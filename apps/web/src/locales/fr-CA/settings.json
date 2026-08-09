@@ -2844,7 +2844,8 @@
       "externalId": "ID externe",
       "status": "Statut",
       "matches": "correspond à « {{name}} »",
-      "reactivateHint": "La sélection réactivera l’organisation supprimée"
+      "reactivateHint": "La sélection réactivera l’organisation supprimée",
+      "matchAlreadyLinked": "« {{name}} » est déjà liée à ce système sous un autre identifiant — confirmer cette correspondance fusionnerait deux enregistrements dans une seule organisation."
     },
     "badges": {
       "create": "Nouvelle",

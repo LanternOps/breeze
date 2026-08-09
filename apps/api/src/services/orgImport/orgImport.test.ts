@@ -178,6 +178,62 @@ describe('previewOrgImport', () => {
     expect(rows[0]).toMatchObject({ annotation: 'name-match', matchedOrganizationLinkedToSystem: true });
   });
 
+  it('REFUSES a confirmed name match whose org is already linked to the system', async () => {
+    // The flag above is advisory — preview only. Until #3246 nothing enforced
+    // it at commit, so a caller that ignored it (a direct API call, or the web
+    // preview table, which never read the field) could confirm the match and
+    // write a SECOND link row, silently merging two source companies onto one
+    // tenant. The seam is where every source converges, so the refusal lives
+    // here rather than in each caller.
+    stubState(
+      [{ id: 'org-1', name: 'Acme', slug: 'acme' }],
+      [{ orgId: 'org-1', system: 'quickbooks', externalId: 'other' }],
+    );
+
+    const summary = await commitOrgImport(
+      [{
+        organization: 'Acme',
+        externalId: 'mine',
+        externalSystem: 'quickbooks',
+        expectedAnnotation: 'name-match',
+      }],
+      'p1',
+      { userId: null },
+      'skip',
+    );
+
+    expect(summary.imported).toHaveLength(0);
+    expect(summary.updated).toHaveLength(0);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ code: 'match-already-linked' });
+    expect(summary.errors[0]!.error).toContain('already linked');
+  });
+
+  it('still allows forceCreate to make a SEPARATE org for that row', async () => {
+    // Refusing the match must not strand the company: "this is not that org"
+    // remains available and is the correct answer here.
+    stubState(
+      [{ id: 'org-1', name: 'Acme', slug: 'acme' }],
+      [{ orgId: 'org-1', system: 'quickbooks', externalId: 'other' }],
+    );
+
+    const summary = await commitOrgImport(
+      [{
+        organization: 'Acme',
+        externalId: 'mine',
+        externalSystem: 'quickbooks',
+        expectedAnnotation: 'name-match',
+        forceCreate: true,
+      }],
+      'p1',
+      { userId: null },
+      'skip',
+    );
+
+    expect(summary.errors).toHaveLength(0);
+    expect(summary.imported).toHaveLength(1);
+  });
+
   it('does not flag a name match whose org is linked under a DIFFERENT system', async () => {
     stubState(
       [{ id: 'org-1', name: 'Acme', slug: 'acme' }],

@@ -12,8 +12,23 @@ import {
   type AuthContext
 } from '../middleware/auth';
 import { db } from '../db';
-import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
+import { devices, organizationExternalLinks, organizations, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
+import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
+import { MAX_IMPORT_ROWS, commitOrgImport, previewOrgImport } from '../services/orgImport';
+import { writeOrgImportAudits } from '../services/orgImport/audit';
+import { commitImportRowSchema } from '../services/orgImport/schemas';
+import {
+  createPsaCompanyImportSource,
+  type PsaCompanyImportSource
+} from '../services/psa/companyImport';
+import { PsaCursorOriginError } from '../services/psa/pagination';
+import {
+  PSA_COMPANY_LIST_CAP,
+  PsaCapabilityError,
+  isOrgImportCapableProvider,
+  type OrgImportCapablePsaProvider
+} from '../services/psa/types';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -1105,5 +1120,335 @@ psaRoutes.get(
       data: rows.map(mapTicketRow),
       pagination: { page, limit, total: Number(countRows[0]?.count ?? 0) }
     });
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PSA company import (#3246)
+//
+// Pulls the connection's companies through the org-import seam, so a PSA becomes
+// just another source alongside CSV and QuickBooks. The row contract is shared
+// verbatim with POST /orgs/import (services/orgImport/schemas.ts) — the same web
+// preview table drives both.
+//
+// BOTH routes are registered in SELF_MANAGED_DB_CONTEXT_ROUTES (#1448 / #1105
+// class), so neither runs inside the auth middleware's ambient request
+// transaction:
+//   • preview makes up to a dozen outbound PSA requests at 20s each; pinning a
+//     pooled connection idle-in-transaction across that is the pool-poison bug.
+//   • commit runs `commitOrgImport`, which opens its OWN transaction per row
+//     group in a system DB context; an ambient tx wrapped around hundreds of
+//     those holds one connection for the entire import.
+// Every DB touch below is therefore an explicit short `withAuthDbAccessContext`,
+// with the network call outside all of them — the pattern the /test route uses.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const psaCommitImportSchema = z.object({
+  rows: z.array(commitImportRowSchema).min(1).max(MAX_IMPORT_ROWS),
+  mode: z.enum(['skip', 'update']).default('skip')
+});
+
+/**
+ * The partner whose tenant tree the import writes into: always the partner that
+ * OWNS the connection, never a value the caller supplies.
+ *
+ * Partner-owned rows carry it directly; an org-owned connection inherits it from
+ * its organization. Returns null when the owning partner cannot be resolved,
+ * which the caller turns into a 404 rather than guessing.
+ */
+async function resolveConnectionPartnerId(
+  connection: ConnectionOwner
+): Promise<string | null> {
+  if (connection.partnerId) return connection.partnerId;
+  if (!connection.orgId) return null;
+
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, connection.orgId))
+    .limit(1);
+
+  return org?.partnerId ?? null;
+}
+
+type PsaConnectionRow = NonNullable<Awaited<ReturnType<typeof getConnectionById>>>;
+
+interface ResolvedImportConnection {
+  connection: PsaConnectionRow;
+  partnerId: string;
+  provider: OrgImportCapablePsaProvider;
+}
+
+type ImportResolution =
+  | { ok: true; value: ResolvedImportConnection }
+  | { ok: false; error: string; status: 400 | 403 | 404 };
+
+/**
+ * Shared front half of both import routes: load the connection, prove access,
+ * prove capability, and resolve the owning partner.
+ *
+ * Returns either the resolved bundle or a ready-to-send error, so the two
+ * handlers cannot drift on any of the gates.
+ *
+ * Deliberately does NOT touch credentials. Commit makes no outbound call, so
+ * decrypting there would both do needless secret handling and let a connection
+ * with rotated credentials 400 a commit that never needed them — see
+ * `buildImportSource`, which preview alone calls.
+ */
+async function resolveImportConnection(
+  auth: AuthContext,
+  connectionId: string
+): Promise<ImportResolution> {
+  // Short, explicit DB context — no ambient request transaction here (#1448).
+  const connection = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId));
+  if (!connection) {
+    return { ok: false, error: 'PSA connection not found', status: 404 };
+  }
+
+  const hasAccess = await ensureConnectionAccess(connection, auth);
+  if (!hasAccess) {
+    return { ok: false, error: 'Access denied', status: 403 };
+  }
+
+  // Gate on the BLAST RADIUS, not on who owns the connection.
+  //
+  // `partnerWideWriteBlocked` is the right question for /test, where the thing
+  // being touched IS the connection. It is the WRONG question here: an import
+  // writes into the partner's whole tenant tree — creating organizations and
+  // sites, and under mode:'update' renaming, re-timezoning and REACTIVATING
+  // existing orgs — and `commitOrgImport` does it in a SYSTEM db context, so
+  // neither RLS nor `accessibleOrgIds` narrows it. Keying on connection
+  // ownership let a partner user with partnerOrgAccess='selected' (say 2 of 40
+  // orgs) pick an ORG-owned connection, sail past the check, and mutate all 40.
+  //
+  // So: full partner authority is required for BOTH preview and commit,
+  // whatever the connection's ownership. Preview is included deliberately —
+  // it enumerates every organization name in the partner in its annotations.
+  if (!canManagePartnerWidePolicies(auth)) {
+    return { ok: false, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 };
+  }
+
+  if (!isOrgImportCapableProvider(connection.provider)) {
+    // 400, not 501: the provider is a property of the caller's own connection.
+    return {
+      ok: false,
+      error: new PsaCapabilityError(connection.provider, 'organization import').message,
+      status: 400
+    };
+  }
+  const provider: OrgImportCapablePsaProvider = connection.provider;
+
+  const partnerId = await withAuthDbAccessContext(auth, () => resolveConnectionPartnerId(connection));
+  if (!partnerId) {
+    return { ok: false, error: 'PSA connection has no owning partner', status: 404 };
+  }
+
+  // Defense in depth: ensureConnectionAccess already implies this for partner
+  // scope, but an explicit equality check means a future change to that helper
+  // cannot silently let one partner import into another's tenant tree.
+  if (auth.scope === 'partner' && auth.partnerId !== partnerId) {
+    return { ok: false, error: 'Access denied', status: 403 };
+  }
+
+  return { ok: true, value: { connection, partnerId, provider } };
+}
+
+/**
+ * Every external id this partner has already linked to `system`.
+ *
+ * Read as a Set so the adapter can drop them mid-walk. Scoped by partner AND
+ * system, matching the `(partner_id, system, external_id)` unique index.
+ */
+async function loadLinkedExternalIds(
+  partnerId: string,
+  system: string
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ externalId: organizationExternalLinks.externalId })
+    .from(organizationExternalLinks)
+    .where(
+      and(
+        eq(organizationExternalLinks.partnerId, partnerId),
+        eq(organizationExternalLinks.system, system)
+      )
+    );
+
+  return new Set(rows.map((row) => row.externalId));
+}
+
+/**
+ * Decrypt credentials and build the company-import source. PREVIEW ONLY — the
+ * only half of the feature that talks to the PSA.
+ */
+function buildImportSource(
+  connection: PsaConnectionRow,
+  provider: OrgImportCapablePsaProvider,
+  alreadyLinkedExternalIds: ReadonlySet<string>
+): { ok: true; source: PsaCompanyImportSource } | { ok: false; error: string; status: 400 } {
+  const credentials = decryptCredentials(connection.credentials);
+  if (!credentials) {
+    return { ok: false, error: 'PSA connection has no usable credentials', status: 400 };
+  }
+
+  const settings = (connection.settings && typeof connection.settings === 'object' && !Array.isArray(connection.settings))
+    ? connection.settings as Record<string, unknown>
+    : {};
+
+  let client;
+  try {
+    client = createPSAProvider(provider, credentials, settings);
+  } catch (error) {
+    if (error instanceof PsaConfigError) {
+      return { ok: false, error: error.message, status: 400 };
+    }
+    throw error;
+  }
+
+  return {
+    ok: true,
+    source: createPsaCompanyImportSource({ provider, client, alreadyLinkedExternalIds })
+  };
+}
+
+/** Map an outbound-listing failure onto an honest status. */
+function companyListingError(error: unknown): { error: string; status: 400 | 502 } {
+  if (error instanceof PsaCapabilityError) {
+    return { error: error.message, status: 400 };
+  }
+  if (error instanceof PsaCursorOriginError) {
+    // The PSA steered pagination off its own host. Refused before dialing, so
+    // no credentials left the process. The pin itself stays strict — there is
+    // deliberately no allowlist of "similar" hosts — but the message names the
+    // provider and both origins and, for Autotask, the benign cause that
+    // produces this in practice: each customer is assigned a ZONE host, and a
+    // connection saved with the generic entry-point URL gets zone-hosted
+    // cursors back and trips the pin on page 2 every time.
+    const remedy = error.provider === 'Autotask'
+      ? ` Set this connection's base URL to your assigned Autotask zone URL (the host returned by zoneInformation), not the generic entry point.`
+      : ` Set this connection's base URL to the host that serves its API.`;
+    return { error: `${error.message}${remedy}`, status: 502 };
+  }
+  return {
+    error: error instanceof Error
+      ? `PSA returned an error while listing companies: ${error.message}`
+      : 'PSA returned an error while listing companies',
+    status: 502
+  };
+}
+
+psaRoutes.post(
+  '/connections/:id/import/preview',
+  // Import creates ORGS and SITES, so it carries both write gates plus MFA —
+  // identical to POST /orgs/import. Org-scope tokens are excluded: the seam
+  // imports into a PARTNER's tenant tree.
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action),
+  requireMfa(),
+  // Each call is potentially a dozen 20s outbound requests on the partner's
+  // behalf. Placed AFTER the gates so a 403 never consumes the caller's budget —
+  // the bucket should count real PSA traffic, not rejected attempts.
+  userRateLimit('psa-company-import-preview', 10, 3600),
+  async (c) => {
+    const auth = c.get('auth');
+    const connectionId = c.req.param('id')!;
+
+    const resolved = await resolveImportConnection(auth, connectionId);
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const { connection, partnerId, provider } = resolved.value;
+
+    // Ids already imported from this provider, read in its own short context
+    // BEFORE the network call. Handed to the adapter so they are dropped during
+    // the walk and never consume the cap — this is what lets an MSP with more
+    // companies than the cap reach the rest by previewing again.
+    const alreadyLinkedExternalIds = await withAuthDbAccessContext(auth, () =>
+      loadLinkedExternalIds(partnerId, provider)
+    );
+
+    const built = buildImportSource(connection, provider, alreadyLinkedExternalIds);
+    if (!built.ok) {
+      return c.json({ error: built.error }, built.status);
+    }
+
+    // Outbound HTTP — deliberately outside every DB context above.
+    let listing;
+    try {
+      listing = await built.source.listCompanies({ partnerId });
+    } catch (error) {
+      const mapped = companyListingError(error);
+      return c.json({ error: mapped.error }, mapped.status);
+    }
+
+    // previewOrgImport manages its own short system contexts internally
+    // (runOutsideDbContext + withSystemDbAccessContext), so it is called bare.
+    const rows = await previewOrgImport(listing.rows, partnerId);
+
+    return c.json({
+      rows,
+      truncated: listing.truncated,
+      // WHY it stopped short — 'cap' vs a slow PSA clipping us well below it.
+      truncationReason: listing.truncationReason ?? null,
+      fetched: listing.fetched,
+      alreadyLinked: listing.alreadyLinked,
+      malformed: listing.malformed,
+      cap: PSA_COMPANY_LIST_CAP
+    });
+  }
+);
+
+psaRoutes.post(
+  '/connections/:id/import',
+  requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action),
+  requireMfa(),
+  zValidator('json', psaCommitImportSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const connectionId = c.req.param('id')!;
+    const { rows: submitted, mode } = c.req.valid('json');
+
+    const resolved = await resolveImportConnection(auth, connectionId);
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const { connection, partnerId, provider } = resolved.value;
+
+    // `externalSystem` is FORCED to this connection's provider, overwriting
+    // whatever the client sent. Trusting the client here would let a caller
+    // write link rows into another system's namespace — e.g. claim
+    // system='quickbooks' for a ConnectWise company and hijack the dedupe key
+    // a later QuickBooks import matches on.
+    const rows = submitted.map((row) => ({ ...row, externalSystem: provider }));
+
+    const summary = await commitOrgImport(rows, partnerId, { userId: auth.user?.id ?? null }, mode);
+
+    // commitOrgImport writes NO audit events (no Hono context, system DB
+    // context) — the route owns the trail. Shared with POST /orgs/import.
+    writeOrgImportAudits(c, { summary, rows, partnerId, source: 'psa_import' });
+
+    // Plus one event on the connection itself, so the PSA's own audit view shows
+    // that an import ran and how much it moved.
+    writeRouteAudit(c, {
+      orgId: connection.orgId,
+      action: 'psa.connection.import',
+      resourceType: 'psa_connection',
+      resourceId: connection.id,
+      resourceName: connection.name,
+      details: {
+        ...auditOwnerFields(connection),
+        provider,
+        mode,
+        requested: rows.length,
+        imported: summary.imported.length,
+        updated: summary.updated.length,
+        skipped: summary.skipped.length,
+        errors: summary.errors.length
+      }
+    });
+
+    return c.json(summary);
   }
 );

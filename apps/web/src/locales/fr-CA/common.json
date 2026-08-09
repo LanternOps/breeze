@@ -930,6 +930,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importer les entreprises",
+        "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
+        "intro": "Les entreprises sont d'abord comparées à vos organisations existantes. Rien n'est créé avant que vous ayez vérifié la liste ci-dessous et confirmé.",
+        "capHint": "Jusqu'à {{cap}} entreprises sont récupérées par importation.",
+        "empty": "Cette connexion n'a retourné aucune entreprise.",
+        "alreadyLinked_one": "{{count}} entreprise a été ignorée parce qu'elle a déjà été importée depuis cette connexion.",
+        "alreadyLinked_other": "{{count}} entreprises ont été ignorées parce qu'elles ont déjà été importées depuis cette connexion.",
+        "malformed_one": "{{count}} enregistrement n'a pas pu être lu (aucun identifiant ni nom exploitable) et a été ignoré.",
+        "malformed_other": "{{count}} enregistrements n'ont pas pu être lus (aucun identifiant ni nom exploitable) et ont été ignorés.",
+        "actions": {
+          "fetch": "Récupérer les entreprises",
+          "fetching": "Récupération des entreprises…",
+          "import": "Importer {{count}} sélectionnées",
+          "importing": "Importation…"
+        },
+        "truncated": {
+          "title": "Liste d'entreprises partielle",
+          "body": "La liste des entreprises a été interrompue après {{fetched}} entreprises sur un maximum de {{cap}}; cette importation sera donc incomplète. Les entreprises jamais lues ne seront pas liées.",
+          "cap": "La limite de {{cap}} entreprises par importation a été atteinte après {{fetched}} entreprises récupérées; cette importation sera donc incomplète. Les entreprises au-delà de cette limite n'ont jamais été lues et ne seront pas liées.",
+          "timeBudget": "Cette connexion a répondu trop lentement; la liste des entreprises a donc été interrompue après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées.",
+          "pageGuard": "La liste des entreprises comptait trop de pages et a été arrêtée après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées."
+        },
+        "errors": {
+          "previewFailed": "Impossible de charger les entreprises de cette connexion.",
+          "importFailed": "Impossible d'importer les entreprises."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Tester la connexion",
@@ -1034,7 +1062,8 @@
         "actions": {
           "pause": "Mettre en pause",
           "resume": "Reprendre",
-          "syncNow": "Synchronisez maintenant"
+          "syncNow": "Synchronisez maintenant",
+          "importCompanies": "Importer les entreprises"
         },
         "connectionCount": "{{filtered}} de {{total}} connexions",
         "empty": {

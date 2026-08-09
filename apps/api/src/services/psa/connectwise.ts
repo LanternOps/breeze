@@ -1,5 +1,16 @@
-import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompany,
+  PSACompanyList,
+  PSACompanyListOptions,
+  PSAConnectionTest,
+  PSAProvider,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PSA_COMPANY_LIST_CAP
+} from './types';
 import { psaFetch } from './http';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface ConnectWiseCredentials {
   baseUrl: string;
@@ -104,17 +115,39 @@ export class ConnectWiseProvider implements PSAProvider {
     }
   }
 
-  async getCompanies(): Promise<PSACompany[]> {
-    const response = await this.request<ConnectWiseCompany[]>(
-      'GET',
-      '/company/companies?fields=id,name&pageSize=100'
-    );
+  /**
+   * ConnectWise Manage paginates with a 1-based `page=` alongside `pageSize=`.
+   * It returns a bare array with no total, so "another page exists" is inferred
+   * from a full page — one extra request on an exact multiple, which is the
+   * correct trade against under-reading an MSP's company list.
+   */
+  async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
+    const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    return (response || []).map((company) => ({
-      id: company.id.toString(),
-      name: company.name,
-      externalId: company.id.toString()
-    }));
+    // `conditions=deletedFlag=false` drops soft-deleted companies server-side;
+    // without it an MSP's archived customers arrive pre-selected and provision
+    // dead organizations. `orderBy=id asc` makes the page walk deterministic —
+    // page/offset paging over an unordered result set can skip or repeat rows
+    // while still looking like a complete list.
+    const query =
+      `/company/companies?fields=id,name&conditions=${encodeURIComponent('deletedFlag=false')}` +
+      `&orderBy=${encodeURIComponent('id asc')}&pageSize=${PSA_COMPANY_PAGE_SIZE}`;
+
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
+      const page = cursor ? Number(cursor) : 1;
+      const response = await this.request<ConnectWiseCompany[]>('GET', `${query}&page=${page}`);
+      const rows = response || [];
+
+      // Never infer end-of-list from a SHORT page — ConnectWise may return
+      // fewer than pageSize. Only an empty RAW page ends the walk.
+      return companyPage(
+        rows.map((company) => ({ id: company?.id, name: company?.name })),
+        String(page + 1),
+        options.skipExternalIds
+      );
+    });
+
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

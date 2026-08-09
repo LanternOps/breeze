@@ -930,6 +930,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Import companies",
+        "subtitle": "Create organizations from the companies in {{name}}.",
+        "intro": "Companies are matched against your existing organizations first. Nothing is created until you review the list below and confirm.",
+        "capHint": "Up to {{cap}} companies are fetched per import.",
+        "empty": "This connection returned no companies.",
+        "alreadyLinked_one": "{{count}} company was skipped because it has already been imported from this connection.",
+        "alreadyLinked_other": "{{count}} companies were skipped because they have already been imported from this connection.",
+        "malformed_one": "{{count}} record could not be read (no usable ID or name) and was skipped.",
+        "malformed_other": "{{count}} records could not be read (no usable ID or name) and were skipped.",
+        "actions": {
+          "fetch": "Fetch companies",
+          "fetching": "Fetching companies…",
+          "import": "Import {{count}} selected",
+          "importing": "Importing…"
+        },
+        "truncated": {
+          "title": "Partial company list",
+          "body": "The company listing was cut short after {{fetched}} of up to {{cap}} companies, so this import will be incomplete. Any company that was never read will not be linked.",
+          "cap": "The per-import limit of {{cap}} companies was reached after {{fetched}} were fetched, so this import will be incomplete. Any company beyond that limit was never read and will not be linked.",
+          "timeBudget": "This connection responded too slowly, so the company listing was cut short after {{fetched}} companies. This import will be incomplete — the companies that were never read will not be linked.",
+          "pageGuard": "The company listing spanned too many pages and was stopped after {{fetched}} companies. This import will be incomplete — the companies that were never read will not be linked."
+        },
+        "errors": {
+          "previewFailed": "Failed to load companies from this connection.",
+          "importFailed": "Failed to import companies."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Test connection",
@@ -1034,7 +1062,8 @@
         "actions": {
           "pause": "Pause",
           "resume": "Resume",
-          "syncNow": "Sync now"
+          "syncNow": "Sync now",
+          "importCompanies": "Import companies"
         },
         "connectionCount": "{{filtered}} of {{total}} connections",
         "empty": {

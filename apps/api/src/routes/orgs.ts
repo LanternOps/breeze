@@ -36,6 +36,8 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
+import { writeOrgImportAudits } from '../services/orgImport/audit';
+import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -1344,24 +1346,8 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
 // directly. Gating matches the single-record write routes this composes
 // (POST /organizations, POST /sites): partner/system scope + orgs:write + MFA.
 
-const importRowContactSchema = z
-  .object({
-    name: z.string().max(255).optional(),
-    email: z.union([z.string().email(), z.literal('')]).optional(),
-    phone: z.string().max(64).optional(),
-  })
-  .passthrough();
-
-const importRowSchema = z.object({
-  organization: z.string().min(1).max(255),
-  site: z.string().max(255).optional(),
-  externalId: z.string().min(1).max(255).optional(),
-  externalSystem: z.string().min(1).max(64).optional(),
-  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
-  address: z.any().optional(),
-  contact: importRowContactSchema.optional(),
-});
-
+// Row shape lives in services/orgImport/schemas.ts so the PSA company-import
+// route (#3246) accepts the byte-identical row contract.
 const previewOrgImportSchema = z.object({
   // System scope only — partner scope always imports into its own partner.
   partnerId: z.string().guid().optional(),
@@ -1370,26 +1356,7 @@ const previewOrgImportSchema = z.object({
 
 const commitOrgImportSchema = z.object({
   partnerId: z.string().guid().optional(),
-  rows: z
-    .array(importRowSchema.extend({
-      // The annotation the client saw at preview. Commit re-derives and
-      // rejects rows whose annotation changed — and a name-match is never
-      // applied without this explicit acknowledgement.
-      expectedAnnotation: z.enum(['create', 'link-match', 'name-match', 'matched-soft-deleted']).optional(),
-      // The organizationId the row matched at preview; commit rejects the row
-      // if the re-derived match resolves to a different organization.
-      expectedOrganizationId: z.string().guid().optional(),
-      // Explicit opt-in to reactivate a soft-deleted matched org.
-      reactivate: z.boolean().optional(),
-      // Explicit "this is NOT that organization" — create a separate,
-      // slug-suffixed org instead of touching the name/soft-deleted match.
-      // Without it, a row colliding by name with a soft-deleted org is
-      // unimportable: the only other way to satisfy that match is `reactivate`,
-      // and reviving an unrelated dead tenant is the wrong answer.
-      forceCreate: z.boolean().optional(),
-    }))
-    .min(1)
-    .max(MAX_IMPORT_ROWS),
+  rows: z.array(commitImportRowSchema).min(1).max(MAX_IMPORT_ROWS),
   mode: z.enum(['skip', 'update']).default('skip'),
 });
 
@@ -1441,81 +1408,14 @@ orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, re
   const summary = await commitOrgImport(rows, resolved.partnerId, { userId: auth.user?.id ?? null }, mode);
 
   // Audit every org, site, and link created (and every reactivation/update).
-  for (const entry of summary.imported) {
-    const sourceRow = rows[entry.index];
-    if (entry.createdOrganization) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.create',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { partnerId: resolved.partnerId, source: 'org_import', slug: entry.slug },
-      });
-    }
-    if (entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.external_link.create',
-        resourceType: 'organization_external_link',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { system: sourceRow?.externalSystem ?? 'csv', externalId: sourceRow?.externalId, source: 'org_import' },
-      });
-    }
-    if (entry.siteId) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'site.create',
-        resourceType: 'site',
-        resourceId: entry.siteId,
-        resourceName: entry.siteName ?? entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-  }
-  for (const entry of summary.updated) {
-    const sourceRow = rows[entry.index];
-    if (entry.reactivated) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.reactivate',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-    if (entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.external_link.create',
-        resourceType: 'organization_external_link',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { system: sourceRow?.externalSystem ?? 'csv', externalId: sourceRow?.externalId, source: 'org_import' },
-      });
-    }
-    if (entry.siteId && entry.createdSite) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'site.create',
-        resourceType: 'site',
-        resourceId: entry.siteId,
-        resourceName: entry.siteName ?? entry.organization,
-        details: { source: 'org_import' },
-      });
-    } else if (!entry.reactivated && !entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.update',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-  }
+  // Extracted to a shared helper (#3246) so the PSA company-import route emits
+  // the identical trail — commitOrgImport writes no audit events of its own.
+  writeOrgImportAudits(c, {
+    summary,
+    rows,
+    partnerId: resolved.partnerId,
+    source: 'org_import',
+  });
 
   return c.json(summary);
 });

@@ -5,6 +5,7 @@ import PsaConnectionForm, {
   type PsaCredentialField
 } from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
+import PsaCompanyImport from './PsaCompanyImport';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { useOrgStore } from '../../stores/orgStore';
@@ -16,7 +17,7 @@ import { useTranslation } from 'react-i18next';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
-type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
+type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test' | 'import';
 
 type TestResult = {
   success: boolean;
@@ -219,6 +220,11 @@ export default function PsaConnectionsPage() {
     setModalMode('delete');
   };
 
+  const handleImportCompanies = (connection: PsaConnection) => {
+    setSelectedConnection(connection);
+    setModalMode('import');
+  };
+
   const handleCloseModal = () => {
     setModalMode('closed');
     setSelectedConnection(null);
@@ -390,6 +396,7 @@ export default function PsaConnectionsPage() {
         onEdit={handleEdit}
         onToggleStatus={handleToggleStatus}
         onDelete={handleDelete}
+        onImportCompanies={handleImportCompanies}
         isLockedPartnerWide={isLockedPartnerWide}
       />
 
@@ -459,6 +466,12 @@ export default function PsaConnectionsPage() {
             />
           </div>
         </div>
+      )}
+
+      {modalMode === 'import' && selectedConnection && (
+        // A company import creates organizations, not connections — nothing on
+        // this page changes, so there is no `onImported` refetch to do here.
+        <PsaCompanyImport connection={selectedConnection} onClose={handleCloseModal} />
       )}
 
       {modalMode === 'delete' && selectedConnection && (

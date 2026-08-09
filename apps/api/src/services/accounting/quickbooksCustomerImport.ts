@@ -227,6 +227,13 @@ const SEAM_ERROR_KIND: Record<OrgImportErrorCode, SeamErrorKind> = {
   'name-match-unconfirmed': 'recheck',
   'soft-deleted-unconfirmed': 'recheck',
   'external-id-conflict': 'recheck',
+  // Describes the customer's DATA — "the org you matched is already linked to
+  // QuickBooks under a different id" — not a stale-preview problem, and this
+  // importer already declines to offer such matches (see the
+  // `matchedOrganizationLinkedToSystem` guard above). Reaching here means the
+  // link appeared between annotate and commit, so it is a conflict to show
+  // verbatim, not an incident to page on.
+  'match-already-linked': 'conflict',
   'row-conflict': 'conflict',
   'write-failed': 'failure',
 };
