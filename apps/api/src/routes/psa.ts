@@ -5,21 +5,23 @@ import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { psaProviderIdSchema, type PsaProviderId } from '@breeze/shared';
 import {
   authMiddleware,
-  dbAccessContextFromAuth,
   requireMfa,
   requirePermission,
   requireScope,
+  withAuthDbAccessContext,
   type AuthContext
 } from '../middleware/auth';
-import { db, runOutsideDbContext, withDbAccessContext } from '../db';
+import { db } from '../db';
 import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { createPSAProvider } from '../services/psa';
 import {
   PsaConfigError,
   decryptCredentials,
   encryptCredentials,
+  mergeProviderCredentials,
+  validateProviderCredentials,
   validatePsaCredentialBaseUrl
 } from '../services/psa/credentials';
 
@@ -119,9 +121,41 @@ function mergeObjectState(
 
 // Round-trip contract with the web form (PsaConnectionsPage/PsaConnectionForm):
 // non-secret credential fields are returned for edit prefill; secrets are NEVER
-// returned — only per-field presence flags so the form can show "keep existing".
-const PSA_PUBLIC_CREDENTIAL_KEYS = ['baseUrl', 'username', 'clientId'] as const;
-const PSA_SECRET_CREDENTIAL_KEYS = ['password', 'apiToken', 'clientSecret'] as const;
+// returned — only per-field presence flags (`credentialFields`) so the form can
+// show "keep existing". BOTH are gated on orgs:write — see GET /connections/:id.
+const PSA_PUBLIC_CREDENTIAL_KEYS = [
+  'baseUrl',
+  'username',
+  'email',
+  'clientId',
+  'companyId',
+  'publicKey'
+] as const;
+const PSA_SECRET_CREDENTIAL_KEYS = [
+  'password',
+  'apiToken',
+  'clientSecret',
+  'privateKey',
+  'secret',
+  'integrationCode',
+  'apiKey',
+  'personalAccessToken'
+] as const;
+
+/**
+ * Is the stored credential blob non-empty? Deliberately does NOT decrypt — the
+ * list endpoint serializes up to 100 rows and only needs the boolean.
+ */
+function hasStoredCredentials(value: unknown): boolean {
+  if (!value) return false;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.encrypted === 'string') return record.encrypted.length > 0;
+    return Object.keys(record).length > 0;
+  }
+  return false;
+}
 
 function deriveConnectionStatus(settings: unknown): 'active' | 'paused' | 'error' {
   if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
@@ -159,7 +193,15 @@ function serializeConnection(
     settings,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
-    lastTestedAt: extractLastTestedAt(connection.syncSettings)
+    lastTestedAt: extractLastTestedAt(connection.syncSettings),
+    // Whether ANY credential material is stored. Part of the pre-existing
+    // public shape — every list/detail consumer sees it, no permission gate.
+    hasCredentials: hasStoredCredentials(connection.credentials),
+    // DEPRECATED and frozen: nothing writes psa_connections.last_sync_at any
+    // more (POST /connections/:id/sync returns 501 — there is no sync worker),
+    // so this is null on every connection created since. Kept because removing
+    // a response field is a breaking public-API change.
+    lastSyncedAt: connection.lastSyncAt ?? null
   };
 
   if (!includeCredentialInfo) {
@@ -175,7 +217,10 @@ function serializeConnection(
     }
   }
 
-  const hasCredentials = Object.fromEntries(
+  // Per-field presence of the SECRET keys — named `credentialFields` to keep it
+  // distinct from the `hasCredentials` boolean above, which is a different
+  // question with a different audience.
+  const credentialFields = Object.fromEntries(
     PSA_SECRET_CREDENTIAL_KEYS.map((key) => {
       const value = decrypted[key];
       return [key, typeof value === 'string' ? value.length > 0 : Boolean(value)];
@@ -185,7 +230,7 @@ function serializeConnection(
   return {
     ...response,
     credentials,
-    hasCredentials
+    credentialFields
   };
 }
 
@@ -362,6 +407,21 @@ psaRoutes.post(
       return c.json({ error: baseUrlError }, 400);
     }
 
+    // Validate at SAVE time, not just at adapter-construction (test) time —
+    // otherwise a misconfigured blob persists happily and only surfaces as a
+    // 400 the first time someone presses Test. Create always has the full set
+    // of credentials in hand, so it always validates. The stored blob stays the
+    // raw payload: normalization (jira `type` inference, alias backfill) is
+    // derived per use, never frozen into the row.
+    try {
+      validateProviderCredentials(data.provider, data.credentials);
+    } catch (error) {
+      if (error instanceof PsaConfigError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+
     const credentialsEncrypted = encryptCredentials(data.credentials);
     if (!credentialsEncrypted) {
       return c.json({ error: 'Failed to encrypt credentials' }, 500);
@@ -427,9 +487,18 @@ psaRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    // includeCredentialInfo: non-secret prefill fields + per-field secret
-    // presence flags for the edit form. Secrets themselves are never returned.
-    return c.json({ data: serializeConnection(connection, true) });
+    // The credential prefill block (non-secret fields) and the per-field
+    // `credentialFields` presence map exist to drive the EDIT form, so they are
+    // gated on orgs:write. A caller holding only orgs:read never sees decrypted
+    // material or which auth mode a connection is configured with (#3291
+    // review) — `requirePermission(ORGS_READ)` above has already resolved and
+    // cached the permission set on the context.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const canManage = perms
+      ? hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)
+      : false;
+
+    return c.json({ data: serializeConnection(connection, canManage) });
   }
 );
 
@@ -470,19 +539,31 @@ psaRoutes.patch(
       // Merge-with-existing semantics: keys present in the patch overwrite,
       // `null` deletes a key, absent keys keep their stored value. This lets
       // the edit form omit untouched secrets without wiping them.
+      //
+      // The merge is AUTH-GROUP AWARE (see CREDENTIAL_AUTH_GROUPS in
+      // services/psa/credentials.ts): supplying any key of one mutually
+      // exclusive auth group clears the others. A plain merge trapped stale
+      // material — rotating a Jira connection from a personal access token to
+      // username/password kept the PAT, which the adapter keeps preferring, so
+      // the rotation silently did nothing (#3291 review).
       const existingCredentials = decryptCredentials(existing.credentials) ?? {};
-      const merged: Record<string, unknown> = { ...existingCredentials };
-      for (const [key, value] of Object.entries(data.credentials)) {
-        if (value === null) {
-          delete merged[key];
-        } else {
-          merged[key] = value;
-        }
-      }
+      const merged = mergeProviderCredentials(existing.provider, existingCredentials, data.credentials);
 
       const baseUrlError = validatePsaCredentialBaseUrl(merged);
       if (baseUrlError) {
         return c.json({ error: baseUrlError }, 400);
+      }
+
+      // Validate the POST-MERGE blob — only reachable when this PATCH actually
+      // writes credentials. A rename-only PATCH deliberately skips validation
+      // so legacy-shaped stored blobs stay editable.
+      try {
+        validateProviderCredentials(existing.provider, merged);
+      } catch (error) {
+        if (error instanceof PsaConfigError) {
+          return c.json({ error: error.message }, 400);
+        }
+        throw error;
       }
 
       const encrypted = encryptCredentials(merged);
@@ -493,7 +574,11 @@ psaRoutes.patch(
     }
 
     if (data.settings !== undefined) {
-      updates.settings = data.settings;
+      // Shallow MERGE, not replace — same semantics as the credentials merge
+      // above. `settings.status` is written by POST /connections/:id/status and
+      // is NOT part of the edit form's payload, so a wholesale replace silently
+      // reactivated a paused connection on any rename (#3291 review).
+      updates.settings = mergeObjectState(existing.settings, data.settings);
     }
 
     const [updated] = await db
@@ -569,14 +654,9 @@ psaRoutes.delete(
  * (#1448 / #1105 class) — it makes a REAL outbound HTTP call to the PSA
  * (psaFetch, 20s timeout, tenant-controlled baseUrl), so the auth middleware
  * does NOT wrap this route in the usual request transaction. Reads/writes run
- * in short explicit contexts built from the same fields the middleware would
- * have used, with the network call between them. Mirrors
- * `withChannelsDbContext` in routes/alerts/channels.ts.
+ * in short explicit contexts (`withAuthDbAccessContext`) built from the same
+ * fields the middleware would have used, with the network call between them.
  */
-function withPsaDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
-}
-
 psaRoutes.post(
   '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
@@ -587,7 +667,7 @@ psaRoutes.post(
     const connectionId = c.req.param('id')!;
 
     // Short, explicit DB context — no ambient request transaction here (#1448).
-    const existing = await withPsaDbContext(auth, () => getConnectionById(connectionId));
+    const existing = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId));
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -631,7 +711,7 @@ psaRoutes.post(
     // Persist the outcome in a second short context. Best-effort: a DB hiccup
     // here must not mask the actual test result.
     try {
-      await withPsaDbContext(auth, () =>
+      await withAuthDbAccessContext(auth, () =>
         db
           .update(psaConnectionsTable)
           .set({

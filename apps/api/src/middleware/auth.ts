@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { verifyToken, TokenPayload } from '../services/jwt';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite, UserPermissions } from '../services/permissions';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -435,6 +435,28 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     // every tool call rather than a benign null user id.
     userId: auth.user?.id ?? null,
   });
+}
+
+/**
+ * Run `fn` in a fresh, short DB access context carrying the caller's exact
+ * tenant scope — escaping any ambient request transaction first.
+ *
+ * This is the canonical form of the pattern every route registered in
+ * `SELF_MANAGED_DB_CONTEXT_ROUTES` needs: those handlers are deliberately NOT
+ * wrapped in the middleware's request transaction (they make slow outbound
+ * calls, and pinning a pooled connection across one is the #1105 pool-poison
+ * class), so each read/write phase opens its own context instead. Background
+ * workers replaying a captured `AuthContext` need the same thing.
+ *
+ * It had been copy-pasted verbatim five times (the former
+ * `withChannelsDbContext` / `withProviderDbContext` / `withReconcileDbContext`
+ * / `withPsaDbContext`, plus two inline uses in the intent release worker), all
+ * of which now call through here. RLS scoping is not a thing to keep
+ * re-deriving by hand — `runOutsideDbContext` is load-bearing and easy to drop,
+ * which would silently nest the context instead of replacing it.
+ */
+export function withAuthDbAccessContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
 }
 
 export async function authMiddleware(c: Context, next: Next): Promise<void | Response> {

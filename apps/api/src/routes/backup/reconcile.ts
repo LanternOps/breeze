@@ -2,14 +2,13 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
-import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { devices } from '../../db/schema';
 import {
-  dbAccessContextFromAuth,
   requireMfa,
   requirePermission,
   requireScope,
-  type AuthContext,
+  withAuthDbAccessContext,
 } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -29,11 +28,9 @@ export const reconcileRoutes = new Hono();
  * auth middleware does NOT wrap the handler in a request transaction: the
  * handler pages a whole S3 bucket listing and fetches multi-MB manifests from a
  * tenant-controlled endpoint host, and pinning a pooled connection idle across
- * that is the #1105 pool-poison class against a 25-connection prod pool.
+ * that is the #1105 pool-poison class against a 25-connection prod pool. The
+ * wrapper is `withAuthDbAccessContext` (middleware/auth.ts).
  */
-function withReconcileDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
-}
 
 const reconcileRequestSchema = z.object({
   /** The destination to enumerate. Must belong to the caller's org. */
@@ -91,7 +88,7 @@ reconcileRoutes.post(
 
     const body = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
-    const allowedDeviceIds = await withReconcileDbContext(auth, () =>
+    const allowedDeviceIds = await withAuthDbAccessContext(auth, () =>
       resolveSiteAllowedDeviceIds(orgId, perms)
     );
 
@@ -103,7 +100,7 @@ reconcileRoutes.post(
         dryRun: body.dryRun,
         limit: body.limit,
         allowedDeviceIds,
-        runInDbContext: (fn) => withReconcileDbContext(auth, fn),
+        runInDbContext: (fn) => withAuthDbAccessContext(auth, fn),
       });
     } catch (error) {
       if (error instanceof BackupReconcileError) {

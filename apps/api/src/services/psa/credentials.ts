@@ -97,10 +97,39 @@ const REQUIRED_CREDENTIAL_KEYS: Record<Exclude<PsaProviderId, 'jira'>, readonly 
 };
 
 /**
- * Bridge the web form's generic credential fields (username/apiToken/…) onto
- * the key names the adapters actually read, and normalize baseUrl (trailing
- * slashes break the Jira adapter's raw path concatenation). Returns a NEW
- * object; never mutates the stored credentials.
+ * Jira supports three mutually exclusive auth modes and the adapter picks
+ * between them off `credentials.type` (`'cloud'` → Basic email:apiToken;
+ * anything else → PAT Bearer if present, else Basic username:password).
+ *
+ * `type` is an adapter implementation detail, NOT something the operator
+ * enters, so it is DERIVED from the material actually present rather than
+ * trusted from the stored blob. Deriving it is what makes Jira Server basic
+ * auth (username + password, no PAT) work: the previous code inferred
+ * `'cloud'` whenever no PAT was present, so a valid username/password pair was
+ * rejected for a missing `apiToken` it never needed (#3291 review).
+ *
+ * The one place a stored `type` still matters: an explicit `'server'` keeps
+ * password-basic selected even when a stray `apiToken` is also present, so
+ * legacy blobs resolve exactly as they did before.
+ */
+type JiraAuthMode = 'server-pat' | 'server-basic' | 'cloud';
+
+function jiraAuthMode(credentials: Record<string, unknown>): JiraAuthMode {
+  if (credentials.personalAccessToken) return 'server-pat';
+  // An explicitly stored `type: 'server'` stays server-basic — that declaration
+  // is the operator's, so it outranks inference (and keeps legacy blobs that
+  // also carry a stray apiToken resolving exactly as they did before).
+  if (credentials.type === 'server') return 'server-basic';
+  // Otherwise infer: a password with no apiToken can only be server basic auth.
+  if (credentials.password && !credentials.apiToken) return 'server-basic';
+  return 'cloud';
+}
+
+/**
+ * Bridge legacy/aliased credential fields onto the key names the adapters
+ * actually read, and normalize baseUrl (trailing slashes break the Jira
+ * adapter's raw path concatenation). Returns a NEW object; never mutates the
+ * stored credentials.
  */
 function normalizeProviderCredentials(
   provider: PsaProviderId,
@@ -115,9 +144,7 @@ function normalizeProviderCredentials(
   switch (provider) {
     case 'jira':
       if (!out.email && typeof out.username === 'string') out.email = out.username;
-      if (out.type !== 'cloud' && out.type !== 'server') {
-        out.type = out.personalAccessToken ? 'server' : 'cloud';
-      }
+      out.type = jiraAuthMode(out) === 'cloud' ? 'cloud' : 'server';
       break;
     case 'zendesk':
       if (!out.email && typeof out.username === 'string') out.email = out.username;
@@ -135,14 +162,75 @@ function normalizeProviderCredentials(
 function requiredKeysFor(provider: PsaProviderId, credentials: Record<string, unknown>): readonly string[] {
   if (provider !== 'jira') return REQUIRED_CREDENTIAL_KEYS[provider];
 
-  // Jira after normalization: cloud → email + apiToken Basic auth;
-  // server → personal access token (Bearer) OR username + password Basic.
-  if (credentials.type === 'server') {
-    return credentials.personalAccessToken
-      ? ['baseUrl', 'personalAccessToken']
-      : ['baseUrl', 'username', 'password'];
+  switch (jiraAuthMode(credentials)) {
+    case 'server-pat':
+      return ['baseUrl', 'personalAccessToken'];
+    case 'server-basic':
+      return ['baseUrl', 'username', 'password'];
+    default:
+      return ['baseUrl', 'email', 'apiToken'];
   }
-  return ['baseUrl', 'email', 'apiToken'];
+}
+
+/**
+ * Mutually exclusive credential groups per provider. When a PATCH supplies ANY
+ * key from one group, the other groups' keys are dropped from the merged blob.
+ *
+ * Without this, a plain merge traps stale alternative-auth material: rotating a
+ * Jira connection from a personal access token to username/password left the
+ * old PAT in the blob, and `jiraAuthMode` keeps preferring a PAT — so the
+ * rotation silently did nothing and the UI offered no way to clear it (#3291
+ * review). Keys NOT in any group (baseUrl, username, companyId, …) merge
+ * normally; an explicit JSON `null` still deletes any key.
+ */
+const CREDENTIAL_AUTH_GROUPS: Partial<Record<PsaProviderId, readonly (readonly string[])[]>> = {
+  // username is deliberately absent: it is shared identity, used by both the
+  // cloud (backfills email) and server-basic modes.
+  jira: [['email', 'apiToken'], ['password'], ['personalAccessToken']],
+  // apiToken is the legacy alias normalize maps onto apiKey; a stored apiKey
+  // would otherwise always win over a freshly supplied apiToken.
+  freshservice: [['apiKey'], ['apiToken']],
+  // same alias trap on the identity axis: a stored email outranks a new username.
+  zendesk: [['email'], ['username']]
+};
+
+/**
+ * Merge a PATCH's credential fields over the stored blob:
+ * - a supplied key overwrites, an explicit `null` deletes it,
+ * - an absent key keeps its stored value (so the edit form can omit untouched
+ *   secrets),
+ * - supplying any key from one auth group clears the OTHER groups' keys.
+ */
+export function mergeProviderCredentials(
+  provider: string,
+  existing: Record<string, unknown>,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing };
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
+    }
+  }
+
+  const groups = CREDENTIAL_AUTH_GROUPS[provider as PsaProviderId];
+  if (groups) {
+    const suppliedGroups = groups.filter((group) =>
+      group.some((key) => patch[key] !== undefined && patch[key] !== null)
+    );
+
+    if (suppliedGroups.length > 0) {
+      for (const group of groups) {
+        if (suppliedGroups.includes(group)) continue;
+        for (const key of group) delete merged[key];
+      }
+    }
+  }
+
+  return merged;
 }
 
 /**

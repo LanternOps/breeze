@@ -15,7 +15,7 @@ vi.mock('../services/psa', () => ({
   createPSAProvider: createPSAProviderMock,
 }));
 
-const { permissionGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
+const { permissionGate, orgsWriteGate, mfaGate, selectMock, insertMock, updateMock, deleteMock } = vi.hoisted(() => {
   function chainMock(resolvedValue: unknown = []) {
     const chain: Record<string, any> = {};
     for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'innerJoin', 'leftJoin', 'orderBy', 'offset']) {
@@ -25,6 +25,10 @@ const { permissionGate, mfaGate, selectMock, insertMock, updateMock, deleteMock 
   }
   return {
     permissionGate: { deny: false },
+    // Whether the caller holds organizations:write. The detail GET gates its
+    // credential-prefill block on this while still being reachable with only
+    // organizations:read.
+    orgsWriteGate: { granted: true },
     mfaGate: { deny: false },
     selectMock: vi.fn(() => chainMock([])),
     insertMock: vi.fn(() => chainMock([])),
@@ -97,10 +101,14 @@ vi.mock('../services/permissions', () => ({
     ORGS_READ: { resource: 'organizations', action: 'read' },
     ORGS_WRITE: { resource: 'organizations', action: 'write' },
   },
+  hasPermission: vi.fn((_perms: unknown, _resource: string, action: string) =>
+    action === 'write' ? orgsWriteGate.granted : true),
 }));
 
 vi.mock('../middleware/auth', () => ({
-  dbAccessContextFromAuth: vi.fn(() => ({})),
+  // The self-managed-DB-context wrapper the test route runs its reads/writes
+  // in. Identity here — the real one is covered by the auth middleware tests.
+  withAuthDbAccessContext: vi.fn((_auth: unknown, fn: () => Promise<unknown>) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
@@ -122,14 +130,16 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
     const restrict = c.req.header('x-restrict-site');
-    c.set('permissions', restrict ? {
+    // Mirrors the real middleware, which always caches the resolved permission
+    // set on the context — handlers re-read it for in-handler checks.
+    c.set('permissions', {
       permissions: [{ resource: 'organizations', action: 'read' }],
       partnerId: null,
       orgId: 'org-123',
       roleId: 'role-1',
       scope: 'organization',
-      allowedSiteIds: restrict === '__empty__' ? [] : [restrict],
-    } : undefined);
+      ...(restrict ? { allowedSiteIds: restrict === '__empty__' ? [] : [restrict] } : {}),
+    });
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -147,6 +157,7 @@ describe('psa route security gates', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    orgsWriteGate.granted = true;
     mfaGate.deny = false;
     app = new Hono();
     app.route('/psa', psaRoutes);
@@ -167,6 +178,28 @@ describe('psa route security gates', () => {
     });
 
     expect(res.status).toBe(403);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects credentials that are incomplete for the provider at SAVE time', async () => {
+    const res = await app.request('/psa/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'connectwise',
+        name: 'Half-configured CW',
+        // companyId / publicKey / privateKey are what the adapter actually
+        // reads; without validation this blob persisted and only failed on the
+        // first Test press.
+        credentials: { baseUrl: 'https://api-na.myconnectwise.net', companyId: 'acme' },
+        settings: {},
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('missing required credential field');
+    expect(body.error).toContain('publicKey');
     expect(insertMock).not.toHaveBeenCalled();
   });
 
@@ -195,7 +228,11 @@ describe('psa route security gates', () => {
       body: JSON.stringify({
         provider: 'jira',
         name: 'Primary PSA',
-        credentials: { apiKey: 'secret' },
+        credentials: {
+          baseUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          apiToken: 'secret',
+        },
         settings: {},
       }),
     });
@@ -273,6 +310,7 @@ describe('psa routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    orgsWriteGate.granted = true;
     mfaGate.deny = false;
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
       c.set('auth', {
@@ -313,7 +351,10 @@ describe('psa routes', () => {
     expect(body.orgId).toBe('org-123');
     expect(body.status).toBe('active');
     expect(body.credentials).toBeUndefined();
-    expect(body.hasCredentials).toBeUndefined();
+    expect(body.credentialFields).toBeUndefined();
+    // Public shape: the boolean stays, the per-field map does not.
+    expect(body.hasCredentials).toBe(true);
+    expect(body.lastSyncedAt).toBeNull();
   });
 
   it('rejects providers outside the shared implemented list', async () => {
@@ -344,7 +385,9 @@ describe('psa routes', () => {
     expect(body.data[0].id).toBe('conn-1');
     expect(body.data[0].status).toBe('active');
     expect(body.data[0].credentials).toBeUndefined();
-    expect(body.data[0].hasCredentials).toBeUndefined();
+    expect(body.data[0].credentialFields).toBeUndefined();
+    expect(body.data[0].hasCredentials).toBe(true);
+    expect(body.data[0].lastSyncedAt).toBeNull();
     expect(body.pagination.total).toBe(1);
   });
 
@@ -361,11 +404,35 @@ describe('psa routes', () => {
     });
     expect(data.credentials.apiToken).toBeUndefined();
     expect(data.credentials.password).toBeUndefined();
-    expect(data.hasCredentials).toEqual({
+    expect(data.credentialFields).toEqual({
       password: true,
       apiToken: true,
-      clientSecret: false
+      clientSecret: false,
+      privateKey: false,
+      secret: false,
+      integrationCode: false,
+      apiKey: false,
+      personalAccessToken: false
     });
+    expect(data.hasCredentials).toBe(true);
+    expect(data.settings).toEqual({ defaultQueue: 'OPS' });
+  });
+
+  it('withholds the credential prefill block from a read-only caller', async () => {
+    // organizations:read is enough to reach this route; it is NOT enough to see
+    // decrypted credential material or which auth mode is configured.
+    orgsWriteGate.granted = false;
+    selectMock.mockReturnValueOnce(makeChain([connectionRow()]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.credentials).toBeUndefined();
+    expect(data.credentialFields).toBeUndefined();
+    // The non-credential shape is unchanged for read-only callers.
+    expect(data.id).toBe('conn-1');
+    expect(data.hasCredentials).toBe(true);
     expect(data.settings).toEqual({ defaultQueue: 'OPS' });
   });
 
@@ -428,6 +495,112 @@ describe('psa routes', () => {
       username: 'admin@acme.com',
       apiToken: 'tok-NEW'
     });
+  });
+
+  it('merges PATCHed settings so an edit cannot silently un-pause a connection', async () => {
+    // settings.status is written by POST /connections/:id/status and is NOT a
+    // field the edit form round-trips, so a wholesale replace reactivated a
+    // paused connection on a rename.
+    selectMock.mockReturnValueOnce(
+      makeChain([connectionRow({ settings: { defaultQueue: 'OPS', status: 'paused' } })]) as never
+    );
+    const setSpy = vi.fn((values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => [connectionRow({ name: 'Renamed PSA', settings: values.settings })])
+      }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      // Exactly what the web form sends: every settings key it knows about,
+      // none of which is `status`.
+      body: JSON.stringify({ name: 'Renamed PSA', settings: { defaultQueue: 'OPS', syncEnabled: true } })
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = setSpy.mock.calls[0]![0] as { settings: Record<string, unknown> };
+    expect(setArg.settings.status).toBe('paused');
+    expect(setArg.settings.syncEnabled).toBe(true);
+
+    const body = await res.json();
+    expect(body.status).toBe('paused');
+  });
+
+  it('clears stale alternative-auth material when rotating a Jira PAT to a password', async () => {
+    // Auth-group-aware merge: supplying a key from the password group drops the
+    // PAT group. A plain merge left the PAT in place and the adapter keeps
+    // preferring it, so the rotation silently did nothing.
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({
+      credentials: `enc:${JSON.stringify({
+        baseUrl: 'https://jira.acme.internal',
+        type: 'server',
+        username: 'svc-breeze',
+        personalAccessToken: 'pat-OLD'
+      })}`
+    })]) as never);
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => [connectionRow()]) }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentials: { password: 'pw-NEW' } })
+    });
+
+    expect(res.status).toBe(200);
+    const setArg = setSpy.mock.calls[0]![0] as { credentials: string };
+    const persisted = JSON.parse(setArg.credentials.replace(/^enc:/, ''));
+    expect(persisted.personalAccessToken).toBeUndefined();
+    expect(persisted.password).toBe('pw-NEW');
+    // Shared, non-auth-group keys survive the rotation.
+    expect(persisted.username).toBe('svc-breeze');
+    expect(persisted.baseUrl).toBe('https://jira.acme.internal');
+  });
+
+  it('does not revalidate credentials on a rename-only PATCH of a legacy-shaped connection', async () => {
+    // Legacy blobs predate per-provider validation. Renaming one must not
+    // resurface that as a 400 — validation runs only when credentials are set.
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({
+      provider: 'connectwise',
+      credentials: `enc:${JSON.stringify({ baseUrl: 'https://api-na.myconnectwise.net', apiKey: 'legacy' })}`
+    })]) as never);
+    const setSpy = vi.fn((_values: Record<string, unknown>) => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(async () => [connectionRow({ provider: 'connectwise', name: 'Renamed CW' })])
+      }))
+    }));
+    updateMock.mockReturnValueOnce({ set: setSpy } as any);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed CW' })
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
+  });
+
+  it('rejects a credential PATCH whose merged blob is incomplete for the provider', async () => {
+    selectMock.mockReturnValueOnce(makeChain([connectionRow({
+      provider: 'connectwise',
+      credentials: `enc:${JSON.stringify({ baseUrl: 'https://api-na.myconnectwise.net', apiKey: 'legacy' })}`
+    })]) as never);
+
+    const res = await app.request('/psa/connections/conn-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credentials: { companyId: 'acme' } })
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('missing required credential field');
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('rejects empty updates', async () => {

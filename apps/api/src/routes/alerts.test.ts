@@ -130,7 +130,7 @@ vi.mock('../middleware/auth', async () => ({
   // Real implementation (single source of truth for site-allowlist semantics) —
   // the create-ticket site gate resolves through it via tickets/siteScope.ts.
   siteAccessCheck: (await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth')).siteAccessCheck,
-  // The channel-test route wraps its writes in withChannelsDbContext, which
+  // The channel-test route wraps its writes in withAuthDbAccessContext, which
   // derives the DB access context from auth via dbAccessContextFromAuth. The
   // db mock's withDbAccessContext ignores the context, so a passthrough stub
   // is enough to keep the import from failing.
