@@ -306,7 +306,10 @@ BEGIN
   UPDATE portal_users pu
   SET contact_id = m.contact_id
   FROM (
-    SELECT c.org_id, lower(c.email) AS email, min(c.id) AS contact_id
+    -- (array_agg(...))[1] rather than min(c.id): there is no min(uuid) in
+    -- Postgres. HAVING count(*) = 1 means the array holds exactly one id, so
+    -- the subscript is the unambiguous match, not an arbitrary pick.
+    SELECT c.org_id, lower(c.email) AS email, (array_agg(c.id))[1] AS contact_id
     FROM contacts c
     WHERE c.email IS NOT NULL
     GROUP BY c.org_id, lower(c.email)
