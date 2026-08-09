@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import PsaConnectionList, { type PsaConnection } from './PsaConnectionList';
-import PsaConnectionForm, { type PsaConnectionFormValues } from './PsaConnectionForm';
+import PsaConnectionForm, {
+  type PsaConnectionFormValues,
+  type PsaCredentialField
+} from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
 import { fetchWithAuth } from '../../stores/auth';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -18,13 +23,19 @@ type TestResult = {
 };
 
 // Server round-trip contract (see serializeConnection in apps/api/src/routes/psa.ts):
-// GET /psa/connections/:id returns nested `settings`, the NON-SECRET credential
-// fields for edit prefill, and per-field secret presence flags. Secrets are
-// never returned.
+// GET /psa/connections/:id returns nested `settings`, and — only for callers
+// holding organizations:write — the NON-SECRET credential fields for edit
+// prefill plus `credentialFields`, the per-field presence map for the stored
+// secrets. Secrets themselves are never returned, and a read-only caller gets
+// neither block, so both are optional here.
 type PsaConnectionDetails = {
   id: string;
   name: string;
   provider: PsaConnectionFormValues['provider'];
+  /** True when ANY credential material is stored (not permission-gated). */
+  hasCredentials?: boolean;
+  /** Deprecated server-side; no PSA sync worker writes it. */
+  lastSyncedAt?: string | null;
   settings?: {
     defaultQueue?: string;
     syncEnabled?: boolean;
@@ -33,19 +44,28 @@ type PsaConnectionDetails = {
     syncOnClose?: boolean;
     includeNotes?: boolean;
   };
-  credentials?: {
-    baseUrl?: string;
-    username?: string;
-    clientId?: string;
-  };
-  hasCredentials?: {
-    password?: boolean;
-    apiToken?: boolean;
-    clientSecret?: boolean;
-  };
+  credentials?: Partial<Record<'baseUrl' | PsaCredentialField, string>>;
+  credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
 };
 
-const CREDENTIAL_FIELDS = ['baseUrl', 'username', 'password', 'apiToken', 'clientId', 'clientSecret'] as const;
+// Every credential key the form can produce; the server decides which ones a
+// given provider requires. Keep in sync with PROVIDER_CREDENTIAL_FIELDS.
+const CREDENTIAL_FIELDS = [
+  'baseUrl',
+  'username',
+  'password',
+  'apiToken',
+  'clientId',
+  'clientSecret',
+  'email',
+  'companyId',
+  'publicKey',
+  'privateKey',
+  'integrationCode',
+  'secret',
+  'apiKey',
+  'personalAccessToken'
+] as const;
 
 // Map flat form values onto the server's nested {credentials, settings} payload.
 // Empty credential fields are omitted: on PATCH the server merges provided keys
@@ -148,18 +168,19 @@ export default function PsaConnectionsPage() {
 
   const handleToggleStatus = async (connection: PsaConnection, newStatus: 'active' | 'paused') => {
     try {
-      const response = await fetchWithAuth(`/psa/connections/${connection.id}/status`, {
-        method: 'POST',
-        body: JSON.stringify({ status: newStatus })
+      await runAction({
+        request: () => fetchWithAuth(`/psa/connections/${connection.id}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status: newStatus })
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.updateStatus')
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.updateStatus'));
-      }
-
       await fetchConnections();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.updateStatus') });
+      }
     }
   };
 
@@ -182,16 +203,28 @@ export default function PsaConnectionsPage() {
     setTestResult(null);
 
     try {
-      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}/test`, {
-        method: 'POST'
+      // The route answers HTTP 200 with {success:false} on a rejected
+      // credential, which runAction treats as a failure (and toasts). The
+      // result modal still opens in both branches — it carries the provider's
+      // own message, which the toast alone would truncate the context of.
+      const data = await runAction<TestResult>({
+        request: () => fetchWithAuth(`/psa/connections/${selectedConnection.id}/test`, {
+          method: 'POST'
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.testFailed')
       });
-      const data = await response.json();
       setTestResult(data);
       setModalMode('test');
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.testFailed') });
+      }
+      const body = err instanceof ActionError ? (err.body as TestResult | undefined) : undefined;
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.testFailed')
+        error: body?.error
+          ?? (err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.testFailed'))
       });
       setModalMode('test');
     } finally {
@@ -210,21 +243,19 @@ export default function PsaConnectionsPage() {
       const base = toConnectionPayload(values);
       const payload = modalMode === 'edit' ? base : { ...base, provider: values.provider };
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.saveConnection')
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || t('longTail.psa.PsaConnectionsPage.errors.saveConnection'));
-      }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.saveConnection') });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -235,19 +266,21 @@ export default function PsaConnectionsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/psa/connections/${selectedConnection.id}`, {
+          method: 'DELETE'
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.deleteConnection')
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.deleteConnection'));
-      }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.deleteConnection') });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -339,14 +372,23 @@ export default function PsaConnectionsPage() {
                       provider: selectedConnectionDetails.provider,
                       baseUrl: selectedConnectionDetails.credentials?.baseUrl || '',
                       defaultQueue: selectedConnectionDetails.settings?.defaultQueue || '',
+                      // Non-secret fields prefill from the server; secrets are
+                      // never returned, so they stay empty and an untouched
+                      // field is omitted from the PATCH (the form shows a
+                      // "keep existing" placeholder instead).
                       username: selectedConnectionDetails.credentials?.username || '',
-                      // Secrets are never returned by the server; leave them
-                      // empty so an untouched field is omitted from the PATCH
-                      // (the form shows a "keep existing" placeholder instead).
+                      email: selectedConnectionDetails.credentials?.email || '',
+                      clientId: selectedConnectionDetails.credentials?.clientId || '',
+                      companyId: selectedConnectionDetails.credentials?.companyId || '',
+                      publicKey: selectedConnectionDetails.credentials?.publicKey || '',
                       password: '',
                       apiToken: '',
-                      clientId: selectedConnectionDetails.credentials?.clientId || '',
                       clientSecret: '',
+                      privateKey: '',
+                      integrationCode: '',
+                      secret: '',
+                      apiKey: '',
+                      personalAccessToken: '',
                       syncEnabled: selectedConnectionDetails.settings?.syncEnabled ?? true,
                       syncInterval: selectedConnectionDetails.settings?.syncInterval || '1h',
                       syncDirection: selectedConnectionDetails.settings?.syncDirection || 'bidirectional',
@@ -359,7 +401,7 @@ export default function PsaConnectionsPage() {
               loading={submitting}
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
-              hasCredentials={selectedConnectionDetails?.hasCredentials}
+              credentialFields={selectedConnectionDetails?.credentialFields}
             />
           </div>
         </div>

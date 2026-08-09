@@ -134,6 +134,12 @@ vi.mock('../services/aiGuardrails', () => ({
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
+  // The worker replays the released intent's captured AuthContext in a fresh
+  // short context; keep the context derivation observable via the same spy.
+  withAuthDbAccessContext: vi.fn((auth: unknown, fn: () => Promise<unknown>) => {
+    authMock.dbAccessContextFromAuth(auth);
+    return fn();
+  }),
 }));
 vi.mock('../services/googleToolsHeadless', () => ({
   isHeadlessGoogleTool: googleHeadlessMock.isHeadlessGoogleTool,

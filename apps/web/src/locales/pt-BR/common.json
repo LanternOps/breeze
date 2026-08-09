@@ -933,18 +933,30 @@
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Testar conexão",
-          "testing": "Testando..."
+          "testing": "Testando...",
+          "toggleVisibility": "Mostrar ou ocultar este valor"
+        },
+        "credentialsNote": {
+          "jira": "Preencha apenas um método de autenticação: e-mail mais token de API para o Jira Cloud, usuário mais senha para o Jira Server ou um token de acesso pessoal."
         },
         "defaultSubmitLabel": "Salvar conexão",
         "fields": {
+          "apiKey": "Chave de API",
           "apiToken": "Token ou chave de API",
           "clientId": "ID do cliente",
           "clientSecret": "Segredo do cliente",
+          "companyId": "ID da empresa",
           "connectionName": "Nome da conexão",
           "defaultQueue": "Projeto ou fila padrão",
+          "email": "Endereço de e-mail",
           "instanceUrl": "URL da instância",
+          "integrationCode": "Código de integração",
           "password": "Senha",
+          "personalAccessToken": "Token de acesso pessoal",
+          "privateKey": "Chave privada",
           "provider": "Provedor",
+          "publicKey": "Chave pública",
+          "secret": "Segredo",
           "syncDirection": "Direção da sincronização",
           "syncInterval": "Intervalo de sincronização",
           "username": "Usuário ou e-mail"
@@ -954,13 +966,21 @@
         },
         "keepExisting": "(deixe em branco para manter o existente)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "ex.: Jira Produção",
           "defaultQueue": "ex.: Suporte de TI",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "senha",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,6 +1017,7 @@
           "every6Hours": "A cada 6 horas",
           "everyHour": "A cada hora"
         },
+        "testDirtyHint": "Salve primeiro — o teste verifica as credenciais armazenadas, não suas edições não salvas.",
         "validation": {
           "nameRequired": "Nome da conexão é obrigatório",
           "validUrl": "Deve ser uma URL válida"

@@ -349,7 +349,8 @@ vi.mock('../middleware/auth', () => ({
     accessiblePartnerIds: auth.partnerId ? [auth.partnerId] : [],
     userId: auth.user?.id ?? null,
     currentPartnerId: auth.partnerId ?? null,
-  }))
+  })),
+  withAuthDbAccessContext: vi.fn((_auth: any, fn: () => any) => fn()),
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';

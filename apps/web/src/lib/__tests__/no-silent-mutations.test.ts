@@ -127,6 +127,12 @@ const TARGET_GLOBS = [
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
   'src/components/remote/QuickSupportPage.tsx',
+  // PSA connections: create/update/delete/status/test all mutate stored PSA
+  // credentials or a live connection's state. They were rewritten with bare
+  // fetchWithAuth + setError, which the page's error banner only renders when
+  // the connection list is empty — so a failed save on a populated page was
+  // silent (#3291 review).
+  'src/components/psa/PsaConnectionsPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -318,7 +324,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(82);
+    expect(absoluteFiles.length).toBe(83);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

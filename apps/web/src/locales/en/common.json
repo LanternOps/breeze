@@ -933,18 +933,30 @@
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Test connection",
-          "testing": "Testing..."
+          "testing": "Testing...",
+          "toggleVisibility": "Show or hide this value"
+        },
+        "credentialsNote": {
+          "jira": "Fill in one authentication method: email plus API token for Jira Cloud, username plus password for Jira Server, or a personal access token."
         },
         "defaultSubmitLabel": "Save connection",
         "fields": {
+          "apiKey": "API key",
           "apiToken": "API token or key",
           "clientId": "Client ID",
           "clientSecret": "Client Secret",
+          "companyId": "Company ID",
           "connectionName": "Connection name",
           "defaultQueue": "Default project or queue",
+          "email": "Email address",
           "instanceUrl": "Instance URL",
+          "integrationCode": "Integration code",
           "password": "Password",
+          "personalAccessToken": "Personal access token",
+          "privateKey": "Private key",
           "provider": "Provider",
+          "publicKey": "Public key",
+          "secret": "Secret",
           "syncDirection": "Sync direction",
           "syncInterval": "Sync interval",
           "username": "Username or email"
@@ -954,13 +966,21 @@
         },
         "keepExisting": "(leave blank to keep existing)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "e.g., Jira Production",
           "defaultQueue": "e.g., IT Support",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "password",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,6 +1017,7 @@
           "every6Hours": "Every 6 hours",
           "everyHour": "Every hour"
         },
+        "testDirtyHint": "Save first — Test checks the stored credentials, not your unsaved edits.",
         "validation": {
           "nameRequired": "Connection name is required",
           "validUrl": "Must be a valid URL"

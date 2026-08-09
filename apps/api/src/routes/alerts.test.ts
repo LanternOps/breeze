@@ -135,6 +135,7 @@ vi.mock('../middleware/auth', async () => ({
   // db mock's withDbAccessContext ignores the context, so a passthrough stub
   // is enough to keep the import from failing.
   dbAccessContextFromAuth: (auth: any) => auth,
+  withAuthDbAccessContext: (_auth: any, fn: () => Promise<unknown>) => fn(),
   authMiddleware: vi.fn((c: any, next: any) => {
     // Opt-in site restriction on the AUTH context (deviceInSiteScope reads
     // auth.allowedSiteIds, unlike the list narrowing which reads permissions).

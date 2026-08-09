@@ -127,7 +127,8 @@ describe('PsaConnectionsPage round-trip contract', () => {
               baseUrl: 'https://acme.atlassian.net',
               username: 'admin@acme.com',
             },
-            hasCredentials: { password: false, apiToken: true, clientSecret: false },
+            hasCredentials: true,
+            credentialFields: { password: false, apiToken: true, clientSecret: false },
           },
         },
         'PATCH /psa/connections/c1': { id: 'c1', provider: 'jira', name: 'Renamed', status: 'active' },
@@ -181,6 +182,85 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(body.credentials).not.toHaveProperty('apiToken');
     expect(body.credentials).not.toHaveProperty('password');
     expect(body.credentials).not.toHaveProperty('clientSecret');
+  });
+
+  it('renders the ConnectWise-specific credential fields and nests them in the payload', async () => {
+    // The form used to offer one generic credential set for every provider, so
+    // a ConnectWise connection could not supply companyId/publicKey/privateKey
+    // at all and every Test came back 400.
+    const recorded: RecordedRequest[] = [];
+    installFetchRouter(
+      {
+        'GET /psa/connections': { data: [] },
+        'POST /psa/connections': { id: 'c-cw', provider: 'connectwise', name: 'CW', status: 'active' },
+      },
+      recorded
+    );
+
+    const user = userEvent.setup();
+    render(<PsaConnectionsPage />);
+
+    await user.click(await screen.findByRole('button', { name: /add connection/i }));
+    await user.selectOptions(screen.getByLabelText(/provider/i), 'connectwise');
+
+    // Jira-only fields are gone; ConnectWise's real keys are present.
+    expect(screen.queryByTestId('psa-credential-personalAccessToken')).toBeNull();
+    await user.type(screen.getByLabelText(/connection name/i), 'CW');
+    await user.type(screen.getByLabelText(/instance url/i), 'https://api-na.myconnectwise.net');
+    await user.type(screen.getByTestId('psa-credential-companyId'), 'acme');
+    await user.type(screen.getByTestId('psa-credential-publicKey'), 'pub-1');
+    await user.type(screen.getByTestId('psa-credential-privateKey'), 'priv-1');
+
+    await user.click(screen.getByRole('button', { name: /create connection/i }));
+
+    await waitFor(() => expect(recorded).toHaveLength(1));
+    const body = recorded[0]!.body as { provider: string; credentials: Record<string, string> };
+    expect(body.provider).toBe('connectwise');
+    expect(body.credentials).toEqual({
+      baseUrl: 'https://api-na.myconnectwise.net',
+      companyId: 'acme',
+      publicKey: 'pub-1',
+      privateKey: 'priv-1',
+    });
+  });
+
+  it('disables Test while credential edits are unsaved', async () => {
+    // Test posts to the server, which tests the STORED credentials — a green
+    // result would otherwise vouch for credentials about to be overwritten.
+    installFetchRouter(
+      {
+        'GET /psa/connections': {
+          data: [{ id: 'c1', provider: 'jira', name: 'Primary', status: 'active' }],
+        },
+        'GET /psa/connections/c1': {
+          data: {
+            id: 'c1',
+            provider: 'jira',
+            name: 'Primary',
+            status: 'active',
+            settings: {},
+            credentials: { baseUrl: 'https://acme.atlassian.net', username: 'admin@acme.com' },
+            hasCredentials: true,
+            credentialFields: { apiToken: true },
+          },
+        },
+      },
+      []
+    );
+
+    const user = userEvent.setup();
+    render(<PsaConnectionsPage />);
+
+    await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+
+    const testButton = await screen.findByTestId('psa-test-connection');
+    expect(testButton).toBeEnabled();
+    expect(screen.queryByTestId('psa-test-dirty-hint')).toBeNull();
+
+    await user.type(screen.getByTestId('psa-credential-apiToken'), 'rotated-token');
+
+    await waitFor(() => expect(testButton).toBeDisabled());
+    expect(screen.getByTestId('psa-test-dirty-hint')).toBeInTheDocument();
   });
 
   it('no longer offers a "Sync now" action (sync endpoint is an honest 501)', async () => {
