@@ -79,8 +79,8 @@ func Hosts() []string {
 
 // AllowedHost reports whether host (bare hostname, no port) is permitted.
 // Self-host permits everything. Matching is exact and case-insensitive — there is
-// deliberately NO wildcard/suffix logic, so "2breeze.app.evil.com" never matches
-// an allowlisted "us.2breeze.app".
+// deliberately NO wildcard/suffix logic, so "hosted-a.example.evil.com" never matches
+// an allowlisted "hosted-a.example".
 func AllowedHost(host string) bool {
 	if !Enforced() {
 		return true

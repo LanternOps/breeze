@@ -22,7 +22,7 @@ func TestSelfHostDefaultAllowsEverything(t *testing.T) {
 }
 
 func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
-	restore := SetAllowedHostsForTest("us.2breeze.app, eu.2breeze.app")
+	restore := SetAllowedHostsForTest("hosted-a.example, hosted-b.example")
 	defer restore()
 
 	if !Enforced() || Mode() != "hosted-gap" {
@@ -33,9 +33,9 @@ func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 	}
 	// Allowed: exact, case-insensitive, with port.
 	for _, ok := range []string{
-		"https://us.2breeze.app/api",
-		"https://US.2Breeze.App/api",
-		"https://eu.2breeze.app:443/api",
+		"https://hosted-a.example/api",
+		"https://HOSTED-A.Example/api",
+		"https://hosted-b.example:443/api",
 	} {
 		if err := AllowedURL(ok); err != nil {
 			t.Errorf("AllowedURL(%q) should pass, got %v", ok, err)
@@ -43,10 +43,10 @@ func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 	}
 	// Refused: suffix attack, subdomain injection, lookalike, unparseable.
 	for _, bad := range []string{
-		"https://2breeze.app.evil.com/api", // suffix attack
-		"https://us.2breeze.app.evil.com",  // suffix attack
-		"https://evil-us.2breeze.app",      // not exact
-		"https://app.2breeze.app",          // sibling not allowlisted
+		"https://hosted-a.example.evil.com/api", // suffix attack
+		"https://hosted-a.example.evil.com",  // suffix attack
+		"https://evil-hosted-a.example",      // not exact
+		"https://app.hosted-a.example",          // sibling not allowlisted
 		"https://attacker.es",
 		"://nonsense",
 	} {
@@ -57,7 +57,7 @@ func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 }
 
 func TestHostedRejectsUnparseableAndEmpty(t *testing.T) {
-	restore := SetAllowedHostsForTest("us.2breeze.app")
+	restore := SetAllowedHostsForTest("hosted-a.example")
 	defer restore()
 	for _, bad := range []string{"", "   ", "not a url", "https://"} {
 		if err := AllowedURL(bad); err == nil {
@@ -73,7 +73,7 @@ func TestStrictModeGate(t *testing.T) {
 	if Strict() {
 		t.Fatal("Strict() must be false in self-host even with strictMode set")
 	}
-	ra := SetAllowedHostsForTest("us.2breeze.app")
+	ra := SetAllowedHostsForTest("hosted-a.example")
 	defer ra()
 	if !Strict() || Mode() != "hosted-strict" {
 		t.Fatalf("expected hosted-strict when both set, got Strict()=%v Mode()=%q", Strict(), Mode())
