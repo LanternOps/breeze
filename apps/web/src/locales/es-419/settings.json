@@ -2796,7 +2796,8 @@
       "externalId": "ID externo",
       "status": "Estado",
       "matches": "coincide con “{{name}}”",
-      "reactivateHint": "Seleccionarla reactivará la organización eliminada"
+      "reactivateHint": "Seleccionarla reactivará la organización eliminada",
+      "matchAlreadyLinked": "«{{name}}» ya está vinculada a este sistema con otro ID: confirmar esta coincidencia fusionaría dos registros en una sola organización."
     },
     "badges": {
       "create": "Nueva",

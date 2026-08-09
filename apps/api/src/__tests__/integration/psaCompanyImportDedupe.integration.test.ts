@@ -26,7 +26,18 @@ const actor = { userId: null };
 
 /** A PSA adapter stub returning a fixed company list. */
 function fakeClient(companies: Array<{ id: string; name: string; externalId?: string }>, truncated = false) {
-  return { getCompanies: async () => ({ companies, truncated }) };
+  return {
+    getCompanies: async (options?: { skipExternalIds?: ReadonlySet<string> }) => {
+      const skip = options?.skipExternalIds;
+      const kept = skip ? companies.filter((c) => !skip.has(c.externalId ?? c.id)) : companies;
+      return {
+        companies: kept,
+        truncated,
+        alreadyLinked: companies.length - kept.length,
+        malformed: 0,
+      };
+    },
+  };
 }
 
 describe('PSA company import — cross-source dedupe', () => {

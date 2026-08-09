@@ -103,17 +103,36 @@ export interface PSATicketUpdate {
 export interface PSACompanyListOptions {
   /** Max companies to return. Defaults to `PSA_COMPANY_LIST_CAP`. */
   limit?: number;
+  /**
+   * External ids to drop DURING the walk, so they never consume the cap.
+   *
+   * The caller passes the ids already linked to this provider; without this an
+   * MSP with more companies than the cap could never reach the ones past it,
+   * because every walk restarts at page 1 and refills the cap with companies
+   * that are already imported.
+   */
+  skipExternalIds?: ReadonlySet<string>;
 }
 
 export interface PSACompanyList {
   companies: PSACompany[];
   /**
-   * True when the cap stopped the page walk with companies still unread
-   * upstream. MUST be surfaced to the user: importing the first 1000 of 1500
-   * companies creates exactly the partial-tenant state the external link table
-   * exists to prevent.
+   * True when the cap, the wall-clock budget, or the page guard stopped the
+   * walk with companies still unread upstream. MUST be surfaced to the user:
+   * importing the first 1000 of 1500 companies creates exactly the
+   * partial-tenant state the external link table exists to prevent.
    */
   truncated: boolean;
+  /** Set iff `truncated` — the UI wording differs per cause. */
+  truncationReason?: 'cap' | 'time-budget' | 'page-guard';
+  /** Records dropped during the walk because `skipExternalIds` matched. */
+  alreadyLinked: number;
+  /**
+   * Records the PSA returned that had no usable id or name and were skipped.
+   * Surfaced rather than silently dropped so a tech can tell "my PSA has 300
+   * companies" from "297 imported, 3 were unreadable".
+   */
+  malformed: number;
 }
 
 export interface PSAProvider {

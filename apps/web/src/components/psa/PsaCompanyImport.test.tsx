@@ -94,13 +94,59 @@ describe('PsaCompanyImport provider capability gate', () => {
 describe('PsaCompanyImport truncation warning', () => {
   it('shows the prominent warning when the company list was capped', async () => {
     render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
-    await fetchCompanies({ rows: PREVIEW_ROWS, truncated: true });
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: true, truncationReason: 'cap',
+      fetched: 1000, alreadyLinked: 0, malformed: 0, cap: 1000,
+    });
 
     const warning = await screen.findByTestId('psa-company-import-truncated');
     expect(warning).toHaveAttribute('role', 'alert');
     // The copy must name the cap and say the import will be partial.
     expect(warning).toHaveTextContent('1000');
+    expect(warning).toHaveTextContent(/limit/i);
     expect(warning).toHaveTextContent(/incomplete/i);
+  });
+
+  it('blames the SLOW PSA — not the cap — when a time budget cut the listing short', async () => {
+    // The alarming bug this replaces: a 40-company tenant was told "only the
+    // first 1000 were fetched", which is both false and frightening.
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: true, truncationReason: 'time-budget',
+      fetched: 40, alreadyLinked: 0, malformed: 0, cap: 1000,
+    });
+
+    const warning = await screen.findByTestId('psa-company-import-truncated');
+    expect(warning).toHaveTextContent(/too slowly/i);
+    expect(warning).toHaveTextContent('40');
+    expect(warning).toHaveTextContent(/incomplete/i);
+    expect(warning).not.toHaveTextContent('1000');
+  });
+
+  it('blames the page count when the page guard stopped the walk', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: true, truncationReason: 'page-guard',
+      fetched: 250, alreadyLinked: 0, malformed: 0, cap: 1000,
+    });
+
+    const warning = await screen.findByTestId('psa-company-import-truncated');
+    expect(warning).toHaveTextContent(/pages/i);
+    expect(warning).toHaveTextContent('250');
+    expect(warning).not.toHaveTextContent('1000');
+  });
+
+  it('falls back to a reason-free wording when the API sends no reason', async () => {
+    // An older API answers `{ rows, truncated }` only. The warning must still
+    // be truthful rather than blank or invented.
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({ rows: PREVIEW_ROWS, truncated: true });
+
+    const warning = await screen.findByTestId('psa-company-import-truncated');
+    expect(warning).toHaveTextContent('1000');
+    expect(warning).toHaveTextContent(/incomplete/i);
+    // fetched falls back to the row count rather than reading undefined.
+    expect(warning).toHaveTextContent('3');
   });
 
   it('does not show the warning when the whole list was fetched', async () => {
@@ -109,6 +155,100 @@ describe('PsaCompanyImport truncation warning', () => {
 
     await screen.findByTestId('psa-company-import-table');
     expect(screen.queryByTestId('psa-company-import-truncated')).toBeNull();
+  });
+});
+
+describe('PsaCompanyImport listing counters', () => {
+  it('reports already-imported companies reassuringly, without a truncation warning', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: false, truncationReason: null,
+      fetched: 12, alreadyLinked: 9, malformed: 0, cap: 1000,
+    });
+
+    const note = await screen.findByTestId('psa-company-import-already-linked');
+    expect(note).toHaveTextContent('9');
+    expect(note).toHaveTextContent(/already been imported/i);
+    // Reassurance, not an alarm.
+    expect(note).not.toHaveAttribute('role', 'alert');
+    expect(screen.queryByTestId('psa-company-import-truncated')).toBeNull();
+    expect(screen.queryByTestId('psa-company-import-malformed')).toBeNull();
+  });
+
+  it('warns mildly about unreadable PSA records', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: false, truncationReason: null,
+      fetched: 5, alreadyLinked: 0, malformed: 2, cap: 1000,
+    });
+
+    const note = await screen.findByTestId('psa-company-import-malformed');
+    expect(note).toHaveTextContent('2');
+    expect(note).toHaveTextContent(/could not be read/i);
+    expect(screen.queryByTestId('psa-company-import-already-linked')).toBeNull();
+  });
+
+  it('uses the singular wording for a count of one', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: false, truncationReason: null,
+      fetched: 4, alreadyLinked: 1, malformed: 1, cap: 1000,
+    });
+
+    expect(await screen.findByTestId('psa-company-import-already-linked'))
+      .toHaveTextContent('1 company was skipped');
+    expect(screen.getByTestId('psa-company-import-malformed'))
+      .toHaveTextContent('1 record could not be read');
+  });
+
+  it('stays silent when nothing was skipped', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({
+      rows: PREVIEW_ROWS, truncated: false, truncationReason: null,
+      fetched: 3, alreadyLinked: 0, malformed: 0, cap: 1000,
+    });
+
+    await screen.findByTestId('psa-company-import-table');
+    expect(screen.queryByTestId('psa-company-import-already-linked')).toBeNull();
+    expect(screen.queryByTestId('psa-company-import-malformed')).toBeNull();
+  });
+});
+
+describe('PsaCompanyImport already-linked match guard', () => {
+  const ROWS_WITH_COLLISION = [
+    ...PREVIEW_ROWS,
+    {
+      index: 3, organization: 'Contoso Ltd', externalId: 'cw-77', annotation: 'name-match',
+      slug: null, organizationId: 'org-contoso', matchedOrganizationName: 'Contoso',
+      matchedOrganizationLinkedToSystem: true,
+    },
+  ];
+
+  it('refuses to offer the confirmation and says why', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({ rows: ROWS_WITH_COLLISION, truncated: false });
+    await screen.findByTestId('psa-company-import-table');
+
+    expect(screen.getByTestId('psa-company-import-select-3')).toBeDisabled();
+    expect(screen.getByTestId('psa-company-import-select-3')).not.toBeChecked();
+    expect(screen.getByTestId('psa-company-import-already-linked-3'))
+      .toHaveTextContent(/Contoso.*already linked/i);
+  });
+
+  it('never commits an acknowledgement for it', async () => {
+    render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
+    await fetchCompanies({ rows: ROWS_WITH_COLLISION, truncated: false });
+    await screen.findByTestId('psa-company-import-table');
+
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      imported: [], updated: [], skipped: [], errors: [],
+    }));
+    fireEvent.click(screen.getByTestId('psa-company-import-submit'));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    const body = JSON.parse((fetchWithAuthMock.mock.calls[1]![1] as RequestInit).body as string);
+    // Only the two default-selected rows travel; the collision is not among them.
+    expect(body.rows.map((r: { organization: string }) => r.organization)).toEqual(['Acme', 'Widget']);
   });
 });
 

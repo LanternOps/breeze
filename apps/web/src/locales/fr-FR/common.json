@@ -936,6 +936,10 @@
         "intro": "Les entreprises sont d'abord comparées à vos organisations existantes. Rien n'est créé tant que vous n'avez pas vérifié la liste ci-dessous et confirmé.",
         "capHint": "Jusqu'à {{cap}} entreprises sont récupérées par importation.",
         "empty": "Cette connexion n'a renvoyé aucune entreprise.",
+        "alreadyLinked_one": "{{count}} entreprise a été ignorée car elle a déjà été importée depuis cette connexion.",
+        "alreadyLinked_other": "{{count}} entreprises ont été ignorées car elles ont déjà été importées depuis cette connexion.",
+        "malformed_one": "{{count}} enregistrement n'a pas pu être lu (aucun identifiant ni nom exploitable) et a été ignoré.",
+        "malformed_other": "{{count}} enregistrements n'ont pas pu être lus (aucun identifiant ni nom exploitable) et ont été ignorés.",
         "actions": {
           "fetch": "Récupérer les entreprises",
           "fetching": "Récupération des entreprises…",
@@ -944,7 +948,10 @@
         },
         "truncated": {
           "title": "Liste d'entreprises partielle",
-          "body": "Seules les {{cap}} premières entreprises ont été récupérées : cette importation sera donc incomplète. Les entreprises au-delà de cette limite n'ont pas été lues et ne seront pas liées."
+          "body": "La liste des entreprises a été interrompue après {{fetched}} entreprises sur un maximum de {{cap}}, cet import sera donc incomplet. Les entreprises jamais lues ne seront pas liées.",
+          "cap": "La limite de {{cap}} entreprises par import a été atteinte après {{fetched}} entreprises récupérées, cet import sera donc incomplet. Les entreprises au-delà de cette limite n'ont jamais été lues et ne seront pas liées.",
+          "timeBudget": "Cette connexion a répondu trop lentement, la liste des entreprises a donc été interrompue après {{fetched}} entreprises. Cet import sera incomplet — les entreprises jamais lues ne seront pas liées.",
+          "pageGuard": "La liste des entreprises comptait trop de pages et a été arrêtée après {{fetched}} entreprises. Cet import sera incomplet — les entreprises jamais lues ne seront pas liées."
         },
         "errors": {
           "previewFailed": "Impossible de charger les entreprises de cette connexion.",

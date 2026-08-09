@@ -10,7 +10,7 @@ import {
   PSA_COMPANY_LIST_CAP
 } from './types';
 import { psaFetch } from './http';
-import { PSA_COMPANY_PAGE_SIZE, collectPaginated, pinCursorToBase } from './pagination';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, pinCursorToBase, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface ZendeskCredentials {
   baseUrl: string;
@@ -135,7 +135,11 @@ export class ZendeskProvider implements PSAProvider {
   async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
     const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    const { items, truncated } = await collectPaginated<PSACompany>(limit, async (cursor) => {
+    // Zendesk organizations have no active/archived/deleted flag — deletion is
+    // immediate, so there is nothing to filter out here (unlike ConnectWise's
+    // deletedFlag or Autotask's isActive). Ordering is Zendesk's own and stable
+    // across the cursor walk, so no sort parameter is needed either.
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
       const response = cursor
         ? await this.requestUrl<ZendeskOrganizationPage>('GET', cursor)
         : await this.request<ZendeskOrganizationPage>(
@@ -143,21 +147,18 @@ export class ZendeskProvider implements PSAProvider {
             `/api/v2/organizations.json?per_page=${PSA_COMPANY_PAGE_SIZE}`
           );
 
-      const nextPage = response.next_page ?? null;
+      const nextPage = response?.next_page ?? null;
 
-      return {
-        items: (response.organizations || []).map((org) => ({
-          id: org.id.toString(),
-          name: org.name,
-          externalId: org.id.toString()
-        })),
+      return companyPage(
+        (response?.organizations || []).map((org) => ({ id: org?.id, name: org?.name })),
         // Throws PsaCursorOriginError on an off-origin cursor — a hard refusal,
         // never a silent stop, so a redirected page can't masquerade as "done".
-        next: nextPage ? pinCursorToBase(nextPage, this.baseUrl) : null
-      };
+        nextPage ? pinCursorToBase(nextPage, this.baseUrl, 'Zendesk') : null,
+        options.skipExternalIds
+      );
     });
 
-    return { companies: items, truncated };
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

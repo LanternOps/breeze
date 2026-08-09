@@ -90,16 +90,26 @@ describe('pinCursorToBase', () => {
 });
 
 describe('collectPaginated', () => {
+  /**
+   * `rawCount` defaults to the kept-item count; pass it explicitly to model a
+   * page whose records were all filtered out (already-linked) upstream.
+   */
+  const page = <T,>(items: T[], next: string | null, rawCount = items.length) => ({
+    items,
+    rawCount,
+    next
+  });
+
   it('walks every page until the provider stops offering one', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
-      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' })
-      .mockResolvedValueOnce({ items: [5], next: null });
+      .mockResolvedValueOnce(page([1, 2], 'p2'))
+      .mockResolvedValueOnce(page([3, 4], 'p3'))
+      .mockResolvedValueOnce(page([5], null));
 
     const result = await collectPaginated<number>(100, fetchPage);
 
-    expect(result).toEqual({ items: [1, 2, 3, 4, 5], truncated: false });
+    expect(result).toMatchObject({ items: [1, 2, 3, 4, 5], truncated: false });
     expect(fetchPage).toHaveBeenCalledTimes(3);
     expect(fetchPage).toHaveBeenNthCalledWith(1, null);
     expect(fetchPage).toHaveBeenNthCalledWith(2, 'p2');
@@ -109,24 +119,24 @@ describe('collectPaginated', () => {
   it('stops once it overshoots the cap and reports truncated', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1, 2, 3], next: 'p2' })
-      .mockResolvedValueOnce({ items: [4, 5, 6], next: 'p3' });
+      .mockResolvedValueOnce(page([1, 2, 3], 'p2'))
+      .mockResolvedValueOnce(page([4, 5, 6], 'p3'));
 
     const result = await collectPaginated<number>(4, fetchPage);
 
-    expect(result).toEqual({ items: [1, 2, 3, 4], truncated: true });
+    expect(result).toMatchObject({ items: [1, 2, 3, 4], truncated: true });
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 
   it('is NOT truncated when the last page lands exactly on the cap', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
-      .mockResolvedValueOnce({ items: [3, 4], next: null });
+      .mockResolvedValueOnce(page([1, 2], 'p2'))
+      .mockResolvedValueOnce(page([3, 4], null));
 
     const result = await collectPaginated<number>(4, fetchPage);
 
-    expect(result).toEqual({ items: [1, 2, 3, 4], truncated: false });
+    expect(result).toMatchObject({ items: [1, 2, 3, 4], truncated: false });
   });
 
   it('reads ONE page past an exact-multiple cap rather than crying truncation', async () => {
@@ -135,26 +145,59 @@ describe('collectPaginated', () => {
     // rows were dropped when none were. The extra page disambiguates.
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
-      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' }) // full page ⇒ inferred next
-      .mockResolvedValueOnce({ items: [], next: null });
+      .mockResolvedValueOnce(page([1, 2], 'p2'))
+      .mockResolvedValueOnce(page([3, 4], 'p3')) // full page ⇒ inferred next
+      .mockResolvedValueOnce(page([], null));
 
     const result = await collectPaginated<number>(4, fetchPage);
 
-    expect(result).toEqual({ items: [1, 2, 3, 4], truncated: false });
+    expect(result).toMatchObject({ items: [1, 2, 3, 4], truncated: false });
     expect(fetchPage).toHaveBeenCalledTimes(3);
   });
 
   it('IS truncated when the page past the cap actually yields more', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1, 2], next: 'p2' })
-      .mockResolvedValueOnce({ items: [3, 4], next: 'p3' })
-      .mockResolvedValueOnce({ items: [5, 6], next: 'p4' });
+      .mockResolvedValueOnce(page([1, 2], 'p2'))
+      .mockResolvedValueOnce(page([3, 4], 'p3'))
+      .mockResolvedValueOnce(page([5, 6], 'p4'));
 
     const result = await collectPaginated<number>(4, fetchPage);
 
-    expect(result).toEqual({ items: [1, 2, 3, 4], truncated: true });
+    expect(result).toMatchObject({ items: [1, 2, 3, 4], truncated: true });
+  });
+
+  it('reports WHY it stopped, so the UI can word the warning correctly', async () => {
+    const capped = await collectPaginated<number>(
+      2,
+      vi.fn().mockResolvedValue(page([1, 2, 3], 'more'))
+    );
+    expect(capped).toMatchObject({ truncated: true, truncationReason: 'cap' });
+
+    const guarded = await collectPaginated<number>(
+      10_000,
+      vi.fn().mockResolvedValue(page([1], 'forever'))
+    );
+    expect(guarded).toMatchObject({ truncated: true, truncationReason: 'page-guard' });
+  });
+
+  it('does NOT stop on a page whose records were all filtered out', async () => {
+    // A full upstream page that is entirely already-linked arrives as
+    // items:[] with rawCount:100. Terminating there would hide every company
+    // behind it — the bug that made a PSA larger than the cap unimportable.
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce(page([], 'p2', 100))
+      .mockResolvedValueOnce(page([7, 8], 'p3', 100))
+      .mockResolvedValueOnce(page([], null, 0));
+
+    const result = await collectPaginated<number>(1000, fetchPage);
+
+    expect(result.items).toEqual([7, 8]);
+    expect(result.truncated).toBe(false);
+    // 100 + 98 upstream records were filtered out as already-linked.
+    expect(result.filtered).toBe(198);
+    expect(fetchPage).toHaveBeenCalledTimes(3);
   });
 
   it('stops on the wall-clock budget and reports truncated', async () => {
@@ -163,7 +206,7 @@ describe('collectPaginated', () => {
     const nowSpy = vi.spyOn(Date, 'now');
     nowSpy.mockReturnValueOnce(0).mockReturnValue(60_001);
 
-    const fetchPage = vi.fn().mockResolvedValue({ items: [1], next: 'more' });
+    const fetchPage = vi.fn().mockResolvedValue(page([1], 'more'));
 
     const result = await collectPaginated<number>(1000, fetchPage);
 
@@ -175,17 +218,17 @@ describe('collectPaginated', () => {
   it('terminates on an empty page even if a cursor keeps being offered', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1], next: 'p2' })
-      .mockResolvedValue({ items: [], next: 'forever' });
+      .mockResolvedValueOnce(page([1], 'p2'))
+      .mockResolvedValue(page([], 'forever'));
 
     const result = await collectPaginated<number>(100, fetchPage);
 
-    expect(result).toEqual({ items: [1], truncated: false });
+    expect(result).toMatchObject({ items: [1], truncated: false });
     expect(fetchPage).toHaveBeenCalledTimes(2);
   });
 
   it('bounds a never-ending cursor at MAX_PSA_PAGES and reports truncated', async () => {
-    const fetchPage = vi.fn().mockResolvedValue({ items: [1], next: 'forever' });
+    const fetchPage = vi.fn().mockResolvedValue(page([1], 'forever'));
 
     const result = await collectPaginated<number>(10_000, fetchPage);
 
@@ -197,8 +240,8 @@ describe('collectPaginated', () => {
   it('propagates a cursor refusal instead of silently ending the walk', async () => {
     const fetchPage = vi
       .fn()
-      .mockResolvedValueOnce({ items: [1], next: 'p2' })
-      .mockRejectedValueOnce(new PsaCursorOriginError('https://attacker.example', 'https://acme.example'));
+      .mockResolvedValueOnce(page([1], 'p2'))
+      .mockRejectedValueOnce(new PsaCursorOriginError('Zendesk', 'https://attacker.example', 'https://acme.example'));
 
     await expect(collectPaginated<number>(100, fetchPage)).rejects.toBeInstanceOf(
       PsaCursorOriginError

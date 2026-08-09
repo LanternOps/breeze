@@ -30,6 +30,49 @@ export interface PsaImportConnection {
   provider: PsaProviderId;
 }
 
+/**
+ * WHY the listing stopped short. The cap is only one of three reasons, and the
+ * other two can clip FAR below it — telling a user "only the first 1000 were
+ * fetched" when a slow PSA actually returned 40 is both wrong and alarming.
+ */
+type TruncationReason = 'cap' | 'time-budget' | 'page-guard';
+
+/** The non-row half of `POST /psa/connections/:id/import/preview`. */
+interface PreviewMeta {
+  truncated: boolean;
+  truncationReason: TruncationReason | null;
+  /** Companies the PSA actually returned, before any filtering. */
+  fetched: number;
+  /** Skipped because they are already imported from this provider. */
+  alreadyLinked: number;
+  /** Skipped because the PSA record had no usable id or name. */
+  malformed: number;
+  cap: number;
+}
+
+interface PreviewResponse extends Partial<PreviewMeta> {
+  rows: AnnotatedRow[];
+}
+
+const TRUNCATION_REASONS: readonly TruncationReason[] = ['cap', 'time-budget', 'page-guard'];
+
+/**
+ * Normalise the preview envelope. Every counter is optional here on purpose:
+ * an older API (or a self-hosted deploy mid-upgrade) answers with `rows` +
+ * `truncated` only, and the warning must still be truthful rather than blank.
+ */
+function toPreviewMeta(res: PreviewResponse): PreviewMeta {
+  const reason = res.truncationReason;
+  return {
+    truncated: res.truncated === true,
+    truncationReason: reason && TRUNCATION_REASONS.includes(reason) ? reason : null,
+    fetched: typeof res.fetched === 'number' ? res.fetched : res.rows.length,
+    alreadyLinked: typeof res.alreadyLinked === 'number' ? res.alreadyLinked : 0,
+    malformed: typeof res.malformed === 'number' ? res.malformed : 0,
+    cap: typeof res.cap === 'number' ? res.cap : PSA_COMPANY_LIST_CAP,
+  };
+}
+
 interface Props {
   connection: PsaImportConnection;
   onClose: () => void;
@@ -41,7 +84,7 @@ interface Props {
 export default function PsaCompanyImport({ connection, onClose, onImported, onUnauthorized }: Props) {
   const { t } = useTranslation('common');
   const [previewRows, setPreviewRows] = useState<AnnotatedRow[] | null>(null);
-  const [truncated, setTruncated] = useState(false);
+  const [meta, setMeta] = useState<PreviewMeta | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [mode, setMode] = useState<'skip' | 'update'>('skip');
   const [previewing, setPreviewing] = useState(false);
@@ -62,7 +105,7 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
     try {
       // Empty body: the connection id in the path is the entire input. Which
       // companies get pulled — and the cap — is the server's decision.
-      const res = await runAction<{ rows: AnnotatedRow[]; truncated: boolean }>({
+      const res = await runAction<PreviewResponse>({
         request: () =>
           fetchWithAuth(`/psa/connections/${connection.id}/import/preview`, {
             method: 'POST',
@@ -72,7 +115,7 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
         onUnauthorized
       });
       setPreviewRows(res.rows);
-      setTruncated(res.truncated === true);
+      setMeta(toPreviewMeta(res));
       setSelected(defaultPreviewSelection(res.rows));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
@@ -124,6 +167,9 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
       setFailures(s.errors);
       setLastSummary(message);
       setPreviewRows(null);
+      // The counters describe the listing that produced this preview — they
+      // must not outlive it.
+      setMeta(null);
       setSelected(new Set());
       if (s.imported.length > 0 || s.updated.length > 0) onImported?.();
     } catch (err) {
@@ -184,8 +230,12 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
 
         {/* A clipped company list leaves the un-fetched companies unlinked, and
             a later import cannot tell they were ever missed. This is a
-            correctness warning about the resulting tenant state, not a hint. */}
-        {truncated && (
+            correctness warning about the resulting tenant state, not a hint.
+
+            The wording follows the REASON: the cap is only one of three, and a
+            slow PSA or a runaway pager can stop the walk far below it — quoting
+            the cap in those cases is both wrong and needlessly alarming. */}
+        {meta?.truncated && (
           <div
             data-testid="psa-company-import-truncated"
             role="alert"
@@ -209,10 +259,49 @@ export default function PsaCompanyImport({ connection, onClose, onImported, onUn
                 {t('longTail.psa.PsaCompanyImport.truncated.title')}
               </h3>
               <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-                {t('longTail.psa.PsaCompanyImport.truncated.body', { cap: PSA_COMPANY_LIST_CAP })}
+                {meta.truncationReason === 'cap'
+                  ? t('longTail.psa.PsaCompanyImport.truncated.cap', {
+                      cap: meta.cap,
+                      fetched: meta.fetched,
+                    })
+                  : meta.truncationReason === 'time-budget'
+                    ? t('longTail.psa.PsaCompanyImport.truncated.timeBudget', {
+                        fetched: meta.fetched,
+                      })
+                    : meta.truncationReason === 'page-guard'
+                      ? t('longTail.psa.PsaCompanyImport.truncated.pageGuard', {
+                          fetched: meta.fetched,
+                        })
+                      : t('longTail.psa.PsaCompanyImport.truncated.body', {
+                          cap: meta.cap,
+                          fetched: meta.fetched,
+                        })}
               </p>
             </div>
           </div>
+        )}
+
+        {/* Not a warning: these companies ARE imported already, and previewing
+            again after an import is exactly how an MSP walks a company list
+            larger than the cap. */}
+        {meta && meta.alreadyLinked > 0 && (
+          <p
+            data-testid="psa-company-import-already-linked"
+            className="mt-4 rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground"
+          >
+            {t('longTail.psa.PsaCompanyImport.alreadyLinked', { count: meta.alreadyLinked })}
+          </p>
+        )}
+
+        {/* Mild: a handful of unreadable PSA records is a data-quality problem
+            on their side, not a failed import. */}
+        {meta && meta.malformed > 0 && (
+          <p
+            data-testid="psa-company-import-malformed"
+            className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
+          >
+            {t('longTail.psa.PsaCompanyImport.malformed', { count: meta.malformed })}
+          </p>
         )}
 
         {/* Step 2: acknowledge rows and commit. */}

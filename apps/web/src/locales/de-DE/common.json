@@ -936,6 +936,10 @@
         "intro": "Firmen werden zuerst mit Ihren vorhandenen Organisationen abgeglichen. Es wird nichts angelegt, bevor Sie die Liste unten geprüft und bestätigt haben.",
         "capHint": "Pro Import werden bis zu {{cap}} Firmen abgerufen.",
         "empty": "Diese Verbindung hat keine Firmen zurückgegeben.",
+        "alreadyLinked_one": "{{count}} Firma wurde übersprungen, weil sie bereits aus dieser Verbindung importiert wurde.",
+        "alreadyLinked_other": "{{count}} Firmen wurden übersprungen, weil sie bereits aus dieser Verbindung importiert wurden.",
+        "malformed_one": "{{count}} Datensatz konnte nicht gelesen werden (keine verwendbare ID und kein Name) und wurde übersprungen.",
+        "malformed_other": "{{count}} Datensätze konnten nicht gelesen werden (keine verwendbare ID und kein Name) und wurden übersprungen.",
         "actions": {
           "fetch": "Firmen abrufen",
           "fetching": "Firmen werden abgerufen…",
@@ -944,7 +948,10 @@
         },
         "truncated": {
           "title": "Unvollständige Firmenliste",
-          "body": "Es wurden nur die ersten {{cap}} Firmen abgerufen, daher bleibt dieser Import unvollständig. Firmen jenseits dieser Grenze wurden nie gelesen und werden nicht verknüpft."
+          "body": "Die Firmenliste wurde nach {{fetched}} von bis zu {{cap}} Firmen abgebrochen, daher ist dieser Import unvollständig. Firmen, die nie gelesen wurden, werden nicht verknüpft.",
+          "cap": "Das Limit von {{cap}} Firmen pro Import wurde nach {{fetched}} abgerufenen Firmen erreicht, daher ist dieser Import unvollständig. Alle Firmen darüber hinaus wurden nie gelesen und werden nicht verknüpft.",
+          "timeBudget": "Diese Verbindung hat zu langsam geantwortet, daher wurde die Firmenliste nach {{fetched}} Firmen abgebrochen. Dieser Import ist unvollständig – die nicht gelesenen Firmen werden nicht verknüpft.",
+          "pageGuard": "Die Firmenliste umfasste zu viele Seiten und wurde nach {{fetched}} Firmen gestoppt. Dieser Import ist unvollständig – die nicht gelesenen Firmen werden nicht verknüpft."
         },
         "errors": {
           "previewFailed": "Die Firmen dieser Verbindung konnten nicht geladen werden.",

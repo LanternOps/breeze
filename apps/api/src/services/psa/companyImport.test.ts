@@ -7,8 +7,18 @@ import {
   PsaCapabilityError
 } from './types';
 
-const listing = (companies: Array<{ id: string; name: string; externalId?: string }>, truncated = false) =>
-  vi.fn().mockResolvedValue({ companies, truncated });
+const listing = (
+  companies: Array<{ id: string; name: string; externalId?: string }>,
+  truncated = false,
+  extra: { truncationReason?: string; alreadyLinked?: number; malformed?: number } = {}
+) =>
+  vi.fn().mockResolvedValue({
+    companies,
+    truncated,
+    alreadyLinked: extra.alreadyLinked ?? 0,
+    malformed: extra.malformed ?? 0,
+    ...(extra.truncationReason ? { truncationReason: extra.truncationReason } : {}),
+  });
 
 describe('ORG_IMPORT_CAPABLE_PSA_PROVIDERS', () => {
   it('accounts for EVERY shared provider exactly once', () => {
@@ -87,6 +97,52 @@ describe('createPsaCompanyImportSource', () => {
       { organization: 'Acme', externalId: '1', externalSystem: 'servicenow' },
       { organization: 'Globex', externalId: 'G-2', externalSystem: 'servicenow' }
     ]);
+  });
+
+  it('reports the skip counts and an honest fetched total', async () => {
+    const getCompanies = listing([{ id: '1', name: 'Acme' }], true, {
+      truncationReason: 'cap',
+      alreadyLinked: 12,
+      malformed: 3
+    });
+    const source = createPsaCompanyImportSource({ provider: 'connectwise', client: { getCompanies } });
+
+    const result = await source.listCompanies({ partnerId: 'p1' });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.truncationReason).toBe('cap');
+    expect(result.alreadyLinked).toBe(12);
+    expect(result.malformed).toBe(3);
+    // fetched is what the PSA actually handed us, pre-filter: 1 + 12 + 3.
+    expect(result.fetched).toBe(16);
+  });
+
+  it('hands the already-linked ids to the adapter so they never consume the cap', async () => {
+    const getCompanies = listing([]);
+    const alreadyLinkedExternalIds = new Set(['a', 'b']);
+    const source = createPsaCompanyImportSource({
+      provider: 'connectwise',
+      client: { getCompanies },
+      alreadyLinkedExternalIds
+    });
+
+    await source.listCompanies({ partnerId: 'p1' });
+
+    expect(getCompanies).toHaveBeenCalledWith(
+      expect.objectContaining({ skipExternalIds: alreadyLinkedExternalIds })
+    );
+  });
+
+  it('clamps an over-long company name instead of failing the commit batch', async () => {
+    const longName = 'x'.repeat(400);
+    const getCompanies = listing([{ id: '1', name: longName }]);
+    const source = createPsaCompanyImportSource({ provider: 'zendesk', client: { getCompanies } });
+
+    const { rows } = await source.listCompanies({ partnerId: 'p1' });
+
+    // The wire schema caps organization at 255 and REJECTS longer values, so an
+    // unclamped name previewed fine and then 400'd the whole batch.
+    expect(rows[0]!.organization).toHaveLength(255);
   });
 
   it('requests the shared cap by default', async () => {

@@ -155,6 +155,12 @@ export type OrgImportErrorCode =
   | 'name-match-unconfirmed'
   /** A soft-deleted match carried neither reactivate nor forceCreate. */
   | 'soft-deleted-unconfirmed'
+  /**
+   * The acknowledged organization is ALREADY linked to this row's
+   * `externalSystem` under a different external id, so accepting the match
+   * would collapse two source records onto one tenant.
+   */
+  | 'match-already-linked'
   /** The external id was linked to a DIFFERENT org by a concurrent import. */
   | 'external-id-conflict'
   /** A database write failed. `cause` carries the original error. */

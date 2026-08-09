@@ -46,19 +46,38 @@ export interface PsaCompanyImportOptions {
   provider: string;
   /** Adapter built from the connection's decrypted credentials. */
   client: Pick<PSAProvider, 'getCompanies'>;
-  /** Max companies to pull. Defaults to `PSA_COMPANY_LIST_CAP`. */
+  /** Max NEW companies to return. Defaults to `PSA_COMPANY_LIST_CAP`. */
   limit?: number;
+  /**
+   * External ids already linked to this provider for this partner.
+   *
+   * These are dropped BEFORE the cap is applied, which is what makes a PSA
+   * larger than the cap importable at all. Previously the walk always restarted
+   * at page 1, so after importing the first 1000 of 1500 companies a re-preview
+   * returned the SAME 1000 (every one a `link-match`) and zero new rows — the
+   * remaining 500 were reachable only through the CSV import this feature
+   * exists to replace. Skipping what is already linked means each successive
+   * preview surfaces the next batch until the PSA is exhausted.
+   */
+  alreadyLinkedExternalIds?: ReadonlySet<string>;
 }
 
 export interface PsaCompanyListing {
   rows: ImportRow[];
   /**
-   * True when the cap clipped the company list. The route MUST forward this to
-   * the UI: importing the first 1000 of 1500 companies leaves the remaining
-   * 500 unlinked, and a later import of the same PSA would then have no link
-   * rows to match against for the ones that were never fetched.
+   * True when the cap, the wall-clock budget, or the page guard clipped the
+   * list. The route MUST forward this to the UI: importing the first 1000 of
+   * 1500 companies leaves the rest unlinked.
    */
   truncated: boolean;
+  /** Why the walk stopped short — the UI wording differs per cause. */
+  truncationReason?: 'cap' | 'time-budget' | 'page-guard';
+  /** Companies read from the PSA before filtering. */
+  fetched: number;
+  /** Skipped because they are already linked to this provider. */
+  alreadyLinked: number;
+  /** Skipped because the PSA record had no usable id or name. */
+  malformed: number;
 }
 
 /**
@@ -111,7 +130,12 @@ export function psaCompanyToImportRow(
 export function createPsaCompanyImportSource(
   options: PsaCompanyImportOptions
 ): PsaCompanyImportSource {
-  const { provider, client, limit = PSA_COMPANY_LIST_CAP } = options;
+  const {
+    provider,
+    client,
+    limit = PSA_COMPANY_LIST_CAP,
+    alreadyLinkedExternalIds
+  } = options;
 
   // Fail here rather than at the adapter: the capability list is the contract
   // the route and the web UI both read, so an incapable provider must never get
@@ -124,14 +148,26 @@ export function createPsaCompanyImportSource(
 
   async function listCompanies(_ctx: OrgImportContext): Promise<PsaCompanyListing> {
     // `ctx.partnerId` is unused: the connection was already resolved and
-    // authorized by the route, and the partner scoping of the resulting rows is
-    // applied by the seam itself (previewOrgImport/commitOrgImport take
-    // partnerId directly). Kept in the signature to satisfy the seam.
-    const { companies, truncated } = await client.getCompanies({ limit });
+    // authorized by the route, which also supplied `alreadyLinkedExternalIds`
+    // for that partner. The partner scoping of the resulting rows is applied by
+    // the seam itself (previewOrgImport/commitOrgImport take partnerId
+    // directly). Kept in the signature to satisfy the seam.
+    //
+    // The adapter is asked for `limit` NEW companies. Because already-linked
+    // ids are filtered inside the walk (see `skipExternalIds`), the cap counts
+    // only rows the tech can actually act on.
+    const { companies, truncated, truncationReason, alreadyLinked, malformed } =
+      await client.getCompanies({ limit, skipExternalIds: alreadyLinkedExternalIds });
 
     return {
       rows: companies.map((company) => psaCompanyToImportRow(company, system)),
-      truncated
+      truncated,
+      ...(truncationReason ? { truncationReason } : {}),
+      // What the PSA actually handed us, before any filtering — the honest
+      // denominator for "N of M companies" in the UI.
+      fetched: companies.length + alreadyLinked + malformed,
+      alreadyLinked,
+      malformed
     };
   }
 

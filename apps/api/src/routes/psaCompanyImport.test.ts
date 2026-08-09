@@ -15,6 +15,7 @@ vi.mock('../services', () => ({}));
 const {
   authState,
   rateLimitGate,
+  partnerWideGate,
   permissionGate,
   mfaGate,
   selectQueue,
@@ -32,6 +33,7 @@ const {
     value: {} as Record<string, unknown>,
   },
   rateLimitGate: { deny: false },
+  partnerWideGate: { deny: false },
   permissionGate: { deny: false },
   mfaGate: { deny: false },
   selectQueue: [] as unknown[][],
@@ -88,6 +90,11 @@ vi.mock('../db/schema', () => ({
   psaTicketMappings: { id: 'x', connectionId: 'y', deviceId: 'z' },
   devices: { id: 'devices.id', siteId: 'devices.site_id' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partner_id' },
+  organizationExternalLinks: {
+    partnerId: 'organization_external_links.partner_id',
+    system: 'organization_external_links.system',
+    externalId: 'organization_external_links.external_id',
+  },
 }));
 
 vi.mock('../services/psa', () => ({ createPSAProvider: createPSAProviderMock }));
@@ -121,7 +128,7 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/partnerWideAccess', () => ({
   PARTNER_WIDE_WRITE_DENIED_MESSAGE: 'Partner-wide write denied',
-  canManagePartnerWidePolicies: vi.fn(() => true),
+  canManagePartnerWidePolicies: vi.fn(() => !partnerWideGate.deny),
 }));
 
 vi.mock('../middleware/userRateLimit', () => ({
@@ -200,6 +207,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   selectQueue.length = 0;
   rateLimitGate.deny = false;
+  partnerWideGate.deny = false;
   permissionGate.deny = false;
   mfaGate.deny = false;
   authState.value = partnerAuth();
@@ -211,6 +219,8 @@ beforeEach(() => {
       { id: '2', name: 'Globex' },
     ],
     truncated: false,
+    alreadyLinked: 0,
+    malformed: 0,
   });
   createPSAProviderMock.mockReturnValue({ getCompanies: getCompaniesMock });
 
@@ -283,6 +293,60 @@ describe('import route gates', () => {
     expect(getCompaniesMock).not.toHaveBeenCalled();
   });
 
+  // ── Finding 1: the partner-wide bar must key on the import's BLAST RADIUS,
+  // not on who owns the connection. An import writes across the partner's whole
+  // tenant tree in a SYSTEM db context, so a 'selected'-access partner user
+  // must be refused even when the connection they picked is ORG-owned — which
+  // is exactly the hole the connection-ownership check left open.
+  describe('partner-wide authority is required regardless of connection ownership', () => {
+    it('403s preview on a PARTNER-owned connection', async () => {
+      partnerWideGate.deny = true;
+      queueConnection({ orgId: null, partnerId: PARTNER });
+
+      const res = await preview();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toBe('Partner-wide write denied');
+      expect(getCompaniesMock).not.toHaveBeenCalled();
+    });
+
+    it('403s preview on an ORG-owned connection (the previously open hole)', async () => {
+      partnerWideGate.deny = true;
+      selectQueue.push([connectionRow({ orgId: 'org-5', partnerId: null })]);
+      selectQueue.push([{ partnerId: PARTNER }]);
+
+      const res = await preview();
+
+      expect(res.status).toBe(403);
+      expect(getCompaniesMock).not.toHaveBeenCalled();
+      expect(previewOrgImportMock).not.toHaveBeenCalled();
+    });
+
+    it('403s COMMIT on an ORG-owned connection', async () => {
+      partnerWideGate.deny = true;
+      selectQueue.push([connectionRow({ orgId: 'org-5', partnerId: null })]);
+      selectQueue.push([{ partnerId: PARTNER }]);
+
+      const res = await commit({
+        rows: [{ organization: 'Acme', externalId: '1' }],
+        mode: 'update',
+      });
+
+      expect(res.status).toBe(403);
+      expect(commitOrgImportMock).not.toHaveBeenCalled();
+    });
+
+    it('allows both halves when the caller HAS full partner authority', async () => {
+      queueConnection({ orgId: 'org-5', partnerId: null });
+      selectQueue.push([{ partnerId: PARTNER }]);
+
+      const res = await preview();
+
+      expect(res.status).toBe(200);
+      expect(getCompaniesMock).toHaveBeenCalled();
+    });
+  });
+
   it('400s a jira connection with a capability error, never calling the PSA', async () => {
     queueConnection({ provider: 'jira' });
     const res = await preview();
@@ -323,20 +387,54 @@ describe('POST /connections/:id/import/preview', () => {
     );
   });
 
-  it('surfaces truncation to the caller', async () => {
+  it('surfaces truncation, its REASON, and the skip counts', async () => {
     queueConnection();
-    getCompaniesMock.mockResolvedValue({ companies: [{ id: '1', name: 'Acme' }], truncated: true });
+    getCompaniesMock.mockResolvedValue({
+      companies: [{ id: '1', name: 'Acme' }],
+      truncated: true,
+      truncationReason: 'time-budget',
+      alreadyLinked: 7,
+      malformed: 2,
+    });
 
     const res = await preview();
+    const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect((await res.json()).truncated).toBe(true);
+    expect(body.truncated).toBe(true);
+    // 'cap' vs 'time-budget' change the UI wording entirely — "we took the
+    // first 1000" is wrong and alarming when a slow PSA clipped us at 1.
+    expect(body.truncationReason).toBe('time-budget');
+    expect(body.alreadyLinked).toBe(7);
+    expect(body.malformed).toBe(2);
+    expect(body.fetched).toBe(10);
+    expect(body.cap).toBe(1000);
+  });
+
+  it('reports truncationReason null when the listing is complete', async () => {
+    queueConnection();
+
+    const body = await (await preview()).json();
+
+    expect(body.truncated).toBe(false);
+    expect(body.truncationReason).toBeNull();
+  });
+
+  it('passes the partner+provider linked ids to the adapter so they skip the cap', async () => {
+    queueConnection();
+    selectQueue.push([{ externalId: '1' }, { externalId: '9' }]);
+
+    await preview();
+
+    const options = getCompaniesMock.mock.calls[0]![0];
+    expect(options.skipExternalIds).toBeInstanceOf(Set);
+    expect([...options.skipExternalIds]).toEqual(['1', '9']);
   });
 
   it('maps an off-origin pagination cursor refusal to 502', async () => {
     queueConnection();
     getCompaniesMock.mockRejectedValue(
-      new PsaCursorOriginError('https://attacker.example', 'https://psa.example.com')
+      new PsaCursorOriginError('Autotask', 'https://attacker.example', 'https://psa.example.com')
     );
 
     const res = await preview();

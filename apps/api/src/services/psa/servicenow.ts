@@ -10,7 +10,7 @@ import {
   PSA_COMPANY_LIST_CAP
 } from './types';
 import { psaFetch } from './http';
-import { PSA_COMPANY_PAGE_SIZE, collectPaginated } from './pagination';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface ServiceNowCredentials {
   baseUrl: string;
@@ -131,28 +131,37 @@ export class ServiceNowProvider implements PSAProvider {
   async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
     const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    const { items, truncated } = await collectPaginated<PSACompany>(limit, async (cursor) => {
+    // `active=true` drops retired company records; `ORDERBYsys_id` makes offset
+    // paging deterministic — without an explicit sort, ServiceNow may return
+    // rows in an unstable order and offset paging then skips records while
+    // still reporting a complete list.
+    const query = `active=true^ORDERBYsys_id`;
+
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
       const offset = cursor ? Number(cursor) : 0;
       const response = await this.request<{ result: ServiceNowTableRecord[] }>(
         'GET',
         `/api/now/table/${this.companyTable}?sysparm_fields=sys_id,name` +
+        `&sysparm_query=${encodeURIComponent(query)}` +
         `&sysparm_limit=${PSA_COMPANY_PAGE_SIZE}&sysparm_offset=${offset}`
       );
-      const rows = response.result || [];
+      const rows = response?.result || [];
 
-      return {
-        items: rows.map((company) => ({
-          id: company.sys_id || '',
-          name: (company as { name?: string }).name || '',
-          externalId: company.sys_id
+      // Advance by what we actually RECEIVED, not by the requested page size:
+      // if ServiceNow clamps the limit, striding by the request size would skip
+      // every record in the gap. Only an empty RAW page ends the walk, so
+      // `rows.length === 0` never reaches this expression.
+      return companyPage(
+        rows.map((company) => ({
+          id: company?.sys_id,
+          name: (company as { name?: unknown })?.name
         })),
-        next: rows.length === PSA_COMPANY_PAGE_SIZE
-          ? String(offset + PSA_COMPANY_PAGE_SIZE)
-          : null
-      };
+        String(offset + rows.length),
+        options.skipExternalIds
+      );
     });
 
-    return { companies: items, truncated };
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

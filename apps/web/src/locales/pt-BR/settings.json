@@ -2849,7 +2849,8 @@
       "externalId": "ID externo",
       "status": "Status",
       "matches": "corresponde a “{{name}}”",
-      "reactivateHint": "Selecionar reativará a organização excluída"
+      "reactivateHint": "Selecionar reativará a organização excluída",
+      "matchAlreadyLinked": "“{{name}}” já está vinculada a este sistema com outro ID — confirmar esta correspondência mesclaria dois registros em uma única organização."
     },
     "badges": {
       "create": "Nova",

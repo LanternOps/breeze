@@ -1,3 +1,4 @@
+import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -35,12 +36,31 @@ export interface AnnotatedRow extends ImportRow {
   slug: string | null;
   organizationId: string | null;
   matchedOrganizationName?: string;
+  /**
+   * True when the organization this row matched BY NAME already carries a link
+   * row for this row's `externalSystem` — i.e. it is spoken for by a DIFFERENT
+   * external id. The link table's unique index is
+   * `(partner_id, system, external_id)`, so confirming the match would happily
+   * write a SECOND link row and collapse two source companies onto one Breeze
+   * tenant. Such a row is never confirmable from this table; `forceCreate`
+   * ("this is NOT that org, make a new one") stays the legitimate escape hatch.
+   *
+   * The API refuses it server-side too (`OrgImportErrorCode`
+   * `'match-already-linked'`) — this flag exists so the UI never OFFERS the
+   * confirmation in the first place.
+   */
+  matchedOrganizationLinkedToSystem?: boolean;
   conflictReason?: string;
 }
 
 /** A row as submitted to a commit — mirrors `commitImportRowSchema`. */
 export interface CommitRowInput extends ImportRow {
-  expectedAnnotation: RowAnnotation;
+  /**
+   * Optional, exactly as on the server: a row with no acknowledgement is one
+   * the UI refuses to confirm (see `toCommitRow`), and the commit then applies
+   * its own unconfirmed-match refusal.
+   */
+  expectedAnnotation?: RowAnnotation;
   expectedOrganizationId?: string;
   reactivate?: boolean;
   forceCreate?: boolean;
@@ -70,13 +90,29 @@ const BADGE_LABEL_KEYS: Record<RowAnnotation, string> = {
 };
 
 /**
+ * A row whose match cannot be confirmed at all: the matched organization is
+ * ALREADY linked to this row's external system under a different external id,
+ * so accepting the match would merge two source records onto one tenant.
+ */
+export function isMatchAlreadyLinked(row: AnnotatedRow): boolean {
+  return row.matchedOrganizationLinkedToSystem === true;
+}
+
+/** Every row the table lets the user tick, in bulk or individually. */
+export function isRowSelectable(row: AnnotatedRow): boolean {
+  return row.annotation !== 'conflict' && !isMatchAlreadyLinked(row);
+}
+
+/**
  * The rows select-all is allowed to touch. name-match acknowledgement and
  * soft-deleted reactivation are per-row decisions — a bulk toggle must never
- * opt 500 rows into reactivating dead tenants in one click. Conflict rows are
- * never selectable at all.
+ * opt 500 rows into reactivating dead tenants in one click. Conflict rows and
+ * already-linked matches are never selectable at all.
  */
 export function bulkSelectableRows(rows: readonly AnnotatedRow[]): AnnotatedRow[] {
-  return rows.filter((r) => r.annotation === 'create' || r.annotation === 'link-match');
+  return rows.filter(
+    (r) => (r.annotation === 'create' || r.annotation === 'link-match') && isRowSelectable(r),
+  );
 }
 
 /** The selection a fresh preview starts with: create + link-match only. */
@@ -90,23 +126,35 @@ export function defaultPreviewSelection(rows: readonly AnnotatedRow[]): Set<numb
  * `includeExternalSystem` is false for sources where the SERVER owns the value
  * (the PSA import forces it to the connection's provider slug, so sending one
  * is at best ignored and at worst a mismatched dedupe key).
+ *
+ * A row whose match is already linked to this system under a different id
+ * carries NO acknowledgement at all — no `expectedAnnotation`, no
+ * `expectedOrganizationId`, no `reactivate`. The table never lets such a row be
+ * ticked, so this is defence in depth against a host that hands us a stale
+ * selection: an acknowledgement is exactly the thing that would let the commit
+ * write a second link row onto one tenant.
  */
 export function toCommitRow(
   row: AnnotatedRow,
   options: { includeExternalSystem?: boolean } = {},
 ): CommitRowInput {
   const { includeExternalSystem = true } = options;
+  const alreadyLinked = isMatchAlreadyLinked(row);
   return {
     organization: row.organization,
     ...(row.site ? { site: row.site } : {}),
     ...(row.externalId ? { externalId: row.externalId } : {}),
     ...(includeExternalSystem && row.externalSystem ? { externalSystem: row.externalSystem } : {}),
     ...(row.timezone ? { timezone: row.timezone } : {}),
-    expectedAnnotation: row.annotation,
-    // Pin the identity the user acknowledged: commit re-derives the match and
-    // rejects the row if it now resolves to a DIFFERENT organization.
-    ...(row.organizationId ? { expectedOrganizationId: row.organizationId } : {}),
-    ...(row.annotation === 'matched-soft-deleted' ? { reactivate: true } : {}),
+    ...(alreadyLinked
+      ? {}
+      : {
+          expectedAnnotation: row.annotation,
+          // Pin the identity the user acknowledged: commit re-derives the match
+          // and rejects the row if it now resolves to a DIFFERENT organization.
+          ...(row.organizationId ? { expectedOrganizationId: row.organizationId } : {}),
+          ...(row.annotation === 'matched-soft-deleted' ? { reactivate: true } : {}),
+        }),
   };
 }
 
@@ -114,7 +162,13 @@ interface Props {
   rows: AnnotatedRow[];
   /** Indexes the user has acknowledged for commit. Owned by the host. */
   selected: ReadonlySet<number>;
-  onSelectedChange: (next: Set<number>) => void;
+  /**
+   * A `useState` setter, NOT a plain callback: every selection change here
+   * derives from the previous selection, so the table always passes a
+   * functional updater. Reading `selected` (a prop captured at render) to
+   * build the next set would drop one of two toggles fired in the same tick.
+   */
+  onSelectedChange: Dispatch<SetStateAction<Set<number>>>;
   /**
    * Prefix for every `data-testid` this table emits, e.g. `bulk-org-import`
    * yields `bulk-org-import-table`, `-select-all`, `-row-N`, `-select-N`,
@@ -133,23 +187,29 @@ export default function OrgImportPreviewTable({
   const { t } = useTranslation('settings');
   const bulkRows = bulkSelectableRows(rows);
 
-  function toggleRow(index: number) {
-    const next = new Set(selected);
-    if (next.has(index)) next.delete(index);
-    else next.add(index);
-    onSelectedChange(next);
+  function toggleRow(row: AnnotatedRow) {
+    onSelectedChange((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.index)) next.delete(row.index);
+      // Un-ticking an unselectable row is always allowed (a host may hand us a
+      // stale selection); ticking one never is.
+      else if (isRowSelectable(row)) next.add(row.index);
+      return next;
+    });
   }
 
   function toggleAll() {
-    const next = new Set(selected);
-    if (bulkRows.every((r) => next.has(r.index))) {
-      // Deselect the bulk set; explicit per-row opt-ins (name-match /
-      // reactivate) stay as ticked.
-      for (const r of bulkRows) next.delete(r.index);
-    } else {
-      for (const r of bulkRows) next.add(r.index);
-    }
-    onSelectedChange(next);
+    onSelectedChange((prev) => {
+      const next = new Set(prev);
+      if (bulkRows.every((r) => next.has(r.index))) {
+        // Deselect the bulk set; explicit per-row opt-ins (name-match /
+        // reactivate) stay as ticked.
+        for (const r of bulkRows) next.delete(r.index);
+      } else {
+        for (const r of bulkRows) next.add(r.index);
+      }
+      return next;
+    });
   }
 
   return (
@@ -184,8 +244,8 @@ export default function OrgImportPreviewTable({
                   type="checkbox"
                   data-testid={`${testIdPrefix}-select-${r.index}`}
                   checked={selected.has(r.index)}
-                  disabled={r.annotation === 'conflict'}
-                  onChange={() => toggleRow(r.index)}
+                  disabled={!isRowSelectable(r)}
+                  onChange={() => toggleRow(r)}
                 />
               </td>
               <td className="px-2 py-1.5">{r.organization}</td>
@@ -198,14 +258,27 @@ export default function OrgImportPreviewTable({
                 >
                   {t(/* i18n-dynamic */ BADGE_LABEL_KEYS[r.annotation])}
                 </span>
-                {r.annotation === 'name-match' && r.matchedOrganizationName && (
+                {r.annotation === 'name-match' && r.matchedOrganizationName && !isMatchAlreadyLinked(r) && (
                   <span className="ml-2 text-xs text-muted-foreground">
                     {t('bulkOrgImport.preview.matches', { name: r.matchedOrganizationName })}
                   </span>
                 )}
-                {r.annotation === 'matched-soft-deleted' && (
+                {r.annotation === 'matched-soft-deleted' && !isMatchAlreadyLinked(r) && (
                   <span className="ml-2 text-xs text-orange-700 dark:text-orange-400">
                     {t('bulkOrgImport.preview.reactivateHint')}
+                  </span>
+                )}
+                {/* Confirming this match would write a SECOND link row for the
+                    same (system, org) pair and merge two source records onto
+                    one tenant. The checkbox above is disabled; this says why. */}
+                {isMatchAlreadyLinked(r) && (
+                  <span
+                    data-testid={`${testIdPrefix}-already-linked-${r.index}`}
+                    className="ml-2 text-xs text-red-700 dark:text-red-400"
+                  >
+                    {t('bulkOrgImport.preview.matchAlreadyLinked', {
+                      name: r.matchedOrganizationName ?? r.organization,
+                    })}
                   </span>
                 )}
                 {r.annotation === 'conflict' && r.conflictReason && (

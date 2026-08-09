@@ -936,6 +936,10 @@
         "intro": "As empresas são comparadas primeiro com suas organizações existentes. Nada é criado até você revisar a lista abaixo e confirmar.",
         "capHint": "Até {{cap}} empresas são obtidas por importação.",
         "empty": "Esta conexão não retornou nenhuma empresa.",
+        "alreadyLinked_one": "{{count}} empresa foi ignorada porque já foi importada desta conexão.",
+        "alreadyLinked_other": "{{count}} empresas foram ignoradas porque já foram importadas desta conexão.",
+        "malformed_one": "{{count}} registro não pôde ser lido (sem ID ou nome utilizável) e foi ignorado.",
+        "malformed_other": "{{count}} registros não puderam ser lidos (sem ID ou nome utilizável) e foram ignorados.",
         "actions": {
           "fetch": "Buscar empresas",
           "fetching": "Buscando empresas…",
@@ -944,7 +948,10 @@
         },
         "truncated": {
           "title": "Lista de empresas parcial",
-          "body": "Apenas as primeiras {{cap}} empresas foram obtidas, portanto esta importação ficará incompleta. Qualquer empresa além desse limite não foi lida e não será vinculada."
+          "body": "A listagem de empresas foi interrompida após {{fetched}} de até {{cap}} empresas, portanto esta importação ficará incompleta. As empresas que nunca foram lidas não serão vinculadas.",
+          "cap": "O limite de {{cap}} empresas por importação foi atingido após {{fetched}} empresas obtidas, portanto esta importação ficará incompleta. As empresas acima desse limite nunca foram lidas e não serão vinculadas.",
+          "timeBudget": "Esta conexão respondeu lentamente demais, então a listagem de empresas foi interrompida após {{fetched}} empresas. Esta importação ficará incompleta — as empresas que nunca foram lidas não serão vinculadas.",
+          "pageGuard": "A listagem de empresas abrangeu páginas demais e foi interrompida após {{fetched}} empresas. Esta importação ficará incompleta — as empresas que nunca foram lidas não serão vinculadas."
         },
         "errors": {
           "previewFailed": "Falha ao carregar as empresas desta conexão.",
