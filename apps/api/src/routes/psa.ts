@@ -20,6 +20,7 @@ import {
   canManagePartnerWidePolicies
 } from '../services/partnerWideAccess';
 import { createPSAProvider } from '../services/psa';
+import { psaTicketMappingOrgCondition } from '../services/psa/ticketScope';
 import {
   PsaConfigError,
   decryptCredentials,
@@ -159,55 +160,6 @@ function psaConnectionAccessCondition(
     return sql`(${orgCond} OR (${psaConnectionsTable.orgId} IS NULL AND ${psaConnectionsTable.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;
-}
-
-/**
- * WHERE fragment restricting psa_ticket_mappings rows to the caller's ACCESSIBLE
- * ORGS, via the mapping's own org anchors.
- *
- * This is the tenancy boundary for ticket DATA, and it is deliberately separate
- * from `psaConnectionAccessCondition`, which governs CONFIG visibility. The two
- * were conflated before, which leaked data:
- *
- *   A psa_connections row is partner-owned CONFIG — correctly visible to any
- *   partner-scope caller of that partner. The psa_ticket_mappings rows hanging
- *   off it are PER-ORG DATA: they name a specific org's device, alert, and
- *   external ticket. A `partner_user` with org_access='selected' scoped to org A
- *   could read org B's external ticket ids/URLs through the partner-wide
- *   connection, because "partner scope" was treated as sufficient authorization
- *   for everything reachable from a partner-owned row. It is not.
- *
- * Every anchor that is SET must be accessible (AND, not OR): a row is withheld
- * if EITHER its device or its alert belongs to an org the caller cannot reach.
- * A row with neither anchor references no org at all, so connection access
- * governs it and it passes this filter.
- *
- * Note this is NOT redundant with RLS. `breeze_has_org_access` does respect the
- * caller's accessible-org list, but the psa_ticket_mappings policy's
- * connection arm passes for ANY partner-scope caller of the owning partner —
- * necessarily so, since unanchored rows have no org to check. Postgres cannot
- * express "org_access='selected'" here; this condition is the enforcement point
- * for that refinement and must not be removed as "the policy already covers it".
- */
-function psaTicketMappingOrgCondition(
-  auth: Pick<AuthContext, 'accessibleOrgIds'>
-): SQL | undefined {
-  const orgIds = auth.accessibleOrgIds;
-  if (orgIds === null) return undefined; // system scope — unrestricted
-  if (orgIds.length === 0) return sql`false`;
-
-  return sql`(
-    (${psaTicketMappings.deviceId} IS NULL OR EXISTS (
-      SELECT 1 FROM devices d
-       WHERE d.id = ${psaTicketMappings.deviceId}
-         AND d.org_id = ANY(${orgIds}::uuid[])
-    ))
-    AND (${psaTicketMappings.alertId} IS NULL OR EXISTS (
-      SELECT 1 FROM alerts a
-       WHERE a.id = ${psaTicketMappings.alertId}
-         AND a.org_id = ANY(${orgIds}::uuid[])
-    ))
-  )`;
 }
 
 /** 'partner' when the row is partner-wide ("All orgs"), else 'organization'. */
@@ -1037,7 +989,7 @@ psaRoutes.get(
     // it. Scoping the mapping rows directly fixes that and is also what closes
     // the cross-org leak, since the connection arm alone cannot express
     // org_access='selected'. psa_ticket_mappings RLS still bounds the partner.
-    const ticketOrgCondition = psaTicketMappingOrgCondition(auth);
+    const ticketOrgCondition = psaTicketMappingOrgCondition(auth.accessibleOrgIds);
     if (ticketOrgCondition) conditions.push(ticketOrgCondition);
     if (perms?.allowedSiteIds) {
       conditions.push(or(
@@ -1111,7 +1063,7 @@ psaRoutes.get(
     // partner-wide connection it passes for every partner-scope caller,
     // including an org_access='selected' user. Without this the route returned
     // every org's external ticket ids and URLs under that connection.
-    const ticketOrgCondition = psaTicketMappingOrgCondition(auth);
+    const ticketOrgCondition = psaTicketMappingOrgCondition(auth.accessibleOrgIds);
     if (ticketOrgCondition) conditions.push(ticketOrgCondition);
     if (perms?.allowedSiteIds) {
       conditions.push(or(
