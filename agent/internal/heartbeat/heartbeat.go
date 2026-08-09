@@ -131,6 +131,28 @@ type HeartbeatPayload struct {
 	// — which this build never does, but the server must not assume "object
 	// present" implies "version 1" either. See SecurityCapabilities below.
 	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
+	// AgentEdition + MigrationRequired are the hosted/self-host build-edition
+	// telemetry signal (Phase 1 gap model, Task 8). Sent every heartbeat and
+	// written unconditionally server-side (the outboundNetworkPolicyVersion
+	// self-healing pattern, NOT the sticky isVirtual pattern) so a resolved
+	// condition clears a dashboard migration banner on the next beat.
+	// omitempty on both: a self-host build (the only build in this repo
+	// today) reports "" / false, so the wire payload is byte-identical to
+	// pre-Task-8 agents.
+	AgentEdition      string `json:"agentEdition,omitempty"`
+	MigrationRequired bool   `json:"migrationRequired,omitempty"`
+}
+
+// migrationSignal reports the agent's build edition and whether it is a
+// hosted build currently talking to a non-allowlisted server (migration
+// needed). Pure; independent of hostpolicy.Strict() — reporting is
+// telemetry, not enforcement, so it fires the same in gap and strict hosted
+// builds.
+func migrationSignal(server string) (edition string, migrationRequired bool) {
+	if !hostpolicy.Enforced() {
+		return "self-host", false
+	}
+	return "hosted", hostpolicy.AllowedURL(server) != nil
 }
 
 // SecurityCapabilities is the agent's outbound-network-policy capability
@@ -3668,6 +3690,9 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
+	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
+	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
+	payload.AgentEdition, payload.MigrationRequired = migrationSignal(h.ServerURL())
 
 	h.mu.Lock()
 	if h.helperLifecycle != nil {
