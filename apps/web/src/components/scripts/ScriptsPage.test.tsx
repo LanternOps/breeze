@@ -82,7 +82,7 @@ describe('ScriptsPage execution freshness', () => {
   it('updates lastRun from execution response timestamp when available', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/scripts') {
+      if (url.startsWith('/scripts?')) {
         return makeJsonResponse({ data: [baseScript] });
       }
       if (url === '/devices') {
@@ -112,7 +112,7 @@ describe('ScriptsPage execution freshness', () => {
       expect(screen.getByTestId('last-run-script-1').textContent).toBe('2026-02-09T15:30:00.000Z');
     });
 
-    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === '/scripts');
+    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith('/scripts?'));
     expect(scriptsCalls).toHaveLength(1);
   });
 
@@ -121,7 +121,7 @@ describe('ScriptsPage execution freshness', () => {
 
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
-      if (url === '/scripts') {
+      if (url.startsWith('/scripts?')) {
         scriptsFetchCount += 1;
         if (scriptsFetchCount === 1) {
           return makeJsonResponse({ data: [baseScript] });
@@ -155,7 +155,7 @@ describe('ScriptsPage execution freshness', () => {
       expect(screen.getByTestId('last-run-script-1').textContent).toBe('2026-02-09T16:45:00.000Z');
     });
 
-    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url) === '/scripts');
+    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith('/scripts?'));
     expect(scriptsCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
