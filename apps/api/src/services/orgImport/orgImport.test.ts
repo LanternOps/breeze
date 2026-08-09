@@ -259,6 +259,42 @@ describe('commitOrgImport — create', () => {
     expect(summary.imported[1]!.siteName).toBe('HQ');
   });
 
+  it('clamps a structured billingAddress onto the org billing columns (char(2) country guard)', async () => {
+    stubState([], []);
+    const summary = await commitOrgImport([{
+      organization: 'Acme',
+      billingAddress: {
+        line1: '1 Bill St',
+        city: 'C'.repeat(200),
+        region: 'TX',
+        postalCode: '78701',
+        country: 'United States',
+      },
+    }], 'p1', { userId: null }, 'skip');
+
+    expect(summary.errors).toEqual([]);
+    const org = insertedValues[0]!.values;
+    expect(org).toMatchObject({ billingAddressLine1: '1 Bill St', billingAddressRegion: 'TX', billingAddressPostalCode: '78701' });
+    // billing_address_city is varchar(120): an over-long value would throw and
+    // roll the whole group back.
+    expect(org.billingAddressCity).toHaveLength(120);
+    // billing_address_country is char(2): free-form names are dropped, not truncated.
+    expect(org.billingAddressCountry).toBeNull();
+  });
+
+  it('uppercases a genuine 2-letter billingAddress country', async () => {
+    stubState([], []);
+    await commitOrgImport([{ organization: 'Acme', billingAddress: { country: 'us' } }], 'p1', { userId: null }, 'skip');
+    expect(insertedValues[0]!.values.billingAddressCountry).toBe('US');
+  });
+
+  it('omits the billing columns entirely when no row carries a billingAddress', async () => {
+    stubState([], []);
+    await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');
+    expect(insertedValues[0]!.values).not.toHaveProperty('billingAddressLine1');
+    expect(insertedValues[0]!.values).not.toHaveProperty('billingAddressCountry');
+  });
+
   it('creates a default site named after the org when no row names a site', async () => {
     stubState([], []);
     const summary = await commitOrgImport([{ organization: 'Acme' }], 'p1', { userId: null }, 'skip');

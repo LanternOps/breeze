@@ -27,6 +27,7 @@ import type {
   AnnotatedRow,
   CommitRowInput,
   ImportRow,
+  ImportRowBillingAddress,
   OrgImportActor,
   OrgImportMode,
   OrgImportSummary,
@@ -49,6 +50,28 @@ export function normalizeOrgName(name: string): string {
 function clamp(value: string | undefined | null, max: number): string | null {
   if (value == null) return null;
   return value.length > max ? value.slice(0, max) : value;
+}
+
+/**
+ * Map a source billing address onto the `organizations.billing_address_*`
+ * columns. Widths mirror routes/orgs.ts; an over-long value would throw and
+ * roll back the whole group insert, dropping an otherwise-valid org.
+ *
+ * `billing_address_country` is char(2) and sources are free-form ("United
+ * States", "USA", …), so only a genuine 2-letter code is persisted — the
+ * untruncated address still survives in the site `address` JSONB, which has no
+ * length cap.
+ */
+function billingAddressColumns(addr: ImportRowBillingAddress | undefined): Record<string, string | null> {
+  if (!addr) return {};
+  return {
+    billingAddressLine1: clamp(addr.line1, 255),
+    billingAddressLine2: clamp(addr.line2, 255),
+    billingAddressCity: clamp(addr.city, 120),
+    billingAddressRegion: clamp(addr.region, 120),
+    billingAddressPostalCode: clamp(addr.postalCode, 40),
+    billingAddressCountry: addr.country?.length === 2 ? addr.country.toUpperCase() : null,
+  };
 }
 
 interface ExistingOrg {
@@ -574,6 +597,9 @@ async function createGroup(
   summary: OrgImportSummary,
 ): Promise<void> {
   const firstContact = rows.find((r) => r.row.contact)?.row.contact;
+  // Org-level billing address: create-only, first row of the group that carries
+  // one (the group is ONE organization, so later rows cannot disagree usefully).
+  const billingAddress = rows.find((r) => r.row.billingAddress)?.row.billingAddress;
 
   // Sites: one per row that names a site; a group with none gets a default
   // site named after the org (matching the QuickBooks importer).
@@ -598,6 +624,7 @@ async function createGroup(
         slug: group.slug!,
         type: 'customer' as const,
         ...(firstContact ? { billingContact: firstContact } : {}),
+        ...billingAddressColumns(billingAddress),
       }).returning();
       let linked = false;
       if (group.externalId) {

@@ -12,6 +12,21 @@ export interface ImportRowContact {
   phone?: string;
 }
 
+/**
+ * Structured billing address for the ORGANIZATION (not the site). Written to
+ * the `organizations.billing_address_*` columns when a group creates the org;
+ * values are clamped to the column widths and `country` is only persisted when
+ * it is a genuine 2-letter code (the column is char(2)).
+ */
+export interface ImportRowBillingAddress {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  country?: string;
+}
+
 export interface ImportRow {
   /** Organization name. Repeat across rows to attach multiple sites. */
   organization: string;
@@ -26,6 +41,12 @@ export interface ImportRow {
   /** Site address, stored as-is into the sites.address JSONB. */
   address?: unknown;
   contact?: ImportRowContact;
+  /**
+   * Organization billing address, applied only when the group CREATES the org.
+   * Sources that carry billing data (QuickBooks) set it; CSV/PSA leave it unset
+   * — an absent value never clears existing columns.
+   */
+  billingAddress?: ImportRowBillingAddress;
 }
 
 export type RowAnnotation =

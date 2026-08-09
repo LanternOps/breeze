@@ -6,7 +6,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections } from '../../db/schema';
-import { authMiddleware, requireMfa, requireScope, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import {
   deleteConnection,
@@ -26,6 +27,12 @@ import type { AccountingProviderId } from '../../services/accounting/types';
 export const accountingRoutes = new Hono();
 
 const partnerScopes = requireScope('partner', 'system');
+// The customer routes create organizations + their default sites, so they carry
+// the same permission gates as the bulk org import (routes/orgs.ts /import,
+// /import/preview) — partner scope + MFA alone would let a restricted partner
+// user without orgs:write mass-create orgs.
+const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+const requireSiteWrite = requirePermission(PERMISSIONS.SITES_WRITE.resource, PERMISSIONS.SITES_WRITE.action);
 const providerParamSchema = z.object({ provider: z.enum(['quickbooks']) });
 const partnerQuerySchema = z.object({ partnerId: z.string().guid().optional() });
 const callbackQuerySchema = z.object({
@@ -260,8 +267,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
 });
 
 // List remote QuickBooks customers, annotated with whether each is already
-// imported. Read-only but partner-privileged, so partner/system scope.
-accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+// imported. Read-only but partner-privileged, so partner/system scope; it is
+// the preview step of an org+site create, so it carries the same write gates as
+// routes/orgs.ts POST /import/preview.
+accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, requireOrgWrite, requireSiteWrite, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
@@ -276,16 +285,22 @@ accountingRoutes.get('/:provider/customers', authMiddleware, partnerScopes, zVal
 });
 
 // Import selected QuickBooks customers as orgs + sites. Write + MFA-gated.
-accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
+accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScopes, requireOrgWrite, requireSiteWrite, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', importCustomersSchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   let summary;
   try {
-    summary = await importQuickbooksCustomers({ partnerId: partner.partnerId, customerIds: c.req.valid('json').customerIds });
+    summary = await importQuickbooksCustomers({
+      partnerId: partner.partnerId,
+      customerIds: c.req.valid('json').customerIds,
+      // Stamped onto organization_external_links.created_by by the seam.
+      actor: { userId: auth.user?.id ?? null },
+    });
   } catch (err) {
     return handleImportError(c, err);
   }

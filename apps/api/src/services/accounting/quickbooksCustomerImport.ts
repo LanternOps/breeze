@@ -1,10 +1,33 @@
-import { and, eq } from 'drizzle-orm';
+/**
+ * QuickBooks customer import — a thin adapter over the shared org import seam
+ * (`services/orgImport`, issue #3242 / epic #3249).
+ *
+ * This module owns only what is QuickBooks-specific: connection + token
+ * plumbing, the RemoteCustomer → ImportRow mapping, and the translation of the
+ * seam's generic summary back into the customer-shaped contract the
+ * integrations UI consumes. Matching, slug reservation, org/site creation,
+ * link-row persistence and concurrent-import recovery all live in the seam.
+ *
+ * Linkage is written to `organization_external_links` ONLY — the legacy
+ * `organizations.accounting_provider` / `accounting_external_id` columns are no
+ * longer written by this importer. Every reader is a union reader in which the
+ * link table wins, and the 2026-08-08 backfill shipped; the columns are dropped
+ * separately.
+ */
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, organizationExternalLinks, sites } from '../../db/schema';
 import { getConnection } from './accountingConnectionService';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
+import { commitOrgImport, previewOrgImport } from '../orgImport';
+import type {
+  AnnotatedRow,
+  CommitRowInput,
+  ImportRow,
+  OrgImportActor,
+  OrgImportSummary,
+} from '../orgImport';
 import type { RemoteAddress, RemoteCustomer } from './types';
 
 const PROVIDER = 'quickbooks' as const;
@@ -26,38 +49,27 @@ export class QbImportError extends Error {
   }
 }
 
-// QBO source values can exceed Breeze's billing-address column widths (DisplayName
-// up to 500, City/lines up to 255, etc.). Writing an over-long value throws and
-// rolls back the whole org+site insert, dropping an otherwise-valid customer. Clamp
-// to the column width — the untruncated value is still preserved in the site
-// `address` JSONB (no length cap), so this is lossless overall. See orgs.ts widths.
-function clamp(value: string | undefined | null, max: number): string | null {
-  if (value == null) return null;
-  return value.length > max ? value.slice(0, max) : value;
-}
-
-// Postgres unique_violation — a concurrent import linked this customer after
-// our dedup snapshot; the unique indexes are the backstop, treat it as a skip.
-// Uses the shared cause-chain-walking helper: Drizzle wraps postgres.js errors
-// in DrizzleQueryError whose top-level `.code` is undefined (utils/pgErrors.ts),
-// so a local top-level check would miss every Drizzle-issued insert.
-import { isPgUniqueViolation as isUniqueViolation } from '../../utils/pgErrors';
-
 export interface AnnotatedCustomer extends RemoteCustomer {
   alreadyImported: boolean;
   organizationId: string | null;
 }
 
 export interface QbImportSummary {
-  imported: Array<{ customerId: string; displayName: string; organizationId: string; siteId: string }>;
-  skipped: Array<{ customerId: string; displayName: string; organizationId: string; reason: 'already_imported' }>;
+  /**
+   * `siteId` is nullable only defensively: every created group gets a default
+   * site named after the org, so the seam always returns one here.
+   */
+  imported: Array<{ customerId: string; displayName: string; organizationId: string; siteId: string | null }>;
+  skipped: Array<{
+    customerId: string;
+    displayName: string;
+    organizationId: string;
+    reason: 'already_imported';
+    /** Non-fatal note from the seam (e.g. the link write failed). */
+    warning?: string;
+  }>;
   errors: Array<{ customerId: string; displayName?: string; error: string }>;
 }
-
-// Slug helpers moved to the shared org import pipeline (#3242); re-exported
-// here for back-compat with existing importers/tests.
-export { generateUniqueSlug, slugify } from '../orgImport/slug';
-import { generateUniqueSlug, slugify } from '../orgImport/slug';
 
 // Resolve the partner's QB connection + a fresh access token, then fetch all
 // customers from QuickBooks. These DB ops run in SYSTEM context (the connection
@@ -102,51 +114,6 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   }
 }
 
-// Map external id -> organizationId for every org already linked to this
-// partner's QB realm. Reads the UNION of organization_external_links and the
-// legacy accounting_* columns (#3242) so an org linked by either mechanism
-// matches — a link-table-only read would miss orgs created before the link
-// table existed on a database whose backfill hasn't run, and a columns-only
-// read would miss future link-only rows once the columns are dropped. Same
-// self-managed system-context rule as fetchCustomers (the routes opt out of
-// the request tx).
-async function loadExistingOrgs(partnerId: string): Promise<{ byExternalId: Map<string, string>; slugs: Set<string> }> {
-  const { orgRows, linkRows } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => ({
-    orgRows: await db.select({ id: organizations.id, accountingProvider: organizations.accountingProvider, accountingExternalId: organizations.accountingExternalId, slug: organizations.slug })
-      .from(organizations)
-      .where(eq(organizations.partnerId, partnerId)),
-    linkRows: await db.select({ orgId: organizationExternalLinks.orgId, externalId: organizationExternalLinks.externalId })
-      .from(organizationExternalLinks)
-      .where(and(eq(organizationExternalLinks.partnerId, partnerId), eq(organizationExternalLinks.system, PROVIDER))),
-  }))) as {
-    orgRows: Array<{ id: string; accountingProvider: string | null; accountingExternalId: string | null; slug: string | null }>;
-    linkRows: Array<{ orgId: string; externalId: string }>;
-  };
-
-  const byExternalId = new Map<string, string>();
-  const slugs = new Set<string>();
-  for (const row of orgRows) {
-    if (row.accountingProvider === PROVIDER && row.accountingExternalId) byExternalId.set(row.accountingExternalId, row.id);
-    // Slug uniqueness is per partner, not per QB linkage — reserve them all.
-    if (row.slug) slugs.add(row.slug);
-  }
-  // The link table wins over the legacy columns on conflict.
-  for (const row of linkRows) {
-    byExternalId.set(row.externalId, row.orgId);
-  }
-  return { byExternalId, slugs };
-}
-
-export async function listQuickbooksCustomersAnnotated(partnerId: string): Promise<AnnotatedCustomer[]> {
-  const customers = await fetchCustomers(partnerId);
-  const { byExternalId } = await loadExistingOrgs(partnerId);
-  return customers.map((c) => ({
-    ...c,
-    alreadyImported: byExternalId.has(c.id),
-    organizationId: byExternalId.get(c.id) ?? null,
-  }));
-}
-
 function siteAddressFrom(addr: RemoteAddress | undefined): Record<string, string> | undefined {
   if (!addr) return undefined;
   // Match the web SiteForm convention so imported sites render correctly.
@@ -160,123 +127,217 @@ function siteAddressFrom(addr: RemoteAddress | undefined): Record<string, string
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * RemoteCustomer → ImportRow. No `site` field: a group with no sites gets one
+ * default site named after the org, which is exactly the "one site per
+ * customer" shape this importer has always produced.
+ */
+function toImportRow(customer: RemoteCustomer): ImportRow {
+  return {
+    organization: customer.displayName,
+    externalId: customer.id,
+    externalSystem: PROVIDER,
+    // The site keeps the shipping address when QB has one (that is where the
+    // techs go), falling back to billing.
+    address: siteAddressFrom(customer.shipAddr ?? customer.billAddr),
+    contact: { name: customer.contactName, email: customer.email, phone: customer.phone },
+    billingAddress: customer.billAddr,
+  };
+}
+
+export async function listQuickbooksCustomersAnnotated(partnerId: string): Promise<AnnotatedCustomer[]> {
+  const customers = await fetchCustomers(partnerId);
+  const annotated = await previewOrgImport(customers.map(toImportRow), partnerId);
+  return customers.map((customer, i) => {
+    const row = annotated[i];
+    // "Already imported" means a durable link exists (or the linked org is
+    // soft-deleted). A bare name match is NOT already-imported: nothing links
+    // that org to this customer yet, and the import refuses it (see below).
+    const linked = row?.annotation === 'link-match' || row?.annotation === 'matched-soft-deleted';
+    return {
+      ...customer,
+      alreadyImported: linked,
+      organizationId: linked ? row?.organizationId ?? null : null,
+    };
+  });
+}
+
+const BULK_IMPORT = 'Use Settings → Organizations → Bulk import to review and';
+
+/**
+ * Why a previewed row is not auto-acknowledged. The seam only commits a
+ * name-match or a soft-deleted match against an explicit acknowledgement, and
+ * this importer has no confirmation UI to collect one — so it refuses and
+ * points at the bulk-import screen, which does. Before the migration onto the
+ * seam, a same-named-but-unlinked org silently got a duplicate beside it.
+ */
+function refusalMessage(customer: RemoteCustomer, row: AnnotatedRow | undefined): string {
+  const matched = row?.matchedOrganizationName ?? customer.displayName;
+  if (row?.annotation === 'name-match') {
+    return `An organization named "${matched}" already exists but isn't linked to QuickBooks. `
+      + `${BULK_IMPORT} confirm the match.`;
+  }
+  if (row?.annotation === 'matched-soft-deleted') {
+    return `An organization named "${matched}" was deleted and still matches this customer. `
+      + `${BULK_IMPORT} restore it.`;
+  }
+  if (row?.conflictReason) return row.conflictReason;
+  return `"${customer.displayName}" could not be matched to an organization — refresh the customer list and try again.`;
+}
+
+// The seam's expectation/link-conflict errors speak the bulk-import UI's
+// language ("re-run preview", "expectedAnnotation"). This screen has no preview
+// step, so the whole class — which can only mean "Breeze changed under the
+// import between our preview and our commit" — collapses into one actionable
+// sentence. Anything else (DB failures) passes through unchanged, as before.
+const SEAM_RECHECK_PREFIXES = [
+  'Annotation changed since preview',
+  'Match changed since preview',
+  'Name matches existing organization',
+  'Matches soft-deleted organization',
+  'External id "',
+];
+
+function isSeamRecheckError(message: string): boolean {
+  return SEAM_RECHECK_PREFIXES.some((prefix) => message.startsWith(prefix));
+}
+
 export async function importQuickbooksCustomers(
-  input: { partnerId: string; customerIds: string[] }
+  input: { partnerId: string; customerIds: string[]; actor?: OrgImportActor }
 ): Promise<QbImportSummary> {
   const { partnerId, customerIds } = input;
+  const actor: OrgImportActor = input.actor ?? { userId: null };
   const customers = await fetchCustomers(partnerId);
   const byId = new Map(customers.map((c) => [c.id, c]));
-  const { byExternalId, slugs } = await loadExistingOrgs(partnerId);
 
   const summary: QbImportSummary = { imported: [], skipped: [], errors: [] };
 
+  // Resolve the requested ids first. A repeated id is ONE customer, not two —
+  // the seam would group the duplicate rows onto a single org and report it
+  // twice.
+  const selected: RemoteCustomer[] = [];
+  const seen = new Set<string>();
   for (const customerId of customerIds) {
+    if (seen.has(customerId)) continue;
+    seen.add(customerId);
     const customer = byId.get(customerId);
     if (!customer) {
       summary.errors.push({ customerId, error: 'Customer not found in QuickBooks' });
       continue;
     }
+    selected.push(customer);
+  }
+  if (selected.length === 0) return summary;
 
-    const existingOrgId = byExternalId.get(customerId);
-    if (existingOrgId) {
-      summary.skipped.push({ customerId, displayName: customer.displayName, organizationId: existingOrgId, reason: 'already_imported' });
+  // Re-derive the annotations server-side: what the browser saw is advisory,
+  // and the acknowledgements below must be made against fresh DB state.
+  const rows = selected.map(toImportRow);
+  const annotated = await previewOrgImport(rows, partnerId);
+
+  const commitRows: CommitRowInput[] = [];
+  const commitCustomers: RemoteCustomer[] = [];
+  for (const [i, customer] of selected.entries()) {
+    const row = annotated[i];
+    // Auto-acknowledge ONLY the unambiguous annotations: a brand-new org, or a
+    // customer already linked to one. Everything else needs a human.
+    if (row && (row.annotation === 'create' || row.annotation === 'link-match')) {
+      commitRows.push({
+        ...rows[i]!,
+        expectedAnnotation: row.annotation,
+        ...(row.organizationId ? { expectedOrganizationId: row.organizationId } : {}),
+      });
+      commitCustomers.push(customer);
       continue;
     }
+    summary.errors.push({
+      customerId: customer.id,
+      displayName: customer.displayName,
+      error: refusalMessage(customer, row),
+    });
+  }
+  if (commitRows.length === 0) return summary;
 
-    try {
-      const slug = generateUniqueSlug(slugify(customer.displayName), slugs);
-      slugs.add(slug); // reserve within this batch
+  const result = await commitOrgImport(commitRows, partnerId, actor, 'skip');
+  mergeSummary(result, commitCustomers, summary);
+  return summary;
+}
 
-      const contact = {
-        name: customer.contactName,
-        email: customer.email,
-        phone: customer.phone,
-      };
-
-      const { orgId, siteId } = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(async () => {
-          const [org] = await db.insert(organizations).values({
-            partnerId,
-            // name is NOT NULL; clamp() can only shorten a present string here.
-            name: clamp(customer.displayName, 255)!,
-            slug,
-            type: 'customer' as const,
-            billingContact: contact,
-            billingAddressLine1: clamp(customer.billAddr?.line1, 255),
-            billingAddressLine2: clamp(customer.billAddr?.line2, 255),
-            billingAddressCity: clamp(customer.billAddr?.city, 120),
-            billingAddressRegion: clamp(customer.billAddr?.region, 120),
-            billingAddressPostalCode: clamp(customer.billAddr?.postalCode, 40),
-            // billing_address_country is char(2). QBO's BillAddr.Country is
-            // free-form ("United States", "USA", …); only persist a genuine
-            // 2-letter code — the full country still survives in the site
-            // address JSONB (siteAddressFrom) which has no length cap.
-            billingAddressCountry: customer.billAddr?.country?.length === 2
-              ? customer.billAddr.country.toUpperCase()
-              : null,
-            accountingProvider: PROVIDER,
-            accountingExternalId: customerId,
-          }).returning();
-          // DUAL-WRITE (#3242): the link row must be written alongside the
-          // legacy accounting_* columns for as long as the columns exist.
-          // Readers are moving to the link table; an org created with only
-          // the columns would not match on the next import and would be
-          // duplicated — the exact failure the link table exists to prevent.
-          await db.insert(organizationExternalLinks).values({
-            orgId: org!.id,
-            partnerId,
-            system: PROVIDER,
-            externalId: customerId,
-          });
-          const [site] = await db.insert(sites).values({
-            orgId: org!.id,
-            name: clamp(customer.displayName, 255)!,
-            address: siteAddressFrom(customer.shipAddr ?? customer.billAddr),
-            contact,
-          }).returning();
-          return { orgId: org!.id as string, siteId: site!.id as string };
-        })
-      );
-
-      byExternalId.set(customerId, orgId);
-      summary.imported.push({ customerId, displayName: customer.displayName, organizationId: orgId, siteId });
-    } catch (err) {
-      // A concurrent import already linked this customer (partial unique index)
-      // — honor the documented "skip dupes" contract instead of reporting a raw
-      // constraint error. Re-read the winning org id under system context.
-      if (isUniqueViolation(err)) {
-        // The violation can come from either idempotency guard — the link
-        // table's unique index or the legacy partial unique index. Re-read
-        // the union (link table first: it wins on conflict).
-        const existing = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-          const [link] = await db.select({ id: organizationExternalLinks.orgId })
-            .from(organizationExternalLinks)
-            .where(and(
-              eq(organizationExternalLinks.partnerId, partnerId),
-              eq(organizationExternalLinks.system, PROVIDER),
-              eq(organizationExternalLinks.externalId, customerId),
-            )).limit(1);
-          if (link) return [link];
-          return db.select({ id: organizations.id }).from(organizations).where(and(
-            eq(organizations.partnerId, partnerId),
-            eq(organizations.accountingProvider, PROVIDER),
-            eq(organizations.accountingExternalId, customerId),
-          )).limit(1);
-        })) as Array<{ id: string }>;
-        if (existing[0]) {
-          byExternalId.set(customerId, existing[0].id);
-          summary.skipped.push({ customerId, displayName: customer.displayName, organizationId: existing[0].id, reason: 'already_imported' });
-          continue;
-        }
-      }
-      // Log + Sentry before collecting: the only other trace is a string in the
-      // response body, and a broad catch can also surface a systemic failure
-      // (e.g. DB outage) as a per-customer error — keep it observable.
-      console.error('[qb-import] failed to import customer', { partnerId, customerId, error: err instanceof Error ? err.message : String(err) });
-      captureException(err instanceof Error ? err : new Error(String(err)));
-      summary.errors.push({ customerId, displayName: customer.displayName, error: err instanceof Error ? err.message : String(err) });
-    }
+/**
+ * OrgImportSummary → QbImportSummary. The seam reports by row index into the
+ * committed rows array, so `commitCustomers[index]` is the originating
+ * customer.
+ */
+function mergeSummary(
+  result: OrgImportSummary,
+  commitCustomers: RemoteCustomer[],
+  summary: QbImportSummary,
+): void {
+  for (const row of result.imported) {
+    const customer = commitCustomers[row.index];
+    if (!customer) continue;
+    summary.imported.push({
+      customerId: customer.id,
+      displayName: customer.displayName,
+      organizationId: row.organizationId,
+      siteId: row.siteId,
+    });
   }
 
-  return summary;
+  for (const row of result.skipped) {
+    const customer = commitCustomers[row.index];
+    if (!customer) continue;
+    if (!row.organizationId) {
+      // `created_concurrently` where the winning link row could not be re-read.
+      // Reporting a skip with no organization id would fabricate an identity —
+      // report it as a retryable failure instead.
+      summary.errors.push({
+        customerId: customer.id,
+        displayName: customer.displayName,
+        error: `"${customer.displayName}" was imported by another run at the same time and the resulting `
+          + 'organization could not be resolved — refresh the customer list to confirm.',
+      });
+      continue;
+    }
+    summary.skipped.push({
+      customerId: customer.id,
+      displayName: customer.displayName,
+      organizationId: row.organizationId,
+      reason: 'already_imported',
+      ...(row.warning ? { warning: row.warning } : {}),
+    });
+  }
+
+  // Defensive: in 'skip' mode the seam only emits `updated` rows for a
+  // reactivated soft-deleted match, which this importer never acknowledges.
+  for (const row of result.updated) {
+    const customer = commitCustomers[row.index];
+    if (!customer) continue;
+    summary.skipped.push({
+      customerId: customer.id,
+      displayName: customer.displayName,
+      organizationId: row.organizationId,
+      reason: 'already_imported',
+      ...(row.warning ? { warning: row.warning } : {}),
+    });
+  }
+
+  for (const row of result.errors) {
+    const customer = commitCustomers[row.index];
+    const recheck = isSeamRecheckError(row.error);
+    const displayName = customer?.displayName ?? row.organization;
+    if (!recheck) {
+      // A real failure (DB error, constraint violation). The seam already
+      // console.errors it; keep the Sentry breadcrumb this importer has always
+      // produced, since the only other trace is a string in the response body.
+      captureException(new Error(`[qb-import] ${row.error}`));
+    }
+    summary.errors.push({
+      customerId: customer?.id ?? '',
+      ...(displayName ? { displayName } : {}),
+      error: recheck
+        ? `"${displayName ?? 'This customer'}" changed in Breeze while the import was running — `
+          + 'refresh the customer list and try again.'
+        : row.error,
+    });
+  }
 }
