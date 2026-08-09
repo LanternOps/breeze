@@ -1,6 +1,6 @@
 import { Job, Worker } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
 import { approvalRequests } from '../db/schema/approvals';
 import { getBullMQConnection } from '../services/redis';
@@ -11,7 +11,7 @@ import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
 import { computeEffectDigest, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
-import { dbAccessContextFromAuth } from '../middleware/auth';
+import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
@@ -444,10 +444,8 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   try {
     if (secretAction) {
       carrier = await withToolTimeout(
-        runOutsideDbContext(() =>
-          withDbAccessContext(dbAccessContextFromAuth(auth), () =>
-            executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
-          ),
+        withAuthDbAccessContext(auth, () =>
+          executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
         ),
         getToolTimeout(intent.actionName),
         intent.actionName,
@@ -460,7 +458,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
         : () => executeTool(intent.actionName, intent.arguments, auth);
       rawResult = await withToolTimeout(
-        runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), invoke)),
+        withAuthDbAccessContext(auth, invoke),
         getToolTimeout(intent.actionName),
         intent.actionName,
       );

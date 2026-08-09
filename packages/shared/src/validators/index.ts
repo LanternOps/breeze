@@ -28,6 +28,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './psa';
 
 // ============================================
 // Device Roles

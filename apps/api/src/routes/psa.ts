@@ -2,19 +2,37 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { psaProviderIdSchema, type PsaProviderId } from '@breeze/shared';
+import {
+  authMiddleware,
+  requireMfa,
+  requirePermission,
+  requireScope,
+  withAuthDbAccessContext,
+  type AuthContext
+} from '../middleware/auth';
 import { db } from '../db';
 import { devices, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS, type UserPermissions } from '../services/permissions';
-import { validatePsaBaseUrl } from '../services/psa/http';
-import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
+import { createPSAProvider } from '../services/psa';
+import {
+  PsaConfigError,
+  decryptCredentials,
+  encryptCredentials,
+  mergeProviderCredentials,
+  validateProviderCredentials,
+  validatePsaCredentialBaseUrl
+} from '../services/psa/credentials';
 
 export const psaRoutes = new Hono();
 
-type PsaProvider = 'jira' | 'servicenow' | 'connectwise' | 'autotask' | 'freshservice' | 'zendesk';
+type PsaProvider = PsaProviderId;
 
-const providerSchema = z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 'freshservice', 'zendesk']);
+// Single-source provider list — @breeze/shared PSA_PROVIDERS. The DB enum is
+// intentionally wider (halo/syncro/kaseya/other are dead values); this schema
+// is the gate.
+const providerSchema = psaProviderIdSchema;
 
 const listConnectionsSchema = z.object({
   page: z.string().optional(),
@@ -75,58 +93,6 @@ async function ensureOrgAccess(
   return true;
 }
 
-function encryptCredentials(credentials: Record<string, unknown>): string | null {
-  return encryptSecret(JSON.stringify(credentials));
-}
-
-function validatePsaCredentialBaseUrl(credentials: Record<string, unknown>): string | null {
-  const baseUrl = credentials.baseUrl;
-  if (baseUrl === undefined) return null;
-  if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
-    return 'credentials.baseUrl must be a non-empty URL';
-  }
-
-  const rejectionReason = validatePsaBaseUrl(baseUrl.trim());
-  return rejectionReason ? `credentials.baseUrl rejected: ${rejectionReason}` : null;
-}
-
-function decryptCredentials(value: unknown): Record<string, unknown> | null {
-  if (!value) return null;
-
-  const parseRecord = (payload: unknown): Record<string, unknown> | null => {
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-      return payload as Record<string, unknown>;
-    }
-    return null;
-  };
-
-  try {
-    if (typeof value === 'string') {
-      // psa_connections.credentials is a JSON column; the registry walker
-      // uses the column-level AAD when re-encrypting, so we bind the same
-      // here regardless of where the ciphertext sits inside the JSON.
-      const decrypted = decryptForColumn('psa_connections', 'credentials', value);
-      if (!decrypted) return null;
-      return parseRecord(JSON.parse(decrypted));
-    }
-
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const asRecord = value as Record<string, unknown>;
-      if (typeof asRecord.encrypted === 'string') {
-        const decrypted = decryptForColumn('psa_connections', 'credentials', asRecord.encrypted);
-        if (!decrypted) return null;
-        return parseRecord(JSON.parse(decrypted));
-      }
-
-      return asRecord;
-    }
-  } catch (error) {
-    console.error('[psa] Failed to decrypt PSA connection credentials:', error);
-  }
-
-  return null;
-}
-
 function extractLastTestedAt(syncSettings: unknown): Date | null {
   if (!syncSettings || typeof syncSettings !== 'object' || Array.isArray(syncSettings)) {
     return null;
@@ -153,6 +119,52 @@ function mergeObjectState(
   };
 }
 
+// Round-trip contract with the web form (PsaConnectionsPage/PsaConnectionForm):
+// non-secret credential fields are returned for edit prefill; secrets are NEVER
+// returned — only per-field presence flags (`credentialFields`) so the form can
+// show "keep existing". BOTH are gated on orgs:write — see GET /connections/:id.
+const PSA_PUBLIC_CREDENTIAL_KEYS = [
+  'baseUrl',
+  'username',
+  'email',
+  'clientId',
+  'companyId',
+  'publicKey'
+] as const;
+const PSA_SECRET_CREDENTIAL_KEYS = [
+  'password',
+  'apiToken',
+  'clientSecret',
+  'privateKey',
+  'secret',
+  'integrationCode',
+  'apiKey',
+  'personalAccessToken'
+] as const;
+
+/**
+ * Is the stored credential blob non-empty? Deliberately does NOT decrypt — the
+ * list endpoint serializes up to 100 rows and only needs the boolean.
+ */
+function hasStoredCredentials(value: unknown): boolean {
+  if (!value) return false;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (typeof record.encrypted === 'string') return record.encrypted.length > 0;
+    return Object.keys(record).length > 0;
+  }
+  return false;
+}
+
+function deriveConnectionStatus(settings: unknown): 'active' | 'paused' | 'error' {
+  if (settings && typeof settings === 'object' && !Array.isArray(settings)) {
+    const status = (settings as Record<string, unknown>).status;
+    if (status === 'paused' || status === 'error') return status;
+  }
+  return 'active';
+}
+
 function serializeConnection(
   connection: {
     id: string;
@@ -166,30 +178,59 @@ function serializeConnection(
     updatedAt: Date;
     lastSyncAt: Date | null;
   },
-  includeCredentials: boolean
+  includeCredentialInfo: boolean
 ) {
+  const settings = (connection.settings && typeof connection.settings === 'object' && !Array.isArray(connection.settings))
+    ? connection.settings as Record<string, unknown>
+    : {};
+
   const response = {
     id: connection.id,
     orgId: connection.orgId,
     provider: connection.provider,
     name: connection.name,
-    settings: (connection.settings && typeof connection.settings === 'object' && !Array.isArray(connection.settings))
-      ? connection.settings
-      : {},
+    status: deriveConnectionStatus(settings),
+    settings,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
     lastTestedAt: extractLastTestedAt(connection.syncSettings),
-    lastSyncedAt: connection.lastSyncAt,
-    hasCredentials: Boolean(connection.credentials)
+    // Whether ANY credential material is stored. Part of the pre-existing
+    // public shape — every list/detail consumer sees it, no permission gate.
+    hasCredentials: hasStoredCredentials(connection.credentials),
+    // DEPRECATED and frozen: nothing writes psa_connections.last_sync_at any
+    // more (POST /connections/:id/sync returns 501 — there is no sync worker),
+    // so this is null on every connection created since. Kept because removing
+    // a response field is a breaking public-API change.
+    lastSyncedAt: connection.lastSyncAt ?? null
   };
 
-  if (!includeCredentials) {
+  if (!includeCredentialInfo) {
     return response;
   }
 
+  const decrypted = decryptCredentials(connection.credentials) ?? {};
+  const credentials: Record<string, string> = {};
+  for (const key of PSA_PUBLIC_CREDENTIAL_KEYS) {
+    const value = decrypted[key];
+    if (typeof value === 'string' && value.length > 0) {
+      credentials[key] = value;
+    }
+  }
+
+  // Per-field presence of the SECRET keys — named `credentialFields` to keep it
+  // distinct from the `hasCredentials` boolean above, which is a different
+  // question with a different audience.
+  const credentialFields = Object.fromEntries(
+    PSA_SECRET_CREDENTIAL_KEYS.map((key) => {
+      const value = decrypted[key];
+      return [key, typeof value === 'string' ? value.length > 0 : Boolean(value)];
+    })
+  ) as Record<(typeof PSA_SECRET_CREDENTIAL_KEYS)[number], boolean>;
+
   return {
     ...response,
-    credentials: decryptCredentials(connection.credentials)
+    credentials,
+    credentialFields
   };
 }
 
@@ -366,6 +407,21 @@ psaRoutes.post(
       return c.json({ error: baseUrlError }, 400);
     }
 
+    // Validate at SAVE time, not just at adapter-construction (test) time —
+    // otherwise a misconfigured blob persists happily and only surfaces as a
+    // 400 the first time someone presses Test. Create always has the full set
+    // of credentials in hand, so it always validates. The stored blob stays the
+    // raw payload: normalization (jira `type` inference, alias backfill) is
+    // derived per use, never frozen into the row.
+    try {
+      validateProviderCredentials(data.provider, data.credentials);
+    } catch (error) {
+      if (error instanceof PsaConfigError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+
     const credentialsEncrypted = encryptCredentials(data.credentials);
     if (!credentialsEncrypted) {
       return c.json({ error: 'Failed to encrypt credentials' }, 500);
@@ -431,7 +487,18 @@ psaRoutes.get(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    return c.json({ data: serializeConnection(connection, false) });
+    // The credential prefill block (non-secret fields) and the per-field
+    // `credentialFields` presence map exist to drive the EDIT form, so they are
+    // gated on orgs:write. A caller holding only orgs:read never sees decrypted
+    // material or which auth mode a connection is configured with (#3291
+    // review) — `requirePermission(ORGS_READ)` above has already resolved and
+    // cached the permission set on the context.
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const canManage = perms
+      ? hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)
+      : false;
+
+    return c.json({ data: serializeConnection(connection, canManage) });
   }
 );
 
@@ -469,12 +536,37 @@ psaRoutes.patch(
     }
 
     if (data.credentials !== undefined) {
-      const baseUrlError = validatePsaCredentialBaseUrl(data.credentials);
+      // Merge-with-existing semantics: keys present in the patch overwrite,
+      // `null` deletes a key, absent keys keep their stored value. This lets
+      // the edit form omit untouched secrets without wiping them.
+      //
+      // The merge is AUTH-GROUP AWARE (see CREDENTIAL_AUTH_GROUPS in
+      // services/psa/credentials.ts): supplying any key of one mutually
+      // exclusive auth group clears the others. A plain merge trapped stale
+      // material — rotating a Jira connection from a personal access token to
+      // username/password kept the PAT, which the adapter keeps preferring, so
+      // the rotation silently did nothing (#3291 review).
+      const existingCredentials = decryptCredentials(existing.credentials) ?? {};
+      const merged = mergeProviderCredentials(existing.provider, existingCredentials, data.credentials);
+
+      const baseUrlError = validatePsaCredentialBaseUrl(merged);
       if (baseUrlError) {
         return c.json({ error: baseUrlError }, 400);
       }
 
-      const encrypted = encryptCredentials(data.credentials);
+      // Validate the POST-MERGE blob — only reachable when this PATCH actually
+      // writes credentials. A rename-only PATCH deliberately skips validation
+      // so legacy-shaped stored blobs stay editable.
+      try {
+        validateProviderCredentials(existing.provider, merged);
+      } catch (error) {
+        if (error instanceof PsaConfigError) {
+          return c.json({ error: error.message }, 400);
+        }
+        throw error;
+      }
+
+      const encrypted = encryptCredentials(merged);
       if (!encrypted) {
         return c.json({ error: 'Failed to encrypt credentials' }, 500);
       }
@@ -482,7 +574,11 @@ psaRoutes.patch(
     }
 
     if (data.settings !== undefined) {
-      updates.settings = data.settings;
+      // Shallow MERGE, not replace — same semantics as the credentials merge
+      // above. `settings.status` is written by POST /connections/:id/status and
+      // is NOT part of the edit form's payload, so a wholesale replace silently
+      // reactivated a paused connection on any rename (#3291 review).
+      updates.settings = mergeObjectState(existing.settings, data.settings);
     }
 
     const [updated] = await db
@@ -553,6 +649,14 @@ psaRoutes.delete(
   }
 );
 
+/**
+ * POST /connections/:id/test is registered in SELF_MANAGED_DB_CONTEXT_ROUTES
+ * (#1448 / #1105 class) — it makes a REAL outbound HTTP call to the PSA
+ * (psaFetch, 20s timeout, tenant-controlled baseUrl), so the auth middleware
+ * does NOT wrap this route in the usual request transaction. Reads/writes run
+ * in short explicit contexts (`withAuthDbAccessContext`) built from the same
+ * fields the middleware would have used, with the network call between them.
+ */
 psaRoutes.post(
   '/connections/:id/test',
   requireScope('organization', 'partner', 'system'),
@@ -562,7 +666,8 @@ psaRoutes.post(
     const auth = c.get('auth');
     const connectionId = c.req.param('id')!;
 
-    const existing = await getConnectionById(connectionId);
+    // Short, explicit DB context — no ambient request transaction here (#1448).
+    const existing = await withAuthDbAccessContext(auth, () => getConnectionById(connectionId));
     if (!existing) {
       return c.json({ error: 'PSA connection not found' }, 404);
     }
@@ -572,25 +677,78 @@ psaRoutes.post(
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    await db
-      .update(psaConnectionsTable)
-      .set({
-        syncSettings: mergeObjectState(existing.syncSettings, { lastTestedAt: new Date().toISOString(), status: 'verified' }),
-        updatedAt: new Date()
-      })
-      .where(eq(psaConnectionsTable.id, existing.id));
+    const credentials = decryptCredentials(existing.credentials);
+    if (!credentials) {
+      return c.json({ error: 'PSA connection has no usable credentials' }, 400);
+    }
+
+    const settings = (existing.settings && typeof existing.settings === 'object' && !Array.isArray(existing.settings))
+      ? existing.settings as Record<string, unknown>
+      : {};
+
+    let providerClient;
+    try {
+      providerClient = createPSAProvider(existing.provider, credentials, settings);
+    } catch (error) {
+      if (error instanceof PsaConfigError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+
+    // Real connectivity test — runs OUTSIDE any DB context (adapters return
+    // {success, message} instead of throwing, but guard anyway).
+    let result: { success: boolean; message?: string };
+    try {
+      result = await providerClient.testConnection();
+    } catch (error) {
+      result = {
+        success: false,
+        message: error instanceof Error ? error.message : 'Connection test failed'
+      };
+    }
+
+    // Persist the outcome in a second short context. Best-effort: a DB hiccup
+    // here must not mask the actual test result.
+    try {
+      await withAuthDbAccessContext(auth, () =>
+        db
+          .update(psaConnectionsTable)
+          .set({
+            syncSettings: mergeObjectState(existing.syncSettings, {
+              lastTestedAt: new Date().toISOString(),
+              status: result.success ? 'verified' : 'failed'
+            }),
+            updatedAt: new Date()
+          })
+          .where(eq(psaConnectionsTable.id, existing.id))
+      );
+    } catch (persistError) {
+      console.error('[psa] Failed to persist connection test outcome', { connectionId: existing.id, persistError });
+    }
 
     writeRouteAudit(c, {
       orgId: existing.orgId,
       action: 'psa.connection.test',
       resourceType: 'psa_connection',
       resourceId: existing.id,
-      resourceName: existing.name
+      resourceName: existing.name,
+      details: { success: result.success },
+      result: result.success ? 'success' : 'failure'
     });
+
+    if (!result.success) {
+      // HTTP 200 with success:false — the web page's TestResult consumer keys
+      // off the body, and runAction-style callers treat {success:false} as failure.
+      return c.json({
+        success: false,
+        error: result.message || 'Connection test failed'
+      });
+    }
 
     return c.json({
       success: true,
-      message: 'Credentials verified'
+      message: result.message || 'Credentials verified'
     });
   }
 );
@@ -601,44 +759,10 @@ psaRoutes.post(
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
   async (c) => {
-    const auth = c.get('auth');
-    const connectionId = c.req.param('id')!;
-
-    const existing = await getConnectionById(connectionId);
-    if (!existing) {
-      return c.json({ error: 'PSA connection not found' }, 404);
-    }
-
-    const hasAccess = await ensureOrgAccess(existing.orgId, auth);
-    if (!hasAccess) {
-      return c.json({ error: 'Access denied' }, 403);
-    }
-
-    const syncedAt = new Date();
-
-    await db
-      .update(psaConnectionsTable)
-      .set({
-        lastSyncAt: syncedAt,
-        lastSyncStatus: 'queued',
-        updatedAt: syncedAt
-      })
-      .where(eq(psaConnectionsTable.id, existing.id));
-
-    writeRouteAudit(c, {
-      orgId: existing.orgId,
-      action: 'psa.connection.sync',
-      resourceType: 'psa_connection',
-      resourceId: existing.id,
-      resourceName: existing.name
-    });
-
-    return c.json({
-      id: existing.id,
-      provider: existing.provider,
-      syncedAt: syncedAt.toISOString(),
-      status: 'queued'
-    });
+    // Honest 501: no PSA sync worker exists. The previous implementation wrote
+    // lastSyncStatus='queued' that nothing ever consumed. The route stays
+    // registered so clients get a clear "not implemented" instead of a 404.
+    return c.json({ error: 'PSA ticket sync is not implemented yet' }, 501);
   }
 );
 

@@ -8,6 +8,12 @@ export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', '
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
 export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
 export const eventBusPriorityEnum = pgEnum('event_bus_priority', ['low', 'normal', 'high', 'critical']);
+// The DB enum is intentionally WIDER than the implemented provider list
+// (PSA_PROVIDERS in @breeze/shared): 'halo', 'syncro', 'kaseya' and 'other'
+// are DEAD values — no adapter exists and the route-level zod gate
+// (psaProviderIdSchema) predates any data, so no real rows can carry them.
+// Postgres enum values can't be dropped without a type rebuild, so they stay;
+// do NOT treat their presence here as a feature list.
 export const psaProviderEnum = pgEnum('psa_provider', [
   'connectwise',
   'autotask',
@@ -109,6 +115,9 @@ export const psaConnections = pgTable('psa_connections', {
   credentials: jsonb('credentials').notNull(),
   settings: jsonb('settings').default({}),
   syncSettings: jsonb('sync_settings').default({}),
+  // Dormant — reserved for future ticket-sync. No worker consumes these today
+  // (POST /psa/connections/:id/sync returns 501); nothing reads `enabled` or
+  // writes `lastSyncError`.
   enabled: boolean('enabled').notNull().default(true),
   lastSyncAt: timestamp('last_sync_at'),
   lastSyncStatus: varchar('last_sync_status', { length: 50 }),

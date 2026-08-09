@@ -32,7 +32,11 @@ const namespaceDuplicateBaselines = {
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
-    'common.json': 93,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    'common.json': 101,
     'devices.json': 159,
     'discovery.json': 17,
     'integrations.json': 23,
@@ -75,7 +79,11 @@ const namespaceDuplicateBaselines = {
     'billing.json': 40,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
-    'common.json': 76,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    'common.json': 84,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -119,7 +127,13 @@ const namespaceDuplicateBaselines = {
     'billing.json': 51,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
-    'common.json': 94,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
+    // term for this credential field (fr already uses "Secret client").
+    'common.json': 103,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -159,7 +173,13 @@ const namespaceDuplicateBaselines = {
     'billing.json': 51,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
-    'common.json': 96,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
+    // term for this credential field (fr already uses "Secret client").
+    'common.json': 105,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -201,7 +221,11 @@ const namespaceDuplicateBaselines = {
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
-    'common.json': 94,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    'common.json': 102,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
@@ -237,7 +261,11 @@ const namespaceDuplicateBaselines = {
     'billing.json': 31,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
-    'common.json': 97,
+    // +8: PsaConnectionForm credential placeholders — literal token formats
+    // (api-key, company-id, personal-access-token, …) and the example address
+    // are input-shape hints, not wording, so they are intentionally identical
+    // in every catalog.
+    'common.json': 105,
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,

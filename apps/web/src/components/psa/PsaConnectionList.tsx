@@ -1,25 +1,24 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { PsaProviderId } from '@breeze/shared';
 
-export type PsaProvider = 'jira' | 'servicenow' | 'connectwise' | 'autotask' | 'freshservice' | 'zendesk';
+// Derived from the single-source provider list in @breeze/shared.
+export type PsaProvider = PsaProviderId;
 
-export type PsaConnectionStatus = 'active' | 'paused' | 'error' | 'syncing';
+export type PsaConnectionStatus = 'active' | 'paused' | 'error';
 
 export type PsaConnection = {
   id: string;
   provider: PsaProvider;
   name: string;
   status: PsaConnectionStatus;
-  lastSyncAt: string | null;
 };
 
 type PsaConnectionListProps = {
   connections: PsaConnection[];
   onEdit?: (connection: PsaConnection) => void;
-  onSyncNow?: (connection: PsaConnection) => void;
   onToggleStatus?: (connection: PsaConnection, newStatus: 'active' | 'paused') => void;
   onDelete?: (connection: PsaConnection) => void;
-  timezone?: string;
 };
 
 const providerMeta: Record<PsaProvider, { label: string; className: string }> = {
@@ -61,10 +60,6 @@ const statusConfig: Record<PsaConnectionStatus, { labelKey: string; className: s
   error: {
     labelKey: 'states.error',
     className: 'border-destructive/40 bg-destructive/10 text-destructive'
-  },
-  syncing: {
-    labelKey: 'longTail.psa.PsaConnectionList.status.syncing',
-    className: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-400'
   }
 };
 
@@ -126,20 +121,12 @@ const ProviderIcon = ({ provider }: { provider: PsaProvider }) => {
 export default function PsaConnectionList({
   connections,
   onEdit,
-  onSyncNow,
   onToggleStatus,
-  onDelete,
-  timezone
+  onDelete
 }: PsaConnectionListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaConnectionStatus | 'all'>('all');
-
-  const formatDate = (value: string | null) => {
-    if (!value) return t('longTail.psa.PsaConnectionList.never');
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
-  };
 
   const statusOptions = useMemo(() => {
     const uniqueStatuses = Array.from(new Set(connections.map(connection => connection.status)));
@@ -184,7 +171,7 @@ export default function PsaConnectionList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaConnectionStatus].labelKey)}
+                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ (statusConfig[status as PsaConnectionStatus] ?? statusConfig.active).labelKey)}
               </option>
             ))}
           </select>
@@ -198,14 +185,13 @@ export default function PsaConnectionList({
               <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.provider')}</th>
               <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.connection')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
-              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.lastSync')}</th>
               <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredConnections.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-12 text-center">
+                <td colSpan={4} className="px-4 py-12 text-center">
                   <div className="space-y-2">
                     <div className="mx-auto h-12 w-12 rounded-full bg-muted flex items-center justify-center">
                       <svg
@@ -233,7 +219,9 @@ export default function PsaConnectionList({
               </tr>
             ) : (
               filteredConnections.map(connection => {
-                const statusStyle = statusConfig[connection.status];
+                // Defensive fallback: an unexpected status string must not
+                // crash the whole list render.
+                const statusStyle = statusConfig[connection.status] ?? statusConfig.active;
                 return (
                   <tr key={connection.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3">
@@ -248,9 +236,6 @@ export default function PsaConnectionList({
                         {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDate(connection.lastSyncAt)}
-                    </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-2">
                         <button
@@ -259,13 +244,6 @@ export default function PsaConnectionList({
                           className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
                         >
                           {t('common:actions.edit')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onSyncNow?.(connection)}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                        >
-                          {t('longTail.psa.PsaConnectionList.actions.syncNow')}
                         </button>
                         <button
                           type="button"

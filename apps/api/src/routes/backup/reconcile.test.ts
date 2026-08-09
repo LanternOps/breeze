@@ -69,6 +69,10 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => (_c: any, next: any) => next()),
   dbAccessContextFromAuth: vi.fn((auth: any) => ({ scope: auth.scope, orgId: auth.orgId })),
+  // Composed rather than passthrough: the route is self-managed (#1448) and the
+  // point of the assertion below is that each phase DOES open a scoped context.
+  withAuthDbAccessContext: vi.fn((auth: any, fn: () => Promise<unknown>) =>
+    withDbAccessContextMock({ scope: auth.scope, orgId: auth.orgId }, fn)),
 }));
 
 import {

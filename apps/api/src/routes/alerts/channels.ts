@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { notificationChannels, organizations, partners } from '../../db/schema';
-import { dbAccessContextFromAuth, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   canManagePartnerWidePolicies,
@@ -51,11 +51,8 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
  * contexts built from the same fields the middleware would have used
  * (`dbAccessContextFromAuth` mirrors the `buildDbAccessContext` call in
  * auth.ts's dispatch), so RLS visibility is identical to the auto-wrapped
- * path. Mirrors `withProviderDbContext` in routes/sso.ts.
+ * path. The wrapper is `withAuthDbAccessContext` (middleware/auth.ts).
  */
-function withChannelsDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
-}
 
 function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
   // lastTestedAt and lastTestStatus are carried through via the ...channel spread;
@@ -379,7 +376,7 @@ channelsRoutes.post(
     // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
     // (the outbound send below is not tenant-bounded and can take ~10s), so
     // there is no ambient request transaction to read under (#1105).
-    const channel = await withChannelsDbContext(auth, () => getNotificationChannelWithOrgCheck(channelId, auth));
+    const channel = await withAuthDbAccessContext(auth, () => getNotificationChannelWithOrgCheck(channelId, auth));
     if (!channel) {
       return c.json({ error: 'Notification channel not found' }, 404);
     }
@@ -677,7 +674,7 @@ channelsRoutes.post(
     // Own short context (#1105) — the outbound send above ran with no ambient
     // request transaction; this write reopens one just for the persist.
     try {
-      await withChannelsDbContext(auth, () =>
+      await withAuthDbAccessContext(auth, () =>
         db.update(notificationChannels)
           .set({
             lastTestedAt: new Date(),

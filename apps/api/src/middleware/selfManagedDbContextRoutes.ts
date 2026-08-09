@@ -60,7 +60,7 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // routes, against a 25-connection prod pool — tenant-triggerable pool
   // starvation for every tenant (#1105 class). The handlers wrap each DB op in
   // its own short `withDbAccessContext(dbAccessContextFromAuth(auth), …)` block
-  // (see `withProviderDbContext` in routes/sso.ts) and run discovery between
+  // (see `withAuthDbAccessContext` in middleware/auth.ts) and run discovery between
   // them, holding no connection across the network call.
   { method: 'POST', pattern: /^\/api\/v1\/sso\/providers\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/sso\/providers\/[^/]+\/?$/ },
@@ -84,7 +84,7 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // (email/webhook/Slack/Teams/PagerDuty/Pushover/SMS), observed holding the
   // connection ~10s (Sentry #1105 / BREEZE-A). The handler wraps the channel
   // read and the test-result write in their own short withDbAccessContext
-  // blocks (see withChannelsDbContext in routes/alerts/channels.ts) and runs
+  // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs
   // the send between them, holding no connection across the network call.
   { method: 'POST', pattern: /^\/api\/v1\/alerts\/channels\/[^/]+\/test\/?$/ },
   // #3006 orphaned-snapshot reconcile. The handler pages an ENTIRE S3 bucket
@@ -104,6 +104,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // RECONCILE_MAX_LIMIT, and still far better than the whole-handler
   // transaction this registration replaces. Hoisting it out is a follow-up.
   { method: 'POST', pattern: /^\/api\/v1\/backup\/reconcile\/?$/ },
+  // PSA connection "Test connection" — constructs a real PSA adapter and calls
+  // the remote PSA API (psaFetch, 20s timeout) against a TENANT-CONTROLLED
+  // baseUrl; a blackholed host would otherwise pin a pooled connection
+  // idle-in-transaction for the whole call. The handler wraps the connection
+  // read+decrypt and the result persist in their own short withDbAccessContext
+  // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs the HTTP call
+  // between them.
+  { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
 ];
 
 /**

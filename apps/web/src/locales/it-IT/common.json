@@ -933,18 +933,30 @@
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Testare la connessione",
-          "testing": "Prova..."
+          "testing": "Prova...",
+          "toggleVisibility": "Mostra o nascondi questo valore"
+        },
+        "credentialsNote": {
+          "jira": "Compila un solo metodo di autenticazione: email più token API per Jira Cloud, nome utente più password per Jira Server oppure un token di accesso personale."
         },
         "defaultSubmitLabel": "Salva connessione",
         "fields": {
+          "apiKey": "Chiave API",
           "apiToken": "Token o chiave API",
           "clientId": "ID client",
           "clientSecret": "Segreto del cliente",
+          "companyId": "ID azienda",
           "connectionName": "Nome della connessione",
           "defaultQueue": "Progetto o coda predefinito",
+          "email": "Indirizzo email",
           "instanceUrl": "URL istanza",
+          "integrationCode": "Codice di integrazione",
           "password": "Password",
+          "personalAccessToken": "Token di accesso personale",
+          "privateKey": "Chiave privata",
           "provider": "Fornitore",
+          "publicKey": "Chiave pubblica",
+          "secret": "Segreto",
           "syncDirection": "Direzione di sincronizzazione",
           "syncInterval": "Intervallo di sincronizzazione",
           "username": "Nome utente o email"
@@ -954,13 +966,21 @@
         },
         "keepExisting": "(lascia vuoto per continuare a esistere)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "ad esempio, Jira Production",
           "defaultQueue": "ad esempio, supporto IT",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "password",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,6 +1017,7 @@
           "every6Hours": "Ogni 6 ore",
           "everyHour": "Ogni ora"
         },
+        "testDirtyHint": "Salva prima di procedere: il test verifica le credenziali memorizzate, non le modifiche non salvate.",
         "validation": {
           "nameRequired": "Il nome della connessione è obbligatorio",
           "validUrl": "Deve essere un URL valido"
