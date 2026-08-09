@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alerts } from './alerts';
 import { devices } from './devices';
@@ -107,9 +107,15 @@ export const eventBusEvents = pgTable('event_bus_events', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
 
+// Dual ownership (epic #2135): a connection is owned by EITHER an org
+// (org_id set, partner_id NULL — a customer's own Jira/Zendesk in a co-managed
+// engagement) OR a partner (partner_id set, org_id NULL — the MSP's own PSA,
+// shared across all orgs). Exactly one axis is set, enforced in Postgres by
+// psa_connections_one_owner_chk (2026-08-17-psa-connections-partner-ownership).
 export const psaConnections = pgTable('psa_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   provider: psaProviderEnum('provider').notNull(),
   name: varchar('name', { length: 255 }).notNull(),
   credentials: jsonb('credentials').notNull(),

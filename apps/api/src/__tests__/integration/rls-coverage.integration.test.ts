@@ -427,6 +427,19 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // Functional cross-partner forge proof:
   // contractTemplatesPartnerRls.integration.test.ts.
   'contract_template_versions',
+  // psa_connections (epic #2135, 2026-08-17): an MSP's PSA is a PARTNER-level
+  // system (its sibling accounting_connections is already partner-axis), so a
+  // connection is partner-wide (partner_id set, org_id NULL) OR org-scoped
+  // (org_id set, partner_id NULL — a customer's own Jira/Zendesk in a
+  // co-managed engagement). Retrofitted from org-only in
+  // 2026-08-17-psa-connections-partner-ownership. The org_id column means
+  // org-tenant auto-discovery already asserts the breeze_has_org_access branch;
+  // this entry asserts the breeze_has_partner_access (partner-wide) branch.
+  // CHECK psa_connections_one_owner_chk enforces exactly one axis. The child
+  // psa_ticket_mappings stays a parent-FK join (registered below) and its
+  // policy gained the partner branch in the same migration. Functional
+  // cross-partner forge proof: psaConnectionsPartnerRls.integration.test.ts.
+  'psa_connections',
 ]);
 
 // Tables that carry a `device_id` FK but no denormalized `org_id`. Their
@@ -501,6 +514,12 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // (2026-04-11-bucket-c-dead-cleanup-rls.sql) but had no org_id column and was
   // never allowlisted, so the contract test couldn't see it. Register it so a
   // future regression that drops/weakens the policy is caught.
+  // 2026-08-17 (epic #2135): the four per-command policies were collapsed into
+  // one `psa_ticket_mappings_isolation` and the join predicate gained the
+  // parent's partner branch. A plain breeze_has_org_access(pc.org_id) join is
+  // now WRONG — the parent's org_id is NULL for every partner-owned
+  // connection, which would make those mappings invisible AND unwritable.
+  // Same hazard ticket_form_org_links documents below.
   ['psa_ticket_mappings', ['psa_connections']],
   // ticket_form_org_links (2026-07-11): org allowlist for partner-wide
   // ticket_forms. Its policy joins through ticket_forms and OR's in the
