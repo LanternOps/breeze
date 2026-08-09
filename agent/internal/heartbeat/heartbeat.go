@@ -137,8 +137,8 @@ type HeartbeatPayload struct {
 	// self-healing pattern, NOT the sticky isVirtual pattern) so a resolved
 	// condition clears a dashboard migration banner on the next beat.
 	// omitempty on both: a self-host build (the only build in this repo
-	// today) reports "" / false, so the wire payload is byte-identical to
-	// pre-Task-8 agents.
+	// today) reports "" / false — both omitempty fields drop out — so the
+	// wire payload is byte-identical to pre-Task-8 agents.
 	AgentEdition      string `json:"agentEdition,omitempty"`
 	MigrationRequired bool   `json:"migrationRequired,omitempty"`
 }
@@ -147,10 +147,12 @@ type HeartbeatPayload struct {
 // hosted build currently talking to a non-allowlisted server (migration
 // needed). Pure; independent of hostpolicy.Strict() — reporting is
 // telemetry, not enforcement, so it fires the same in gap and strict hosted
-// builds.
+// builds. Self-host returns ("", false) — NOT "self-host" — because the
+// AgentEdition field is omitempty: only the empty string drops out of the
+// wire payload, preserving byte-identity with pre-Task-8 agents.
 func migrationSignal(server string) (edition string, migrationRequired bool) {
 	if !hostpolicy.Enforced() {
-		return "self-host", false
+		return "", false
 	}
 	return "hosted", hostpolicy.AllowedURL(server) != nil
 }

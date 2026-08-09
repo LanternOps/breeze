@@ -7,9 +7,11 @@ import (
 )
 
 func TestMigrationSignal(t *testing.T) {
-	// Self-host build: edition self-host, never migration-needed.
-	if e, m := migrationSignal("https://anything.example"); e != "self-host" || m {
-		t.Fatalf("self-host: want (self-host,false), got (%s,%v)", e, m)
+	// Self-host build: empty edition (omitempty drops it from the wire
+	// payload, keeping byte-identity with pre-Task-8 agents), never
+	// migration-needed.
+	if e, m := migrationSignal("https://anything.example"); e != "" || m {
+		t.Fatalf("self-host: want (\"\",false), got (%s,%v)", e, m)
 	}
 
 	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")

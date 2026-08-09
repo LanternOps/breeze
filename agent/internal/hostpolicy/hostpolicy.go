@@ -99,7 +99,7 @@ func AllowedURL(rawURL string) error {
 	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("hosted build: control-plane URL %q is not a parseable https URL", rawURL)
+		return fmt.Errorf("hosted build: control-plane URL %q is not a parseable URL", rawURL)
 	}
 	if !AllowedHost(u.Hostname()) {
 		return fmt.Errorf("hosted build refuses control-plane host %q (allowed: %s)",

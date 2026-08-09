@@ -209,6 +209,7 @@ func runBootstrap() {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
 		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
 		osExit(1) // hard — roll back the install (osExit: test seam, enroll_error.go)
+		return    // under a noop osExit test seam, don't fall through to a nil res
 	}
 
 	if err := gateRedeemResponse(*res); err != nil {

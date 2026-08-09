@@ -1269,7 +1269,7 @@ func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
 // checkPersistedServerAllowed is a pure predicate: it reports the violation
 // when a hosted build (Enforced) has a persisted primary cfg.ServerURL
 // outside the compiled allowlist. It does NOT decide warn-vs-hard-fail —
-// that split is made by the caller in runAgent, gated on hostpolicy.Strict().
+// that split is made by the caller in startAgent, gated on hostpolicy.Strict().
 // Empty server (unenrolled) and self-host builds always return nil.
 func checkPersistedServerAllowed(cfg *config.Config) error {
 	if cfg == nil || cfg.ServerURL == "" {
