@@ -17,35 +17,83 @@
 -- need this split into an expand phase (stop reading) and a contract phase
 -- (drop) across two releases.
 --
--- Idempotent: the backfill is guarded on the columns still existing (so a
--- re-apply after the drop is a no-op rather than a parse error), the insert
--- uses ON CONFLICT DO NOTHING, and both the index drop and the column drops use
--- IF EXISTS.
+-- Idempotent: the backfill is guarded on BOTH columns still existing (so a
+-- re-apply after the drop is a no-op rather than a missing-column abort), the
+-- insert uses an explicitly targeted ON CONFLICT DO NOTHING, and both the index
+-- drop and the column drops use IF EXISTS.
 
 -- Defensive re-backfill. The 2026-08-08 migration already backfilled, but a
 -- deployment that wrote the legacy pair afterwards (an unmigrated code path, a
 -- manual UPDATE, or a self-hoster jumping several versions at once) would
--- otherwise lose that linkage silently on the DROP. A nonzero count means
--- exactly that happened and belongs in the Postgres log.
+-- otherwise lose that linkage silently on the DROP.
+--
+-- Every row that CANNOT be carried over is counted and logged rather than
+-- silently discarded (CLAUDE.md's forensic-trail rule). There are two such
+-- classes, and both are real linkage loss a tech may have to reconcile by hand:
+--
+--   * conflicting  — (partner_id, system, external_id) is already linked to a
+--     DIFFERENT organization, so ON CONFLICT drops our row. Left unreported this
+--     is the nastiest outcome: the surviving org keeps the link, the losing org
+--     ends up with no linkage at all, and the next QuickBooks import sees it as
+--     unlinked — so the seam offers "confirm this match" and collapses two
+--     QuickBooks customers onto one tenant, which is exactly what
+--     matchedOrganizationLinkedToSystem (#3298) exists to prevent.
+--   * providerless — accounting_external_id set with a NULL accounting_provider.
+--     The 2026-06-29 partial unique index was `WHERE accounting_external_id IS
+--     NOT NULL`, so these rows are legal and have been storable all along. They
+--     cannot be migrated because organization_external_links.system is NOT NULL.
+--
+-- The guard requires BOTH columns, not just one: the body names both, and on a
+-- half-dropped schema a single-column guard would pass and then fail with
+-- `column "accounting_provider" does not exist`, aborting autoMigrate at boot so
+-- the API never starts. plpgsql resolves column names lazily (only when the
+-- branch is actually taken), so the plain INSERT below is replay-safe once the
+-- columns are gone — no EXECUTE wrapper needed, and inlining keeps the
+-- statement under parse-time checking.
 DO $$
-DECLARE n integer;
+DECLARE
+  inserted     integer;
+  conflicting  integer;
+  providerless integer;
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
+  IF (
+    SELECT count(*) FROM information_schema.columns
     WHERE table_schema = 'public'
       AND table_name = 'organizations'
-      AND column_name = 'accounting_external_id'
-  ) THEN
-    EXECUTE $backfill$
-      INSERT INTO organization_external_links (org_id, partner_id, system, external_id)
-      SELECT id, partner_id, accounting_provider, accounting_external_id
-      FROM organizations
-      WHERE accounting_external_id IS NOT NULL AND accounting_provider IS NOT NULL
-      ON CONFLICT DO NOTHING
-    $backfill$;
-    GET DIAGNOSTICS n = ROW_COUNT;
-    IF n > 0 THEN
-      RAISE WARNING 'backfilled % organization_external_links rows before dropping legacy accounting columns', n;
+      AND column_name IN ('accounting_provider', 'accounting_external_id')
+  ) = 2 THEN
+    INSERT INTO organization_external_links (org_id, partner_id, system, external_id)
+    SELECT id, partner_id, accounting_provider, accounting_external_id
+    FROM organizations
+    WHERE accounting_external_id IS NOT NULL AND accounting_provider IS NOT NULL
+    ON CONFLICT (partner_id, system, external_id) DO NOTHING;
+    GET DIAGNOSTICS inserted = ROW_COUNT;
+
+    IF inserted > 0 THEN
+      RAISE WARNING 'backfilled % organization_external_links rows before dropping legacy accounting columns', inserted;
+    END IF;
+
+    -- Only rows whose surviving link belongs to ANOTHER org are losses. Rows
+    -- already linked to the SAME org are the ordinary idempotent case (the
+    -- 2026-08-08 backfill) and must not be reported as such.
+    SELECT count(*) INTO conflicting
+    FROM organizations o
+    JOIN organization_external_links l
+      ON l.partner_id  = o.partner_id
+     AND l.system      = o.accounting_provider
+     AND l.external_id = o.accounting_external_id
+    WHERE o.accounting_external_id IS NOT NULL
+      AND o.accounting_provider IS NOT NULL
+      AND l.org_id <> o.id;
+    IF conflicting > 0 THEN
+      RAISE WARNING 'DISCARDED % legacy accounting linkage row(s): (partner_id, system, external_id) is already linked to a DIFFERENT organization; those organizations are now unlinked and must be reconciled by hand', conflicting;
+    END IF;
+
+    SELECT count(*) INTO providerless
+    FROM organizations
+    WHERE accounting_external_id IS NOT NULL AND accounting_provider IS NULL;
+    IF providerless > 0 THEN
+      RAISE WARNING 'DISCARDED % legacy accounting_external_id value(s) with a NULL accounting_provider: organization_external_links.system is NOT NULL, so there is no system to migrate them under', providerless;
     END IF;
   END IF;
 END $$;

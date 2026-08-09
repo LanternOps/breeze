@@ -207,8 +207,17 @@ describe('previewOrgImport', () => {
       [{ organization: 'Acme', externalId: 'qb-7', externalSystem: 'quickbooks' }],
       'p1',
     );
-    expect(rows[0]).toMatchObject({ annotation: 'name-match', organizationId: 'org-1' });
-    expect(rows[0]).not.toMatchObject({ annotation: 'link-match' });
+    // matchedBy proves WHICH branch resolved it: the name index, not the link
+    // index. Asserting `annotation !== 'link-match'` would be vacuous once the
+    // line above has already pinned the annotation.
+    expect(rows[0]).toMatchObject({
+      annotation: 'name-match',
+      organizationId: 'org-1',
+      matchedBy: 'name',
+    });
+    // The org holds no link under this system, so the "already spoken for"
+    // guard must stay off — otherwise the QB importer would refuse the row.
+    expect(rows[0]).not.toHaveProperty('matchedOrganizationLinkedToSystem');
   });
 
   it('externalId dedupe is scoped by system — same id under another system creates', async () => {

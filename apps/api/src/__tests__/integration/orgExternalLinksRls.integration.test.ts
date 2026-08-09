@@ -225,21 +225,6 @@ describe('2026-08-18 drop of the legacy accounting columns', () => {
       (await createOrganization({ partnerId: partnerA.id }))!
     );
 
-    // Put the database back into the pre-drop shape, then write a legacy-only link.
-    await getTestDb().execute(sql`
-      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_provider text;
-      ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_external_id text;
-      CREATE UNIQUE INDEX IF NOT EXISTS organizations_accounting_external_uniq
-        ON organizations (partner_id, accounting_provider, accounting_external_id)
-        WHERE accounting_external_id IS NOT NULL;
-    `);
-    expect(await legacyColumnsPresent()).toEqual(LEGACY_COLUMNS.slice().sort());
-    await getTestDb().execute(sql`
-      UPDATE organizations
-      SET accounting_provider = 'quickbooks', accounting_external_id = 'qb-backfill-1'
-      WHERE id = ${legacyOrg.id}
-    `);
-
     const countLinks = async () =>
       withSystemDbAccessContext(async () => {
         const rows = await db.select({ id: organizationExternalLinks.id })
@@ -252,17 +237,55 @@ describe('2026-08-18 drop of the legacy accounting columns', () => {
         return rows.length;
       });
 
-    // The migration must rescue the linkage into the link table…
-    await getTestDb().execute(sql.raw(migrationText()));
-    expect(await countLinks()).toBe(1);
-    // …and remove the columns + index in the same pass.
-    expect(await legacyColumnsPresent()).toEqual([]);
+    // DANGER: this test resurrects DROPPED COLUMNS on the SHARED integration
+    // database. DDL commits immediately and the per-test TRUNCATE only removes
+    // rows, while autoMigrate will not re-drop them (the drop migration is
+    // already recorded in breeze_migrations). So a column left behind here
+    // persists for every later run and reddens BOTH the sibling test above and
+    // tenant-export-policy.integration.test.ts ("organizations.accounting_
+    // provider: unclassified") until someone hand-drops it on the CI database.
+    //
+    // Everything from the setup DDL onwards therefore lives inside try/finally,
+    // and the finally is UNCONDITIONAL — it must also run when the setup itself
+    // fails halfway (the ADD COLUMNs are separate statements), when an
+    // assertion throws, and when the test times out mid-flight.
+    // Precedent: tenant-export-policy.integration.test.ts.
+    try {
+      // Put the database back into the pre-drop shape, then write a legacy-only link.
+      await getTestDb().execute(sql`
+        ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_provider text;
+        ALTER TABLE organizations ADD COLUMN IF NOT EXISTS accounting_external_id text;
+        CREATE UNIQUE INDEX IF NOT EXISTS organizations_accounting_external_uniq
+          ON organizations (partner_id, accounting_provider, accounting_external_id)
+          WHERE accounting_external_id IS NOT NULL;
+      `);
+      expect(await legacyColumnsPresent()).toEqual(LEGACY_COLUMNS.slice().sort());
+      await getTestDb().execute(sql`
+        UPDATE organizations
+        SET accounting_provider = 'quickbooks', accounting_external_id = 'qb-backfill-1'
+        WHERE id = ${legacyOrg.id}
+      `);
 
-    // Replaying against the already-dropped schema must be a clean no-op — the
-    // backfill block is guarded on the columns still existing, so it neither
-    // throws nor duplicates the rescued row.
-    await getTestDb().execute(sql.raw(migrationText()));
-    expect(await countLinks()).toBe(1);
-    expect(await legacyColumnsPresent()).toEqual([]);
+      // The migration must rescue the linkage into the link table…
+      await getTestDb().execute(sql.raw(migrationText()));
+      expect(await countLinks()).toBe(1);
+      // …and remove the columns + index in the same pass.
+      expect(await legacyColumnsPresent()).toEqual([]);
+
+      // Replaying against the already-dropped schema must be a clean no-op — the
+      // backfill block is guarded on BOTH columns still existing, so it neither
+      // throws nor duplicates the rescued row.
+      await getTestDb().execute(sql.raw(migrationText()));
+      expect(await countLinks()).toBe(1);
+      expect(await legacyColumnsPresent()).toEqual([]);
+    } finally {
+      // Idempotent by construction: in the happy path the migration already
+      // dropped all three objects, so this is a no-op.
+      await getTestDb().execute(sql`
+        DROP INDEX IF EXISTS organizations_accounting_external_uniq;
+        ALTER TABLE organizations DROP COLUMN IF EXISTS accounting_provider;
+        ALTER TABLE organizations DROP COLUMN IF EXISTS accounting_external_id;
+      `);
+    }
   });
 });
