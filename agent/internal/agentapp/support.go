@@ -16,6 +16,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
@@ -263,6 +264,18 @@ func promptSupportInput(prefillServer string) (code, server string, err error) {
 	return "", server, errors.New("no valid support code entered")
 }
 
+// gateSupportServer refuses, in a hosted build, to redeem a support code
+// against (or adopt a redirect to) a control-plane host outside the compiled
+// allowlist. The support flow is a fresh connection with no prior enrollment
+// to fall back on, so it gates on hostpolicy.Enforced() the same way
+// AllowedURL already does — a signed binary must not be turned into an
+// arbitrary-server client via the Quick Support code path any more than via
+// bootstrap or normal enrollment. No-op in self-host builds. Mirrors
+// gateBootstrapServer/gateRedeemResponse in bootstrap.go.
+func gateSupportServer(server string) error {
+	return hostpolicy.AllowedURL(server)
+}
+
 // supportFail prints a user-facing failure and exits nonzero. The end user is
 // typically a non-technical person on the phone with a technician, so the
 // message names the next action rather than the internals.
@@ -357,6 +370,12 @@ func runSupportSession() {
 		osType = runtime.GOOS
 	}
 
+	if err := gateSupportServer(server); err != nil {
+		_ = os.RemoveAll(workDir)
+		supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
+		return
+	}
+
 	resp, err := api.RedeemSupportCode(server, code, hostname, osType)
 	if err != nil {
 		_ = os.RemoveAll(workDir)
@@ -372,8 +391,15 @@ func runSupportSession() {
 
 	// The redeem response is authoritative for the control-plane URL: a
 	// self-hosted deployment can hand back a different (e.g. externally
-	// reachable) address than the one the download link used.
+	// reachable) address than the one the download link used. Gated the same
+	// as the initial server: a hosted build must not adopt a redirect to a
+	// non-allowlisted host any more than it may redeem against one.
 	if strings.TrimSpace(resp.ServerURL) != "" {
+		if err := gateSupportServer(resp.ServerURL); err != nil {
+			_ = os.RemoveAll(workDir)
+			supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
+			return
+		}
 		cfg.ServerURL = strings.TrimSpace(resp.ServerURL)
 	}
 	cfg.SupportSessionID = resp.SessionID
