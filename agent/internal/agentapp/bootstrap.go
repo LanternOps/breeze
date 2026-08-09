@@ -13,11 +13,35 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/pkg/api"
 )
 
 var errNoBootstrapInput = errors.New("no bootstrap token from filename or properties")
+
+// gateBootstrapServer refuses, in a hosted build, to contact a control-plane host
+// outside the compiled allowlist — called BEFORE the token is redeemed so a
+// bootstrap token is never disclosed to a non-allowlisted server. No-op in
+// self-host builds.
+func gateBootstrapServer(server string) error {
+	return hostpolicy.AllowedURL(server)
+}
+
+// gateRedeemResponse refuses a redeem response that tries to re-point the agent
+// at a non-allowlisted primary or backup control plane (design constraint 2:
+// the redeem-response redirect must be gated, not just the filename host).
+func gateRedeemResponse(res bootstrapResult) error {
+	if err := hostpolicy.AllowedURL(res.ServerURL); err != nil {
+		return err
+	}
+	if res.BackupServerURL != "" {
+		if err := hostpolicy.AllowedURL(res.BackupServerURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // bootstrapInstallData arrives via --install-data on the BootstrapEnroll
 // deferred CA's command line, formatted directly from
@@ -172,12 +196,26 @@ func runBootstrap() {
 		return // exit 0 — soft
 	}
 
+	if err := gateBootstrapServer(server); err != nil {
+		bsLog.Error("bootstrap refused: control-plane host not allowed", "error", err.Error())
+		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
+		osExit(1) // hard — roll back the install; token NOT sent to this host
+		return
+	}
+
 	bsLog.Info("redeeming bootstrap token", "server", server)
 	res, err := redeemBootstrapToken(server, token)
 	if err != nil {
 		bsLog.Error("bootstrap token redemption failed", "error", err.Error())
 		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
 		osExit(1) // hard — roll back the install (osExit: test seam, enroll_error.go)
+	}
+
+	if err := gateRedeemResponse(*res); err != nil {
+		bsLog.Error("bootstrap refused: redeem response host not allowed", "error", err.Error())
+		fmt.Fprintf(os.Stderr, "Bootstrap failed: %v\n", err)
+		osExit(1) // hard — roll back; do not adopt a non-allowlisted redirect
+		return
 	}
 
 	// Hand off to the existing enroll path via the package globals it reads.
