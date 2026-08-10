@@ -3,11 +3,10 @@ import { X, Search, Play, Loader2, ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
-import { fetchWithAuth } from '../../stores/auth';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
 import type { ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
-import { asList } from '@/lib/asList';
+import { fetchAllScripts } from '@/lib/scriptsFetch';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -101,13 +100,9 @@ export default function ScriptPickerModal({
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/scripts?includeSystem=true');
-      if (!response.ok) {
-        throw new Error(t('scriptPickerModal.errors.fetch'));
-      }
-
-      const data = await response.json();
-      const scriptList = asList(data, 'scripts');
+      // #3301 — walk every page; a bare request returned only the first 50, so
+      // a script past that could not be picked to run on a device.
+      const { data: scriptList } = await fetchAllScripts({ includeSystem: true });
 
       // Transform scripts
       const transformedScripts: Script[] = scriptList
@@ -124,6 +119,11 @@ export default function ScriptPickerModal({
 
       setScripts(transformedScripts);
     } catch (err) {
+      // fetchAllScripts throws the failed Response, not an Error.
+      if (err instanceof Response) {
+        setError(t('scriptPickerModal.errors.fetch'));
+        return;
+      }
       setError(err instanceof Error ? err.message : t('scriptPickerModal.errors.load'));
     } finally {
       setLoading(false);

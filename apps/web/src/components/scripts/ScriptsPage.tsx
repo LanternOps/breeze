@@ -9,6 +9,7 @@ import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { fetchAllScripts } from '@/lib/scriptsFetch';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
@@ -66,17 +67,23 @@ export default function ScriptsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/scripts');
-      if (!response.ok) {
-        if (response.status === 401) {
+      // #3301 — walk every page. A bare `/scripts` returns only the first 50,
+      // and this page has no pagination controls, so script 51+ was simply
+      // unreachable here.
+      const { data } = await fetchAllScripts<ScriptWithDetails>();
+      setScripts(data);
+    } catch (err) {
+      // fetchAllScripts throws the failed Response (not an Error), so the 401
+      // redirect has to be checked on that shape — an `instanceof Error` test
+      // alone would drop the logout and show a generic message instead.
+      if (err instanceof Response) {
+        if (err.status === 401) {
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(t('scriptsPage.errors.fetch'));
+        setError(t('scriptsPage.errors.fetch'));
+        return;
       }
-      const data = await response.json();
-      setScripts(asList(data, 'scripts'));
-    } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptsPage.errors.generic'));
     } finally {
       setLoading(false);
