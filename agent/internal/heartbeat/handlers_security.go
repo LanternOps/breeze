@@ -95,11 +95,20 @@ func handleSecurityThreatQuarantine(_ *Heartbeat, cmd Command) tools.CommandResu
 	// tools.QuarantineFile, just reached through the threat surface instead of
 	// the file browser. Gated here rather than inside internal/security so that
 	// package keeps no dependency on the tools deny-list.
-	if err := tools.EnforcePathContainment("quarantine", filepath.Clean(path)); err != nil {
+	// Check and use the same string, as every other call site in #3397 does.
+	path = filepath.Clean(path)
+	if err := tools.EnforcePathContainment("quarantine", path); err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
 	quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", security.DefaultQuarantineDir())
+
+	// quarantineDir is caller-supplied: gate the destination too, or quarantine
+	// implants the file's content wherever the caller points it.
+	if err := tools.EnforcePathContainment("write", filepath.Clean(quarantineDir)); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	dest, err := security.QuarantineThreat(security.Threat{
 		Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
 		Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
@@ -126,7 +135,9 @@ func handleSecurityThreatRemove(_ *Heartbeat, cmd Command) tools.CommandResult {
 	// Containment (#3397): destructive-but-not-disclosing, gated for the same
 	// reason as tools.SecureDeleteFile — an unrecoverable delete of a credential
 	// store is not a threat-remediation outcome anyone wants.
-	if err := tools.EnforcePathContainment("delete", filepath.Clean(path)); err != nil {
+	// Check and use the same string, as every other call site in #3397 does.
+	path = filepath.Clean(path)
+	if err := tools.EnforcePathContainment("delete", path); err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 

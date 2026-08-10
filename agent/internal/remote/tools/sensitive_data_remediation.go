@@ -62,6 +62,15 @@ func QuarantineFile(payload map[string]any) CommandResult {
 	targetName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), sanitizeFileName(filepath.Base(sourcePath)))
 	targetPath := filepath.Join(quarantineDir, targetName)
 
+	// quarantineDir is caller-supplied, so the destination needs the same gate
+	// CopyFile/RenameFile/TrashRestore got: without it, quarantining an ordinary
+	// file into "/etc/sudoers.d" implants its content there. Checked against the
+	// computed target rather than the directory so the deny-list sees the exact
+	// path os.Rename will create.
+	if err := enforceWriteContainment(targetPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	if err := os.Rename(sourcePath, targetPath); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to move file to quarantine: %w", err), time.Since(start).Milliseconds())
 	}

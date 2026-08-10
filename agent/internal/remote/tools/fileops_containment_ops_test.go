@@ -320,6 +320,216 @@ func TestOperationsDenySensitiveDestination(t *testing.T) {
 	}
 }
 
+// TestRelocatingADirectoryDeniesNestedCredentialStores is the regression for
+// the second bypass the security review of this PR found and proved
+// exploitable.
+//
+// The deny-list is a path-string match, and several rules only fire on a
+// component BELOW the directory: "~/.ssh" does not match (the rule keys on
+// "/.ssh/"), while "~/.ssh/id_rsa" does. A move carries the whole subtree to a
+// new prefix in one syscall, and the relocated copy matches nothing — so
+// DeleteFile("~/.ssh") to trash left the private key readable at
+// <trash>/<id>/content/id_rsa, and RenameFile("~/.ssh", "/tmp/x") left it at
+// /tmp/x/id_rsa. Both defeat the very bypass this PR set out to close.
+func TestRelocatingADirectoryDeniesNestedCredentialStores(t *testing.T) {
+	ops := []struct {
+		name   string
+		invoke func(t *testing.T, dir, scratch string) CommandResult
+	}{
+		{name: "delete to trash", invoke: func(t *testing.T, dir, scratch string) CommandResult {
+			getTrashDirFunc = func() (string, error) { return scratch, nil }
+			t.Cleanup(func() { getTrashDirFunc = getTrashDir })
+			return DeleteFile(map[string]any{"path": dir, "recursive": true})
+		}},
+		{name: "rename", invoke: func(_ *testing.T, dir, scratch string) CommandResult {
+			return RenameFile(map[string]any{"oldPath": dir, "newPath": filepath.Join(scratch, "moved")})
+		}},
+	}
+
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			root := t.TempDir()
+			scratch := t.TempDir()
+
+			// The directory itself is NOT deny-listed; its contents are.
+			ssh := filepath.Join(root, "home", "alice", ".ssh")
+			if err := os.MkdirAll(ssh, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			key := filepath.Join(ssh, "id_rsa")
+			if err := os.WriteFile(key, []byte("PRIVATE KEY"), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if isSensitiveReadPath(ssh) {
+				t.Fatal("fixture invalid: the directory itself must not be deny-listed, or this proves nothing")
+			}
+
+			res := op.invoke(t, ssh, scratch)
+			if res.Status == "completed" {
+				t.Fatalf("expected %s of a directory holding a credential store to be denied", op.name)
+			}
+			if !strings.Contains(res.Error, "denied on sensitive path") {
+				t.Fatalf("expected a containment denial, got: %q", res.Error)
+			}
+			if _, err := os.Stat(key); err != nil {
+				t.Fatalf("the private key was relocated despite the denial: %v", err)
+			}
+		})
+	}
+}
+
+// TestRelocatingABenignDirectoryStillWorks keeps the subtree scan from turning
+// ordinary directory moves into denials.
+func TestRelocatingABenignDirectoryStillWorks(t *testing.T) {
+	root := t.TempDir()
+	scratch := t.TempDir()
+	dir := makeBenignDir(t, root)
+
+	res := RenameFile(map[string]any{"oldPath": dir, "newPath": filepath.Join(scratch, "moved")})
+	if res.Status != "completed" {
+		t.Fatalf("expected a benign directory rename to succeed, got: %q", res.Error)
+	}
+	if _, err := os.Stat(filepath.Join(scratch, "moved", "notes.txt")); err != nil {
+		t.Fatalf("expected the directory to be moved: %v", err)
+	}
+}
+
+// TestQuarantineDeniesSensitiveDestination pins the destination half of
+// quarantine. quarantineDir is caller-supplied, so without a write gate,
+// quarantining an ORDINARY file into /etc/sudoers.d implants its content
+// there — the same credential-implant primitive closed for copy and rename.
+func TestQuarantineDeniesSensitiveDestination(t *testing.T) {
+	root := t.TempDir()
+	source := makeBenignFile(t, root)
+	quarantineDir := filepath.Join(root, "etc", "sudoers.d")
+
+	res := QuarantineFile(map[string]any{"path": source, "quarantineDir": quarantineDir})
+	if res.Status == "completed" {
+		t.Fatal("expected quarantine into a sensitive directory to be denied")
+	}
+	if !strings.Contains(res.Error, "denied on sensitive path") {
+		t.Fatalf("expected a containment denial, got: %q", res.Error)
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("source was moved despite the denial: %v", err)
+	}
+
+	// A benign quarantine directory still works.
+	res = QuarantineFile(map[string]any{"path": source, "quarantineDir": filepath.Join(root, "quarantine")})
+	if res.Status != "completed" {
+		t.Fatalf("expected quarantine into a benign directory to succeed, got: %q", res.Error)
+	}
+}
+
+// TestWriteDestinationDeniesSymlinkedParent is the regression for the bypass
+// the security review of this PR found and proved exploitable: a write
+// destination whose LEAF does not exist yet, reached through a pre-existing
+// symlinked PARENT directory.
+//
+// filepath.EvalSymlinks needs every component including the leaf to exist, so
+// the original check silently no-opped on exactly the case write containment
+// exists for: the literal path "<tmp>/innocent/authorized_keys" carries no
+// "/.ssh/" to match, EvalSymlinks errored on the missing leaf, and the key was
+// implanted. resolveForContainment now resolves the nearest existing ancestor.
+func TestWriteDestinationDeniesSymlinkedParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is unreliable without privilege on Windows CI")
+	}
+
+	cases := []struct {
+		name   string
+		nested bool // destination sits below a directory that does not exist yet
+		invoke func(t *testing.T, dest, scratch string) CommandResult
+	}{
+		{name: "write", invoke: func(_ *testing.T, dest, _ string) CommandResult {
+			return WriteFile(map[string]any{"path": dest, "content": "ssh-rsa ATTACKER"})
+		}},
+		{name: "write nested below the link", nested: true, invoke: func(_ *testing.T, dest, _ string) CommandResult {
+			return WriteFile(map[string]any{"path": dest, "content": "ssh-rsa ATTACKER"})
+		}},
+		{name: "copy", invoke: func(t *testing.T, dest, scratch string) CommandResult {
+			return CopyFile(map[string]any{"sourcePath": makeBenignFile(t, scratch), "destPath": dest})
+		}},
+		{name: "rename", invoke: func(t *testing.T, dest, scratch string) CommandResult {
+			return RenameFile(map[string]any{"oldPath": makeBenignFile(t, scratch), "newPath": dest})
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			scratch := t.TempDir()
+
+			ssh := filepath.Join(root, "home", "alice", ".ssh")
+			if err := os.MkdirAll(ssh, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			link := filepath.Join(root, "innocent")
+			if err := os.Symlink(ssh, link); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+
+			dest := filepath.Join(link, "authorized_keys")
+			implanted := filepath.Join(ssh, "authorized_keys")
+			if tc.nested {
+				// The op would MkdirAll its way down before writing.
+				dest = filepath.Join(link, "sub", "authorized_keys")
+				implanted = filepath.Join(ssh, "sub", "authorized_keys")
+			}
+
+			res := tc.invoke(t, dest, scratch)
+			if res.Status == "completed" {
+				t.Fatal("expected the write through a symlinked parent to be denied")
+			}
+			if !strings.Contains(res.Error, "denied on sensitive path") {
+				t.Fatalf("expected a containment denial, got: %q", res.Error)
+			}
+			if _, err := os.Stat(implanted); err == nil {
+				t.Fatal("content was implanted inside the credential directory")
+			}
+		})
+	}
+}
+
+// TestAnalyzeFilesystemMarksContainmentDenialsPartial pins the signal that
+// distinguishes "we were not allowed to look" from "nothing to report". Without
+// it, an incremental scan whose every requested directory was refused comes
+// back partial:false with zero results, which reads as a clean scan.
+func TestAnalyzeFilesystemMarksContainmentDenialsPartial(t *testing.T) {
+	root := t.TempDir()
+	denied := makeSensitiveDir(t, root)
+
+	res := AnalyzeFilesystem(map[string]any{
+		"path":              makeBenignDir(t, root),
+		"scanMode":          "incremental",
+		"targetDirectories": []any{denied},
+		"timeoutSeconds":    5,
+	})
+	if res.Status != "completed" {
+		t.Fatalf("expected the analysis to complete, got: %q", res.Error)
+	}
+
+	var parsed FilesystemAnalysisResponse
+	if err := json.Unmarshal([]byte(res.Stdout), &parsed); err != nil {
+		t.Fatalf("unmarshal analysis response: %v", err)
+	}
+	if !parsed.Partial {
+		t.Fatalf("expected partial=true when a requested directory was refused: %s", res.Stdout)
+	}
+	if parsed.Reason == "" {
+		t.Fatal("expected a reason explaining the partial result")
+	}
+	var sawDenial bool
+	for _, e := range parsed.Errors {
+		if strings.Contains(e.Error, "denied on sensitive path") {
+			sawDenial = true
+		}
+	}
+	if !sawDenial {
+		t.Fatalf("expected the denial to be reported as a scan error: %s", res.Stdout)
+	}
+}
+
 // TestTrashRestoreDeniesForgedSensitiveDestination covers the one destination
 // that is not taken from the command payload: TrashRestore reads it out of
 // metadata.json, a file on disk that a preceding WriteFile could have forged.

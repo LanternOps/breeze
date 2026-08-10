@@ -220,6 +220,17 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	queueCond := sync.NewCond(&queueMu)
 	var statsMu sync.Mutex
 
+	// A containment denial makes the result incomplete in exactly the sense
+	// `partial` exists to signal. Without this, an incremental scan whose every
+	// targetDirectories entry was refused returns
+	// partial:false / dirsScanned:0 / errors:[...] — indistinguishable, at the
+	// field a consumer actually branches on, from "nothing changed since the
+	// last checkpoint" rather than "we were not allowed to look".
+	if len(containmentDenials) > 0 {
+		partial = true
+		reason = "containment denied on one or more requested directories"
+	}
+
 	notePartial := func(partialReason string) {
 		queueMu.Lock()
 		partial = true

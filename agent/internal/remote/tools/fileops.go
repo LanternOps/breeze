@@ -173,19 +173,66 @@ func isSensitiveReadPath(p string) bool {
 //
 // verb names the operation in the error ("read", "copy", "rename", …) so the
 // denial is attributable in agent logs and command results.
+//
+// KNOWN LIMITATION: this is path-string matching, so a HARD link to a credential
+// store under an innocuous name is invisible to it — a hard link has no
+// "resolved path" for EvalSymlinks to follow, and os.Lstat reports it as an
+// ordinary regular file. Closing that would mean comparing inode/device
+// identity against the deny-list, which is a different mechanism. It is not
+// reachable through this toolset (nothing here creates links) and requires a
+// hard link already present on the target filesystem; it is called out so the
+// next reader does not mistake the symlink handling for complete link coverage.
 func EnforcePathContainment(verb, cleanPath string) error {
 	if isSensitiveReadPath(cleanPath) {
 		return fmt.Errorf("%s denied on sensitive path: %s", verb, cleanPath)
 	}
-	// EvalSymlinks requires the target to exist; if it can't be resolved the
-	// literal check above already ran, and the subsequent os.Stat/Open will
-	// surface any not-exist error.
-	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil && resolved != cleanPath {
+	if resolved, ok := resolveForContainment(cleanPath); ok && resolved != cleanPath {
 		if isSensitiveReadPath(resolved) {
 			return fmt.Errorf("%s denied on sensitive path (via symlink): %s", verb, cleanPath)
 		}
 	}
 	return nil
+}
+
+// resolveForContainment resolves cleanPath through any symlinks, returning
+// false only when nothing along the path can be resolved at all.
+//
+// filepath.EvalSymlinks requires EVERY component including the leaf to exist,
+// which is never true for a write destination — so a naive
+// `EvalSymlinks(path); if err == nil` check silently no-ops on exactly the case
+// enforceWriteContainment cares about. That left a real bypass: with a
+// pre-existing symlinked PARENT (/tmp/innocent -> ~/.ssh),
+// WriteFile("/tmp/innocent/authorized_keys") passed both legs of the check —
+// the literal string carries no "/.ssh/" to match, and EvalSymlinks errored on
+// the missing leaf so the symlink leg never ran — and implanted the key.
+//
+// So walk up to the nearest ancestor that DOES resolve and re-attach the
+// unresolved remainder. That also covers destinations several levels below a
+// symlink, which WriteFile/RenameFile/CopyFile happily MkdirAll into.
+func resolveForContainment(cleanPath string) (string, bool) {
+	current := cleanPath
+	remainder := ""
+	// Bounded to keep a pathological path from spinning; far deeper than any
+	// real filesystem nesting.
+	for i := 0; i < 128; i++ {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			if remainder != "" {
+				resolved = filepath.Join(resolved, remainder)
+			}
+			return resolved, true
+		}
+		parent, base := filepath.Split(current)
+		if base == "" {
+			return "", false
+		}
+		remainder = filepath.Join(base, remainder)
+		parent = filepath.Clean(parent)
+		if parent == current {
+			return "", false
+		}
+		current = parent
+	}
+	return "", false
 }
 
 // enforceReadContainment blocks reads/lists of obviously-sensitive credential
@@ -194,15 +241,66 @@ func enforceReadContainment(cleanPath string) error {
 	return EnforcePathContainment("read", cleanPath)
 }
 
+// maxContainmentWalkEntries bounds the pre-relocation subtree scan. Far above
+// any directory an operator moves through a file browser; exceeding it fails
+// CLOSED, because an unbounded tree is precisely where an unnoticed credential
+// store hides.
+const maxContainmentWalkEntries = 500_000
+
+// enforceTreeContainment refuses to RELOCATE a directory whose subtree contains
+// a credential store, even when the directory itself is not on the deny-list.
+//
+// This exists because the deny-list is a path-string match and several of its
+// rules only fire on a path component BELOW the directory: "~/.ssh" does not
+// match (the rule keys on "/.ssh/"), while "~/.ssh/id_rsa" does. A move carries
+// the whole subtree to a new prefix in one syscall, and the relocated copy no
+// longer matches anything — DeleteFile("~/.ssh") to trash left the private key
+// readable at <trash>/<id>/content/id_rsa, and RenameFile("~/.ssh", "/tmp/x")
+// left it at /tmp/x/id_rsa. Found by the security review of #3397.
+//
+// CopyFile does not need this: copyDir walks and evaluates every entry against
+// its ORIGINAL path, which still carries the telltale component.
+//
+// Applied only to relocating operations. Permanent delete does not need it —
+// destroying a directory discloses nothing, and the top-level gate still
+// refuses a directory that is itself deny-listed.
+func enforceTreeContainment(verb, root string) error {
+	entries := 0
+	var offender string
+	err := filepath.Walk(root, func(path string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			// An unreadable subtree cannot be cleared, and a move would carry
+			// it wholesale. Fail closed.
+			return walkErr
+		}
+		entries++
+		if entries > maxContainmentWalkEntries {
+			return fmt.Errorf("directory too large to clear for %s (over %d entries)", verb, maxContainmentWalkEntries)
+		}
+		if isSensitiveReadPath(path) {
+			offender = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("%s denied: cannot verify directory contents: %w", verb, err)
+	}
+	if offender != "" {
+		return fmt.Errorf("%s denied on sensitive path: %s (inside %s)", verb, offender, root)
+	}
+	return nil
+}
+
 // enforceWriteContainment blocks an operation that would CREATE or OVERWRITE
 // content at a sensitive path. The deny-list is shared with the read side on
 // purpose: writing to /etc/shadow, /etc/sudoers.d, ~/.ssh/authorized_keys or a
 // keychain is a credential-implant / privilege-escalation primitive, and the
 // file browser has no legitimate reason to reach them (#3397).
 //
-// The destination usually does not exist yet, so the symlink leg of
-// EnforcePathContainment is a no-op here — that is intentional: a pre-existing
-// symlink at the destination still resolves and is still caught.
+// The destination usually does not exist yet; resolveForContainment handles
+// that by resolving the nearest existing ancestor, so a symlinked parent
+// directory cannot smuggle a write into a denied location.
 func enforceWriteContainment(cleanPath string) error {
 	return EnforcePathContainment("write", cleanPath)
 }
@@ -479,6 +577,16 @@ func DeleteFile(payload map[string]any) CommandResult {
 			"deleted":   true,
 			"permanent": true,
 		}, time.Since(start).Milliseconds())
+	}
+
+	// Moving to trash relocates the whole subtree under a prefix the deny-list
+	// no longer recognises, so a directory must be cleared entry-by-entry — the
+	// top-level gate above misses "~/.ssh" and friends. Not needed on the
+	// permanent branch above, which discloses nothing.
+	if info.IsDir() {
+		if err := enforceTreeContainment("delete", cleanPath); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
 	}
 
 	// Move to trash
@@ -860,11 +968,21 @@ func RenameFile(payload map[string]any) CommandResult {
 	}
 
 	// Check if source exists
-	if _, err := os.Stat(cleanOldPath); err != nil {
+	oldInfo, err := os.Stat(cleanOldPath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return NewErrorResult(fmt.Errorf("source path does not exist: %s", cleanOldPath), time.Since(start).Milliseconds())
 		}
 		return NewErrorResult(fmt.Errorf("failed to stat source: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// A directory rename relocates the entire subtree in one syscall, so clear
+	// it entry-by-entry — the top-level gate misses directories that are not
+	// themselves deny-listed but hold credential stores (e.g. "~/.ssh").
+	if oldInfo.IsDir() {
+		if err := enforceTreeContainment("rename", cleanOldPath); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
 	}
 
 	// Ensure destination parent directory exists
