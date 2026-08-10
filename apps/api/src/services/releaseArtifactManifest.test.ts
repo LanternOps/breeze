@@ -264,4 +264,104 @@ describe("releaseArtifactManifest", () => {
       }),
     );
   });
+
+  it("tolerates sourceCommit and intendedUse manifest fields (BYO signing inputs)", async () => {
+    // Deliverable 1 of the self-host BYO-signing design adds a top-level
+    // sourceCommit and per-asset intendedUse/platformTrust:"none" for
+    // -unsigned signing-input assets. The parser is deliberately tolerant
+    // of unknown fields; this pins that contract so older APIs keep
+    // verifying newer manifests.
+    const asset = Buffer.from("unsigned-signing-input");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({
+      format: "der",
+      type: "spki",
+    }) as Buffer;
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = publicDer
+      .subarray(publicDer.length - 32)
+      .toString("base64");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: "lanternops/breeze",
+        release: "v1.2.3",
+        sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+        assets: [
+          {
+            name: "breeze-agent-windows-amd64-unsigned.exe",
+            sha256: createSha256(asset),
+            size: asset.length,
+            platformTrust: "none",
+            intendedUse: "signing-input",
+          },
+        ],
+      }),
+    );
+    const signature = Buffer.from(
+      sign(null, manifest, privateKey).toString("base64"),
+    );
+
+    await expect(
+      verifyReleaseArtifactBuffer({
+        assetName: "breeze-agent-windows-amd64-unsigned.exe",
+        assetBuffer: asset,
+        manifestBytes: manifest,
+        signatureBytes: signature,
+        expectedRepository: "lanternops/breeze",
+        expectedRelease: "v1.2.3",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        assetName: "breeze-agent-windows-amd64-unsigned.exe",
+        platformTrust: "none",
+      }),
+    );
+  });
+
+  it("rejects a signing-input entry when the caller expects authenticode trust", async () => {
+    // The expectedPlatformTrust mismatch check is the fail-closed seam that
+    // Deliverable 3c's positive allowlist builds on: an -unsigned entry
+    // (platformTrust "none") must never satisfy a caller that demands
+    // windows-authenticode-required.
+    const asset = Buffer.from("unsigned-signing-input");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({
+      format: "der",
+      type: "spki",
+    }) as Buffer;
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = publicDer
+      .subarray(publicDer.length - 32)
+      .toString("base64");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: "lanternops/breeze",
+        release: "v1.2.3",
+        sourceCommit: "0123456789abcdef0123456789abcdef01234567",
+        assets: [
+          {
+            name: "breeze-agent-windows-amd64-unsigned.exe",
+            sha256: createSha256(asset),
+            size: asset.length,
+            platformTrust: "none",
+            intendedUse: "signing-input",
+          },
+        ],
+      }),
+    );
+    const signature = Buffer.from(
+      sign(null, manifest, privateKey).toString("base64"),
+    );
+
+    await expect(
+      verifyReleaseArtifactBuffer({
+        assetName: "breeze-agent-windows-amd64-unsigned.exe",
+        assetBuffer: asset,
+        manifestBytes: manifest,
+        signatureBytes: signature,
+        expectedRepository: "lanternops/breeze",
+        expectedPlatformTrust: "windows-authenticode-required",
+      }),
+    ).rejects.toThrow("platform trust mismatch");
+  });
 });

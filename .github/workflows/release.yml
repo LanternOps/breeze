@@ -251,19 +251,13 @@ jobs:
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
-  build-windows-msi:
-    name: Build + Sign Windows Artifacts
+  build-windows-unsigned:
+    name: Build Windows Agent Binaries (unsigned)
     if: >-
-      vars.ENABLE_WINDOWS_SIGNING == 'true'
-      && github.ref_type == 'tag'
+      github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     needs: [build-agent]
-    permissions:
-      contents: read
-      id-token: write
-    environment:
-      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -280,21 +274,6 @@ jobs:
         working-directory: agent
         shell: pwsh
         run: go mod download
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Install WiX CLI
-        shell: pwsh
-        run: |
-          dotnet tool update --global wix | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            dotnet tool install --global wix | Out-Null
-          }
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          wix eula accept wix7
 
       - name: Get version from tag
         id: version
@@ -446,6 +425,109 @@ jobs:
             exit 1
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
+
+      - name: Stage unsigned Windows exes (BYO signing inputs)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -Path dist-unsigned -ItemType Directory -Force | Out-Null
+          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
+            $src = "dist\breeze-$component-windows-amd64.exe"
+            if (-not (Test-Path $src)) { throw "missing expected build output: $src" }
+            Copy-Item $src "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
+          }
+
+      - name: Upload unsigned agent EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-agent-windows-amd64-unsigned
+          path: dist-unsigned/breeze-agent-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned backup EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-backup-windows-amd64-unsigned
+          path: dist-unsigned/breeze-backup-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned watchdog EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-watchdog-windows-amd64-unsigned
+          path: dist-unsigned/breeze-watchdog-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned user-helper EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-user-helper-windows-amd64-unsigned
+          path: dist-unsigned/breeze-user-helper-windows-amd64-unsigned.exe
+          retention-days: 30
+
+  build-windows-msi:
+    name: Build + Sign Windows Artifacts
+    if: >-
+      vars.ENABLE_WINDOWS_SIGNING == 'true'
+      && github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    needs: [build-agent, build-windows-unsigned]
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Get version from tag
+        id: version
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:REF_NAME.Substring(1)
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download unsigned Windows exes (signing inputs)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: 'breeze-*-windows-amd64-unsigned'
+          path: dist-unsigned/
+          merge-multiple: true
+
+      # The published -unsigned assets are byte-identical to the files signed
+      # below by construction: the signing job's inputs ARE the unsigned
+      # artifacts (BYO signing, Deliverable 1).
+      - name: Stage exes for signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
+            $src = "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
+            if (-not (Test-Path $src)) { throw "missing unsigned input artifact: $src" }
+            Copy-Item $src "dist\breeze-$component-windows-amd64.exe"
+          }
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX CLI
+        shell: pwsh
+        run: |
+          dotnet tool update --global wix | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            dotnet tool install --global wix | Out-Null
+          }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          wix eula accept wix7
 
       - name: Validate signing configuration
         shell: pwsh
@@ -742,6 +824,60 @@ jobs:
         with:
           name: breeze-watchdog-darwin-arm64
           path: staging/
+
+      # BYO signing (Deliverable 1): capture the exact pre-sign inputs. The
+      # sign step below mutates staging/ in place, so this MUST run before
+      # any codesign invocation. Deliberately not gated on
+      # vars.ENABLE_MACOS_SIGNING — unsigned publication is independent of
+      # the signing toggle.
+      - name: Stage unsigned darwin binaries (BYO signing inputs)
+        run: |
+          set -euo pipefail
+          mkdir -p staging-unsigned
+          count=0
+          for bin in staging/breeze-agent-darwin-amd64 staging/breeze-agent-darwin-arm64 \
+                     staging/breeze-backup-darwin-amd64 staging/breeze-backup-darwin-arm64 \
+                     staging/breeze-desktop-helper-darwin-amd64 staging/breeze-desktop-helper-darwin-arm64 \
+                     staging/breeze-watchdog-darwin-amd64 staging/breeze-watchdog-darwin-arm64; do
+            if [ ! -f "$bin" ]; then
+              echo "::error::missing expected darwin binary for unsigned capture: $bin"
+              exit 1
+            fi
+            cp "$bin" "staging-unsigned/$(basename "$bin")-unsigned"
+            count=$((count + 1))
+          done
+          if [ "$count" -ne 8 ]; then
+            echo "::error::expected 8 unsigned darwin binaries, staged $count"
+            exit 1
+          fi
+
+      - name: Upload unsigned agent darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-agent-darwin-unsigned
+          path: staging-unsigned/breeze-agent-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned backup darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-backup-darwin-unsigned
+          path: staging-unsigned/breeze-backup-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned desktop-helper darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-desktop-helper-darwin-unsigned
+          path: staging-unsigned/breeze-desktop-helper-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned watchdog darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-watchdog-darwin-unsigned
+          path: staging-unsigned/breeze-watchdog-darwin-*-unsigned
+          retention-days: 30
 
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
@@ -1904,7 +2040,7 @@ jobs:
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
-    needs: [build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
+    needs: [build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Fail closed when release signing was skipped
@@ -1914,6 +2050,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SKIP_RELEASE: ${{ inputs.skip_release || false }}
           BUILD_WINDOWS_MSI_RESULT: ${{ needs.build-windows-msi.result }}
+          BUILD_WINDOWS_UNSIGNED_RESULT: ${{ needs.build-windows-unsigned.result }}
           BUILD_MACOS_AGENT_RESULT: ${{ needs.build-macos-agent.result }}
           BUILD_MACOS_INSTALLER_APP_RESULT: ${{ needs.build-macos-installer-app.result }}
           SIGN_WINDOWS_TAURI_RESULT: ${{ needs.sign-windows-tauri.result }}
@@ -1938,6 +2075,7 @@ jobs:
           }
 
           require_success "build-windows-msi" "$BUILD_WINDOWS_MSI_RESULT"
+          require_success "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
           require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
           require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
           require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
@@ -1954,7 +2092,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -1963,6 +2101,7 @@ jobs:
       && needs.build-web.result == 'success'
       && needs.build-agent.result == 'success'
       && needs.release-integrity-gate.result == 'success'
+      && needs.build-windows-unsigned.result == 'success'
       && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
@@ -2062,6 +2201,9 @@ jobs:
             tar -czvf release-assets/breeze-web.tar.gz -C artifacts/web-dist .
           fi
 
+          SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          export SOURCE_COMMIT
+
           python3 <<'PY'
           import hashlib
           import json
@@ -2085,7 +2227,22 @@ jobs:
               r"^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$"
           )
 
+          # BYO signing (Deliverable 1): unsigned build outputs published as
+          # inputs for self-hosters to sign with their own certificates. The
+          # -unsigned rule MUST be evaluated before the extension branches —
+          # breeze-agent-windows-amd64-unsigned.exe would otherwise classify
+          # as windows-authenticode-required.
+          UNSIGNED_INPUT_RE = re.compile(
+              r"^breeze-(agent|backup|watchdog|user-helper)-windows-amd64-unsigned\.exe$"
+              r"|^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)-unsigned$"
+          )
+
+          def is_signing_input(name):
+              return UNSIGNED_INPUT_RE.match(name) is not None
+
           def platform_trust(name):
+              if is_signing_input(name):
+                  return "none"
               if name.endswith(".msi") or name.endswith(".exe"):
                   return "windows-authenticode-required"
               if (
@@ -2102,22 +2259,91 @@ jobs:
           for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
               if not path.is_file() or path.name in excluded:
                   continue
-              assets.append({
+              entry = {
                   "name": path.name,
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
                   "platformTrust": platform_trust(path.name),
-              })
+              }
+              if is_signing_input(path.name):
+                  entry["intendedUse"] = "signing-input"
+              assets.append(entry)
 
           manifest = {
               "schemaVersion": 1,
               "repository": os.environ["GITHUB_REPOSITORY"],
               "release": os.environ["GITHUB_REF_NAME"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
               "assets": assets,
           }
           (release_dir / "release-artifact-manifest.json").write_text(
               json.dumps(manifest, indent=2, sort_keys=True) + "\n"
           )
+          PY
+
+      # BYO signing (Deliverable 1) non-regression: the manifest must gain
+      # sourceCommit and exactly the expected signing-input entries, and the
+      # signed set's platform-trust classification must be unchanged. Runs
+      # before the manifest is signed so a violation blocks the release.
+      - name: Verify signing-input manifest entries
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          export SOURCE_COMMIT
+          python3 <<'PY'
+          import json
+          import os
+          import re
+
+          with open("release-assets/release-artifact-manifest.json") as fh:
+              manifest = json.load(fh)
+
+          source_commit = manifest.get("sourceCommit")
+          assert isinstance(source_commit, str) and re.fullmatch(r"[0-9a-f]{40}", source_commit), \
+              f"sourceCommit missing or malformed: {source_commit!r}"
+          assert source_commit == os.environ["SOURCE_COMMIT"], \
+              f"sourceCommit {source_commit} != checked-out commit {os.environ['SOURCE_COMMIT']}"
+
+          EXPECTED_UNSIGNED = {
+              "breeze-agent-windows-amd64-unsigned.exe",
+              "breeze-backup-windows-amd64-unsigned.exe",
+              "breeze-watchdog-windows-amd64-unsigned.exe",
+              "breeze-user-helper-windows-amd64-unsigned.exe",
+              "breeze-agent-darwin-amd64-unsigned",
+              "breeze-agent-darwin-arm64-unsigned",
+              "breeze-backup-darwin-amd64-unsigned",
+              "breeze-backup-darwin-arm64-unsigned",
+              "breeze-desktop-helper-darwin-amd64-unsigned",
+              "breeze-desktop-helper-darwin-arm64-unsigned",
+              "breeze-watchdog-darwin-amd64-unsigned",
+              "breeze-watchdog-darwin-arm64-unsigned",
+          }
+          by_name = {a["name"]: a for a in manifest["assets"]}
+          missing = EXPECTED_UNSIGNED - set(by_name)
+          assert not missing, f"missing unsigned signing-input assets: {sorted(missing)}"
+          for name in sorted(EXPECTED_UNSIGNED):
+              entry = by_name[name]
+              assert entry.get("platformTrust") == "none", \
+                  f"{name}: platformTrust {entry.get('platformTrust')!r} != 'none'"
+              assert entry.get("intendedUse") == "signing-input", \
+                  f"{name}: intendedUse {entry.get('intendedUse')!r} != 'signing-input'"
+          for name, entry in by_name.items():
+              if name in EXPECTED_UNSIGNED:
+                  continue
+              assert "-unsigned" not in name, \
+                  f"unexpected -unsigned asset outside the expected set: {name}"
+              assert "intendedUse" not in entry, \
+                  f"{name}: signed-set asset must not carry intendedUse"
+              assert entry.get("platformTrust") != "none", \
+                  f"{name}: signed-set asset must not have platformTrust 'none'"
+          # Signed-set spot checks, one per trust class (classification-order
+          # non-regression for the extension branches).
+          assert by_name["breeze-agent.msi"]["platformTrust"] == "windows-authenticode-required"
+          assert by_name["breeze-agent-windows-amd64.exe"]["platformTrust"] == "windows-authenticode-required"
+          assert by_name["breeze-agent-darwin-arm64"]["platformTrust"] == "macos-developer-id-notarization-required"
+          assert by_name["breeze-agent-linux-amd64"]["platformTrust"] == "release-workflow-produced"
+          print(f"OK: {len(EXPECTED_UNSIGNED)} signing-input assets verified; sourceCommit={source_commit}")
           PY
 
       - name: Sign release artifact manifest
@@ -2346,6 +2572,16 @@ jobs:
           path: staging/helper
           pattern: 'breeze-helper-*'
           merge-multiple: true
+
+      # BYO signing (Deliverable 1): -unsigned signing inputs are published
+      # release assets only. Keep them out of the binaries-init image — the
+      # API's local scanner would ignore them (parseBinaryFilename anchors on
+      # breeze-<component>-<os>-<arch>[.exe]) but they'd bloat the image and
+      # the /target volume for nothing.
+      - name: Drop unsigned signing-input files from image staging
+        run: |
+          set -euo pipefail
+          find staging -type f -name '*-unsigned*' -print -delete
 
       - name: Write VERSION file
         env:

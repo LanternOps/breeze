@@ -18,12 +18,19 @@ type ReleaseArtifactManifestAsset = {
   sha256?: unknown;
   size?: unknown;
   platformTrust?: unknown;
+  // BYO signing (Deliverable 1): "signing-input" marks published unsigned
+  // build outputs. Tolerated here; positive rejection at registration/serve
+  // time is Deliverable 3c.
+  intendedUse?: unknown;
 };
 
 type ReleaseArtifactManifest = {
   schemaVersion?: unknown;
   repository?: unknown;
   release?: unknown;
+  // BYO signing (Deliverable 1): the release's peeled source commit SHA,
+  // recorded so downstream signing workflows can pin their checkout.
+  sourceCommit?: unknown;
   assets?: unknown;
 };
 
