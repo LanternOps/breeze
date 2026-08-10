@@ -42,7 +42,7 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
 
   // Get device org
   const [device] = await db
-    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
+    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral, isVirtual: devices.isVirtual })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -58,6 +58,16 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
   // getDevicesNeedingWarrantySync excludes them too; this is the entry-point
   // guard for any other caller.
   if (device.isEphemeral) return;
+
+  // Virtual-machine exclusion: a VMware/Hyper-V guest reports a synthetic
+  // serial and a vendor-ish manufacturer string, so it passes the serial +
+  // manufacturer filters above and gets submitted to a vendor warranty API
+  // that has never heard of it. There is no warranty to find — the result is
+  // burnt vendor quota and a row parked permanently in 'unknown'.
+  // cleanHardwareIdentityValue does not catch these the way it catches
+  // whitebox OEM placeholders, because a guest's reported values look
+  // plausible. Same entry-point-guard role as the isEphemeral check above.
+  if (device.isVirtual) return;
 
   const provider = getProviderForManufacturer(hw.manufacturer);
   if (!provider) {
@@ -300,6 +310,8 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<string[
       and(
         // Quick Support exclusion — see syncWarrantyForDevice above.
         eq(devices.isEphemeral, false),
+        // Virtual-machine exclusion — see syncWarrantyForDevice above.
+        eq(devices.isVirtual, false),
         // Has hardware with serial number
         sql`${deviceHardware.serialNumber} IS NOT NULL`,
         sql`${deviceHardware.manufacturer} IS NOT NULL`,
