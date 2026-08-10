@@ -13,7 +13,11 @@ import {
   verifyReleaseArtifactManifestAsset,
 } from "./releaseArtifactManifest";
 import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
-import { getReleaseSourceApiBase, getReleaseSourceRepository } from "./releaseSource";
+import {
+  getReleaseSourceApiBase,
+  getReleaseSourceRepository,
+  isOfficialReleaseSource,
+} from "./releaseSource";
 
 const GH_PLATFORM_MAP: Record<string, string> = {
   linux: "linux",
@@ -818,21 +822,76 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
 // Transaction ensures atomicity: without it, concurrent upserts could leave
 // multiple rows with isLatest=true for the same platform/arch/component tuple,
 // causing heartbeat queries to return stale versions.
+type UpsertMetadata = {
+  checksum: string;
+  size: number;
+  releaseManifest?: string;
+  manifestSignature?: string;
+  signingKeyId?: string;
+};
+
+// Spec 3b: when syncing from an OVERRIDDEN repository, the release manifest is
+// signed by the self-hoster's release key, which agents do not (and must not
+// need to) trust. Re-sign a NORMALIZED per-asset update manifest — the exact
+// shape registerLocalBinaries produces — with the per-deployment key and stamp
+// the deploy-* key ID, so agents verify against their TOFU-pinned deployment
+// key with zero agent-side changes.
+//
+// For the official repository this is a pass-through: that path must stay
+// byte-identical (raw release manifest + "release-artifact-manifest-ed25519",
+// which agents bind to the embedded official key). The checksums.txt fallback
+// path (no releaseManifest, non-production only) is also passed through — there
+// is no verified manifest to normalize.
+async function applyDeploymentSigning(args: {
+  metadata: UpsertMetadata;
+  version: string;
+  component: string;
+  platform: string;
+  arch: string;
+  downloadUrl: string;
+}): Promise<UpsertMetadata> {
+  const { metadata } = args;
+  if (isOfficialReleaseSource() || !metadata.releaseManifest) {
+    return metadata;
+  }
+
+  const { keyId } = await ensureActiveSigningKey();
+  const releaseManifest = JSON.stringify({
+    version: args.version,
+    component: args.component,
+    platform: args.platform,
+    arch: args.arch,
+    url: args.downloadUrl,
+    checksum: metadata.checksum,
+    size: metadata.size,
+  });
+  const manifestSignature = await signManifest(releaseManifest);
+  return {
+    checksum: metadata.checksum,
+    size: metadata.size,
+    releaseManifest,
+    manifestSignature,
+    signingKeyId: keyId,
+  };
+}
+
 async function upsertVersion(
   version: string,
   platform: string,
   arch: string,
   component: string,
   downloadUrl: string,
-  metadata: {
-    checksum: string;
-    size: number;
-    releaseManifest?: string;
-    manifestSignature?: string;
-    signingKeyId?: string;
-  },
+  metadata: UpsertMetadata,
   releaseNotes?: string | null,
 ) {
+  const signedMetadata = await applyDeploymentSigning({
+    metadata,
+    version,
+    component,
+    platform,
+    arch,
+    downloadUrl,
+  });
   // Controlled fleet rollout (AGENT_AUTO_PROMOTE=false): register but do not
   // promote. Skip the demote UPDATE, insert isLatest:false, and OMIT isLatest
   // from the conflict `set` so an existing promoted row keeps its target.
@@ -860,11 +919,11 @@ async function upsertVersion(
         platform,
         architecture: arch,
         downloadUrl,
-        checksum: metadata.checksum,
-        releaseManifest: metadata.releaseManifest,
-        manifestSignature: metadata.manifestSignature,
-        signingKeyId: metadata.signingKeyId,
-        fileSize: BigInt(metadata.size),
+        checksum: signedMetadata.checksum,
+        releaseManifest: signedMetadata.releaseManifest,
+        manifestSignature: signedMetadata.manifestSignature,
+        signingKeyId: signedMetadata.signingKeyId,
+        fileSize: BigInt(signedMetadata.size),
         releaseNotes: releaseNotes ?? null,
         isLatest: autoPromote,
         component,
@@ -878,11 +937,11 @@ async function upsertVersion(
         ],
         set: {
           downloadUrl,
-          checksum: metadata.checksum,
-          releaseManifest: metadata.releaseManifest,
-          manifestSignature: metadata.manifestSignature,
-          signingKeyId: metadata.signingKeyId,
-          fileSize: BigInt(metadata.size),
+          checksum: signedMetadata.checksum,
+          releaseManifest: signedMetadata.releaseManifest,
+          manifestSignature: signedMetadata.manifestSignature,
+          signingKeyId: signedMetadata.signingKeyId,
+          fileSize: BigInt(signedMetadata.size),
           releaseNotes: releaseNotes ?? null,
           ...(autoPromote ? { isLatest: true } : {}),
         },
