@@ -21,6 +21,26 @@ func TestSelfHostDefaultAllowsEverything(t *testing.T) {
 	}
 }
 
+// TestCommittedLdflagVarsAreEmpty pins the repo-default contract for BOTH
+// injected vars, not just allowedHosts. A committed non-empty allowedHosts
+// would violate the CLAUDE.md "no internal infrastructure details in public
+// code" rule; a committed non-empty strictMode would arm the hard-fail tier
+// for every self-hosted build the moment an allowlist appeared. Both must be
+// injected at build time only, so both are asserted here.
+func TestCommittedLdflagVarsAreEmpty(t *testing.T) {
+	if allowedHosts != "" {
+		t.Errorf("committed allowedHosts must be empty, got %q "+
+			"(hosted values are injected by the release pipeline, never committed)", allowedHosts)
+	}
+	if strictMode != "" {
+		t.Errorf("committed strictMode must be empty, got %q "+
+			"(strict is a build-time opt-in, never the repo default)", strictMode)
+	}
+	if Strict() {
+		t.Error("repo default must not be strict")
+	}
+}
+
 func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 	restore := SetAllowedHostsForTest("hosted-a.example, hosted-b.example")
 	defer restore()
