@@ -22,8 +22,8 @@ describe('POST /:id/process-sample', () => {
   beforeEach(() => { inserted.length = 0; });
 
   it('derives org_id from the auth context and ignores any body org_id', async () => {
-    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'a', siteId: 's', role: 'agent' });
-    const res = await app.request('/dev-1/process-sample', {
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'agent-1', siteId: 's', role: 'agent' });
+    const res = await app.request('/agent-1/process-sample', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -38,8 +38,8 @@ describe('POST /:id/process-sample', () => {
   });
 
   it('server-stamps timestamp and stores agent time separately', async () => {
-    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'a', siteId: 's', role: 'agent' });
-    await app.request('/dev-1/process-sample', {
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'agent-1', siteId: 's', role: 'agent' });
+    await app.request('/agent-1/process-sample', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ timestamp: '2020-01-01T00:00:00.000Z', processes: [] })
@@ -49,9 +49,9 @@ describe('POST /:id/process-sample', () => {
   });
 
   it('rejects a payload over the 16-process cap', async () => {
-    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'a', siteId: 's', role: 'agent' });
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'agent-1', siteId: 's', role: 'agent' });
     const processes = Array.from({ length: 17 }, (_, i) => ({ name: `p${i}`, pid: i, cpu: 0, ramMb: 0 }));
-    const res = await app.request('/dev-1/process-sample', {
+    const res = await app.request('/agent-1/process-sample', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ timestamp: '2026-06-13T12:00:00.000Z', processes })
@@ -59,9 +59,33 @@ describe('POST /:id/process-sample', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects when path id does not match the authenticated device', async () => {
-    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'a', siteId: 's', role: 'agent' });
-    const res = await app.request('/dev-OTHER/process-sample', {
+  // #3387: the agent sends config.AgentID in the path (heartbeat.go
+  // sendProcessSample), matching every sibling ingest route. Comparing it to
+  // the device UUID instead 403'd every real sample, and the pre-fix tests hid
+  // that by putting the device id in the path — a value no agent ever sends.
+  it('accepts the agent id in the path, not the device id (#3387)', async () => {
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'agent-1', siteId: 's', role: 'agent' });
+
+    const ok = await app.request('/agent-1/process-sample', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timestamp: '2026-06-13T12:00:00.000Z', processes: [] })
+    });
+    expect(ok.status).toBe(201);
+    // the row is still keyed by the device, resolved from the token
+    expect(inserted[0].deviceId).toBe('dev-1');
+
+    const wrong = await app.request('/dev-1/process-sample', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timestamp: '2026-06-13T12:00:00.000Z', processes: [] })
+    });
+    expect(wrong.status).toBe(403);
+  });
+
+  it('rejects when path agent id does not match the authenticated token', async () => {
+    const app = appWithAgent({ deviceId: 'dev-1', orgId: 'org-real', agentId: 'agent-1', siteId: 's', role: 'agent' });
+    const res = await app.request('/agent-OTHER/process-sample', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ timestamp: '2026-06-13T12:00:00.000Z', processes: [] })
@@ -78,7 +102,7 @@ describe('process-sample ingest — requireAgentRole gate (F8)', () => {
       return next();
     });
     app.route('/', processSampleRoutes);
-    const res = await app.request('/dev-1/process-sample', {
+    const res = await app.request('/agent-1/process-sample', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
     });
     expect(res.status).toBe(403);
