@@ -44,6 +44,9 @@ release), so fleet trust is unchanged.
    (Settings → Environments), move the secrets there, and add yourself as a
    required reviewer — every signing run then needs an explicit approval.
    The workflow's signing jobs reference the `signing` environment.
+   Dry-run executions also run in the `signing` environment, so with required
+   reviewers even secret-free dry runs wait for your approval — this is
+   expected and is a useful smoke test of the approval gate.
 5. Actions → **Sign Breeze Release** → Run workflow. Do a `dry-run: true`
    pass first (no secrets needed) to validate the plumbing, then a real run.
 6. Point your instance at your builds (the run summary prints this block

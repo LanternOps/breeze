@@ -14,7 +14,8 @@ outputs *unsigned* alongside a cryptographically signed manifest; the
 [`breeze-selfhost-signing`](https://github.com/lanternops/breeze-selfhost-signing)
 template repository turns those into fully signed Windows and macOS packages
 under your identity — no fork, no build environment, no Windows or Mac
-hardware of your own.
+hardware of your own. For how official releases are signed, see
+[Code Signing](/deploy/code-signing/).
 
 ---
 
@@ -298,6 +299,9 @@ in `.env` alone never reaches the container:
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS}
       AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-true}
 ```
+
+See the [Environment Variables](/deploy/environment/) reference for the full
+deployment configuration.
 
 <Aside type="caution" title="The key must be YOURS">
   In production, overriding `BINARY_GITHUB_REPOSITORY` requires
