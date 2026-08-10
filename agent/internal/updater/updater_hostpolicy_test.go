@@ -49,3 +49,46 @@ func TestFilterControlPlaneOrigins_SelfHostIdentity(t *testing.T) {
 		t.Fatalf("self-host must not filter origins; got %v", got)
 	}
 }
+
+// TestUpdaterPolicy_StrictExcludesNonAllowlistedBackup proves updaterPolicy
+// (the real assembly function every production Updater is built from — see
+// New) actually applies filterControlPlaneOrigins to the origins that reach
+// netpolicy.Policy.ControlPlaneOrigins, not just that the filter function
+// works in isolation.
+func TestUpdaterPolicy_StrictExcludesNonAllowlistedBackup(t *testing.T) {
+	restoreHosts := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
+	defer restoreHosts()
+	restoreStrict := hostpolicy.SetStrictModeForTest(true)
+	defer restoreStrict()
+
+	cfg := &Config{
+		ServerURL:       func() string { return "https://hosted-a.example" },
+		BackupServerURL: "https://stale.attacker.es",
+	}
+	policy := updaterPolicy(cfg)
+	want := []string{"https://hosted-a.example"}
+	if !reflect.DeepEqual(policy.ControlPlaneOrigins, want) {
+		t.Fatalf("strict build: updaterPolicy().ControlPlaneOrigins = %v, want %v (non-allowlisted backup excluded)",
+			policy.ControlPlaneOrigins, want)
+	}
+}
+
+// TestUpdaterPolicy_GapIdentity is the companion: a gap build must pass both
+// origins through updaterPolicy unfiltered — matching the runtime GAP-MODEL
+// (existing-fleet agents on a gap build keep functioning unchanged).
+func TestUpdaterPolicy_GapIdentity(t *testing.T) {
+	restoreHosts := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
+	defer restoreHosts()
+	// strictMode intentionally left off (gap build default).
+
+	cfg := &Config{
+		ServerURL:       func() string { return "https://hosted-a.example" },
+		BackupServerURL: "https://stale.attacker.es",
+	}
+	policy := updaterPolicy(cfg)
+	want := []string{"https://hosted-a.example", "https://stale.attacker.es"}
+	if !reflect.DeepEqual(policy.ControlPlaneOrigins, want) {
+		t.Fatalf("gap build: updaterPolicy().ControlPlaneOrigins = %v, want %v (unfiltered)",
+			policy.ControlPlaneOrigins, want)
+	}
+}
