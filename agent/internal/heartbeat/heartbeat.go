@@ -3528,6 +3528,10 @@ func (h *Heartbeat) recordHeartbeatFailure(payload *HeartbeatPayload) {
 // Only the URL that actually passed the probe may be promoted; re-reading
 // config here bricked stragglers with server_url="" during migrations.
 func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
+	if probedURL == "" {
+		log.Error("refusing to promote empty backup server URL")
+		return
+	}
 	// Defense-in-depth: Task 4 already gated ingestion of backup_server_url,
 	// so probedURL should only ever be a previously-allowlisted value. This
 	// guards against a torn-persist or a backup that predates the hosted
@@ -3539,10 +3543,6 @@ func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
 				"host", probedURL, "error", err.Error())
 			return
 		}
-	}
-	if probedURL == "" {
-		log.Error("refusing to promote empty backup server URL")
-		return
 	}
 	h.mu.Lock()
 	oldPrimary := h.config.ServerURL
