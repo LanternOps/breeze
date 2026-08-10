@@ -704,6 +704,10 @@
       "retry": "Réessayer"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} appareil(s) utilisent l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
+    "cta": "Comment migrer"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {

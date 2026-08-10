@@ -20,7 +20,13 @@ function failed<T>(): DashboardQueryState<T> {
   return { data: null, error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false };
 }
 
-const deviceStats: DeviceStats = { total: 42, online: 40, offline: 2, byStatus: { online: 40, offline: 2 } };
+const deviceStats: DeviceStats = {
+  total: 42,
+  online: 40,
+  offline: 2,
+  byStatus: { online: 40, offline: 2 },
+  migrationRequiredCount: 0,
+};
 const alertsSummary: AlertsSummary = {
   bySeverity: { critical: 1, high: 2, medium: 4, low: 0, info: 0 },
   byStatus: { active: 7, acknowledged: 0, resolved: 0, suppressed: 0, dismissed: 0 },
@@ -108,7 +114,7 @@ describe('KpiStrip', () => {
   it('shows the enrollment empty state for a zero-device fleet', () => {
     render(
       <KpiStrip
-        devices={loaded({ total: 0, online: 0, offline: 0, byStatus: {} })}
+        devices={loaded({ total: 0, online: 0, offline: 0, byStatus: {}, migrationRequiredCount: 0 })}
         alerts={loaded(alertsSummary)}
         tickets={unavailable<TicketStats>()}
         patch={unavailable<PatchCompliance>()}

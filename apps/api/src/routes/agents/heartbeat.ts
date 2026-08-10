@@ -474,6 +474,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
+    // Migration-banner Task 2 — self-reported install edition + migration
+    // flag. Written UNCONDITIONALLY every heartbeat, mirroring
+    // outboundNetworkPolicyVersion above: an agent that stops reporting these
+    // (old build, or a build that no longer believes migration is required)
+    // must self-heal back to the default rather than leaving a stale value.
+    agentEdition: data.agentEdition ?? null,
+    migrationRequired: data.migrationRequired ?? false,
     // Task 5 (#2764) — a live heartbeat is proof the agent is still installed,
     // so it unconditionally clears any uninstall-intent stamp left by a prior
     // /uninstall-intent call (aborted uninstall, or a reinstall on the same

@@ -26,6 +26,7 @@ vi.mock('../../db/schema', () => ({
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
     status: 'devices.status',
+    migrationRequired: 'devices.migrationRequired',
   },
 }));
 
@@ -55,7 +56,9 @@ const registeredPermissionCalls = [...requirePermissionMock.mock.calls];
 
 let lastWhereArg: unknown;
 
-function mockGroupByRows(rows: Array<{ status: string; count: number | string }>) {
+function mockGroupByRows(
+  rows: Array<{ status: string; count: number | string; migrationRequiredCount?: number | string }>
+) {
   lastWhereArg = undefined;
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
@@ -114,6 +117,7 @@ describe('device stats route', () => {
       online: 3,
       offline: 3,
       byStatus: { online: 3, offline: 2, maintenance: 1 },
+      migrationRequiredCount: 0,
     });
   });
 
@@ -126,7 +130,13 @@ describe('device stats route', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ total: 0, online: 0, offline: 0, byStatus: {} });
+    expect(body.data).toEqual({
+      total: 0,
+      online: 0,
+      offline: 0,
+      byStatus: {},
+      migrationRequiredCount: 0,
+    });
   });
 
   it('pushes the org condition and decommissioned exclusion into WHERE', async () => {
@@ -181,7 +191,30 @@ describe('device stats route', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ total: 0, online: 0, offline: 0, byStatus: {} });
+    expect(body.data).toEqual({
+      total: 0,
+      online: 0,
+      offline: 0,
+      byStatus: {},
+      migrationRequiredCount: 0,
+    });
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  it('counts devices with migrationRequired', async () => {
+    // 2 devices with migration_required=true (1 online, 1 offline), 1 false —
+    // the per-status filtered count must sum across groups to the tenant total.
+    mockGroupByRows([
+      { status: 'online', count: '2', migrationRequiredCount: '1' },
+      { status: 'offline', count: '1', migrationRequiredCount: '1' },
+    ]);
+
+    const res = await app.request('/devices/stats', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.migrationRequiredCount).toBe(2);
   });
 });

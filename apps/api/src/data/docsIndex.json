@@ -249,6 +249,17 @@
     "section": "agents"
   },
   {
+    "path": "/agents/self-host-migration/",
+    "title": "Migrating to the Self-Host Agent Edition",
+    "description": "Move devices off hosted-edition agent builds and onto the self-host agent edition for self-hosted Breeze servers.",
+    "headings": [
+      "What the banner means",
+      "Migrate a device",
+      "Verify"
+    ],
+    "section": "agents"
+  },
+  {
     "path": "/backup/api-reference/",
     "title": "Backup API Reference",
     "description": "REST API endpoints for backup configurations, jobs, snapshots, restores, and enterprise features.",
@@ -1900,6 +1911,7 @@
       "Identity and directory detection",
       "Platform support",
       "Viewing posture in the UI",
+      "Fleet Posture report",
       "Data freshness",
       "API reference",
       "Response fields — `GET /api/v1/devices/:id/management-posture`",
@@ -2772,6 +2784,7 @@
       "Browsing and searching",
       "Partner-wide vs. organization scripts",
       "Importing from the system library",
+      "Importing and exporting script bundles",
       "Creating a script",
       "Version history and rollback",
       "Running a Script",
@@ -3585,6 +3598,7 @@
       "Creating an API Key",
       "Scopes",
       "Authentication Flow",
+      "Where API Keys Work",
       "Dual Authentication",
       "Key Rotation",
       "Revocation",
@@ -3594,6 +3608,7 @@
       "Scope-Delegation Ceiling",
       "Statuses",
       "API Reference",
+      "Partner Service Principal Scopes",
       "Enrollment Keys",
       "Key Format",
       "Creating an Enrollment Key",
@@ -3638,6 +3653,7 @@
       "Roles & Permissions",
       "Access Reviews",
       "API Keys",
+      "Partner API (Service Principals)",
       "Alerts",
       "Alert Rules",
       "Notification Channels",

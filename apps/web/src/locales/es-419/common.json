@@ -704,6 +704,10 @@
       "retry": "Reintentar"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo(s) usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "cta": "Cómo migrar"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {

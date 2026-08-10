@@ -704,6 +704,10 @@
       "retry": "Erneut versuchen"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} Gerät(e) verwenden auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
+    "cta": "Anleitung zur Migration"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {

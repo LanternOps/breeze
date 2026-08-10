@@ -150,6 +150,11 @@ export const devices = pgTable('devices', {
   // build correctly reports back down to 0. Task 5 gates managed-software
   // dispatch on this value.
   outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
+  // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
+  // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
+  // every heartbeat (self-healing), so a resolved condition clears next beat.
+  agentEdition: varchar('agent_edition', { length: 20 }),
+  migrationRequired: boolean('migration_required').notNull().default(false),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
