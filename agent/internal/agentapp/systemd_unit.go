@@ -19,7 +19,12 @@ import (
 // hardened breeze-watchdog (which would re-wedge it at 226/NAMESPACE), and
 // corrects a comment that wrongly claimed the agent re-chowns the directory to
 // root:breeze at runtime (it relaxes it to 0755 instead).
-const currentUnitVersion = 4
+// Version 5 raises TimeoutStopSec above the agent's own shutdown budget. At 15s
+// it sat BELOW the sum of the agent's sequential teardown stage timeouts (17s
+// on an ordinary enrolled Linux agent), so systemd escalated SIGTERM to SIGKILL
+// on routine stops and restarts (#3323). Deployed hosts pick this up on the
+// next agent start via reconcileServiceUnitIfNeeded.
+const currentUnitVersion = 5
 
 const unitVersionPrefix = "# breeze-unit-version:"
 
@@ -35,7 +40,7 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-# breeze-unit-version: 4
+# breeze-unit-version: 5
 Type=simple
 ExecStart=/usr/local/bin/breeze-agent start
 WorkingDirectory=/etc/breeze
@@ -63,11 +68,23 @@ RuntimeDirectoryPreserve=yes
 # of stampeding the API.
 RestartSec=30
 
-# Cap total stop time so a hung HTTP flush during OS shutdown (network
-# going down) doesn't block system power-off for the 90s systemd default.
+# Outer backstop on stop time, so a hung HTTP flush during OS shutdown (network
+# going down) can't block system power-off for the 90s systemd default.
+#
+# This is deliberately ABOVE the agent's own shutdown budget, not equal to it.
+# The agent bounds its entire graceful teardown itself (see the shutdown timing
+# contract in agent/internal/agentapp/shutdown_budget.go); the slack between
+# that budget and this value covers the parts of shutdown that are not timed —
+# stopping-state file write, watchdog IPC notify, secure-token zeroing, process
+# exit — plus systemd's own signal-delivery latency. Set at 15s the two
+# disagreed: the agent's sequential stage timeouts summed to more than the cap,
+# so systemd SIGKILLed mid-teardown on ordinary stops and restarts, leaving
+# helpers, tunnels and the audit log unclosed (#3323).
+# TestShutdownBudgetFitsUnitTimeoutStopSec keeps the two in sync.
+#
 # KillMode=mixed sends SIGTERM to the main process, then SIGKILL to the
 # whole cgroup after TimeoutStopSec.
-TimeoutStopSec=15
+TimeoutStopSec=30
 KillMode=mixed
 
 # INTENTIONALLY UNSANDBOXED. The remote terminal and remote script execution
