@@ -1277,21 +1277,34 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 	return nil
 }
 
-// BroadcastNotification sends a desktop notification to all connected user sessions.
+// BroadcastNotification sends a desktop notification to every connected session
+// holding the "notify" scope.
+//
+// The scope filter is load-bearing, not cosmetic: helpers that were never
+// granted "notify" have no toast handler at all (the Breeze Assist helper
+// connects with assist/consent_ui and drops unknown message types on the
+// floor). Sending to them wastes an IPC round trip and, worse, would inflate
+// any delivery accounting built on this broadcast into claiming reach it does
+// not have.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	b.mu.RLock()
 	sessions := make([]*Session, 0, len(b.sessions))
 	for _, s := range b.sessions {
-		sessions = append(sessions, s)
+		if s.HasScope("notify") {
+			sessions = append(sessions, s)
+		}
 	}
 	b.mu.RUnlock()
 
 	for _, s := range sessions {
-		_ = s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
+		if err := s.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{
 			Title:   title,
 			Body:    body,
 			Urgency: urgency,
-		})
+		}); err != nil {
+			log.Debug("broadcast notification to session failed",
+				"sessionId", s.SessionID, "error", err.Error())
+		}
 	}
 }
 
