@@ -60,6 +60,120 @@ func TestIsSensitiveReadPath(t *testing.T) {
 	}
 }
 
+// TestIsSensitiveReadPathDirectoryNode pins the component-boundary contract for
+// deny-list entries that name a *directory*: the directory node itself must be
+// denied, not just its contents (#3385). Sibling directories that merely share a
+// name prefix must stay readable.
+func TestIsSensitiveReadPathDirectoryNode(t *testing.T) {
+	cases := []struct {
+		name      string
+		path      string
+		sensitive bool
+	}{
+		// macOS keychains — the directory node itself (#3385).
+		{"user keychains dir node", "/Users/alice/Library/Keychains", true},
+		{"system keychains dir node", "/Library/Keychains", true},
+		{"keychains dir node trailing slash", "/Users/alice/Library/Keychains/", true},
+		{"keychains dir node backslashes", `C:\Users\bob\Library\Keychains`, true},
+		{"keychains dir node lowercase", "/users/alice/library/keychains", true},
+		// macOS keychains — contents (already denied before #3385, kept as regression).
+		{"keychains direct child", "/Users/alice/Library/Keychains/login.keychain-db", true},
+		{"keychains nested child", "/Users/alice/Library/Keychains/ABCD-1234/keychain-2.db", true},
+		// macOS keychains — prefix siblings must NOT be denied.
+		{"keychains sibling dir", "/Users/alice/Library/Keychainsfoo", false},
+		{"keychains sibling dir child", "/Users/alice/Library/Keychainsfoo/notes.txt", false},
+		{"keychains singular sibling", "/Users/alice/Library/Keychain", false},
+		{"keychain access doc", "/Users/alice/Library/KeychainAccess.txt", false},
+		{"keychains without library parent", "/Users/alice/Keychains", false},
+
+		// Other directory-shaped deny-list entries: node + contents + siblings.
+		{"sudoers.d dir node", "/etc/sudoers.d", true},
+		{"sudoers.d child", "/etc/sudoers.d/90-breeze", true},
+		{"sudoers.d sibling", "/etc/sudoers.dx", false},
+		{"ssl private dir node", "/etc/ssl/private", true},
+		{"ssl private child", "/etc/ssl/private/server.key", true},
+		{"ssl private sibling", "/etc/ssl/privatestuff", false},
+		{"ssl private sibling child", "/etc/ssl/privatestuff/readme.txt", false},
+		{"windows config hive sibling dir", `C:\Windows\System32\config\systemprofile`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSensitiveReadPath(tc.path); got != tc.sensitive {
+				t.Fatalf("isSensitiveReadPath(%q) = %v, want %v", tc.path, got, tc.sensitive)
+			}
+		})
+	}
+}
+
+// TestIsSensitiveReadPathRelativeInput proves the deny-list is evaluated against
+// the absolute path the OS would actually open. Every entry is anchored with a
+// leading "/", so a relative path handed to the agent would otherwise slip past
+// the check and still resolve to the sensitive target via the process CWD
+// (found auditing #3385; agent services commonly run with CWD "/").
+func TestIsSensitiveReadPathRelativeInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-rooted deny-list entries are not reachable from a Windows CWD")
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc", "ssl", "private"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(root)
+
+	cases := []struct {
+		name      string
+		path      string
+		sensitive bool
+	}{
+		{"relative shadow", "etc/shadow", true},
+		{"relative dot-slash shadow", "./etc/shadow", true},
+		{"relative ssl private dir", "etc/ssl/private", true},
+		{"relative benign", "etc/hosts", false},
+		{"relative benign nested", "docs/readme.md", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSensitiveReadPath(filepath.Clean(tc.path)); got != tc.sensitive {
+				t.Fatalf("isSensitiveReadPath(%q) with cwd %q = %v, want %v", tc.path, root, got, tc.sensitive)
+			}
+		})
+	}
+}
+
+// TestListFilesDeniesKeychainsDirNode is the end-to-end proof for #3385: the
+// Keychains directory listing itself (not just reads of files inside it) is
+// refused at the ListFiles entry point.
+func TestListFilesDeniesKeychainsDirNode(t *testing.T) {
+	dir := t.TempDir()
+	keychains := filepath.Join(dir, "Library", "Keychains")
+	if err := os.MkdirAll(keychains, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keychains, "login.keychain-db"), []byte("kc"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	res := ListFiles(map[string]any{"path": keychains})
+	if res.Status == "completed" {
+		t.Fatal("expected listing of the Keychains directory itself to be denied")
+	}
+	if !strings.Contains(res.Error, "sensitive path") {
+		t.Fatalf("expected sensitive-path error, got: %q", res.Error)
+	}
+
+	// A prefix-sibling directory must still list.
+	sibling := filepath.Join(dir, "Library", "Keychainsfoo")
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatalf("mkdir sibling: %v", err)
+	}
+	if res = ListFiles(map[string]any{"path": sibling}); res.Status != "completed" {
+		t.Fatalf("expected sibling dir listing to succeed, got: %q", res.Error)
+	}
+}
+
 // TestEnforceReadContainmentSymlinkEscape proves that a symlink whose own name
 // is innocuous cannot be used to read a sensitive target: EvalSymlinks resolves
 // the link before the deny-list check.
