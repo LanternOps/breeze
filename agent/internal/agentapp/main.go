@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
@@ -586,6 +587,47 @@ func runWithTimeout(name string, d time.Duration, fn func()) {
 	}
 }
 
+// enforceBuildModeGate is startAgent's build-mode self-check, extracted as a
+// named helper (mirroring checkPersistedServerAllowed/gateEnrollPrimary
+// above) so the gap/strict decision is directly testable without invoking
+// startAgent's full initialization (mTLS load, heartbeat bring-up, hardware
+// collection). Logs the resolved build mode, then on a persisted-server
+// violation either hard-refuses to start (strict — logs, prints an operator
+// message, calls osExit(1), and returns the violation error as a
+// belt-and-braces measure for a stubbed-osExit test) or warns and returns nil
+// (gap — the migration-needed heartbeat signal covers this case; see
+// migrationSignal). Self-host and an unenrolled/empty ServerURL always
+// return nil (checkPersistedServerAllowed's contract).
+func enforceBuildModeGate(cfg *config.Config) error {
+	buildModeLogArgs := []any{"mode", hostpolicy.Mode()}
+	if hostpolicy.Enforced() {
+		buildModeLogArgs = append(buildModeLogArgs, "allowedHosts", hostpolicy.Hosts())
+	}
+	log.Info("control-plane build mode", buildModeLogArgs...)
+	if err := checkPersistedServerAllowed(cfg); err != nil {
+		if hostpolicy.Strict() {
+			// Belt-and-braces: config.Load -> ValidateTiered already fatals
+			// on a persisted out-of-allowlist ServerURL before any caller
+			// reaches startAgent, but keeping an explicit refusal here makes
+			// the invariant local to the function that actually starts
+			// components, instead of depending on every caller having gone
+			// through config.Load first.
+			log.Error("hosted build refuses to run against this server", "error", err.Error())
+			fmt.Fprintf(os.Stderr,
+				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
+					"Use the self-host build instead. Details: %v\n", err)
+			osExit(1)
+			return err
+		}
+		// Gap build: warn and keep running. The migration-needed signal
+		// (Task 8) surfaces this on the self-hosted dashboard so the admin
+		// can migrate before the strict build ships. Do NOT exit.
+		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
+			"error", err.Error())
+	}
+	return nil
+}
+
 // startAgent performs all agent initialisation assuming cfg is already
 // enrolled. Returns the running components or an error if any
 // initialization step fails (mTLS load, log shipper init, heartbeat
@@ -596,6 +638,17 @@ func runWithTimeout(name string, d time.Duration, fn func()) {
 func startAgent(cfg *config.Config) (*agentComponents, error) {
 	if !config.IsEnrolled(cfg) {
 		return nil, fmt.Errorf("startAgent called with unenrolled config — caller must waitForEnrollment first")
+	}
+
+	// Build-mode self-check. Lives here — not in runAgent — because this is
+	// the single choke point every entry point reaches: console/Unix via
+	// runAgent's startAgentFn call, the Windows SCM service and the Unix
+	// runAsService loop (both call startAgentFn directly), and the Quick
+	// Support session in support.go. runAgent alone would miss the two
+	// primary service deployment modes, which return into runAsService
+	// before ever reaching runAgent's own body.
+	if err := enforceBuildModeGate(cfg); err != nil {
+		return nil, err
 	}
 
 	// Quick Support clients are throwaway, unelevated, and live entirely in a
@@ -1190,6 +1243,26 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// gateEnrollResponseBackup refuses, in a hosted build, an enroll response
+// backup control-plane URL outside the compiled allowlist. It runs on the
+// RAW response field, BEFORE resolveBackupServerURL's precedence/validation
+// logic — exactly where gateRedeemResponse checks res.BackupServerURL in
+// bootstrap.go — and is gated at Enforced() tier (gap AND strict), not
+// ValidateBackupServerURL's Strict()-only gate on the EXISTING-fleet paths it
+// guards (heartbeat configUpdate push, self-heal). Running before
+// resolveBackupServerURL matters: that function's own ValidateBackupServerURL
+// call already soft-drops (warn + skip) a non-allowlisted backup under
+// Strict(), which would otherwise swallow this gate's hard refusal in a
+// strict build. Fresh enrollment is a fresh-install path, matching
+// gateBootstrapServer/gateRedeemResponse/gateEnrollPrimary. No-op in
+// self-host and when the response carries no backup.
+func gateEnrollResponseBackup(backup string) error {
+	if backup == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(backup)
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1229,6 +1302,31 @@ func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
 	return nil
 }
 
+// checkPersistedServerAllowed is a pure predicate: it reports the violation
+// when a hosted build (Enforced) has a persisted primary cfg.ServerURL
+// outside the compiled allowlist. It does NOT decide warn-vs-hard-fail —
+// that split is made by the caller in startAgent, gated on hostpolicy.Strict().
+// Empty server (unenrolled) and self-host builds always return nil.
+func checkPersistedServerAllowed(cfg *config.Config) error {
+	if cfg == nil || cfg.ServerURL == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(cfg.ServerURL)
+}
+
+// gateEnrollPrimary refuses, in a hosted build, a primary control-plane
+// server URL outside the compiled allowlist. serverURL is the one package
+// global fed by all three primary-server entry points — filename,
+// MSI property, and --server — so this single gate at the point it is
+// applied to cfg covers all of them. (The enroll *response* carries no
+// primary ServerURL — api.EnrollResponse has only BackupServerURL — so
+// there is no second gate needed on the response side, unlike bootstrap's
+// gateRedeemResponse.) No-op in self-host builds. Mirrors
+// gateBootstrapServer/gateRedeemResponse in bootstrap.go.
+func gateEnrollPrimary(server string) error {
+	return hostpolicy.AllowedURL(server)
+}
+
 func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
@@ -1240,6 +1338,19 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if serverURL != "" {
+		// Gated here, before cfg.ServerURL is ever set: at this point in
+		// enrollDevice, logging has not been initialised yet (initEnrollLogging
+		// / the scoped enrollLog are set up a few lines below), so this uses
+		// enrollError — the function's existing four-sink failure reporter,
+		// which logs through the package-level `log` var rather than the
+		// not-yet-initialised enrollLog — exactly as the "server URL required"
+		// pre-flight check below does. catConfig is correct here: like that
+		// check, this fires before any HTTP call is made, so isRefundable4xx
+		// correctly treats it as non-refundable.
+		if err := gateEnrollPrimary(serverURL); err != nil {
+			enrollError(catConfig, "control-plane host not allowed", err)
+			return // enrollError does not return in production; belt-and-braces.
+		}
 		cfg.ServerURL = serverURL
 	}
 
@@ -1481,6 +1592,16 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	applyEnrollResponseIdentity(cfg, enrollResp)
+
+	// Refused, in a hosted build, BEFORE resolveBackupServerURL's own
+	// Strict()-only validation gets a chance to soft-drop it — see
+	// gateEnrollResponseBackup's doc comment. bootstrapServerURL (the
+	// fallback seed below) needs no separate gate here: it only ever arrives
+	// via the bootstrap flow, which already hard-refused it through
+	// gateRedeemResponse before enrollDevice ever ran.
+	if err := gateEnrollResponseBackup(enrollResp.BackupServerURL); err != nil {
+		return &enrollFailure{cat: catConfig, friendly: "enrollment refused: backup control-plane host not allowed", detail: err}
+	}
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not
