@@ -56,12 +56,33 @@ export function buildRemoteAccessLaunchUrl(
 export function resolveRemoteAccessLaunch(
   device: { customFields?: Record<string, unknown> | null },
   remoteAccess: InheritableRemoteAccessSettings | undefined | null,
+  // A technician's own preferred provider (users.preferences.remoteAccessProviderId).
+  // Deliberately an ID and nothing else: it SELECTS from the tenant's configured
+  // providers, it never supplies one. The template, password and customFieldKey
+  // still come from the tenant record, so a user value cannot introduce a scheme
+  // or a destination -- which is what keeps the javascript: guard below meaningful.
+  preferredProviderId?: string | null,
 ): RemoteAccessLaunchResult {
-  if (!remoteAccess?.defaultProviderId || !remoteAccess.providers?.length) {
+  if (!remoteAccess?.providers?.length) {
     return { launchUrl: null, providerId: null, scheme: null, skipReason: 'no_provider_configured' };
   }
+
+  // A preference only counts when it names a provider this tenant actually has
+  // AND that provider is enabled. Anything else -- unknown id, id belonging to
+  // another tenant, provider since disabled or deleted -- falls through to the
+  // tenant default rather than failing the launch, so a stale preference degrades
+  // quietly instead of stranding the technician.
+  const preferred: RemoteAccessProvider | undefined = preferredProviderId
+    ? remoteAccess.providers.find((p) => p.id === preferredProviderId && p.enabled)
+    : undefined;
+
+  const targetId = preferred?.id ?? remoteAccess.defaultProviderId;
+  if (!targetId) {
+    return { launchUrl: null, providerId: null, scheme: null, skipReason: 'no_provider_configured' };
+  }
+
   const provider: RemoteAccessProvider | undefined = remoteAccess.providers.find(
-    (p) => p.id === remoteAccess.defaultProviderId,
+    (p) => p.id === targetId,
   );
   if (!provider) {
     return { launchUrl: null, providerId: null, scheme: null, skipReason: 'no_provider_configured' };

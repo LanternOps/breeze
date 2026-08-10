@@ -18,8 +18,16 @@ import {
   enrollmentKeys,
   organizations,
   partners,
+  users,
 } from '../../db/schema';
-import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
+import {
+  authMiddleware,
+  isInteractiveUserSession,
+  requireMfa,
+  requireScope,
+  requirePermission,
+  type AuthContext,
+} from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
@@ -993,6 +1001,7 @@ coreRoutes.get(
       const launcher = await resolveRemoteAccessLauncherForDevice(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
+        auth,
       );
       if (launcher.launchUrl) {
         hasRemoteAccessLauncher = true;
@@ -1031,9 +1040,34 @@ coreRoutes.get(
  * engine doesn't filter the row out. This mirrors how remoteAccessPolicy.ts
  * uses systemAuth for the same reason.
  */
+/**
+ * Read the acting technician's preferred provider id, if any.
+ *
+ * Gated on `isInteractiveUserSession` on purpose. An MCP API key is built with
+ * `user.id = apiKey.createdBy` (see AuthContext.principal), so keying this off
+ * user identity alone would make a machine caller silently inherit whichever
+ * remote tool the human who minted the key happens to prefer. A preference is a
+ * property of a person at a keyboard; anything else gets the tenant default.
+ */
+async function readPreferredProviderId(auth: AuthContext): Promise<string | null> {
+  if (!isInteractiveUserSession(auth)) return null;
+  const prefs = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ preferences: users.preferences })
+      .from(users)
+      .where(eq(users.id, auth.user.id))
+      .limit(1);
+    return row?.preferences ?? null;
+  });
+  if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return null;
+  const value = (prefs as { remoteAccessProviderId?: unknown }).remoteAccessProviderId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 async function resolveRemoteAccessLauncherForDevice(
   orgId: string,
   customFields: Record<string, unknown> | null,
+  auth?: AuthContext,
 ): Promise<RemoteAccessLaunchResult> {
   const partnerSettings = await withSystemDbAccessContext(async () => {
     const [partnerRow] = await db
@@ -1046,7 +1080,8 @@ async function resolveRemoteAccessLauncherForDevice(
   });
   const providers: InheritableRemoteAccessSettings | undefined =
     partnerSettings.remoteAccessProviders;
-  return resolveRemoteAccessLaunch({ customFields }, providers);
+  const preferredProviderId = auth ? await readPreferredProviderId(auth) : null;
+  return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId);
 }
 
 // POST /devices/:id/remote-access-launch - Issue a one-shot remote-access
@@ -1082,6 +1117,7 @@ coreRoutes.post(
       launcher = await resolveRemoteAccessLauncherForDevice(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
+        auth,
       );
     } catch (err) {
       captureException(err, c);
