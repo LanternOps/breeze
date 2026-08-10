@@ -268,9 +268,6 @@ services:
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
-      MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
-      MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
-      MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
       # Signup-abuse-detection sweep (docs/superpowers/specs/security-auth/2026-07-11-signup-abuse-detection-design.md).
       # Optional — empty/unmapped means ops alerting stays dark and per-signal
       # thresholds fall back to config.ts defaults.

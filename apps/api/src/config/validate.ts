@@ -606,12 +606,6 @@ const envObjectSchema = z
     CLOUDFLARE_API_TOKEN: z.string().optional(),
     CLOUDFLARE_ZONE_ID: z.string().optional(),
 
-    // MSI signing — when MSI_SIGNING_URL is set, CF Access secret is required
-    // (the signing tunnel rejects unauthenticated requests; without it every
-    // first installer-link request 5xxs).
-    MSI_SIGNING_URL: z.string().optional(),
-    MSI_SIGNING_CF_ACCESS_SECRET: z.string().optional(),
-
     // Delegant M365 helpdesk — DELEGANT_BASE_URL is the soft-enable indicator.
     // When set, the service token + principal signing material are required;
     // without them every M365 tool call mints an empty/invalid principal JWT
@@ -1289,7 +1283,7 @@ const envSchema = envObjectSchema
       // Indicator semantics:
       //   - boolean flags  → MCP_OAUTH_ENABLED
       //   - "URL is set"   → BREEZE_BILLING_URL, BILLING_SERVICE_URL,
-      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN, MSI_SIGNING_URL
+      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN
       //   - explicit value → EMAIL_PROVIDER=resend|smtp|mailgun
       const truthyFlag = (raw: string | undefined): boolean =>
         ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
@@ -1388,20 +1382,6 @@ const envSchema = envObjectSchema
         'CLOUDFLARE_ZONE_ID',
         data.CLOUDFLARE_ZONE_ID,
         'CLOUDFLARE_API_TOKEN is set (mTLS issuance against the configured zone)',
-        ctx,
-      );
-
-      // MSI signing (MSI_SIGNING_URL as indicator).
-      // The Cloudflare-fronted signing tunnel rejects unauthenticated requests.
-      // The signing service also accepts a per-account X-API-Key, but the
-      // CF Access service-token pair is mandatory in the current deploy —
-      // without it every /installer/link request 5xxs.
-      const msiSigningEnabled = Boolean(data.MSI_SIGNING_URL?.trim());
-      requireIf(
-        msiSigningEnabled,
-        'MSI_SIGNING_CF_ACCESS_SECRET',
-        data.MSI_SIGNING_CF_ACCESS_SECRET,
-        'MSI_SIGNING_URL is set (Cloudflare Access service-token auth to the signing tunnel)',
         ctx,
       );
 

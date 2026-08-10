@@ -29,7 +29,7 @@ function assertValidEnrollmentKey(key: string): void {
   }
 }
 
-// --- Windows zip bundle builder (fallback when remote signing service is not configured) ---
+// --- Windows zip bundle builder ---
 
 function generateWindowsInstallScript(enrollmentKey: string): string {
   return `@echo off

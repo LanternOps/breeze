@@ -115,6 +115,15 @@ describe('system routes', () => {
 
   // ────────────────────── GET /config-status ──────────────────────
   describe('GET /config-status', () => {
+    it('config-status no longer reports an msiSigning integration flag (per-download signing retired)', async () => {
+      setAuth();
+      const app = makeApp();
+      const res = await app.request('/system/config-status');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { integrations: Record<string, unknown> };
+      expect(body.integrations).not.toHaveProperty('msiSigning');
+    });
+
     it('returns config status for partner-scoped user', async () => {
       const res = await app.request('/system/config-status');
       expect(res.status).toBe(200);

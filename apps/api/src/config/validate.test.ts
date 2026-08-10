@@ -1671,7 +1671,6 @@ describe('validateConfig', () => {
   //   - Email (Resend):                                  EMAIL_PROVIDER=resend
   //                                                       OR (auto + RESEND_API_KEY)
   //   - Cloudflare mTLS:                                 CLOUDFLARE_API_TOKEN set
-  //   - MSI signing:                                     MSI_SIGNING_URL set
   //
   // Stripe is NOT present in apps/api (it lives in the separate breeze-billing
   // service). The audit plan listed STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
@@ -1872,22 +1871,10 @@ describe('validateConfig', () => {
       });
     });
 
-    // --- MSI signing (MSI_SIGNING_URL set) ----------------------------------
-    it('refuses to boot when MSI_SIGNING_URL is set but MSI_SIGNING_CF_ACCESS_SECRET is missing', () => {
+    it('MSI_SIGNING_URL is inert: production boots without MSI_SIGNING_CF_ACCESS_SECRET', () => {
       withEnv({
         ...prodBase,
-        MSI_SIGNING_URL: 'https://sign.2breeze.app/sign-breeze-agent',
-        MSI_SIGNING_CF_ACCESS_ID: 'cf-access-id',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
-      }, () => {
-        expect(() => validateConfig()).toThrow(/MSI_SIGNING_CF_ACCESS_SECRET/);
-      });
-    });
-
-    it('does not require MSI signing secrets when URL is unset', () => {
-      withEnv({
-        ...prodBase,
-        MSI_SIGNING_URL: '',
+        MSI_SIGNING_URL: 'https://sign.example.com/sign-breeze-agent',
         MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
@@ -1935,8 +1922,6 @@ describe('validateConfig', () => {
         RESEND_API_KEY: '',
         CLOUDFLARE_API_TOKEN: 'cf',
         CLOUDFLARE_ZONE_ID: '',
-        MSI_SIGNING_URL: 'https://sign',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
