@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoiceWorkspace from './InvoiceWorkspace';
 import { _resetShowMarginMemoryForTests } from './billingUi';
@@ -49,6 +49,32 @@ function invoice(over: Record<string, unknown>) {
 }
 
 describe('InvoiceWorkspace', () => {
+  // #3219 — the queued-Issue tests assert the END of a multi-hop propagation
+  // chain: the PATCH promise settles → the editor reports saved/failed → the
+  // workspace clears `savePending` → the header un-gates → the queued Issue
+  // fires a fetch. Every hop is promise/render scheduling, so under CI load the
+  // whole chain can outrun Testing Library's 1000ms default `waitFor` timeout.
+  //
+  // That is exactly what the three recorded sightings look like: #2925, this
+  // issue, and #3277 all failed at ~1038ms, i.e. a fraction over the default,
+  // and all passed on a same-commit rerun and locally.
+  //
+  // Fake timers are the wrong instrument here despite being the usual reflex —
+  // nothing in this chain is timer-driven. The delay is promise microtasks plus
+  // React render scheduling, which fake timers do not advance, so they would add
+  // machinery without touching the cause.
+  //
+  // Raised file-wide rather than per-assertion so a future test in this file
+  // inherits the headroom instead of re-discovering the flake. Restored
+  // afterwards because Testing Library's `configure` is process-global.
+  const DEFAULT_ASYNC_UTIL_TIMEOUT_MS = 1000;
+  beforeAll(() => {
+    configure({ asyncUtilTimeout: 5000 });
+  });
+  afterAll(() => {
+    configure({ asyncUtilTimeout: DEFAULT_ASYNC_UTIL_TIMEOUT_MS });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     // The margin preference persists to localStorage plus an in-memory mirror
