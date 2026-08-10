@@ -601,8 +601,10 @@ function sanitizeEnrollmentKey(
  * Counts DEVICE SLOTS, not installers: a key that produced two 5-device
  * downloads reports max 10, not 2.
  *
- * NOT reported for every key — see `reportsInstallerCapacity`, which is the
- * gate both read routes run before asking for this at all.
+ * NOT reported for every key. `fetchInstallerTokenUsage` counts only tokens
+ * stamped `usage_kind = 'capacity'` (#3034), so a key backed solely by
+ * per-download or legacy-unknown tokens aggregates to nothing and both read
+ * routes render `installerTokens: null`.
  */
 export interface InstallerTokenUsage {
   /** Σ consumed_count — devices that have actually redeemed an installer. */
@@ -842,10 +844,12 @@ enrollmentKeyRoutes.get(
     // tested `expires_at` alone, so "Hide expired" hid rows the same page was
     // calling Active: both Active and invisible.
     //
-    // The carve-out is `hasLiveUnexhaustedBootstrapToken()`, the positive form
-    // of the guard that already spares such a key from `purge-expired`. Sharing
-    // one predicate (services/enrollmentKeyPurgeGuards.ts) is what stops the
-    // page claiming a key is expired while the delete path insists it is not.
+    // The carve-out is `hasLiveUnexhaustedCapacityToken()`, the positive form
+    // of the capacity-scoped guard. It shares ONE subquery builder with the
+    // all-kind guard that spares a key from `purge-expired`
+    // (services/enrollmentKeyPurgeGuards.ts), differing only in the
+    // `usage_kind` predicate — which is what stops the page claiming a key is
+    // expired while the delete path insists it is not.
     // It is the SQL counterpart of the badge's `liveConsumed < liveMax` — the
     // test that makes the badge say "Active" — modulo two documented seams:
     // the guard binds the API process clock while the live* sums use Postgres
@@ -1153,13 +1157,16 @@ enrollmentKeyRoutes.post(
     // keys are never touched. The list route pairs it with the same live-token
     // exemption used below, so "Hide expired" and "Delete expired" now agree
     // about which keys are dead (#3191) — with one deliberate asymmetry,
-    // documented at that filter: the list route skips the exemption for
-    // short-link children (their token counts are suppressed on the wire, so
-    // their badge is parent-only), while this delete path applies it to every
-    // key. That leaves the residual disagreement pinned in the SAFE direction —
-    // the list may call a short-link child dead while this route spares it
-    // (visible symptom: "Delete expired" reporting a lower deletedCount than
-    // the operator expected), never the reverse, which would be data loss.
+    // documented at that filter: the list route's exemption counts only
+    // CAPACITY tokens, because it must match the badge, which is derived from
+    // the same capacity-only aggregate. This delete path counts tokens of every
+    // kind — a per-download token is still a working installer somebody
+    // downloaded, and a legacy-unknown one is merely a token whose provenance
+    // was never recorded (#3034). That leaves the residual disagreement pinned
+    // in the SAFE direction — the list may call a per-download-only key dead
+    // while this route spares it (visible symptom: "Delete expired" reporting a
+    // lower deletedCount than the operator expected), never the reverse, which
+    // would be data loss.
     conditions.push(
       lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
     );

@@ -178,9 +178,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "incident_actions": tablePolicy("org_id", {"included":["id","incident_id","org_id","action_type","description","executed_by","status","reversible","reversed","approval_ref","executed_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["result"]}),
   "incident_evidence": tablePolicy("org_id", {"included":["id","incident_id","org_id","evidence_type","description","collected_at","collected_by","storage_path","created_at"],"reviewedIncluded":["hash","hash_algorithm"],"excludedSensitive":[],"excludedOpen":["metadata"]}),
   "incidents": tablePolicy("org_id", {"included":["id","org_id","title","classification","severity","status","summary","source_type","source_ref","assigned_to","detected_at","contained_at","resolved_at","closed_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["related_alerts","affected_devices","affected_users","timeline"]}),
-  // usage_kind joins the plain included set: it is a three-value enum recording which
-// mint path issued the token ('capacity' / 'per_download' / 'legacy_unknown'), the same
-// kind of non-secret classifier as installer_platform.
+    // usage_kind joins the plain included set: it is a three-value enum recording
+  // which mint path issued the token ('capacity' / 'per_download' /
+  // 'legacy_unknown'), the same kind of non-secret classifier as
+  // installer_platform.
   "installer_bootstrap_tokens": tablePolicy("org_id", {"included":["id","org_id","parent_enrollment_key_id","site_id","max_usage","consumed_count","created_by","created_at","expires_at","consumed_at","consumed_from_ip","installer_platform","usage_kind"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":[]}),
   "invoice_documents": tablePolicy("org_id", {"included":["id","invoice_id","org_id","sha256","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["pdf"]}),
   "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

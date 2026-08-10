@@ -16,10 +16,15 @@
  *   NO key the badge would render "Active" is hidden by `?expired=false`.
  *
  * Concretely that means the filter honours the SAME live-token fact the purge
- * guard honours — `hasLiveUnexhaustedBootstrapToken()` /
- * `hasNoLiveUnexhaustedBootstrapToken()` are two wrappers over one subquery in
- * `services/enrollmentKeyPurgeGuards.ts` — so "Hide expired" can no longer hide
- * a key that "Delete expired" deliberately refuses to delete.
+ * guard honours. `hasLiveUnexhaustedCapacityToken()` /
+ * `hasNoLiveUnexhaustedCapacityToken()` (what the filter uses) and
+ * `hasNoLiveUnexhaustedBootstrapToken()` (what the purge uses) are wrappers
+ * over ONE subquery builder in `services/enrollmentKeyPurgeGuards.ts`,
+ * differing only in whether they restrict to `usage_kind = 'capacity'` — so
+ * "Hide expired" can no longer hide a key that "Delete expired" deliberately
+ * refuses to delete. The filter is the narrower of the two because it must
+ * match the badge (#3034); the purge stays deliberately wider, so the residual
+ * disagreement is always in the safe direction.
  *
  * Why real Postgres and not the mocked-`db` unit suites: `enrollmentKeys_list_create.test.ts`
  * mocks `../db` wholesale, so its `where()` returns whatever the test hands it
@@ -445,8 +450,9 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
   // the filter alone leaves half of it on trust. This reads both off the SAME
   // payload: `installerTokens` is exactly what `getKeyStatus` badges from, so a
   // future change that flips a row's badge to Active without flipping the
-  // filter (e.g. relaxing `reportsInstallerCapacity` per #3034) fails HERE
-  // rather than silently reintroducing #3191.
+  // filter — e.g. changing which `usage_kind` values the aggregate counts,
+  // which is what #3034 did — fails HERE rather than silently reintroducing
+  // #3191.
   runDb('no key whose wire payload reads Active is hidden by expired=false', async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const env = await setupTestEnvironment({ scope: 'organization' });

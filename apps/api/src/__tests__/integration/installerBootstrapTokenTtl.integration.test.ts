@@ -106,6 +106,15 @@ describe('installer bootstrap token TTL (#2775, real Postgres)', () => {
         // issuance default (bootstrapTokenExpiresAt()).
         expect(ttlMs).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
         expect(ttlMs).toBeLessThan(31 * 24 * 60 * 60 * 1000);
+
+        // #3034 — the caller's `usageKind` is actually PERSISTED, read back off
+        // real Postgres. The whole read path keys off this column, but every
+        // other test observes it only indirectly through an aggregate total, so
+        // a dropped or misnamed field would surface as a mysteriously wrong sum
+        // somewhere else. Asserting the stored value here points at the bug.
+        // (`legacy_unknown` is the column DEFAULT, so this also proves the
+        // insert supplied the value rather than falling through to it.)
+        expect(row!.usageKind).toBe('capacity');
       } finally {
         // Clean up every row created above. enrollment_keys ->
         // installer_bootstrap_tokens is ON DELETE CASCADE, so deleting the
