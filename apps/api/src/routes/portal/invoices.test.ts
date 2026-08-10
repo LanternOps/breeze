@@ -6,17 +6,19 @@ const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
   getCustomerInvoiceMock: vi.fn(),
   markViewedMock: vi.fn(),
 }));
-vi.mock('../../services/invoiceService', () => ({
-  getCustomerInvoice: getCustomerInvoiceMock,
-  markViewed: markViewedMock,
-  toCustomerInvoiceLine: (line: Record<string, unknown>) => ({
-    description: line.description,
-    quantity: line.quantity,
-    unitPrice: line.unitPrice,
-    taxable: line.taxable,
-    lineTotal: line.lineTotal,
-  }),
-}));
+// toCustomerInvoiceLine is deliberately kept REAL (importActual) — it is the
+// serialization boundary this suite's leak-guard test exists to police. A
+// hand-written stub here would only ever assert itself: it silently drifted
+// from the real field list when `name` was added (#3319), leaving the keyset
+// test documenting a keyset the route never actually returns.
+vi.mock('../../services/invoiceService', async (importActual) => {
+  const actual = await importActual<typeof import('../../services/invoiceService')>();
+  return {
+    getCustomerInvoice: getCustomerInvoiceMock,
+    markViewed: markViewedMock,
+    toCustomerInvoiceLine: actual.toCustomerInvoiceLine,
+  };
+});
 
 const { getInvoicePdfMock, renderInvoicePdfMock } = vi.hoisted(() => ({
   getInvoicePdfMock: vi.fn(),
@@ -158,6 +160,7 @@ describe('portal invoices routes', () => {
       lines: [{
         id: 'internal-line-id', sourceType: 'time_entry', sourceId: 'source-1',
         costBasis: '10.00', revenueAllocation: { labor: '25.00' }, isUnapprovedTime: true,
+        name: 'Support retainer',
         description: 'Support', quantity: '1.00', unitPrice: '25.00', taxable: true, lineTotal: '25.00',
       }],
     });
@@ -166,8 +169,12 @@ describe('portal invoices routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
     ]);
+    // The customer-facing title survives the route boundary (#3319) — this is
+    // the assertion the stubbed serializer used to make vacuous.
+    expect(body.lines[0].name).toBe('Support retainer');
+    expect(body.lines[0].description).toBe('Support');
   });
 
   it('GET /invoices/:id maps a cross-tenant 404 from the service', async () => {

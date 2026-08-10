@@ -193,6 +193,19 @@ export async function acceptQuote(
       catalogItemId: l.catalogItemId ?? null,
       parentLineId: null,
       ticketId: null,
+      // Carry BOTH label fields from the quote line (#3319). invoice_lines.name
+      // is the title and `description` the sub-line blurb (migration
+      // 2026-07-03-quote-invoice-line-name); renderers read `name ?? description`.
+      // Dropping `name` here made every converted invoice look like a legacy
+      // line, so an accepted "Onboarding & network setup" line showed only its
+      // blurb on the invoice and PDF.
+      //
+      // Blank-normalized, not just null-coalesced: the renderers key the blurb
+      // off `name` being truthy, so a name of '' would render the title as '—'
+      // AND suppress the description — losing BOTH labels. '' is reachable
+      // because the line validators allow an empty string. Storing NULL makes
+      // such a line a well-formed legacy line instead.
+      name: l.name?.trim() || null,
       description: l.description,
       quantity: l.quantity,
       unitPrice: l.unitPrice,

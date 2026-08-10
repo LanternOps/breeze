@@ -238,15 +238,49 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
     ]);
     expect(result.lines[0]).toEqual({
+      // Legacy line (source row carries no `name`): description stays the title.
+      name: null,
       description: 'Customer-facing work',
       quantity: '2.00',
       unitPrice: '75.00',
       taxable: true,
       lineTotal: '150.00',
     });
+  });
+
+  // #3319: the portal DTO used to collapse the pair as `description ?? name`,
+  // the INVERSE of the fallback the PDF and the MSP web views use, so a line
+  // with both fields set showed the customer the blurb and never the title.
+  it('getCustomerInvoice surfaces name and description as separate fields', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{
+      id: 'internal-line-id',
+      invoiceId: 'i1',
+      orgId: 'org1',
+      sourceType: 'manual',
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+      quantity: '1.00',
+      unitPrice: '1500.00',
+      taxable: true,
+      lineTotal: '1500.00',
+      customerVisible: true,
+      sortOrder: 0,
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(result.lines[0]).toMatchObject({
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+    });
+    // Still no internal columns leaked alongside the new field.
+    expect(Object.keys(result.lines[0]!).sort()).toEqual([
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+    ]);
   });
 
   it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
