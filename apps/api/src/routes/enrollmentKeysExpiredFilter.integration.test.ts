@@ -35,11 +35,14 @@
  *   (c) expired parent + token fully consumed    -> hidden
  *   (d) expired parent, no tokens at all         -> hidden (pre-existing behaviour)
  *   (e) unexpired parent / never-expiring parent -> visible (pre-existing behaviour)
- *   (f) short-link child + live token            -> hidden, mirroring
- *       `reportsInstallerCapacity` (#2992 / PR #2993): the API suppresses
- *       `installerTokens` for a short_code key, so its badge is parent-only and
- *       the filter must be too. Pins the deliberate asymmetry against the purge
- *       guard, which applies no such gate.
+ *   (f) short-link child + live PER_DOWNLOAD token -> hidden: a download token
+ *       is not device-slot capacity, so nothing aggregates, the badge is
+ *       parent-only, and the filter must be too. Pins the deliberate asymmetry
+ *       against the purge guard, which spares the key regardless of kind.
+ *   (j) short-link child + live CAPACITY token   -> VISIBLE (#3034). Differs
+ *       from (f) ONLY in `usage_kind`, which is what makes this pair the proof
+ *       that the discriminator moved from the key to the token. The old
+ *       `short_code IS NULL` gate hid both.
  *   (g) `expired=true` is the exact complement of `expired=false` — every key
  *       lands in exactly one, so no key is unreachable from both predicates.
  *   (h)/(i) MULTI-token keys, where the badge's SUM semantics and the filter's
@@ -48,8 +51,9 @@
  * Three cases go beyond the filter itself, because the invariant is a RELATION
  * and the other half must not be taken on faith:
  *   - the badge's own input (`installerTokens` on the wire) is asserted from
- *     the SAME response, so relaxing `reportsInstallerCapacity` (#3034) can no
- *     longer flip a badge to Active while the filter keeps hiding the row;
+ *     the SAME response, so a change to which tokens count can no longer flip a
+ *     badge to Active while the filter keeps hiding the row. That is exactly
+ *     what #3034 changed, and case (j) is the row it turned on;
  *   - partner and system scope, since the carve-out is a correlated EXISTS over
  *     a second RLS-forced table and a blind subquery would silently no-op;
  *   - a foreign-org token, since the subquery correlates only on
@@ -87,7 +91,19 @@ interface SeedOptions {
   /** Minutes in the FUTURE the parent expires (mutually exclusive with the above). */
   parentExpiresInMinutes?: number;
   shortCode?: string;
-  token?: { expiresAt: Date; createdAt?: Date; maxUsage: number; consumedCount: number };
+  token?: {
+    expiresAt: Date;
+    createdAt?: Date;
+    maxUsage: number;
+    consumedCount: number;
+    /**
+     * REQUIRED (#3034): what this token's max_usage MEANS. The list filter now
+     * asks `hasLiveUnexhaustedCapacityToken`, so a fixture that left this to the
+     * column DEFAULT (`legacy_unknown`) would be silently excluded and the case
+     * would pass for the wrong reason. Every case states it.
+     */
+    usageKind: "capacity" | "per_download";
+  };
 }
 
 /**
@@ -129,6 +145,7 @@ async function seedKey(opts: SeedOptions): Promise<string> {
         siteId: opts.siteId,
         maxUsage: opts.token.maxUsage,
         consumedCount: opts.token.consumedCount,
+        usageKind: opts.token.usageKind,
         // `installer_bootstrap_tokens_expires_after_created` (DB CHECK) forbids
         // expires_at <= created_at, so an ALREADY-EXPIRED token has to be
         // backdated rather than just given a past expiry.
@@ -151,6 +168,7 @@ async function attachToken(
     createdAt?: Date;
     maxUsage: number;
     consumedCount: number;
+    usageKind: "capacity" | "per_download";
   },
 ): Promise<void> {
   await withSystemDbAccessContext(async () => {
@@ -161,6 +179,7 @@ async function attachToken(
       siteId: opts.siteId,
       maxUsage: opts.maxUsage,
       consumedCount: opts.consumedCount,
+      usageKind: opts.usageKind,
       ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
       expiresAt: opts.expiresAt,
     });
@@ -243,7 +262,12 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
       orgId,
       siteId,
       unique: `${unique}-live`,
-      token: { expiresAt: LIVE_UNTIL(), maxUsage: 25, consumedCount: 3 },
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 25,
+        consumedCount: 3,
+        usageKind: "capacity",
+      },
     }),
     deadToken: await seedKey({
       orgId,
@@ -254,13 +278,19 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
         expiresAt: DEAD_SINCE(),
         maxUsage: 25,
         consumedCount: 3,
+        usageKind: "capacity",
       },
     }),
     consumedToken: await seedKey({
       orgId,
       siteId,
       unique: `${unique}-consumed`,
-      token: { expiresAt: LIVE_UNTIL(), maxUsage: 5, consumedCount: 5 },
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 5,
+        consumedCount: 5,
+        usageKind: "capacity",
+      },
     }),
     noToken: await seedKey({ orgId, siteId, unique: `${unique}-notoken` }),
     unexpired: await seedKey({
@@ -283,7 +313,31 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
       // emit — the realism of this row is the whole point of case (f).
       shortCode: shortCodeLike(unique),
       unique: `${unique}-shortlink`,
-      token: { expiresAt: LIVE_UNTIL(), maxUsage: 1, consumedCount: 0 },
+      // A real public download: serveInstaller hardcodes maxUsage 1 and stamps
+      // per_download, so this token is a CLICK, not a device slot.
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 1,
+        consumedCount: 0,
+        usageKind: "per_download",
+      },
+    }),
+    // (j) #3034 — the SAME short_code-bearing row, but the operator went on to
+    // build an authenticated installer FROM it, minting a genuine 4-slot
+    // capacity token. Under the old per-key `short_code` gate this row was
+    // indistinguishable from the one above: both had their figure suppressed and
+    // both were hidden. It must now badge Active and stay VISIBLE.
+    shortLinkChildWithCapacity: await seedKey({
+      orgId,
+      siteId,
+      shortCode: shortCodeLike(`${unique}-cap`),
+      unique: `${unique}-shortlink-cap`,
+      token: {
+        expiresAt: LIVE_UNTIL(),
+        maxUsage: 4,
+        consumedCount: 1,
+        usageKind: "capacity",
+      },
     }),
   };
 
@@ -302,6 +356,7 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
       expiresAt: DEAD_SINCE(),
       maxUsage: 10,
       consumedCount: 0,
+      usageKind: "capacity",
     },
   });
   await attachToken(multiTokenId, {
@@ -311,6 +366,7 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
     expiresAt: LIVE_UNTIL(),
     maxUsage: 1,
     consumedCount: 0,
+    usageKind: "capacity",
   });
 
   // (i) MULTI-TOKEN, all live but all exhausted -> badge Exhausted, not Active.
@@ -318,7 +374,12 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
     orgId,
     siteId,
     unique: `${unique}-multiex-a`,
-    token: { expiresAt: LIVE_UNTIL(), maxUsage: 5, consumedCount: 5 },
+    token: {
+      expiresAt: LIVE_UNTIL(),
+      maxUsage: 5,
+      consumedCount: 5,
+      usageKind: "capacity",
+    },
   });
   await attachToken(multiExhaustedId, {
     orgId,
@@ -327,6 +388,7 @@ async function seedMatrix(env: TestEnvironment, unique: string) {
     expiresAt: LIVE_UNTIL(),
     maxUsage: 3,
     consumedCount: 3,
+    usageKind: "capacity",
   });
 
   return { ...ids, multiToken: multiTokenId, multiExhausted: multiExhaustedId };
@@ -360,11 +422,15 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
     expect(visible.ids).not.toContain(ids.consumedToken);
     // (d) no installer ever minted -> parent expiry is the whole story.
     expect(visible.ids).not.toContain(ids.noToken);
-    // (f) short-link child: `installerTokens` is suppressed on the wire for it
-    // (#2992 / reportsInstallerCapacity), so its badge is parent-only and the
-    // filter must agree — even though a live token exists and the PURGE guard
-    // would spare it.
+    // (f) short-link child whose only token is per_download: it is a live token,
+    // and the PURGE guard would spare it, but it is not device-slot capacity —
+    // so `installerTokens` is null on the wire, the badge is parent-only, and
+    // the filter must agree. Pins the deliberate asymmetry against the purge.
     expect(visible.ids).not.toContain(ids.shortLinkChild);
+    // (j) #3034 — same short_code shape, but backed by a live CAPACITY token.
+    // The badge reads Active, so the filter must keep it visible. Under the old
+    // `short_code IS NULL` gate this row was hidden, which is the bug.
+    expect(visible.ids).toContain(ids.shortLinkChildWithCapacity);
     // (h) two tokens, one long-dead 10-slot + one live unused 1-slot -> Active.
     expect(visible.ids).toContain(ids.multiToken);
     // (i) two tokens, both live but both fully claimed -> not Active -> hidden.
@@ -401,11 +467,24 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
     );
     expect(activeByToken.length).toBeGreaterThan(0);
 
-    // The two rows the gate turns on, asserted explicitly rather than implied.
+    // The rows the discriminator turns on, asserted explicitly rather than
+    // implied.
     expect(badgeReadsActiveFromTokens(unfiltered.tokens.get(ids.liveToken))).toBe(true);
-    // Suppressed on the wire -> badge falls through to parent expiry -> hidden,
-    // which is why the filter's `short_code IS NULL` gate must exist.
+    // Only per-download tokens -> nothing aggregates -> null on the wire ->
+    // badge falls through to parent expiry -> hidden.
     expect(unfiltered.tokens.get(ids.shortLinkChild)).toBeNull();
+    // #3034: a capacity token under the SAME short_code shape DOES reach the
+    // wire, and the badge reads Active off it. This is the pair that proves the
+    // discriminator is per-token — the two rows differ only in `usage_kind`.
+    expect(unfiltered.tokens.get(ids.shortLinkChildWithCapacity)).toEqual({
+      consumed: 1,
+      max: 4,
+      liveConsumed: 1,
+      liveMax: 4,
+    });
+    expect(
+      badgeReadsActiveFromTokens(unfiltered.tokens.get(ids.shortLinkChildWithCapacity)),
+    ).toBe(true);
   });
 
   // This predicate has now been missed on three separate code paths
@@ -431,6 +510,10 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
     expect(partnerVisible.ids).toContain(partnerIds.multiToken);
     expect(partnerVisible.ids).not.toContain(partnerIds.deadToken);
     expect(partnerVisible.ids).not.toContain(partnerIds.shortLinkChild);
+    // #3034 under partner scope too: the capacity subquery re-evaluates
+    // `breeze_has_org_access` per token across many orgs, so a blind subquery
+    // here would hide the row again for every MSP-scoped tech.
+    expect(partnerVisible.ids).toContain(partnerIds.shortLinkChildWithCapacity);
 
     // The badge half, read off the partner-scope payload: the token aggregate
     // must survive the wider RLS context too, or the row would badge Expired
@@ -460,6 +543,7 @@ describe('GET /enrollment-keys?expired= — live installer-token liveness (#3191
       expiresAt: LIVE_UNTIL(),
       maxUsage: 5,
       consumedCount: 0,
+      usageKind: "capacity",
     });
 
     const visible = await listKeys(env.token, 'false');

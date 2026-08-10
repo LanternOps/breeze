@@ -75,6 +75,7 @@ describe('installer bootstrap token TTL (#2775, real Postgres)', () => {
         const issued = await issueBootstrapTokenForKey({
           parentEnrollmentKeyId: parent!.id,
           createdByUserId: null,
+          usageKind: "capacity",
           maxUsage: 25,
           ttlMinutes: 43200, // 30 days — admin's chosen expiry
         });

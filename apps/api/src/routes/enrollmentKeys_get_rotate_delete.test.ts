@@ -333,20 +333,51 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(body.usageCount).toBe(0);
     });
 
-    // #2992 review round 2 — a short_code marks an installer-link / invite
-    // CHILD key, whose bootstrap tokens are one-per-DOWNLOAD (`maxUsage: 1`
-    // hardcoded in serveInstaller), so Σ max_usage counts clicks rather than
-    // device slots. See reportsInstallerCapacity. The detail route must apply
-    // the same rule as the list route, or a caller gets a different answer
-    // depending on which endpoint it read the key from.
-    it('suppresses installer capacity for a short-link child key', async () => {
+    // #3034 — the detail route must answer the same as the list route, and both
+    // now discriminate per TOKEN. A short_code says nothing about whether a
+    // capacity token exists under the key: the authenticated build routes accept
+    // a short-link child id, so an operator CAN mint a real device-slot token
+    // there. These two cases pin both directions.
+    it('reports installer capacity for a short-link child that has a capacity token (#3034)', async () => {
       mockSelectFromWhereLimit([
         makeEnrollmentKey({ shortCode: 'A1B2C3D4E5', maxUsage: 7, usageCount: 3 }),
       ]);
-      // No groupBy mock: the aggregate must not be issued at all. Mutant
-      // killed — drop the reportsInstallerCapacity gate here and the savepoint
-      // opens and a second select fires (and, with a groupBy mock present, a
-      // meaningless `Installer devices 0 / 3` reaches the wire).
+      // The aggregate's `usage_kind = 'capacity'` predicate matched the token
+      // the operator minted by building a 4-device installer from this child
+      // row. Reinstating a per-key shortCode gate here would drop it on the
+      // floor — the defect #3034 reported, and the reason the detail route must
+      // not re-derive suppression of its own.
+      mockSelectFromWhereGroupBy([
+        { parentEnrollmentKeyId: KEY_ID, consumed: 1, max: 4, liveConsumed: 1, liveMax: 4 },
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.installerTokens).toEqual({
+        consumed: 1,
+        max: 4,
+        liveConsumed: 1,
+        liveMax: 4,
+      });
+      // The key's own counters — atomically claimed on every /s/:code
+      // download — are reported unchanged alongside it.
+      expect(body.usageCount).toBe(3);
+      expect(body.maxUsage).toBe(7);
+    });
+
+    it('reports no installer capacity for a short-link child whose tokens are all per-download', async () => {
+      mockSelectFromWhereLimit([
+        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5', maxUsage: 7, usageCount: 3 }),
+      ]);
+      // The aggregate IS issued — there is no per-key skip any more — but its
+      // capacity predicate matches nothing, so no group comes back and the wire
+      // shows null instead of a meaningless "Installer devices 0 / 3".
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request(`/enrollment-keys/${KEY_ID}`, {
         method: 'GET',
@@ -356,10 +387,11 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.installerTokens).toBeNull();
-      expect(dbMock.transaction).not.toHaveBeenCalled();
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
-      // The key's own counters — atomically claimed on every /s/:code
-      // download — still carry the real story.
+      // Two selects, not one: the key lookup AND the aggregate. The old per-key
+      // gate skipped the second entirely for a short_code row; that skip is what
+      // #3034 removed, so this count is the mutant-killer for reinstating it.
+      expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
       expect(body.usageCount).toBe(3);
       expect(body.maxUsage).toBe(7);
     });
