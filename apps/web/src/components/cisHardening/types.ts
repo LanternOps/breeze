@@ -43,6 +43,7 @@ export type ComplianceEntry = {
 
 export type Baseline = {
   id: string;
+  orgId: string;
   name: string;
   osType: string;
   level: string;

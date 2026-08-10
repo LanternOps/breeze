@@ -1633,7 +1633,8 @@
       "triggerScan": "Attiva scansione"
     },
     "messages": {
-      "triggerScanFailed": "Impossibile attivare la scansione"
+      "triggerScanFailed": "Impossibile attivare la scansione",
+      "triggerScanQueued": "Scansione in coda per {{name}}"
     },
     "table": {
       "name": "Nome",
@@ -1666,7 +1667,8 @@
       "new": "Nuova baseline"
     },
     "messages": {
-      "saveFailed": "Impossibile salvare la baseline"
+      "saveFailed": "Impossibile salvare la baseline",
+      "saveSuccess": "Baseline “{{name}}” salvata"
     },
     "fields": {
       "name": "Nome",

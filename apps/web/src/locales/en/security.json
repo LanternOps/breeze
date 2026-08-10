@@ -1633,7 +1633,8 @@
       "triggerScan": "Trigger Scan"
     },
     "messages": {
-      "triggerScanFailed": "Failed to trigger scan"
+      "triggerScanFailed": "Failed to trigger scan",
+      "triggerScanQueued": "Scan queued for {{name}}"
     },
     "table": {
       "name": "Name",
@@ -1666,7 +1667,8 @@
       "new": "New Baseline"
     },
     "messages": {
-      "saveFailed": "Failed to save baseline"
+      "saveFailed": "Failed to save baseline",
+      "saveSuccess": "Baseline “{{name}}” saved"
     },
     "fields": {
       "name": "Name",

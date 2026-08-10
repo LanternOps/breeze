@@ -1633,7 +1633,8 @@
       "triggerScan": "Acionar verificação"
     },
     "messages": {
-      "triggerScanFailed": "Falha ao acionar verificação"
+      "triggerScanFailed": "Falha ao acionar verificação",
+      "triggerScanQueued": "Verificação na fila para {{name}}"
     },
     "table": {
       "name": "Nome",
@@ -1666,7 +1667,8 @@
       "new": "Nova linha de base"
     },
     "messages": {
-      "saveFailed": "Falha ao salvar linha de base"
+      "saveFailed": "Falha ao salvar linha de base",
+      "saveSuccess": "Linha de base “{{name}}” salva"
     },
     "fields": {
       "name": "Nome",
