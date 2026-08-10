@@ -220,25 +220,30 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     expect(sessionPolls).toBe(1);
   });
 
-  it('stops the answer poll on a terminal 403 instead of polling to timeout', async () => {
-    let sessionPolls = 0;
-    stubFetch((url) => {
-      if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
-      if (url.includes('/viewer/offer')) return jsonResponse({ ok: true });
-      if (url.includes('/viewer/session')) {
-        sessionPolls += 1;
-        return jsonResponse('Remote desktop is disabled by policy', 403);
-      }
-      return jsonResponse({}, 404);
-    });
+  // 400 not-a-desktop-session, 403 policy-denied/owner-mismatch, 404
+  // session-not-found — all terminal, all previously polled to timeout.
+  it.each([400, 403, 404])(
+    'stops the answer poll on a terminal %i instead of polling to timeout',
+    async (status) => {
+      let sessionPolls = 0;
+      stubFetch((url) => {
+        if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
+        if (url.includes('/viewer/offer')) return jsonResponse({ ok: true });
+        if (url.includes('/viewer/session')) {
+          sessionPolls += 1;
+          return jsonResponse('Remote desktop is disabled by policy', status);
+        }
+        return jsonResponse({}, 404);
+      });
 
-    const err = await createWebRTCSession(baseParams, videoEl).catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
-    // A policy denial is not a dead session, so it must not masquerade as one.
-    expect(err).not.toBeInstanceOf(SessionEndedError);
-    expect((err as Error).message).toContain('403');
-    expect(sessionPolls).toBe(1);
-  });
+      const err = await createWebRTCSession(baseParams, videoEl).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      // A policy denial is not a dead session, so it must not masquerade as one.
+      expect(err).not.toBeInstanceOf(SessionEndedError);
+      expect((err as Error).message).toContain(String(status));
+      expect(sessionPolls).toBe(1);
+    },
+  );
 
   it('gives up rather than polling through a 429 it has been told to wait out', async () => {
     let sessionPolls = 0;
@@ -269,5 +274,83 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(SessionEndedError);
     expect(err).not.toBeInstanceOf(AgentSessionError);
+  });
+
+  // The tests above all settle on the first poll. These drive the real
+  // multi-iteration loop (fake timers) to prove that *recoverable* statuses
+  // still retry — the fix must not turn "stop hammering" into "give up".
+  describe('multi-iteration polling', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function stubSessionPolls(responses: (n: number) => Response) {
+      let sessionPolls = 0;
+      stubFetch((url) => {
+        if (url.includes('/ice-servers')) return jsonResponse({ iceServers: [] });
+        if (url.includes('/viewer/offer')) return jsonResponse({ ok: true });
+        if (url.includes('/viewer/session')) {
+          sessionPolls += 1;
+          return responses(sessionPolls);
+        }
+        return jsonResponse({}, 404);
+      });
+      return () => sessionPolls;
+    }
+
+    it('keeps polling through a transient 5xx and still succeeds', async () => {
+      const polls = stubSessionPolls((n) =>
+        n <= 2
+          ? jsonResponse({ error: 'bad gateway' }, 503)
+          : jsonResponse({ webrtcAnswer: 'v=0 answer-sdp' }),
+      );
+
+      const pending = createWebRTCSession(baseParams, videoEl);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pending).resolves.toMatchObject({ pc: expect.anything() });
+      // Two 503s were ridden out, the third poll got the answer.
+      expect(polls()).toBe(3);
+    });
+
+    it('honours a short Retry-After and resumes polling', async () => {
+      const polls = stubSessionPolls((n) =>
+        n === 1
+          ? jsonResponse({ error: 'Too many requests' }, 429, { 'Retry-After': '1' })
+          : jsonResponse({ webrtcAnswer: 'v=0 answer-sdp' }),
+      );
+
+      const pending = createWebRTCSession(baseParams, videoEl);
+      // Nothing should happen before the server's 1s Retry-After elapses.
+      await vi.advanceTimersByTimeAsync(500);
+      expect(polls()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(pending).resolves.toMatchObject({ pc: expect.anything() });
+      expect(polls()).toBe(2);
+    });
+
+    it('stays bounded on a 429 that carries no Retry-After', async () => {
+      // No header means no give-up signal, so the loop runs to the timeout —
+      // it must do so at the backed-off cadence, not the old 50ms hot spin.
+      const polls = stubSessionPolls(() => jsonResponse({ error: 'Too many requests' }, 429));
+
+      const pending = createWebRTCSession(baseParams, videoEl);
+      const settled = pending.catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      const message = (await settled as Error).message;
+      expect(message).toContain('Timed out');
+      // The timeout must say what it last saw, or a throttled server looks
+      // identical to an agent that simply never answered.
+      expect(message).toContain('429');
+      expect(polls()).toBeGreaterThan(1);
+      // A flat 50ms poll would have issued ~300 here.
+      expect(polls()).toBeLessThan(40);
+    });
   });
 });

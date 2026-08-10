@@ -1,13 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// Hoisted so individual tests can flip between the in-memory fallback
+// (getRedis -> null) and the Redis-backed path that production actually runs.
+const mocks = vi.hoisted(() => ({
+  getRedis: vi.fn<() => unknown>(() => null),
+  rateLimiter: vi.fn(),
+}));
+
 vi.mock('../services/redis', () => ({
-  getRedis: () => null,
+  getRedis: mocks.getRedis,
+}));
+
+vi.mock('../services/rate-limit', () => ({
+  rateLimiter: mocks.rateLimiter,
 }));
 
 vi.mock('../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => 'global-rate-limit-test'),
 }));
+
+const TEST_IP = 'global-rate-limit-test';
 
 import {
   __resetInMemoryCountersForTests,
@@ -20,6 +33,9 @@ import {
 beforeEach(() => {
   __resetSkipPrefixesForTests();
   __resetInMemoryCountersForTests();
+  // Default to the in-memory fallback; the Redis-path tests opt in.
+  mocks.getRedis.mockReturnValue(null);
+  mocks.rateLimiter.mockReset();
 });
 
 describe('globalRateLimit', () => {
@@ -102,6 +118,37 @@ describe('globalRateLimit — isolated desktop-ws bucket', () => {
     expect(throttled.status).toBe(429);
     expect(throttled.headers.get('Retry-After')).toBe('60');
     expect(throttled.headers.get('X-RateLimit-Limit')).toBe('2');
+  });
+
+  // Production always has Redis, so the in-memory assertions above exercise the
+  // fallback rather than the real path. Pin the key/limit actually handed to the
+  // Redis limiter too.
+  it('hands the isolated key and limit to the Redis limiter', async () => {
+    const fakeRedis = { marker: 'redis' };
+    mocks.getRedis.mockReturnValue(fakeRedis);
+    mocks.rateLimiter.mockResolvedValue({
+      allowed: true,
+      remaining: 599,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+    const app = buildApp({ limit: 300, windowSeconds: 60 });
+
+    await app.request(VIEWER_PATH);
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(
+      fakeRedis,
+      `global:desktopws:${TEST_IP}`,
+      600,
+      60,
+    );
+
+    mocks.rateLimiter.mockClear();
+    await app.request('/api/v1/devices');
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(
+      fakeRedis,
+      `global:${TEST_IP}`,
+      300,
+      60,
+    );
   });
 
   it('exhausting the shared bucket does not throttle viewer traffic', async () => {

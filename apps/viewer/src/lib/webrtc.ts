@@ -269,6 +269,10 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
 async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: number): Promise<string> {
   const start = Date.now();
   let intervalMs = ANSWER_POLL_INITIAL_INTERVAL_MS;
+  // Remembered so a timeout can say WHY it timed out. Without this a server
+  // returning 503 for 15s is indistinguishable from an agent that never
+  // answered, and both produce the same misleading "agent didn't respond".
+  let lastErrorStatus: number | null = null;
 
   while (Date.now() - start < timeoutMs) {
     const resp = await apiFetch(
@@ -309,13 +313,26 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
         throw new Error('Remote session is rate limited — please retry in a moment.');
       }
       intervalMs = Math.max(retryAfterMs ?? 0, ANSWER_POLL_MAX_INTERVAL_MS);
+    } else {
+      // 5xx/408 — genuinely transient, so keep polling. Log the first of each
+      // kind so a real outage is visible rather than silently absorbed into a
+      // generic timeout 15s later.
+      if (resp.status !== lastErrorStatus) {
+        console.warn(`Answer poll got HTTP ${resp.status}; retrying until timeout`);
+      }
     }
+
+    if (!resp.ok) lastErrorStatus = resp.status;
 
     await new Promise((r) => setTimeout(r, intervalMs));
     intervalMs = nextAnswerPollInterval(intervalMs);
   }
 
-  throw new Error('Timed out waiting for WebRTC answer from agent');
+  throw new Error(
+    lastErrorStatus === null
+      ? 'Timed out waiting for WebRTC answer from agent'
+      : `Timed out waiting for WebRTC answer from agent (last response: HTTP ${lastErrorStatus})`,
+  );
 }
 
 /**
