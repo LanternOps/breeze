@@ -20,7 +20,7 @@ import (
 // agents, so assert on the marshalled bytes.
 func TestHeartbeatPayloadWireByteIdentity(t *testing.T) {
 	var payload HeartbeatPayload
-	payload.AgentEdition, payload.MigrationRequired = migrationSignal("https://selfhosted.example")
+	payload.AgentEdition, payload.MigrationRequired = migrationSignal("https://selfhosted.example", "")
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestHeartbeatPayloadWireHostedSignal(t *testing.T) {
 	defer restore()
 
 	var payload HeartbeatPayload
-	payload.AgentEdition, payload.MigrationRequired = migrationSignal("https://selfhosted.example")
+	payload.AgentEdition, payload.MigrationRequired = migrationSignal("https://selfhosted.example", "")
 
 	body, err := json.Marshal(payload)
 	if err != nil {

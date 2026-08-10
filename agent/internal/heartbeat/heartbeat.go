@@ -144,17 +144,25 @@ type HeartbeatPayload struct {
 }
 
 // migrationSignal reports the agent's build edition and whether it is a
-// hosted build currently talking to a non-allowlisted server (migration
-// needed). Pure; independent of hostpolicy.Strict() — reporting is
-// telemetry, not enforcement, so it fires the same in gap and strict hosted
-// builds. Self-host returns ("", false) — NOT "self-host" — because the
+// hosted build currently talking to a non-allowlisted primary OR persisted
+// backup server (migration needed). backup is checked only when non-empty —
+// nothing is persisted to violate the allowlist when there is no backup.
+// Pure; independent of hostpolicy.Strict() — reporting is telemetry, not
+// enforcement, so it fires the same in gap and strict hosted builds.
+// Self-host returns ("", false) — NOT "self-host" — because the
 // AgentEdition field is omitempty: only the empty string drops out of the
 // wire payload, preserving byte-identity with pre-Task-8 agents.
-func migrationSignal(server string) (edition string, migrationRequired bool) {
+func migrationSignal(server, backup string) (edition string, migrationRequired bool) {
 	if !hostpolicy.Enforced() {
 		return "", false
 	}
-	return "hosted", hostpolicy.AllowedURL(server) != nil
+	if hostpolicy.AllowedURL(server) != nil {
+		return "hosted", true
+	}
+	if backup != "" && hostpolicy.AllowedURL(backup) != nil {
+		return "hosted", true
+	}
+	return "hosted", false
 }
 
 // SecurityCapabilities is the agent's outbound-network-policy capability
@@ -3694,7 +3702,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
 	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
-	payload.AgentEdition, payload.MigrationRequired = migrationSignal(h.ServerURL())
+	// Checks the persisted backup as well as the primary so a hosted-gap
+	// build with an allowlisted primary but a non-allowlisted backup still
+	// surfaces the dashboard migration banner.
+	payload.AgentEdition, payload.MigrationRequired = migrationSignal(h.ServerURL(), h.BackupServerURL())
 
 	h.mu.Lock()
 	if h.helperLifecycle != nil {
