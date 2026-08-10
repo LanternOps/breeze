@@ -1,0 +1,368 @@
+name: Sign Breeze Release
+
+# Distilled from the signing jobs of lanternops/breeze .github/workflows/release.yml.
+# Maintenance stance: this is a COPY, not a reusable workflow — your secrets never
+# flow through LanternOps workflow definitions, and refactors of the product repo's
+# release.yml cannot break your runs. Version-sensitive build logic lives in the
+# product repo and is checked out at the manifest-verified sourceCommit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Breeze release version to sign (X.Y.Z or X.Y.Z-suffix, no leading v)'
+        required: true
+        type: string
+      signing-mode:
+        description: 'Windows signing backend (pfx is legacy/internal-PKI only)'
+        required: true
+        default: azure-artifact-signing
+        type: choice
+        options:
+          - azure-artifact-signing
+          - pfx
+      platforms:
+        description: 'Platforms to sign'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+      dry-run:
+        description: 'Download + verify + build with signing stubbed (no secrets needed)'
+        required: true
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      signing-mode:
+        required: false
+        default: azure-artifact-signing
+        type: string
+      platforms:
+        required: false
+        default: all
+        type: string
+      dry-run:
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write   # publish the signed release on this repository
+  id-token: write   # Azure OIDC federated login (azure-artifact-signing mode)
+
+concurrency:
+  group: sign-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Validate version format
+        id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::version '$VERSION' is not X.Y.Z or X.Y.Z-suffix (no leading v)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to overwrite an existing release
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release v${VERSION} already exists on ${GITHUB_REPOSITORY}. Signing must happen once per release so SmartScreen/Gatekeeper reputation accrues on a stable hash — delete the release manually first if you truly need to re-sign."
+            exit 1
+          fi
+          echo "no existing release v${VERSION} — ok to proceed"
+
+  windows:
+    name: Sign Windows artifacts
+    needs: [validate]
+    if: inputs.platforms == 'all' || inputs.platforms == 'windows'
+    runs-on: windows-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # ---- Trust boundary: everything below `verify` may assume the official
+      # ---- release is authentic. No secrets appear above or inside it.
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Checkout Breeze source at manifest sourceCommit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lanternops/breeze
+          ref: ${{ steps.verify.outputs.source-commit }}
+          path: breeze
+          persist-credentials: false
+
+      - name: Download and verify unsigned signing inputs
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          for pair in \
+            "breeze-agent-windows-amd64-unsigned.exe:breeze-agent-windows-amd64.exe" \
+            "breeze-backup-windows-amd64-unsigned.exe:breeze-backup-windows-amd64.exe" \
+            "breeze-watchdog-windows-amd64-unsigned.exe:breeze-watchdog-windows-amd64.exe" \
+            "breeze-user-helper-windows-amd64-unsigned.exe:breeze-user-helper-windows-amd64.exe"
+          do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            # explicit `bash` prefix: the exec bit is not reliable after a
+            # Windows checkout, and git-bash is the shell here
+            bash scripts/download-verified-asset.sh "$VERSION" "$src" "dist/$dst" --expect-signing-input
+          done
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX CLI (pinned)
+        shell: pwsh
+        run: |
+          # Version-pinned, unlike the product CI which floats — a WiX minor
+          # bump must not change your MSI bytes out from under you.
+          dotnet tool install --global wix --version 7.0.0
+          if ($LASTEXITCODE -ne 0) { throw "wix install failed with exit code $LASTEXITCODE" }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          wix eula accept wix7
+
+      - name: Validate Azure signing secrets
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+        run: |
+          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME", "AZURE_CERT_PROFILE")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) {
+              throw "Missing required signing secret: $name (see README secrets table)"
+            }
+          }
+
+      - name: Validate PFX signing secrets
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          foreach ($name in @("WINDOWS_PFX_BASE64", "WINDOWS_PFX_PASSWORD")) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) {
+              throw "Missing required signing secret: $name (see README secrets table)"
+            }
+          }
+
+      - name: Azure Login (OIDC)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign agent EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign backup EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-backup-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign watchdog EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign user-helper EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign EXEs (PFX — legacy/internal PKI)
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          PFX_TIMESTAMP_URL: ${{ vars.PFX_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+          $targets = @(
+            "dist\breeze-agent-windows-amd64.exe",
+            "dist\breeze-backup-windows-amd64.exe",
+            "dist\breeze-watchdog-windows-amd64.exe",
+            "dist\breeze-user-helper-windows-amd64.exe"
+          )
+          foreach ($f in $targets) {
+            & $signtool sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /tr $env:PFX_TIMESTAMP_URL /td SHA256 $f
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $f with exit code $LASTEXITCODE" }
+          }
+
+      - name: Build MSI
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = $env:GITHUB_WORKSPACE
+          $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
+          $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
+          $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
+          $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
+          $msiPath = Join-Path $root "dist\breeze-agent.msi"
+          & (Join-Path $root "breeze\agent\installer\build-msi.ps1") `
+            -Version $env:VERSION `
+            -AgentExePath $agentExe `
+            -BackupExePath $backupExe `
+            -WatchdogExePath $watchdogExe `
+            -UserHelperExePath $userHelperExe `
+            -OutputPath $msiPath
+
+      - name: Sign MSI (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSI (PFX — legacy/internal PKI)
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          PFX_TIMESTAMP_URL: ${{ vars.PFX_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          if (-not (Test-Path $pfxPath)) {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          & $signtool sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /tr $env:PFX_TIMESTAMP_URL /td SHA256 "dist\breeze-agent.msi"
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for MSI with exit code $LASTEXITCODE" }
+
+      - name: Remove PFX from disk
+        if: always() && inputs.signing-mode == 'pfx'
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP "signing.pfx")
+
+      - name: Verify signatures
+        if: inputs.dry-run == false
+        shell: pwsh
+        run: |
+          $targets = @(
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-backup-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-watchdog-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-user-helper-windows-amd64.exe"),
+            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi")
+          )
+          foreach ($target in $targets) {
+            $sig = Get-AuthenticodeSignature -FilePath $target
+            # Valid = fully trusted chain; UnknownError = signed but the Azure
+            # Artifact Signing root is not yet in the runner's local trust store
+            # (normal for new accounts).
+            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
+              throw "Signature validation failed for $target. Status: $($sig.Status)"
+            }
+            if ($sig.Status -eq "UnknownError") {
+              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError). This is normal for new Azure Artifact Signing accounts."
+            }
+            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
+          }
+
+      - name: Assert dry-run outputs exist
+        if: inputs.dry-run == true
+        shell: pwsh
+        run: |
+          foreach ($f in @("dist\breeze-agent-windows-amd64.exe", "dist\breeze-backup-windows-amd64.exe", "dist\breeze-watchdog-windows-amd64.exe", "dist\breeze-user-helper-windows-amd64.exe", "dist\breeze-agent.msi")) {
+            if (-not (Test-Path $f) -or (Get-Item $f).Length -eq 0) { throw "dry-run output missing or empty: $f" }
+            Write-Host "dry-run output ok: $f"
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-windows
+          path: |
+            dist/breeze-agent-windows-amd64.exe
+            dist/breeze-backup-windows-amd64.exe
+            dist/breeze-watchdog-windows-amd64.exe
+            dist/breeze-user-helper-windows-amd64.exe
+            dist/breeze-agent.msi
+          retention-days: 7
