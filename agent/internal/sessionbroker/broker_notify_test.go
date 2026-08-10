@@ -24,6 +24,7 @@ func newNotifyProbe(t *testing.T, b *Broker, name string, scopes []string) *noti
 	t.Cleanup(func() { _ = clientConn.Close() })
 
 	session := NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "", name, scopes)
+	t.Cleanup(func() { _ = session.Close() })
 
 	b.mu.Lock()
 	b.sessions[session.SessionID] = session
@@ -99,6 +100,16 @@ func TestBroadcastNotificationFiltersOnNotifyScope(t *testing.T) {
 		{
 			name:   "desktop and clipboard without notify",
 			scopes: []string{"desktop", "clipboard"},
+			want:   false,
+		},
+		{
+			// The macOS desktop helper: scopesForRole grants it "desktop"
+			// only, even though it runs the shared internal/userhelper client
+			// that would dispatch TypeNotify. Filtered out, and that is
+			// deliberate — see the BroadcastNotification doc comment. This
+			// case is pinned so the asymmetry cannot change unnoticed.
+			name:   "macos desktop helper scopes",
+			scopes: []string{"desktop"},
 			want:   false,
 		},
 		{

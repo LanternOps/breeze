@@ -1280,12 +1280,22 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 // BroadcastNotification sends a desktop notification to every connected session
 // holding the "notify" scope.
 //
-// The scope filter is load-bearing, not cosmetic: helpers that were never
-// granted "notify" have no toast handler at all (the Breeze Assist helper
-// connects with assist/consent_ui and drops unknown message types on the
-// floor). Sending to them wastes an IPC round trip and, worse, would inflate
-// any delivery accounting built on this broadcast into claiming reach it does
-// not have.
+// The scope filter is load-bearing, not cosmetic. The Breeze Assist helper
+// connects with assist/consent_ui and the watchdog with "watchdog"; neither
+// has a TypeNotify handler, so an unfiltered broadcast wastes an IPC round
+// trip and — worse — would inflate any delivery accounting built on this
+// broadcast into claiming reach it does not have.
+//
+// Known asymmetry: holding "notify" is sufficient to render a toast but is
+// not, today, strictly necessary. The macOS desktop helper runs the shared
+// internal/userhelper client (which dispatches TypeNotify unconditionally)
+// yet scopesForRole deliberately grants it "desktop" only, so it is filtered
+// out here. That costs nothing at present because neither caller reaches
+// macOS: NewRebootManager discards its NotifyFunc on non-Windows
+// (patching/reboot_other.go) and handleRebootSafeMode precedes a
+// RebootToSafeMode that is Windows-only. If a cross-platform notification
+// caller is ever added, grant the macOS desktop helper "notify" in
+// scopesForRole rather than weakening this filter.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	b.mu.RLock()
 	sessions := make([]*Session, 0, len(b.sessions))
