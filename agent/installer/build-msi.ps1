@@ -43,7 +43,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-    throw "wix CLI not found. Install WiX v4 first (e.g. 'dotnet tool install --global wix')."
+    throw "wix CLI not found. Install the WiX CLI first (e.g. 'dotnet tool install --global wix')."
 }
 
 if (-not (Test-Path $installerPath)) {

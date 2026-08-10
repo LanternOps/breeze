@@ -264,5 +264,25 @@ jobs:
       - name: Run actionlint
         run: ./actionlint -shellcheck=
 
+      # selfhost-signing-template/ is the source of truth for the public
+      # breeze-selfhost-signing template repo. Its own .github/workflows/ci.yml
+      # is never loaded here (nested workflow directories are not scanned), so
+      # without this the verifier that decides whether a self-hoster applies
+      # their Authenticode/Apple certificate to downloaded bytes is only ever
+      # tested in the CONSUMER's fork, after adoption.
+      - name: Verify BYO-signing template (self-test + standalone actionlint)
+        run: |
+          set -euo pipefail
+          node selfhost-signing-template/scripts/verify-manifest.test.mjs
+          # Lint the template as the standalone repo it becomes: its local
+          # reusable-workflow refs (./.github/workflows/sign-release.yml) only
+          # resolve when the template directory IS the repo root.
+          standalone="$(mktemp -d)"
+          cp -R selfhost-signing-template/. "$standalone/"
+          # actionlint locates the workflows directory via the git root.
+          git -C "$standalone" init -q
+          (cd "$standalone" && "$GITHUB_WORKSPACE/actionlint" -shellcheck=)
+          rm -rf "$standalone"
+
       - name: Run zizmor
         run: pipx run zizmor==1.25.2 --no-progress --config .github/zizmor.yml --min-severity medium .github/workflows/

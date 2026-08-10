@@ -59,6 +59,14 @@ jobs:
     name: Dry-run sign workflow
     needs: [lint]
     if: vars.DRY_RUN_VERSION != ''
+    # A called workflow's jobs cannot hold more permission than the calling job
+    # grants. sign-release.yml declares `contents: write` (publish) and
+    # `id-token: write` (Azure OIDC); without them here the call is rejected
+    # against this workflow's top-level `contents: read`. A dry run exercises
+    # neither — it publishes nothing and skips every Azure step.
+    permissions:
+      contents: write
+      id-token: write
     uses: ./.github/workflows/sign-release.yml
     with:
       version: ${{ vars.DRY_RUN_VERSION }}

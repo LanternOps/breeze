@@ -16,6 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 url="https://github.com/lanternops/breeze/releases/download/v${VERSION}/${ASSET}"
 mkdir -p "$(dirname "$DEST")"
-curl -fsSL --retry 3 --retry-delay 5 -o "$DEST" "$url"
+
+# Download to a temp path and only move into place once verified, so unverified
+# bytes never occupy the destination a later step reads. `set -e` aborts the job
+# today, but that is a property of the caller, not of this script.
+tmp="$(mktemp "${DEST}.download.XXXXXX")"
+cleanup() { rm -f "$tmp"; }
+trap cleanup EXIT
+
+curl -fsSL --retry 3 --retry-delay 5 -o "$tmp" "$url"
 node "$SCRIPT_DIR/verify-manifest.mjs" check-asset \
-  --manifest "$MANIFEST" --name "$ASSET" --file "$DEST" "$POLICY"
+  --manifest "$MANIFEST" --name "$ASSET" --file "$tmp" "$POLICY"
+mv "$tmp" "$DEST"

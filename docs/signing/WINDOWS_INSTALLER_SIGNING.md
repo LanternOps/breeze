@@ -6,7 +6,7 @@ See also: `docs/signing/ARTIFACT_SIGNING_OPERATIONS.md` for official Breeze sign
 
 Fully implemented in `.github/workflows/release.yml`: resource-stamped exes
 (go-winres) signed via `azure/artifact-signing-action` (Azure Artifact
-Signing, formerly Trusted Signing) with OIDC auth, a WiX v4 MSI built from
+Signing, formerly Trusted Signing) with OIDC auth, a WiX-built MSI made from
 the signed exes and then itself signed, and a `Get-AuthenticodeSignature`
 verification sweep. Official releases additionally publish the pre-signing
 unsigned outputs (`*-unsigned.exe`) as manifest-tracked signing inputs so
@@ -101,9 +101,11 @@ Secrets used by the current release workflow:
 - Use `signtool.exe` (Windows SDK) or `osslsigncode` (cross-platform)
 - Store cert in GitHub Secrets (PFX + password) or use cloud HSM
 
-### 5. WiX v4 Build Commands (Implementation Baseline)
+### 5. WiX Build Commands (Implementation Baseline)
 
-Assuming WiX v4 CLI is installed (`wix --version`) and `agent/installer/breeze.wxs` exists:
+Assuming the WiX CLI is installed (`wix --version`; CI uses v7) and
+`agent/installer/breeze.wxs` exists. Note the `.wxs` authoring schema is the
+v4 namespace, which is independent of the CLI version:
 
 ```bash
 # from repo root
@@ -116,7 +118,7 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
   -o ../dist/breeze-agent.exe ./cmd/breeze-agent
 cd ..
 
-# Build MSI with WiX v4
+# Build MSI with WiX
 wix build agent/installer/breeze.wxs \
   -arch x64 \
   -d AgentExePath=dist/breeze-agent.exe \

@@ -36,6 +36,43 @@ function die(msg) {
 
 const cmd = process.argv[2];
 
+// Reject unrecognised flags. `has()` is an exact match, so a typo such as
+// --expect-signing-inputs would silently disable the intendedUse policy and
+// exit 0 — the gate would be gone with every job still green. Callers pass
+// these as literal strings from shell (download-verified-asset.sh forwards $4
+// verbatim), so a typo is a live risk, not a hypothetical one.
+const KNOWN_FLAGS = {
+  verify: ['--manifest', '--signature', '--key', '--repository', '--release'],
+  'check-asset': [
+    '--manifest',
+    '--name',
+    '--file',
+    '--expect-signing-input',
+    '--forbid-signing-input',
+  ],
+};
+const VALUE_FLAGS = new Set([
+  '--manifest',
+  '--signature',
+  '--key',
+  '--repository',
+  '--release',
+  '--name',
+  '--file',
+]);
+if (KNOWN_FLAGS[cmd]) {
+  const allowed = new Set(KNOWN_FLAGS[cmd]);
+  for (let i = 3; i < process.argv.length; i += 1) {
+    const token = process.argv[i];
+    if (!token.startsWith('--')) continue;
+    // Skip a value that happens to look like a flag (e.g. --name --weird).
+    if (VALUE_FLAGS.has(process.argv[i - 1])) continue;
+    if (!allowed.has(token)) {
+      die(`unknown option ${token} for '${cmd}' (known: ${KNOWN_FLAGS[cmd].join(', ')})`);
+    }
+  }
+}
+
 if (cmd === 'verify') {
   const manifestPath = arg('--manifest');
   const sigPath = arg('--signature');
@@ -52,6 +89,12 @@ if (cmd === 'verify') {
     die('release manifest Ed25519 signature verification FAILED — refusing to continue');
   }
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  // The Breeze API requires schemaVersion === 1. A future schema could give
+  // intendedUse/platformTrust different meanings, and this verifier would
+  // apply schema-1 rules to it without noticing.
+  if (manifest.schemaVersion !== 1) {
+    die(`unsupported manifest schemaVersion: ${manifest.schemaVersion} (this verifier understands 1)`);
+  }
   if (manifest.repository !== repository) {
     die(`manifest repository mismatch: expected ${repository}, got ${manifest.repository}`);
   }

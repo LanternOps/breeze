@@ -243,7 +243,13 @@ identities don't appear under `-p codesigning`; use
    Release* → Run workflow → set `dry-run: true` and a current Breeze
    version. A dry run downloads and verifies the official inputs and builds
    the MSI/pkgs/app with signing stubbed — it needs **no secrets and no
-   certificates**, so you can do this before paying anyone.
+   certificates**, so you can do this before paying anyone. Your manifest
+   key is never used on a dry run either: the manifest is signed with a
+   throwaway key generated in-run, so the resulting bundle (uploaded as
+   `dry-run-unsigned-assets`) is exactly what its name says and cannot be
+   mistaken for a release. Note that dry runs still run in the `signing`
+   environment, so if you configured required reviewers they must approve
+   the run before it starts.
 
 </Steps>
 
@@ -256,10 +262,30 @@ you want (e.g. `0.106.0` — no leading `v`). What each job does:
 
 | Job | What it does |
 |---|---|
-| `validate` | Checks the version format and refuses to overwrite an existing `v<version>` release on your repo (signing must happen once per release so reputation accrues on a stable hash). |
-| `windows` | Verifies the official manifest against the committed official key, pins the tag to the manifest's `sourceCommit`, checks out the Breeze build scripts at that commit, downloads + hash-verifies the four unsigned exes, signs them (Azure Artifact Signing or PFX), builds the MSI with WiX v4, signs the MSI, and sweeps everything with `Get-AuthenticodeSignature`. |
-| `macos` | Same verify preamble; imports your `.p12` into an ephemeral keychain (deleted even on failure), codesigns all eight darwin binaries with hardened runtime + the repo's entitlements, notarizes them, builds both pkgs, `productsign`s, notarizes + staples, builds `Breeze Installer.app` from source around **your** pkgs, signs/notarizes/staples it, then verifies with `codesign --verify --strict`, `pkgutil --check-signature`, and `spctl -a -t install`. |
-| `publish` | Mirrors the never-signed official assets (Linux agent/backup/watchdog, viewer, helper — each hash-verified against the official manifest), generates **your** `release-artifact-manifest.json` (+ `.ed25519` signed with your manifest key), writes `checksums.txt`, and creates release `v<version>` on your repo. The run summary prints the exact env block for Part 5. |
+| `validate` | Checks the version and enum inputs, and refuses to overwrite an existing `v<version>` release on your repo (signing must happen once per release so reputation accrues on a stable hash). |
+| `windows` | Verifies the official manifest against the committed official key, pins the tag to the manifest's `sourceCommit`, checks out the Breeze build scripts at that commit, downloads + hash-verifies the four unsigned exes, signs them (Azure Artifact Signing or PFX), builds the MSI with WiX, signs the MSI, then asserts every output carries a signer **and an RFC3161 timestamp** and records that result as a signing attestation. |
+| `macos` | Same verify preamble; imports your `.p12` into an ephemeral keychain (deleted even on failure), codesigns all eight darwin binaries with hardened runtime + the repo's entitlements, notarizes them, builds both pkgs, `productsign`s, notarizes + staples, builds `Breeze Installer.app` from source around **your** pkgs, signs/notarizes/staples it, then verifies with `codesign --verify --strict`, `pkgutil --check-signature`, and `spctl -a -t install`, recording the result as a signing attestation. |
+| `publish` | Mirrors the never-signed official assets (Linux agent/backup/watchdog, viewer, helper, `latest.json` — each hash-verified against the official manifest), generates **your** `release-artifact-manifest.json` (+ `.ed25519` signed with your manifest key), writes `checksums.txt`, and creates release `v<version>` on your repo. The run summary prints the exact env block for Part 5. |
+
+<Aside type="caution" title="One run per version — a partial run consumes it">
+  A successful run publishes `v<version>` and every later run for that
+  version is refused, so a signature never changes under a hash the world
+  has already seen. The corollary: running with `platforms: windows` or
+  `platforms: macos` **claims the version**. You cannot add the other
+  platform afterwards without deleting the release in the GitHub UI first.
+  Use `platforms: all` unless you specifically want a single-platform
+  release.
+</Aside>
+
+<Aside type="note" title="How `platformTrust` is decided">
+  The manifest never infers trust from a filename. Each asset's
+  `platformTrust` comes either from the platform job's signing attestation
+  (something ran `codesign` / `Get-AuthenticodeSignature` on those exact
+  bytes) or, for mirrored assets, from the already-verified official
+  manifest. `publish` refuses to build a manifest covering an asset that
+  neither accounts for — so a component that slips past a signing step
+  fails the run instead of being published as "signed".
+</Aside>
 
 <Aside type="note" title="Verifying outputs locally">
   Windows: `Get-AuthenticodeSignature .\breeze-agent.msi` should report your
@@ -337,21 +363,34 @@ repository override — at the cost of manual downloads per release.
 3. Verify a manual download of each platform installer from your instance,
    install on a test device, confirm it enrolls and heartbeats.
 
-4. Promote explicitly (platform admin, Settings → Agent Versions, or
-   `POST /agent-versions/promote`) — see
-   [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout).
-   Existing agents upgrade to your signed build like any normal version
-   promotion.
+4. Promote explicitly with `POST /agent-versions/promote`. This is an
+   API-only action — there is no UI for it — and it requires a platform
+   admin **with MFA**. See
+   [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout)
+   for the exact call. Existing agents upgrade to your signed build like any
+   normal version promotion.
 
 </Steps>
 
 ### Optional hardening
 
-Once the whole fleet has pinned your deployment key, you can set
-`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` so agents refuse update
-manifests that don't name an explicit trusted key — removing the embedded
-official key as a possible update signer. Leave this off until every agent
-has upgraded at least once through your instance.
+`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` makes agents refuse update
+manifests that don't name an explicit trusted key, removing the embedded
+official key as a possible update signer.
+
+Enable it only once the missing-ID count has sat at **zero for seven
+consecutive days across every active server version** — the same gate as
+any other instance. See
+[`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID`](/deploy/rollout-modes/#agent_require_manifest_signing_key_id).
+
+<Aside type="caution" title="This is not a fleet-wide switch">
+  Agents on a capable build apply the pushed value at their next update
+  check; **older builds ignore it entirely** and keep accepting manifests
+  without a key ID. Turning it on does not harden the agents that have not
+  yet upgraded through your instance, so do not read a successful flip as
+  "the fleet is now hardened". The rollout runbook is
+  `docs/operations/agent-network-and-manifest-rollout.md`.
+</Aside>
 
 ---
 
@@ -384,9 +423,14 @@ commit. Both indicate the official release changed after publication —
 do not work around this; check the official repository's security
 announcements and open an issue.
 
-**`asset ... not present in signed manifest` on an older version.**
-Unsigned signing inputs ship with Breeze releases from the BYO-signing
-release onward. You cannot self-sign releases older than that.
+**Trying to sign a release from before BYO-signing support.**
+The run stops in the `verify-official-release` step with
+`manifest has no valid sourceCommit — this Breeze release predates
+BYO-signing support`. Unsigned signing inputs ship with Breeze releases
+from the BYO-signing release onward; you cannot self-sign releases older
+than that. (The related `asset <name> is not present in the signed
+manifest` means the release *is* recent enough but is missing an asset the
+workflow expects — check the official release page for a partial upload.)
 
 **Your API refuses to sync your release.**
 Check that `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is your key (raw base64,

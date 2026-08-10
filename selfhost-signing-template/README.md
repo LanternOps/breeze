@@ -23,10 +23,18 @@ Packages** in the Breeze docs (`/deploy/sign-your-own-packages/`).
    (`*-unsigned.exe`, `breeze-*-darwin-*-unsigned`), verifies each SHA-256
    against the manifest, signs them with your certificates, builds the MSI /
    pkgs / `Breeze Installer.app`, and verifies every signature.
-4. It mirrors the never-signed official assets (Linux binaries,
-   viewer/helper installers) after verifying them, generates **your** release
-   manifest, signs it with **your** Ed25519 manifest key, and publishes
-   release `v<version>` on this repository.
+4. It mirrors the official assets this workflow does not re-sign (Linux
+   binaries, viewer/helper installers) after verifying them, generates
+   **your** release manifest, signs it with **your** Ed25519 manifest key,
+   and publishes release `v<version>` on this repository.
+5. Nothing in the manifest is guessed from a filename. Each asset's
+   `platformTrust` comes either from the platform job's signing attestation
+   — proof that `codesign` / `Get-AuthenticodeSignature` actually inspected
+   those bytes on a runner that had the tools — or, for mirrored assets,
+   from the official manifest already verified in step 1. `publish` refuses
+   to build a manifest covering an asset that neither accounts for, so a
+   component that slips past a signing step fails the run instead of being
+   published as "signed".
 
 Your agents never trust this repo's key directly — your Breeze API re-signs
 update manifests with its per-deployment key (standard since the BYO-signing
@@ -66,8 +74,8 @@ release), so fleet trust is unchanged.
 |---|---|---|
 | `version` | `X.Y.Z` or `X.Y.Z-suffix` (no leading `v`) | Must be an official Breeze release that publishes unsigned signing inputs. The run refuses to overwrite an existing `v<version>` release here. |
 | `signing-mode` | `azure-artifact-signing` (default), `pfx` | PFX is **legacy / internal-PKI only** — publicly trusted code-signing keys must live in HSMs (CA/B Forum, June 2023), so exportable PFX files are generally unavailable for new OV certs. |
-| `platforms` | `all` (default), `windows`, `macos` | Skip a platform **only if your fleet has no such devices** — a skipped platform's assets are absent from your release and those downloads will 404. |
-| `dry-run` | `false` (default), `true` | Download + verify + build with signing stubbed; no secrets or certs needed. Publishes nothing — assets land as a workflow artifact. |
+| `platforms` | `all` (default), `windows`, `macos` | Skip a platform **only if your fleet has no such devices** — a skipped platform's assets are absent from your release and those downloads will 404. A partial run also **consumes the version**: the release now exists, so a later run for the same version is refused and you would have to delete the release in the GitHub UI to add the other platform. |
+| `dry-run` | `false` (default), `true` | Download + verify + build with signing stubbed; no secrets or certs needed. Publishes nothing — assets land as the `dry-run-unsigned-assets` workflow artifact. Your manifest key is **never** used: the manifest is signed with a throwaway key generated in-run, and every asset is recorded `platformTrust: none`, so a dry-run bundle cannot be mistaken for a release. |
 
 ## Secrets
 
@@ -120,7 +128,10 @@ Signed by you: `breeze-agent.msi`, `breeze-agent-windows-amd64.exe`,
 `breeze-{agent,backup,desktop-helper,watchdog}-darwin-{amd64,arm64}`,
 `breeze-agent-darwin-{amd64,arm64}.pkg`, `Breeze Installer.app.zip`.
 
-Mirrored from the official release (verified, never signed by anyone):
+Mirrored from the official release (hash-verified against the official
+manifest; not re-signed here — the viewer/helper installers keep LanternOps'
+original Authenticode/Developer ID signatures, and their `platformTrust` is
+carried over from the official manifest rather than re-derived):
 `breeze-{agent,backup,watchdog}-linux-{amd64,arm64}`,
 `breeze-viewer-{windows.msi,macos.dmg,linux.AppImage}`, `latest.json`,
 `breeze-helper-{windows.msi,macos.dmg,linux.AppImage}`.

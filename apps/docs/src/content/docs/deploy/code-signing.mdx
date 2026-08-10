@@ -50,7 +50,7 @@ Windows binaries are signed using **Azure Artifact Signing** (formerly Azure Tru
 
 2. Each binary is signed and RFC 3161-timestamped against the Azure Artifact Signing endpoint; the certificates are short-lived and HSM-backed — the private key never exists outside Azure.
 
-3. The MSI installer is built from the signed binaries with WiX v4, then signed as a separate step.
+3. The MSI installer is built from the signed binaries with the WiX CLI, then signed as a separate step.
 
 4. The workflow verifies every signature with `Get-AuthenticodeSignature` before upload (tolerating `UnknownError`, which means "signed, root not yet cached locally").
 
@@ -58,9 +58,11 @@ Windows binaries are signed using **Azure Artifact Signing** (formerly Azure Tru
 
 </Steps>
 
-### WiX v4 MSI Packaging
+### WiX MSI Packaging
 
-The Windows agent MSI is built using WiX v4. The MSI bundles the signed agent binary, configures the Windows service, and sets appropriate file permissions. The MSI itself is then signed as a separate step.
+The Windows agent MSI is built with the WiX CLI (v7; the `breeze.wxs`
+authoring schema is the v4 namespace — the two version numbers are
+unrelated). The MSI bundles the signed agent binary, configures the Windows service, and sets appropriate file permissions. The MSI itself is then signed as a separate step.
 
 <Aside>
   Azure Artifact Signing keys are HSM-backed and never exportable, meeting the CA/Browser Forum hardware requirements for publicly trusted code signing. Certificates are short-lived and rotated automatically — there is nothing to renew.
