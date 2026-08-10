@@ -2,6 +2,7 @@
 package hostpolicy
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -76,6 +77,25 @@ func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 		if err := AllowedURL(bad); err == nil {
 			t.Errorf("AllowedURL(%q) must be refused in hosted mode", bad)
 		}
+	}
+}
+
+// TestHostedUnparseableURLErrorDoesNotEchoRawInput pins the doc claim on
+// AllowedURL ("the returned error ... never a token or secret"): a malformed
+// URL may embed a token or query string, so the unparseable-URL branch must
+// not format the raw input verbatim into the error.
+func TestHostedUnparseableURLErrorDoesNotEchoRawInput(t *testing.T) {
+	restore := SetAllowedHostsForTest("hosted-a.example")
+	defer restore()
+
+	const secret = "s3cr3t-token-value"
+	bad := "not a url?token=" + secret
+	err := AllowedURL(bad)
+	if err == nil {
+		t.Fatalf("AllowedURL(%q) must error", bad)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("AllowedURL error must not echo the raw (possibly secret-bearing) input, got: %v", err)
 	}
 }
 

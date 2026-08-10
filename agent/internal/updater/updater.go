@@ -107,13 +107,25 @@ func New(cfg *Config) *Updater {
 }
 
 // filterControlPlaneOrigins drops any control-plane origin outside the
-// compiled allowlist. Identity (no filtering) in self-host AND in a gap
-// build (allowlist compiled in, strict mode off) — existing-fleet agents on
-// a gap build must keep functioning unchanged; only a strict build hard-
-// filters. It filters ONLY the control-plane origin set passed to
-// netpolicy, never the signed download target, which may legitimately be a
-// cross-origin CDN URL (checksum + Ed25519 manifest-signature bound) —
-// see updaterPolicy's doc comment below.
+// compiled allowlist from the ControlPlaneOrigins list passed to netpolicy.
+// Identity (no filtering) in self-host AND in a gap build (allowlist
+// compiled in, strict mode off) — existing-fleet agents on a gap build must
+// keep functioning unchanged; only a strict build filters.
+//
+// What dropping an origin actually gates: ControlPlaneOrigins membership
+// grants exactly two things at that origin — reachability to a private
+// address, and (for ControlPlaneDownload) permission to use plain HTTP (see
+// netpolicy.Policy.ControlPlaneOrigins). It does NOT, by itself, block an
+// HTTPS request to a public host at that origin — netpolicy permits that
+// regardless of ControlPlaneOrigins membership. So filtering a
+// non-allowlisted control-plane origin here is not a guarantee that a
+// strict build refuses to talk to it; it only withdraws the private-address
+// and cleartext-HTTP grants for that origin.
+//
+// It filters ONLY the control-plane origin set passed to netpolicy, never
+// the signed download target, which may legitimately be a cross-origin CDN
+// URL (checksum + Ed25519 manifest-signature bound) — see updaterPolicy's
+// doc comment below.
 func filterControlPlaneOrigins(origins []string) []string {
 	if !hostpolicy.Strict() {
 		return origins

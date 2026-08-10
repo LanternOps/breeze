@@ -606,7 +606,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Support session in support.go. runAgent alone would miss the two
 	// primary service deployment modes, which return into runAsService
 	// before ever reaching runAgent's own body.
-	log.Info("control-plane build mode", "mode", hostpolicy.Mode(), "allowedHosts", hostpolicy.Hosts())
+	buildModeLogArgs := []any{"mode", hostpolicy.Mode()}
+	if hostpolicy.Enforced() {
+		buildModeLogArgs = append(buildModeLogArgs, "allowedHosts", hostpolicy.Hosts())
+	}
+	log.Info("control-plane build mode", buildModeLogArgs...)
 	if err := checkPersistedServerAllowed(cfg); err != nil {
 		if hostpolicy.Strict() {
 			// Belt-and-braces: config.Load -> ValidateTiered already fatals
@@ -1148,12 +1152,6 @@ func runAgent() {
 			return
 		}
 	}
-
-	// Build-mode self-check (log + gap/strict enforcement) now lives in
-	// startAgentFn/startAgent — the shared choke point reached by every
-	// entry point, including the Windows SCM and Unix service-manager
-	// paths that return early into runAsService above and never reach
-	// this point in runAgent.
 
 	comps, err := startAgentFn(cfg)
 	if err != nil {

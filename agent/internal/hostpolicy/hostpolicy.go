@@ -13,6 +13,7 @@
 package hostpolicy
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -125,7 +126,10 @@ func AllowedURL(rawURL string) error {
 	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("hosted build: control-plane URL %q is not a parseable URL", rawURL)
+		// Deliberately does NOT echo rawURL: a malformed URL may embed a
+		// token or query string, and this error is documented as safe to
+		// surface/log verbatim.
+		return errors.New("hosted build: control-plane URL is not a parseable URL")
 	}
 	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
 	if _, ok := s.hosts[host]; !ok {
