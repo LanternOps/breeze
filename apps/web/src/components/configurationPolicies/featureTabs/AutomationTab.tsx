@@ -14,6 +14,7 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import InlineEntityPicker from "./InlineEntityPicker";
+import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type TriggerType = "schedule" | "event" | "manual";
@@ -53,17 +54,6 @@ const defaultItem: AutomationItem = {
   actions: [{ type: "run_script" }],
   onFailure: "stop",
 };
-const timezoneOptions = [
-  { value: "UTC", labelKey: "configurationPolicies.featureTabs.automationTab.uTC" },
-  { value: "America/New_York", labelKey: "configurationPolicies.featureTabs.automationTab.easternAmericaNewYork" },
-  { value: "America/Chicago", labelKey: "configurationPolicies.featureTabs.automationTab.centralAmericaChicago" },
-  { value: "America/Denver", labelKey: "configurationPolicies.featureTabs.automationTab.mountainAmericaDenver" },
-  { value: "America/Los_Angeles", labelKey: "configurationPolicies.featureTabs.automationTab.pacificAmericaLosAngeles" },
-  { value: "Europe/London", labelKey: "configurationPolicies.featureTabs.automationTab.europeLondon" },
-  { value: "Europe/Paris", labelKey: "configurationPolicies.featureTabs.automationTab.europeParis" },
-  { value: "Asia/Tokyo", labelKey: "configurationPolicies.featureTabs.automationTab.asiaTokyo" },
-  { value: "Australia/Sydney", labelKey: "configurationPolicies.featureTabs.automationTab.australiaSydney" },
-];
 const triggerOptions: {
   value: TriggerType;
   labelKey: string;
@@ -570,24 +560,27 @@ export default function AutomationTab({
                         </div>
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground">
+                        <label
+                          htmlFor={`automation-timezone-${index}`}
+                          className="text-xs font-medium text-muted-foreground"
+                        >
                           {i18n.t(
                             "policies:configurationPolicies.featureTabs.automationTab.timezone",
                           )}
                         </label>
-                        <select
-                          value={item.timezone || "UTC"}
-                          onChange={(e) =>
-                            updateItem(index, { timezone: e.target.value })
-                          }
-                          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
-                        >
-                          {timezoneOptions.map((tz) => (
-                            <option key={tz.value} value={tz.value}>
-                              {t(/* i18n-dynamic */ tz.labelKey)}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="mt-1">
+                          <TimezoneSelect
+                            id={`automation-timezone-${index}`}
+                            label={i18n.t(
+                              "policies:configurationPolicies.featureTabs.automationTab.timezone",
+                            )}
+                            value={item.timezone || "UTC"}
+                            onChange={(timezone) =>
+                              updateItem(index, { timezone })
+                            }
+                            testId={`automation-timezone-${index}`}
+                          />
+                        </div>
                       </div>
                     </div>
                   )}

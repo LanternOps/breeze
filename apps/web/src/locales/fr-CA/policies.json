@@ -255,15 +255,6 @@
         "metricNotSet": "non défini"
       },
       "automationTab": {
-        "uTC": "UTC",
-        "easternAmericaNewYork": "Est (Amérique/New_York)",
-        "centralAmericaChicago": "Centre (Amérique / Chicago)",
-        "mountainAmericaDenver": "Mountain (Amérique/Denver)",
-        "pacificAmericaLosAngeles": "Pacifique (Amérique/Los_Angeles)",
-        "europeLondon": "Europe/Londres",
-        "europeParis": "Europe/Paris",
-        "asiaTokyo": "Asie/Tokyo",
-        "australiaSydney": "Australie/Sydney",
         "schedule": "Calendrier",
         "event": "Événement",
         "manual": "Manuel",
