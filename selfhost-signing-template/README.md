@@ -122,6 +122,17 @@ timestamp server (default `http://timestamp.digicert.com`).
 
 ## What a run publishes
 
+The Windows MSI builds under the **self-hosted edition** identity —
+`ProductName` "Breeze Agent (Self-Hosted)" and its own permanent
+`UpgradeCode`, distinct from the `ProductName` "Breeze Agent" that hosted
+Breeze distribution uses. This is intentional: the two identities can never
+install on top of each other, and the self-hosted `UpgradeCode` is what your
+fleet's upgrade lineage tracks — matching the public unsigned self-host MSI
+Breeze publishes with each release, so signing it here doesn't fork your
+fleet onto a different upgrade path. Signing a release from before this
+edition parameter existed builds the original ("Breeze Agent") identity,
+matching what that release actually shipped.
+
 Signed by you: `breeze-agent.msi`, `breeze-agent-windows-amd64.exe`,
 `breeze-backup-windows-amd64.exe`, `breeze-watchdog-windows-amd64.exe`,
 `breeze-user-helper-windows-amd64.exe`,
