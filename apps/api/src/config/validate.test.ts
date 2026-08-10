@@ -620,6 +620,12 @@ describe('validateConfig', () => {
       });
     });
 
+    it('refuses to boot on a malformed legacy GITHUB_REPO alias in any environment', () => {
+      withEnv({ ...validEnv, GITHUB_REPO: 'not-a-repo' }, () => {
+        expect(() => validateConfig()).toThrow(/GITHUB_REPO/);
+      });
+    });
+
     it('treats an empty string (compose ${VAR:-} interpolation) as unset', () => {
       withEnv({ ...validEnv, BINARY_GITHUB_REPOSITORY: '' }, () => {
         expect(() => validateConfig()).not.toThrow();
@@ -636,6 +642,20 @@ describe('validateConfig', () => {
         },
         () => {
           expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+        },
+      );
+    });
+
+    it('production: overriding via legacy GITHUB_REPO requires the manifest trust root', () => {
+      withEnv(
+        {
+          ...prodBase,
+          GITHUB_REPO: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/overrides the release source/);
         },
       );
     });

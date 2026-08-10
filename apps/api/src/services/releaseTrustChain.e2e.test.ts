@@ -209,7 +209,7 @@ describe('trust-chain E2E: official key → self-hoster release key → deployme
             );
           }
           if (url.endsWith('/release-artifact-manifest.json')) return new Response(releaseManifest);
-          if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signatureBody);
+          if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(new Uint8Array(signatureBody));
           return new Response('not found', { status: 404 });
         }),
       );
@@ -231,7 +231,8 @@ describe('trust-chain E2E: official key → self-hoster release key → deployme
     const fixtureEntry = fixture.entries.find(
       (e) => e.platform === 'linux' && e.arch === 'amd64',
     )!;
-    const insert = dbMocks.insertValues.mock.calls[0]![0] as Record<string, unknown>;
+    const insertCalls = dbMocks.insertValues.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    const insert = insertCalls[0]![0];
     expect(insert.signingKeyId).toBe(fixture.keyId);
     expect(insert.releaseManifest).toBe(fixtureEntry.manifest);
     expect(insert.manifestSignature).toBe(fixtureEntry.signatureB64);

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
+import { OFFICIAL_RELEASE_REPOSITORY } from '../services/releaseSource';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -511,6 +512,16 @@ const envObjectSchema = z
         .regex(
           /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
           'BINARY_GITHUB_REPOSITORY must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        )
+        .optional(),
+    ),
+    GITHUB_REPO: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
+          'GITHUB_REPO must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
         )
         .optional(),
     ),
@@ -1131,17 +1142,22 @@ const envSchema = envObjectSchema
       // production key rule above were ever relaxed) accept unverified
       // third-party binaries. Kept as its own rule with its own message even
       // though the blanket rule currently subsumes the "unset" case.
-      const releaseRepositoryOverride = data.BINARY_GITHUB_REPOSITORY?.trim().toLowerCase();
+      const releaseRepositoryOverrideKey = data.BINARY_GITHUB_REPOSITORY
+        ? 'BINARY_GITHUB_REPOSITORY'
+        : 'GITHUB_REPO';
+      const releaseRepositoryOverride = (
+        data.BINARY_GITHUB_REPOSITORY ?? data.GITHUB_REPO
+      )?.trim().toLowerCase();
       if (
         releaseRepositoryOverride &&
-        releaseRepositoryOverride !== 'lanternops/breeze' &&
+        releaseRepositoryOverride !== OFFICIAL_RELEASE_REPOSITORY &&
         !hasReleaseArtifactManifestPublicKey(data)
       ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['BINARY_GITHUB_REPOSITORY'],
+          path: [releaseRepositoryOverrideKey],
           message:
-            'BINARY_GITHUB_REPOSITORY overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository\'s release manifest public key (NOT the official Breeze key).',
+            `${releaseRepositoryOverrideKey} overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository's release manifest public key (NOT the official Breeze key).`,
         });
       }
 

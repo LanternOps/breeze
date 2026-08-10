@@ -33,7 +33,7 @@ const DARWIN_BINARY_RE = /^breeze-(agent|backup|desktop-helper|watchdog)-darwin-
 // "-unsigned" immediately before the extension chain (or at the end for
 // extensionless darwin/linux binaries): breeze-agent-windows-amd64-unsigned.exe,
 // breeze-agent-darwin-arm64-unsigned.
-const SIGNING_INPUT_NAME_RE = /-unsigned(\.[A-Za-z0-9]+)*$/;
+const SIGNING_INPUT_NAME_RE = /-unsigned(\.[A-Za-z0-9]+)*$/i;
 
 export function isSigningInputAssetName(assetName: string): boolean {
   return SIGNING_INPUT_NAME_RE.test(assetName);
