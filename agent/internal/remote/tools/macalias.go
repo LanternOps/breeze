@@ -79,11 +79,6 @@ const (
 	// maxBookmarkPathLen bounds the reconstructed path; PATH_MAX on macOS is
 	// 1024, so anything longer cannot name a real file.
 	maxBookmarkPathLen = 4096
-
-	// maxAliasFileSize caps how large a regular file may be before it is
-	// dismissed as a possible alias without reading it. Observed aliases are
-	// under 2KB; 64KB is generous headroom.
-	maxAliasFileSize = 64 * 1024
 )
 
 var errNotBookmark = errors.New("not a macOS bookmark blob")

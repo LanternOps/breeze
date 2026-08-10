@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -21,6 +22,11 @@ const (
 
 	// maxAliasResolveHops bounds an alias→alias chain.
 	maxAliasResolveHops = 8
+
+	// maxAliasFileSize caps how large a regular file may be before it is
+	// dismissed as a possible alias without reading it. Observed aliases are
+	// under 2KB; 64KB is generous headroom.
+	maxAliasFileSize = 64 * 1024
 )
 
 // hasFinderAliasFlag reports whether path carries the Finder kIsAlias flag.
@@ -49,24 +55,47 @@ func resolveAliasHop(path string, info fs.FileInfo) (string, fs.FileInfo, bool) 
 	if !hasFinderAliasFlag(path) {
 		return "", nil, false
 	}
+	// Past this point Finder's own kIsAlias bit says this IS an alias, so a
+	// failure is worth a log line: the caller degrades it to "ordinary file",
+	// which otherwise leaves a technician staring at a 1KB file with no hint
+	// that resolution was attempted and failed. Logging cannot flood a listing
+	// because almost nothing carries the flag in the first place — the one
+	// genuinely routine failure, a dangling alias whose target was deleted, is
+	// excluded below.
+
 	// Read through a bounded reader rather than os.ReadFile: the size above came
 	// from a stat that another process can invalidate before the open, and an
 	// alias blob is never larger than maxAliasFileSize anyway.
 	f, err := os.Open(path)
 	if err != nil {
+		log.Printf("[WARN] resolveAliasHop: cannot open alias %s: %v", path, err)
 		return "", nil, false
 	}
 	blob, err := io.ReadAll(io.LimitReader(f, maxAliasFileSize))
-	f.Close()
+	_ = f.Close() // read-only handle; a close error cannot affect the bytes read
 	if err != nil {
+		log.Printf("[WARN] resolveAliasHop: cannot read alias %s: %v", path, err)
 		return "", nil, false
 	}
 	target, err := parseBookmarkTargetPath(blob)
-	if err != nil || target == path {
+	if err != nil {
+		// The parser's error is the only forensic trail when a blob is corrupt
+		// or is probing the path-traversal guard, so keep its text.
+		log.Printf("[WARN] resolveAliasHop: cannot parse alias %s: %v", path, err)
+		return "", nil, false
+	}
+	if target == path {
+		log.Printf("[WARN] resolveAliasHop: alias %s points at itself", path)
 		return "", nil, false
 	}
 	targetInfo, err := os.Stat(target)
 	if err != nil {
+		// A dangling alias is routine (a Desktop full of shortcuts to things
+		// since deleted) and stays silent; anything else — a permission error on
+		// a parent directory, an I/O error — is actionable.
+		if !os.IsNotExist(err) {
+			log.Printf("[WARN] resolveAliasHop: cannot stat target of alias %s: %v", path, err)
+		}
 		return "", nil, false
 	}
 	return target, targetInfo, true
