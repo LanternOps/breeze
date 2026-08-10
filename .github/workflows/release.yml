@@ -825,6 +825,60 @@ jobs:
           name: breeze-watchdog-darwin-arm64
           path: staging/
 
+      # BYO signing (Deliverable 1): capture the exact pre-sign inputs. The
+      # sign step below mutates staging/ in place, so this MUST run before
+      # any codesign invocation. Deliberately not gated on
+      # vars.ENABLE_MACOS_SIGNING — unsigned publication is independent of
+      # the signing toggle.
+      - name: Stage unsigned darwin binaries (BYO signing inputs)
+        run: |
+          set -euo pipefail
+          mkdir -p staging-unsigned
+          count=0
+          for bin in staging/breeze-agent-darwin-amd64 staging/breeze-agent-darwin-arm64 \
+                     staging/breeze-backup-darwin-amd64 staging/breeze-backup-darwin-arm64 \
+                     staging/breeze-desktop-helper-darwin-amd64 staging/breeze-desktop-helper-darwin-arm64 \
+                     staging/breeze-watchdog-darwin-amd64 staging/breeze-watchdog-darwin-arm64; do
+            if [ ! -f "$bin" ]; then
+              echo "::error::missing expected darwin binary for unsigned capture: $bin"
+              exit 1
+            fi
+            cp "$bin" "staging-unsigned/$(basename "$bin")-unsigned"
+            count=$((count + 1))
+          done
+          if [ "$count" -ne 8 ]; then
+            echo "::error::expected 8 unsigned darwin binaries, staged $count"
+            exit 1
+          fi
+
+      - name: Upload unsigned agent darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-agent-darwin-unsigned
+          path: staging-unsigned/breeze-agent-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned backup darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-backup-darwin-unsigned
+          path: staging-unsigned/breeze-backup-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned desktop-helper darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-desktop-helper-darwin-unsigned
+          path: staging-unsigned/breeze-desktop-helper-darwin-*-unsigned
+          retention-days: 30
+
+      - name: Upload unsigned watchdog darwin binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-watchdog-darwin-unsigned
+          path: staging-unsigned/breeze-watchdog-darwin-*-unsigned
+          retention-days: 30
+
       - name: Import certificate into keychain
         if: vars.ENABLE_MACOS_SIGNING == 'true'
         env:
