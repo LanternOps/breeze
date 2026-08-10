@@ -1,5 +1,6 @@
 import { eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { sqlTimestamptz } from '../db/sqlValues';
 import { oauthRevocationRetries } from '../db/schema';
 import { revokeGrant, revokeJti } from './revocationCache';
 
@@ -33,6 +34,44 @@ function markerErrorCode(error: unknown): 'redis_unavailable' | 'redis_write_fai
 
 function remainingLifetimeSeconds(expiresAt: Date, now: Date): number {
   return Math.max(Math.ceil((expiresAt.getTime() - now.getTime()) / 1000), 1);
+}
+
+/**
+ * The `ON CONFLICT ... DO UPDATE` assignment list for an existing, still-open
+ * retry row: bump the attempt count, push `next_attempt_at` out by an
+ * exponential backoff capped at 300s, and never shorten the marker's lifetime.
+ *
+ * Extracted so the SQL can be rendered and asserted on without a database.
+ *
+ * Both timestamps are bound via `sqlTimestamptz` rather than interpolated bare
+ * (#3369). A raw `Date` inside a `sql` template is wrapped in a `Param` with
+ * the noop encoder and reaches postgres.js as a JS object, whose Bind step
+ * throws `ERR_INVALID_ARG_TYPE`. This branch runs only when a retry row already
+ * exists — i.e. exactly when a prior Redis write failed — so the throw rolled
+ * back the entire `withSystemDbAccessContext` batch in
+ * `jobs/oauthRevocationRetryWorker.ts` and was then swallowed by the generic
+ * `.catch` in `runScheduledDrain`, which logs and returns 0. Net effect: the
+ * OAuth revocation retry queue could never drain or heal during a Redis
+ * outage, and failed silently rather than per-row.
+ *
+ * The explicit `::timestamptz` casts are load-bearing, not decoration: an
+ * untyped parameter has no unique operator resolution against `interval`, and
+ * inside `GREATEST` it would resolve off the other argument's type.
+ */
+export function buildRetryConflictUpdate(args: {
+  attemptedAt: Date;
+  expiresAt: Date;
+  errorCode: 'redis_unavailable' | 'redis_write_failed';
+}) {
+  return {
+    attempts: sql`${oauthRevocationRetries.attempts} + 1`,
+    nextAttemptAt: sql`${sqlTimestamptz(args.attemptedAt)} + (
+      LEAST(300, POWER(2, ${oauthRevocationRetries.attempts})) * interval '1 second'
+    )`,
+    lastErrorCode: args.errorCode,
+    expiresAt: sql`GREATEST(${oauthRevocationRetries.expiresAt}, ${sqlTimestamptz(args.expiresAt)})`,
+    updatedAt: args.attemptedAt,
+  };
 }
 
 /**
@@ -75,15 +114,11 @@ export async function writeOAuthRevocationMarkerDurably(
           oauthRevocationRetries.markerId,
         ],
         targetWhere: isNull(oauthRevocationRetries.completedAt),
-        set: {
-          attempts: sql`${oauthRevocationRetries.attempts} + 1`,
-          nextAttemptAt: sql`${attemptedAt} + (
-            LEAST(300, POWER(2, ${oauthRevocationRetries.attempts})) * interval '1 second'
-          )`,
-          lastErrorCode: errorCode,
-          expiresAt: sql`GREATEST(${oauthRevocationRetries.expiresAt}, ${input.expiresAt})`,
-          updatedAt: attemptedAt,
-        },
+        set: buildRetryConflictUpdate({
+          attemptedAt,
+          expiresAt: input.expiresAt,
+          errorCode,
+        }),
         setWhere: eq(oauthRevocationRetries.userId, input.userId),
       })
       .returning({ userId: oauthRevocationRetries.userId });
