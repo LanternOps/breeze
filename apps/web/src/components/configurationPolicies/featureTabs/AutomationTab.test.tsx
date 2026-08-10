@@ -151,6 +151,20 @@ describe('AutomationTab — schedule timezone picker', () => {
     expect(payload.inlineSettings.items[0].timezone).toBe('America/Sao_Paulo');
   });
 
+  // The picker is scoped to the schedule trigger. Pinned because it is now a
+  // mounted combobox rather than an inert <select>: leaking it into the event /
+  // manual branches would put a focusable popup in a form where the timezone is
+  // meaningless.
+  it('renders no timezone picker for non-schedule triggers', () => {
+    addAutomation();
+    expect(screen.getByTestId('automation-timezone-0-trigger')).toBeTruthy();
+
+    for (const trigger of ['event', 'manual']) {
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${trigger}$`, 'i') }));
+      expect(screen.queryByTestId('automation-timezone-0-trigger')).toBeNull();
+    }
+  });
+
   it('defaults to UTC and leaves it intact when untouched', async () => {
     addAutomation();
     expect(screen.getByTestId('automation-timezone-0-trigger').textContent).toContain('UTC');
