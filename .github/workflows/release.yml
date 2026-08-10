@@ -2345,7 +2345,13 @@ jobs:
         with:
           files: release-assets/*
           generate_release_notes: true
-          draft: false
+          # RELEASE_DRAFT_FIRST (repo variable, normally unset): when 'true',
+          # the release is created as a DRAFT so downstream consumers (self-host
+          # servers syncing published releases) see nothing until it is
+          # explicitly published — used when a release must be verified and
+          # coordinated with out-of-band deployment steps before going live.
+          # Publish with: gh release edit <tag> --draft=false
+          draft: ${{ vars.RELEASE_DRAFT_FIRST == 'true' }}
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
