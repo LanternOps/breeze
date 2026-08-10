@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "Ticket de conexão inválido",
+      "invalidTicket": "Este link é inválido ou expirou.",
       "obtainTicket": "Falha ao obter o ticket de conexão",
       "prepareConnection": "Falha ao preparar a conexão",
-      "tlsUntrusted": "Este dispositivo apresentou um certificado não confiável ou autoassinado. Recrie a sessão de proxy com \"Permitir certificado autoassinado\" ativado para continuar.",
-      "tunnelFailed": "Falha no túnel"
+      "tlsUntrusted": "Este dispositivo apresentou um certificado não confiável ou autoassinado.",
+      "tunnelFailed": "O túnel não pôde ser aberto"
     },
     "openInNewTab": "Abrir em nova aba",
     "preparingConnection": "Preparando conexão...",
     "proxiedService": "Serviço via proxy",
+    "reconnectSelfSigned": "Reconectar permitindo certificado autoassinado",
+    "sessionExpired": {
+      "title": "Sessão expirada",
+      "body": "Sua sessão de proxy expirou.",
+      "reconnect": "Reconectar"
+    },
     "status": {
       "connected": "Conectado",
       "connecting": "Conectando...",

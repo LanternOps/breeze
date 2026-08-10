@@ -62,15 +62,7 @@
       "tags": "z.B. kritisch, Etage 2, Networking"
     },
     "proxy": {
-      "allowSelfSigned": "Selbstsigniertes Zertifikat zulassen (üblich für Drucker, iLO/IPMI, Switches)",
-      "description": "Erreichen Sie die Weboberfläche dieses Geräts in Ihrem Browser, getunnelt über einen Online-Agenten in seinem Netzwerk. Durch die Aktivierung wird die IP dieses Geräts auf die Whitelist gesetzt, sodass ein Agent als Proxy darauf zugreifen darf.",
-      "enable": "Aktivieren Sie den Proxy-Zugriff",
-      "enabled": "Proxy aktiviert",
-      "noOnlineAgent": "Für den Proxy dieses Geräts ist kein Online-Agent verfügbar. Ein Agent muss online und im selben Netzwerk wie {{ip}} sein, um die Verbindung zu überbrücken.",
-      "port": "Port {{port}}",
-      "portWithService": "Anschluss {{port}} ({{service}})",
-      "throughAgent": "Proxy durch Agent",
-      "throughAgentHelp": "Wählen Sie einen Online-Agenten aus, der in seinem Netzwerk {{ip}} erreichen kann (normalerweise derjenige, der ihn entdeckt hat). Dies ist unabhängig vom Identitätslink oben.",
+      "manageOnDevicePage": "Proxy-Zugriff auf der Netzwerkgeräteseite verwalten",
       "title": "Proxy-Zugriff"
     },
     "snmpDataTitle": "SNMP Daten",
@@ -694,6 +686,12 @@
     "tryAgain": "Versuchen Sie es erneut",
     "vlan": "VLAN {{vlan}}",
     "escToCancel": "· Esc zum Abbrechen"
+  },
+  "proxyConnect": {
+    "title": "Proxy zu {{target}}",
+    "throughAgent": "Über Agent",
+    "connect": "Verbinden",
+    "allowSelfSigned": "Selbstsigniertes Zertifikat zulassen (üblich für Drucker, iLO/IPMI, Switches)"
   },
   "assetTypes": {
     "workstation": "Arbeitsplatz",

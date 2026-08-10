@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "Impossible de valider le ticket",
+      "invalidTicket": "Ce lien n'est plus valide ou a expiré.",
       "obtainTicket": "Impossible de récupérer le ticket",
       "prepareConnection": "Impossible de préparer la connexion",
-      "tlsUntrusted": "Cet appareil présentait un certificat non fiable ou auto-signé. Recréez la session proxy avec « Autoriser le certificat auto-signé » activé pour continuer.",
-      "tunnelFailed": "Impossible de creuser un tunnel échoué"
+      "tlsUntrusted": "Cet appareil a présenté un certificat non fiable ou auto-signé.",
+      "tunnelFailed": "Le tunnel n'a pas pu s'ouvrir"
     },
     "openInNewTab": "Ouvrir dans un nouvel onglet",
     "preparingConnection": "Préparation de la connexion par procuration...",
     "proxiedService": "Service par procuration",
+    "reconnectSelfSigned": "Se reconnecter en autorisant le certificat auto-signé",
+    "sessionExpired": {
+      "title": "Session expirée",
+      "body": "Votre session proxy a expiré.",
+      "reconnect": "Reconnecter"
+    },
     "status": {
       "connected": "Connecté",
       "connecting": "En connexion...",

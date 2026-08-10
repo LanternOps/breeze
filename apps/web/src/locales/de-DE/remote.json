@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "Fehler beim ungültigen Ticket",
+      "invalidTicket": "Dieser Link ist ungültig oder abgelaufen.",
       "obtainTicket": "Ticket konnte nicht abgerufen werden",
       "prepareConnection": "Die Verbindung konnte nicht vorbereitet werden",
-      "tlsUntrusted": "Dieses Gerät hat ein nicht vertrauenswürdiges oder selbstsigniertes Zertifikat vorgelegt. Erstellen Sie die Proxy-Sitzung mit aktivierter Option „Selbstsigniertes Zertifikat zulassen“ neu, um fortzufahren.",
-      "tunnelFailed": "Fehler beim Tunneln"
+      "tlsUntrusted": "Dieses Gerät hat ein nicht vertrauenswürdiges oder selbstsigniertes Zertifikat vorgelegt.",
+      "tunnelFailed": "Tunnel konnte nicht geöffnet werden"
     },
     "openInNewTab": "In neuem Tab öffnen",
     "preparingConnection": "Proxy-Verbindung wird vorbereitet…",
     "proxiedService": "Proxy-Dienst",
+    "reconnectSelfSigned": "Wieder verbinden und selbstsigniertes Zertifikat zulassen",
+    "sessionExpired": {
+      "title": "Sitzung abgelaufen",
+      "body": "Ihre Proxy-Sitzung ist abgelaufen.",
+      "reconnect": "Wieder verbinden"
+    },
     "status": {
       "connected": "Verbunden",
       "connecting": "Verbinden...",

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
@@ -42,8 +42,21 @@ export const tunnelHttpRoutes = new Hono();
 const HTTP_REQUEST_TIMEOUT_MS = 25_000;
 export const HTTP_TUNNEL_COOKIE_TTL_SECONDS = 300;
 export const HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS = 0;
+// Absolute session cap, independent of the sliding cookie refresh. Enforced
+// here (before forwarding to the agent) AND in POST /tunnels/:id/http-ticket
+// (tunnels.ts) so an already-capped session can't even mint a fresh ticket.
+export const HTTP_TUNNEL_MAX_SESSION_HOURS = 12;
+const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
+// Throttle for the lastActivityAt bump — avoid a write on every single
+// sub-resource request while a page is actively loading.
+const ACTIVITY_BUMP_THROTTLE_MS = 30_000;
 const COOKIE_AUDIENCE = 'breeze-tunnel-http';
 const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'];
+
+/** Absolute 12h cap off the tunnel row's createdAt, independent of activity. */
+function isPastSessionCap(createdAt: Date): boolean {
+  return Date.now() - createdAt.getTime() > HTTP_TUNNEL_MAX_SESSION_MS;
+}
 
 // Hop-by-hop headers (RFC 7230 §6.1) plus `host` — never forwarded in either
 // direction. Lowercased for case-insensitive matching.
@@ -145,6 +158,9 @@ interface UsableTunnel {
   skipTlsVerify: boolean;
   orgId: string;
   type: string;
+  createdAt: Date;
+  startedAt: Date | null;
+  lastActivityAt: Date | null;
 }
 
 /**
@@ -178,6 +194,9 @@ async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise
       skipTlsVerify: session.skipTlsVerify ?? false,
       orgId: session.orgId,
       type: session.type,
+      createdAt: session.createdAt,
+      startedAt: session.startedAt ?? null,
+      lastActivityAt: session.lastActivityAt ?? null,
     };
   });
 }
@@ -264,6 +283,17 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       return c.text('Not found', 404);
     }
 
+    // `active` means "a client established a session" — set it at successful
+    // ticket->cookie exchange. `startedAt` only when still null so a later
+    // re-mint (session resuming after idle) doesn't reset session duration.
+    const mintUpdates: Record<string, unknown> = { status: 'active' };
+    if (!ownedAtMint.startedAt) {
+      mintUpdates.startedAt = new Date();
+    }
+    await withSystemDbAccessContext(async () => {
+      await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
+    });
+
     setCookie(c, authCookieName, await signTunnelCookie(consumed.userId, tunnelId), {
       httpOnly: true,
       secure: true,
@@ -277,11 +307,26 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     return c.redirect(url.pathname + url.search, 302);
   }
 
-  // 2. Authz: owner + device online + agent connected + policy (fail-closed).
+  // 2. Authz: owner + absolute cap + device online + agent connected + policy
+  // (fail-closed).
   const session = await loadOwnedTunnelSession(tunnelId, userId);
   if (!session) {
     return c.text('Not found', 404);
   }
+
+  // Absolute 12h cap, checked before any further processing — including
+  // before contacting the agent. The terminal row write (not just the 410)
+  // is what makes the cap visible to the polling parent page; a cap that only
+  // 410s inside the sandboxed iframe would be a silent reconnect loop.
+  if (isPastSessionCap(session.createdAt)) {
+    await withSystemDbAccessContext(async () => {
+      await db.update(tunnelSessions)
+        .set({ status: 'disconnected', errorMessage: 'session_expired', endedAt: new Date() })
+        .where(eq(tunnelSessions.id, tunnelId));
+    });
+    return c.text('Session expired', 410);
+  }
+
   if (session.deviceStatus !== 'online' || !session.agentId || !isAgentConnected(session.agentId)) {
     return c.text('Bridge agent offline', 502);
   }
@@ -289,6 +334,29 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   if (!policy.allowed) {
     return c.text(policy.reason ?? 'Proxy access disabled by policy', 403);
   }
+
+  // All gates passed — ONE code point for the sliding cookie refresh and the
+  // throttled lastActivityAt bump. A request rejected by any gate above must
+  // NOT reach here: bumping activity (or refreshing the cookie) over a
+  // rejected request could paper over a policy-denied/offline stretch with a
+  // stale-green session over a dead cookie.
+  const activityNow = new Date();
+  if (!session.lastActivityAt || activityNow.getTime() - session.lastActivityAt.getTime() > ACTIVITY_BUMP_THROTTLE_MS) {
+    await withSystemDbAccessContext(async () => {
+      await db.update(tunnelSessions)
+        .set({ lastActivityAt: activityNow })
+        .where(eq(tunnelSessions.id, tunnelId));
+    });
+  }
+  // Built here (not via setCookie(c, …), which no-ops against the hand-built
+  // Response returned below) and appended to respHeaders once it exists.
+  const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+    path: basePath,
+    maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
+  });
 
   // 3. Build + dispatch the http_request command.
   const wildcard = c.req.path.startsWith(basePath) ? c.req.path.slice(basePath.length) : '';
@@ -410,6 +478,10 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Sandbox the proxied (untrusted) device content so its scripts run in a null
   // origin and cannot read app cookies/storage or reach the parent frame.
   respHeaders.set('content-security-policy', PROXY_RESPONSE_CSP);
+
+  // Sliding refresh: append (not set) so this doesn't clobber any device
+  // Set-Cookie headers already appended above.
+  respHeaders.append('set-cookie', refreshedCookie);
 
   if (contentType.toLowerCase().includes('text/html')) {
     body = injectBaseTag(body.toString('utf8'), basePath);

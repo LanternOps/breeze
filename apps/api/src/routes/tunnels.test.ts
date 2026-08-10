@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { tunnelRoutes, vncExchangeRoutes, vncViewerRoutes } from './tunnels';
 
@@ -31,12 +31,19 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   tunnelSessions: {},
-  tunnelAllowlists: { orgId: 'tunnelAllowlists.orgId', siteId: 'tunnelAllowlists.siteId', createdAt: 'tunnelAllowlists.createdAt' },
+  tunnelAllowlists: {
+    orgId: 'tunnelAllowlists.orgId',
+    siteId: 'tunnelAllowlists.siteId',
+    createdAt: 'tunnelAllowlists.createdAt',
+    direction: 'tunnelAllowlists.direction',
+    pattern: 'tunnelAllowlists.pattern',
+  },
   devices: {},
   users: {},
   remoteSessions: {},
   sites: { id: 'sites.id', orgId: 'sites.orgId' },
   auditLogs: {},
+  discoveredAssets: { id: 'discoveredAssets.id', orgId: 'discoveredAssets.orgId' },
 }));
 
 // --- Sentry (audit-write failures escalate here) ---
@@ -193,6 +200,7 @@ const sessionRecord = {
   updatedAt: new Date(),
   endedAt: null,
   errorMessage: null,
+  lastActivityAt: null,
 };
 
 /**
@@ -322,6 +330,249 @@ describe('POST /tunnels (VNC)', () => {
   });
 });
 
+// ─── POST /tunnels — legacy tunnel_open dispatch skipped for proxy (#3199) ───
+// The raw TCP socket tunnel_open opens is unused on the HTTP-proxy path and
+// its 5-min agent-side idle reap was one of two independent mechanisms that
+// killed proxy sessions early — skipping the dispatch removes that reaper.
+
+describe('POST /tunnels — tunnel_open agent dispatch', () => {
+  let app: Hono;
+  const destAllowlistRule = {
+    id: 'r2r2r2r2-r2r2-4r2r-8r2r-r2r2r2r2r2r2',
+    orgId: ORG_ID,
+    direction: 'destination',
+    enabled: true,
+    pattern: '10.0.0.0/8:*',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('does NOT dispatch tunnel_open for a proxy tunnel', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)       // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any)                   // source-IP allowlist
+      .mockReturnValueOnce(makeSelectChain([destAllowlistRule]) as any); // destination allowlist
+    vi.mocked(db.insert).mockReturnValue(
+      makeInsertChain([{ ...sessionRecord, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }]) as any
+    );
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'proxy', targetHost: '10.0.0.5', targetPort: 8080 }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('still dispatches tunnel_open for a vnc tunnel', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)  // device lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any);             // source-IP allowlist
+    vi.mocked(db.insert).mockReturnValue(makeInsertChain([sessionRecord]) as any);
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(sendCommandToAgent).toHaveBeenCalledOnce();
+  });
+});
+
+// ─── POST /tunnels/proxy-connect — idempotent "Connect" (#3199, spec Architecture C) ──
+// Folds "Enable Proxy Access" + "Connect" into one op: ensure a single-port
+// destination allowlist rule for the discovered asset's port (insert-if-absent
+// against the Task-1 unique index), then create the proxy tunnel session.
+
+describe('POST /tunnels/proxy-connect', () => {
+  let app: Hono;
+  const ASSET_ID = 'a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5';
+  const PROXY_SITE_ID = 'a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6';
+  const RULE_ID = 'a7a7a7a7-a7a7-4a7a-8a7a-a7a7a7a7a7a7';
+
+  const assetRow = {
+    id: ASSET_ID,
+    orgId: ORG_ID,
+    siteId: PROXY_SITE_ID,
+    ipAddress: '10.0.5.20',
+  };
+
+  const requestBody = {
+    deviceId: DEVICE_ID,
+    discoveredAssetId: ASSET_ID,
+    port: 8080,
+    scheme: 'http' as const,
+    skipTlsVerify: false,
+  };
+
+  const newRule = {
+    id: RULE_ID,
+    orgId: ORG_ID,
+    siteId: PROXY_SITE_ID,
+    direction: 'destination',
+    pattern: '10.0.5.20/32:8080',
+    enabled: true,
+    source: 'discovery',
+    discoveredAssetId: ASSET_ID,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const proxySessionRow = {
+    id: 'session-proxy-0001',
+    deviceId: DEVICE_ID,
+    userId: USER_ID,
+    orgId: ORG_ID,
+    type: 'proxy',
+    status: 'pending',
+    targetHost: '10.0.5.20',
+    targetPort: 8080,
+    scheme: 'http',
+    skipTlsVerify: false,
+    sourceIp: '127.0.0.1',
+    createdAt: new Date(),
+  };
+
+  const uniqueViolationError = {
+    cause: Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+      constraint_name: 'tunnel_allowlists_org_direction_pattern_site_idx',
+    }),
+  };
+
+  const rejectingInsertChain = () => ({
+    values: vi.fn().mockReturnValue({ returning: vi.fn().mockRejectedValue(uniqueViolationError) }),
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  it('creates exactly one allowlist rule across two identical calls (idempotency); the rule has a single-port pattern + correct siteId/discoveredAssetId', async () => {
+    vi.mocked(db.select)
+      // --- Call 1: no existing rule, gets created ---
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)   // device lookup
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)       // discovered asset lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any)               // source-ip allowlist (none = allowed)
+      // --- Call 2: insert conflicts, re-select finds the same rule ---
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any)
+      .mockReturnValueOnce(makeSelectChain([newRule]) as any);       // re-select existing rule
+
+    vi.mocked(db.insert)
+      // --- Call 1 ---
+      .mockReturnValueOnce(makeInsertChain([newRule]) as any)             // allowlist insert succeeds
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any)          // audit: allowlist.create
+      .mockReturnValueOnce(makeInsertChain([proxySessionRow]) as any)     // session insert
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any)          // audit: tunnel.open
+      // --- Call 2 ---
+      .mockReturnValueOnce(rejectingInsertChain() as any)                 // allowlist insert conflicts (23505)
+      .mockReturnValueOnce(makeInsertChain([{ ...proxySessionRow, id: 'session-proxy-0002' }]) as any) // session insert
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);         // audit: tunnel.open
+
+    const res1 = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+    expect(res1.status).toBe(201);
+    const body1 = await res1.json();
+    expect(body1.tunnel).toBeDefined();
+    expect(body1).not.toHaveProperty('ticket');
+
+    const res2 = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+    expect(res2.status).toBe(201);
+    const body2 = await res2.json();
+    expect(body2.tunnel).toBeDefined();
+    expect(body2).not.toHaveProperty('ticket');
+
+    // Only ONE allowlist row was ever actually created — call 2 hit the
+    // unique index and re-selected instead of inserting a duplicate.
+    const allowlistCreateAudits = auditCalls(db.insert as any).filter(
+      (a) => a.action === 'tunnel.allowlist.create'
+    );
+    expect(allowlistCreateAudits).toHaveLength(1);
+    expect(allowlistCreateAudits[0]).toMatchObject({
+      details: {
+        pattern: '10.0.5.20/32:8080', // single port, not a range
+        siteId: PROXY_SITE_ID,
+        discoveredAssetId: ASSET_ID,
+      },
+    });
+
+    // Both calls still mint a tunnel session (two distinct tunnel.open audits).
+    const tunnelOpenAudits = auditCalls(db.insert as any).filter((a) => a.action === 'tunnel.open');
+    expect(tunnelOpenAudits).toHaveLength(2);
+  });
+
+  it('returns 403 PROXY_TARGET_DISABLED — and never re-enables the rule — when the matching rule exists but is disabled', async () => {
+    const disabledRule = { ...newRule, enabled: false };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)   // device lookup
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)       // discovered asset lookup
+      .mockReturnValueOnce(makeSelectChain([]) as any)               // source-ip allowlist
+      .mockReturnValueOnce(makeSelectChain([disabledRule]) as any);  // re-select existing (disabled) rule
+
+    vi.mocked(db.insert).mockReturnValueOnce(rejectingInsertChain() as any); // allowlist insert conflicts
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('PROXY_TARGET_DISABLED');
+
+    // Never silently re-enabled, and no tunnel session created for a
+    // disabled target.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalledTimes(1); // only the failed allowlist insert attempt
+  });
+
+  it('returns {tunnel} only — no ticket — on a successful connect', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);
+
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(makeInsertChain([newRule]) as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any)
+      .mockReturnValueOnce(makeInsertChain([proxySessionRow]) as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body).toHaveProperty('tunnel');
+    expect(body.tunnel).toMatchObject({ type: 'proxy', targetHost: '10.0.5.20', targetPort: 8080 });
+    expect(body).not.toHaveProperty('ticket');
+  });
+});
+
 // ─── Malformed params/query ───────────────────────────────────────────────────
 
 describe('Malformed UUID params and query strings', () => {
@@ -414,22 +665,29 @@ describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () =
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    // Default no-op lazy-expiry sweep — most tests in this block don't care
+    // about it, just that it doesn't throw on the unconfigured mock.
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
     app = new Hono();
     app.route('/tunnels', tunnelRoutes);
   });
 
   // List flow when site-restricted: 1st select resolves org devices (id+siteId),
-  // 2nd select returns the (already narrowed) sessions list.
-  function rigListNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, sessions: any[]) {
+  // then the lazy-expiry sweep (db.update), then the 2nd select — the joined
+  // (already narrowed) sessions list, returned as `{session, siteId}` rows.
+  function rigListNarrowing(orgDevices: Array<{ id: string; siteId: string | null }>, rows: Array<{ session: any; siteId: string | null }>) {
     const deviceWhere = vi.fn().mockResolvedValue(orgDevices);
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({ where: deviceWhere }),
     } as any);
     const listWhere = vi.fn().mockReturnValue({
-      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(sessions) }),
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
     });
     vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({ where: listWhere }),
+      from: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnThis(), where: listWhere }),
     } as any);
     return { deviceWhere, listWhere };
   }
@@ -440,7 +698,7 @@ describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () =
         { id: DEVICE_IN_A, siteId: SITE_A },
         { id: DEVICE_IN_B, siteId: SITE_B },
       ],
-      [{ ...sessionRecord, deviceId: DEVICE_IN_A }]
+      [{ session: { ...sessionRecord, deviceId: DEVICE_IN_A }, siteId: SITE_A }]
     );
 
     const res = await app.request('/tunnels', {
@@ -468,16 +726,18 @@ describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () =
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([]);
-    // Only the org-device narrowing select ran; the sessions query was skipped.
+    // Only the org-device narrowing select ran; the sweep + sessions query
+    // were both skipped by the early return.
     expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it('does not narrow the session list for an unrestricted caller', async () => {
     const listWhere = vi.fn().mockReturnValue({
-      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([sessionRecord]) }),
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ session: sessionRecord, siteId: null }]) }),
     });
     vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({ where: listWhere }),
+      from: vi.fn().mockReturnValue({ leftJoin: vi.fn().mockReturnThis(), where: listWhere }),
     } as any);
 
     const res = await app.request('/tunnels', { method: 'GET' });
@@ -485,6 +745,161 @@ describe('GET /tunnels — site-scope enforcement (partner-scope callers)', () =
     expect(res.status).toBe(200);
     expect(await res.json()).toHaveLength(1);
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── GET /tunnels — lazy expiry + siteId join + idleSeconds (#3199) ──────────
+// With tunnel_open skipped for proxy tunnels, nothing else reaps a stale
+// `active` row or an abandoned `pending` row — GET /tunnels sweeps them on
+// every read instead. Row-level WHERE filtering is real-Postgres behavior
+// that this fully-mocked unit suite cannot execute (no DB available here);
+// these tests instead assert the sweep is unconditionally issued with the
+// right `.set()` payload and a WHERE clause that structurally covers both
+// branches at the correct 10-minute cutoff, then verify the response shape
+// (siteId, idleSeconds) against whatever the (mocked) read returns.
+describe('GET /tunnels — lazy expiry + siteId + idleSeconds', () => {
+  let app: Hono;
+  const FIXED_NOW = new Date('2026-08-08T12:00:00.000Z');
+  const SITE_ID = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Rigs the update (sweep) mock and the joined-list select mock; returns the
+  // update's `.where()` spy so the test can inspect what was swept for.
+  function rigSweepAndRead(rows: Array<{ session: any; siteId: string | null }>) {
+    const updateWhereSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({ where: updateWhereSpy }),
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        leftJoin: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        }),
+      }),
+    } as any);
+    return updateWhereSpy;
+  }
+
+  it('issues the sweep unconditionally, covering both the stale-active and abandoned-pending branches at the 10-minute cutoff', async () => {
+    const updateWhereSpy = rigSweepAndRead([{ session: sessionRecord, siteId: null }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    expect(res.status).toBe(200);
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(updateWhereSpy).toHaveBeenCalledTimes(1);
+    const rendered = JSON.stringify(updateWhereSpy.mock.calls[0]![0]);
+    const expectedCutoff = new Date(FIXED_NOW.getTime() - 10 * 60 * 1000).toISOString();
+    // Branch (a): active + stale lastActivityAt.
+    expect(rendered).toContain('"active"');
+    // Branch (b): pending + stale createdAt + null lastActivityAt.
+    expect(rendered).toContain('"pending"');
+    // Scoped to proxy rows only (VNC has its own agent-side reaper).
+    expect(rendered).toContain('"proxy"');
+    // Same 10-minute cutoff feeds both branches.
+    expect(rendered).toContain(expectedCutoff);
+  });
+
+  it('flips a stale-active proxy row to disconnected in the response (post-sweep read)', async () => {
+    const staleLastActivity = new Date(FIXED_NOW.getTime() - 11 * 60 * 1000); // >10min stale
+    rigSweepAndRead([{
+      session: {
+        ...sessionRecord,
+        type: 'proxy',
+        status: 'disconnected', // what the DB shows after the sweep matched this row
+        lastActivityAt: staleLastActivity,
+        createdAt: staleLastActivity,
+      },
+      siteId: SITE_ID,
+    }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body[0].status).toBe('disconnected');
+  });
+
+  it('flips an abandoned pending proxy row (no lastActivityAt, >10min old) to disconnected in the response', async () => {
+    const staleCreatedAt = new Date(FIXED_NOW.getTime() - 15 * 60 * 1000);
+    rigSweepAndRead([{
+      session: {
+        ...sessionRecord,
+        type: 'proxy',
+        status: 'disconnected',
+        lastActivityAt: null,
+        createdAt: staleCreatedAt,
+      },
+      siteId: SITE_ID,
+    }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body[0].status).toBe('disconnected');
+  });
+
+  it('leaves a fresh active proxy row untouched', async () => {
+    const freshLastActivity = new Date(FIXED_NOW.getTime() - 30 * 1000); // 30s ago, well within window
+    rigSweepAndRead([{
+      session: {
+        ...sessionRecord,
+        type: 'proxy',
+        status: 'active',
+        lastActivityAt: freshLastActivity,
+      },
+      siteId: SITE_ID,
+    }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body[0].status).toBe('active');
+    expect(body[0].idleSeconds).toBe(30);
+  });
+
+  it('joins the bridge device siteId and computes idleSeconds from lastActivityAt when present', async () => {
+    const lastActivity = new Date(FIXED_NOW.getTime() - 45 * 1000);
+    rigSweepAndRead([{
+      session: { ...sessionRecord, lastActivityAt: lastActivity },
+      siteId: SITE_ID,
+    }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    const body = await res.json();
+
+    expect(body[0].siteId).toBe(SITE_ID);
+    expect(body[0].idleSeconds).toBe(45);
+  });
+
+  it('falls back to createdAt for idleSeconds when lastActivityAt is null, and reports siteId null when the device has none', async () => {
+    const createdAt = new Date(FIXED_NOW.getTime() - 120 * 1000);
+    rigSweepAndRead([{
+      session: { ...sessionRecord, lastActivityAt: null, createdAt },
+      siteId: null,
+    }]);
+
+    const res = await app.request('/tunnels', { method: 'GET' });
+    const body = await res.json();
+
+    expect(body[0].siteId).toBeNull();
+    expect(body[0].idleSeconds).toBe(120);
   });
 });
 
@@ -552,6 +967,113 @@ describe('GET /tunnels/:id — site-scope enforcement', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).id).toBe(SESSION_ID);
     expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── GET /tunnels/:id — lazy expiry + idleSeconds (#3199) ─────────────────────
+// ProxyTunnelPage's 5s poll hits this route directly (not the list route), so
+// it needs the SAME stale-row flip + idleSeconds the list route already has
+// (see the "GET /tunnels — lazy expiry + siteId + idleSeconds" block above) —
+// otherwise a proxy row can read "active"/"pending" forever once tunnel_open
+// stops being sent for proxy tunnels.
+describe('GET /tunnels/:id — lazy expiry + idleSeconds', () => {
+  let app: Hono;
+  const FIXED_NOW = new Date('2026-08-08T12:00:00.000Z');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function rigUpdate() {
+    const updateWhereSpy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({ where: updateWhereSpy }),
+    } as any);
+    return updateWhereSpy;
+  }
+
+  it('returns idleSeconds computed from lastActivityAt and never sweeps a fresh row', async () => {
+    const lastActivity = new Date(FIXED_NOW.getTime() - 45 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'active',
+      lastActivityAt: lastActivity,
+    }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.idleSeconds).toBe(45);
+    expect(body.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('flips a stale active proxy row to disconnected on read', async () => {
+    const staleLastActivity = new Date(FIXED_NOW.getTime() - 11 * 60 * 1000); // >10min
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'active',
+      lastActivityAt: staleLastActivity,
+    }]) as any);
+    const updateWhereSpy = rigUpdate();
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('disconnected');
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(updateWhereSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('flips an abandoned pending proxy row (no lastActivityAt, >10min old) to disconnected on read', async () => {
+    const staleCreatedAt = new Date(FIXED_NOW.getTime() - 15 * 60 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'proxy',
+      status: 'pending',
+      lastActivityAt: null,
+      createdAt: staleCreatedAt,
+    }]) as any);
+    const updateWhereSpy = rigUpdate();
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('disconnected');
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(updateWhereSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves non-proxy tunnel types unaffected by the sweep', async () => {
+    const staleLastActivity = new Date(FIXED_NOW.getTime() - 11 * 60 * 1000);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([{
+      ...sessionRecord,
+      type: 'vnc',
+      status: 'active',
+      lastActivityAt: staleLastActivity,
+    }]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}`, { method: 'GET' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('active');
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
 
@@ -1168,6 +1690,28 @@ describe('Allowlist mutation routes — DEVICES_EXECUTE gate', () => {
     expect(db.insert).toHaveBeenCalledTimes(2);
   });
 
+  // The new expression unique index on (orgId, direction, pattern, siteId)
+  // raises 23505 on a duplicate rule — map it to 409, not a raw 500.
+  it('POST /allowlist returns 409 (not 500) when the unique index rejects a duplicate rule', async () => {
+    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+      constraint_name: 'tunnel_allowlists_org_direction_pattern_site_idx',
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockRejectedValue({ cause: pgError }) }),
+    } as any);
+
+    const res = await app.request('/tunnels/allowlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ruleBody),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toHaveProperty('error');
+  });
+
   it('PUT /allowlist/:id returns 403 when caller lacks DEVICES_EXECUTE', async () => {
     const res = await app.request(`/tunnels/allowlist/${RULE_ID}`, {
       method: 'PUT',
@@ -1753,6 +2297,38 @@ describe('POST /tunnels/:id/http-ticket', () => {
       result: 'success',
     }));
     expect(audits[0].details).toEqual(expect.objectContaining({ deviceId: DEVICE_ID }));
+  });
+
+  // Absolute 12h cap (spec A.3-3): reject minting a fresh ticket for a row
+  // past its lifetime, even if `status` still reads connectable — the
+  // per-request enforcement lives in tunnelHttp.ts, this is the mint-time
+  // backstop so a caller can't refresh past a session that should be dead.
+  it('returns a coded 410 when the tunnel row is older than the 12h absolute cap', async () => {
+    const expiredSession = {
+      ...sessionRecord,
+      createdAt: new Date(Date.now() - 13 * 60 * 60 * 1000), // 13h old
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([expiredSession]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(410);
+    const body = await res.json();
+    expect(body).toHaveProperty('error', 'session_expired');
+    expect(createWsTicket).not.toHaveBeenCalled();
+  });
+
+  it('still mints a ticket for a row just under the 12h cap', async () => {
+    const freshSession = {
+      ...sessionRecord,
+      createdAt: new Date(Date.now() - 11 * 60 * 60 * 1000), // 11h old
+    };
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([freshSession]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request(`/tunnels/${SESSION_ID}/http-ticket`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
   });
 });
 

@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "Ticket non valido",
+      "invalidTicket": "Questo link non è valido o è scaduto.",
       "obtainTicket": "Impossibile ottenere il ticket",
       "prepareConnection": "Impossibile preparare la connessione",
-      "tlsUntrusted": "Questo dispositivo ha presentato un certificato non attendibile o autofirmato. Per continuare, ricrea la sessione proxy abilitando \"Consenti certificato autofirmato\".",
-      "tunnelFailed": "Connessione tramite tunnel non riuscita"
+      "tlsUntrusted": "Questo dispositivo ha presentato un certificato non attendibile o autofirmato.",
+      "tunnelFailed": "Impossibile aprire il tunnel"
     },
     "openInNewTab": "Apri in una nuova scheda",
     "preparingConnection": "Preparazione della connessione proxy…",
     "proxiedService": "Servizio tramite proxy",
+    "reconnectSelfSigned": "Riconnetti consentendo il certificato autofirmato",
+    "sessionExpired": {
+      "title": "Sessione scaduta",
+      "body": "La sessione proxy è scaduta.",
+      "reconnect": "Riconnetti"
+    },
     "status": {
       "connected": "Connesso",
       "connecting": "Connessione in corso...",

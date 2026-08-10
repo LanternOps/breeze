@@ -62,15 +62,7 @@
       "tags": "es. critico, piano-2, rete"
     },
     "proxy": {
-      "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)",
-      "description": "Accedi all'interfaccia web di questo dispositivo dal browser tramite un tunnel attraverso un agente online nella stessa rete. L'abilitazione aggiunge l'IP del dispositivo all'elenco di autorizzazione, consentendo a un agente di fungere da proxy.",
-      "enable": "Abilita accesso proxy",
-      "enabled": "Proxy abilitato",
-      "noOnlineAgent": "Nessun agente online disponibile per fungere da proxy verso questo dispositivo. Un agente deve essere online e trovarsi nella stessa rete di {{ip}} per stabilire il collegamento.",
-      "port": "Porta {{port}}",
-      "portWithService": "Porta {{port}} ({{service}})",
-      "throughAgent": "Proxy tramite agente",
-      "throughAgentHelp": "Scegli un agente online in grado di raggiungere {{ip}} nella propria rete, in genere quello che lo ha rilevato. Questa impostazione è distinta dal collegamento di identità precedente.",
+      "manageOnDevicePage": "Gestisci l'accesso proxy nella pagina del dispositivo di rete",
       "title": "Accesso proxy"
     },
     "snmpDataTitle": "Dati SNMP",
@@ -694,6 +686,12 @@
     "tryAgain": "Riprova",
     "vlan": "VLAN {{vlan}}",
     "escToCancel": "· Esc per annullare"
+  },
+  "proxyConnect": {
+    "title": "Proxy verso {{target}}",
+    "throughAgent": "Tramite agente",
+    "connect": "Connetti",
+    "allowSelfSigned": "Consenti certificato autofirmato (comune per stampanti, iLO/IPMI e switch)"
   },
   "assetTypes": {
     "workstation": "Workstation",

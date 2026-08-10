@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, desc, sql, inArray } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
@@ -55,6 +56,10 @@ const requireTopologyWrite = requirePermission(
   PERMISSIONS.TOPOLOGY_WRITE.resource,
   PERMISSIONS.TOPOLOGY_WRITE.action,
 );
+
+// Second `devices` alias for GET /assets/:id's suggestedBridgeDeviceId join
+// (devices is already joined once for linkedDeviceId in that query).
+const bridgeDevices = alias(devices, 'bridge_devices');
 
 // --- Helpers ---
 
@@ -1202,7 +1207,15 @@ discoveryRoutes.get(
         linkedDeviceDisplayName: devices.displayName,
         profileId: discoveryProfiles.id,
         profileName: discoveryProfiles.name,
-        profileSubnets: discoveryProfiles.subnets
+        profileSubnets: discoveryProfiles.subnets,
+        // The agent device that ran the asset's most recent discovery scan —
+        // discoveredAssets.lastJobId -> discoveryJobs.agentId (the varchar
+        // agent identifier, globally unique) -> devices.agentId. This is the
+        // "discovering agent" default for the proxy bridge picker (spec D.1) —
+        // deliberately NOT linkedDeviceId, which is a same-device identity
+        // link and semantically the wrong default (relaying to the asset
+        // through the device IT WAS LINKED TO is a loopback).
+        suggestedBridgeDeviceId: bridgeDevices.id,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1212,6 +1225,10 @@ discoveryRoutes.get(
       ))
       .leftJoin(discoveryJobs, eq(discoveredAssets.lastJobId, discoveryJobs.id))
       .leftJoin(discoveryProfiles, eq(discoveryJobs.profileId, discoveryProfiles.id))
+      .leftJoin(bridgeDevices, and(
+        eq(discoveryJobs.agentId, bridgeDevices.agentId),
+        eq(bridgeDevices.orgId, discoveredAssets.orgId),
+      ))
       .where(and(...conditions))
       .limit(1);
 
@@ -1244,6 +1261,7 @@ discoveryRoutes.get(
         linkedDeviceId: row.linkedDeviceId ?? null,
         linkedDeviceName: row.linkedDeviceDisplayName ?? row.linkedDeviceHostname ?? null,
         linkSource: row.linkedDeviceId ? a.linkSource : null,
+        suggestedBridgeDeviceId: row.suggestedBridgeDeviceId ?? null,
         typeSource: a.typeSource,
         detectedAssetType: a.detectedAssetType,
         snmpMonitoringEnabled: Boolean(row.snmpMonitoringEnabled),
