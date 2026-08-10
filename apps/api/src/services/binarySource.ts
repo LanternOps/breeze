@@ -1,7 +1,6 @@
-export type BinarySource = 'local' | 'github';
+import { getReleaseSourceReleaseBase, getReleaseSourceRepository } from './releaseSource';
 
-const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
-const GITHUB_REPOSITORY = 'lanternops/breeze';
+export type BinarySource = 'local' | 'github';
 
 let binarySourceWarned = false;
 
@@ -37,21 +36,21 @@ export function getGithubReleaseVersion(): string {
 export function getGithubReleasePageUrl(): string {
   const version = getGithubReleaseVersion();
   if (version === 'latest') {
-    return `${GITHUB_RELEASE_BASE}/latest`;
+    return `${getReleaseSourceReleaseBase()}/latest`;
   }
-  return `${GITHUB_RELEASE_BASE}/tag/v${version}`;
+  return `${getReleaseSourceReleaseBase()}/tag/v${version}`;
 }
 
 function githubDownloadBase(): string {
   const version = getGithubReleaseVersion();
   if (version === 'latest') {
-    return `${GITHUB_RELEASE_BASE}/latest/download`;
+    return `${getReleaseSourceReleaseBase()}/latest/download`;
   }
-  return `${GITHUB_RELEASE_BASE}/download/v${version}`;
+  return `${getReleaseSourceReleaseBase()}/download/v${version}`;
 }
 
 export function getGithubReleaseRepository(): string {
-  return process.env.BINARY_GITHUB_REPOSITORY?.trim() || GITHUB_REPOSITORY;
+  return getReleaseSourceRepository();
 }
 
 export function getGithubExpectedReleaseTag(): string | null {
