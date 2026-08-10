@@ -172,6 +172,53 @@ describe('portal cookie Secure flag (#2611)', () => {
   });
 });
 
+// Compose now threads both names in as `VAR: ${VAR:-}` (#3239), so setting only
+// the generic COOKIE_* still leaves PORTAL_COOKIE_* present-but-empty. Pin that
+// '' falls through instead of shadowing. Mirrors the auth-side suite.
+describe('portal cookie PORTAL_COOKIE_* vs generic COOKIE_* precedence (#3239)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  beforeEach(() => {
+    enableProxyTrust();
+    process.env.NODE_ENV = 'production';
+  });
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    disableProxyTrustEnv();
+    delete process.env.PORTAL_COOKIE_FORCE_SECURE;
+    delete process.env.PORTAL_COOKIE_SAME_SITE;
+    delete process.env.COOKIE_FORCE_SECURE;
+    delete process.env.COOKIE_SAME_SITE;
+  });
+
+  it('an EMPTY PORTAL_COOKIE_SAME_SITE does not shadow COOKIE_SAME_SITE', () => {
+    process.env.PORTAL_COOKIE_SAME_SITE = '';
+    process.env.COOKIE_SAME_SITE = 'None';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setPortalSessionCookies(c, 'session.token.value');
+    expect(setCookies[0]).toContain('SameSite=None; Secure');
+    expect(setCookies[1]).toContain('SameSite=None; Secure');
+  });
+
+  it('an EMPTY PORTAL_COOKIE_FORCE_SECURE does not shadow COOKIE_FORCE_SECURE', () => {
+    process.env.PORTAL_COOKIE_FORCE_SECURE = '';
+    process.env.COOKIE_FORCE_SECURE = 'true';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setPortalSessionCookies(c, 'session.token.value');
+    expect(setCookies[0]).toContain('; Secure');
+    expect(setCookies[1]).toContain('; Secure');
+  });
+
+  it('a CONFIGURED PORTAL_COOKIE_* override still wins over the generic name', () => {
+    process.env.PORTAL_COOKIE_SAME_SITE = 'Strict';
+    process.env.COOKIE_SAME_SITE = 'None';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    setPortalSessionCookies(c, 'session.token.value');
+    expect(setCookies[0]).toContain('SameSite=Strict');
+    expect(setCookies[0]).not.toContain('SameSite=None');
+  });
+});
+
 describe('portal cookie transport warnings (#2611 diagnostics)', () => {
   const originalNodeEnv = process.env.NODE_ENV;
   let warnSpy: ReturnType<typeof vi.spyOn>;

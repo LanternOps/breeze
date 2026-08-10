@@ -12,6 +12,7 @@ import {
   verifyPassword,
   getUserEpochs
 } from '../../services';
+import { envStr } from '../../utils/envStr';
 import { getImmediatePeerIpOrUndefined, rateLimitIpKey, trustsForwardedHeadersFrom } from '../../services/clientIp';
 import { effectiveRequestScheme } from '../../services/requestTransport';
 import { createAuditLogAsync } from '../../services/auditService';
@@ -538,12 +539,25 @@ function normalizeSameSite(raw: string | undefined): SameSiteValue {
   return 'Lax';
 }
 
+/**
+ * The AUTH_-prefixed override wins over the generic name only when it is
+ * actually CONFIGURED.
+ *
+ * `??` was safe while neither name was threaded through Compose, and stopped
+ * being safe the moment both were (#3239). Compose renders an unset variable as
+ * `VAR: ""`, so the container sees `AUTH_COOKIE_SAME_SITE=''` — and `''` is not
+ * nullish, so `??` returns it and never consults COOKIE_SAME_SITE. An operator
+ * setting only `COOKIE_SAME_SITE=None` would have been silently downgraded back
+ * to `Lax` (and, via shouldSetSecureCookie, lost the implied `Secure`).
+ * `envStr` treats empty/whitespace-only as absent, which is the precedence the
+ * two-name pair was always meant to express.
+ */
 function resolveAuthCookieSameSite(): SameSiteValue {
-  return normalizeSameSite(process.env.AUTH_COOKIE_SAME_SITE ?? process.env.COOKIE_SAME_SITE);
+  return normalizeSameSite(envStr('AUTH_COOKIE_SAME_SITE', envStr('COOKIE_SAME_SITE', '')));
 }
 
 function forceSecureCookie(): boolean {
-  const forceSecure = (process.env.AUTH_COOKIE_FORCE_SECURE ?? process.env.COOKIE_FORCE_SECURE)?.trim().toLowerCase();
+  const forceSecure = envStr('AUTH_COOKIE_FORCE_SECURE', envStr('COOKIE_FORCE_SECURE', '')).toLowerCase();
   return forceSecure === '1' || forceSecure === 'true';
 }
 

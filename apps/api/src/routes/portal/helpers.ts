@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
+import { envStr } from '../../utils/envStr';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { isRequestConnectionSecure } from '../auth/helpers';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -123,12 +124,17 @@ function normalizeSameSite(raw: string | undefined): SameSiteValue {
   return 'Lax';
 }
 
+/**
+ * PORTAL_-prefixed override wins over the generic name only when CONFIGURED —
+ * `''` must fall through, not shadow. Same reasoning (and same #3239 fix) as
+ * resolveAuthCookieSameSite() in ../auth/helpers.ts; see the note there.
+ */
 function resolvePortalCookieSameSite(): SameSiteValue {
-  return normalizeSameSite(process.env.PORTAL_COOKIE_SAME_SITE ?? process.env.COOKIE_SAME_SITE);
+  return normalizeSameSite(envStr('PORTAL_COOKIE_SAME_SITE', envStr('COOKIE_SAME_SITE', '')));
 }
 
 function forcePortalSecureCookie(): boolean {
-  const forceSecure = (process.env.PORTAL_COOKIE_FORCE_SECURE ?? process.env.COOKIE_FORCE_SECURE)?.trim().toLowerCase();
+  const forceSecure = envStr('PORTAL_COOKIE_FORCE_SECURE', envStr('COOKIE_FORCE_SECURE', '')).toLowerCase();
   return forceSecure === '1' || forceSecure === 'true';
 }
 

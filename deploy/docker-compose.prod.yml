@@ -303,6 +303,18 @@ services:
       # these MUST be mapped here for compose interpolation to reach the API).
       SYNTHETIC_TEST_TOKEN: ${SYNTHETIC_TEST_TOKEN:-}
       SYNTHETIC_TEST_IP_ALLOWLIST: ${SYNTHETIC_TEST_IP_ALLOWLIST:-}
+      # Optional knobs documented as COMMENTED-OUT defaults in
+      # deploy/.env.example. The parity guard read only uncommented assignments
+      # until #3239, so this whole class was exempt from it and never reached
+      # the container. Same `${VAR:-}` reasoning as the block above.
+      MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+      LOGIN_ACCOUNT_LOCKOUT_MAX: ${LOGIN_ACCOUNT_LOCKOUT_MAX:-}
+      LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: ${LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS:-}
+      AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+      # Break-glass only: lets the API connect to an unauthenticated Redis.
+      # Mapped so it can be set deliberately in an incident rather than being
+      # inert; leave it unset in normal operation.
+      BREEZE_ALLOW_UNAUTH_REDIS: ${BREEZE_ALLOW_UNAUTH_REDIS:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
