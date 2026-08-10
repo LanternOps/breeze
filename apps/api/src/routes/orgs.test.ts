@@ -2811,7 +2811,17 @@ describe('org routes', () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'site-3', name: 'Site C' }])
+          returning: vi.fn().mockResolvedValue([
+            { id: 'site-3', orgId: '11111111-1111-1111-1111-111111111111', name: 'Site C' }
+          ])
+        })
+      } as any);
+      // A site created WITH a contact now mirrors it into `contacts`, which
+      // reads the existing primary first. Earlier tests leave a narrower select
+      // chain on the shared mock, so re-declare one that reaches .limit().
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
         })
       } as any);
 
@@ -2832,7 +2842,15 @@ describe('org routes', () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: 'site-4', name: 'Site D' }])
+          returning: vi.fn().mockResolvedValue([
+            { id: 'site-4', orgId: '11111111-1111-1111-1111-111111111111', name: 'Site D' }
+          ])
+        })
+      } as any);
+      // See the phone-only test above: the contact mirror reads before writing.
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
         })
       } as any);
 

@@ -121,6 +121,25 @@ describe('mergeBillingContact', () => {
     expect(calls.deletes).toBe(1);
     expect(calls.updates).toHaveLength(1); // the jsonb write only
   });
+
+  it('keeps a mobile-only contact when the blob fields are all cleared', async () => {
+    // `mobile` is a real contacts column with NO key in the legacy blob, and
+    // contacts_identifiable_chk accepts it alone — so a row identified only by
+    // mobile is legal. Judging emptiness on name/email/phone alone would delete
+    // it here, cascading contact_external_links and destroying the re-import
+    // identity key, the first time anyone cleared the billing email.
+    ({ exec, calls } = makeExec([
+      { id: EXISTING_ID, name: null, email: 'jane@acme.com', phone: null, mobile: '+1 555 0100' },
+    ]));
+    await mergeBillingContact(exec, ORG, { email: null });
+
+    expect(calls.deletes).toBe(0);
+    // The jsonb write, then the contacts row with its modelled fields cleared.
+    expect(calls.updates).toHaveLength(2);
+    expect(calls.updates[1]).toMatchObject({ name: null, email: null, phone: null });
+    // ...and mobile is left alone rather than written back as null.
+    expect(calls.updates[1]).not.toHaveProperty('mobile');
+  });
 });
 
 describe('replaceBillingContact', () => {

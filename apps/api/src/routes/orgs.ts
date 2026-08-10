@@ -26,6 +26,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
@@ -1322,9 +1323,19 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // system-scoped tx for just this insert. Atomicity with the rest of the
   // handler isn't a concern — the only follow-up here is an audit write.
   const [organization] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () =>
-      db.insert(organizations).values(insertValues).returning()
-    )
+    withSystemDbAccessContext(async () => {
+      const created = await db.insert(organizations).values(insertValues).returning();
+      // The `contacts` mirror is written inside this SAME system-scoped context,
+      // for the same reason the insert above needs one: the new org's id is not
+      // in the caller's accessible_org_ids yet, so breeze_has_org_access(org_id)
+      // would reject the contacts INSERT exactly as it rejects the organizations
+      // one. The blob itself is already persisted by the insert, so this only
+      // mirrors the row.
+      if (created[0] && data.billingContact) {
+        await syncBillingContactRow(db, created[0].id, data.billingContact, auth.user?.id ?? null);
+      }
+      return created;
+    })
   );
 
   writeRouteAudit(c, {
@@ -1652,6 +1663,14 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // before writing organizations.settings. See encryptedColumnRegistry.
     updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
   }
+  // The blob write stays in THIS update rather than going through
+  // replaceBillingContact: the #2879 override path below re-asserts
+  // partner-ownership and suspended-status in the UPDATE's own WHERE, and the
+  // compat writer targets a bare eq(id, orgId), which would let a billing
+  // contact land on an org that stopped qualifying between check and write.
+  // The `contacts` row is mirrored by syncBillingContactRow once the guarded
+  // update has succeeded — exactly the "caller already wrote the blob" case
+  // that entry point exists for.
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
   if (data.contractStart !== undefined) {
     updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
@@ -1676,11 +1695,21 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       )
     : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const runUpdate = () => db
-    .update(organizations)
-    .set(updates)
-    .where(conditions)
-    .returning();
+  const runUpdate = async () => {
+    const rows = await db
+      .update(organizations)
+      .set(updates)
+      .where(conditions)
+      .returning();
+    // Mirrored inside the SAME context as the update above. On the override
+    // path that context is system-scoped because the request's partner context
+    // cannot see a suspended org — and `contacts` is policed by
+    // breeze_has_org_access(org_id), so it could not see the row either.
+    if (rows[0] && data.billingContact !== undefined) {
+      await syncBillingContactRow(db, rows[0].id, data.billingContact, auth.user?.id ?? null);
+    }
+    return rows;
+  };
 
   const [organization] = suspendedLifecycleOverride
     ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
@@ -1957,6 +1986,13 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
     })
     .returning();
 
+  // The insert above already persisted the blob, so this only mirrors it into
+  // `contacts`. Same request transaction, so the two representations commit
+  // together or not at all.
+  if (site && data.contact) {
+    await syncSiteContactRow(db, site.orgId, site.id, data.contact, auth.user?.id ?? null);
+  }
+
   writeRouteAudit(c, {
     orgId: site?.orgId,
     action: 'site.create',
@@ -2042,6 +2078,14 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   // it instead of returning 200 + null, which reads to the client as a success.
   if (!updated) {
     return c.json({ error: 'Failed to update site' }, 500);
+  }
+
+  // `contact` reaches the UPDATE above through the `{ ...data }` spread, with
+  // no literal `contact:` token at the write site — which is why this mirror
+  // has to be wired deliberately rather than found by grep. Runs only after
+  // the 0-row RLS check, so a rejected write never mirrors.
+  if (data.contact !== undefined) {
+    await syncSiteContactRow(db, site.orgId, site.id, data.contact, auth.user?.id ?? null);
   }
 
   writeRouteAudit(c, {
