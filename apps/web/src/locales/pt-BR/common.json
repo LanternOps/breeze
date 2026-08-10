@@ -704,6 +704,10 @@
       "retry": "Tentar novamente"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo(s) estão usando a edição hospedada do agente neste servidor auto-hospedado. Migre para a edição do agente auto-hospedado.",
+    "cta": "Como migrar"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
