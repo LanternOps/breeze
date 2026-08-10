@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { groupRoutes } from './groups';
+// The `../db/schema` module is vi.mock'd below; importing from it yields the
+// same mock objects the route passes to db.delete(), so identity comparison
+// works for the #3313 ordering assertion.
+import * as schema from '../db/schema';
 
 const GROUP_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const GROUP_ID_2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -469,7 +473,9 @@ describe('groups routes', () => {
           })
         } as any);
 
+      // Three deletes: memberships, membership log (#3313), then the group.
       vi.mocked(db.delete)
+        .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
         .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any)
         .mockReturnValueOnce({ where: vi.fn().mockResolvedValue(undefined) } as any);
 
@@ -481,6 +487,17 @@ describe('groups routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.id).toBe(GROUP_ID);
+
+      // group_membership_log FKs device_groups with no ON DELETE, so its rows
+      // must be cleared BEFORE the group or Postgres raises 23503 (#3313).
+      // This mock resolves every delete regardless, so the assertion is on the
+      // call order — the real FK is proven in
+      // __tests__/integration/groupDeleteMembershipLog.integration.test.ts.
+      const deletedTables = vi.mocked(db.delete).mock.calls.map(([table]) => table);
+      expect(deletedTables).toContain(schema.groupMembershipLog);
+      expect(deletedTables.indexOf(schema.groupMembershipLog)).toBeLessThan(
+        deletedTables.indexOf(schema.deviceGroups)
+      );
     });
 
     it('should return 404 when deleting non-existent group', async () => {
