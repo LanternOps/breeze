@@ -366,3 +366,271 @@ jobs:
             dist/breeze-user-helper-windows-amd64.exe
             dist/breeze-agent.msi
           retention-days: 7
+
+  macos:
+    name: Sign macOS artifacts
+    needs: [validate]
+    if: inputs.platforms == 'all' || inputs.platforms == 'macos'
+    runs-on: macos-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # ---- Trust boundary: everything below `verify` may assume the official
+      # ---- release is authentic. No secrets appear above or inside it.
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Checkout Breeze source at manifest sourceCommit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lanternops/breeze
+          ref: ${{ steps.verify.outputs.source-commit }}
+          path: breeze
+          persist-credentials: false
+
+      - name: Download and verify unsigned signing inputs
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          for component in agent backup desktop-helper watchdog; do
+            for arch in amd64 arm64; do
+              scripts/download-verified-asset.sh "$VERSION" \
+                "breeze-${component}-darwin-${arch}-unsigned" \
+                "staging/breeze-${component}-darwin-${arch}" \
+                --expect-signing-input
+            done
+          done
+          chmod 755 staging/breeze-*
+
+      - name: Validate macOS signing secrets
+        if: inputs.dry-run == false
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_INSTALLER_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required signing secret: $name (see README secrets table)"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Import certificates into ephemeral keychain
+        if: inputs.dry-run == false
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+
+      - name: Sign binaries (hardened runtime + entitlements)
+        if: inputs.dry-run == false
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            codesign --force --options runtime \
+              --entitlements breeze/agent/entitlements/agent-macos.entitlements.plist \
+              --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
+            codesign --verify --verbose "$bin"
+            echo "Signed: $bin"
+          done
+
+      - name: Notarize binaries
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          chmod +x breeze/scripts/release/notarize-submit.sh
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            ZIP_PATH="${bin}.zip"
+            ditto -c -k --keepParent "$bin" "$ZIP_PATH"
+            breeze/scripts/release/notarize-submit.sh "$ZIP_PATH"
+            rm -f "$ZIP_PATH"
+          done
+
+      - name: Build macOS .pkg installers
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x breeze/agent/installer/macos/build-pkg.sh
+          for arch in amd64 arm64; do
+            breeze/agent/installer/macos/build-pkg.sh \
+              "staging/breeze-agent-darwin-${arch}" \
+              "staging/breeze-desktop-helper-darwin-${arch}" \
+              "staging/breeze-backup-darwin-${arch}" \
+              "staging/breeze-watchdog-darwin-${arch}" \
+              "$VERSION" \
+              "$arch" \
+              "staging/breeze-agent-darwin-${arch}.pkg"
+          done
+
+      - name: Sign .pkg installers
+        if: inputs.dry-run == false
+        env:
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for pkg in staging/*.pkg; do
+            SIGNED="${pkg%.pkg}-signed.pkg"
+            productsign --sign "$APPLE_INSTALLER_IDENTITY" "$pkg" "$SIGNED"
+            mv "$SIGNED" "$pkg"
+            echo "Signed: $(basename "$pkg")"
+          done
+
+      - name: Notarize and staple .pkg installers
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for pkg in staging/*.pkg; do
+            breeze/scripts/release/notarize-submit.sh "$pkg"
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            echo "Notarized and stapled: $(basename "$pkg")"
+          done
+
+      - name: Build Breeze Installer.app from source
+        run: |
+          set -euo pipefail
+          chmod +x breeze/agent/installer/macos-app/build-app-bundle.sh
+          breeze/agent/installer/macos-app/build-app-bundle.sh \
+            --pkg-amd64 staging/breeze-agent-darwin-amd64.pkg \
+            --pkg-arm64 staging/breeze-agent-darwin-arm64.pkg \
+            --output "build/Breeze Installer.app"
+
+      - name: Sign Installer.app
+        if: inputs.dry-run == false
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime \
+            --entitlements breeze/agent/installer/macos-app/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" --timestamp \
+            --deep "build/Breeze Installer.app"
+          codesign --verify --verbose=2 "build/Breeze Installer.app"
+
+      - name: Notarize + staple Installer.app
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
+          breeze/scripts/release/notarize-submit.sh build/installer-notarize.zip
+          xcrun stapler staple "build/Breeze Installer.app"
+          xcrun stapler validate "build/Breeze Installer.app"
+          spctl -a -t exec -vv "build/Breeze Installer.app"
+
+      - name: Verify macOS signatures and notarization
+        if: inputs.dry-run == false
+        run: |
+          set -euo pipefail
+          # Raw Mach-O binaries: verify signature + hardened runtime + Developer ID.
+          # Do NOT run `spctl -a -t exec` against raw command-line binaries —
+          # Gatekeeper's exec assessment is bundle-aware and rejects raw Mach-O
+          # even when signing/notarization are correct. The user-facing
+          # assessment happens at the .pkg layer below.
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            codesign --verify --strict --verbose=2 "$bin"
+            DETAILS=$(codesign -dvvv "$bin" 2>&1)
+            if ! grep -q 'flags=.*runtime' <<<"$DETAILS"; then
+              echo "::error::$bin missing hardened runtime flag"
+              echo "$DETAILS"
+              exit 1
+            fi
+            if ! grep -q 'Authority=Developer ID Application' <<<"$DETAILS"; then
+              echo "::error::$bin not signed by Developer ID Application"
+              echo "$DETAILS"
+              exit 1
+            fi
+          done
+
+          for pkg in staging/*.pkg; do
+            [ -f "$pkg" ] || continue
+            pkgutil --check-signature "$pkg"
+            xcrun stapler validate "$pkg"
+            spctl -a -vv -t install "$pkg"
+          done
+
+      - name: Package Installer.app for release
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Breeze Installer.app" \
+            "build/Breeze Installer.app.zip"
+
+      - name: Collect outputs
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for component in agent backup desktop-helper watchdog; do
+            for arch in amd64 arm64; do
+              cp "staging/breeze-${component}-darwin-${arch}" out/
+            done
+          done
+          cp staging/breeze-agent-darwin-amd64.pkg staging/breeze-agent-darwin-arm64.pkg out/
+          cp "build/Breeze Installer.app.zip" out/
+          ls -lh out/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-macos
+          path: out/*
+          retention-days: 7
+
+      - name: Cleanup keychain
+        if: always() && inputs.dry-run == false
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
