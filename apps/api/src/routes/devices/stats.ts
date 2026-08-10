@@ -51,7 +51,9 @@ statsRoutes.get(
       return c.json({ error: 'Access to this organization denied' }, 403);
     }
     if ('emptyAllowlist' in scoped) {
-      return c.json({ data: { total: 0, online: 0, offline: 0, byStatus: {} } });
+      return c.json({
+        data: { total: 0, online: 0, offline: 0, byStatus: {}, migrationRequiredCount: 0 },
+      });
     }
 
     // Ephemeral Quick Support devices live in the hidden 'quick_support' org,
@@ -65,17 +67,25 @@ statsRoutes.get(
     }
 
     const rows = await db
-      .select({ status: devices.status, count: sql<number>`count(*)` })
+      .select({
+        status: devices.status,
+        count: sql<number>`count(*)`,
+        // Filtered within the same per-status group; summed across groups
+        // below this yields the tenant-wide migration-required total.
+        migrationRequiredCount: sql<number>`count(*) filter (where ${devices.migrationRequired})`,
+      })
       .from(devices)
       .where(and(...conditions))
       .groupBy(devices.status);
 
     const byStatus: Record<string, number> = {};
     let total = 0;
+    let migrationRequiredCount = 0;
     for (const row of rows) {
       const n = Number(row.count);
       byStatus[row.status] = n;
       total += n;
+      migrationRequiredCount += Number(row.migrationRequiredCount ?? 0);
     }
 
     const online = byStatus.online ?? 0;
@@ -89,6 +99,7 @@ statsRoutes.get(
         // online count, not just status='offline'. byStatus has the raw split.
         offline: total - online,
         byStatus,
+        migrationRequiredCount,
       },
     });
   }
