@@ -181,6 +181,12 @@ export const CHECKSUM_RECONCILIATIONS: Record<
     to: '6be4c7fa5b808e4ca51f63824f6d5b286f0b8dfc081ed8a43cc33f731fdb6148',
     reason: '#2622 (v0.97.1): advisory-lock gate function had breeze.scope attributes dropped outright; superuser DBs applied the original v0.97.0 file, heal their recorded checksum instead of crashing the upgrade.',
   },
+  '2026-08-19-contacts.sql': {
+    from: '4b6559271dbc35c85e342756a3892909a7f2cee58e4b5bdc8e04207ffe842a64',
+    to: 'e586cb0f8474e3a84d06638def12268896bba260d3c4568679e90935cc6e1a52',
+    reason:
+      "#3316: bound the two backfill projections with left(...) at the destination column widths. The original raises 22001 on a sites.contact / organizations.billing_contact value longer than varchar(255)/(320)/(64), which aborts the whole migration run. Equivalent for any DB that already applied the original: applying it successfully proves no value exceeded a limit, so left(...) would have returned those same strings unchanged — heal the recorded checksum rather than crashing the upgrade.",
+  },
 };
 
 /**
