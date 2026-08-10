@@ -634,3 +634,279 @@ jobs:
       - name: Cleanup keychain
         if: always() && inputs.dry-run == false
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  publish:
+    name: Publish signed release
+    needs: [validate, windows, macos]
+    if: >-
+      always() && !cancelled()
+      && needs.validate.result == 'success'
+      && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+      && (needs.macos.result == 'success' || needs.macos.result == 'skipped')
+      && !(needs.windows.result == 'skipped' && needs.macos.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Download signed Windows artifacts
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-windows
+          path: release-assets/
+
+      - name: Download signed macOS artifacts
+        if: needs.macos.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-macos
+          path: release-assets/
+
+      - name: Mirror never-signed official assets (verified)
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          # Contract: every canonical asset the Breeze API's URL helpers can
+          # request from a repointed repository, minus what the platform jobs
+          # produce. Sources of truth in the product repo:
+          #   apps/api/src/services/binarySync.ts   (AGENT/WATCHDOG/HELPER/USER_HELPER targets)
+          #   apps/api/src/services/binarySource.ts (VIEWER_FILENAMES, HELPER_FILENAMES,
+          #                                          getGithubBackupUrl, getGithubInstallerAppUrl)
+          MIRROR_ASSETS=(
+            breeze-agent-linux-amd64
+            breeze-agent-linux-arm64
+            breeze-backup-linux-amd64
+            breeze-backup-linux-arm64
+            breeze-watchdog-linux-amd64
+            breeze-watchdog-linux-arm64
+            breeze-viewer-windows.msi
+            breeze-viewer-macos.dmg
+            breeze-viewer-linux.AppImage
+            latest.json
+            breeze-helper-windows.msi
+            breeze-helper-macos.dmg
+            breeze-helper-linux.AppImage
+          )
+          for asset in "${MIRROR_ASSETS[@]}"; do
+            scripts/download-verified-asset.sh "$VERSION" "$asset" "release-assets/$asset" --forbid-signing-input
+          done
+
+      - name: Generate release artifact manifest
+        env:
+          SIGN_VERSION: ${{ needs.validate.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.verify.outputs.source-commit }}
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          release_dir = Path("release-assets")
+          excluded = {
+              "checksums.txt",
+              "release-artifact-manifest.json",
+              "release-artifact-manifest.json.ed25519",
+              "release-artifact-manifest.json.minisig",
+          }
+
+          # Same classifier and platformTrust vocabulary as the official
+          # generator in lanternops/breeze release.yml — the Breeze API
+          # already understands exactly these values.
+          DARWIN_BINARY_RE = re.compile(
+              r"^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$"
+          )
+
+          def platform_trust(name):
+              if name.endswith(".msi") or name.endswith(".exe"):
+                  return "windows-authenticode-required"
+              if (
+                  name.endswith(".pkg")
+                  or name.endswith(".app.zip")
+                  or name.endswith(".dmg")
+              ):
+                  return "macos-developer-id-notarization-required"
+              if DARWIN_BINARY_RE.match(name):
+                  return "macos-developer-id-notarization-required"
+              return "release-workflow-produced"
+
+          assets = []
+          for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
+              if not path.is_file() or path.name in excluded:
+                  continue
+              if "-unsigned" in path.name:
+                  raise SystemExit(
+                      f"refusing to publish signing input {path.name} — "
+                      "unsigned inputs must never reach a distributable release"
+                  )
+              assets.append({
+                  "name": path.name,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "size": path.stat().st_size,
+                  "platformTrust": platform_trust(path.name),
+              })
+
+          if not assets:
+              raise SystemExit("release-assets/ is empty — nothing to publish")
+
+          manifest = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release": f"v{os.environ['SIGN_VERSION']}",
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "assets": assets,
+          }
+          (release_dir / "release-artifact-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          print(f"manifest written with {len(assets)} assets")
+          PY
+
+      - name: Sign release artifact manifest (your Ed25519 key)
+        env:
+          RELEASE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_MANIFEST_ED25519_PRIVATE_KEY }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          node <<'NODE'
+          const {
+            createPrivateKey,
+            createPublicKey,
+            generateKeyPairSync,
+            sign,
+            verify,
+          } = require('node:crypto');
+          const { readFileSync, writeFileSync } = require('node:fs');
+
+          const dryRun = process.env.DRY_RUN === 'true';
+          const raw = (process.env.RELEASE_MANIFEST_ED25519_PRIVATE_KEY ?? '').trim();
+
+          let privateKey;
+          if (!raw) {
+            if (!dryRun) {
+              throw new Error(
+                'RELEASE_MANIFEST_ED25519_PRIVATE_KEY secret is not set — run scripts/generate-manifest-key.sh and add it (see README)'
+              );
+            }
+            ({ privateKey } = generateKeyPairSync('ed25519'));
+            console.log('dry-run: signing with an ephemeral throwaway key');
+          } else {
+            privateKey = raw.includes('BEGIN PRIVATE KEY')
+              ? createPrivateKey(raw)
+              : createPrivateKey({ key: Buffer.from(raw, 'base64'), format: 'der', type: 'pkcs8' });
+          }
+
+          const publicKey = createPublicKey(privateKey);
+          const rawPub = publicKey
+            .export({ format: 'der', type: 'spki' })
+            .subarray(-32)
+            .toString('base64');
+
+          const manifest = readFileSync('release-assets/release-artifact-manifest.json');
+          const signature = sign(null, manifest, privateKey);
+          if (!verify(null, manifest, publicKey, signature)) {
+            throw new Error('Ed25519 manifest signature self-verification failed');
+          }
+          writeFileSync(
+            'release-assets/release-artifact-manifest.json.ed25519',
+            `${signature.toString('base64')}\n`,
+            { mode: 0o644 }
+          );
+          writeFileSync('derived-public-key.txt', `${rawPub}\n`);
+          console.log(`manifest signed; derived public key: ${rawPub}`);
+          NODE
+
+      - name: Generate release checksums
+        run: |
+          cd release-assets
+          sha256sum * > checksums.txt
+
+      - name: Verify release asset integrity
+        run: |
+          set -euo pipefail
+          if [ ! -s "release-assets/checksums.txt" ]; then
+            echo "::error::checksums.txt missing or empty"
+            exit 1
+          fi
+          count=0
+          for path in release-assets/*; do
+            asset="$(basename "$path")"
+            [ "$asset" = "checksums.txt" ] && continue
+            count=$((count + 1))
+            if [ ! -s "$path" ]; then
+              echo "::error::release asset missing or empty: $asset"
+              exit 1
+            fi
+            if ! grep -Fq "  $asset" release-assets/checksums.txt; then
+              echo "::error::checksums.txt missing SHA-256 entry for $asset"
+              exit 1
+            fi
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no release assets assembled"
+            exit 1
+          fi
+          echo "Verified $count release assets against checksums.txt"
+
+      - name: Upload dry-run assets as workflow artifact
+        if: inputs.dry-run == true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dry-run-release-assets
+          path: release-assets/*
+          retention-days: 7
+
+      - name: Create release
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Re-check immediately before create: a concurrent run may have
+          # published between validate and now.
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release v${VERSION} appeared on ${GITHUB_REPOSITORY} while this run was in flight — refusing to overwrite"
+            exit 1
+          fi
+          gh release create "v${VERSION}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Breeze ${VERSION} (self-signed)" \
+            --notes "Breeze ${VERSION} agent packages signed with this organization's certificates. Built from official unsigned artifacts of https://github.com/lanternops/breeze/releases/tag/v${VERSION}, verified against the official Ed25519 release manifest before signing."
+
+      - name: Write instance configuration summary
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          pubkey="$(cat derived-public-key.txt)"
+          {
+            echo "## Point your Breeze instance at this release"
+            echo ""
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "> **Dry run** — nothing was published and the key below is a throwaway. Real runs print your real key here."
+              echo ""
+            fi
+            echo '```bash'
+            echo "BINARY_SOURCE=github"
+            echo "BINARY_GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+            echo "BINARY_VERSION=${VERSION}"
+            echo "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=${pubkey}"
+            echo "AGENT_AUTO_PROMOTE=false   # recommended: promote explicitly after verifying sync"
+            echo '```'
+            echo ""
+            echo "Map each variable in your compose file's \`api\` service \`environment:\` block — a value in \`.env\` alone never reaches the container. Full walkthrough: the \"Sign Your Own Agent Packages\" guide in the Breeze docs."
+          } >> "$GITHUB_STEP_SUMMARY"
