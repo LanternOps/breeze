@@ -182,6 +182,38 @@ func TestBroadcastNotificationPayload(t *testing.T) {
 	}
 }
 
+// TestBroadcastNotificationContinuesPastSendFailure proves one session's dead
+// transport cannot starve its siblings. The broadcast loop logs and moves on
+// rather than aborting, so a helper that died between the snapshot and the
+// send does not silently swallow everyone else's notification.
+func TestBroadcastNotificationContinuesPastSendFailure(t *testing.T) {
+	b := New("broadcast-notify-send-failure", nil)
+
+	// Registered first so it is a candidate, then killed: SendNotify will fail
+	// on a closed transport. Map iteration order is random, so this exercises
+	// the failure both before and after the healthy session across runs.
+	dead := newNotifyProbe(t, b, "dead-session", []string{"notify"})
+	if err := dead.session.Close(); err != nil {
+		t.Fatalf("close dead session: %v", err)
+	}
+	// Guards the test against passing vacuously: if a closed transport still
+	// accepted writes, the broadcast would never enter the error branch.
+	if err := dead.session.SendNotify("", ipc.TypeNotify, &ipc.NotifyRequest{}); err == nil {
+		t.Fatal("send on a closed session succeeded; the failure path is not being exercised")
+	}
+
+	healthy := newNotifyProbe(t, b, "healthy-session", []string{"notify"})
+
+	b.BroadcastNotification("Reboot required", "Your device will restart", "critical")
+
+	if err := healthy.session.SendNotify("sentinel", notifySentinelType, nil); err != nil {
+		t.Fatalf("healthy session: send sentinel: %v", err)
+	}
+	if !healthy.gotNotification(t) {
+		t.Error("healthy session missed the notification because a sibling's send failed")
+	}
+}
+
 // TestBroadcastNotificationSkipsSessionsWithoutNotifyScopeEntirely is the
 // regression guard for #3255 in its bluntest form: with only non-notify
 // sessions connected, the broker must put nothing on any wire.
