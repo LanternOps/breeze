@@ -251,19 +251,13 @@ jobs:
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
-  build-windows-msi:
-    name: Build + Sign Windows Artifacts
+  build-windows-unsigned:
+    name: Build Windows Agent Binaries (unsigned)
     if: >-
-      vars.ENABLE_WINDOWS_SIGNING == 'true'
-      && github.ref_type == 'tag'
+      github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     needs: [build-agent]
-    permissions:
-      contents: read
-      id-token: write
-    environment:
-      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -280,21 +274,6 @@ jobs:
         working-directory: agent
         shell: pwsh
         run: go mod download
-
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Install WiX CLI
-        shell: pwsh
-        run: |
-          dotnet tool update --global wix | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            dotnet tool install --global wix | Out-Null
-          }
-          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          wix eula accept wix7
 
       - name: Get version from tag
         id: version
@@ -446,6 +425,109 @@ jobs:
             exit 1
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
+
+      - name: Stage unsigned Windows exes (BYO signing inputs)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -Path dist-unsigned -ItemType Directory -Force | Out-Null
+          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
+            $src = "dist\breeze-$component-windows-amd64.exe"
+            if (-not (Test-Path $src)) { throw "missing expected build output: $src" }
+            Copy-Item $src "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
+          }
+
+      - name: Upload unsigned agent EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-agent-windows-amd64-unsigned
+          path: dist-unsigned/breeze-agent-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned backup EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-backup-windows-amd64-unsigned
+          path: dist-unsigned/breeze-backup-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned watchdog EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-watchdog-windows-amd64-unsigned
+          path: dist-unsigned/breeze-watchdog-windows-amd64-unsigned.exe
+          retention-days: 30
+
+      - name: Upload unsigned user-helper EXE artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-user-helper-windows-amd64-unsigned
+          path: dist-unsigned/breeze-user-helper-windows-amd64-unsigned.exe
+          retention-days: 30
+
+  build-windows-msi:
+    name: Build + Sign Windows Artifacts
+    if: >-
+      vars.ENABLE_WINDOWS_SIGNING == 'true'
+      && github.ref_type == 'tag'
+      && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    needs: [build-agent, build-windows-unsigned]
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Get version from tag
+        id: version
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:REF_NAME.Substring(1)
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download unsigned Windows exes (signing inputs)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: 'breeze-*-windows-amd64-unsigned'
+          path: dist-unsigned/
+          merge-multiple: true
+
+      # The published -unsigned assets are byte-identical to the files signed
+      # below by construction: the signing job's inputs ARE the unsigned
+      # artifacts (BYO signing, Deliverable 1).
+      - name: Stage exes for signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -Path dist -ItemType Directory -Force | Out-Null
+          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
+            $src = "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
+            if (-not (Test-Path $src)) { throw "missing unsigned input artifact: $src" }
+            Copy-Item $src "dist\breeze-$component-windows-amd64.exe"
+          }
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX CLI
+        shell: pwsh
+        run: |
+          dotnet tool update --global wix | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            dotnet tool install --global wix | Out-Null
+          }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          wix eula accept wix7
 
       - name: Validate signing configuration
         shell: pwsh
@@ -1904,7 +1986,7 @@ jobs:
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
-    needs: [build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
+    needs: [build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Fail closed when release signing was skipped
@@ -1914,6 +1996,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SKIP_RELEASE: ${{ inputs.skip_release || false }}
           BUILD_WINDOWS_MSI_RESULT: ${{ needs.build-windows-msi.result }}
+          BUILD_WINDOWS_UNSIGNED_RESULT: ${{ needs.build-windows-unsigned.result }}
           BUILD_MACOS_AGENT_RESULT: ${{ needs.build-macos-agent.result }}
           BUILD_MACOS_INSTALLER_APP_RESULT: ${{ needs.build-macos-installer-app.result }}
           SIGN_WINDOWS_TAURI_RESULT: ${{ needs.sign-windows-tauri.result }}
@@ -1938,6 +2021,7 @@ jobs:
           }
 
           require_success "build-windows-msi" "$BUILD_WINDOWS_MSI_RESULT"
+          require_success "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
           require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
           require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
           require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
@@ -1954,7 +2038,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
+    needs: [build-api, build-web, build-agent, build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -1963,6 +2047,7 @@ jobs:
       && needs.build-web.result == 'success'
       && needs.build-agent.result == 'success'
       && needs.release-integrity-gate.result == 'success'
+      && needs.build-windows-unsigned.result == 'success'
       && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
