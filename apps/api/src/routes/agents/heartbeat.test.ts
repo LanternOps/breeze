@@ -1666,6 +1666,115 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
 });
 
 // ---------------------------------------------------------------------
+// agentEdition / migrationRequired persistence (self-healing, migration
+// banner Task 2). Modeled on the outboundNetworkPolicyVersion capability
+// handshake above: both fields are written UNCONDITIONALLY every beat, so an
+// omitted field resets to its default rather than leaving a stale value.
+// ---------------------------------------------------------------------
+describe('agentEdition / migrationRequired persistence (self-healing)', () => {
+  const deviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  async function setupMocks(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+  }
+
+  it('persists agentEdition + migrationRequired from the heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        agentEdition: 'hosted',
+        migrationRequired: true,
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.agentEdition).toBe('hosted');
+    expect(updateArg.migrationRequired).toBe(true);
+  });
+
+  it('self-heals to null/false when a later heartbeat omits the fields', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    // minimalHeartbeatBody carries neither key — simulates an agent that
+    // previously reported agentEdition/migrationRequired but no longer does
+    // (or an old agent that never did). The write must be unconditional so
+    // this beat clears any stale value rather than leaving it sticky.
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.agentEdition).toBeNull();
+    expect(updateArg.migrationRequired).toBe(false);
+  });
+
+  it('watchdog heartbeats never touch agentEdition/migrationRequired', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    vi.clearAllMocks();
+    const { resetWatchdogRestartLogCacheForTests } = await import('./heartbeat');
+    resetWatchdogRestartLogCacheForTests();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(
+      selectChainResolving([{ ...deviceRow, lastSeenAt: new Date() }]),
+    );
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        role: 'watchdog',
+        agentVersion: '0.65.10',
+        watchdogState: 'MONITORING',
+        agentEdition: 'hosted',
+        migrationRequired: true,
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(setSpy).toHaveBeenCalled();
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg).toHaveProperty('watchdogStatus');
+    expect(updateArg).not.toHaveProperty('agentEdition');
+    expect(updateArg).not.toHaveProperty('migrationRequired');
+  });
+});
+
+// ---------------------------------------------------------------------
 // batteryStatus persistence (#2142)
 // ---------------------------------------------------------------------
 
