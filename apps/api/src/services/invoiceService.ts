@@ -16,6 +16,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
+import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
 import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
 
@@ -495,28 +496,60 @@ export async function updateOrgBillingSettings(
   if (patch.taxExempt !== undefined) set.taxExempt = patch.taxExempt;
   if (patch.taxRate !== undefined) set.taxRate = patch.taxRate === null ? null : Number(patch.taxRate).toFixed(5);
   // billingContact is a jsonb bag other importers (e.g. QuickBooks) also write.
-  // Merge email/name in the DB with `||` (COALESCE handles a NULL start on a fresh
-  // org) so we never drop keys we don't model here AND never lose a concurrent
-  // writer's key to a read-modify-write race — the merge is one atomic statement,
-  // no pre-read round-trip. Only build it when a contact field is in the patch.
-  const contactPatch: Record<string, unknown> = {};
+  // It is written by the contacts compat service rather than here (#3258), so
+  // the `contacts` row stays in step with the blob. `mergeBillingContact` keeps
+  // the same atomic `COALESCE(...) || ...::jsonb` this code used before: we
+  // never drop keys we don't model here AND never lose a concurrent writer's
+  // key to a read-modify-write race. Only built when a contact field is in the
+  // patch.
+  const contactPatch: ContactBlob = {};
   if (patch.billingContactEmail !== undefined) contactPatch.email = patch.billingContactEmail;
   if (patch.billingContactName !== undefined) contactPatch.name = patch.billingContactName;
-  if (Object.keys(contactPatch).length > 0) {
-    set.billingContact = sql`COALESCE(${organizations.billingContact}, '{}'::jsonb) || ${JSON.stringify(contactPatch)}::jsonb`;
-  }
   if (patch.billingAddressLine1 !== undefined) set.billingAddressLine1 = patch.billingAddressLine1;
   if (patch.billingAddressLine2 !== undefined) set.billingAddressLine2 = patch.billingAddressLine2;
   if (patch.billingAddressCity !== undefined) set.billingAddressCity = patch.billingAddressCity;
   if (patch.billingAddressRegion !== undefined) set.billingAddressRegion = patch.billingAddressRegion;
   if (patch.billingAddressPostalCode !== undefined) set.billingAddressPostalCode = patch.billingAddressPostalCode;
   if (patch.billingAddressCountry !== undefined) set.billingAddressCountry = patch.billingAddressCountry;
-  const [row] = await db.update(organizations).set(set).where(eq(organizations.id, orgId)).returning({
+  const projection = {
     id: organizations.id, taxId: organizations.taxId, taxExempt: organizations.taxExempt, taxRate: organizations.taxRate,
     billingContact: organizations.billingContact,
     billingAddressLine1: organizations.billingAddressLine1, billingAddressLine2: organizations.billingAddressLine2,
     billingAddressCity: organizations.billingAddressCity, billingAddressRegion: organizations.billingAddressRegion,
     billingAddressPostalCode: organizations.billingAddressPostalCode, billingAddressCountry: organizations.billingAddressCountry,
+  };
+
+  // One transaction so the contact merge and the column update still land
+  // together, as they did when this was a single statement.
+  const row = await db.transaction(async (tx) => {
+    if (Object.keys(contactPatch).length > 0) {
+      // Existence check, scoped to the contact path ONLY. The merge inserts a
+      // `contacts` row for the org, so an unknown orgId would raise an FK
+      // violation where this endpoint has always returned a clean 404. It does
+      // NOT reintroduce a read-modify-write race: it selects `id`, never
+      // `billing_contact`, and the merge value below is still computed by
+      // Postgres via `||`. A patch with no contact field does no read at all,
+      // exactly as before.
+      const [exists] = await tx
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      if (!exists) return undefined;
+
+      // Merged FIRST so the projection below observes the merged blob —
+      // OrgBillingSettings.tsx renders straight from this response.
+      await mergeBillingContact(tx, orgId, contactPatch, actor.userId ?? null);
+    }
+
+    // `set` is empty only when the patch carried ONLY contact fields, and
+    // drizzle rejects `.set({})` — read the same projection back instead.
+    if (Object.keys(set).length === 0) {
+      const [r] = await tx.select(projection).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      return r;
+    }
+    const [r] = await tx.update(organizations).set(set).where(eq(organizations.id, orgId)).returning(projection);
+    return r;
   });
   if (!row) throw new InvoiceServiceError('Organization not found', 404, 'INVOICE_NOT_FOUND');
   return row;

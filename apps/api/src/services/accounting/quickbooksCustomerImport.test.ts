@@ -7,6 +7,7 @@ const {
   selectMock,
   insertMock,
   updateMock,
+  deleteMock,
   getConnectionMock,
   getValidAccessTokenMock,
   listRemoteCustomersMock,
@@ -20,6 +21,7 @@ const {
     selectMock: vi.fn(),
     insertMock: vi.fn(),
     updateMock: vi.fn(),
+    deleteMock: vi.fn(),
     getConnectionMock: vi.fn(),
     getValidAccessTokenMock: vi.fn(),
     listRemoteCustomersMock: vi.fn(),
@@ -28,7 +30,7 @@ const {
   };
 });
 vi.mock('../../db', () => ({
-  db: { select: selectMock, insert: insertMock, update: updateMock },
+  db: { select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -50,6 +52,7 @@ vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../tenantLifecycle', () => ({ restoreOrganizationTenantAccess: vi.fn() }));
 
 import { organizations, organizationExternalLinks, sites } from '../../db/schema';
+import { contacts } from '../../db/schema/contacts';
 import {
   importQuickbooksCustomers,
   listQuickbooksCustomersAnnotated,
@@ -87,6 +90,12 @@ function stubState(orgs: OrgRow[] = [], links: LinkRow[] = [], laterLinkReads: u
         let rows: unknown[];
         if (table === organizations) {
           rows = orgRows;
+        } else if (table === contacts) {
+          // The contacts compat mirror reads the existing primary before
+          // writing. Keyed by table so it does NOT consume a link read —
+          // `laterLinkReads` positions the post-violation winner lookup by
+          // count, and an extra read would silently shift it.
+          rows = [];
         } else {
           rows = linkReads >= 2 ? (laterLinkReads.shift() ?? links) : links;
           linkReads++;
@@ -129,6 +138,11 @@ beforeEach(() => {
   insertedValues.length = 0;
   stubInserts();
   updateMock.mockImplementation(() => ({ set: () => ({ where: () => Promise.resolve([]) }) }));
+  // The contacts compat mirror deletes the contact row when an import row
+  // carries no usable contact field — QuickBooks always sends a
+  // `{name,email,phone}` object, so a customer with all three blank reaches
+  // this path (and clears the legacy jsonb blob to `{}` just the same).
+  deleteMock.mockImplementation(() => ({ where: () => Promise.resolve([]) }));
   getConnectionMock.mockResolvedValue(connectedConn());
   getValidAccessTokenMock.mockResolvedValue('fresh-token');
 });
@@ -208,7 +222,12 @@ describe('importQuickbooksCustomers', () => {
 
     const summary = await importQuickbooksCustomers({ partnerId: 'p1', customerIds: ['1'], actor: { userId: 'u1' } });
 
-    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-3' }]);
+    // Ids are the mock's insert counter. This customer HAS contact data, so the
+    // compat mirror inserts a contacts row between the org and the link —
+    // org(1), contact(2), link(3), site(4) — which is why the site is row-4
+    // rather than row-3. Pure sequencing artifact; the contract asserted here is
+    // that the summary reports the ids of the rows actually created.
+    expect(summary.imported).toEqual([{ customerId: '1', displayName: 'Acme Co', organizationId: 'row-1', siteId: 'row-4' }]);
     expect(summary.skipped).toEqual([]);
     expect(summary.errors).toEqual([]);
 
