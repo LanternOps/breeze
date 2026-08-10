@@ -101,8 +101,18 @@ async function applyToContactRow(
     ? and(eq(contacts.orgId, orgId), isNull(contacts.siteId), eq(contacts.isPrimary, true))
     : and(eq(contacts.siteId, siteId), eq(contacts.isPrimary, true));
 
+  // `mobile` is selected but never patched: the legacy blob has no key for it,
+  // so it can only ever have been set by a path that writes `contacts`
+  // directly. It still has to be read, because it decides whether a row with
+  // no name/email/phone left is empty — see the delete guard below.
   const [existing] = await exec
-    .select({ id: contacts.id, name: contacts.name, email: contacts.email, phone: contacts.phone })
+    .select({
+      id: contacts.id,
+      name: contacts.name,
+      email: contacts.email,
+      phone: contacts.phone,
+      mobile: contacts.mobile,
+    })
     .from(contacts)
     .where(where)
     .limit(1);
@@ -117,7 +127,14 @@ async function applyToContactRow(
     phone: patch.phone === undefined ? base.phone : clean(patch.phone),
   };
 
-  if (isEmpty(next)) {
+  // "No identifying field left" has to be judged against contacts_identifiable_chk,
+  // which accepts `mobile` alone — NOT against the three fields the blob models.
+  // A mobile-only contact is legal and invisible to the blob, so deleting on
+  // isEmpty(next) alone would destroy it (and cascade contact_external_links,
+  // taking the re-import identity key with it) the first time someone cleared
+  // the billing email. When mobile survives, fall through and clear the three
+  // modelled fields instead.
+  if (isEmpty(next) && (existing?.mobile ?? null) === null) {
     if (existing) await exec.delete(contacts).where(eq(contacts.id, existing.id));
     return;
   }
@@ -174,9 +191,19 @@ export async function mergeBillingContact(
 /**
  * Replace an organization's billing contact blob wholesale.
  *
- * Mirrors the org create / PATCH routes, which assign `data.billingContact`
- * directly. Callers pass whatever the (unvalidated, `z.any()`) request body
- * carried; `readContactBlob` is what makes a non-object value safe here.
+ * Callers pass whatever the (unvalidated, `z.any()`) request body carried;
+ * `readContactBlob` is what makes a non-object value safe here.
+ *
+ * ⚠️ NO PRODUCTION CALLER TODAY, deliberately. The org PATCH/PUT route needs a
+ * guarded WHERE — it re-asserts partner-ownership and suspended-status in the
+ * UPDATE itself (#2879) so a concurrent change cannot let a write land on an
+ * org that stopped qualifying — and this function writes with a bare
+ * `eq(organizations.id, orgId)`, which would silently drop that guard. That
+ * route writes the column inside its own guarded UPDATE and then calls
+ * `syncBillingContactRow`. Kept for the contact CRUD routes still to come
+ * (#3258), which own the row rather than patching a guarded org update. If you
+ * are reaching for this from a route that already has conditions on its
+ * UPDATE, you want `syncBillingContactRow` instead.
  */
 export async function replaceBillingContact(
   exec: ContactExecutor,
@@ -215,7 +242,15 @@ export async function syncBillingContactRow(
  *
  * The site PATCH route writes `contact` through a `{...data}` spread with no
  * literal `contact:` token at the write site, so a grep-driven sweep does not
- * find it. Callers must route through here explicitly.
+ * find it.
+ *
+ * ⚠️ NO PRODUCTION CALLER TODAY. That spread write is a single UPDATE whose
+ * 0-row result is load-bearing (it detects an RLS rejection that the prior
+ * SELECT missed), so the route keeps its own write and calls
+ * `syncSiteContactRow` afterwards rather than issuing a second UPDATE here.
+ * Kept for the contact CRUD routes still to come (#3258). Same rule as
+ * `replaceBillingContact`: if your caller already writes the column, use the
+ * `sync*` mirror instead of this.
  */
 export async function replaceSiteContact(
   exec: ContactExecutor,
