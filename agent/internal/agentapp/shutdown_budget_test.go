@@ -61,14 +61,14 @@ func TestShutdownStageBudgetsFitShutdownBudget(t *testing.T) {
 // takes the whole cgroup down mid-teardown and helpers, tunnels and the audit
 // log are never closed.
 func TestShutdownBudgetFitsUnitTimeoutStopSec(t *testing.T) {
-	timeoutStopSec := unitTimeoutStopSec(t)
+	unitStopTimeout := unitTimeoutStopSec(t)
 	needed := shutdownBudget + shipperFlushBudget + shutdownTailSlack
-	if needed > timeoutStopSec {
+	if needed > unitStopTimeout {
 		t.Fatalf("agent needs %v (shutdownBudget %v + shipper flush %v + tail slack %v) but "+
 			"the unit's TimeoutStopSec is %v — systemd would SIGKILL mid-shutdown (#3323). "+
 			"Raise TimeoutStopSec in linuxUnit (and bump currentUnitVersion so deployed "+
 			"hosts reconcile), or lower the agent-side budgets.",
-			needed, shutdownBudget, shipperFlushBudget, shutdownTailSlack, timeoutStopSec)
+			needed, shutdownBudget, shipperFlushBudget, shutdownTailSlack, unitStopTimeout)
 	}
 }
 
@@ -115,14 +115,82 @@ func TestShutdownClockRunHonoursSharedDeadline(t *testing.T) {
 	}
 }
 
-func TestShutdownClockSkipsStageWhenBudgetExhausted(t *testing.T) {
+// TestShutdownClockStartsStageEvenWhenBudgetExhausted pins the contract that
+// an exhausted budget means "start it, don't wait" and never "skip it". The
+// stop functions handed to run are sync.Once-guarded (Heartbeat.Stop,
+// websocket Client.Stop): a Once never fires twice, so declining to call one
+// forgoes that teardown permanently rather than deferring it, leaving the
+// session broker, helper lifecycle and audit log open.
+func TestShutdownClockStartsStageEvenWhenBudgetExhausted(t *testing.T) {
 	clock := &shutdownClock{deadline: time.Now().Add(-time.Second)}
-	ran := false
-	if clock.run("spent", time.Second, func() { ran = true }) {
-		t.Fatal("run reported the stage ran despite an exhausted budget")
+
+	started := make(chan struct{})
+	start := time.Now()
+	waited := clock.run("spent", time.Second, func() { close(started) })
+	elapsed := time.Since(start)
+
+	if waited {
+		t.Fatal("run reported it waited for the stage despite an exhausted budget")
 	}
-	if ran {
-		t.Fatal("stage body executed after the shared budget was exhausted")
+	if elapsed > time.Second {
+		t.Fatalf("run blocked for %v on an exhausted budget; it must not wait", elapsed)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stage was never started on an exhausted budget — a sync.Once-guarded " +
+			"stop skipped here is forgone permanently, not merely deferred")
+	}
+}
+
+// TestShutdownClockRunCtxStartsStageEvenWhenBudgetExhausted is the runCtx half
+// of the same contract, and additionally checks the stage gets a live context
+// rather than one cancelled out from under it as runCtx returns.
+func TestShutdownClockRunCtxStartsStageEvenWhenBudgetExhausted(t *testing.T) {
+	clock := &shutdownClock{deadline: time.Now().Add(-time.Second)}
+
+	type ctxState struct{ hasDeadline, live bool }
+	observed := make(chan ctxState, 1)
+
+	waited := clock.runCtx("spent", time.Second, 500*time.Millisecond, func(ctx context.Context) {
+		_, hasDeadline := ctx.Deadline()
+		live := ctx.Err() == nil
+		observed <- ctxState{hasDeadline: hasDeadline, live: live}
+	})
+	if waited {
+		t.Fatal("runCtx reported it waited despite an exhausted budget")
+	}
+
+	select {
+	case got := <-observed:
+		if !got.hasDeadline {
+			t.Error("stage context has no deadline; the abandoned goroutine would run unbounded")
+		}
+		if !got.live {
+			t.Error("stage context was already cancelled when the stage started, so the " +
+				"stage had no window at all to act on it")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stage was never started on an exhausted budget")
+	}
+}
+
+// TestShutdownClockLogsSqueezedStage exercises the squeeze path: a stage that
+// gets less than its nominal budget but still completes. It must not be
+// silently indistinguishable from one that ran with its full allotment.
+func TestShutdownClockLogsSqueezedStage(t *testing.T) {
+	clock := &shutdownClock{deadline: time.Now().Add(50 * time.Millisecond)}
+	granted := clock.stageTimeout(5 * time.Second)
+	if granted <= 0 || granted > 50*time.Millisecond {
+		t.Fatalf("expected a positive squeezed budget under 50ms, got %v", granted)
+	}
+	// logIfSqueezed is the observability seam; assert it fires on exactly the
+	// squeeze condition and stays quiet otherwise.
+	if !logIfSqueezed("squeezed", 5*time.Second, granted) {
+		t.Fatal("a stage granted less than its budget must be reported as squeezed")
+	}
+	if logIfSqueezed("full", time.Second, time.Second) {
+		t.Fatal("a stage granted its full budget must not be reported as squeezed")
 	}
 }
 

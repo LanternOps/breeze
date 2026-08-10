@@ -122,31 +122,67 @@ func (c *shutdownClock) stageTimeout(budget time.Duration) time.Duration {
 	return budget
 }
 
-// run executes fn under min(budget, remaining). Reports whether the stage ran;
-// a false return means the shared budget was already exhausted and the stage
-// was skipped entirely (logged, never silent — a skipped teardown stage is a
-// real signal that something upstream wedged).
+// run executes fn under min(budget, remaining). It reports whether the clock
+// WAITED for the stage — not whether the stage ran, because fn is ALWAYS
+// started.
+//
+// Starting fn even when the budget is spent is deliberate and load-bearing:
+// the stop functions passed here are the whole teardown, not just a wait, and
+// several of them are sync.Once-guarded (Heartbeat.Stop, websocket
+// Client.Stop). A Once never fires twice, so declining to call one doesn't
+// defer that teardown to later — it forgoes it permanently, leaving the
+// session broker, helper lifecycle and audit log open. Out of budget therefore
+// means "start it and don't wait" (the goroutine is abandoned when the process
+// exits), never "skip it".
 func (c *shutdownClock) run(name string, budget time.Duration, fn func()) bool {
 	d := c.stageTimeout(budget)
 	if d <= 0 {
-		log.Warn("shutdown budget exhausted, skipping stage", "stage", name)
+		log.Warn("shutdown budget exhausted, starting stage without waiting", "stage", name)
+		go fn()
 		return false
 	}
+	logIfSqueezed(name, budget, d)
 	runWithTimeout(name, d, fn)
 	return true
 }
 
 // runCtx is run for stages that need a context to abort their own inner work.
 // The context deadline is the stage cap plus grace, so the stage timer fires
-// (and logs) before the context aborts — see drainCtxGrace.
+// (and logs) before the context aborts — see drainCtxGrace. Same
+// always-start contract as run.
 func (c *shutdownClock) runCtx(name string, budget, grace time.Duration, fn func(context.Context)) bool {
 	d := c.stageTimeout(budget)
 	if d <= 0 {
-		log.Warn("shutdown budget exhausted, skipping stage", "stage", name)
+		log.Warn("shutdown budget exhausted, starting stage without waiting", "stage", name)
+		// grace alone, so the abandoned goroutine still gets a bounded window
+		// to notice it should stop rather than a context cancelled out from
+		// under it the instant this returns.
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
+		go func() {
+			defer cancel()
+			fn(ctx)
+		}()
 		return false
 	}
+	logIfSqueezed(name, budget, d)
 	ctx, cancel := context.WithTimeout(context.Background(), d+grace)
 	defer cancel()
 	runWithTimeout(name, d, func() { fn(ctx) })
+	return true
+}
+
+// logIfSqueezed records a stage that got less than its nominal budget because
+// an earlier stage consumed the shared clock. Without this, a squeezed stage
+// that still finishes in its reduced window is indistinguishable in the logs
+// from one that had its full allotment — and a squeeze is the first visible
+// symptom of the shared budget running tight, which is exactly the arithmetic
+// that went unnoticed in #3323.
+// Reports whether the stage was squeezed, so the rule is directly assertable.
+func logIfSqueezed(name string, budget, granted time.Duration) bool {
+	if granted >= budget {
+		return false
+	}
+	log.Warn("shutdown stage squeezed by shared budget",
+		"stage", name, "granted", granted.String(), "budget", budget.String())
 	return true
 }
