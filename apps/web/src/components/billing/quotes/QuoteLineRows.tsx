@@ -78,13 +78,28 @@ export function filterPercentChars(raw: string): string {
   return out;
 }
 
+// Horizontal chrome (padding + border, both sides) of the two input shapes the
+// money/percent fields use. `box-sizing: border-box` (Tailwind preflight) makes
+// `width` INCLUDE these, so growWidth has to fund them on top of the character
+// budget rather than letting them eat it.
+const MONEY_INPUT_PAD_X = '1rem + 2px'; // px-2 + border
+const BAND_INPUT_PAD_X = '0.5rem + 2px'; // px-1 + border
+
 // ch-based width so a 7-digit price or a "155.1" markup is never clipped by the
 // old fixed w-20/w-24/w-16 — grows with the displayed value, clamped so a
 // single keystroke can't make the row jump wildly and floored so short values
-// keep the prior visual width (row rhythm unchanged).
-function growWidth(value: string, minCh: number, maxCh: number): string {
-  const ch = Math.min(maxCh, Math.max(minCh, value.length + 2));
-  return `${ch}ch`;
+// keep a stable resting rhythm.
+//
+// The two-character buffer is for GLYPHS, not chrome: `1ch` is the advance of
+// the font's own "0", and the money strings render wider than that per
+// character — in Plus Jakarta Sans at 14px a tabular digit is 9.60px and "$"
+// is 10.34px against a 8.96px `ch`. It only works if the input's own padding
+// and border are paid for separately. They weren't: `px-2` + 1px borders is
+// 18px ≈ exactly the 2ch buffer, so a blurred "$45.00" ended up with 0.4px of
+// slack and the browser clipped the final digit ("$45.0", issue #3318).
+function growWidth(value: string, minChars: number, maxChars: number, padX: string): string {
+  const chars = Math.min(maxChars, Math.max(minChars, value.length));
+  return `calc(${chars + 2}ch + ${padX})`;
 }
 
 // ── Internal-band progressive disclosure (shared by both row variants) ────
@@ -348,7 +363,7 @@ export function GhostRow({ blockId, busy, currency, onAdd, colSpan }: {
             placeholder="0.00"
             aria-label={t('quotes.editor.table.unitPrice')}
             data-testid={`quote-ghost-price-${blockId}`}
-            style={{ width: growWidth(ghostPriceDisplay, 8, 16) }}
+            style={{ width: growWidth(ghostPriceDisplay, 6, 15, MONEY_INPUT_PAD_X) }}
             className={`${ghostField} px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
           />
           <select
@@ -1054,7 +1069,7 @@ export function EditableLineRow({
           aria-invalid={fieldErrors.price ? true : undefined}
           aria-describedby={describedByIds(fieldErrors.price && `quote-line-price-error-${line.id}`, priceDirty && unsavedHintId(line.id, 'price'))}
           data-testid={`quote-line-price-${line.id}`}
-          style={{ width: growWidth(priceDisplay, 8, 16) }}
+          style={{ width: growWidth(priceDisplay, 6, 15, MONEY_INPUT_PAD_X) }}
           className={`h-9 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(priceDirty, saved), !!fieldErrors.price)}`}
         />
         <UnsavedFieldHint id={unsavedHintId(line.id, 'price')} show={priceDirty} />
@@ -1504,7 +1519,7 @@ export function EditableLineRow({
                 costDirty && unsavedHintId(line.id, 'cost'),
               )}
               data-testid={`quote-line-cost-${line.id}`}
-              style={{ width: growWidth(costDisplay, 6, 14) }}
+              style={{ width: growWidth(costDisplay, 4, 14, BAND_INPUT_PAD_X) }}
               // Priority: validation error (destructive) > unsaved edit (amber
               // dirty border) > a genuinely missing cost (warning tint —
               // "distinct from the amber dirty border" treatment, using the same
@@ -1557,7 +1572,7 @@ export function EditableLineRow({
               title={cost.trim() === '' ? t('quotes.editor.line.enterCostFirstMarkup') : undefined}
               aria-describedby={cost.trim() === '' ? `quote-line-markup-hint-${line.id}` : undefined}
               data-testid={`quote-line-markup-${line.id}`}
-              style={{ width: growWidth(markupInput, 5, 10) }}
+              style={{ width: growWidth(markupInput, 3, 8, BAND_INPUT_PAD_X) }}
               className="h-6 rounded border bg-background px-1 text-right tabular-nums text-foreground disabled:opacity-60"
             />{t('quotes.editor.symbols.percent')}
             {cost.trim() === '' && <span id={`quote-line-markup-hint-${line.id}`} className="sr-only">{t('quotes.editor.line.enterCostFirstMarkupSentence')}</span>}
