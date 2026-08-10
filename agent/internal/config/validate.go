@@ -102,7 +102,31 @@ func (c *Config) ValidateTiered() ValidationResult {
 	}
 
 	if err := ValidateBackupServerURL(c.BackupServerURL); err != nil {
-		result.Fatals = append(result.Fatals, err)
+		// LOAD-path degrade: a strict build with a non-allowlisted PERSISTED
+		// backup must not fatal startup over an existing-fleet backup that
+		// predates a hosted flip — degrade to warn + clear, mirroring the
+		// backup==primary self-heal immediately below, rather than letting
+		// this reach config load's fatal-Aborts-startup path. Only this
+		// LOAD-path evaluation degrades: ingestion paths (heartbeat
+		// configUpdate push, enroll-response adoption, bootstrap redeem
+		// response) call ValidateBackupServerURL directly and must keep
+		// erroring on a NEW non-allowlisted backup — see that function's own
+		// doc comment, which is intentionally unchanged here.
+		//
+		// ValidateBackupServerURL doesn't expose which check failed, so
+		// distinguishing "the backup is well-formed but not allowlisted"
+		// from any other validation failure (malformed URL, disallowed
+		// scheme — which stay fatal) means re-checking hostpolicy directly.
+		// Gap builds never reach this branch: ValidateBackupServerURL only
+		// hostpolicy-checks under Strict(), so under gap err is nil here
+		// whenever the only problem would have been the allowlist.
+		if hostpolicy.Strict() && hostpolicy.AllowedURL(c.BackupServerURL) != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf(
+				"persisted backup_server_url is not an allowed control-plane host for this build; clearing it: %w", err))
+			c.BackupServerURL = ""
+		} else {
+			result.Fatals = append(result.Fatals, err)
+		}
 	}
 	// Self-heal a backup equal to the primary (a torn promote persist could
 	// leave this on disk, #2288): it is useless as a failover target and the
