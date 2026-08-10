@@ -412,6 +412,49 @@ jobs:
           fi
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
+      # Publish these go-winres-resourced exes (VERSIONINFO, icon, the #949
+      # asInvoker/requireAdministrator manifests) under their canonical
+      # (non "-unsigned") artifact names. This job's overwrite:true wins over
+      # build-agent's earlier, unresourced windows/amd64 matrix-leg upload of
+      # the same artifact names — the public pipeline no longer signs these,
+      # but the canonical filenames must still carry the resourced build,
+      # since the agent's own Windows auto-updater fetches
+      # breeze-agent-windows-amd64.exe (and its siblings) by that exact name
+      # from the GitHub release (agent/internal/updater/updater.go).
+      - name: Upload agent EXE artifact (canonical name)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-agent-windows-amd64
+          path: dist/breeze-agent-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload backup EXE artifact (canonical name)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-backup-windows-amd64
+          path: dist/breeze-backup-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload watchdog EXE artifact (canonical name)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-watchdog-windows-amd64
+          path: dist/breeze-watchdog-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
+      # Issue #816: ship the user-helper as a discrete GitHub release asset so
+      # the agent's in-place auto-upgrade can fetch it directly.
+      - name: Upload user-helper EXE artifact (canonical name)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-user-helper-windows-amd64
+          path: dist/breeze-user-helper-windows-amd64.exe
+          overwrite: true
+          retention-days: 30
+
       - name: Stage unsigned Windows exes (BYO signing inputs)
         shell: pwsh
         run: |
@@ -451,55 +494,9 @@ jobs:
           path: dist-unsigned/breeze-user-helper-windows-amd64-unsigned.exe
           retention-days: 30
 
-  build-windows-msi:
-    name: Build + Sign Windows Artifacts
-    if: >-
-      vars.ENABLE_WINDOWS_SIGNING == 'true'
-      && github.ref_type == 'tag'
-      && startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-    needs: [build-agent, build-windows-unsigned]
-    permissions:
-      contents: read
-      id-token: write
-    environment:
-      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Get version from tag
-        id: version
-        shell: pwsh
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          $version = $env:REF_NAME.Substring(1)
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Download unsigned Windows exes (signing inputs)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          pattern: 'breeze-*-windows-amd64-unsigned'
-          path: dist-unsigned/
-          merge-multiple: true
-
-      # The published -unsigned assets are byte-identical to the files signed
-      # below by construction: the signing job's inputs ARE the unsigned
-      # artifacts (BYO signing, Deliverable 1).
-      - name: Stage exes for signing
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -Path dist -ItemType Directory -Force | Out-Null
-          foreach ($component in @("agent", "backup", "watchdog", "user-helper")) {
-            $src = "dist-unsigned\breeze-$component-windows-amd64-unsigned.exe"
-            if (-not (Test-Path $src)) { throw "missing unsigned input artifact: $src" }
-            Copy-Item $src "dist\breeze-$component-windows-amd64.exe"
-          }
-
+      # The public release no longer Authenticode-signs the agent MSI (see
+      # the removed build-windows-msi job). This publishes the self-host
+      # edition MSI unsigned, built from the exact exes staged above.
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
@@ -515,140 +512,10 @@ jobs:
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           wix eula accept wix7
 
-      - name: Validate signing configuration
-        shell: pwsh
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          AZURE_CERT_PROFILE_PROD: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          AZURE_CERT_PROFILE_PRERELEASE: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-        run: |
-          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME")
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing required signing secret: $name"
-            }
-          }
-
-          $isPrerelease = "${{ contains(github.ref_name, '-') }}" -eq "true"
-          if ($isPrerelease) {
-            if ([string]::IsNullOrWhiteSpace($env:AZURE_CERT_PROFILE_PRERELEASE)) {
-              throw "Missing required signing secret: AZURE_CERT_PROFILE_PRERELEASE"
-            }
-          } else {
-            if ([string]::IsNullOrWhiteSpace($env:AZURE_CERT_PROFILE_PROD)) {
-              throw "Missing required signing secret: AZURE_CERT_PROFILE_PROD"
-            }
-          }
-
-      - name: Azure Login (OIDC)
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-
-      - name: Sign Windows EXE (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign Windows EXE (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign backup EXE (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-backup-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign backup EXE (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-backup-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign watchdog executable (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign watchdog executable (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign user-helper EXE (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign user-helper EXE (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Build MSI
+      - name: Build unsigned self-host MSI
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $root = $env:GITHUB_WORKSPACE
           $version = "${{ steps.version.outputs.version }}"
           $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
@@ -656,98 +523,14 @@ jobs:
           $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
           $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
-          & (Join-Path $root "agent\installer\build-msi.ps1") -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath
+          & (Join-Path $root "agent\installer\build-msi.ps1") -Edition SelfHost -Version $version -AgentExePath $agentExe -BackupExePath $backupExe -WatchdogExePath $watchdogExe -UserHelperExePath $userHelperExe -OutputPath $msiPath
+          if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 (SelfHost) failed with exit code $LASTEXITCODE" }
 
-      # Sign the agent MSI (Azure Trusted Signing).
-      - name: Sign MSI (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PROD }}
-          files: ${{ github.workspace }}\dist\breeze-agent.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Sign MSI (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE_PRERELEASE }}
-          files: ${{ github.workspace }}\dist\breeze-agent.msi
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Verify signatures
-        shell: pwsh
-        run: |
-          $targets = @(
-            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent-windows-amd64.exe"),
-            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-backup-windows-amd64.exe"),
-            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-watchdog-windows-amd64.exe"),
-            (Join-Path $env:GITHUB_WORKSPACE "dist\breeze-agent.msi")
-          )
-          foreach ($target in $targets) {
-            $sig = Get-AuthenticodeSignature -FilePath $target
-            # Valid = fully trusted chain; UnknownError = signed but Azure Trusted
-            # Signing root cert not yet in local trust store (normal for new accounts)
-            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
-              throw "Signature validation failed for $target. Status: $($sig.Status)"
-            }
-            if ($sig.Status -eq "UnknownError") {
-              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError). This is normal for new Azure Trusted Signing accounts."
-            }
-            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
-          }
-
-      - name: Upload signed Windows EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: breeze-agent-windows-amd64
-          path: dist/breeze-agent-windows-amd64.exe
-          overwrite: true
-          retention-days: 30
-
-      # Issue #816: ship the user-helper as a discrete GitHub release asset
-      # so the agent's in-place auto-upgrade can fetch it directly. Pre-#816
-      # the binary was only ever bundled into the MSI installer, which meant
-      # hosts that reached new versions via auto-update never received it
-      # and the HelperLifecycleManager fell through to a
-      # `breeze-agent.exe user-helper` fallback every ~30s.
-      - name: Upload signed Windows user-helper EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: breeze-user-helper-windows-amd64
-          path: dist/breeze-user-helper-windows-amd64.exe
-          overwrite: true
-          retention-days: 30
-
-      - name: Upload Windows MSI artifact
+      - name: Upload unsigned self-host Windows MSI artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-agent-windows-msi
           path: dist/breeze-agent.msi
-          retention-days: 30
-
-      - name: Upload signed backup EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: breeze-backup-windows-amd64
-          path: dist/breeze-backup-windows-amd64.exe
-          overwrite: true
-          retention-days: 30
-
-      - name: Upload signed watchdog EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: breeze-watchdog-windows-amd64
-          path: dist/breeze-watchdog-windows-amd64.exe
-          overwrite: true
           retention-days: 30
 
   build-macos-agent:
@@ -2026,7 +1809,7 @@ jobs:
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest
-    needs: [build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
+    needs: [build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer-macos, build-helper-macos, package-windows-updater, merge-viewer-update-manifest]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Fail closed when release signing was skipped
@@ -2035,7 +1818,6 @@ jobs:
           GITHUB_REF_VALUE: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
           SKIP_RELEASE: ${{ inputs.skip_release || false }}
-          BUILD_WINDOWS_MSI_RESULT: ${{ needs.build-windows-msi.result }}
           BUILD_WINDOWS_UNSIGNED_RESULT: ${{ needs.build-windows-unsigned.result }}
           BUILD_MACOS_AGENT_RESULT: ${{ needs.build-macos-agent.result }}
           BUILD_MACOS_INSTALLER_APP_RESULT: ${{ needs.build-macos-installer-app.result }}
@@ -2060,7 +1842,6 @@ jobs:
             fi
           }
 
-          require_success "build-windows-msi" "$BUILD_WINDOWS_MSI_RESULT"
           require_success "build-windows-unsigned" "$BUILD_WINDOWS_UNSIGNED_RESULT"
           require_success "build-macos-agent" "$BUILD_MACOS_AGENT_RESULT"
           require_success "build-macos-installer-app" "$BUILD_MACOS_INSTALLER_APP_RESULT"
@@ -2078,7 +1859,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-windows-msi, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
+    needs: [build-api, build-web, build-agent, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
@@ -2088,7 +1869,6 @@ jobs:
       && needs.build-agent.result == 'success'
       && needs.release-integrity-gate.result == 'success'
       && needs.build-windows-unsigned.result == 'success'
-      && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.build-macos-installer-app.result == 'success' || needs.build-macos-installer-app.result == 'skipped')
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
@@ -2226,8 +2006,29 @@ jobs:
           def is_signing_input(name):
               return UNSIGNED_INPUT_RE.match(name) is not None
 
+          # The public pipeline no longer Authenticode-signs any agent-family
+          # Windows artifact (the exes or the MSI) — this is the self-host
+          # edition, unsigned by construction. Evaluated before the generic
+          # extension branches below, which would otherwise classify these as
+          # windows-authenticode-required. Deliberately does NOT cover the
+          # unrelated viewer/helper Tauri MSIs (breeze-viewer-windows.msi,
+          # breeze-helper-windows.msi) — those are still Authenticode-signed
+          # (sign-windows-tauri job, out of scope here) and keep that trust
+          # level. breeze-agent-template.msi is not currently produced by
+          # this workflow (removed by an earlier initiative); nothing to
+          # classify.
+          AGENT_FAMILY_WINDOWS_RE = re.compile(
+              r"^breeze-agent\.msi$"
+              r"|^breeze-(agent|backup|watchdog|user-helper)-windows-amd64\.exe$"
+          )
+
+          def is_agent_family_windows(name):
+              return AGENT_FAMILY_WINDOWS_RE.match(name) is not None
+
           def platform_trust(name):
               if is_signing_input(name):
+                  return "none"
+              if is_agent_family_windows(name):
                   return "none"
               if name.endswith(".msi") or name.endswith(".exe"):
                   return "windows-authenticode-required"
@@ -2250,6 +2051,12 @@ jobs:
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
                   "platformTrust": platform_trust(path.name),
+                  # BYO signing (Deliverable 2): every asset this workflow
+                  # produces is the self-host edition — hosted builds happen
+                  # in a separate, private repository and never reach this
+                  # manifest. See the guard step below for the corresponding
+                  # non-regression check.
+                  "edition": "self-host",
               }
               if is_signing_input(path.name):
                   entry["intendedUse"] = "signing-input"
@@ -2305,6 +2112,18 @@ jobs:
               "breeze-watchdog-darwin-amd64-unsigned",
               "breeze-watchdog-darwin-arm64-unsigned",
           }
+          # Canonical (non "-unsigned") agent-family Windows assets. Unlike
+          # every other non-signing-input asset, these legitimately carry
+          # platformTrust "none" — the public pipeline no longer
+          # Authenticode-signs the agent family at all (Deliverable 2).
+          AGENT_FAMILY_WINDOWS_UNSIGNED = {
+              "breeze-agent.msi",
+              "breeze-agent-windows-amd64.exe",
+              "breeze-backup-windows-amd64.exe",
+              "breeze-watchdog-windows-amd64.exe",
+              "breeze-user-helper-windows-amd64.exe",
+          }
+
           by_name = {a["name"]: a for a in manifest["assets"]}
           missing = EXPECTED_UNSIGNED - set(by_name)
           assert not missing, f"missing unsigned signing-input assets: {sorted(missing)}"
@@ -2314,8 +2133,19 @@ jobs:
                   f"{name}: platformTrust {entry.get('platformTrust')!r} != 'none'"
               assert entry.get("intendedUse") == "signing-input", \
                   f"{name}: intendedUse {entry.get('intendedUse')!r} != 'signing-input'"
+
+          missing_agent_family = AGENT_FAMILY_WINDOWS_UNSIGNED - set(by_name)
+          assert not missing_agent_family, \
+              f"missing unsigned agent-family Windows assets: {sorted(missing_agent_family)}"
+          for name in sorted(AGENT_FAMILY_WINDOWS_UNSIGNED):
+              entry = by_name[name]
+              assert entry.get("platformTrust") == "none", \
+                  f"{name}: platformTrust {entry.get('platformTrust')!r} != 'none' (agent-family Windows assets must be unsigned in the public pipeline)"
+              assert "intendedUse" not in entry, \
+                  f"{name}: canonical agent-family asset must not carry intendedUse (that's reserved for the -unsigned signing-input copies)"
+
           for name, entry in by_name.items():
-              if name in EXPECTED_UNSIGNED:
+              if name in EXPECTED_UNSIGNED or name in AGENT_FAMILY_WINDOWS_UNSIGNED:
                   continue
               assert "-unsigned" not in name, \
                   f"unexpected -unsigned asset outside the expected set: {name}"
@@ -2323,13 +2153,35 @@ jobs:
                   f"{name}: signed-set asset must not carry intendedUse"
               assert entry.get("platformTrust") != "none", \
                   f"{name}: signed-set asset must not have platformTrust 'none'"
+
+          # Every asset this workflow produces is the self-host edition —
+          # hosted builds happen in a separate, private repository.
+          for name, entry in by_name.items():
+              assert entry.get("edition") == "self-host", \
+                  f"{name}: edition {entry.get('edition')!r} != 'self-host'"
+
+          # Gate against any hosted/signed agent artifact leaking into public
+          # assets: no agent-family Windows asset may carry a signed/notarized
+          # platformTrust. (Darwin agent binaries are intentionally out of
+          # scope here — macOS Developer ID signing/notarization is a
+          # separate, unchanged gate; see build-macos-agent.)
+          FORBIDDEN_AGENT_TRUST = {
+              "windows-authenticode-required",
+              "macos-developer-id-notarization-required",
+          }
+          for name in AGENT_FAMILY_WINDOWS_UNSIGNED:
+              entry = by_name[name]
+              assert entry.get("platformTrust") not in FORBIDDEN_AGENT_TRUST, \
+                  f"{name}: agent-family asset carries platformTrust {entry.get('platformTrust')!r} — a hosted/signed agent artifact may have leaked into the public release"
+
           # Signed-set spot checks, one per trust class (classification-order
           # non-regression for the extension branches).
-          assert by_name["breeze-agent.msi"]["platformTrust"] == "windows-authenticode-required"
-          assert by_name["breeze-agent-windows-amd64.exe"]["platformTrust"] == "windows-authenticode-required"
+          assert by_name["breeze-agent.msi"]["platformTrust"] == "none"
+          assert by_name["breeze-agent-windows-amd64.exe"]["platformTrust"] == "none"
           assert by_name["breeze-agent-darwin-arm64"]["platformTrust"] == "macos-developer-id-notarization-required"
           assert by_name["breeze-agent-linux-amd64"]["platformTrust"] == "release-workflow-produced"
-          print(f"OK: {len(EXPECTED_UNSIGNED)} signing-input assets verified; sourceCommit={source_commit}")
+          assert by_name["breeze-viewer-windows.msi"]["platformTrust"] == "windows-authenticode-required"
+          print(f"OK: {len(EXPECTED_UNSIGNED)} signing-input assets + {len(AGENT_FAMILY_WINDOWS_UNSIGNED)} unsigned agent-family Windows assets verified; sourceCommit={source_commit}")
           PY
 
       - name: Sign release artifact manifest
@@ -2498,27 +2350,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync agent versions to Breeze API
-        if: ${{ !contains(github.ref_name, '-') && vars.BREEZE_API_URL != '' }}
-        env:
-          BREEZE_API_URL: ${{ vars.BREEZE_API_URL }}
-          BREEZE_API_KEY: ${{ secrets.BREEZE_API_KEY }}
-        run: |
-          curl -sf -X POST "${BREEZE_API_URL}/api/v1/agent-versions/sync-github" \
-            -H "Authorization: Bearer ${BREEZE_API_KEY}" \
-            -H "Content-Type: application/json" \
-            || echo "::warning::Agent version sync failed (non-fatal)"
-
   build-binaries-image:
     name: Build & Push Binaries Init Image
     runs-on: ubuntu-latest
-    needs: [build-agent, build-windows-msi, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, create-release]
+    needs: [build-agent, build-macos-agent, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, create-release]
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && !cancelled()
       && needs.build-agent.result == 'success'
-      && (needs.build-windows-msi.result == 'success' || needs.build-windows-msi.result == 'skipped')
       && (needs.build-macos-agent.result == 'success' || needs.build-macos-agent.result == 'skipped')
       && (needs.sign-windows-tauri.result == 'success' || needs.sign-windows-tauri.result == 'skipped')
       && needs.build-viewer.result == 'success'
