@@ -773,10 +773,10 @@ vulnerabilityRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const { deviceVulnerabilityIds } = c.req.valid('json');
-    // Org-scope callers pass their org; partner/system callers pass '' so the
+    // Org-scope callers pass their org; partner/system callers pass null so the
     // core derives the org per-device (auth.orgId is null off org scope).
     const result = await remediateVulnerabilities(
-      auth.orgId ?? '',
+      auth.orgId,
       deviceVulnerabilityIds,
       auth.user.id,
       auth,
