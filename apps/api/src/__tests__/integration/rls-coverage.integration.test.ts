@@ -292,6 +292,21 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // one axis per row. Functional cross-partner forge proof:
   // configurationPoliciesPartnerRls.integration.test.ts.
   'configuration_policies',
+  // cis_baselines (#2135): a baseline is org-scoped (org_id set, partner_id
+  // NULL — the original shape) OR partner-wide (partner_id set, org_id NULL —
+  // one CIS benchmark applied across every org the MSP manages). Converted
+  // from org-only to dual-axis in 2026-08-10-cis-baselines-partner-ownership.
+  // Same blindspot as configuration_policies: the org_id column means
+  // org-tenant auto-discovery already asserts the breeze_has_org_access
+  // branch, so this entry is what asserts the breeze_has_partner_access
+  // (partner-wide) branch. A CHECK constraint (cis_baselines_one_owner_chk)
+  // enforces exactly one axis per row. Note the table also carries a
+  // SELECT-only cis_baselines_partner_wide_select policy so org users can READ
+  // their partner's partner-wide rows (the four-command assertion below is
+  // satisfied by cis_baselines_isolation, which covers ALL commands).
+  // Functional cross-partner forge proof:
+  // cisBaselinesPartnerRls.integration.test.ts.
+  'cis_baselines',
   // software_catalog: a package is org-scoped (org_id set, partner_id NULL — the
   // baseline shape for custom packages) OR partner-wide (partner_id set, org_id
   // NULL — built-in EDR integration packages). Converted from org-only to
