@@ -188,6 +188,45 @@ describe('webhook URL safety — self-hosted private-network opt-in', () => {
     });
   });
 
+  describe('cleartext http is confined to the private hop', () => {
+    it('rejects plain http to a PUBLIC literal even when self-hosted', () => {
+      process.env.IS_HOSTED = 'false';
+      // Not vacuous: the same env accepts http://10.1.2.3/collector above.
+      const errors = validateWebhookUrlSafety('http://93.184.216.34/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+
+    it('still accepts https to that same public literal', () => {
+      process.env.IS_HOSTED = 'false';
+      expect(validateWebhookUrlSafety('https://93.184.216.34/hook')).toEqual([]);
+    });
+
+    it('rejects plain http to a hostname that resolves public', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+      const errors = await validateWebhookUrlSafetyWithDns('http://collector.example/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+
+    it('accepts plain http to a hostname that resolves RFC1918', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      await expect(validateWebhookUrlSafetyWithDns('http://collector.lan/hook')).resolves.toEqual([]);
+    });
+
+    it('rejects plain http when the answers MIX private and public', async () => {
+      process.env.IS_HOSTED = 'false';
+      // safeFetch pins one record; a mixed rotation could otherwise send a later
+      // delivery to the public address in the clear.
+      dnsLookupMock.mockResolvedValue([
+        { address: '10.0.0.5', family: 4 },
+        { address: '93.184.216.34', family: 4 }
+      ]);
+      const errors = await validateWebhookUrlSafetyWithDns('http://collector.lan/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+  });
+
   describe('DNS-resolved targets honour the same policy', () => {
     it('accepts a hostname resolving to RFC1918 when self-hosted', async () => {
       process.env.IS_HOSTED = 'false';

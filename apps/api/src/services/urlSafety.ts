@@ -204,6 +204,22 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    */
   allowPrivateNetwork?: boolean;
   /**
+   * Require a cleartext (`http:`) target to resolve to an RFC1918/ULA address.
+   *
+   * `allowPrivateNetwork` opts a self-hosted deployment into private targets,
+   * but it does not narrow the scheme: `isAlwaysBlockedIp` returns false for
+   * PUBLIC addresses too, so `http://example.com` is permitted alongside the
+   * intended `http://10.0.0.5`. That sends the payload over the open internet
+   * in the clear. Set this when the cleartext allowance exists only because
+   * the operator owns both ends of an on-LAN hop.
+   *
+   * Enforced here rather than in the caller on purpose: the check has to run
+   * against the SAME record that gets pinned, or the caller's resolution and
+   * this one can disagree — reintroducing the TOCTOU window the pinning is
+   * built to close. `https:` targets are unaffected.
+   */
+  requirePrivateForCleartext?: boolean;
+  /**
    * Hard ceiling on the response body in bytes. On overrun the socket is
    * destroyed and ResponseTooLargeError is thrown — the partial body is never
    * buffered further. Unset = unbounded (legacy behavior for existing callers).
@@ -278,6 +294,16 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
   if (!safeRecord) {
     throw new SsrfBlockedError(
       `all resolved IPs for ${hostname} are private/loopback/link-local`,
+      { hostname, resolvedIps: allIps }
+    );
+  }
+
+  // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
+  // against the pinned record specifically, so it cannot drift from the address
+  // actually dialed.
+  if (init.requirePrivateForCleartext && u.protocol === 'http:' && !isRfc1918OrUla(safeRecord.address)) {
+    throw new SsrfBlockedError(
+      `cleartext http is only permitted to private (RFC1918/ULA) addresses; ${hostname} resolves to ${safeRecord.address}`,
       { hostname, resolvedIps: allIps }
     );
   }
