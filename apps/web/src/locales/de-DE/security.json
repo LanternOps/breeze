@@ -1633,7 +1633,8 @@
       "triggerScan": "Scan auslösen"
     },
     "messages": {
-      "triggerScanFailed": "Der Scan konnte nicht ausgelöst werden"
+      "triggerScanFailed": "Der Scan konnte nicht ausgelöst werden",
+      "triggerScanQueued": "Scan für {{name}} in die Warteschlange gestellt"
     },
     "table": {
       "name": "Name",
@@ -1666,7 +1667,8 @@
       "new": "Neue Baseline"
     },
     "messages": {
-      "saveFailed": "Baseline konnte nicht gespeichert werden"
+      "saveFailed": "Baseline konnte nicht gespeichert werden",
+      "saveSuccess": "Baseline „{{name}}“ gespeichert"
     },
     "fields": {
       "name": "Name",

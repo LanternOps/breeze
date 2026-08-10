@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Loader2, Pencil, Play, Plus } from 'lucide-react';
 import { cn, friendlyFetchError } from '@/lib/utils';
-import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '@/stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import CisBaselineForm from './CisBaselineForm';
 import type { Baseline } from './types';
 
@@ -20,7 +22,19 @@ interface CisBaselinesTabProps {
 }
 
 export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTabProps) {
-  const { t } = useTranslation('security');
+  const { t } = useTranslation(['security', 'common']);
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const orgCount = useOrgStore((s) => s.organizations.length);
+  // Baselines are org-owned (cis_baselines.org_id is NOT NULL), so creating one
+  // needs a concrete org. In fleet view the API still auto-resolves the org for
+  // a partner that manages exactly one, so only a partner with a real choice to
+  // make is blocked — gating on `scope === 'org'` alone would lock single-org
+  // partners out of a create the server would have accepted.
+  const scope = useOrgScope();
+  const canCreate = scope.scope === 'org' || (scope.scope === 'all' && orgCount === 1);
+  // Distinct from the not-yet-resolved and zero-org states, where telling the
+  // user to "select an organization" is advice they cannot act on.
+  const needsOrgChoice = scope.scope === 'all' && orgCount > 1;
   const [baselines, setBaselines] = useState<Baseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -37,7 +51,10 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
     abortRef.current = controller;
 
     try {
-      const response = await fetchWithAuth('/cis/baselines?limit=200', {
+      const params = new URLSearchParams({ limit: '200' });
+      if (currentOrgId) params.set('orgId', currentOrgId);
+
+      const response = await fetchWithAuth(`/cis/baselines?${params.toString()}`, {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -48,27 +65,39 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
       if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(friendlyFetchError(err));
     } finally {
-      setLoading(false);
+      // The early return above skips the error banner but cannot skip
+      // `finally`, so an aborted request would still clear the spinner while
+      // its replacement is in flight — rendering "No baselines configured"
+      // over a pending load. Only the newest request may settle the flag.
+      if (abortRef.current === controller) setLoading(false);
     }
-  }, []);
+  }, [currentOrgId]);
 
   useEffect(() => {
     fetchBaselines();
     return () => abortRef.current?.abort();
   }, [fetchBaselines, refreshKey]);
 
-  const handleTriggerScan = async (baselineId: string) => {
-    setScanningId(baselineId);
+  const handleTriggerScan = async (baseline: Baseline) => {
+    setScanningId(baseline.id);
+    setError(undefined);
     try {
-      const res = await fetchWithAuth('/cis/scan', {
-        method: 'POST',
-        body: JSON.stringify({ baselineId }),
+      // The scan is queued for the agents to pick up: nothing on this row
+      // changes, and the results land minutes later on the Compliance tab. The
+      // spinner stopping is therefore indistinguishable from a no-op, so the
+      // success toast is the only confirmation the tech ever gets.
+      await runAction({
+        request: () => fetchWithAuth('/cis/scan', {
+          method: 'POST',
+          body: JSON.stringify({ baselineId: baseline.id }),
+        }),
+        errorFallback: t('cisHardeningCisBaselinesTab.messages.triggerScanFailed'),
+        successMessage: t('cisHardeningCisBaselinesTab.messages.triggerScanQueued', { name: baseline.name }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, `${res.status} ${res.statusText}`));
-      }
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      // runAction already toasted the failure; mirror it in the tab banner so
+      // the reason survives the toast timing out.
       setError(err instanceof Error ? err.message : t('cisHardeningCisBaselinesTab.messages.triggerScanFailed'));
     } finally {
       setScanningId(null);
@@ -102,7 +131,9 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
         <button
           type="button"
           onClick={() => setEditBaseline(null)}
-          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+          disabled={!canCreate}
+          title={needsOrgChoice ? t('common:layout.orgRequired.title') : undefined}
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Plus className="h-4 w-4" />
           {t('cisHardeningCisBaselinesTab.actions.newBaseline')}
@@ -185,7 +216,7 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleTriggerScan(bl.id)}
+                        onClick={() => handleTriggerScan(bl)}
                         disabled={scanningId === bl.id || !bl.isActive}
                         className="rounded-md p-1.5 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         title={t('cisHardeningCisBaselinesTab.actions.triggerScan')}

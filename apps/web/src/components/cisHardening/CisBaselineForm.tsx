@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Loader2, X } from 'lucide-react';
 import { fetchWithAuth } from '@/stores/auth';
-import { extractApiError } from '@/lib/apiError';
+import { useOrgStore } from '../../stores/orgStore';
+import { runAction, ActionError } from '@/lib/runAction';
 import type { Baseline } from './types';
 import HelpTooltip from '../shared/HelpTooltip';
 
@@ -15,6 +16,7 @@ interface CisBaselineFormProps {
 
 export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBaselineFormProps) {
   const { t } = useTranslation('security');
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [name, setName] = useState(baseline?.name ?? '');
   const [osType, setOsType] = useState(baseline?.osType ?? 'windows');
   const [level, setLevel] = useState(baseline?.level ?? 'l1');
@@ -50,23 +52,36 @@ export default function CisBaselineForm({ baseline, onClose, onSaved }: CisBasel
           intervalHours: scheduleEnabled ? intervalHours : undefined,
         },
       };
+      // The org has to travel in the BODY. `fetchWithAuth` auto-appends the
+      // selected org to the URL, but POST /cis/baselines reads its org only
+      // from the validated JSON body and requires an explicit one whenever the
+      // token isn't org-scoped — so a multi-org partner used to get a hard 400
+      // here while the query string quietly carried the right answer.
+      //
+      // On edit, send the baseline's OWN org rather than the header selection:
+      // the route looks the row up by (id, orgId), so a mismatch is a 404 — or
+      // a 403 if the caller can't reach that org at all.
+      const targetOrgId = baseline?.orgId ?? currentOrgId;
+      if (targetOrgId) body.orgId = targetOrgId;
       if (baseline?.id) {
         body.id = baseline.id;
       }
 
-      const res = await fetchWithAuth('/cis/baselines', {
-        method: 'POST',
-        body: JSON.stringify(body),
+      await runAction({
+        request: () => fetchWithAuth('/cis/baselines', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+        errorFallback: t('cisHardeningCisBaselineForm.messages.saveFailed'),
+        successMessage: t('cisHardeningCisBaselineForm.messages.saveSuccess', { name }),
       });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, `${res.status} ${res.statusText}`));
-      }
 
       onSaved();
       onClose();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      // runAction already toasted the failure; keep the inline copy too — the
+      // modal stays open on failure and the banner is where the user is looking.
       setError(err instanceof Error ? err.message : t('cisHardeningCisBaselineForm.messages.saveFailed'));
     } finally {
       setSaving(false);

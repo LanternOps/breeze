@@ -1633,7 +1633,8 @@
       "triggerScan": "Escaneo de activación"
     },
     "messages": {
-      "triggerScanFailed": "No se pudo activar el escaneo"
+      "triggerScanFailed": "No se pudo activar el escaneo",
+      "triggerScanQueued": "Escaneo en cola para {{name}}"
     },
     "table": {
       "name": "Nombre",
@@ -1666,7 +1667,8 @@
       "new": "Nueva línea de base"
     },
     "messages": {
-      "saveFailed": "No se pudo guardar la línea base"
+      "saveFailed": "No se pudo guardar la línea base",
+      "saveSuccess": "Línea base «{{name}}» guardada"
     },
     "fields": {
       "name": "Nombre",

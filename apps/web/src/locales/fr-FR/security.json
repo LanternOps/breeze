@@ -1633,7 +1633,8 @@
       "triggerScan": "Balayage de déclenchement"
     },
     "messages": {
-      "triggerScanFailed": "Impossible de déclencher le scan"
+      "triggerScanFailed": "Impossible de déclencher le scan",
+      "triggerScanQueued": "Scan mis en file d’attente pour {{name}}"
     },
     "table": {
       "name": "Nom",
@@ -1666,7 +1667,8 @@
       "new": "Nouvelle base"
     },
     "messages": {
-      "saveFailed": "Impossible d’enregistrer la ligne de base"
+      "saveFailed": "Impossible d’enregistrer la ligne de base",
+      "saveSuccess": "Base « {{name}} » enregistrée"
     },
     "fields": {
       "name": "Nom",
