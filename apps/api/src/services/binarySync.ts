@@ -1,17 +1,20 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
 import { getBinarySource, getAgentAutoPromote } from "./binarySource";
+import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
   verifyReleaseArtifactManifestAsset,
+  verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
+import { EDITION_SELF_HOST, assertGithubFetchableEdition } from "./releaseAssetTrust";
 import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
 import {
   getReleaseSourceApiBase,
@@ -24,6 +27,22 @@ const GH_PLATFORM_MAP: Record<string, string> = {
   darwin: "macos",
   windows: "windows",
 };
+
+// BINARY_EDITION=hosted fail-closed (BYO signing edition follow-up): a
+// hosted deployment must never silently fall back to the public GitHub
+// release when its local binaries volume is missing or stale — that release
+// now carries the self-host edition, which is not what a hosted deployment
+// is supposed to serve. Throwing here is deliberate: syncBinaries()'s only
+// caller (index.ts startup) treats a thrown error as fatal when
+// BINARY_SOURCE=local, so this turns a would-be silent substitution into a
+// boot failure an operator has to notice and fix.
+function assertLocalGithubFallbackAllowed(context: string): void {
+  if (getBinaryEdition() === "hosted") {
+    throw new Error(
+      `[binarySync] BINARY_EDITION=hosted refuses to fall back to the public GitHub release (${context}). Fix the local binaries volume instead.`,
+    );
+  }
+}
 
 const AGENT_TARGETS = [
   { goos: "linux", goarch: "amd64" },
@@ -214,11 +233,14 @@ async function getReleaseAssetMetadata(args: {
   releaseManifest?: string;
   manifestSignature?: string;
   signingKeyId?: string;
+  edition: string;
 } | null> {
   if (!args.trustedManifest) {
     const checksum = args.fallbackChecksums?.get(args.asset.name);
     if (!checksum) return null;
-    return { checksum, size: args.asset.size };
+    // Legacy checksums.txt fallback (non-production only) predates the
+    // edition field entirely — same default as an unset manifest field.
+    return { checksum, size: args.asset.size, edition: EDITION_SELF_HOST };
   }
 
   const verified = await verifyReleaseArtifactManifestAsset({
@@ -228,6 +250,12 @@ async function getReleaseAssetMetadata(args: {
     expectedRepository: getReleaseSourceRepository(),
     expectedRelease: args.releaseTag,
   });
+
+  // Defense in depth: this whole function only runs inside the GitHub sync
+  // flow, so an asset labeled edition "hosted" here would mean a hosted
+  // artifact somehow ended up in a public release manifest — refuse it
+  // outright rather than register it.
+  assertGithubFetchableEdition({ assetName: args.asset.name, edition: verified.edition });
 
   if (verified.size !== args.asset.size) {
     throw new Error(
@@ -241,6 +269,7 @@ async function getReleaseAssetMetadata(args: {
     releaseManifest: args.trustedManifest.manifest,
     manifestSignature: args.trustedManifest.signature,
     signingKeyId: "release-artifact-manifest-ed25519",
+    edition: verified.edition ?? EDITION_SELF_HOST,
   };
 }
 
@@ -311,6 +340,10 @@ async function registerLocalBinaries(args: {
   // the GitHub-source path (upsertVersion) so both registration paths behave
   // identically regardless of component.
   const autoPromote = getAgentAutoPromote();
+  // A locally-scanned binary carries no per-asset edition claim of its own
+  // (unlike a manifest-covered asset — see registerFromOfficialManifest
+  // below), so it's stamped with this SERVER's own configured edition.
+  const edition = getBinaryEdition();
 
   await db.transaction(async (tx) => {
     for (const bin of binaries) {
@@ -329,7 +362,7 @@ async function registerLocalBinaries(args: {
       const releaseManifest = JSON.stringify(manifestObj);
       const manifestSignature = await signManifest(releaseManifest);
 
-      // Demote existing "isLatest" entries for this platform/arch/component.
+      // Demote existing "isLatest" entries for this platform/arch/component/edition.
       if (autoPromote) {
         await tx
           .update(agentVersions)
@@ -339,6 +372,7 @@ async function registerLocalBinaries(args: {
               eq(agentVersions.platform, bin.platform),
               eq(agentVersions.architecture, bin.architecture),
               eq(agentVersions.component, component),
+              eq(agentVersions.edition, edition),
               eq(agentVersions.isLatest, true),
             ),
           );
@@ -359,15 +393,17 @@ async function registerLocalBinaries(args: {
           releaseManifest,
           manifestSignature,
           signingKeyId: keyId,
+          edition,
         })
         .onConflictDoUpdate({
           // Match the actual unique constraint
-          // (version, platform, architecture, component).
+          // (version, platform, architecture, component, edition).
           target: [
             agentVersions.version,
             agentVersions.platform,
             agentVersions.architecture,
             agentVersions.component,
+            agentVersions.edition,
           ],
           set: {
             downloadUrl,
@@ -381,6 +417,149 @@ async function registerLocalBinaries(args: {
         });
     }
   });
+}
+
+// Official-manifest local registration (BYO signing edition follow-up).
+//
+// AGENT_BINARY_DIR (e.g. /data/binaries/agent) is a subdirectory of the
+// binaries volume root (e.g. /data/binaries — see VIEWER_BINARY_DIR and
+// HELPER_BINARY_DIR, siblings under the same root in docker-compose.yml). If
+// an operator has staged an official release-artifact-manifest.json +
+// release-artifact-manifest.json.ed25519 pair at that root (e.g. by copying
+// them alongside the binaries during their own image build or volume seed),
+// registering FROM that manifest — instead of re-signing a fresh
+// per-deployment manifest — lets self-host agents verify updates against the
+// well-known release key embedded in the agent binary, with zero
+// per-deployment key distribution required.
+function officialManifestPairPaths(agentBinaryDir: string): {
+  manifestPath: string;
+  signaturePath: string;
+} {
+  const root = dirname(resolve(agentBinaryDir));
+  return {
+    manifestPath: join(root, "release-artifact-manifest.json"),
+    signaturePath: join(root, "release-artifact-manifest.json.ed25519"),
+  };
+}
+
+async function loadOfficialLocalManifestPair(
+  agentBinaryDir: string,
+): Promise<{ manifestBytes: Buffer; signatureBytes: Buffer } | null> {
+  const { manifestPath, signaturePath } = officialManifestPairPaths(agentBinaryDir);
+  try {
+    const [manifestBytes, signatureBytes] = await Promise.all([
+      readFile(manifestPath),
+      readFile(signaturePath),
+    ]);
+    return { manifestBytes, signatureBytes };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+// Registers whichever of `binaries` the official manifest actually covers
+// (matched by on-disk filename == manifest asset name), verifying each
+// asset's checksum against the LOCAL file before trusting the manifest's
+// claim for it. Binaries the manifest doesn't cover (or whose local checksum
+// disagrees with it) are left unregistered here — the caller falls back to
+// registerLocalBinaries (deploy-key re-sign) for those.
+async function registerFromOfficialManifest(args: {
+  binaries: BinaryInfo[];
+  component: string;
+  version: string;
+  manifestBytes: Buffer;
+  signatureBytes: Buffer;
+  downloadUrlFor: (osParam: string, arch: string) => string;
+}): Promise<{ registeredFilenames: Set<string> }> {
+  const { binaries, component, version, manifestBytes, signatureBytes, downloadUrlFor } = args;
+  const autoPromote = getAgentAutoPromote();
+  const manifestString = manifestBytes.toString("utf8");
+  const signatureString = signatureBytes.toString("utf8").trim();
+  const registeredFilenames = new Set<string>();
+
+  await db.transaction(async (tx) => {
+    for (const bin of binaries) {
+      let verified;
+      try {
+        verified = await verifyReleaseArtifactManifestAsset({
+          assetName: bin.filename,
+          manifestBytes,
+          signatureBytes,
+        });
+      } catch (err) {
+        console.warn(
+          `[binarySync] Official release manifest does not cover ${bin.filename}: ${err instanceof Error ? err.message : err}`,
+        );
+        continue;
+      }
+
+      if (verified.sha256 !== bin.checksum) {
+        console.error(
+          `[binarySync] Checksum mismatch between the local file and the official release manifest for ${bin.filename} — not registering from the official manifest for this asset`,
+        );
+        continue;
+      }
+
+      const edition = verified.edition ?? EDITION_SELF_HOST;
+      const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
+      const downloadUrl = downloadUrlFor(osParam, bin.architecture);
+
+      if (autoPromote) {
+        await tx
+          .update(agentVersions)
+          .set({ isLatest: false })
+          .where(
+            and(
+              eq(agentVersions.platform, bin.platform),
+              eq(agentVersions.architecture, bin.architecture),
+              eq(agentVersions.component, component),
+              eq(agentVersions.edition, edition),
+              eq(agentVersions.isLatest, true),
+            ),
+          );
+      }
+
+      await tx
+        .insert(agentVersions)
+        .values({
+          version,
+          component,
+          platform: bin.platform,
+          architecture: bin.architecture,
+          downloadUrl,
+          checksum: verified.sha256,
+          fileSize: BigInt(verified.size),
+          isLatest: autoPromote,
+          releaseManifest: manifestString,
+          manifestSignature: signatureString,
+          signingKeyId: "release-artifact-manifest-ed25519",
+          edition,
+        })
+        .onConflictDoUpdate({
+          target: [
+            agentVersions.version,
+            agentVersions.platform,
+            agentVersions.architecture,
+            agentVersions.component,
+            agentVersions.edition,
+          ],
+          set: {
+            downloadUrl,
+            checksum: verified.sha256,
+            fileSize: BigInt(verified.size),
+            releaseManifest: manifestString,
+            manifestSignature: signatureString,
+            signingKeyId: "release-artifact-manifest-ed25519",
+            ...(autoPromote ? { isLatest: true } : {}),
+          },
+        });
+
+      registeredFilenames.add(bin.filename);
+    }
+  });
+
+  return { registeredFilenames };
 }
 
 export async function syncBinaries(): Promise<void> {
@@ -431,6 +610,9 @@ export async function syncBinaries(): Promise<void> {
     version !== "unknown" &&
     version !== expectedVersion
   ) {
+    assertLocalGithubFallbackAllowed(
+      `stale binaries volume: v${version} but BREEZE_VERSION=${expectedVersion}`,
+    );
     console.warn(
       `[binarySync] Stale binaries volume detected: volume has v${version} but BREEZE_VERSION=${expectedVersion}. ` +
         `Falling back to GitHub release sync. To fix, run: docker compose up -d --force-recreate binaries-init`,
@@ -444,6 +626,39 @@ export async function syncBinaries(): Promise<void> {
       // and log alerting catch it (#644).
       console.error(
         `[binarySync] Stale binaries volume + GitHub sync FAILED — agents will be served the wrong version: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  // Official-manifest local registration (BYO signing edition follow-up): if
+  // a release-artifact-manifest.json + .ed25519 pair is staged at the
+  // binaries volume root, verify it up front so assets it covers register
+  // against IT (raw manifest + official key ID) instead of a fresh
+  // per-deployment re-sign. Absent files: unchanged self-host local-mode
+  // behavior. Present but invalid: log + fall back UNLESS this is a hosted
+  // deployment, where trusting an unverifiable local manifest is not an
+  // option and sync fails outright instead of silently falling back.
+  let officialManifest: { manifestBytes: Buffer; signatureBytes: Buffer } | null = null;
+  const officialManifestPair = await loadOfficialLocalManifestPair(agentBinaryDir);
+  if (officialManifestPair) {
+    try {
+      verifyReleaseArtifactManifestIntegrity(
+        officialManifestPair.manifestBytes,
+        officialManifestPair.signatureBytes,
+      );
+      officialManifest = officialManifestPair;
+      console.log(
+        "[binarySync] Verified official release-artifact-manifest.json in the binaries volume; registering the assets it covers against it instead of re-signing with the per-deployment key",
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (getBinaryEdition() === "hosted") {
+        throw new Error(
+          `[binarySync] Official release manifest verification failed and BINARY_EDITION=hosted requires a valid manifest: ${msg}`,
+        );
+      }
+      console.error(
+        `[binarySync] Official release manifest found but failed verification, falling back to per-deployment re-signing: ${msg}`,
       );
     }
   }
@@ -466,18 +681,42 @@ export async function syncBinaries(): Promise<void> {
     // across the loop. See docs/deploy/agent-update-trust-bootstrap.md.
     const { keyId } = await ensureActiveSigningKey();
 
-    await registerLocalBinaries({
-      binaries,
-      component: "agent",
-      version,
-      keyId,
-      downloadUrlFor: (osParam, arch) =>
-        `${serverUrl}/api/v1/agents/download/${osParam}/${arch}`,
-    });
+    let coveredAgentFilenames = new Set<string>();
+    if (officialManifest) {
+      const result = await registerFromOfficialManifest({
+        binaries,
+        component: "agent",
+        version,
+        manifestBytes: officialManifest.manifestBytes,
+        signatureBytes: officialManifest.signatureBytes,
+        downloadUrlFor: (osParam, arch) =>
+          `${serverUrl}/api/v1/agents/download/${osParam}/${arch}`,
+      });
+      coveredAgentFilenames = result.registeredFilenames;
+      if (coveredAgentFilenames.size > 0) {
+        console.log(
+          `[binarySync] Registered ${coveredAgentFilenames.size} agent binaries from the official release manifest (version: ${version})`,
+        );
+      }
+    }
 
-    console.log(
-      `[binarySync] Registered ${binaries.length} agent binaries (version: ${version})`,
+    const remainingAgentBinaries = binaries.filter(
+      (b) => !coveredAgentFilenames.has(b.filename),
     );
+    if (remainingAgentBinaries.length > 0) {
+      await registerLocalBinaries({
+        binaries: remainingAgentBinaries,
+        component: "agent",
+        version,
+        keyId,
+        downloadUrlFor: (osParam, arch) =>
+          `${serverUrl}/api/v1/agents/download/${osParam}/${arch}`,
+      });
+
+      console.log(
+        `[binarySync] Registered ${remainingAgentBinaries.length} agent binaries via per-deployment re-signing (version: ${version})`,
+      );
+    }
 
     // #1802: register the watchdog component too, so self-hosters on
     // BINARY_SOURCE=local get watchdog auto-update (heartbeat.ts watchdogUpgradeTo
@@ -488,14 +727,32 @@ export async function syncBinaries(): Promise<void> {
       // doesn't abort the rest of syncBinaries after the agent already
       // registered — mirrors the GitHub path's per-component try/catch.
       try {
-        await registerLocalBinaries({
-          binaries: watchdogBinaries,
-          component: "watchdog",
-          version,
-          keyId,
-          downloadUrlFor: (osParam, arch) =>
-            `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
-        });
+        let coveredWatchdogFilenames = new Set<string>();
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: watchdogBinaries,
+            component: "watchdog",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
+          });
+          coveredWatchdogFilenames = result.registeredFilenames;
+        }
+        const remainingWatchdogBinaries = watchdogBinaries.filter(
+          (b) => !coveredWatchdogFilenames.has(b.filename),
+        );
+        if (remainingWatchdogBinaries.length > 0) {
+          await registerLocalBinaries({
+            binaries: remainingWatchdogBinaries,
+            component: "watchdog",
+            version,
+            keyId,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/watchdog/${osParam}/${arch}`,
+          });
+        }
         console.log(
           `[binarySync] Registered ${watchdogBinaries.length} watchdog binaries (version: ${version})`,
         );
@@ -510,6 +767,9 @@ export async function syncBinaries(): Promise<void> {
       );
     }
   } else {
+    assertLocalGithubFallbackAllowed(
+      `no local agent binaries found in ${agentBinaryDir}`,
+    );
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",
     );
@@ -801,6 +1061,20 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
 
     if (existing) return; // Already registered
 
+    // This safety net runs after BOTH sync modes. In github mode, syncing the
+    // current version from GitHub is the primary path, not a fallback — leave
+    // it alone. In local mode it IS a fallback (local scan didn't produce the
+    // running version), so it's subject to the same hosted-edition fail-closed
+    // rule as the other local-mode fallbacks above. Unlike those, this
+    // function is a best-effort safety net by design (never crashes boot), so
+    // mirror that here: log and skip rather than throw.
+    if (getBinarySource() === "local" && getBinaryEdition() === "hosted") {
+      console.error(
+        `[binarySync] Version ${currentVersion} not found in agentVersions and BINARY_EDITION=hosted refuses to fall back to the public GitHub release from local mode. Register it via the local binaries volume instead.`,
+      );
+      return;
+    }
+
     console.log(
       `[binarySync] Version ${currentVersion} not found in agentVersions, syncing from GitHub`,
     );
@@ -828,6 +1102,7 @@ type UpsertMetadata = {
   releaseManifest?: string;
   manifestSignature?: string;
   signingKeyId?: string;
+  edition: string;
 };
 
 // Spec 3b: when syncing from an OVERRIDDEN repository, the release manifest is
@@ -872,6 +1147,7 @@ async function applyDeploymentSigning(args: {
     releaseManifest,
     manifestSignature,
     signingKeyId: keyId,
+    edition: metadata.edition,
   };
 }
 
@@ -897,6 +1173,7 @@ async function upsertVersion(
   // from the conflict `set` so an existing promoted row keeps its target.
   // When auto-promote is on (default) behavior is byte-for-byte unchanged.
   const autoPromote = getAgentAutoPromote();
+  const edition = signedMetadata.edition;
   await db.transaction(async (tx) => {
     if (autoPromote) {
       await tx
@@ -907,6 +1184,7 @@ async function upsertVersion(
             eq(agentVersions.platform, platform),
             eq(agentVersions.architecture, arch),
             eq(agentVersions.component, component),
+            eq(agentVersions.edition, edition),
             eq(agentVersions.isLatest, true),
           ),
         );
@@ -927,6 +1205,7 @@ async function upsertVersion(
         releaseNotes: releaseNotes ?? null,
         isLatest: autoPromote,
         component,
+        edition,
       })
       .onConflictDoUpdate({
         target: [
@@ -934,6 +1213,7 @@ async function upsertVersion(
           agentVersions.platform,
           agentVersions.architecture,
           agentVersions.component,
+          agentVersions.edition,
         ],
         set: {
           downloadUrl,

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   PLATFORM_TRUST_MACOS,
+  PLATFORM_TRUST_NONE,
   PLATFORM_TRUST_WINDOWS,
   PLATFORM_TRUST_WORKFLOW,
   assertDistributableReleaseAsset,
+  assertGithubFetchableEdition,
   isSigningInputAssetName,
   requiredPlatformTrustFor,
 } from './releaseAssetTrust';
@@ -126,5 +128,110 @@ describe('releaseAssetTrust', () => {
         intendedUse: null,
       }),
     ).not.toThrow();
+  });
+
+  describe('edition-aware MSI acceptance', () => {
+    it('accepts an unsigned self-host breeze-agent.msi', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent.msi',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).not.toThrow();
+    });
+
+    it('still accepts a signed self-host breeze-agent.msi (BYO-resigned repos)', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent.msi',
+          platformTrust: PLATFORM_TRUST_WINDOWS,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects an unsigned breeze-agent.msi with no edition claim (today\'s behavior unchanged)', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent.msi',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    it('rejects an unsigned breeze-agent.msi labeled edition "hosted"', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent.msi',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'hosted',
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    it('does NOT extend the unsigned exception to other .msi assets (e.g. helper)', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-helper-windows.msi',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    it('rejects an unknown edition value (fails closed)', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent-linux-amd64',
+          platformTrust: PLATFORM_TRUST_WORKFLOW,
+          intendedUse: null,
+          edition: 'enterprise',
+        }),
+      ).toThrow(/unknown edition/);
+    });
+
+    it('tolerates edition undefined/null identically (manifests predating the field)', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent-linux-amd64',
+          platformTrust: PLATFORM_TRUST_WORKFLOW,
+          intendedUse: null,
+          edition: null,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent-linux-amd64',
+          platformTrust: PLATFORM_TRUST_WORKFLOW,
+          intendedUse: null,
+        }),
+      ).not.toThrow();
+    });
+  });
+
+  describe('assertGithubFetchableEdition', () => {
+    it('refuses an asset labeled edition "hosted"', () => {
+      expect(() =>
+        assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: 'hosted' }),
+      ).toThrow(/must never be fetched from a public GitHub release/);
+    });
+
+    it('allows edition "self-host"', () => {
+      expect(() =>
+        assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: 'self-host' }),
+      ).not.toThrow();
+    });
+
+    it('allows a null/absent edition (manifests predating the field)', () => {
+      expect(() =>
+        assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: null }),
+      ).not.toThrow();
+    });
   });
 });

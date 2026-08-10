@@ -275,6 +275,10 @@ services:
       # from (default lanternops/breeze). Pair with
       # RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS set to YOUR release manifest key.
       BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+      # Binary edition served by this deployment: self-host (default,
+      # unchanged behavior) or hosted (production requires
+      # BINARY_SOURCE=local + a manifest trust root — see .env.example).
+      BINARY_EDITION: ${BINARY_EDITION:-self-host}
       # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
       # without touching their .env. Hosted operators must set IS_HOSTED=true
       # in .env so this interpolates to true. The API config validator (#570)

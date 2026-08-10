@@ -2,6 +2,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { generateKeyPairSync, sign } from "node:crypto";
 
+// Real eq/and are opaque drizzle-orm SQL AST builders that aren't easy to
+// assert on directly. Spy-wrap them (mirrors binarySync.test.ts) so
+// edition-scoping tests can inspect exactly which columns/values a route
+// built into its WHERE clause, without changing any chain shape the other
+// (unmodified) tests in this file already rely on.
+const drizzleSpies = vi.hoisted(() => ({
+  eq: vi.fn((column: unknown, value: unknown) => ({ __op: "eq", column, value })),
+  and: vi.fn((...clauses: unknown[]) => ({ __op: "and", clauses })),
+}));
+vi.mock("drizzle-orm", async (importActual) => {
+  const actual = await importActual<typeof import("drizzle-orm")>();
+  return { ...actual, eq: drizzleSpies.eq, and: drizzleSpies.and };
+});
+
 vi.mock("../db", () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(
@@ -58,9 +72,24 @@ import {
   verifyEd25519ManifestSignature,
 } from "./agentVersions";
 import { db } from "../db";
+import { agentVersions } from "../db/schema";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
+
+// Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
+// eq(agentVersions.edition, expected) leaf clause.
+function hasEditionClause(node: unknown, expected: string): boolean {
+  if (!node || typeof node !== "object") return false;
+  const n = node as { __op?: string; column?: unknown; value?: unknown; clauses?: unknown[] };
+  if (n.__op === "eq") {
+    return n.column === agentVersions.edition && n.value === expected;
+  }
+  if (n.__op === "and" && Array.isArray(n.clauses)) {
+    return n.clauses.some((c) => hasEditionClause(c, expected));
+  }
+  return false;
+}
 
 function makeSignedReleaseManifest(overrides: Record<string, unknown> = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -130,6 +159,7 @@ describe("agentVersions routes", () => {
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BINARY_EDITION;
     app = new Hono();
     // Inject mock auth context
     app.use(async (c: any, next: any) => {
@@ -148,9 +178,11 @@ describe("agentVersions routes", () => {
   // multiple sequential selects.
   function selectResolving(rows: unknown[]) {
     // `where()` must be awaitable on its own (the promote target-rows query has
-    // no .limit()) AND expose .limit() (the in-tx "current isLatest" lookup).
+    // no .limit()) AND expose .limit() (the in-tx "current isLatest" lookup)
+    // AND expose .orderBy() (the edition-scoped /pinnable query).
     const whereResult: any = Promise.resolve(rows);
     whereResult.limit = vi.fn().mockResolvedValue(rows);
+    whereResult.orderBy = vi.fn().mockResolvedValue(rows);
     return {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue(whereResult),
@@ -379,6 +411,45 @@ describe("agentVersions routes", () => {
         }),
       );
     });
+
+    it("scopes the target-rows lookup and the tx demote/promote to this server's edition", async () => {
+      process.env.BINARY_EDITION = "hosted";
+
+      const targetRowsWhere = vi.fn().mockResolvedValue([
+        { component: "agent", platform: "linux", architecture: "amd64" },
+      ]);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: targetRowsWhere }),
+      } as any);
+
+      const { tx, txUpdate, updateSet } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0", component: "agent" }),
+      });
+      delete process.env.BINARY_EDITION;
+
+      expect(res.status).toBe(200);
+      // Pre-tx target-rows lookup scoped to edition=hosted.
+      const targetRowsWhereArg = targetRowsWhere.mock.calls[0]?.[0];
+      expect(hasEditionClause(targetRowsWhereArg, "hosted")).toBe(true);
+
+      // In-tx demote (.set({isLatest:false}).where(...)) and promote
+      // (.set({isLatest:true}).where(...)) share the same mocked `where` fn
+      // (makeTx's updateSet always returns the same object) — both calls
+      // must carry the edition scope.
+      expect(txUpdate).toHaveBeenCalledTimes(2);
+      const sharedWhereMock = updateSet.mock.results[0]?.value.where;
+      expect(sharedWhereMock.mock.calls.length).toBe(2);
+      for (const call of sharedWhereMock.mock.calls) {
+        expect(hasEditionClause(call[0], "hosted")).toBe(true);
+      }
+    });
   });
 
   describe("GET /agent-versions/latest", () => {
@@ -429,6 +500,37 @@ describe("agentVersions routes", () => {
       );
 
       expect(res.status).toBe(404);
+    });
+
+    it("scopes the lookup to this server's own edition (default self-host)", async () => {
+      const whereMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: whereMock }),
+      } as any);
+
+      delete process.env.BINARY_EDITION;
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+
+      const whereArg = whereMock.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "self-host")).toBe(true);
+    });
+
+    it("scopes the lookup to BINARY_EDITION=hosted when configured", async () => {
+      const whereMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: whereMock }),
+      } as any);
+
+      process.env.BINARY_EDITION = "hosted";
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+      delete process.env.BINARY_EDITION;
+
+      const whereArg = whereMock.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "hosted")).toBe(true);
     });
 
     it("should reject invalid platform", async () => {
@@ -1178,6 +1280,113 @@ describe("agentVersions routes", () => {
       const body = await res.json();
       expect(body.version).toBe("1.0.0");
       expect(body.platform).toBe("linux");
+    });
+
+    it("defaults edition to this server's own edition (self-host) when omitted", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: "ver-ed-1", version: "1.0.0", edition: "self-host", isLatest: false },
+        ]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      delete process.env.BINARY_EDITION;
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.edition).toBe("self-host");
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("accepts an explicit edition and stamps it on the row", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: "ver-ed-2", version: "1.0.0", edition: "hosted", isLatest: false },
+        ]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          edition: "hosted",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.edition).toBe("hosted");
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "hosted" }),
+      );
+    });
+
+    it("rejects an unrecognized edition value", async () => {
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          edition: "enterprise",
+        }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it("scopes the isLatest unset to the same edition on create", async () => {
+      const updateWhere = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: updateWhere }),
+      } as any);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            { id: "ver-ed-3", version: "3.0.0", edition: "hosted", isLatest: true },
+          ]),
+        }),
+      } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "3.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-3.0.0",
+          checksum: "e".repeat(64),
+          isLatest: true,
+          edition: "hosted",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const whereArg = updateWhere.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "hosted")).toBe(true);
     });
 
     it("should unset previous latest when isLatest=true", async () => {
