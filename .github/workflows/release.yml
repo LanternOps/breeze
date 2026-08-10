@@ -2201,6 +2201,9 @@ jobs:
             tar -czvf release-assets/breeze-web.tar.gz -C artifacts/web-dist .
           fi
 
+          SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          export SOURCE_COMMIT
+
           python3 <<'PY'
           import hashlib
           import json
@@ -2224,7 +2227,22 @@ jobs:
               r"^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$"
           )
 
+          # BYO signing (Deliverable 1): unsigned build outputs published as
+          # inputs for self-hosters to sign with their own certificates. The
+          # -unsigned rule MUST be evaluated before the extension branches —
+          # breeze-agent-windows-amd64-unsigned.exe would otherwise classify
+          # as windows-authenticode-required.
+          UNSIGNED_INPUT_RE = re.compile(
+              r"^breeze-(agent|backup|watchdog|user-helper)-windows-amd64-unsigned\.exe$"
+              r"|^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)-unsigned$"
+          )
+
+          def is_signing_input(name):
+              return UNSIGNED_INPUT_RE.match(name) is not None
+
           def platform_trust(name):
+              if is_signing_input(name):
+                  return "none"
               if name.endswith(".msi") or name.endswith(".exe"):
                   return "windows-authenticode-required"
               if (
@@ -2241,17 +2259,21 @@ jobs:
           for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
               if not path.is_file() or path.name in excluded:
                   continue
-              assets.append({
+              entry = {
                   "name": path.name,
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
                   "platformTrust": platform_trust(path.name),
-              })
+              }
+              if is_signing_input(path.name):
+                  entry["intendedUse"] = "signing-input"
+              assets.append(entry)
 
           manifest = {
               "schemaVersion": 1,
               "repository": os.environ["GITHUB_REPOSITORY"],
               "release": os.environ["GITHUB_REF_NAME"],
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
               "assets": assets,
           }
           (release_dir / "release-artifact-manifest.json").write_text(
