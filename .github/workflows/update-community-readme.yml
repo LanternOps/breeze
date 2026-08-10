@@ -69,9 +69,13 @@ jobs:
             echo
             echo 'Download the community-readme artifact from this run, apply it on a branch, and open a normal pull request.'
             echo
-            echo '```diff'
+            # Four backticks, not three: every diff line carries a one-char
+            # prefix, so a README line of ``` renders as " ```" - which is a
+            # valid closing fence for a three-backtick block and would truncate
+            # the report without failing the run.
+            echo '````diff'
             git --no-pager diff -- README.md
-            echo '```'
+            echo '````'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload refreshed README

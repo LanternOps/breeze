@@ -1025,6 +1025,10 @@ test('community README refresh never writes to the repository', () => {
   assert.doesNotMatch(workflowText, /push origin/u);
   assert.doesNotMatch(workflowText, /credential\.helper/u);
   assert.doesNotMatch(workflowText, /persist-credentials:\s*true/u);
-  assert.doesNotMatch(workflowText, /^permissions:\n(?:\s+\w[\w-]*: .*\n)*\s+contents: write$/mu);
+  // Anchored to a line that is *only* the key, so it catches `contents: write`
+  // at the workflow level and inside any job-level permissions block, in any
+  // key order — while still ignoring the header comment, which discusses the
+  // string in prose.
+  assert.doesNotMatch(workflowText, /^\s*contents: write\s*$/mu);
   assert.match(workflowText, /^permissions:\n  contents: read$/mu);
 });
