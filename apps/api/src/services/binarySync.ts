@@ -13,8 +13,7 @@ import {
   verifyReleaseArtifactManifestAsset,
 } from "./releaseArtifactManifest";
 import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
-
-const GITHUB_REPO = process.env.GITHUB_REPO || "LanternOps/breeze";
+import { getReleaseSourceApiBase, getReleaseSourceRepository } from "./releaseSource";
 
 const GH_PLATFORM_MAP: Record<string, string> = {
   linux: "linux",
@@ -222,7 +221,7 @@ async function getReleaseAssetMetadata(args: {
     assetName: args.asset.name,
     manifestBytes: args.trustedManifest.manifestBytes,
     signatureBytes: args.trustedManifest.signatureBytes,
-    expectedRepository: GITHUB_REPO,
+    expectedRepository: getReleaseSourceRepository(),
     expectedRelease: args.releaseTag,
   });
 
@@ -549,8 +548,8 @@ export async function syncFromGitHub(
   requestedVersion?: string,
 ): Promise<{ version: string; synced: string[] }> {
   const ghUrl = requestedVersion
-    ? `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${requestedVersion}`
-    : `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+    ? `${getReleaseSourceApiBase()}/releases/tags/${requestedVersion}`
+    : `${getReleaseSourceApiBase()}/releases/latest`;
 
   // Authenticate the API call when a token is available. Unauthenticated
   // requests are capped at 60/hour per IP — fine for prod droplets where
