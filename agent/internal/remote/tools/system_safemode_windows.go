@@ -18,7 +18,13 @@ import (
 func RebootToSafeMode(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
-	delay := clampShutdownDelayMinutes(GetPayloadInt(payload, "delay", 0))
+	// Strict parse: a malformed delay must fail the command outright rather
+	// than defaulting to 0, which here means an immediate forced reboot into
+	// Safe Mode with the BCD flag already set (issue #3373).
+	delay, err := ShutdownDelayMinutes(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
 
 	slog.Info("reboot to safe mode requested", "delayMinutes", delay)
 

@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// maxShutdownDelayMinutes bounds the `delay` payload for reboot/shutdown.
-// The wire contract is minutes on every platform (see docs/agents/commands.mdx),
-// so this is 24 hours.
+// maxShutdownDelayMinutes bounds the `delay` payload shared by the reboot,
+// shutdown, and safe-mode-reboot commands. The wire contract is minutes on
+// every platform (see docs/agents/commands.mdx), so this is 24 hours.
 const maxShutdownDelayMinutes = 1440
 
 // clampShutdownDelayMinutes constrains a caller-supplied delay to [0, 1440]
@@ -26,11 +26,34 @@ func clampShutdownDelayMinutes(delayMinutes int) int {
 	return delayMinutes
 }
 
+// ShutdownDelayMinutes parses and clamps the `delay` field shared by the
+// reboot, shutdown, and safe-mode-reboot commands. It is the single source of
+// truth for that field, so the value a handler announces to logged-in users can
+// never drift from the value the command is actually scheduled with.
+//
+// A malformed delay is an error rather than a 0. `delay: 0` legitimately means
+// "immediately", so silently collapsing an unparseable value onto it would turn
+// a requested grace period into an instant forced reboot — the exact failure in
+// issue #3373, where a JSON-string "15" became an immediate reboot.
+//
+// An out-of-range delay is still clamped rather than rejected, matching the
+// long-standing behaviour of these commands; only the type is now strict.
+func ShutdownDelayMinutes(payload map[string]any) (int, error) {
+	delay, err := ParsePayloadInt(payload, "delay", 0)
+	if err != nil {
+		return 0, err
+	}
+	return clampShutdownDelayMinutes(delay), nil
+}
+
 // Reboot schedules a system reboot after the requested delay.
 // The `delay` payload is in MINUTES on every platform; maximum 1440 (24 hours).
 func Reboot(payload map[string]any) CommandResult {
 	startTime := time.Now()
-	delay := clampShutdownDelayMinutes(GetPayloadInt(payload, "delay", 0))
+	delay, err := ShutdownDelayMinutes(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
 
 	cmd, err := buildShutdownCommand(true, delay)
 	if err != nil {
@@ -53,7 +76,10 @@ func Reboot(payload map[string]any) CommandResult {
 // The `delay` payload is in MINUTES on every platform; maximum 1440 (24 hours).
 func Shutdown(payload map[string]any) CommandResult {
 	startTime := time.Now()
-	delay := clampShutdownDelayMinutes(GetPayloadInt(payload, "delay", 0))
+	delay, err := ShutdownDelayMinutes(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
 
 	cmd, err := buildShutdownCommand(false, delay)
 	if err != nil {
