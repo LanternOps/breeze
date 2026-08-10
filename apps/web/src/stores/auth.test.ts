@@ -357,6 +357,36 @@ describe('auth store fetchWithAuth', () => {
     expect(refreshCalls).toHaveLength(2);
   });
 
+  // Issue #3041: a 429 on /auth/refresh is the rate limiter rejecting the
+  // request before it was ever evaluated — no verdict was reached on the
+  // refresh cookie, so it is transient exactly like a 502. It used to fall
+  // through to the hard-failure branch, which is how a runaway remote-desktop
+  // viewer poll could exhaust the shared per-IP budget and dump an operator
+  // with a perfectly valid session on the login screen.
+  it('retries a 429 on refresh and keeps the session', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
+    const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))       // original request
+      .mockResolvedValueOnce(makeResponse({ error: 'Too many requests' }, false, 429))  // refresh throttled
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200))      // refresh recovers
+      .mockResolvedValueOnce(apiSuccess);                                               // original replayed
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices');
+
+    expect(response).toBe(apiSuccess);
+    // The session must survive being rate limited.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+    expect(refreshCalls).toHaveLength(2);
+  });
+
   // The retry is bounded: a sustained gateway outage still evicts once the
   // backoff attempts are exhausted (no infinite hang).
   it('logs out when refresh 5xx persists past the retry budget', async () => {

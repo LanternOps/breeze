@@ -313,11 +313,12 @@ const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 //                #1107) — the winning sibling already rotated the SHARED refresh
 //                cookie and the server deliberately did NOT clear it or kill the
 //                session family, so an immediate retry picks up the fresh cookie.
-//   - transient: a gateway/network blip (5xx, offline, timeout) — no verdict was
-//                reached on the refresh cookie, so the session is very likely
-//                still valid and this should be retried with backoff rather than
-//                evicting the user (QA 2026-07-08: a single 502 on /auth/refresh
-//                hard-logged-out the SPA mid-session).
+//   - transient: a gateway/network blip or a rate-limit rejection (5xx, 429,
+//                offline, timeout) — no verdict was reached on the refresh
+//                cookie, so the session is very likely still valid and this
+//                should be retried with backoff rather than evicting the user
+//                (QA 2026-07-08: a single 502 on /auth/refresh hard-logged-out
+//                the SPA mid-session; issue #3041: so did a single 429).
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
 async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean; transient: boolean }> {
@@ -357,6 +358,16 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
     if (body?.reason === 'refresh_raced') {
       return { tokens: null, raced: true, transient: false };
     }
+  }
+
+  // 429 means the rate limiter rejected the request before it was ever
+  // evaluated, so — exactly like a 5xx — no verdict was reached on the refresh
+  // cookie and the session is very likely still valid. Classifying it as a hard
+  // failure evicted people whose session was fine, which is how a runaway
+  // remote-desktop viewer poll (issue #3041) could exhaust the shared per-IP
+  // budget and dump the operator on the login screen.
+  if (refreshResponse.status === 429) {
+    return { tokens: null, raced: false, transient: true };
   }
 
   // 5xx (typically a 502/503/504 from the gateway) means the request never

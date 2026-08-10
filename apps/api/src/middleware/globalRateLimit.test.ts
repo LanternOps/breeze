@@ -10,13 +10,16 @@ vi.mock('../services/clientIp', () => ({
 }));
 
 import {
+  __resetInMemoryCountersForTests,
   __resetSkipPrefixesForTests,
   globalRateLimit,
+  ISOLATED_BUCKETS,
   registerGlobalRateLimitSkipPrefix,
 } from './globalRateLimit';
 
 beforeEach(() => {
   __resetSkipPrefixesForTests();
+  __resetInMemoryCountersForTests();
 });
 
 describe('globalRateLimit', () => {
@@ -47,5 +50,67 @@ describe('globalRateLimit', () => {
 
     expect(limited.status).toBe(429);
     expect(builtIn.status).toBe(200);
+  });
+});
+
+// Issue #3041: the remote-desktop viewer polls /viewer/session while waiting
+// for the agent's WebRTC answer. Those polls used to share the per-IP bucket
+// with everything else, so a session that died mid-poll could 429 the
+// operator's own dashboard and auth calls and bounce them to the login screen.
+describe('globalRateLimit — isolated desktop-ws bucket', () => {
+  const VIEWER_PATH = '/api/v1/desktop-ws/00000000-0000-0000-0000-000000000000/viewer/session';
+
+  function buildApp(options?: Parameters<typeof globalRateLimit>[0]) {
+    const app = new Hono();
+    app.use('*', globalRateLimit(options));
+    app.get(VIEWER_PATH, (c) => c.json({ ok: true }));
+    app.get('/api/v1/devices', (c) => c.json({ ok: true }));
+    app.post('/api/v1/auth/refresh', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('ships with /api/v1/desktop-ws/ isolated by default', () => {
+    expect(ISOLATED_BUCKETS.some((b) => b.prefix === '/api/v1/desktop-ws/')).toBe(true);
+  });
+
+  it('does not let viewer polls drain the shared bucket', async () => {
+    // Shared budget of 2, but 20 viewer polls — far past what the shared
+    // bucket would tolerate if they were metered together.
+    const app = buildApp({ limit: 2, windowSeconds: 60 });
+
+    for (let i = 0; i < 20; i++) {
+      const poll = await app.request(VIEWER_PATH);
+      expect(poll.status).toBe(200);
+    }
+
+    // The dashboard and the token refresh must still have their full budget.
+    expect((await app.request('/api/v1/devices')).status).toBe(200);
+    expect((await app.request('/api/v1/auth/refresh', { method: 'POST' })).status).toBe(200);
+  });
+
+  it('still caps viewer traffic — isolation is not exemption', async () => {
+    const app = buildApp({
+      limit: 100,
+      windowSeconds: 60,
+      isolatedBuckets: [{ prefix: '/api/v1/desktop-ws/', name: 'desktopws-test', limit: 2 }],
+    });
+
+    expect((await app.request(VIEWER_PATH)).status).toBe(200);
+    expect((await app.request(VIEWER_PATH)).status).toBe(200);
+
+    const throttled = await app.request(VIEWER_PATH);
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers.get('Retry-After')).toBe('60');
+    expect(throttled.headers.get('X-RateLimit-Limit')).toBe('2');
+  });
+
+  it('exhausting the shared bucket does not throttle viewer traffic', async () => {
+    const app = buildApp({ limit: 1, windowSeconds: 60 });
+
+    expect((await app.request('/api/v1/devices')).status).toBe(200);
+    expect((await app.request('/api/v1/devices')).status).toBe(429);
+
+    // An in-flight remote session must survive an unrelated dashboard burst.
+    expect((await app.request(VIEWER_PATH)).status).toBe(200);
   });
 });
