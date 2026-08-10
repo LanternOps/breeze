@@ -1,10 +1,6 @@
-import {
-  db,
-  getCurrentDbAccessContext,
-  runOutsideDbContext,
-  withSystemDbAccessContext,
-} from '../db';
+import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
+import { policyOwnershipCondition, withPartnerWideVisibility } from './configPolicyOwnership';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -140,26 +136,6 @@ function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
     sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(hierarchy.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
     sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(hierarchy.osType)} = ANY(${configPolicyAssignments.osFilter}))`,
   ];
-}
-
-/**
- * Build the policy-ownership condition for a device's hierarchy.
- *
- * A configuration_policies row resolves for this device when it is owned by
- * the device's own org (the original org-scoped shape) OR owned by the
- * device's partner (org_id NULL, partner_id set — the "partner-wide / all orgs"
- * shape, #1724). breeze_has_org_access / breeze_has_partner_access at the RLS
- * layer still gate visibility; this is the additional "does this policy apply
- * to this device" join predicate.
- *
- * Use this in place of a bare org-equality join on every per-device resolver
- * so partner-owned policies span all of the partner's orgs.
- */
-function policyOwnershipCondition(hierarchy: DeviceHierarchy): SQL {
-  if (hierarchy.partnerId) {
-    return sql`(${configurationPolicies.orgId} = ${hierarchy.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${hierarchy.partnerId}))`;
-  }
-  return sql`${configurationPolicies.orgId} = ${hierarchy.orgId}`;
 }
 
 function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
@@ -529,45 +505,53 @@ export async function resolvePatchConfigDetailsForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      patchSettings: configPolicyPatchSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      configPolicyId: configurationPolicies.id,
-      configPolicyName: configurationPolicies.name,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      assignmentTargetId: configPolicyAssignments.targetId,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context (the agent heartbeat, an org user
+  // token) those rows are invisible and the join silently returns nothing.
+  // Self-tenanted by this device's own hierarchy, so the escape cannot pivot
+  // tenants. Callers on hot paths hoist the whole resolve out of their org
+  // transaction so this opens no second connection.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        patchSettings: configPolicyPatchSettings,
+        featureLinkId: configPolicyFeatureLinks.id,
+        configPolicyId: configurationPolicies.id,
+        configPolicyName: configurationPolicies.name,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        assignmentTargetId: configPolicyAssignments.targetId,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'patch')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'patch')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .innerJoin(
+        configPolicyPatchSettings,
+        eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 
@@ -585,29 +569,6 @@ export async function resolvePatchConfigDetailsForDevice(
     assignmentPriority: winner.assignmentPriority,
     resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
-}
-
-/**
- * Runs a backup POLICY lookup where partner-wide rows must be visible.
- *
- * `configuration_policies` and `backup_profiles` rows owned by a partner have
- * `org_id NULL`, and an org-scoped token never passes `breeze_has_partner_access`
- * — so under a request's RLS context those rows simply do not exist. A backup
- * reader that runs there silently reports "no policy" for partner-linked
- * devices: manual runs fall back to a legacy single-mode job, dashboards call
- * protected devices unprotected. Same trap the heartbeat probe-config hit
- * (#1105); the playbook's answer is a system context.
- *
- * Only the policy/profile joins go through here — they are self-tenanted by the
- * caller-supplied orgId or the device's own hierarchy. Device expansion stays in
- * the caller's context so RLS keeps guarding which devices a caller may see.
- *
- * No-ops when already system-scoped (the scheduler), so the worker doesn't open
- * a second transaction per resolve.
- */
-async function withPartnerWideVisibility<T>(fn: () => Promise<T>): Promise<T> {
-  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
-  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
 /**
