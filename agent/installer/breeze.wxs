@@ -2,6 +2,31 @@
 <?ifndef Version?>
 <?define Version=0.1.0?>
 <?endif?>
+<!-- Installer-identity variables (edition parameterization).
+     ProductName/UpgradeCode default to the ORIGINAL "Hosted" edition's
+     values so a bare `wix build breeze.wxs` (no -d overrides) still
+     produces today's package byte-for-byte identical in identity —
+     existing hosted fleets must keep upgrading via the SAME UpgradeCode.
+     build-msi.ps1's -Edition switch supplies overrides for the
+     "Self-Hosted" edition. OtherUpgradeCode is the UpgradeCode of
+     whichever edition this build is NOT — see the cross-edition Upgrade
+     guard below Package for why it exists and why its default is the
+     Self-Hosted GUID (the complement of the Hosted defaults here). -->
+<?ifndef ProductName?>
+<?define ProductName=Breeze Agent?>
+<?endif?>
+<?ifndef UpgradeCode?>
+<?define UpgradeCode={70A57B7A-4F72-4E18-B8D3-7D2783C2C1A9}?>
+<?endif?>
+<!-- {787838E2-1A3E-4B61-8514-75DD922A6B1B} is the PERMANENT UpgradeCode for
+     the "Self-Hosted" edition, generated once for this parameterization
+     work. It must NEVER change — it is how self-hosted fleets recognize
+     their own upgrade lineage, and it is also the value the Hosted
+     edition's cross-edition guard checks for below (as OtherUpgradeCode's
+     default). -->
+<?ifndef OtherUpgradeCode?>
+<?define OtherUpgradeCode={787838E2-1A3E-4B61-8514-75DD922A6B1B}?>
+<?endif?>
 <?ifndef AgentExePath?>
 <?define AgentExePath=..\breeze-agent-windows-amd64.exe?>
 <?endif?>
@@ -26,10 +51,10 @@
 
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
-    Name="Breeze Agent"
+    Name="$(var.ProductName)"
     Manufacturer="Breeze RMM"
     Version="$(var.Version)"
-    UpgradeCode="{70A57B7A-4F72-4E18-B8D3-7D2783C2C1A9}"
+    UpgradeCode="$(var.UpgradeCode)"
     Scope="perMachine"
     InstallerVersion="500"
     Language="1033">
@@ -59,11 +84,33 @@
          this flag, reinstalling a rebuilt same-version MSI (common with the
          signing-service pipeline) installs SIDE-BY-SIDE: two ARP entries
          both claiming the services, and the eventual uninstall of either
-         one rips the services out from under the survivor. -->
+         one rips the services out from under the survivor.
+
+         Cross-edition guard (OTHEREDITIONFOUND below): Hosted and
+         Self-Hosted are separate PRODUCTS (distinct UpgradeCodes, see the
+         preprocessor block at the top of this file) that install into the
+         exact same paths and claim the exact same service names
+         (BreezeAgent / BreezeWatchdog) — they are NOT upgrade-related to
+         each other, so MajorUpgrade above (which only knows this package's
+         OWN UpgradeCode) does nothing to stop them coexisting. Side-by-side
+         would be the same class of corruption AllowSameVersionUpgrades
+         guards against above (two ARP entries fighting over one set of
+         services/files, whichever uninstalls first yanking them out from
+         under the survivor) — so it must be refused outright in both
+         directions, not merely discouraged. The Upgrade/Launch pair
+         immediately below does that: OnlyDetect="yes" makes it a pure
+         probe (no RemoveExistingProducts action is scheduled for the other
+         product), and the Launch Condition blocks install before any files
+         are touched if the other edition is found. -->
     <MajorUpgrade
       DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallExecute" />
+
+    <Upgrade Id="$(var.OtherUpgradeCode)">
+      <UpgradeVersion Minimum="0.0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="OTHEREDITIONFOUND" />
+    </Upgrade>
+    <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
 
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
