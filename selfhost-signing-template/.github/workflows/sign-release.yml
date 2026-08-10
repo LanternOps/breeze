@@ -324,13 +324,35 @@ jobs:
           $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
           $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
           $msiPath = Join-Path $root "dist\breeze-agent.msi"
-          & (Join-Path $root "breeze\agent\installer\build-msi.ps1") `
+          $buildMsiScript = Join-Path $root "breeze\agent\installer\build-msi.ps1"
+
+          # Build under the self-hosted edition identity (ProductName
+          # "Breeze Agent (Self-Hosted)", its own permanent UpgradeCode) so a
+          # self-signed MSI never collides with a hosted-distribution install
+          # and its upgrade lineage matches the public unsigned self-host MSI
+          # Breeze publishes with the release. -Edition is only present on
+          # build-msi.ps1 from the release that introduced it onward — this
+          # checkout is pinned to the manifest's verified sourceCommit, so an
+          # older release's script simply won't have the parameter. Grep
+          # rather than assume: pass -Edition SelfHost only when it exists;
+          # an older release then builds under the original ("Breeze Agent")
+          # identity, which is what that release actually shipped.
+          $editionArgs = @()
+          if (Select-String -Path $buildMsiScript -Pattern '\$Edition\b' -Quiet) {
+            $editionArgs = @("-Edition", "SelfHost")
+          }
+          else {
+            Write-Host "build-msi.ps1 at this sourceCommit has no -Edition parameter (pre-edition release) — building under the legacy 'Breeze Agent' identity"
+          }
+
+          & $buildMsiScript `
             -Version $env:VERSION `
             -AgentExePath $agentExe `
             -BackupExePath $backupExe `
             -WatchdogExePath $watchdogExe `
             -UserHelperExePath $userHelperExe `
-            -OutputPath $msiPath
+            -OutputPath $msiPath `
+            @editionArgs
           # $ErrorActionPreference does not turn a non-zero *exit* from an
           # external script into a terminating error — only a thrown exception.
           if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 failed with exit code $LASTEXITCODE" }

@@ -471,6 +471,19 @@ file-based key either predates that rule or is internal-only. SmartScreen
 reputation never accrues for internal CAs — pair PFX mode with the
 [AV exclusions](/deploy/antivirus-exceptions/) and GPO trust configuration.
 
+### MSI product identity
+
+The Windows MSI this template builds carries the **self-hosted edition**
+identity: `ProductName` "Breeze Agent (Self-Hosted)" and its own permanent
+`UpgradeCode`, distinct from the `ProductName` "Breeze Agent" that
+hosted-distribution builds use. The two identities can never install over
+each other — that's intentional. The self-hosted `UpgradeCode` is what your
+fleet's upgrade lineage tracks, and it matches the public unsigned self-host
+MSI Breeze publishes with each release, so signing your own copy here keeps
+your fleet on the same upgrade lineage rather than forking it. Signing a
+release from before this edition parameter existed builds the original
+("Breeze Agent") identity, matching what that release actually shipped.
+
 ### Relationship to the fork path
 
 This template signs **official, unmodified** Breeze builds — your
