@@ -41,8 +41,9 @@ import (
 // checked that the sum actually fit under the cap.
 const (
 	// shutdownBudget caps every timed stage in shutdownAgent, combined. The
-	// nominal stage budgets below sum to 17s, leaving 3s of slack before the
-	// clamp starts truncating real work.
+	// nominal stage budgets below sum to 18s, leaving slack before the clamp
+	// starts truncating real work (asserted, not asserted-in-prose, by
+	// TestShutdownStageBudgetsFitShutdownBudget).
 	shutdownBudget = 20 * time.Second
 
 	// componentStopBudget is a shared sub-budget for the OPTIONAL component
@@ -53,6 +54,15 @@ const (
 	// stages need. Each stage is additionally capped at componentStopStage.
 	componentStopBudget = 4 * time.Second
 	componentStopStage  = 2 * time.Second
+
+	// watchdogNotifyBudget bounds the "agent is stopping intentionally" IPC
+	// notify. It is a blocking socket write and ipc.Conn.Send arms a 30s write
+	// deadline, so a watchdog that stopped reading its end could otherwise
+	// park shutdown for longer than the whole stop window before any core
+	// teardown stage began. A local socket write needs milliseconds; anything
+	// beyond this means the peer is gone, and the stopping-state file already
+	// written is the durable signal the watchdog reconciles against.
+	watchdogNotifyBudget = 1 * time.Second
 
 	// Core teardown stages. The ORDER these are invoked in is load-bearing:
 	// drain must stay ahead of the two transport stops, because draining

@@ -36,9 +36,10 @@ func unitTimeoutStopSec(t *testing.T) time.Duration {
 
 // nominalStageBudgets is the worst case shutdownAgent can ask for: the shared
 // component sub-budget (which caps all four optional component stops however
-// many apply) plus every ungated core stage.
+// many apply), the watchdog notify, and every ungated core stage.
 func nominalStageBudgets() time.Duration {
-	return componentStopBudget + drainStageBudget + websocketStopBudget + heartbeatStopBudget
+	return componentStopBudget + watchdogNotifyBudget +
+		drainStageBudget + websocketStopBudget + heartbeatStopBudget
 }
 
 // TestShutdownStageBudgetsFitShutdownBudget is the arithmetic the old comment
@@ -179,10 +180,14 @@ func TestShutdownClockRunCtxStartsStageEvenWhenBudgetExhausted(t *testing.T) {
 // gets less than its nominal budget but still completes. It must not be
 // silently indistinguishable from one that ran with its full allotment.
 func TestShutdownClockLogsSqueezedStage(t *testing.T) {
-	clock := &shutdownClock{deadline: time.Now().Add(50 * time.Millisecond)}
+	// A 2s window against a 5s nominal stage: wide enough that scheduling
+	// delay on a loaded runner can't drive `granted` negative and flake the
+	// test, tight enough that it is unambiguously a squeeze.
+	const window = 2 * time.Second
+	clock := &shutdownClock{deadline: time.Now().Add(window)}
 	granted := clock.stageTimeout(5 * time.Second)
-	if granted <= 0 || granted > 50*time.Millisecond {
-		t.Fatalf("expected a positive squeezed budget under 50ms, got %v", granted)
+	if granted <= 0 || granted > window {
+		t.Fatalf("expected a positive squeezed budget of at most %v, got %v", window, granted)
 	}
 	// logIfSqueezed is the observability seam; assert it fires on exactly the
 	// squeeze condition and stays quiet otherwise.

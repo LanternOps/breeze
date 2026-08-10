@@ -556,10 +556,21 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
 	if broker := comps.hb.SessionBroker(); broker != nil {
 		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-				Reason: state.ReasonUserStop,
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
 			})
 		}
 	}
@@ -577,6 +588,15 @@ func shutdownAgent(comps *agentComponents) {
 	clock.run("websocket stop", websocketStopBudget, comps.wsClient.Stop)
 	clock.run("heartbeat stop", heartbeatStopBudget, comps.hb.Stop)
 
+	// Zeroed unconditionally, including while an abandoned teardown goroutine
+	// may still be running. That goroutine can then read an empty bearer token
+	// and log a single warning instead of authenticating. This is accepted, and
+	// predates the shared budget — runWithTimeout has always abandoned an
+	// overrunning stage and fallen through to here. Wiping the secret is a
+	// hard guarantee at a fixed point in shutdown; the call it degrades is a
+	// best-effort one on a stage we already gave up waiting for, moments
+	// before the process exits. Deferring the wipe to chase it would trade a
+	// security property for a network call that is being dropped anyway.
 	if comps.secureToken != nil {
 		comps.secureToken.Zero()
 	}
