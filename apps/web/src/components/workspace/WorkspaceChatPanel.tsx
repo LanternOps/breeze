@@ -91,7 +91,7 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
       </div>
 
       {/* Cost indicator */}
-      <AiCostIndicator enabled />
+      <AiCostIndicator enabled isStreaming={tab.isStreaming} />
 
       {/* Context badge */}
       {tab.pageContext && (

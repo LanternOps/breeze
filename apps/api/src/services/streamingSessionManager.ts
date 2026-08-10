@@ -341,6 +341,14 @@ export interface ActiveSession {
    */
   pendingTurnUsage: PendingTurnUsage;
   /**
+   * Count of tool calls completed (postToolUse fired) during the current turn.
+   * Fed into recordUsageFromSdkResult's toolExecutionCount so the
+   * `ai_cost_usage.tool_execution_count` rollup actually increments — mirrors
+   * pendingTurnUsage's accumulate-then-flush-on-`result` lifecycle. Reset to 0
+   * after every flush (normal `result` or the abandoned-turn fallback below).
+   */
+  pendingTurnToolExecutionCount: number;
+  /**
    * tool_use id → bare tool name, recorded at content_block_start alongside
    * toolUseIdQueue. Consumed by postToolUse on the normal path, or by the
    * dropped-call fallback in the background processor's 'user' case when the
@@ -580,6 +588,7 @@ export class StreamingSessionManager {
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
+      pendingTurnToolExecutionCount: 0,
       toolUseNames: new Map(),
       processorPromise: Promise.resolve(),
       turnTimeoutId: null,
@@ -1032,6 +1041,8 @@ export class StreamingSessionManager {
             const effectiveUsage = hasTokens(sdkReported) ? sdkReported : session.pendingTurnUsage;
             // Consumed (or superseded by the SDK's own numbers) — reset for the next turn.
             session.pendingTurnUsage = emptyPendingTurnUsage();
+            const turnToolExecutionCount = session.pendingTurnToolExecutionCount;
+            session.pendingTurnToolExecutionCount = 0;
 
             const usageData = {
               total_cost_usd: resultMsg.total_cost_usd ?? 0,
@@ -1044,6 +1055,8 @@ export class StreamingSessionManager {
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.
               model: session.model,
+              // Tool calls completed this turn — feeds ai_cost_usage.tool_execution_count.
+              toolExecutionCount: turnToolExecutionCount,
             };
 
             if (!hasTokens(sdkReported)) {
@@ -1141,9 +1154,11 @@ export class StreamingSessionManager {
       // already spent on model API calls still land in the session counters
       // and org cost aggregates (#3095). Zero after a normal turn — the
       // accumulator is reset when each `result` is recorded.
-      if (hasTokens(session.pendingTurnUsage)) {
+      if (hasTokens(session.pendingTurnUsage) || session.pendingTurnToolExecutionCount > 0) {
         const abandoned = session.pendingTurnUsage;
         session.pendingTurnUsage = emptyPendingTurnUsage();
+        const abandonedToolExecutionCount = session.pendingTurnToolExecutionCount;
+        session.pendingTurnToolExecutionCount = 0;
         // Awaited (not fire-and-forget): the most common abandoned-turn trigger
         // is process shutdown (deploy/SIGTERM), where an untracked promise can
         // be killed before it settles — silently, since even the .catch would
@@ -1163,6 +1178,7 @@ export class StreamingSessionManager {
               },
               num_turns: 1,
               model: session.model,
+              toolExecutionCount: abandonedToolExecutionCount,
             })
           );
         } catch (err) {

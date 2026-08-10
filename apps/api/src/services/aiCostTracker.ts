@@ -438,6 +438,12 @@ export async function recordUsageFromSdkResult(
     num_turns: number;
     /** Model id the SDK ran with. Used to price tokens when total_cost_usd is 0. */
     model?: string;
+    /**
+     * Number of tool calls completed during this turn, for the
+     * `ai_cost_usage.tool_execution_count` rollup. Defaults to 0 — callers that
+     * don't track tool calls (or turns with none) leave the counter untouched.
+     */
+    toolExecutionCount?: number;
   }
 ): Promise<void> {
   if (!orgId) {
@@ -450,6 +456,7 @@ export async function recordUsageFromSdkResult(
     cache_read_input_tokens: cacheReadTokens = 0,
     cache_creation_input_tokens: cacheCreationTokens = 0,
   } = result.usage;
+  const toolExecutionCount = result.toolExecutionCount ?? 0;
 
   // What the `*_input_tokens` COLUMNS store. Kept distinct from the three
   // variables above, which stay split because each is billed at its own rate.
@@ -525,7 +532,7 @@ export async function recordUsageFromSdkResult(
           totalCostCents: costCents,
           sessionCount: 0,
           messageCount: 1,
-          toolExecutionCount: 0
+          toolExecutionCount
         })
         .onConflictDoUpdate({
           target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
@@ -534,6 +541,11 @@ export async function recordUsageFromSdkResult(
             outputTokens: sql`${aiCostUsage.outputTokens} + ${outputTokens}`,
             totalCostCents: sql`${aiCostUsage.totalCostCents} + ${costCents}`,
             messageCount: sql`${aiCostUsage.messageCount} + 1`,
+            // Was missing entirely — every SDK-path turn (the normal chat flow,
+            // as opposed to the sessionless recordUsage() path) upserted this row
+            // without ever touching tool_execution_count, so it stayed 0 forever
+            // even though ai_tool_executions rows were being written correctly.
+            toolExecutionCount: sql`${aiCostUsage.toolExecutionCount} + ${toolExecutionCount}`,
             updatedAt: now
           }
         });

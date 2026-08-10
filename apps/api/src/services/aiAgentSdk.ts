@@ -1544,6 +1544,11 @@ function isScriptApplyTool(toolName: string): boolean {
  */
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed) => {
+    // Count this tool call toward the turn's tool_execution_count rollup
+    // (consumed by streamingSessionManager's `result` handler) regardless of
+    // whether the DB writes below succeed — postToolUse only fires for a tool
+    // that actually ran, which is the event the counter tracks.
+    session.pendingTurnToolExecutionCount += 1;
     const toolUseId = session.toolUseIdQueue.shift();
     if (!toolUseId) {
       console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
