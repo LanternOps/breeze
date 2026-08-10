@@ -20,7 +20,7 @@
 ## Background (current state)
 
 - All signing lives in `.github/workflows/release.yml`: Windows via `azure/artifact-signing-action` (Azure Artifact Signing, formerly Trusted Signing), gated on `vars.ENABLE_WINDOWS_SIGNING` + 6 Azure secrets; macOS via Developer ID + `notarytool`, gated on `vars.ENABLE_MACOS_SIGNING` + 7 Apple secrets.
-- Build order matters on Windows: the signing job **rebuilds** the resource-stamped exes itself (`release.yml:372-395` — agent, backup, watchdog, user-helper), signs them, then `agent/installer/build-msi.ps1` (WiX v4) builds the MSI from them, then the MSI is signed. The generic build-matrix outputs are *not* the exact pre-signing inputs. Same shape on macOS: sign binaries → `build-pkg.sh` → `productsign` → notarize + staple. `Breeze Installer.app` embeds the already-built arch-specific PKGs (`release.yml:1034`).
+- Build order matters on Windows: the signing job **rebuilds** the resource-stamped exes itself (`release.yml:308-425` — agent, backup, watchdog, user-helper), signs them, then `agent/installer/build-msi.ps1` (WiX v4) builds the MSI from them, then the MSI is signed. The generic build-matrix outputs are *not* the exact pre-signing inputs — **on Windows only**; the macOS job never rebuilds, it signs the untouched `build-agent` matrix outputs in place, then `build-pkg.sh` → `productsign` → notarize + staple. `Breeze Installer.app` embeds the already-built arch-specific PKGs (`release.yml:1034`).
 - Release integrity: `release-artifact-manifest.json` (name, sha256, size, `platformTrust` per asset) signed with minisign + raw Ed25519. The API verifies it against `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` and fails closed in production. The manifest generator classifies trust **by file extension** (`release.yml:2088` — every `.exe`/`.msi` → `windows-authenticode-required`), and trust is only enforced where a caller passes an expected value (`releaseArtifactManifest.ts:281`).
 - Release-source identity is fragmented: `binarySource.ts:3` hardcodes `lanternops/breeze` for download URLs; `binarySync.ts:17` separately uses `GITHUB_REPO` (env, default `LanternOps/breeze`) for release sync; `BINARY_GITHUB_REPOSITORY` affects **manifest-repository validation only** and is absent from the config schema and compose env mappings.
 - Agent update trust: github-mode sync stamps assets with `signingKeyId: "release-artifact-manifest-ed25519"` (`binarySync.ts:240`), which agents bind to the **embedded official key** (`agent/internal/updater/updater.go:266`); an ID-bearing response is verified against exactly that one key (`updater.go:637`). The per-deployment Ed25519 key (`manifestSigning.ts`, delivered via enrollment/heartbeat TOFU) is today only used when registering **local** binaries (`binarySync.ts:317`). The embedded official key is always merged into the agent trust set (`updater.go:510`) — it is *not* a source-scoped fallback. `AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID` defaults off.
@@ -53,8 +53,8 @@ Notes:
 
 - **No unsigned `Breeze Installer.app.zip`.** The app embeds the arch-specific PKGs, which the self-hoster produces themselves — their workflow builds the app from the tag-pinned source *after* signing its PKGs.
 - **Manifest modeling:** unsigned inputs get manifest entries with a new field `intendedUse: "signing-input"` and `platformTrust: "none"` — `platformTrust` is not overloaded. The generator's extension-based classification (`release.yml:2088`) must handle the `-unsigned` rule **before** the `.exe`/`.msi` branch.
-- **`sourceCommit`:** the manifest gains the release's `$GITHUB_SHA`, so downstream workflows can bind the tag checkout to the exact signed source revision (tags are movable; the manifest is not).
-- When signing is disabled (`ENABLE_WINDOWS_SIGNING`/`ENABLE_MACOS_SIGNING` false), unsigned uploads still happen — that combination is the eventual end-state for public releases.
+- **`sourceCommit`:** the manifest gains the release's **peeled** commit SHA (`git rev-parse 'HEAD^{commit}'`, not raw `$GITHUB_SHA`, which can name the tag *object* for annotated tags), so downstream workflows can bind the tag checkout to the exact signed source revision (tags are movable; the manifest is not).
+- When signing is disabled (`ENABLE_WINDOWS_SIGNING`/`ENABLE_MACOS_SIGNING` false), the unsigned *capture and upload* still runs — but `release-integrity-gate` still hard-requires the signing jobs on tags, so a signing-disabled tag produces no release at all until rollout step 4 flips that end-state. Phase 1 only makes the capture signing-var-independent.
 - `release-integrity-gate` must not regress: unsigned uploads are additive and must not weaken the platform-trust assertions on the signed set.
 
 ## Deliverable 2 — Template repo `breeze-selfhost-signing`
@@ -90,7 +90,7 @@ All third-party actions pinned to full commit SHAs (same pattern as `release.yml
 
 **`publish`** (needs both, tolerates a skipped platform):
 1. Assemble signed artifacts + `checksums.txt`.
-2. **Mirror every retained canonical asset** from the official release that the API's URL helpers expect — Linux agent/watchdog binaries, viewer/helper assets, install scripts — so a repointed instance doesn't 404 on non-Windows/macOS paths (`binarySync.ts:25`, `binarySource.ts:109`).
+2. **Mirror every retained canonical asset** from the official release that the API's URL helpers expect — Linux agent/backup/watchdog binaries, viewer/helper installers, `latest.json` — so a repointed instance doesn't 404 on non-Windows/macOS paths (source of truth: `binarySync.ts` target arrays + `binarySource.ts` filename maps). Install scripts are *not* release assets — `install.sh` is generated by the API.
 3. Build and sign **their** `release-artifact-manifest.json` (+ `.ed25519`) with their manifest key, same format and `platformTrust` vocabulary the API already understands.
 4. Create release `v${version}` on their repo with everything attached.
 
@@ -128,7 +128,7 @@ Replace expected-value-only checking with a positive allowlist wherever assets a
 
 ### 3d. Recovery media expected hashes
 
-`recoveryMediaService.ts:92` verifies the backup binary against static hashes; a self-signed backup binary has a different hash, so recovery-media verification would fail on BYO deployments. Implementation item: source expected hashes from the active (deployment-verified) release manifest instead of the static table.
+`recoveryMediaService.ts` verifies the backup binary against static hashes (github branch starts ~line 92, static check ~111-118); a self-signed backup binary has a different hash, so recovery-media verification would fail on BYO deployments. Implementation item: in github mode, source expected hashes from the active (deployment-verified) release manifest instead of the static table. **Scope decision (plan phase):** local mode (T2) has no verified manifest, so the static table + existing `BINARY_CHECKSUM_MANIFEST` override remain its path — unchanged behavior.
 
 ### Supported topologies (documented)
 
