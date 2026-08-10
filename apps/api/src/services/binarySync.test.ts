@@ -1211,13 +1211,15 @@ describe("binarySync", () => {
     });
   });
 
-  it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
+  it("upserts local agent binaries with the full 5-column conflict target (regression: #617; extended with edition)", async () => {
     // The agent_versions table has a UNIQUE constraint on
-    // (version, platform, architecture, component). The local-binary path used
-    // to omit `component`, so Postgres rejected the upsert with
+    // (version, platform, architecture, component, edition). The local-binary
+    // path used to omit `component`, so Postgres rejected the upsert with
     // "no unique or exclusion constraint matching the ON CONFLICT
     // specification" and the wrapping transaction rolled back, leaving
-    // agent_versions empty after every API restart.
+    // agent_versions empty after every API restart. `edition` was added
+    // later (BYO signing follow-up) to let two editions of the same version
+    // coexist — the conflict target must include it too.
     process.env.BINARY_SOURCE = "local";
     process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
     process.env.BINARY_VERSION_FILE = "/fake/version";
@@ -1234,7 +1236,181 @@ describe("binarySync", () => {
     );
     expect(targets.length).toBeGreaterThan(0);
     for (const target of targets) {
-      expect(target).toHaveLength(4);
+      expect(target).toHaveLength(5);
     }
+  });
+
+  describe("edition stamping (BYO signing follow-up)", () => {
+    it("stamps local-scan registrations with this server's own BINARY_EDITION", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+      fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "hosted" }),
+      );
+    });
+
+    it("defaults local-scan registrations to self-host when BINARY_EDITION is unset", async () => {
+      process.env.BINARY_SOURCE = "local";
+      delete process.env.BINARY_EDITION;
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+      fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("stamps a GitHub-sync registration with the manifest asset's edition claim", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: [
+            {
+              name: "breeze-agent-linux-amd64",
+              sha256: createHash("sha256").update(asset).digest("hex"),
+              size: asset.length,
+              platformTrust: "release-workflow-produced",
+              edition: "self-host",
+            },
+          ],
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+
+      process.env.BINARY_SOURCE = "github";
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "breeze-agent-linux-amd64",
+                  browser_download_url: "https://example.com/breeze-agent-linux-amd64",
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json",
+                  size: manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json.ed25519",
+                  size: signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("release-artifact-manifest.json")) return new Response(manifest);
+        if (url.endsWith("release-artifact-manifest.json.ed25519")) return new Response(signature);
+        if (url.endsWith("breeze-agent-linux-amd64")) return new Response(asset);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await syncFromGitHub();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("refuses to register a GitHub-sourced asset labeled edition hosted", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: [
+            {
+              name: "breeze-agent-linux-amd64",
+              sha256: createHash("sha256").update(asset).digest("hex"),
+              size: asset.length,
+              platformTrust: "release-workflow-produced",
+              edition: "hosted",
+            },
+          ],
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+
+      process.env.BINARY_SOURCE = "github";
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "breeze-agent-linux-amd64",
+                  browser_download_url: "https://example.com/breeze-agent-linux-amd64",
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json",
+                  size: manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json.ed25519",
+                  size: signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("release-artifact-manifest.json")) return new Response(manifest);
+        if (url.endsWith("release-artifact-manifest.json.ed25519")) return new Response(signature);
+        if (url.endsWith("breeze-agent-linux-amd64")) return new Response(asset);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // getReleaseAssetMetadata's edition check runs OUTSIDE the per-asset
+      // try/catch that wraps upsertVersion, so this fails the whole sync call
+      // rather than silently skipping just this asset — a hosted-labeled
+      // asset showing up in a public release manifest is a defense-in-depth
+      // tripwire, not a routine skip.
+      await expect(syncFromGitHub()).rejects.toThrow(
+        /must never be fetched from a public GitHub release/,
+      );
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
   });
 });

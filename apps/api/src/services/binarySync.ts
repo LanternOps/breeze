@@ -13,6 +13,7 @@ import {
   isReleaseArtifactManifestVerificationConfigured,
   verifyReleaseArtifactManifestAsset,
 } from "./releaseArtifactManifest";
+import { EDITION_SELF_HOST, assertGithubFetchableEdition } from "./releaseAssetTrust";
 import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
 import {
   getReleaseSourceApiBase,
@@ -231,11 +232,14 @@ async function getReleaseAssetMetadata(args: {
   releaseManifest?: string;
   manifestSignature?: string;
   signingKeyId?: string;
+  edition: string;
 } | null> {
   if (!args.trustedManifest) {
     const checksum = args.fallbackChecksums?.get(args.asset.name);
     if (!checksum) return null;
-    return { checksum, size: args.asset.size };
+    // Legacy checksums.txt fallback (non-production only) predates the
+    // edition field entirely — same default as an unset manifest field.
+    return { checksum, size: args.asset.size, edition: EDITION_SELF_HOST };
   }
 
   const verified = await verifyReleaseArtifactManifestAsset({
@@ -245,6 +249,12 @@ async function getReleaseAssetMetadata(args: {
     expectedRepository: getReleaseSourceRepository(),
     expectedRelease: args.releaseTag,
   });
+
+  // Defense in depth: this whole function only runs inside the GitHub sync
+  // flow, so an asset labeled edition "hosted" here would mean a hosted
+  // artifact somehow ended up in a public release manifest — refuse it
+  // outright rather than register it.
+  assertGithubFetchableEdition({ assetName: args.asset.name, edition: verified.edition });
 
   if (verified.size !== args.asset.size) {
     throw new Error(
@@ -258,6 +268,7 @@ async function getReleaseAssetMetadata(args: {
     releaseManifest: args.trustedManifest.manifest,
     manifestSignature: args.trustedManifest.signature,
     signingKeyId: "release-artifact-manifest-ed25519",
+    edition: verified.edition ?? EDITION_SELF_HOST,
   };
 }
 
@@ -328,6 +339,10 @@ async function registerLocalBinaries(args: {
   // the GitHub-source path (upsertVersion) so both registration paths behave
   // identically regardless of component.
   const autoPromote = getAgentAutoPromote();
+  // A locally-scanned binary carries no per-asset edition claim of its own
+  // (unlike a manifest-covered asset — see registerFromOfficialManifest
+  // below), so it's stamped with this SERVER's own configured edition.
+  const edition = getBinaryEdition();
 
   await db.transaction(async (tx) => {
     for (const bin of binaries) {
@@ -346,7 +361,7 @@ async function registerLocalBinaries(args: {
       const releaseManifest = JSON.stringify(manifestObj);
       const manifestSignature = await signManifest(releaseManifest);
 
-      // Demote existing "isLatest" entries for this platform/arch/component.
+      // Demote existing "isLatest" entries for this platform/arch/component/edition.
       if (autoPromote) {
         await tx
           .update(agentVersions)
@@ -356,6 +371,7 @@ async function registerLocalBinaries(args: {
               eq(agentVersions.platform, bin.platform),
               eq(agentVersions.architecture, bin.architecture),
               eq(agentVersions.component, component),
+              eq(agentVersions.edition, edition),
               eq(agentVersions.isLatest, true),
             ),
           );
@@ -376,15 +392,17 @@ async function registerLocalBinaries(args: {
           releaseManifest,
           manifestSignature,
           signingKeyId: keyId,
+          edition,
         })
         .onConflictDoUpdate({
           // Match the actual unique constraint
-          // (version, platform, architecture, component).
+          // (version, platform, architecture, component, edition).
           target: [
             agentVersions.version,
             agentVersions.platform,
             agentVersions.architecture,
             agentVersions.component,
+            agentVersions.edition,
           ],
           set: {
             downloadUrl,
@@ -865,6 +883,7 @@ type UpsertMetadata = {
   releaseManifest?: string;
   manifestSignature?: string;
   signingKeyId?: string;
+  edition: string;
 };
 
 // Spec 3b: when syncing from an OVERRIDDEN repository, the release manifest is
@@ -909,6 +928,7 @@ async function applyDeploymentSigning(args: {
     releaseManifest,
     manifestSignature,
     signingKeyId: keyId,
+    edition: metadata.edition,
   };
 }
 
@@ -934,6 +954,7 @@ async function upsertVersion(
   // from the conflict `set` so an existing promoted row keeps its target.
   // When auto-promote is on (default) behavior is byte-for-byte unchanged.
   const autoPromote = getAgentAutoPromote();
+  const edition = signedMetadata.edition;
   await db.transaction(async (tx) => {
     if (autoPromote) {
       await tx
@@ -944,6 +965,7 @@ async function upsertVersion(
             eq(agentVersions.platform, platform),
             eq(agentVersions.architecture, arch),
             eq(agentVersions.component, component),
+            eq(agentVersions.edition, edition),
             eq(agentVersions.isLatest, true),
           ),
         );
@@ -964,6 +986,7 @@ async function upsertVersion(
         releaseNotes: releaseNotes ?? null,
         isLatest: autoPromote,
         component,
+        edition,
       })
       .onConflictDoUpdate({
         target: [
@@ -971,6 +994,7 @@ async function upsertVersion(
           agentVersions.platform,
           agentVersions.architecture,
           agentVersions.component,
+          agentVersions.edition,
         ],
         set: {
           downloadUrl,
