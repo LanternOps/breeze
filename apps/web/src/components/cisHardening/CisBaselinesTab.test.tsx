@@ -40,6 +40,18 @@ vi.mock('./CisBaselineForm', () => ({
   default: () => null
 }));
 
+// The shared partner-wide capability gate (#2135). Mocked rather than driven
+// through a forged JWT because the real hook reads useAuthStore out of the auth
+// module this file already replaces.
+const ownerScopeState: {
+  isPartnerScope: boolean;
+  defaultOwnerScope: 'organization' | 'partner';
+} = { isPartnerScope: false, defaultOwnerScope: 'organization' };
+
+vi.mock('@/hooks/useDefaultOwnerScope', () => ({
+  useDefaultOwnerScope: () => ownerScopeState
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function listUrl(): string {
@@ -52,6 +64,7 @@ const TWO_ORGS = [{ id: 'org-1', name: 'Acme' }, { id: 'org-2', name: 'Globex' }
 const baseline: Baseline = {
   id: 'baseline-1',
   orgId: 'org-1',
+  partnerId: null,
   name: 'CIS Windows L1',
   osType: 'windows',
   level: 'l1',
@@ -60,6 +73,23 @@ const baseline: Baseline = {
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-01T00:00:00.000Z'
 };
+
+const partnerWideBaseline: Baseline = {
+  ...baseline,
+  id: 'baseline-2',
+  orgId: null,
+  partnerId: 'partner-1',
+  name: 'CIS Windows L2 (fleet)'
+};
+
+/** Answers the list endpoint with `rows` and nothing else. */
+function mockList(rows: Baseline[]): void {
+  fetchWithAuthMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({ data: rows })
+  } as unknown as Response);
+}
 
 /** Lists one active baseline, then answers POST /cis/scan with `scan`
  *  (the route's real success is a 202 with no row-visible effect). */
@@ -83,6 +113,8 @@ describe('CisBaselinesTab org scoping', () => {
     orgStoreState.allOrgs = false;
     orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
     orgStoreState.organizationsLoaded = true;
+    ownerScopeState.isPartnerScope = false;
+    ownerScopeState.defaultOwnerScope = 'organization';
     showToast.mockClear();
     fetchWithAuthMock.mockReset();
     fetchWithAuthMock.mockResolvedValue({
@@ -246,5 +278,85 @@ describe('CisBaselinesTab org scoping', () => {
     const button = screen.getByRole('button', { name: /new baseline/i });
     expect(button).toBeDisabled();
     expect(button).not.toHaveAttribute('title');
+  });
+});
+
+// Ownership axis (#2135): cis_baselines is now org XOR partner owned.
+describe('CisBaselinesTab partner-wide ownership', () => {
+  beforeEach(() => {
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizations = [{ id: 'org-1', name: 'Acme' }];
+    orgStoreState.organizationsLoaded = true;
+    ownerScopeState.isPartnerScope = false;
+    ownerScopeState.defaultOwnerScope = 'organization';
+    showToast.mockClear();
+    fetchWithAuthMock.mockReset();
+    mockList([]);
+  });
+
+  // Partner-wide rows carry no org, so nothing else on the row hints that
+  // editing one changes every organization under the partner.
+  it('badges a partner-wide baseline as All orgs', async () => {
+    mockList([partnerWideBaseline]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('CIS Windows L2 (fleet)')).toBeInTheDocument());
+    expect(screen.getByTestId('cis-baseline-partner-wide-badge')).toBeInTheDocument();
+  });
+
+  // Negative control: the badge must key on partnerId, not merely render for
+  // every row.
+  it('does not badge an org-owned baseline', async () => {
+    mockList([baseline]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('CIS Windows L1')).toBeInTheDocument());
+    expect(screen.queryByTestId('cis-baseline-partner-wide-badge')).not.toBeInTheDocument();
+  });
+
+  // Only one row of a mixed list is partner-wide, so a badge rendered off the
+  // list rather than off the row would show up twice.
+  it('badges only the partner-wide row in a mixed list', async () => {
+    mockList([baseline, partnerWideBaseline]);
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('CIS Windows L1')).toBeInTheDocument());
+    expect(screen.getAllByTestId('cis-baseline-partner-wide-badge')).toHaveLength(1);
+  });
+
+  // The single-org rule only binds users who cannot create partner-wide. A
+  // partner-wide create needs no org, so fleet view is a valid place to start
+  // one and the "select an organization" hint would be wrong advice.
+  it('enables New Baseline in fleet view for a multi-org partner with the capability', async () => {
+    ownerScopeState.isPartnerScope = true;
+    orgStoreState.currentOrgId = null;
+    orgStoreState.allOrgs = true;
+    orgStoreState.organizations = TWO_ORGS;
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const button = screen.getByRole('button', { name: /new baseline/i });
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute('title');
+  });
+
+  // The capability must not leak the create into the unresolved window — there
+  // is still no answer to "who owns this" before the org context settles.
+  it('keeps New Baseline disabled for a capable partner while context loads', async () => {
+    ownerScopeState.isPartnerScope = true;
+    orgStoreState.currentOrgId = null;
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizationsLoaded = false;
+    orgStoreState.organizations = [];
+
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: /new baseline/i })).toBeDisabled();
   });
 });

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Loader2, Pencil, Play, Plus } from 'lucide-react';
+import { Layers, Loader2, Pencil, Play, Plus } from 'lucide-react';
 import { cn, friendlyFetchError } from '@/lib/utils';
 import { runAction, ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '@/stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import CisBaselineForm from './CisBaselineForm';
 import type { Baseline } from './types';
 
@@ -25,16 +26,22 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
   const { t } = useTranslation(['security', 'common']);
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const orgCount = useOrgStore((s) => s.organizations.length);
-  // Baselines are org-owned (cis_baselines.org_id is NOT NULL), so creating one
-  // needs a concrete org. In fleet view the API still auto-resolves the org for
-  // a partner that manages exactly one, so only a partner with a real choice to
-  // make is blocked — gating on `scope === 'org'` alone would lock single-org
-  // partners out of a create the server would have accepted.
+  // An ORG-OWNED baseline needs a concrete org. In fleet view the API still
+  // auto-resolves the org for a partner that manages exactly one, so only a
+  // partner with a real choice to make is blocked — gating on `scope === 'org'`
+  // alone would lock single-org partners out of a create the server would have
+  // accepted. Since #2135 that is no longer the whole story: a partner-scope
+  // user can also create a PARTNER-WIDE baseline (org_id NULL), which needs no
+  // org at all, so the multi-org fleet block does not apply to them. The form
+  // owns the org-vs-partner choice; this gate only decides whether there is a
+  // creatable owner at all.
   const scope = useOrgScope();
-  const canCreate = scope.scope === 'org' || (scope.scope === 'all' && orgCount === 1);
+  const { isPartnerScope } = useDefaultOwnerScope();
+  const canCreate =
+    scope.scope === 'org' || (scope.scope === 'all' && (orgCount === 1 || isPartnerScope));
   // Distinct from the not-yet-resolved and zero-org states, where telling the
   // user to "select an organization" is advice they cannot act on.
-  const needsOrgChoice = scope.scope === 'all' && orgCount > 1;
+  const needsOrgChoice = scope.scope === 'all' && orgCount > 1 && !isPartnerScope;
   const [baselines, setBaselines] = useState<Baseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -172,7 +179,25 @@ export default function CisBaselinesTab({ refreshKey, onMutate }: CisBaselinesTa
             ) : (
               baselines.map((bl) => (
                 <tr key={bl.id} className="text-sm">
-                  <td className="px-4 py-3 font-medium">{bl.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <div className="flex items-center gap-2">
+                      <span>{bl.name}</span>
+                      {/* Partner-wide rows carry no org, so the org column the
+                          tech is used to reading says nothing about their reach
+                          — the badge is the only signal that editing this one
+                          changes every organization. */}
+                      {bl.partnerId !== null && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary"
+                          title={t('cisHardeningCisBaselinesTab.badges.partnerWideTitle')}
+                          data-testid="cis-baseline-partner-wide-badge"
+                        >
+                          <Layers className="h-3 w-3" />
+                          {t('cisHardeningCisBaselinesTab.badges.allOrgs')}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 uppercase text-muted-foreground">{bl.osType}</td>
                   <td className="px-4 py-3">
                     <span

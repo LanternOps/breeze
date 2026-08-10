@@ -1659,6 +1659,10 @@
     "status": {
       "active": "Active",
       "inactive": "Inactive"
+    },
+    "badges": {
+      "allOrgs": "Toutes les orgs",
+      "partnerWideTitle": "Base de référence à l’échelle du partenaire — s’applique aux appareils de chaque organisation"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1699,6 +1703,12 @@
       "cancel": "Annuler",
       "saving": "Enregistrement...",
       "save": "Enregistrer"
+    },
+    "ownership": {
+      "scope": "Portée",
+      "allOrganizations": "Toutes les organisations",
+      "partnerWideBaselineParenthetical": "(base de référence à l’échelle du partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
     }
   },
   "cisHardeningCisRemediationsTab": {

@@ -5,6 +5,7 @@ import {
   cisBaselines,
   cisRemediationActions,
   devices,
+  organizations,
 } from '../db/schema';
 import { queueCommand } from '../services/commandQueue';
 import { normalizeCisSchedule } from '../services/cisHardening';
@@ -135,6 +136,55 @@ async function processScheduleScans(): Promise<{ enqueued: number }> {
   return { enqueued };
 }
 
+/**
+ * The devices a CIS baseline governs (#2135). Exported because this is the
+ * fan-out rule, and its failure mode is silent: for a partner-wide baseline
+ * `eq(devices.orgId, baseline.orgId)` compiles to `org_id = NULL`, which
+ * matches zero rows and scans nothing without raising anything. An
+ * integration test drives this directly against real Postgres.
+ *
+ * Org-owned  -> devices in that one org.
+ * Partner-wide -> devices in EVERY org under the owning partner, including
+ *                 orgs created after the baseline.
+ *
+ * Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
+ * the hidden per-partner 'quick_support' org and are a stranger's personal
+ * machine borrowed for one ~20-minute session. That org stays inside
+ * technicians' accessibleOrgIds for RLS reasons, so this sweep is NOT filtered
+ * for us — running a CIS hardening scan against a home PC is never intended.
+ * The partner-wide branch makes this MORE important, not less: it sweeps every
+ * org under the partner, which is exactly where quick_support orgs live.
+ */
+export async function selectCisScanTargetDevices(
+  baseline: Pick<typeof cisBaselines.$inferSelect, 'orgId' | 'partnerId' | 'osType'>,
+  deviceIds?: string[] | null,
+): Promise<Array<{ id: string; orgId: string }>> {
+  const ownerCondition = baseline.partnerId
+    ? inArray(
+        devices.orgId,
+        db.select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, baseline.partnerId))
+      )
+    : eq(devices.orgId, baseline.orgId!);
+
+  const deviceConditions = [
+    ownerCondition,
+    eq(devices.isEphemeral, false),
+    eq(devices.osType, baseline.osType),
+    ne(devices.status, 'decommissioned'),
+  ];
+
+  if (Array.isArray(deviceIds) && deviceIds.length > 0) {
+    deviceConditions.push(inArray(devices.id, deviceIds));
+  }
+
+  return db
+    .select({ id: devices.id, orgId: devices.orgId })
+    .from(devices)
+    .where(and(...deviceConditions));
+}
+
 async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
   baselineId: string;
   devicesTargeted: number;
@@ -160,38 +210,24 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
     };
   }
 
-  // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
-  // the hidden per-partner 'quick_support' org and are a stranger's personal
-  // machine borrowed for one ~20-minute session. That org stays inside
-  // technicians' accessibleOrgIds for RLS reasons, so this sweep is NOT filtered
-  // for us — running a CIS hardening scan against a home PC is never intended.
-  const deviceConditions = [
-    eq(devices.orgId, baseline.orgId),
-    eq(devices.isEphemeral, false),
-    eq(devices.osType, baseline.osType),
-    ne(devices.status, 'decommissioned'),
-  ];
-
-  if (Array.isArray(data.deviceIds) && data.deviceIds.length > 0) {
-    deviceConditions.push(inArray(devices.id, data.deviceIds));
-  }
-
-  const rows = await db
-    .select({ id: devices.id })
-    .from(devices)
-    .where(and(...deviceConditions));
+  const rows = await selectCisScanTargetDevices(baseline, data.deviceIds);
 
   let commandsQueued = 0;
-  const uniqueDeviceIds = Array.from(new Set(rows.map((row) => row.id)));
-  for (const deviceId of uniqueDeviceIds) {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
     try {
       await queueCommand(
-        deviceId,
+        row.id,
         CIS_SCAN_COMMAND,
         {
           source: 'cis_hardening',
           baselineId: baseline.id,
-          orgId: baseline.orgId,
+          // The DEVICE's org, never the baseline's: a partner-wide baseline
+          // has none, and the result rows this payload produces are tenanted
+          // to the device (cis_baseline_results.org_id is NOT NULL).
+          orgId: row.orgId,
           benchmarkVersion: baseline.benchmarkVersion,
           level: baseline.level,
           customExclusions: baseline.customExclusions ?? [],
@@ -200,14 +236,14 @@ async function processRunBaselineScan(data: RunBaselineScanJobData): Promise<{
       );
       commandsQueued++;
     } catch (error) {
-      console.error(`[CisJobs] processRunBaselineScan: failed to queue command for device ${deviceId}:`, error);
+      console.error(`[CisJobs] processRunBaselineScan: failed to queue command for device ${row.id}:`, error);
       captureException(error);
     }
   }
 
   return {
     baselineId: baseline.id,
-    devicesTargeted: uniqueDeviceIds.length,
+    devicesTargeted: seen.size,
     commandsQueued,
   };
 }

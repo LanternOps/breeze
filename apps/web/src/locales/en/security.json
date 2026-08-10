@@ -1659,6 +1659,10 @@
     "status": {
       "active": "Active",
       "inactive": "Inactive"
+    },
+    "badges": {
+      "allOrgs": "All orgs",
+      "partnerWideTitle": "Partner-wide baseline — applies to devices in every organization"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1699,6 +1703,12 @@
       "cancel": "Cancel",
       "saving": "Saving...",
       "save": "Save"
+    },
+    "ownership": {
+      "scope": "Scope",
+      "allOrganizations": "All organizations",
+      "partnerWideBaselineParenthetical": "(partner-wide baseline)",
+      "thisOrganizationOnly": "This organization only"
     }
   },
   "cisHardeningCisRemediationsTab": {

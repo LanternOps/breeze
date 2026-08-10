@@ -5,6 +5,30 @@
 **Table:** `cis_baselines` — currently `org_id uuid NOT NULL` (`apps/api/src/db/schema/cisHardening.ts:63`), no partner axis.
 **Goal:** an MSP defines one CIS benchmark baseline and it applies to every org under the partner, including orgs created later.
 
+## Implementation status (updated 2026-08-10)
+
+| Phase | State | Notes |
+|---|---|---|
+| 1 Migration | **done** | `2026-08-10-cis-baselines-partner-ownership.sql`; Q1 read branch included |
+| 2 Schema + registration lists | **done** | export policy + `DUAL_AXIS_TENANT_TABLES`; cascade lists needed no edit, as predicted |
+| 3 Write paths | **done** | `ownerScope` on create; `(id, orgId)` lookup replaced with owner-aware auth |
+| 4 Read paths | **done** | `baselineVisibilityCondition()`; explicit `?orgId=` no longer excludes partner-wide |
+| 5 Fan-out | **done** | extracted `selectCisScanTargetDevices()`; command payload re-tenanted to the device |
+| 6 Agent ingest | **done** | system-context lookup; owner-aware guard; result + both events take the device's org |
+| 7 Config-policy linkage | **done (no change)** | Q3 decided; verified CIS appears nowhere in `configurationPolicy.ts` |
+| 8 Web UI | **in progress** | ownerScope selector + "All orgs" badge |
+| 9 Tests | **done** | `cisBaselinesPartnerRls.integration.test.ts`, 14 cases, fan-out mutation-checked |
+| 10 Sweep | **done** | see below; also caught `POST /cis/remediate` and the `apply_cis_remediation` AI tool |
+
+Two findings worth recording against the plan's predictions:
+
+- **The typechecker did most of Phase 5/6 discovery.** Making `org_id` nullable turned
+  `eq(devices.orgId, baseline.orgId)` and both `publishEvent(..., baseline.orgId, ...)` calls
+  into compile errors. The plan expected these to need manual hunting.
+- **"Neither axis set" fails 42501, not 23514.** RLS rejects it before the CHECK is evaluated:
+  with both columns NULL neither branch of the WITH CHECK can match. The test asserts what
+  actually fires.
+
 ---
 
 ## 0. Verdict — is the partner axis a good fit here?

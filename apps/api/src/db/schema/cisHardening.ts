@@ -12,7 +12,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
@@ -58,9 +58,20 @@ export type CisScanSchedule = {
   nextScanAt: string | null;
 };
 
+// Dual-ownership (epic #2135): a baseline belongs to EITHER one org
+// (org_id set, partner_id NULL) or a whole partner (partner_id set, org_id
+// NULL — "applies to all my orgs"). Exactly one axis is set; the CHECK
+// constraint `cis_baselines_one_owner_chk` (migration 2026-08-10) enforces it.
+// Mirrors security_policies / software_policies.
+//
+// NOTE the child tables below keep `org_id` NOT NULL on purpose: results and
+// remediation actions are tenanted to the DEVICE's org, never the baseline's.
+// A partner-wide baseline has no org, so deriving a child's org from
+// `baseline.orgId` would write NULL into a NOT NULL column.
 export const cisBaselines = pgTable('cis_baselines', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 200 }).notNull(),
   osType: cisOsTypeEnum('os_type').notNull(),
   benchmarkVersion: varchar('benchmark_version', { length: 200 }).notNull(),
@@ -74,6 +85,8 @@ export const cisBaselines = pgTable('cis_baselines', {
 }, (table) => ({
   orgOsIdx: index('cis_baselines_org_os_idx').on(table.orgId, table.osType),
   orgActiveIdx: index('cis_baselines_org_active_idx').on(table.orgId, table.isActive),
+  partnerIdx: index('cis_baselines_partner_id_idx').on(table.partnerId),
+  partnerOsIdx: index('cis_baselines_partner_os_idx').on(table.partnerId, table.osType),
 }));
 
 export const cisBaselineResults = pgTable('cis_baseline_results', {
