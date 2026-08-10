@@ -32,8 +32,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * Mapping a var in costs nothing when the operator leaves it unset: the
  * `${VAR:-}` form passes an empty string, which every consumer below treats as
  * "unset" and falls back to its own default. Where a consumer did NOT treat ''
- * that way, the consumer was fixed rather than the var left unmapped — see the
- * cookie helpers' firstConfiguredEnv() (#3239).
+ * that way, the consumer was fixed rather than the var left unmapped — see
+ * resolveAuthCookieSameSite() in routes/auth/helpers.ts, which resolves its
+ * override chain with nested envStr() instead of `??` for exactly this reason
+ * (#3239).
  */
 
 // Variables intentionally NOT threaded into the self-host (root) stack's
@@ -130,6 +132,15 @@ const PAIRS: Pair[] = [
  * Only `# NAME=` is collected, not prose. A comment has to look like an
  * assignment to count, so ordinary explanatory text above a var is not mistaken
  * for a documented knob.
+ *
+ * Prose that OPENS with `# SOME_VAR=value` — e.g. the sentence at
+ * `.env.example` "# OAUTH_DCR_ALLOW_ANONYMOUS=true. The API refuses to boot…" —
+ * does match, and that is the deliberate bias. Such a line is indistinguishable
+ * from a real documented default without parsing English, and this guard exists
+ * to fail LOUD: a spurious hit costs one allow-list line, while the miss it
+ * would otherwise permit is a knob that silently ignores the operator forever.
+ * (That particular line is a no-op anyway — the var is genuinely documented a
+ * few lines below and the Set de-duplicates.)
  */
 export function parseDocumentedVars(text: string): string[] {
   const names = new Set<string>();
