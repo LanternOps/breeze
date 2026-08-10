@@ -315,6 +315,14 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 }
 
 export type CustomerInvoiceLine = {
+  /**
+   * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
+   * created before the name/description split, where `description` holds the
+   * title — the portal renders `name ?? description` as the title and shows
+   * `description` as a sub-line only when `name` is set, exactly like
+   * invoicePdf's lineTitle/lineBlurb.
+   */
+  name: string | null;
   description: string;
   quantity: string;
   unitPrice: string;
@@ -356,7 +364,12 @@ type CustomerInvoiceLineSource = {
 /** Explicit serialization boundary: never spread an invoice_lines row here. */
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
-    description: line.description ?? line.name ?? '',
+    // Carry BOTH fields (#3319). This previously collapsed to
+    // `description ?? name`, which is the INVERSE of the fallback every other
+    // renderer uses, so a line with both set showed the customer only the
+    // blurb and never the title.
+    name: line.name ?? null,
+    description: line.description ?? '',
     quantity: line.quantity,
     unitPrice: line.unitPrice,
     taxable: line.taxable,

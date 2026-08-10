@@ -251,9 +251,17 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
               <tbody>
                 {lines.map((l, index) => {
                   const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
+                  // Title/blurb split (#3319), matching invoicePdf's lineTitle/
+                  // lineBlurb so the portal and the PDF the customer receives
+                  // label the same line identically.
+                  const title = (l.name ?? l.description ?? '').trim() || '—';
+                  const blurb = l.name ? (l.description ?? '').trim() : '';
                   return (
-                  <tr key={`${l.description}-${index}`} className="border-b align-top last:border-0">
-                    <td className="px-4 py-3 text-foreground sm:px-5">{l.description}</td>
+                  <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
+                    <td className="px-4 py-3 text-foreground sm:px-5">
+                      {title}
+                      {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                    </td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>
                     {showTax && <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{tax === null ? '—' : money(tax, currency)}</td>}
