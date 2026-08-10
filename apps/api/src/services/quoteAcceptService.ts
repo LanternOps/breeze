@@ -199,7 +199,13 @@ export async function acceptQuote(
       // Dropping `name` here made every converted invoice look like a legacy
       // line, so an accepted "Onboarding & network setup" line showed only its
       // blurb on the invoice and PDF.
-      name: l.name ?? null,
+      //
+      // Blank-normalized, not just null-coalesced: the renderers key the blurb
+      // off `name` being truthy, so a name of '' would render the title as '—'
+      // AND suppress the description — losing BOTH labels. '' is reachable
+      // because the line validators allow an empty string. Storing NULL makes
+      // such a line a well-formed legacy line instead.
+      name: l.name?.trim() || null,
       description: l.description,
       quantity: l.quantity,
       unitPrice: l.unitPrice,

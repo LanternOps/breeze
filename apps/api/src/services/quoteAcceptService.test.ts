@@ -328,6 +328,31 @@ describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
     expect(invoiceLineValues()).toMatchObject({ name: null, description: 'Legacy widget' });
   });
 
+  it('carries a name-only line (no description) without inventing a blurb', async () => {
+    // The most common catalog shape: a title and no separate blurb.
+    queueAcceptHappyPath({}, { name: 'Firewall replacement', description: null });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toMatchObject({ name: 'Firewall replacement', description: null });
+  });
+
+  it.each([['', 'empty'], ['   ', 'whitespace-only']])(
+    'normalizes a %s name to null so the renderer cannot lose BOTH labels',
+    async (blankName) => {
+      // The renderers derive blurb from `name` being truthy, so a '' name would
+      // render the title as '—' and suppress the description entirely.
+      queueAcceptHappyPath({}, { name: blankName, description: 'Real description survives' });
+
+      await acceptQuote(baseParams);
+
+      expect(invoiceLineValues()).toMatchObject({
+        name: null,
+        description: 'Real description survives',
+      });
+    },
+  );
+
   it('normalizes an undefined name to null rather than omitting the column', async () => {
     const { line } = queueAcceptHappyPath();
     delete (line as Record<string, unknown>).name;
