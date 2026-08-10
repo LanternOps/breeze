@@ -31,7 +31,7 @@
  */
 import './setup';
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { getTestDb } from './setup';
@@ -250,6 +250,11 @@ describe('oauth revocation retry conflict branch — real Postgres (#3369)', () 
       })
       .onConflictDoUpdate({
         target: [oauthRevocationRetries.markerType, oauthRevocationRetries.markerId],
+        // The unique index is PARTIAL (`WHERE completed_at IS NULL`), so the
+        // predicate is required for Postgres to infer the arbiter index —
+        // without it the statement fails 42P10 before the SET list is ever
+        // evaluated. Mirrors `writeOAuthRevocationMarkerDurably`.
+        targetWhere: isNull(oauthRevocationRetries.completedAt),
         set: buildRetryConflictUpdate({
           attemptedAt,
           expiresAt: new Date('2026-03-15T14:00:00.000Z'),
@@ -290,6 +295,11 @@ describe('oauth revocation retry conflict branch — real Postgres (#3369)', () 
       })
       .onConflictDoUpdate({
         target: [oauthRevocationRetries.markerType, oauthRevocationRetries.markerId],
+        // The unique index is PARTIAL (`WHERE completed_at IS NULL`), so the
+        // predicate is required for Postgres to infer the arbiter index —
+        // without it the statement fails 42P10 before the SET list is ever
+        // evaluated. Mirrors `writeOAuthRevocationMarkerDurably`.
+        targetWhere: isNull(oauthRevocationRetries.completedAt),
         set: buildRetryConflictUpdate({
           attemptedAt,
           expiresAt: new Date('2026-03-15T15:00:00.000Z'),
