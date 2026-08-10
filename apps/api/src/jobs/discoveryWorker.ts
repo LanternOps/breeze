@@ -30,10 +30,10 @@ import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import {
   buildClassificationWrite,
-  detectionSourceRank,
   type DiscoveredAssetDetectionSource,
 } from '../services/discoveredAssetClassification';
 import type { discoveredAssetTypeEnum } from '../db/schema';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { buildEventFingerprint } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -865,12 +865,19 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       // row inside the UPDATE, never from the SELECT above, because both can
       // change in between (a user saving a manual type mid-scan is precisely the
       // race #3011 was about).
-      const updateSet: Record<string, unknown> = { ...assetData };
+      // Typed against the real column list, and the classification columns are
+      // assigned one at a time: drizzle silently DROPS set keys that name no
+      // column, and `Object.assign` would defeat the check (its signature does
+      // not constrain the source's keys to the target's).
+      const updateSet: PgUpdateSetSource<typeof discoveredAssets> = { ...assetData };
       if (classification) {
-        Object.assign(updateSet, buildClassificationWrite(classification.source, {
+        const write = buildClassificationWrite(classification.source, {
           assetType: sql`${classification.type}`,
           detectedAssetType: sql`${classification.type}`,
-        }));
+        });
+        updateSet.assetType = write.assetType;
+        updateSet.detectedAssetType = write.detectedAssetType;
+        updateSet.detectedTypeSource = write.detectedTypeSource;
       }
       await db
         .update(discoveredAssets)
@@ -949,35 +956,37 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               .where(eq(discoveredAssets.id, upsertedAssetId));
             autoLinkedDeviceId = match.deviceId;
 
-            // Propagate asset type to linked device (discovery > auto, but not > manual).
-            // Skip propagation when the asset type was manually overridden so the
-            // scan's classification doesn't silently diverge from the user's choice,
-            // and skip it when this scan's classifier was outranked — otherwise the
-            // OUI guess the asset row just rejected would leak onto the device role
-            // anyway and reintroduce the flap one table over (#3187).
+            // Mirror the asset's type onto the linked device (discovery > auto,
+            // but never > manual).
             //
-            // Unlike the asset write above, this decision is made from the JS
-            // pre-read rather than in SQL. device_role is a denormalised
-            // convenience field on a different table, so it cannot share the
-            // asset's UPDATE, and losing a race here costs at most a stale role
-            // until the next scan — not a flapping user-visible type.
-            const classificationApplied = !!classification
-              && existing?.typeSource !== 'manual'
-              && (!existing?.detectedTypeSource
-                || detectionSourceRank(existing.detectedTypeSource) <= detectionSourceRank(classification.source));
-
-            if (classification && classificationApplied) {
-              const [target] = await db
-                .select({ deviceRoleSource: devices.deviceRoleSource })
-                .from(devices)
-                .where(eq(devices.id, match.deviceId))
-                .limit(1);
-
-              if (target && target.deviceRoleSource !== 'manual') {
-                await db.update(devices)
-                  .set({ deviceRole: classification.type, deviceRoleSource: 'discovery', updatedAt: new Date() })
-                  .where(eq(devices.id, match.deviceId));
-              }
+            // The value is read back OUT OF THE ASSET ROW inside this statement
+            // rather than taken from `classification`. The asset write above is
+            // precedence-guarded in SQL, so the type that actually landed may not
+            // be the one this scan proposed — propagating our own guess would put
+            // the rejected value on the device and reintroduce the flap one table
+            // over (#3187). Reading the settled value instead means every scan
+            // re-converges device_role on the asset, so a device can never be
+            // stranded on a stale role by a classifier that is now outranked.
+            //
+            // Both guards are in the statement too, for the same reason the asset
+            // write's are: `existing` was read before the asset UPDATE and a user
+            // can pin a type in between. This also replaces the separate SELECT
+            // that used to fetch device_role_source, so the whole propagation is
+            // now one statement. IS DISTINCT FROM rather than <>: the column is
+            // NOT NULL DEFAULT 'auto' today, but a null-safe comparison keeps the
+            // carve-out correct if that ever relaxes.
+            if (classification) {
+              await db.update(devices)
+                .set({
+                  deviceRole: sql`(select ${discoveredAssets.assetType} from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId})`,
+                  deviceRoleSource: 'discovery',
+                  updatedAt: new Date(),
+                })
+                .where(and(
+                  eq(devices.id, match.deviceId),
+                  sql`${devices.deviceRoleSource} is distinct from 'manual'`,
+                  sql`exists (select 1 from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId} and ${discoveredAssets.typeSource} <> 'manual' and ${discoveredAssets.assetType} <> 'unknown')`,
+                ));
             }
           }
         }

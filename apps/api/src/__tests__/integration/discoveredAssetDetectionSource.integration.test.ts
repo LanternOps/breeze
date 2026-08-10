@@ -26,15 +26,48 @@
  * with it.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { createPartner, createOrganization, createSite } from './db-utils';
-import { discoveredAssets } from '../../db/schema';
+import { discoveredAssets, devices } from '../../db/schema';
+import { unifiIntegrations, unifiSiteMappings, unifiDevices } from '../../db/schema/unifi';
 import {
   buildClassificationWrite,
   DISCOVERED_ASSET_DETECTION_SOURCES,
   type DiscoveredAssetDetectionSource,
 } from '../../services/discoveredAssetClassification';
+
+const MIGRATION_FILE = join(
+  __dirname,
+  '../../../migrations/2026-08-20-discovered-asset-detection-source.sql',
+);
+
+/**
+ * Pull JUST the backfill `DO $$ ... END $$;` block out of the shipped
+ * migration file, rather than retyping it, so the test is pinned to the
+ * ACTUAL SQL that ships — an inverted `IS NULL`, a wrong join column, or a
+ * dropped `detected_asset_type IS NOT NULL` guard fails this test without
+ * anyone having to remember to update a hand-copied statement.
+ *
+ * The file has exactly two `DO $$` blocks: the first `CREATE TYPE`, the
+ * second the backfill. `lastIndexOf` picks the second; the sanity assertions
+ * in the test below guard against this slicing silently drifting if the file
+ * is ever restructured.
+ */
+function extractBackfillBlock(migrationSql: string): string {
+  const start = migrationSql.lastIndexOf('DO $$');
+  if (start === -1) {
+    throw new Error(`no "DO $$" block found in ${MIGRATION_FILE}`);
+  }
+  const endMarker = 'END $$;';
+  const endIdx = migrationSql.indexOf(endMarker, start);
+  if (endIdx === -1) {
+    throw new Error(`no closing "END $$;" found after backfill DO block in ${MIGRATION_FILE}`);
+  }
+  return migrationSql.slice(start, endIdx + endMarker.length);
+}
 
 const DEVICE_IP = '10.88.0.7';
 const DEVICE_MAC = 'aa:bb:cc:77:88:99';
@@ -231,6 +264,111 @@ describe('discovered_assets classifier precedence (#3187)', () => {
     }
   });
 
+  it('the database enum has no member the rank map does not know about', async () => {
+    // The reverse direction of the test above, and the one that actually bites:
+    // a migration can add a label to `discovered_asset_detection_source` without
+    // touching the TS union, and NOTHING would fail loudly. Rows carrying the
+    // unknown label would then fall to `else 0` in the rank CASE — ranked below
+    // every real source — so the weakest classifier could overwrite what should
+    // have been protected. That is #3187 reintroduced through enum drift, and it
+    // is silent. The Record<> in discoveredAssetClassification.ts only catches
+    // the TS-side omission; this catches the SQL side.
+    const db = getTestDb() as any;
+    const rows = await db.execute(sql`
+      select e.enumlabel::text as label
+        from pg_enum e
+        join pg_type t on t.oid = e.enumtypid
+       where t.typname = 'discovered_asset_detection_source'
+    `);
+    const dbLabels = (rows as Array<{ label: string }>).map((r) => r.label).sort();
+    expect(dbLabels.length).toBeGreaterThan(0);
+    expect(dbLabels).toEqual([...DISCOVERED_ASSET_DETECTION_SOURCES].sort());
+  });
+
+  it('the device_role mirror reads the asset row and honours both manual axes', async () => {
+    // discoveryWorker propagates the linked device's `device_role` with a
+    // subquery that reads `discovered_assets.asset_type` back out, rather than
+    // writing the type the scan proposed. Postgres is what makes that correct —
+    // the mocked worker suite can only prove we built such a statement — so
+    // drive the real statement shape here.
+    const db = getTestDb() as any;
+    const { org, site } = await seedOrg();
+
+    const propagate = (assetId: string, deviceId: string) =>
+      db.execute(sql`
+        update devices
+           set device_role = (select asset_type from discovered_assets where id = ${assetId}),
+               device_role_source = 'discovery'
+         where id = ${deviceId}
+           and device_role_source is distinct from 'manual'
+           and exists (
+             select 1 from discovered_assets
+              where id = ${assetId}
+                and type_source <> 'manual'
+                and asset_type <> 'unknown'
+           )
+      `);
+
+    // devices.device_role is NOT NULL DEFAULT 'unknown' and device_role_source
+    // NOT NULL DEFAULT 'auto', so an untouched device reads 'unknown'/'auto'.
+    let deviceSeq = 0;
+    const makeDevice = async (overrides: Record<string, unknown> = {}) => {
+      deviceSeq += 1;
+      const [row] = await db
+        .insert(devices)
+        .values({
+          orgId: org.id,
+          siteId: site.id,
+          agentId: `agent-role-${deviceSeq}-${Date.now()}`,
+          hostname: `role-host-${deviceSeq}`,
+          osType: 'windows',
+          osVersion: '11',
+          architecture: 'x86_64',
+          agentVersion: '0.0.0-test',
+          ...overrides,
+        })
+        .returning({ id: devices.id });
+      return row;
+    };
+    const roleOf = async (id: string) => {
+      const [row] = await db
+        .select({ deviceRole: devices.deviceRole })
+        .from(devices)
+        .where(eq(devices.id, id));
+      return row.deviceRole;
+    };
+
+    // 1. Happy path: the device takes the asset's SETTLED type.
+    const okAsset = await seedAsset(org.id, site.id, {
+      assetType: 'switch', typeSource: 'auto',
+      detectedAssetType: 'switch', detectedTypeSource: 'unifi_controller',
+    });
+    const okDevice = await makeDevice();
+    await propagate(okAsset.id, okDevice.id);
+    expect(await roleOf(okDevice.id)).toBe('switch');
+
+    // 2. A device whose role a user pinned is never touched.
+    const pinnedDevice = await makeDevice({ deviceRole: 'server', deviceRoleSource: 'manual' });
+    await propagate(okAsset.id, pinnedDevice.id);
+    expect(await roleOf(pinnedDevice.id)).toBe('server');
+
+    // 3. A manually-typed ASSET does not push its type onto the device either.
+    const manualAsset = await seedAsset(org.id, site.id, {
+      ipAddress: '10.88.1.10', macAddress: null,
+      assetType: 'nas', typeSource: 'manual',
+    });
+    const untouched = await makeDevice();
+    await propagate(manualAsset.id, untouched.id);
+    expect(await roleOf(untouched.id)).toBe('unknown');
+
+    // 4. An unclassified asset ('unknown') never overwrites a real role.
+    const unknownAsset = await seedAsset(org.id, site.id, {
+      ipAddress: '10.88.1.11', macAddress: null, assetType: 'unknown', typeSource: 'auto',
+    });
+    await propagate(unknownAsset.id, okDevice.id);
+    expect(await roleOf(okDevice.id)).toBe('switch');
+  });
+
   it('the guard survives concurrent writers because it is evaluated at write time', async () => {
     const db = getTestDb() as any;
     const { org, site } = await seedOrg();
@@ -256,5 +394,109 @@ describe('discovered_assets classifier precedence (#3187)', () => {
       .from(discoveredAssets)
       .where(and(eq(discoveredAssets.orgId, org.id), eq(discoveredAssets.id, asset.id)));
     expect(count).toBe(1);
+  });
+});
+
+describe('2026-08-20-discovered-asset-detection-source.sql backfill (#3187)', () => {
+  /**
+   * CI databases are migrated schema-fresh in globalSetup, so this migration's
+   * backfill has only ever run against zero rows there — a green migration
+   * says nothing about whether the UPDATE's WHERE clause is actually correct.
+   * This replays the real, shipped `DO $$ ... END $$` block (extracted from
+   * disk, not retyped) against seeded fixtures that predate the column.
+   */
+
+  async function seedUnifiChain() {
+    const db = getTestDb() as any;
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+
+    const [integration] = await db
+      .insert(unifiIntegrations)
+      .values({ partnerId: partner.id, apiKeyEncrypted: 'test-backfill-key' })
+      .returning({ id: unifiIntegrations.id });
+
+    const [mapping] = await db
+      .insert(unifiSiteMappings)
+      .values({
+        integrationId: integration.id,
+        orgId: org.id,
+        siteId: site.id,
+        unifiHostId: 'host-backfill',
+        unifiSiteId: 'usite-backfill',
+      })
+      .returning();
+
+    return { org, site, integration, mapping };
+  }
+
+  async function linkUnifiDevice(
+    assetId: string,
+    ctx: { org: { id: string }; site: { id: string }; integration: { id: string }; mapping: { id: string } },
+    unifiDeviceId: string,
+  ) {
+    const db = getTestDb() as any;
+    await db.insert(unifiDevices).values({
+      orgId: ctx.org.id,
+      siteId: ctx.site.id,
+      integrationId: ctx.integration.id,
+      mappingId: ctx.mapping.id,
+      discoveredAssetId: assetId,
+      unifiDeviceId,
+      raw: { id: unifiDeviceId },
+    });
+  }
+
+  it('backfills only the linked-and-classified rows the migration comment promises', async () => {
+    const backfillBlock = extractBackfillBlock(readFileSync(MIGRATION_FILE, 'utf8'));
+    // Pin that we sliced the real UPDATE, not an empty or unrelated block.
+    expect(backfillBlock).toContain("SET detected_type_source = 'unifi_controller'");
+    expect(backfillBlock).toContain('unifi_devices');
+    expect(backfillBlock).toContain('detected_type_source IS NULL');
+
+    const ctx = await seedUnifiChain();
+
+    // (a) linked + classified + NULL source → the migration's target case.
+    const linkedClassified = await seedAsset(ctx.org.id, ctx.site.id, {
+      ipAddress: '10.89.0.1',
+      macAddress: 'aa:bb:cc:11:22:01',
+      detectedAssetType: 'switch',
+      detectedTypeSource: null,
+    });
+    await linkUnifiDevice(linkedClassified.id, ctx, 'ud-backfill-a');
+
+    // (b) linked but never classified — no provenance to attribute, must stay NULL.
+    const linkedUnclassified = await seedAsset(ctx.org.id, ctx.site.id, {
+      ipAddress: '10.89.0.2',
+      macAddress: 'aa:bb:cc:11:22:02',
+      detectedAssetType: null,
+      detectedTypeSource: null,
+    });
+    await linkUnifiDevice(linkedUnclassified.id, ctx, 'ud-backfill-b');
+
+    // (c) classified but no unifi_devices link at all — must stay NULL.
+    const unlinked = await seedAsset(ctx.org.id, ctx.site.id, {
+      ipAddress: '10.89.0.3',
+      macAddress: 'aa:bb:cc:11:22:03',
+      detectedAssetType: 'router',
+      detectedTypeSource: null,
+    });
+
+    // (d) already carries a detection source — the `IS NULL` guard must not overwrite it.
+    const alreadyClassified = await seedAsset(ctx.org.id, ctx.site.id, {
+      ipAddress: '10.89.0.4',
+      macAddress: 'aa:bb:cc:11:22:04',
+      detectedAssetType: 'access_point',
+      detectedTypeSource: 'vendor_oui',
+    });
+    await linkUnifiDevice(alreadyClassified.id, ctx, 'ud-backfill-d');
+
+    await getTestDb().execute(sql.raw(backfillBlock));
+
+    expect((await readAsset(linkedClassified.id)).detectedTypeSource).toBe('unifi_controller');
+    expect((await readAsset(linkedUnclassified.id)).detectedTypeSource).toBeNull();
+    expect((await readAsset(unlinked.id)).detectedTypeSource).toBeNull();
+    expect((await readAsset(alreadyClassified.id)).detectedTypeSource).toBe('vendor_oui');
   });
 });

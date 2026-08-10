@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
-import { buildClassificationWrite } from '../discoveredAssetClassification';
+import { buildClassificationWrite, type ClassificationWrite } from '../discoveredAssetClassification';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
 
@@ -66,7 +66,21 @@ function unifiToBreezeDeviceType(
 // drizzle silently DROPS set keys that don't name a column — so a typo in a
 // bare object literal would compile, pass the mocked tests, and no-op at
 // runtime. Naming the type restores that check.
+//
+// The check only holds for keys assigned DIRECTLY (`set.foo = …`) or written as
+// a literal. `Object.assign(set, obj)` is typed `(target: T, source: U) => T & U`
+// and does NOT constrain U's keys to T's, so spreading a helper's return through
+// it compiles even when a key names no column — which is why the classification
+// columns below are assigned one at a time rather than merged.
 type AssetWriteSet = PgUpdateSetSource<typeof discoveredAssets>;
+
+// Apply the guarded classification columns to a write set, one property at a
+// time so each is checked against AssetWriteSet's real column keys.
+function applyClassification(target: AssetWriteSet, write: ClassificationWrite): void {
+  target.assetType = write.assetType;
+  target.detectedAssetType = write.detectedAssetType;
+  target.detectedTypeSource = write.detectedTypeSource;
+}
 
 // Find-or-create a discovered_assets row for a UniFi device; return its id.
 async function reconcileDiscoveredAsset(
@@ -137,7 +151,7 @@ async function reconcileDiscoveredAsset(
   if (existing) {
     const updateSet: AssetWriteSet = { ...enrich };
     if (classified) {
-      Object.assign(updateSet, buildClassificationWrite('unifi_controller', {
+      applyClassification(updateSet, buildClassificationWrite('unifi_controller', {
         assetType: sql`${classified}`,
         detectedAssetType: sql`${classified}`,
       }));
@@ -152,7 +166,7 @@ async function reconcileDiscoveredAsset(
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
   const conflictSet: AssetWriteSet = { ...enrich };
   if (classified) {
-    Object.assign(conflictSet, buildClassificationWrite('unifi_controller', {
+    applyClassification(conflictSet, buildClassificationWrite('unifi_controller', {
       assetType: sql.raw(`excluded.${discoveredAssets.assetType.name}`),
       detectedAssetType: sql.raw(`excluded.${discoveredAssets.detectedAssetType.name}`),
     }));
