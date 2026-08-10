@@ -13,6 +13,22 @@ const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
 
+// Default pass-through behaviour for withSystemDbAccessContext — extracted so
+// it can be reinstalled via mockImplementationOnce for calls a test doesn't
+// care about, while a specific call (targeted by ordering) is made to reject.
+// A `vi.fn()` (rather than a bare async function) is required so a test can
+// override ONE of the several withSystemDbAccessContext call sites in
+// heartbeat.ts (agent-update-policy lookup, policy-probe config, onedrive
+// settings, the #2930 shared policy-config block, helper settings) without
+// touching the others.
+const systemDbAccessContextPassthrough = async (fn: () => Promise<unknown>) => {
+  callOrder.push('systemCtx:enter');
+  const result = await fn();
+  callOrder.push('systemCtx:exit');
+  return result;
+};
+const withSystemDbAccessContextMock = vi.fn(systemDbAccessContextPassthrough);
+
 vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
@@ -30,17 +46,15 @@ vi.mock('../../db', () => ({
     callOrder.push('dbContext:released');
     return result;
   },
-  // Pass-through: the effective agent-update-policy lookup (#2123, BEFORE the
-  // org block) and the policy-probe read (AFTER it) both run in a system
-  // context. Invoke the callback so the mocked getOrgAgentUpdatePolicy /
-  // buildPolicyProbeConfigUpdate still run, and record enter/exit so tests can
-  // assert the update-policy context opens AND closes before the org context.
-  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => {
-    callOrder.push('systemCtx:enter');
-    const result = await fn();
-    callOrder.push('systemCtx:exit');
-    return result;
-  },
+  // Pass-through by default: the effective agent-update-policy lookup (#2123,
+  // BEFORE the org block), the policy-probe read, the onedrive settings read,
+  // the shared #2930 policy-config block, and the helper-settings read all run
+  // in a system context, in that order. Invoke the callback so the mocked
+  // resolvers still run, and record enter/exit so tests can assert ordering
+  // relative to the org context. A `vi.fn()` so an individual test can swap in
+  // a rejection for exactly one call site via mockImplementationOnce.
+  withSystemDbAccessContext: (...args: unknown[]) =>
+    withSystemDbAccessContextMock(...(args as [() => Promise<unknown>])),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -2103,6 +2117,154 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const configUpdate = body.configUpdate as Record<string, unknown> | null;
     expect(configUpdate?.onedrive_helper_settings).toBeUndefined();
     expect(configUpdate?.patch_source_settings).toEqual({ exclusiveWindowsUpdate: true });
+  });
+
+  // #2930 coverage gap — event_log_settings and monitoring_settings were only
+  // ever exercised via their vi.fn(() => undefined) defaults; the delivery and
+  // resolver-throws paths were untested even though patch_source_settings
+  // (the sibling resolver in the same shared policy-config block) had both.
+  it('includes event_log_settings in configUpdate when the resolver succeeds', async () => {
+    const { buildEventLogConfigUpdate } = await import('./helpers');
+    const settings = {
+      max_events_per_cycle: 250,
+      collect_categories: ['security', 'system'],
+      minimum_level: 'warning',
+      collection_interval_minutes: 15,
+    };
+    vi.mocked(buildEventLogConfigUpdate).mockResolvedValueOnce(settings);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.event_log_settings).toEqual(settings);
+  });
+
+  it('omits event_log_settings when the resolver throws (no unintended revert)', async () => {
+    const { buildEventLogConfigUpdate } = await import('./helpers');
+    vi.mocked(buildEventLogConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.event_log_settings).toBeUndefined();
+  });
+
+  it('includes monitoring_settings in configUpdate when the resolver succeeds', async () => {
+    const { buildMonitoringConfigUpdate } = await import('./helpers');
+    const settings = {
+      check_interval_seconds: 60,
+      watches: [
+        {
+          watch_type: 'process',
+          name: 'agent-watch',
+          alert_on_stop: true,
+          alert_after_consecutive_failures: 2,
+          auto_restart: true,
+          max_restart_attempts: 3,
+          restart_cooldown_seconds: 30,
+        },
+      ],
+    };
+    vi.mocked(buildMonitoringConfigUpdate).mockResolvedValueOnce(settings as any);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.monitoring_settings).toEqual(settings);
+  });
+
+  it('omits monitoring_settings when the resolver throws (no unintended revert)', async () => {
+    const { buildMonitoringConfigUpdate } = await import('./helpers');
+    vi.mocked(buildMonitoringConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.monitoring_settings).toBeUndefined();
+  });
+
+  // Existing coverage only exercised the `false` default and the
+  // resolver-throws fail-closed path; the successful opt-in delivery was
+  // never asserted.
+  it('delivers uacInterceptionEnabled: true when buildPamConfigUpdate resolves true', async () => {
+    const { buildPamConfigUpdate } = await import('./helpers');
+    vi.mocked(buildPamConfigUpdate).mockResolvedValueOnce({ uacInterceptionEnabled: true });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.uacInterceptionEnabled).toBe(true);
+  });
+
+  // #2930 — the shared policy-config block (event_log / monitoring / pam /
+  // patch_source) runs AFTER the org transaction has already committed and
+  // its claimed commands are marked delivered. If the outer try/catch around
+  // `withSystemDbAccessContext(...)` were removed, a transaction setup/commit
+  // failure here (e.g. pool exhaustion under #1105-style connection pressure)
+  // would escape as an unhandled rejection and 500 the heartbeat — losing
+  // those already-delivered commands for no benefit, since every field this
+  // block produces is re-resolved on the next heartbeat anyway. This test
+  // pins the fail-safe: only the shared policy-config context is made to
+  // reject (targeted by call order — it is the 4th of 5 withSystemDbAccessContext
+  // calls per heartbeat: #2123 update-policy, policy-probe, onedrive, THIS
+  // ONE, then helper-settings), and the response must still be 200 with all
+  // four policy config keys omitted and uacInterceptionEnabled defaulted to
+  // false, with the failure reported to Sentry.
+  it('returns 200 and omits all four policy config keys when the shared policy-config system context itself fails', async () => {
+    const { captureException } = await import('../../services/sentry');
+
+    withSystemDbAccessContextMock
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // #2123 update-policy lookup
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // policy-probe config
+      .mockImplementationOnce(systemDbAccessContextPassthrough) // onedrive settings
+      .mockImplementationOnce(async () => {
+        throw new Error('shared policy-config system context failed');
+      }); // #2930 shared policy-config block — the one under test
+    // 5th call (helper settings) falls back to the default pass-through.
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.event_log_settings).toBeUndefined();
+    expect(configUpdate?.monitoring_settings).toBeUndefined();
+    expect(configUpdate?.patch_source_settings).toBeUndefined();
+    expect(body.uacInterceptionEnabled).toBe(false);
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
   });
 });
 

@@ -427,4 +427,53 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       expect(patchQ.exclusiveWindowsUpdate).toBe(false);
     });
   });
+
+  describe('status gating: a partner-owned policy that is not active must not resolve', () => {
+    // resolveDeviceEventLogSettings filters on
+    // `eq(configurationPolicies.status, 'active')` in the SAME query as the
+    // partner-wide join predicate — a regression that widened
+    // policyOwnershipCondition without preserving this filter would let a
+    // withdrawn/paused partner-wide policy keep reaching agents. The status
+    // enum (config_policy_status) has no 'draft' value — 'inactive' is the
+    // non-active state a partner uses to pull a policy without deleting it.
+    it('buildEventLogConfigUpdate falls back to EVENT_LOG_DEFAULTS for an inactive partner-owned policy', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      // Distinctive value (not the 100 default) — if this resolved despite
+      // being inactive, the assertion below would catch it explicitly rather
+      // than passing coincidentally.
+      const DISTINCTIVE_MAX_EVENTS = 555;
+      const policyId = await withDbAccessContext(SYSTEM_CTX, async () => {
+        const [policy] = await db
+          .insert(configurationPolicies)
+          .values({
+            orgId: null,
+            partnerId: partner.id,
+            name: `event_log inactive policy ${randomUUID()}`,
+            status: 'inactive',
+          })
+          .returning();
+        createdPolicies.push(policy!.id);
+        const [link] = await db
+          .insert(configPolicyFeatureLinks)
+          .values({ configPolicyId: policy!.id, featureType: 'event_log' })
+          .returning();
+        await db.insert(configPolicyEventLogSettings).values({
+          featureLinkId: link!.id,
+          maxEventsPerCycle: DISTINCTIVE_MAX_EVENTS,
+        });
+        return policy!.id;
+      });
+      await assign(policyId, 'partner', partner.id);
+
+      const result = await withDbAccessContext(orgContext(org!.id), () => buildEventLogConfigUpdate(device.id));
+
+      expect(result.max_events_per_cycle).toBe(EVENT_LOG_DEFAULTS.maxEventsPerCycle);
+      expect(result.max_events_per_cycle).not.toBe(DISTINCTIVE_MAX_EVENTS);
+    });
+  });
 });

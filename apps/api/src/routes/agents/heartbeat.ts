@@ -1256,16 +1256,22 @@ if (latestHelper) {
       let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
       let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
 
+      // Sentry on all four, not just pam/patch_source. Losing an event_log or
+      // monitoring policy is precisely the invisible failure #2930 is about:
+      // the agent keeps collecting on stale defaults and nothing surfaces it.
+      // A stdout line is not an alerting channel.
       try {
         eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
+        captureException(err);
       }
 
       try {
         monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
+        captureException(err);
       }
 
       try {
