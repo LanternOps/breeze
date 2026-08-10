@@ -271,6 +271,10 @@ services:
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-}
+      # BYO signing: override the GitHub repository that releases are pulled
+      # from (default lanternops/breeze). Pair with
+      # RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS set to YOUR release manifest key.
+      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
       # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
       # without touching their .env. Hosted operators must set IS_HOSTED=true
       # in .env so this interpolates to true. The API config validator (#570)

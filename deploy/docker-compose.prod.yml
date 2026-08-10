@@ -217,6 +217,7 @@ services:
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:?Set RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS in .env}
+      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
       # Hosted SaaS gate (#570). This template is for hosted deploys, so
       # IS_HOSTED is required-explicit — operators must set it in .env.
       # Misconfiguration here silently drops new partners to status='active'

@@ -499,6 +499,21 @@ const envObjectSchema = z
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_NAME: z.string().optional(),
     BINARY_SOURCE: z.string().optional(),
+    // BYO signing (spec 3a): the release-source repository override consumed by
+    // services/releaseSource.ts. Empty string means "unset" — both compose
+    // files map it as `${BINARY_GITHUB_REPOSITORY:-}`, which always injects the
+    // key. Shape is validated in EVERY environment so a typo'd override
+    // boot-refuses instead of silently building garbage GitHub URLs.
+    BINARY_GITHUB_REPOSITORY: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
+          'BINARY_GITHUB_REPOSITORY must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        )
+        .optional(),
+    ),
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
@@ -1112,6 +1127,27 @@ const envSchema = envObjectSchema
           path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
           message:
             'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS must be set in production for both BINARY_SOURCE=github (verifies installer fallback assets against the signed release manifest) and BINARY_SOURCE=local (anchors per-deployment update manifests; without a trust root, agents accept unsigned manifests).',
+        });
+      }
+
+      // BYO signing (spec 3a): pointing the deployment at a NON-official
+      // release repository only makes sense with a manifest trust root that is
+      // the OVERRIDING repository's release key — without one, github-mode
+      // sync would either fail closed on every release or (if the blanket
+      // production key rule above were ever relaxed) accept unverified
+      // third-party binaries. Kept as its own rule with its own message even
+      // though the blanket rule currently subsumes the "unset" case.
+      const releaseRepositoryOverride = data.BINARY_GITHUB_REPOSITORY?.trim().toLowerCase();
+      if (
+        releaseRepositoryOverride &&
+        releaseRepositoryOverride !== 'lanternops/breeze' &&
+        !hasReleaseArtifactManifestPublicKey(data)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['BINARY_GITHUB_REPOSITORY'],
+          message:
+            'BINARY_GITHUB_REPOSITORY overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository\'s release manifest public key (NOT the official Breeze key).',
         });
       }
 
