@@ -1614,7 +1614,7 @@
         "placeholders": {
           "name": "Cisco Core",
           "vendor": "Cisco",
-          "deviceType": "Kernschalter",
+          "deviceType": "Core-Switch",
           "description": "Switches mit hohem Durchsatz und mehreren Uplinks",
           "oidName": "Systemverfügbarkeit",
           "oidDescription": "Was dieser OID misst"

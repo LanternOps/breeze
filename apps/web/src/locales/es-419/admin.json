@@ -257,13 +257,13 @@
         "testQueued": "Prueba en cola para {{name}}. Encuesta para obtener resultados..."
       },
       "prompt": {
-        "runSmokeTest": "¿Ejecutar la prueba de humo para {{name}} en qué versión?"
+        "runSmokeTest": "¿En qué versión desea ejecutar la prueba de verificación de {{name}}?"
       },
       "platformAdmin": {
         "title": "Se requiere acceso de administrador a la plataforma",
         "prefix": "El catálogo de terceros lo administran los administradores de la plataforma Breeze. su cuenta",
         "role": "un administrador de organización/socio",
-        "suffix": "Puede ver el catálogo seleccionado a través de flujos de parches normales, pero no puede editarlo directamente."
+        "suffix": "Puede ver el catálogo administrado mediante los flujos normales de parches, pero no puede editarlo directamente."
       },
       "table": {
         "vendor": "Proveedor",
@@ -291,7 +291,7 @@
       },
       "actions": {
         "retest": "Volver a probar",
-        "runSmokeTest": "Ejecutar prueba de humo",
+        "runSmokeTest": "Ejecutar prueba de verificación",
         "edit": "Editar",
         "delete": "Eliminar"
       }

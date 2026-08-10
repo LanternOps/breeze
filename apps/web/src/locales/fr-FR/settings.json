@@ -2434,7 +2434,7 @@
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
     "noOrganization": {
       "title": "Aucune organisation sélectionnée",
-      "description": "Veuillez sélectionner une organisation depuis le commutateur dans l’en-tête pour voir les paramètres."
+      "description": "Veuillez sélectionner une organisation dans le sélecteur de l’en-tête pour afficher les paramètres."
     },
     "actions": {
       "save": "Enregistrer",

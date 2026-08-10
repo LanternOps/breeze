@@ -1,7 +1,7 @@
 {
   "vulnerabilityLandingPage": {
     "title": "Vulnerabilidades",
-    "subtitle": "Exposición CVE de flota agrupada para clasificación: remediar, aceptar riesgo o multar."
+    "subtitle": "Exposición de la flota a CVE, agrupada para su clasificación: corregir, aceptar el riesgo o crear un ticket."
   },
   "createVulnTicketModal": {
     "title": "Crear ticket",
@@ -283,9 +283,9 @@
       },
       "patchReady": {
         "label": "Parche listo",
-        "detail": "{{count}} abre hallazgos con un parche disponible",
+        "detail": "{{count}} hallazgos abiertos con un parche disponible",
         "detail_one": "{{count}} hallazgo abierto con un parche disponible",
-        "detail_other": "{{count}} abre hallazgos con un parche disponible"
+        "detail_other": "{{count}} hallazgos abiertos con un parche disponible"
       },
       "acceptedExpiring": {
         "label": "Aceptado, expirará pronto.",

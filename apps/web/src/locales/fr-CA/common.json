@@ -583,7 +583,7 @@
     "org": {
       "allOrganizations": "Toutes les organisations",
       "selectTitle": "Organisation sélectionnée (Cmd+O)",
-      "switching": "Échanger...",
+      "switching": "Changement en cours…",
       "organizations": "Organisations",
       "noneAvailable": "Aucune organisation disponible",
       "status": {
@@ -754,9 +754,9 @@
           "removedLabel": "Supprimé :",
           "title": "Réviser le texte soigné",
           "warningDescription": "Notre vérification automatique pense qu’un numéro, une mesure ou un code a pu changer. Comparez attentivement l’avant/après — l’IA peut reformuler des textes, mais elle ne doit pas modifier une spécification, un prix ou un modèle.",
-          "warningTitle": "⚠️ Vérifiez bien les détails avant de postuler."
+          "warningTitle": "⚠️ Vérifiez attentivement les détails avant d’appliquer les modifications."
         },
-        "title": "Corrigez la formulation avec l’IA — vos chiffres et spécifications restent ; Consultez la prévisualisation avant de postuler"
+        "title": "Améliorez la formulation avec l’IA sans modifier vos chiffres ni vos spécifications ; consultez l’aperçu avant d’appliquer les modifications"
       }
     },
     "monitors": {
@@ -2018,7 +2018,7 @@
             "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes, utilisateurs ou paramètres."
           },
           "switchOrgs": {
-            "title": "Organisations de changement",
+            "title": "Changer d’organisation",
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {

@@ -1595,7 +1595,7 @@
     "failingDevices": "Dispositifs défaillants",
     "activeBaselines": "Lignes de base actives",
     "pendingRemediations": "En attente de remédiations",
-    "pendingRemediationsTooltip": "Des correctifs automatisés en attente d’approbation. Faites la relecture avant de postuler — certains changements peuvent affecter le comportement du système."
+    "pendingRemediationsTooltip": "Des corrections automatisées sont en attente d’approbation. Vérifiez-les avant de les appliquer : certaines modifications peuvent affecter le comportement du système."
   },
   "cisHardeningCisComplianceTab": {
     "searchPlaceholder": "Rechercher un nom d’hôte ou une référence CIS...",

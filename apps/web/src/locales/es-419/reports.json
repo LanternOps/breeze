@@ -640,7 +640,7 @@
           "approved_at": "Aprobado en",
           "device_count": "Dispositivos",
           "missing_count": "Faltante",
-          "patch_id": "Parche ID",
+          "patch_id": "ID del parche",
           "release_date": "fecha de lanzamiento",
           "severity": "Gravedad",
           "status": "Estado",
