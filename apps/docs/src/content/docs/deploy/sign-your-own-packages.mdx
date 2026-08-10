@@ -1,0 +1,480 @@
+---
+title: Sign Your Own Agent Packages
+description: Sign official Breeze agent releases with your own Windows and macOS certificates using the breeze-selfhost-signing template.
+sidebar:
+  order: 8
+  label: Sign Your Own Packages
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Self-hosted Breeze deployments sign the official agent packages with **their
+own** code-signing certificates. LanternOps publishes every release's build
+outputs *unsigned* alongside a cryptographically signed manifest; the
+[`breeze-selfhost-signing`](https://github.com/lanternops/breeze-selfhost-signing)
+template repository turns those into fully signed Windows and macOS packages
+under your identity — no fork, no build environment, no Windows or Mac
+hardware of your own. For how official releases are signed, see
+[Code Signing](/deploy/code-signing/).
+
+---
+
+## Part 0 — Overview
+
+### Why signing matters
+
+An RMM agent installs silently, runs as SYSTEM/root, and captures screens —
+exactly the profile operating systems and AV engines are paranoid about.
+Unsigned agent packages mean SmartScreen interception on every Windows
+install, Gatekeeper refusal on macOS, and elevated AV false-positive rates.
+Signing *once per release* also matters: reputation systems score the
+certificate **and the file hash**, so a stable signed artifact accrues trust
+where per-download re-signing never could.
+
+### What you'll have at the end
+
+- A private GitHub repo (from the template) that signs each Breeze release
+  with one button press and publishes it as `v<version>` on that repo.
+- Signed + timestamped Windows `breeze-agent.msi` and component exes; signed,
+  notarized, stapled macOS pkgs and `Breeze Installer.app`.
+- Your own Ed25519-signed release manifest that your Breeze API verifies
+  end-to-end.
+- Your instance pulling from your repo via `BINARY_GITHUB_REPOSITORY`,
+  with agents updating through the existing per-deployment trust chain.
+
+### Cost and time expectations
+
+| Item | Cost | Lead time |
+|---|---|---|
+| Azure Artifact Signing (formerly Trusted Signing), Basic tier | ~US$9.99/mo | Identity validation typically takes **1–7 business days**; available to organizations and, in the US and Canada, individuals |
+| Apple Developer Program | US$99/yr | Enrollment usually 1–2 days (D-U-N-S lookup can add time for organizations) |
+| GitHub Actions | Free minutes generally suffice (one run per Breeze release) | — |
+
+### Choosing a Windows signing path
+
+Adapted from the maintainer decision matrix in
+`docs/signing/WINDOWS_INSTALLER_SIGNING.md`:
+
+| Option | Fit | Notes |
+|---|---|---|
+| **Azure Artifact Signing** (recommended) | Most self-hosters | No hardware token, HSM-backed keys, OIDC from GitHub Actions, cheap. The template's default mode. |
+| **CA cloud-signing service** (DigiCert KeyLocker, SSL.com eSigner, …) | Orgs already invested in a CA | Works in principle (they expose `signtool`-compatible flows) but is **not wired into the template in v1** — you would adapt the PFX steps yourself. |
+| **PFX file** | Legacy / internal PKI **only** | Since June 2023 the CA/B Forum requires publicly trusted code-signing keys to live in hardware modules, so newly issued OV certs are generally **not exportable** as PFX. Use only with an internal enterprise CA whose root your fleet already trusts. |
+
+<Aside type="caution" title="SmartScreen is not instant">
+  A valid signature is necessary but not sufficient. SmartScreen reputation
+  ramps per certificate and per file hash over days-to-weeks of installs.
+  Expect "Windows protected your PC" on early installs of a brand-new
+  certificate — see [Troubleshooting](#troubleshooting).
+</Aside>
+
+---
+
+## Part 1 — Azure Artifact Signing from zero
+
+You will create four things: an Artifact Signing account, a validated
+identity, a certificate profile, and an Entra app registration with a GitHub
+OIDC federated credential.
+
+{/* verify-against-portal */}
+### 1. Create the Artifact Signing account
+
+<Steps>
+
+1. In the [Azure portal](https://portal.azure.com), search for **Artifact
+   Signing** (formerly *Trusted Signing*) and select **Create**.
+
+2. Pick your subscription and a resource group, an **account name** (this
+   becomes the `AZURE_SIGNING_ACCOUNT_NAME` secret), and a region. Note the
+   region's endpoint URL, e.g. `https://eus.codesigning.azure.net` for East
+   US — this becomes `AZURE_SIGNING_ENDPOINT`.
+
+3. Select the **Basic** SKU and create the account.
+
+</Steps>
+
+{/* verify-against-portal */}
+### 2. Complete identity validation
+
+<Steps>
+
+1. In your Artifact Signing account, open **Identity validations** →
+   **New identity** → **Public**.
+
+2. Enter your legal organization name, registration number, and address
+   exactly as legally registered. For US/Canada individuals, choose the
+   individual flow and complete the identity-verification session.
+
+3. Submit and wait. Validation is performed by Microsoft's verification
+   partner and typically completes in 1–7 business days; you'll get email
+   updates. You cannot create a certificate profile until the identity shows
+   **Completed**.
+
+</Steps>
+
+{/* verify-against-portal */}
+### 3. Create a certificate profile
+
+<Steps>
+
+1. In the account, open **Certificate profiles** → **Create** →
+   **Public Trust**.
+
+2. Name the profile (this becomes `AZURE_CERT_PROFILE`) and bind it to your
+   completed identity validation. The generated certificates are short-lived
+   and rotated by Azure automatically — nothing to renew.
+
+</Steps>
+
+{/* verify-against-portal */}
+### 4. App registration + GitHub OIDC federated credential
+
+<Steps>
+
+1. In **Microsoft Entra ID** → **App registrations** → **New registration**,
+   create an app (e.g. `breeze-selfhost-signing`). Record the **Application
+   (client) ID** (`AZURE_CLIENT_ID`) and **Directory (tenant) ID**
+   (`AZURE_TENANT_ID`).
+
+2. In the app: **Certificates & secrets** → **Federated credentials** →
+   **Add credential** → scenario **GitHub Actions deploying Azure
+   resources**. Enter your GitHub org, the signing repo name, and entity type
+   **Environment** with value `signing` (the workflow's signing jobs run in
+   the `signing` environment). No client secret is created — the workflow
+   authenticates with short-lived OIDC tokens.
+
+3. Back in the Artifact Signing account: **Access control (IAM)** → **Add
+   role assignment** → role **Trusted Signing Certificate Profile Signer** →
+   assign to the app registration's service principal.
+
+</Steps>
+
+---
+
+## Part 2 — Apple Developer ID
+
+{/* verify-against-portal */}
+### 1. Enroll and create certificates
+
+<Steps>
+
+1. Enroll in the [Apple Developer Program](https://developer.apple.com/programs/enroll/)
+   (US$99/yr). Organizations need a D-U-N-S number; the legal entity name
+   becomes the publisher string users see.
+
+2. In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/certificates/list),
+   create **two** certificates: **Developer ID Application** (signs the
+   binaries and the Installer.app) and **Developer ID Installer** (signs the
+   `.pkg` files). Generate the CSRs in Keychain Access on any Mac
+   (Certificate Assistant → Request a Certificate From a Certificate
+   Authority), or via `openssl` if you have no Mac.
+
+3. Install both certificates into the same Keychain Access keychain, select
+   the two certificates **with their private keys**, and export as a single
+   `.p12` with a strong password.
+
+</Steps>
+
+{/* verify-against-portal */}
+### 2. App-specific password for notarization
+
+<Steps>
+
+1. Sign in at [account.apple.com](https://account.apple.com) with the Apple
+   ID that belongs to (or is invited to) your developer team.
+
+2. Under **Sign-In and Security** → **App-Specific Passwords**, generate one
+   (label it e.g. `breeze-notarytool`). This is the `APPLE_PASSWORD` secret —
+   notarization does not accept your account password, and the template does
+   not support App Store Connect API keys in v1.
+
+3. Find your 10-character **Team ID** under
+   [Membership details](https://developer.apple.com/account#MembershipDetailsCard)
+   (`APPLE_TEAM_ID`).
+
+</Steps>
+
+Compute the secret values:
+
+```bash
+base64 -i developer-id-export.p12 | pbcopy   # -> APPLE_CERTIFICATE
+security find-identity -v -p codesigning     # copy the exact strings for
+                                             # APPLE_SIGNING_IDENTITY, e.g.
+                                             # "Developer ID Application: Example Org (ABCDE12345)"
+```
+
+`APPLE_INSTALLER_IDENTITY` is the matching
+`Developer ID Installer: Example Org (ABCDE12345)` string (installer
+identities don't appear under `-p codesigning`; use
+`security find-identity -v` and pick the Installer entry).
+
+---
+
+## Part 3 — Create your signing repo
+
+<Steps>
+
+1. Open [`lanternops/breeze-selfhost-signing`](https://github.com/lanternops/breeze-selfhost-signing)
+   and click **Use this template** → **Create a new repository**. Private is
+   fine — the workflow only reads public official releases.
+
+2. Clone it and run `./scripts/generate-manifest-key.sh`. Store the printed
+   PEM as the `RELEASE_MANIFEST_ED25519_PRIVATE_KEY` Actions secret and keep
+   the printed `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` line for Part 5. Only
+   the private key is ever stored; the workflow re-derives the public key on
+   every run.
+
+3. Create a GitHub **Environment** named `signing`
+   (Settings → Environments) and add yourself as a **required reviewer**.
+   The workflow's signing jobs run in this environment, so every run that
+   can touch your certificates waits for your approval. Add the secrets to
+   this environment (or as repository secrets if you skip the reviewer
+   gate).
+
+4. Add the platform secrets from Parts 1–2. The full tables live in the
+   template's README: Azure mode needs `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+   `AZURE_SIGNING_ENDPOINT`, `AZURE_SIGNING_ACCOUNT_NAME`,
+   `AZURE_CERT_PROFILE`; macOS needs `APPLE_CERTIFICATE`,
+   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+   `APPLE_INSTALLER_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`,
+   `APPLE_TEAM_ID`.
+
+5. Validate the plumbing with a **dry run**: Actions → *Sign Breeze
+   Release* → Run workflow → set `dry-run: true` and a current Breeze
+   version. A dry run downloads and verifies the official inputs and builds
+   the MSI/pkgs/app with signing stubbed — it needs **no secrets and no
+   certificates**, so you can do this before paying anyone. Your manifest
+   key is never used on a dry run either: the manifest is signed with a
+   throwaway key generated in-run, so the resulting bundle (uploaded as
+   `dry-run-unsigned-assets`) is exactly what its name says and cannot be
+   mistaken for a release. Note that dry runs still run in the `signing`
+   environment, so if you configured required reviewers they must approve
+   the run before it starts.
+
+</Steps>
+
+---
+
+## Part 4 — Run the workflow
+
+Dispatch **Sign Breeze Release** with the version from the official release
+you want (e.g. `0.106.0` — no leading `v`). What each job does:
+
+| Job | What it does |
+|---|---|
+| `validate` | Checks the version and enum inputs, and refuses to overwrite an existing `v<version>` release on your repo (signing must happen once per release so reputation accrues on a stable hash). |
+| `windows` | Verifies the official manifest against the committed official key, pins the tag to the manifest's `sourceCommit`, checks out the Breeze build scripts at that commit, downloads + hash-verifies the four unsigned exes, signs them (Azure Artifact Signing or PFX), builds the MSI with WiX, signs the MSI, then asserts every output carries a signer **and an RFC3161 timestamp** and records that result as a signing attestation. |
+| `macos` | Same verify preamble; imports your `.p12` into an ephemeral keychain (deleted even on failure), codesigns all eight darwin binaries with hardened runtime + the repo's entitlements, notarizes them, builds both pkgs, `productsign`s, notarizes + staples, builds `Breeze Installer.app` from source around **your** pkgs, signs/notarizes/staples it, then verifies with `codesign --verify --strict`, `pkgutil --check-signature`, and `spctl -a -t install`, recording the result as a signing attestation. |
+| `publish` | Mirrors the never-signed official assets (Linux agent/backup/watchdog, viewer, helper, `latest.json` — each hash-verified against the official manifest), generates **your** `release-artifact-manifest.json` (+ `.ed25519` signed with your manifest key), writes `checksums.txt`, and creates release `v<version>` on your repo. The run summary prints the exact env block for Part 5. |
+
+<Aside type="caution" title="One run per version — a partial run consumes it">
+  A successful run publishes `v<version>` and every later run for that
+  version is refused, so a signature never changes under a hash the world
+  has already seen. The corollary: running with `platforms: windows` or
+  `platforms: macos` **claims the version**. You cannot add the other
+  platform afterwards without deleting the release in the GitHub UI first.
+  Use `platforms: all` unless you specifically want a single-platform
+  release.
+</Aside>
+
+<Aside type="note" title="How `platformTrust` is decided">
+  The manifest never infers trust from a filename. Each asset's
+  `platformTrust` comes either from the platform job's signing attestation
+  (something ran `codesign` / `Get-AuthenticodeSignature` on those exact
+  bytes) or, for mirrored assets, from the already-verified official
+  manifest. `publish` refuses to build a manifest covering an asset that
+  neither accounts for — so a component that slips past a signing step
+  fails the run instead of being published as "signed".
+</Aside>
+
+<Aside type="note" title="Verifying outputs locally">
+  Windows: `Get-AuthenticodeSignature .\breeze-agent.msi` should report your
+  organization as signer (Status `Valid`, or `UnknownError` on a machine that
+  hasn't yet cached the Azure Artifact Signing root — that status still means
+  "signed"). macOS: `pkgutil --check-signature breeze-agent-darwin-arm64.pkg`
+  and `spctl -a -vv -t install breeze-agent-darwin-arm64.pkg` should show
+  your Developer ID and `source=Notarized Developer ID`. Then install the MSI
+  and pkg on clean test VMs before promoting to your fleet.
+</Aside>
+
+---
+
+## Part 5 — Point your instance at your builds
+
+### T1 (recommended): repointed GitHub mode
+
+Add to your instance `.env`:
+
+```bash
+BINARY_SOURCE=github
+BINARY_GITHUB_REPOSITORY=your-org/your-signing-repo
+BINARY_VERSION=0.106.0        # the version you signed (or rely on BREEZE_VERSION)
+RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=<your raw base64 key from Part 3>
+AGENT_AUTO_PROMOTE=false      # recommended during first adoption
+```
+
+**And map every one of them** in your compose file's `api` service — a value
+in `.env` alone never reaches the container:
+
+```yaml
+  api:
+    environment:
+      BINARY_SOURCE: ${BINARY_SOURCE:-github}
+      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+      BINARY_VERSION: ${BINARY_VERSION:-}
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS}
+      AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-true}
+```
+
+See the [Environment Variables](/deploy/environment/) reference for the full
+deployment configuration.
+
+<Aside type="caution" title="The key must be YOURS">
+  In production, overriding `BINARY_GITHUB_REPOSITORY` requires
+  `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` to be set explicitly — and it must
+  be **your** manifest key, not the official Breeze key. The official key
+  cannot verify your releases; leaving it in place fails closed at sync time.
+</Aside>
+
+On restart, the API fetches your release, verifies your manifest, registers
+the binaries, and re-signs update manifests with its **per-deployment key** —
+agents keep trusting the same deployment key they pinned at enrollment, so no
+agent-side changes are needed.
+
+### T2 (zero-config fallback): local mode
+
+Download your signed release assets and drop them into the API's binary
+directories (`AGENT_BINARY_DIR`, `VIEWER_BINARY_DIR`, `HELPER_BINARY_DIR`)
+with `BINARY_SOURCE=local`. See [Binary Distribution](/deploy/binaries/) for
+directory layout and S3 offload. This works today on any version and needs no
+repository override — at the cost of manual downloads per release.
+
+### Migration flow for an existing fleet
+
+<Steps>
+
+1. Set `AGENT_AUTO_PROMOTE=false` **before** the switch, so registering your
+   release does not instantly become the fleet upgrade target.
+
+2. Apply the T1 env changes and restart the API. Watch the logs for the
+   sync: every platform/arch your fleet uses must register successfully
+   (a missing asset here means a skipped platform in your signing run).
+
+3. Verify a manual download of each platform installer from your instance,
+   install on a test device, confirm it enrolls and heartbeats.
+
+4. Promote explicitly with `POST /agent-versions/promote`. This is an
+   API-only action — there is no UI for it — and it requires a platform
+   admin **with MFA**. See
+   [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout)
+   for the exact call. Existing agents upgrade to your signed build like any
+   normal version promotion.
+
+</Steps>
+
+### Optional hardening
+
+`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID=true` makes agents refuse update
+manifests that don't name an explicit trusted key, removing the embedded
+official key as a possible update signer.
+
+Enable it only once the missing-ID count has sat at **zero for seven
+consecutive days across every active server version** — the same gate as
+any other instance. See
+[`AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID`](/deploy/rollout-modes/#agent_require_manifest_signing_key_id).
+
+<Aside type="caution" title="This is not a fleet-wide switch">
+  Agents on a capable build apply the pushed value at their next update
+  check; **older builds ignore it entirely** and keep accepting manifests
+  without a key ID. Turning it on does not harden the agents that have not
+  yet upgraded through your instance, so do not read a successful flip as
+  "the fleet is now hardened". The rollout runbook is
+  `docs/operations/agent-network-and-manifest-rollout.md`.
+</Aside>
+
+---
+
+## Troubleshooting
+
+**SmartScreen still warns after signing.**
+Expected at first. Reputation accrues per certificate and per file hash;
+a brand-new Azure Artifact Signing identity starts near zero. It clears
+after enough real installs — typically days to a few weeks. Verify the
+signature is actually present (`Get-AuthenticodeSignature`) and keep the
+release stable (never re-sign an already-published version; the workflow
+enforces this).
+
+**`UnknownError` from `Get-AuthenticodeSignature`.**
+The file *is* signed; the machine just hasn't chained to the Azure Artifact
+Signing root yet. The workflow treats this status as success with a warning,
+matching the official pipeline.
+
+**Notarization rejected (`status: Invalid`).**
+The workflow prints the full `notarytool log` on failure. The most common
+causes: the `.p12` is missing the private key (re-export from Keychain
+Access with the key selected), the Apple ID isn't a member of the team in
+`APPLE_TEAM_ID`, or `APPLE_PASSWORD` is an account password instead of an
+app-specific password.
+
+**Manifest verification failed / `sourceCommit` mismatch.**
+The template refuses to run when the official manifest signature doesn't
+verify or the release tag no longer points at the manifest's recorded
+commit. Both indicate the official release changed after publication —
+do not work around this; check the official repository's security
+announcements and open an issue.
+
+**Trying to sign a release from before BYO-signing support.**
+The run stops in the `verify-official-release` step with
+`manifest has no valid sourceCommit — this Breeze release predates
+BYO-signing support`. Unsigned signing inputs ship with Breeze releases
+from the BYO-signing release onward; you cannot self-sign releases older
+than that. (The related `asset <name> is not present in the signed
+manifest` means the release *is* recent enough but is missing an asset the
+workflow expects — check the official release page for a partial upload.)
+
+**Your API refuses to sync your release.**
+Check that `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is your key (raw base64,
+44 chars), that it's mapped in the compose `environment:` block, and that
+`BINARY_VERSION`/`BREEZE_VERSION` matches a release that exists on your
+signing repo.
+
+**AV flags your signed agent.**
+Some engines flag new publishers regardless of signature. Add the
+recommended exclusions per platform — see
+[Antivirus Exceptions](/deploy/antivirus-exceptions/) — and submit
+false-positive reports with your signed binaries; a stable hash makes those
+reports effective.
+
+---
+
+## Appendix
+
+### Viewer and Helper apps
+
+The technician-side Viewer and Helper (Tauri) apps are mirrored from the
+official release as-is. If you want to sign those under your identity too,
+the relevant official jobs are `build-viewer`, `sign-windows-tauri`,
+`build-viewer-macos`, and `build-helper-macos` in
+`.github/workflows/release.yml` — that path is closer to a fork than to this
+template, and Gatekeeper's right-click-open flow is generally tolerable for
+technician tooling.
+
+### PFX mode details
+
+`signing-mode: pfx` signs with `signtool sign /fd SHA256 /tr <timestamp> /td
+SHA256` using `WINDOWS_PFX_BASE64` + `WINDOWS_PFX_PASSWORD`, with the
+timestamp server overridable via the `PFX_TIMESTAMP_URL` repository
+variable. It exists for internal-PKI deployments (your enterprise CA root is
+already in your fleet's trust store via GPO/MDM). It is **not** a path to
+public trust: publicly trusted code-signing keys must live in HSMs, so a
+file-based key either predates that rule or is internal-only. SmartScreen
+reputation never accrues for internal CAs — pair PFX mode with the
+[AV exclusions](/deploy/antivirus-exceptions/) and GPO trust configuration.
+
+### Relationship to the fork path
+
+This template signs **official, unmodified** Breeze builds — your
+organization appears as publisher on Breeze-branded software, which is
+expected and documented. If you need your own branding (product name,
+identifiers, icons), that is the fork path: see Model B in
+`docs/signing/ARTIFACT_SIGNING_OPERATIONS.md` in the repository.

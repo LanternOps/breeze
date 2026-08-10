@@ -30,6 +30,13 @@ GET /api/v1/agents/download/linux/amd64
 
 The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If neither is set, redirects to the `latest` release.
 
+The repository itself is configurable: `BINARY_GITHUB_REPOSITORY` (default
+`lanternops/breeze`) controls where downloads redirect and where release
+sync reads from. Self-hosters who [sign their own agent
+packages](/deploy/sign-your-own-packages/) point this at their signing
+repository and set `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` to their own
+manifest key.
+
 On startup, the API calls GitHub's Releases API to register the current version's checksums in the `agent_versions` table, so agents know when a new version is available.
 
 <Aside type="note">
@@ -47,6 +54,10 @@ RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTs
 ```
 
 This is a public key (also embedded in the agent and CI), so it is safe to commit. Only override it if you build and sign your own binaries. The API refuses to start in production without it. During a signing-key rotation you can trust multiple keys at once by comma-separating them (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=old,new`).
+
+#### Unsigned signing inputs
+
+Official releases also publish `*-unsigned` build outputs with manifest entries marked `intendedUse: "signing-input"` and `platformTrust: "none"`. These exist solely as inputs for self-signing and are never registrable or downloadable through the API.
 
 ### Local Mode
 

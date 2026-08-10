@@ -1,0 +1,54 @@
+name: Verify official Breeze release
+description: >-
+  Download the official release-artifact-manifest for the requested version,
+  verify its Ed25519 signature against the COMMITTED official key, and bind
+  the release tag to the manifest's sourceCommit. This action must run before
+  any step that exposes a signing credential; it carries no secrets itself.
+inputs:
+  version:
+    description: Official Breeze release version, without the leading v
+    required: true
+outputs:
+  source-commit:
+    description: Verified 40-char commit SHA the official release was built from
+    value: ${{ steps.verify.outputs.source-commit }}
+  manifest-path:
+    description: Path to the verified official manifest JSON
+    value: ${{ steps.verify.outputs.manifest-path }}
+runs:
+  using: composite
+  steps:
+    - id: verify
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        base="https://github.com/lanternops/breeze/releases/download/v${VERSION}"
+        dir="${RUNNER_TEMP}/official-manifest"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 --retry-delay 5 \
+          -o "$dir/release-artifact-manifest.json" \
+          "$base/release-artifact-manifest.json"
+        curl -fsSL --retry 3 --retry-delay 5 \
+          -o "$dir/release-artifact-manifest.json.ed25519" \
+          "$base/release-artifact-manifest.json.ed25519"
+
+        source_commit="$(node "${GITHUB_WORKSPACE}/scripts/verify-manifest.mjs" verify \
+          --manifest "$dir/release-artifact-manifest.json" \
+          --signature "$dir/release-artifact-manifest.json.ed25519" \
+          --key "${GITHUB_WORKSPACE}/official-release-key.pub" \
+          --repository "lanternops/breeze" \
+          --release "v${VERSION}")"
+
+        # Tags are movable; the signed manifest is not. Bind them.
+        tag_commit="$(gh api "repos/lanternops/breeze/commits/v${VERSION}" --jq .sha)"
+        if [ "$tag_commit" != "$source_commit" ]; then
+          echo "::error::tag v${VERSION} resolves to ${tag_commit} but the signed manifest records sourceCommit ${source_commit} — the tag has moved; refusing to continue"
+          exit 1
+        fi
+
+        echo "source-commit=${source_commit}" >> "$GITHUB_OUTPUT"
+        echo "manifest-path=${dir}/release-artifact-manifest.json" >> "$GITHUB_OUTPUT"
+        echo "Verified official manifest for v${VERSION}; sourceCommit=${source_commit}"
