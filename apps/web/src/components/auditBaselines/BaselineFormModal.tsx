@@ -82,7 +82,12 @@ export default function BaselineFormModal({ baseline, onClose, onSaved }: Props)
         isActive,
       };
       if (baseline?.id) body.id = baseline.id;
-      if (currentOrgId) body.orgId = currentOrgId;
+      // On edit, send the baseline's OWN org rather than the header selection:
+      // POST /audit-baselines looks the row up by (id, orgId), so a mismatch is
+      // a 404 — which is what happens whenever the header sits on a different
+      // org (or on fleet view, where nothing would be sent at all).
+      const targetOrgId = baseline?.orgId ?? currentOrgId;
+      if (targetOrgId) body.orgId = targetOrgId;
       if (settings) body.settings = settings;
 
       const response = await fetchWithAuth('/audit-baselines', {
