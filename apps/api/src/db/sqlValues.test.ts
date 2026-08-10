@@ -64,6 +64,16 @@ describe('sqlValues (#3369)', () => {
     }
   });
 
+  it('drops `undefined` rather than binding it — a pre-existing Drizzle footgun, recorded not fixed', () => {
+    // Drizzle skips an `undefined` interpolation entirely, so the fragment
+    // renders with NO parameter and the surrounding predicate becomes malformed
+    // SQL. `sqlValue` does not change that, and `FilterValue` excludes
+    // `undefined`, so nothing here is reachable today — but the behaviour is
+    // surprising enough to pin, so a future caller widening the type finds it.
+    const { params } = dialect.sqlToQuery(sql`x = ${sqlValue(undefined)}`);
+    expect(params).toEqual([]);
+  });
+
   it('sqlValue keeps each value a separate bound parameter rather than inlining it', () => {
     // Inlining would turn a filter value into SQL text — an injection surface.
     const { sql: text, params } = dialect.sqlToQuery(

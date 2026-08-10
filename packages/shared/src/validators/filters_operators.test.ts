@@ -89,8 +89,8 @@ describe('filterValueSchema', () => {
     const result = filterValueSchema.safeParse({ from: 10, to: 90 });
 
     expect(result.success).toBe(true);
+    // `toEqual` distinguishes 10 from `new Date(10)`, which is the whole regression.
     expect(result.data).toEqual({ from: 10, to: 90 });
-    expect(result.data).not.toHaveProperty('from', expect.any(Date));
   });
 
   it('still coerces a date range to real Date instances', () => {

@@ -417,6 +417,30 @@ describe('filterEngine datetime binding (#3369)', () => {
     }
   });
 
+  it('routes matches, in/notIn and the group membership path through sqlValue too', () => {
+    // `OPERATORS_BY_TYPE` never pairs these operators with a datetime field, and
+    // the public route runs `validateFilter` first — but `FilterCondition` types
+    // `operator` as any `FilterOperator`, and the internal callers
+    // (aiToolsFleet, groupMembership, deploymentTargetResolver) build conditions
+    // by hand and call `evaluateFilter` directly without that gate. Defense in
+    // depth: a Date reaching these branches must still serialize.
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const cases: FilterCondition[] = [
+      { field: 'hostname', operator: 'matches', value: at as unknown as string },
+      { field: 'lastSeenAt', operator: 'in', value: [at] as unknown as string[] },
+      { field: 'lastSeenAt', operator: 'notIn', value: [at] as unknown as string[] },
+      { field: 'groupId', operator: 'equals', value: at },
+    ];
+
+    for (const condition of cases) {
+      const { params } = render(condition);
+      for (const param of params) {
+        expect(param, `${condition.field}/${condition.operator}`).not.toBeInstanceOf(Date);
+      }
+      expect(params).toContain(at.toISOString());
+    }
+  });
+
   it('still binds ordinary scalars unchanged', () => {
     expect(render({ field: 'hostname', operator: 'equals', value: 'web-01' }).params).toEqual(['web-01']);
     expect(render({ field: 'status', operator: 'in', value: ['online', 'offline'] }).params)

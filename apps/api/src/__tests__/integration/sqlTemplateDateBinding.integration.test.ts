@@ -31,14 +31,14 @@
  */
 import './setup';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { getTestDb } from './setup';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { withSystemDbAccessContext } from '../../db';
 import { devices, oauthRevocationRetries } from '../../db/schema';
-import { evaluateFilter } from '../../services/filterEngine';
+import { buildConditionSQL, evaluateFilter } from '../../services/filterEngine';
 import { buildRetryConflictUpdate } from '../../oauth/revocationRetry';
 
 // Deliberately spread across a day so a session-time-zone shift of a few hours
@@ -143,41 +143,53 @@ describe('filterEngine datetime predicates — real Postgres (#3369)', () => {
 
   it('gives identical results under a non-UTC session time zone', async () => {
     // `devices.last_seen_at` is `timestamp` WITHOUT time zone, holding UTC wall
-    // clock by Drizzle convention. Had the parameter been cast `::timestamptz`,
-    // Postgres would coerce the naive column *in the session zone* — under
-    // Pacific/Kiritimati (UTC+14) the T2 device (22:00Z) would fall outside the
-    // window below and this assertion would drop it. A silent, deployment-
-    // dependent wrong answer is worse than the TypeError being fixed, so it
-    // gets its own guard.
+    // clock by Drizzle convention. Had the bound parameter been cast
+    // `::timestamptz`, Postgres would coerce the naive column *in the session
+    // zone* — under Pacific/Kiritimati (UTC+14) the T2 device (22:00Z) shifts
+    // to the 16th local and falls outside the window below. A silent,
+    // deployment-dependent wrong answer is worse than the TypeError being
+    // fixed, so the no-cast decision gets its own guard.
+    //
+    // The predicate is run directly rather than through `evaluateFilter`, and
+    // the time zone is set with `SET LOCAL` inside the same transaction as the
+    // query. `getTestDb()` and the application `db` pool (`src/db/index.ts`)
+    // are SEPARATE postgres.js pools on separate connections, so a plain `SET`
+    // on one would not reach a query issued on the other and this guard would
+    // pass vacuously. What is under test here is the SQL `buildConditionSQL`
+    // emits, which is exactly what this asserts.
     const { org, seeded } = await seedOrgWithDevices();
 
-    const run = () =>
-      evaluateFilter(
-        {
-          operator: 'AND',
-          conditions: [
-            {
-              field: 'lastSeenAt',
-              operator: 'between',
-              value: {
-                from: new Date('2026-03-15T06:00:00.000Z'),
-                to: new Date('2026-03-16T00:00:00.000Z'),
-              },
-            },
-          ],
-        },
-        { orgId: org.id },
-      );
+    const predicate = buildConditionSQL({
+      field: 'lastSeenAt',
+      operator: 'between',
+      value: {
+        from: new Date('2026-03-15T06:00:00.000Z'),
+        to: new Date('2026-03-16T00:00:00.000Z'),
+      },
+    });
 
-    const db = getTestDb();
-    const previous = (await db.execute(`SHOW TimeZone`)) as unknown as Array<{ TimeZone: string }>;
-    try {
-      await db.execute(`SET TimeZone = 'Pacific/Kiritimati'`);
-      const shifted = await withSystemDbAccessContext(run);
-      expect([...shifted.deviceIds].sort()).toEqual(idsFor(seeded, [T1, T2]));
-    } finally {
-      await db.execute(`SET TimeZone = '${previous[0]?.TimeZone ?? 'UTC'}'`);
-    }
+    const rowsIn = async (timeZone: string) =>
+      getTestDb().transaction(async (tx) => {
+        // SET LOCAL is transaction-scoped, so it cannot leak into another test.
+        await tx.execute(sql`SET LOCAL TimeZone = ${sql.raw(`'${timeZone}'`)}`);
+        const found = await tx
+          .select({ id: devices.id })
+          .from(devices)
+          .where(and(eq(devices.orgId, org.id), predicate));
+        return found.map((r) => r.id).sort();
+      });
+
+    // Sanity: the zone really is being applied inside the transaction. Without
+    // this, a silently ignored SET would make the comparison below meaningless.
+    const applied = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL TimeZone = 'Pacific/Kiritimati'`);
+      const shown = (await tx.execute(sql`SHOW TimeZone`)) as unknown as Array<{ TimeZone: string }>;
+      return shown[0]?.TimeZone;
+    });
+    expect(applied).toBe('Pacific/Kiritimati');
+
+    expect(await rowsIn('UTC')).toEqual(idsFor(seeded, [T1, T2]));
+    expect(await rowsIn('Pacific/Kiritimati')).toEqual(idsFor(seeded, [T1, T2]));
   });
 });
 
