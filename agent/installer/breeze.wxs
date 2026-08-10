@@ -111,6 +111,18 @@
       <UpgradeVersion Minimum="0.0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="OTHEREDITIONFOUND" />
     </Upgrade>
     <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
+    <!-- The stock MSI sequences run LaunchConditions (100) BEFORE
+         FindRelatedProducts (200), which would leave OTHEREDITIONFOUND
+         permanently unset when the Launch condition above is evaluated —
+         i.e. the cross-edition guard would never fire. Reorder so the
+         related-product probe populates the property first, in both the
+         interactive and silent install paths. -->
+    <InstallUISequence>
+      <FindRelatedProducts Before="LaunchConditions" />
+    </InstallUISequence>
+    <InstallExecuteSequence>
+      <FindRelatedProducts Before="LaunchConditions" />
+    </InstallExecuteSequence>
 
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
