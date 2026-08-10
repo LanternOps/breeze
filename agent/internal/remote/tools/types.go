@@ -431,12 +431,26 @@ type RegistryValuesResponse struct {
 
 // FileEntry represents a file or directory in file listing responses
 type FileEntry struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Type        string `json:"type"` // "file" or "directory"
+	Name string `json:"name"`
+	// Path always names the entry itself. For a macOS Finder alias that means
+	// the alias file, not its target, so rename/delete/move act on the alias.
+	Path string `json:"path"`
+	// Type is "file" or "directory". A resolved macOS Finder alias reports the
+	// kind of its *target*, so existing clients navigate into a folder alias
+	// and download through a file alias without needing to know about aliases.
+	Type string `json:"type"`
+	// Size, Modified and Permissions always describe the entry at Path — for an
+	// alias that is the small bookmark file, not its target, so that a delete
+	// confirmation quotes what will actually be removed.
 	Size        int64  `json:"size,omitempty"`
 	Modified    string `json:"modified,omitempty"`
 	Permissions string `json:"permissions,omitempty"`
+	// IsAlias marks a macOS Finder alias that was resolved successfully, and
+	// AliasTarget carries the absolute path it resolved to. Both are omitted for
+	// ordinary entries and for aliases that could not be resolved (which stay
+	// indistinguishable from plain files, as before).
+	IsAlias     bool   `json:"isAlias,omitempty"`
+	AliasTarget string `json:"aliasTarget,omitempty"`
 }
 
 // FileListResponse represents the response for file listing
