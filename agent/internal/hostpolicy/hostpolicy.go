@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // allowedHosts is the ldflag-injected, comma-separated list of exact,
@@ -32,11 +33,26 @@ var allowedHosts = ""
 //	-ldflags "-X github.com/breeze-rmm/agent/internal/hostpolicy.strictMode=1"
 var strictMode = ""
 
-// parsed is the normalized allowlist set, (re)computed from allowedHosts.
-var parsed = parseHosts(allowedHosts)
+// snapshot is the immutable, derived form of the two ldflag inputs (or of a
+// test-seam override — see testseams.go). It is never mutated after
+// construction; a new snapshot is built and swapped in wholesale, which is
+// what makes concurrent reads (heartbeat loop, updater) safe without a mutex.
+type snapshot struct {
+	hosts  map[string]struct{}
+	strict bool
+}
 
-// strict is the normalized strict flag, (re)computed from strictMode.
-var strict = strings.TrimSpace(strictMode) != ""
+// current holds the active snapshot. Loaded by every predicate below and
+// swapped atomically by the test seams. Production code never calls Store —
+// the snapshot is fixed at process start from the ldflag-injected vars.
+var current atomic.Pointer[snapshot]
+
+func init() {
+	current.Store(&snapshot{
+		hosts:  parseHosts(allowedHosts),
+		strict: strings.TrimSpace(strictMode) != "",
+	})
+}
 
 func parseHosts(raw string) map[string]struct{} {
 	set := make(map[string]struct{})
@@ -48,20 +64,33 @@ func parseHosts(raw string) map[string]struct{} {
 	return set
 }
 
+func sortedHosts(hosts map[string]struct{}) []string {
+	out := make([]string, 0, len(hosts))
+	for h := range hosts {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Enforced reports whether this build restricts control-plane hosts (hosted mode,
 // gap OR strict).
-func Enforced() bool { return len(parsed) > 0 }
+func Enforced() bool { return len(current.Load().hosts) > 0 }
 
 // Strict reports whether existing-fleet violations hard-fail (the strict build).
 // False in a gap build (allowlist set, strictMode empty) and in self-host.
-func Strict() bool { return Enforced() && strict }
+func Strict() bool {
+	s := current.Load()
+	return len(s.hosts) > 0 && s.strict
+}
 
 // Mode returns "hosted-strict", "hosted-gap", or "self-host", for logging.
 func Mode() string {
-	if !Enforced() {
+	s := current.Load()
+	if len(s.hosts) == 0 {
 		return "self-host"
 	}
-	if strict {
+	if s.strict {
 		return "hosted-strict"
 	}
 	return "hosted-gap"
@@ -69,12 +98,7 @@ func Mode() string {
 
 // Hosts returns the sorted allowlist (empty in self-host), for error/log text.
 func Hosts() []string {
-	out := make([]string, 0, len(parsed))
-	for h := range parsed {
-		out = append(out, h)
-	}
-	sort.Strings(out)
-	return out
+	return sortedHosts(current.Load().hosts)
 }
 
 // AllowedHost reports whether host (bare hostname, no port) is permitted.
@@ -82,10 +106,11 @@ func Hosts() []string {
 // deliberately NO wildcard/suffix logic, so "hosted-a.example.evil.com" never matches
 // an allowlisted "hosted-a.example".
 func AllowedHost(host string) bool {
-	if !Enforced() {
+	s := current.Load()
+	if len(s.hosts) == 0 {
 		return true
 	}
-	_, ok := parsed[strings.ToLower(strings.TrimSpace(host))]
+	_, ok := s.hosts[strings.ToLower(strings.TrimSpace(host))]
 	return ok
 }
 
@@ -94,34 +119,18 @@ func AllowedHost(host string) bool {
 // The returned error is safe to surface/log: it names only the offending host and
 // the allowlist, never a token or secret.
 func AllowedURL(rawURL string) error {
-	if !Enforced() {
+	s := current.Load()
+	if len(s.hosts) == 0 {
 		return nil
 	}
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("hosted build: control-plane URL %q is not a parseable URL", rawURL)
 	}
-	if !AllowedHost(u.Hostname()) {
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if _, ok := s.hosts[host]; !ok {
 		return fmt.Errorf("hosted build refuses control-plane host %q (allowed: %s)",
-			u.Hostname(), strings.Join(Hosts(), ", "))
+			u.Hostname(), strings.Join(sortedHosts(s.hosts), ", "))
 	}
 	return nil
-}
-
-// SetAllowedHostsForTest overrides the compiled allowlist at runtime for TESTS
-// ONLY and returns a restore func. Not safe for production use (mutates package
-// state without synchronization).
-func SetAllowedHostsForTest(csv string) (restore func()) {
-	prev := parsed
-	parsed = parseHosts(csv)
-	return func() { parsed = prev }
-}
-
-// SetStrictModeForTest overrides strict mode at runtime for TESTS ONLY and
-// returns a restore func. Not safe for production use (mutates package state
-// without synchronization).
-func SetStrictModeForTest(on bool) (restore func()) {
-	prev := strict
-	strict = on
-	return func() { strict = prev }
 }

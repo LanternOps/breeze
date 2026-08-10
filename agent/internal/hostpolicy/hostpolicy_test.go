@@ -1,7 +1,10 @@
 // agent/internal/hostpolicy/hostpolicy_test.go
 package hostpolicy
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestSelfHostDefaultAllowsEverything(t *testing.T) {
 	// Repo default: allowedHosts is empty => self-host => unrestricted.
@@ -98,4 +101,40 @@ func TestStrictModeGate(t *testing.T) {
 	if !Strict() || Mode() != "hosted-strict" {
 		t.Fatalf("expected hosted-strict when both set, got Strict()=%v Mode()=%q", Strict(), Mode())
 	}
+}
+
+// TestConcurrentSeamSwapAndReadIsRaceFree pins the concurrency contract the
+// test seams must uphold: the heartbeat loop and updater read the predicates
+// (AllowedHost, Mode, Hosts) from arbitrary goroutines while a test can be
+// swapping the seam state on another. Before the atomic-snapshot fix, both
+// sides touched unsynchronized package globals directly and this test failed
+// under `go test -race`.
+func TestConcurrentSeamSwapAndReadIsRaceFree(t *testing.T) {
+	restore := SetAllowedHostsForTest("hosted-a.example")
+	defer restore()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				AllowedHost("hosted-a.example")
+				_ = Mode()
+				_ = Hosts()
+				_ = AllowedURL("https://hosted-a.example/x")
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		r := SetAllowedHostsForTest("hosted-b.example")
+		r()
+	}
+	close(stop)
+	wg.Wait()
 }
