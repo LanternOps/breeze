@@ -3,7 +3,8 @@ import type { Redis } from 'ioredis';
 
 vi.mock('./redis', () => ({
   getRedis: vi.fn(),
-  getRedisConnection: vi.fn()
+  getRedisConnection: vi.fn(),
+  createBlockingRedisConnection: vi.fn()
 }));
 
 // Mock the db module so we can assert `runOutsideDbContext` is invoked

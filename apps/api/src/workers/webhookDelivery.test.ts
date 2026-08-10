@@ -7,6 +7,7 @@ const { safeFetchMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => 
 
 vi.mock('../services/redis', () => ({
   getRedisConnection: vi.fn(),
+  createBlockingRedisConnection: vi.fn(),
 }));
 
 vi.mock('../services/eventBus', () => ({

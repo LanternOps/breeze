@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'crypto';
-import { getRedisConnection } from '../services/redis';
+import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
+import type Redis from 'ioredis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
 import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
@@ -212,6 +213,20 @@ function calculateRetryDelay(
 class WebhookDeliveryWorker {
   private isRunning = false;
   private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
+  /**
+   * Dedicated connection for the `BRPOP` in `processNextJob` — see
+   * `createBlockingRedisConnection`. Lazily created (never at import time) and
+   * cached for the worker's lifetime; a new connection per loop iteration
+   * would churn a TCP connect + AUTH every 5 seconds forever.
+   */
+  private blockingRedis: Redis | null = null;
+
+  private getBlockingRedis(): Redis {
+    if (!this.blockingRedis || this.blockingRedis.status === 'end') {
+      this.blockingRedis = createBlockingRedisConnection('breeze:webhook-delivery:brpop');
+    }
+    return this.blockingRedis;
+  }
 
   /**
    * Set callback for delivery completion (for updating database)
@@ -273,8 +288,13 @@ class WebhookDeliveryWorker {
     const redis = getRedisConnection();
 
     try {
-      // Blocking pop with 5 second timeout
-      const result = await redis.brpop(WEBHOOK_QUEUE, 5);
+      // Blocking pop with 5 second timeout. This MUST run on its own
+      // connection: Redis serves one command at a time per connection, so a
+      // BRPOP here on the shared connection stalls every other command on it
+      // — including the BullMQ `Queue` writes that HTTP handlers await — by
+      // up to the full 5s block. Non-blocking commands below stay on the
+      // shared connection.
+      const result = await this.getBlockingRedis().brpop(WEBHOOK_QUEUE, 5);
 
       if (!result) return; // Timeout, no jobs
 

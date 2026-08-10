@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { getRedisConnection } from './redis';
+import { createBlockingRedisConnection, getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
 
@@ -172,6 +172,14 @@ class EventBus {
   private consumerName: string;
   private isConsuming = false;
   private redisClient: Redis | null = null;
+  /**
+   * Dedicated connection for the `XREADGROUP ... BLOCK 5000` in
+   * `consumeLoop` — see `createBlockingRedisConnection`. Lazily created
+   * (never at import time, and never before `startConsuming()` actually
+   * runs) and cached for the bus's lifetime; a new connection per loop
+   * iteration would churn a TCP connect + AUTH every 5 seconds forever.
+   */
+  private blockingRedisClient: Redis | null = null;
 
   constructor() {
     this.consumerName = `consumer-${process.pid}-${randomUUID().slice(0, 8)}`;
@@ -187,6 +195,26 @@ class EventBus {
     }
     this.redisClient = getRedisConnection();
     return this.redisClient;
+  }
+
+  /**
+   * Get or create the dedicated blocking connection used ONLY for
+   * `XREADGROUP ... BLOCK` in `consumeLoop`. Redis serves one command at a
+   * time per connection, and ioredis queues everything else behind an
+   * in-flight command — so a blocking read on the shared connection from
+   * `getOrCreateRedis()` (the same connection `getBullMQConnection()` hands
+   * to every BullMQ `Queue`) would stall every other command on it,
+   * including request-path job enqueues, by up to the full block timeout.
+   * This is the identical defect fixed in `webhookDelivery.ts`'s `BRPOP`
+   * loop; every non-blocking command in this class (publish's `xadd` /
+   * `publish`, consumer-group creation, `xack`, etc.) deliberately stays on
+   * `getOrCreateRedis()`.
+   */
+  private getBlockingRedis(): Redis {
+    if (!this.blockingRedisClient || this.blockingRedisClient.status === 'end') {
+      this.blockingRedisClient = createBlockingRedisConnection('breeze:event-bus:xreadgroup');
+    }
+    return this.blockingRedisClient;
   }
 
   /**
@@ -367,14 +395,19 @@ class EventBus {
   }
 
   private async consumeLoop(orgIds: string[]): Promise<void> {
+    // `redis` handles all NON-blocking commands (xack/lpush inside
+    // processMessage) and stays on the shared connection. Only the blocking
+    // XREADGROUP read below moves to its own connection — see
+    // `getBlockingRedis`.
     const redis = this.getOrCreateRedis();
     const streams = orgIds.map(orgId => `${STREAM_PREFIX}:${orgId}`);
     const streamArgs = streams.flatMap(s => [s, '>']);
 
     while (this.isConsuming) {
       try {
-        // Read from all streams with blocking
-        const results = await redis.xreadgroup(
+        // Read from all streams with blocking. MUST run on the dedicated
+        // connection (see getBlockingRedis) — not the shared one.
+        const results = await this.getBlockingRedis().xreadgroup(
           'GROUP',
           CONSUMER_GROUP,
           this.consumerName,
