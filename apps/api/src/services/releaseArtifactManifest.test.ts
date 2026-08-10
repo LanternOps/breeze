@@ -5,12 +5,14 @@ import {
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
 } from "./releaseArtifactManifest";
+import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
 function makeSignedManifest(args: {
   assetName: string;
   assetBuffer: Buffer;
   release?: string;
   repository?: string;
+  assetOverrides?: Record<string, unknown>;
 }) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -27,7 +29,10 @@ function makeSignedManifest(args: {
           name: args.assetName,
           sha256: "placeholder",
           size: args.assetBuffer.length,
-          platformTrust: "release-workflow-produced",
+          platformTrust:
+            requiredPlatformTrustFor(args.assetName) ??
+            "release-workflow-produced",
+          ...(args.assetOverrides ?? {}),
         },
       ],
     }).replace("placeholder", createSha256(args.assetBuffer)),
@@ -265,12 +270,84 @@ describe("releaseArtifactManifest", () => {
     );
   });
 
-  it("tolerates sourceCommit and intendedUse manifest fields (BYO signing inputs)", async () => {
+  describe("positive trust enforcement (spec 3c)", () => {
+    it("rejects verification of a signing-input asset", async () => {
+      const asset = Buffer.from("unsigned input bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-windows-amd64-unsigned.exe",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "none", intendedUse: "signing-input" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-windows-amd64-unsigned.exe",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/not distributable/);
+    });
+
+    it("rejects an unknown platformTrust value", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "mystery-trust" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/unknown platformTrust/);
+    });
+
+    it("rejects a canonical Windows exe without windows-authenticode-required", async () => {
+      const asset = Buffer.from("windows agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-windows-amd64.exe",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "release-workflow-produced" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-windows-amd64.exe",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/windows-authenticode-required/);
+    });
+
+    it("returns intendedUse: null and the required trust for ordinary assets", async () => {
+      const asset = Buffer.from("windows agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-windows-amd64.exe",
+        assetBuffer: asset,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-windows-amd64.exe",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).resolves.toMatchObject({
+        platformTrust: "windows-authenticode-required",
+        intendedUse: null,
+      });
+    });
+  });
+
+  it("rejects intendedUse signing inputs even when sourceCommit is present", async () => {
     // Deliverable 1 of the self-host BYO-signing design adds a top-level
     // sourceCommit and per-asset intendedUse/platformTrust:"none" for
-    // -unsigned signing-input assets. The parser is deliberately tolerant
-    // of unknown fields; this pins that contract so older APIs keep
-    // verifying newer manifests.
+    // -unsigned signing-input assets. The parser remains tolerant of the
+    // top-level sourceCommit field, while distribution fails closed on the
+    // per-asset intendedUse marker.
     const asset = Buffer.from("unsigned-signing-input");
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const publicDer = publicKey.export({
@@ -310,19 +387,13 @@ describe("releaseArtifactManifest", () => {
         expectedRepository: "lanternops/breeze",
         expectedRelease: "v1.2.3",
       }),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        assetName: "breeze-agent-windows-amd64-unsigned.exe",
-        platformTrust: "none",
-      }),
-    );
+    ).rejects.toThrow(/not distributable/);
   });
 
   it("rejects a signing-input entry when the caller expects authenticode trust", async () => {
-    // The expectedPlatformTrust mismatch check is the fail-closed seam that
-    // Deliverable 3c's positive allowlist builds on: an -unsigned entry
-    // (platformTrust "none") must never satisfy a caller that demands
-    // windows-authenticode-required.
+    // The positive allowlist is enforced before the caller-supplied stricter
+    // expectedPlatformTrust check, so signing inputs fail at the central
+    // distributability baseline.
     const asset = Buffer.from("unsigned-signing-input");
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const publicDer = publicKey.export({
@@ -362,6 +433,6 @@ describe("releaseArtifactManifest", () => {
         expectedRepository: "lanternops/breeze",
         expectedPlatformTrust: "windows-authenticode-required",
       }),
-    ).rejects.toThrow("platform trust mismatch");
+    ).rejects.toThrow(/not distributable/);
   });
 });

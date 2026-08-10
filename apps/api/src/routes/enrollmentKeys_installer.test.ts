@@ -95,13 +95,6 @@ vi.mock('../services/installerBootstrapTokenIssuance', () => ({
   },
 }));
 
-vi.mock('../services/msiSigning', () => ({
-  MsiSigningService: {
-    fromEnv: vi.fn(() => null), // Signing disabled by default in tests
-    _resetForTests: vi.fn(),
-  },
-}));
-
 vi.mock('../services', () => ({
   getRedis: vi.fn(() => ({})),
 }));
@@ -131,7 +124,6 @@ vi.mock('../services/enrollmentDefaults', () => ({
 import { enrollmentKeyRoutes } from './enrollmentKeys';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
-import { MsiSigningService } from '../services/msiSigning';
 import { rateLimiter } from '../services/rate-limit';
 import { issueBootstrapTokenForKey } from '../services/installerBootstrapTokenIssuance';
 
@@ -214,10 +206,6 @@ describe('enrollment key routes — installer download', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // vi.clearAllMocks clears call history but NOT implementations — tests
-    // that set mockReturnValue for fromEnv would otherwise leak into
-    // subsequent tests. Explicitly reset fromEnv to "signing disabled".
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     // Same reasoning for the partner-cap gate: reset to the permissive
     // default every test unless a test opts into mockEnrollmentDefaults().
     assertTtlWithinCapMock.mockReset();

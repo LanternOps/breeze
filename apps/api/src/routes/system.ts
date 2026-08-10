@@ -72,7 +72,6 @@ systemRoutes.get('/config-status', requireSystemConfigRead, async (c) => {
       sms: !!env.TWILIO_ACCOUNT_SID,
       ai: !!env.ANTHROPIC_API_KEY || !!env.OPENAI_API_KEY,
       mtls: !!env.CLOUDFLARE_API_TOKEN && !!env.CLOUDFLARE_ZONE_ID,
-      msiSigning: !!env.MSI_SIGNING_URL,
       storage: !!env.S3_BUCKET || !!env.STORAGE_PROVIDER,
       sentry: !!env.SENTRY_DSN
     }

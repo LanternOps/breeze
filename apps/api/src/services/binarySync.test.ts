@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
@@ -65,14 +65,23 @@ const manifestSigningMocks = vi.hoisted(() => ({
     keyId: "deploy-test-aaaaaaaa",
     publicKeyB64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   })),
-  signManifest: vi.fn(async () => "test-signature-base64"),
+  signManifest: vi.fn(async (_manifestJson: string) => "test-signature-base64"),
 }));
 
 vi.mock("./manifestSigning", () => manifestSigningMocks);
 
 import { syncBinaries, syncFromGitHub } from "./binarySync";
+import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
-function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
+function fixturePlatformTrust(name: string): string {
+  return requiredPlatformTrustFor(name) ?? "release-workflow-produced";
+}
+
+function makeSignedReleaseManifest(
+  assetName: string,
+  assetBuffer: Buffer,
+  repository = "LanternOps/breeze",
+) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
   const rawPublicKey = publicDer
@@ -82,14 +91,14 @@ function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
   const manifest = Buffer.from(
     JSON.stringify({
       schemaVersion: 1,
-      repository: "LanternOps/breeze",
+      repository,
       release: "v1.2.3",
       assets: [
         {
           name: assetName,
           sha256: checksum,
           size: assetBuffer.length,
-          platformTrust: "release-workflow-produced",
+          platformTrust: fixturePlatformTrust(assetName),
         },
       ],
     }),
@@ -108,6 +117,7 @@ function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
 function makeSignedReleaseManifestMulti(
   assets: { name: string; buffer: Buffer }[],
   release = "v1.2.3",
+  repository = "LanternOps/breeze",
 ) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -121,13 +131,13 @@ function makeSignedReleaseManifestMulti(
   const manifest = Buffer.from(
     JSON.stringify({
       schemaVersion: 1,
-      repository: "LanternOps/breeze",
+      repository,
       release,
       assets: assets.map((a) => ({
         name: a.name,
         sha256: checksums.get(a.name)!,
         size: a.buffer.length,
-        platformTrust: "release-workflow-produced",
+        platformTrust: fixturePlatformTrust(a.name),
       })),
     }),
   );
@@ -145,12 +155,260 @@ describe("binarySync", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
   });
 
   afterEach(() => {
     process.env = originalEnv;
     vi.unstubAllGlobals();
+  });
+
+  describe("release-source unification (spec 3a)", () => {
+    function stubOverriddenRepoFetch(
+      repo: string,
+      assetName: string,
+      asset: Buffer,
+      signed: ReturnType<typeof makeSignedReleaseManifest>,
+    ) {
+      const fetchSpy = vi.fn(async (url: string) => {
+        if (url === `https://api.github.com/repos/${repo}/releases/latest`) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "release notes",
+              assets: [
+                {
+                  name: assetName,
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json`,
+                  size: signed.manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json.ed25519`,
+                  size: signed.signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+      return fetchSpy;
+    }
+
+    it("queries the GitHub API for the overridden repository and accepts its manifest", async () => {
+      const repo = "acme/breeze-selfhost-signing";
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("self-hosted agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const fetchSpy = stubOverriddenRepoFetch(repo, assetName, asset, signed);
+
+      const result = await syncFromGitHub();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        expect.anything(),
+      );
+      expect(result.synced).toContain("agent:linux/amd64");
+    });
+
+    it("rejects a manifest whose repository does not match the overridden source", async () => {
+      const repo = "acme/breeze-selfhost-signing";
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("self-hosted agent bytes");
+      // Manifest still claims the OFFICIAL repository — must not register.
+      const signed = makeSignedReleaseManifest(assetName, asset, "LanternOps/breeze");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubOverriddenRepoFetch(repo, assetName, asset, signed);
+
+      await expect(syncFromGitHub()).rejects.toThrow(/repository mismatch/);
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("honors the legacy GITHUB_REPO alias", async () => {
+      const repo = "legacyorg/breeze-mirror";
+      process.env.GITHUB_REPO = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("legacy alias bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const fetchSpy = stubOverriddenRepoFetch(repo, assetName, asset, signed);
+      await syncFromGitHub();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("deployment re-signing on overridden repos (spec 3b)", () => {
+    const repo = "acme/breeze-selfhost-signing";
+    const assetName = "breeze-agent-linux-amd64";
+
+    function stubRepoFetch(
+      asset: Buffer,
+      signed: ReturnType<typeof makeSignedReleaseManifest>,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  {
+                    name: assetName,
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+                    size: asset.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json`,
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json.ed25519`,
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("stamps the deploy-* key ID and a normalized manifest that verifies against the deployment key", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      // Real deployment key: signManifest signs with it so the test can
+      // assert the stored signature verifies against the deployment pubkey.
+      const { publicKey: deployPub, privateKey: deployPriv } =
+        generateKeyPairSync("ed25519");
+      manifestSigningMocks.signManifest.mockImplementation(
+        async (json: string) =>
+          sign(null, Buffer.from(json, "utf8"), deployPriv).toString("base64"),
+      );
+
+      try {
+        stubRepoFetch(asset, signed);
+        const result = await syncFromGitHub();
+        expect(result.synced).toContain("agent:linux/amd64");
+
+        expect(manifestSigningMocks.ensureActiveSigningKey).toHaveBeenCalled();
+        const insert = (dbMocks.insertValues.mock.calls[0] as any[])[0] as Record<string, unknown>;
+        expect(insert.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        // NOT the raw release manifest: a normalized per-asset update manifest.
+        expect(JSON.parse(insert.releaseManifest as string)).toEqual({
+          version: "1.2.3",
+          component: "agent",
+          platform: "linux",
+          arch: "amd64",
+          url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+          checksum: signed.checksum,
+          size: asset.length,
+        });
+        expect(
+          verify(
+            null,
+            Buffer.from(insert.releaseManifest as string, "utf8"),
+            deployPub,
+            Buffer.from(insert.manifestSignature as string, "base64"),
+          ),
+        ).toBe(true);
+
+        // Conflict-update path carries the same re-signed fields.
+        const set = (dbMocks.onConflictDoUpdate.mock.calls[0]![0] as any).set;
+        expect(set.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        expect(set.releaseManifest).toBe(insert.releaseManifest);
+      } finally {
+        // vi.clearAllMocks() clears CALLS, not implementations — restore the
+        // hoisted default so later tests keep the canned signature.
+        manifestSigningMocks.signManifest.mockImplementation(
+          async () => "test-signature-base64",
+        );
+      }
+    });
+
+    it("official-repo path is untouched: raw manifest, official key ID, no deployment key provisioning", async () => {
+      // No override env set.
+      const asset = Buffer.from("official agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: null,
+                assets: [
+                  {
+                    name: assetName,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${assetName}`,
+                    size: asset.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+
+      await syncFromGitHub();
+
+      expect(manifestSigningMocks.ensureActiveSigningKey).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+      const insert = (dbMocks.insertValues.mock.calls[0] as any[])[0] as Record<string, unknown>;
+      expect(insert.signingKeyId).toBe("release-artifact-manifest-ed25519");
+      expect(insert.releaseManifest).toBe(signed.manifest.toString("utf8"));
+    });
   });
 
   it("syncs GitHub agent versions from the signed release artifact manifest", async () => {

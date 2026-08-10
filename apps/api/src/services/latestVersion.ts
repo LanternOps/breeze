@@ -1,5 +1,6 @@
 import { captureException } from './sentry';
 
+// Deliberately not routed through releaseSource: the staleness banner tracks upstream product releases even on BYO-signing deployments.
 const GITHUB_URL = 'https://api.github.com/repos/LanternOps/breeze/releases/latest';
 // 1h keeps us well under GitHub's 60 req/hr unauthenticated rate limit while
 // letting self-hosters see a new release within an hour.

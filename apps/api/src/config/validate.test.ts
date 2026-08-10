@@ -606,6 +606,74 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BINARY_GITHUB_REPOSITORY (BYO signing, spec 3a)', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    it('refuses to boot on a malformed repository in any environment', () => {
+      withEnv({ ...validEnv, BINARY_GITHUB_REPOSITORY: 'not-a-repo' }, () => {
+        expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+      });
+    });
+
+    it('refuses to boot on a malformed legacy GITHUB_REPO alias in any environment', () => {
+      withEnv({ ...validEnv, GITHUB_REPO: 'not-a-repo' }, () => {
+        expect(() => validateConfig()).toThrow(/GITHUB_REPO/);
+      });
+    });
+
+    it('treats an empty string (compose ${VAR:-} interpolation) as unset', () => {
+      withEnv({ ...validEnv, BINARY_GITHUB_REPOSITORY: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('production: overriding the release source requires the manifest trust root', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+        },
+      );
+    });
+
+    it('production: overriding via legacy GITHUB_REPO requires the manifest trust root', () => {
+      withEnv(
+        {
+          ...prodBase,
+          GITHUB_REPO: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/overrides the release source/);
+        },
+      );
+    });
+
+    it('production: override boots when the trust root is set', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+  });
+
   describe('AGENT_BACKUP_SERVER_URL', () => {
     it('accepts a valid https URL', () => {
       withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'https://new.example.com' }, () => {
@@ -1623,7 +1691,6 @@ describe('validateConfig', () => {
   //   - Email (Resend):                                  EMAIL_PROVIDER=resend
   //                                                       OR (auto + RESEND_API_KEY)
   //   - Cloudflare mTLS:                                 CLOUDFLARE_API_TOKEN set
-  //   - MSI signing:                                     MSI_SIGNING_URL set
   //
   // Stripe is NOT present in apps/api (it lives in the separate breeze-billing
   // service). The audit plan listed STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
@@ -1824,22 +1891,10 @@ describe('validateConfig', () => {
       });
     });
 
-    // --- MSI signing (MSI_SIGNING_URL set) ----------------------------------
-    it('refuses to boot when MSI_SIGNING_URL is set but MSI_SIGNING_CF_ACCESS_SECRET is missing', () => {
+    it('MSI_SIGNING_URL is inert: production boots without MSI_SIGNING_CF_ACCESS_SECRET', () => {
       withEnv({
         ...prodBase,
-        MSI_SIGNING_URL: 'https://sign.2breeze.app/sign-breeze-agent',
-        MSI_SIGNING_CF_ACCESS_ID: 'cf-access-id',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
-      }, () => {
-        expect(() => validateConfig()).toThrow(/MSI_SIGNING_CF_ACCESS_SECRET/);
-      });
-    });
-
-    it('does not require MSI signing secrets when URL is unset', () => {
-      withEnv({
-        ...prodBase,
-        MSI_SIGNING_URL: '',
+        MSI_SIGNING_URL: 'https://sign.example.com/sign-breeze-agent',
         MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
@@ -1887,8 +1942,6 @@ describe('validateConfig', () => {
         RESEND_API_KEY: '',
         CLOUDFLARE_API_TOKEN: 'cf',
         CLOUDFLARE_ZONE_ID: '',
-        MSI_SIGNING_URL: 'https://sign',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });

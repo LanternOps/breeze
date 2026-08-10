@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
+import { OFFICIAL_RELEASE_REPOSITORY } from '../services/releaseSource';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -499,6 +500,31 @@ const envObjectSchema = z
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_NAME: z.string().optional(),
     BINARY_SOURCE: z.string().optional(),
+    // BYO signing (spec 3a): the release-source repository override consumed by
+    // services/releaseSource.ts. Empty string means "unset" — both compose
+    // files map it as `${BINARY_GITHUB_REPOSITORY:-}`, which always injects the
+    // key. Shape is validated in EVERY environment so a typo'd override
+    // boot-refuses instead of silently building garbage GitHub URLs.
+    BINARY_GITHUB_REPOSITORY: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
+          'BINARY_GITHUB_REPOSITORY must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        )
+        .optional(),
+    ),
+    GITHUB_REPO: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
+          'GITHUB_REPO must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        )
+        .optional(),
+    ),
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
@@ -590,12 +616,6 @@ const envObjectSchema = z
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),
     CLOUDFLARE_ZONE_ID: z.string().optional(),
-
-    // MSI signing — when MSI_SIGNING_URL is set, CF Access secret is required
-    // (the signing tunnel rejects unauthenticated requests; without it every
-    // first installer-link request 5xxs).
-    MSI_SIGNING_URL: z.string().optional(),
-    MSI_SIGNING_CF_ACCESS_SECRET: z.string().optional(),
 
     // Delegant M365 helpdesk — DELEGANT_BASE_URL is the soft-enable indicator.
     // When set, the service token + principal signing material are required;
@@ -1115,6 +1135,32 @@ const envSchema = envObjectSchema
         });
       }
 
+      // BYO signing (spec 3a): pointing the deployment at a NON-official
+      // release repository only makes sense with a manifest trust root that is
+      // the OVERRIDING repository's release key — without one, github-mode
+      // sync would either fail closed on every release or (if the blanket
+      // production key rule above were ever relaxed) accept unverified
+      // third-party binaries. Kept as its own rule with its own message even
+      // though the blanket rule currently subsumes the "unset" case.
+      const releaseRepositoryOverrideKey = data.BINARY_GITHUB_REPOSITORY
+        ? 'BINARY_GITHUB_REPOSITORY'
+        : 'GITHUB_REPO';
+      const releaseRepositoryOverride = (
+        data.BINARY_GITHUB_REPOSITORY ?? data.GITHUB_REPO
+      )?.trim().toLowerCase();
+      if (
+        releaseRepositoryOverride &&
+        releaseRepositoryOverride !== OFFICIAL_RELEASE_REPOSITORY &&
+        !hasReleaseArtifactManifestPublicKey(data)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [releaseRepositoryOverrideKey],
+          message:
+            `${releaseRepositoryOverrideKey} overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository's release manifest public key (NOT the official Breeze key).`,
+        });
+      }
+
       rejectSecretReuse(
         [
           { key: 'JWT_SECRET', value: data.JWT_SECRET },
@@ -1253,7 +1299,7 @@ const envSchema = envObjectSchema
       // Indicator semantics:
       //   - boolean flags  → MCP_OAUTH_ENABLED
       //   - "URL is set"   → BREEZE_BILLING_URL, BILLING_SERVICE_URL,
-      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN, MSI_SIGNING_URL
+      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN
       //   - explicit value → EMAIL_PROVIDER=resend|smtp|mailgun
       const truthyFlag = (raw: string | undefined): boolean =>
         ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
@@ -1352,20 +1398,6 @@ const envSchema = envObjectSchema
         'CLOUDFLARE_ZONE_ID',
         data.CLOUDFLARE_ZONE_ID,
         'CLOUDFLARE_API_TOKEN is set (mTLS issuance against the configured zone)',
-        ctx,
-      );
-
-      // MSI signing (MSI_SIGNING_URL as indicator).
-      // The Cloudflare-fronted signing tunnel rejects unauthenticated requests.
-      // The signing service also accepts a per-account X-API-Key, but the
-      // CF Access service-token pair is mandatory in the current deploy —
-      // without it every /installer/link request 5xxs.
-      const msiSigningEnabled = Boolean(data.MSI_SIGNING_URL?.trim());
-      requireIf(
-        msiSigningEnabled,
-        'MSI_SIGNING_CF_ACCESS_SECRET',
-        data.MSI_SIGNING_CF_ACCESS_SECRET,
-        'MSI_SIGNING_URL is set (Cloudflare Access service-token auth to the signing tunnel)',
         ctx,
       );
 

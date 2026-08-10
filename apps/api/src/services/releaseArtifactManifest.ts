@@ -5,6 +5,7 @@ import {
   verify as verifySignature,
   type KeyObject,
 } from "node:crypto";
+import { assertDistributableReleaseAsset } from './releaseAssetTrust';
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -46,6 +47,7 @@ export type VerifiedReleaseArtifact = {
   release: string;
   repository: string;
   platformTrust: string | null;
+  intendedUse: string | null;
 };
 
 function sha256Hex(buffer: Buffer): string {
@@ -231,6 +233,7 @@ export async function verifyReleaseArtifactBuffer(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
+    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
   };
 }
 
@@ -285,6 +288,15 @@ function selectManifestAsset(args: {
       `Release artifact manifest has invalid size for ${args.assetName}`,
     );
   }
+  // Spec 3c: positive allowlist, enforced for EVERY manifest verification —
+  // github sync registration, installer/support asset pre-flight, and recovery
+  // media all funnel through here. expectedPlatformTrust (below) remains as a
+  // caller-supplied stricter expectation on top of this baseline.
+  assertDistributableReleaseAsset({
+    assetName: args.assetName,
+    platformTrust: typeof entry.platformTrust === 'string' ? entry.platformTrust : null,
+    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+  });
   if (
     args.expectedPlatformTrust &&
     entry.platformTrust !== args.expectedPlatformTrust
@@ -326,6 +338,7 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
+    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
   };
 }
 

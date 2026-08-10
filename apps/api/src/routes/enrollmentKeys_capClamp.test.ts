@@ -73,8 +73,6 @@ vi.mock('../services/enrollmentKeySecurity', () => ({
   hashEnrollmentKeyCandidates: vi.fn((key: string) => [`hashed:${key}`]),
 }));
 
-vi.mock('../services/msiSigning', () => ({ MsiSigningService: { fromEnv: vi.fn(() => null) } }));
-
 vi.mock('../services/installerBuilder', () => ({
   buildMacosInstallerZip: vi.fn(),
   fetchRegularMsi: vi.fn(),
