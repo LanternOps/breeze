@@ -2137,6 +2137,12 @@
         "deploy/environment.mdx",
         "reference/troubleshooting.mdx"
       ]
+    },
+    {
+      "pattern": "apps/web/src/components/devices/MigrationRequiredBanner.tsx",
+      "docs": [
+        "agents/self-host-migration.mdx"
+      ]
     }
   ]
 }

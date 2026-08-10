@@ -7,10 +7,7 @@ import { useFeaturesStore } from '../../stores/featuresStore';
 import { usePermissions } from '../../lib/permissions';
 import type { DeviceStats } from '../dashboard/types';
 
-// Existing docs page covering how the agent is installed/re-installed against a
-// self-hosted server — the migration path for devices still carrying the hosted
-// agent edition.
-const MIGRATION_DOCS_URL = 'https://docs.breezermm.com/agents/installation/';
+const MIGRATION_DOCS_URL = 'https://docs.breezermm.com/agents/self-host-migration/';
 
 /**
  * Persistent, non-dismissible notice for self-hosted admins: devices in scope

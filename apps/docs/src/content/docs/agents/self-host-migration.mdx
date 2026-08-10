@@ -1,0 +1,77 @@
+---
+title: Migrating to the Self-Host Agent Edition
+description: Move devices off hosted-edition agent builds and onto the self-host agent edition for self-hosted Breeze servers.
+sidebar:
+  order: 7
+  label: Self-Host Agent Migration
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+If your self-hosted Breeze dashboard shows a persistent banner saying some of
+your devices are running the **hosted agent edition**, this page explains what
+that means and how to migrate those devices. The banner is shown to
+administrators only and clears on its own once every affected device has been
+migrated.
+
+## What the banner means
+
+Breeze ships the agent in two editions:
+
+- **Self-host edition** — the standard build published on GitHub Releases,
+  which is also what your own server's install links and downloads serve by
+  default (see [Agent Binary Distribution](/deploy/binaries/)). It connects to
+  any Breeze server. This is the edition every device on a self-hosted server
+  should run.
+- **Hosted edition** — built exclusively for the Breeze-hosted cloud and
+  restricted to hosted control-plane servers.
+
+A device is counted in the banner when its agent reports that it is a
+hosted-edition build talking to your self-hosted server. This usually means the
+agent was originally installed from an installer or download link that came
+from the hosted service, rather than from your own server.
+
+<Aside type="caution">
+Hosted-edition agents currently keep working against a self-hosted server —
+they only report the mismatch. Future hosted-edition releases enforce the
+restriction and will refuse to run against a non-hosted server. Migrate
+affected devices before updating them.
+</Aside>
+
+## Migrate a device
+
+Migration is an in-place reinstall with the self-host edition. The device's
+enrollment, identity, and history are preserved — the agent keeps its existing
+configuration and does not re-enroll.
+
+<Steps>
+
+1. Get the self-host agent from **your own server**: use the install command or
+   installer download from **Devices → Add Device** in your dashboard. Anything
+   your server hands out is the self-host edition.
+
+2. Run it on the affected device, over the existing installation:
+
+   - **Windows** — run the MSI. It upgrades the existing installation in place
+     and keeps the agent's configuration.
+   - **macOS / Linux** — run the install script, or replace the binary and run
+     `breeze-agent service install`, which reinstalls the binary and restarts
+     the service without re-enrolling. See
+     [Agent Installation](/agents/installation/) for the full commands.
+
+3. Let the device check in. The agent reports its edition on every check-in,
+   so the flag clears automatically the first time the self-host build starts.
+
+</Steps>
+
+<Aside type="note">
+Do **not** uninstall the agent, decommission the device, or re-enroll with a
+new enrollment key first — none of that is needed, and re-enrolling is only
+appropriate when you intentionally want a new device record.
+</Aside>
+
+## Verify
+
+The banner's device count drops as each migrated device checks in, and the
+banner disappears when the count reaches zero. There is nothing to acknowledge
+or dismiss manually.
