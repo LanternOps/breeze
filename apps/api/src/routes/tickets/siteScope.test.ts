@@ -54,7 +54,10 @@ const { state, tables, dbMock } = vi.hoisted(() => {
   return { state, tables, dbMock };
 });
 
-vi.mock('drizzle-orm', () => ({
+// Spread the real module rather than replacing it: schema modules evaluate
+// other drizzle-orm exports (notably `sql`) at import time.
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
   or: (...args: unknown[]) => ({ op: 'or', args }),

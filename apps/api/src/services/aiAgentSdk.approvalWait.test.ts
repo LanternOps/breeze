@@ -43,7 +43,10 @@ vi.mock('../db/schema', () => ({
   approvalRequests: { id: 'approval_requests.id', status: 'approval_requests.status' },
 }));
 
-vi.mock('drizzle-orm', () => ({
+// Spread the real module rather than replacing it: schema modules evaluate
+// other drizzle-orm exports (notably `sql`) at import time.
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   eq: vi.fn((...args: unknown[]) => ({ _eq: args })),
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   isNull: vi.fn((...args: unknown[]) => ({ _isNull: args })),

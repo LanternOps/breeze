@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
+import { contacts } from './contacts';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -46,6 +47,12 @@ export const portalUsers = pgTable('portal_users', {
   entraTenantId: text('entra_tenant_id'),
   authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
   linkedUserId: uuid('linked_user_id').references(() => users.id),
+  // A portal user is a LOGIN attached to a contact, not a second kind of
+  // person (#3258). Nullable because the link is established by the backfill
+  // in 2026-08-19-contacts.sql and by inboundEmail/resolveOrg.ts going
+  // forward; ON DELETE SET NULL so deleting a contact never silently destroys
+  // someone's portal login.
+  contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
