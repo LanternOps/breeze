@@ -924,6 +924,26 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
   }
 }
 
+// An error body may offer a recoverable next step as `{ actionUrl, actionLabel }`.
+// Only absolute http(s) URLs are accepted: the value is rendered as an href, so a
+// `javascript:`/`data:` scheme must never survive even though the only producer
+// today is our own API reading an operator-set env var.
+function errorAction(data: unknown): { url: string; label: string } | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const { actionUrl, actionLabel } = data as { actionUrl?: unknown; actionLabel?: unknown };
+  if (typeof actionUrl !== 'string' || typeof actionLabel !== 'string' || !actionLabel.trim()) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(actionUrl);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
+  return { url: parsed.href, label: actionLabel };
+}
+
 // SR2-21: register-partner is now email-first. The endpoint creates NOTHING and
 // returns a uniform `{ success: true, message }` whether or not the address
 // already has an account (anti-enumeration). No `user`/`partner`/`tokens`/
@@ -936,7 +956,7 @@ export async function apiRegisterPartner(
   name: string
 ): Promise<
   | { success: true; message: string }
-  | { success: false; error: string }
+  | { success: false; error: string; action?: { url: string; label: string } }
 > {
   try {
     const response = await fetch(buildApiUrl('/auth/register-partner'), {
@@ -949,7 +969,12 @@ export async function apiRegisterPartner(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Registration failed') };
+      // A rejection may carry a recoverable next step (BUSINESS_EMAIL_REQUIRED
+      // returns a scheduling link). Dropping it would leave the copy telling
+      // the user to "schedule a call" with nothing to click. This is a failure
+      // shape only — it never runs on the success path, so it cannot
+      // reintroduce the enumeration branch SR2-21 removed.
+      return { success: false, error: extractApiError(data, 'Registration failed'), action: errorAction(data) };
     }
 
     return { success: true, message: data.message };

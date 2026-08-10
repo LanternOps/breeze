@@ -6,6 +6,7 @@ import {
   apiLogin,
   apiLogout,
   apiPreviewInvite,
+  apiRegisterPartner,
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
@@ -1108,5 +1109,64 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const [message] = warnSpy.mock.calls[0] as [string];
     expect(message).toContain('locale resolution skipped');
+  });
+});
+
+describe('apiRegisterPartner recovery action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('surfaces an https recovery link from a rejection body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        makeResponse(
+          {
+            error: 'Please sign up with your business email address.',
+            code: 'BUSINESS_EMAIL_REQUIRED',
+            actionUrl: 'https://breezermm.com/contact',
+            actionLabel: 'Schedule a call'
+          },
+          false,
+          400
+        )
+      )
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@gmail.com', 'pw', 'Jane');
+
+    expect(result).toMatchObject({
+      success: false,
+      action: { url: 'https://breezermm.com/contact', label: 'Schedule a call' }
+    });
+  });
+
+  it.each([
+    ['a javascript: scheme', 'javascript:alert(1)'],
+    ['a data: scheme', 'data:text/html,<script>alert(1)</script>'],
+    ['a relative path', '/contact']
+  ])('drops %s rather than rendering it as an href', async (_label, actionUrl) => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(makeResponse({ error: 'nope', actionUrl, actionLabel: 'Go' }, false, 400))
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@gmail.com', 'pw', 'Jane');
+
+    expect(result).toEqual({ success: false, error: 'nope', action: undefined });
+  });
+
+  it('omits the action when the body carries no next step', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Registration failed' }, false, 400))
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane');
+
+    expect(result).toEqual({ success: false, error: 'Registration failed', action: undefined });
   });
 });
