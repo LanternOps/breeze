@@ -896,6 +896,21 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 			default:
 			}
 
+			// Containment (#3397): unlike AnalyzeFilesystem (metadata only), this
+			// walk opens and pattern-matches file CONTENT, so a benign root that
+			// happens to contain a credential store would turn the scan into an
+			// oracle over it. The per-entry cost rides along with the two path
+			// predicates already evaluated here.
+			if isSensitiveReadPath(path) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				mu.Lock()
+				filesSkipped++
+				mu.Unlock()
+				return nil
+			}
+
 			if d.IsDir() {
 				if shouldExcludeSensitivePath(path, scope.excludePaths) || shouldSuppressSensitivePath(path, scope) {
 					return filepath.SkipDir
@@ -932,6 +947,14 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 
 	for _, include := range scope.includePaths {
 		if shouldExcludeSensitivePath(include, scope.excludePaths) {
+			continue
+		}
+		// Containment (#3397): includePaths is caller-supplied, so gate each
+		// scan root. Recorded as a scan error rather than skipped silently.
+		if err := enforceReadContainment(include); err != nil {
+			mu.Lock()
+			recordErrors([]SensitiveDataScanError{{Path: include, Error: err.Error()}})
+			mu.Unlock()
 			continue
 		}
 		info, err := os.Stat(include)

@@ -90,6 +90,15 @@ func handleSecurityThreatQuarantine(_ *Heartbeat, cmd Command) tools.CommandResu
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
+	// Containment (#3397): threat quarantine is an os.Rename into a
+	// caller-chosen directory — the same laundering primitive as
+	// tools.QuarantineFile, just reached through the threat surface instead of
+	// the file browser. Gated here rather than inside internal/security so that
+	// package keeps no dependency on the tools deny-list.
+	if err := tools.EnforcePathContainment("quarantine", filepath.Clean(path)); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	quarantineDir := tools.GetPayloadString(cmd.Payload, "quarantineDir", security.DefaultQuarantineDir())
 	dest, err := security.QuarantineThreat(security.Threat{
 		Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
@@ -114,6 +123,13 @@ func handleSecurityThreatRemove(_ *Heartbeat, cmd Command) tools.CommandResult {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
+	// Containment (#3397): destructive-but-not-disclosing, gated for the same
+	// reason as tools.SecureDeleteFile — an unrecoverable delete of a credential
+	// store is not a threat-remediation outcome anyone wants.
+	if err := tools.EnforcePathContainment("delete", filepath.Clean(path)); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	err := security.RemoveThreat(security.Threat{
 		Name:     tools.GetPayloadString(cmd.Payload, "name", ""),
 		Type:     tools.GetPayloadString(cmd.Payload, "threatType", "malware"),
@@ -141,10 +157,24 @@ func handleSecurityThreatRestore(_ *Heartbeat, cmd Command) tools.CommandResult 
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
-	if err := os.MkdirAll(filepath.Dir(originalPath), 0755); err != nil {
+	// Containment (#3397): both endpoints are caller-supplied, making restore an
+	// arbitrary source→destination move. The source is read-gated (it relocates
+	// content to an operator-chosen path) and the destination is write-gated
+	// (otherwise this is a credential-implant primitive) — the same policy
+	// tools.TrashRestore applies.
+	cleanSource := filepath.Clean(source)
+	cleanOriginal := filepath.Clean(originalPath)
+	if err := tools.EnforcePathContainment("restore", cleanSource); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := tools.EnforcePathContainment("write", cleanOriginal); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cleanOriginal), 0755); err != nil {
 		return tools.NewErrorResult(fmt.Errorf("failed to create restore directory: %w", err), time.Since(start).Milliseconds())
 	}
-	if err := os.Rename(source, originalPath); err != nil {
+	if err := os.Rename(cleanSource, cleanOriginal); err != nil {
 		return tools.NewErrorResult(fmt.Errorf("failed to restore file: %w", err), time.Since(start).Milliseconds())
 	}
 	return tools.NewSuccessResult(map[string]any{

@@ -37,6 +37,16 @@ func QuarantineFile(payload map[string]any) CommandResult {
 
 	quarantineDir := GetPayloadString(payload, "quarantineDir", quarantineDefaultDir())
 	sourcePath := filepath.Clean(path)
+
+	// Containment (#3397). Not in the issue's list of seven, found while
+	// sweeping the package: quarantine is a rename into a caller-chosen
+	// directory, i.e. the same laundering primitive as RenameFile —
+	// QuarantineFile(/etc/shadow) parks the hashes at
+	// /tmp/breeze-quarantine/<ts>_shadow, which ReadFile would then serve.
+	if err := EnforcePathContainment("quarantine", sourcePath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to stat file: %w", err), time.Since(start).Milliseconds())
@@ -115,6 +125,15 @@ func SecureDeleteFile(payload map[string]any) CommandResult {
 	}
 
 	targetPath := filepath.Clean(path)
+
+	// Containment (#3397). Destructive-but-not-disclosing, gated for the same
+	// reason as DeleteFile's permanent branch: an unrecoverable overwrite of a
+	// credential store has no legitimate remediation use, and secureDeletePath
+	// is strictly less recoverable than the trash path that is already refused.
+	if err := EnforcePathContainment("delete", targetPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	if err := secureDeletePath(targetPath); err != nil {
 		return NewErrorResult(fmt.Errorf("secure delete failed: %w", err), time.Since(start).Milliseconds())
 	}
@@ -272,6 +291,16 @@ func EncryptFile(payload map[string]any) CommandResult {
 	}
 
 	sourcePath := filepath.Clean(path)
+
+	// Containment (#3397): EncryptFile reads the whole file into memory and then
+	// secure-wipes the source. Both halves are disqualifying for a credential
+	// store — the read is disclosure, and the wipe would irrecoverably brick
+	// authentication on the host. Remediation targets ordinary documents
+	// surfaced by ScanSensitiveData, never the credential deny-list.
+	if err := EnforcePathContainment("encrypt", sourcePath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	info, err := os.Stat(sourcePath)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to stat file: %w", err), time.Since(start).Milliseconds())
