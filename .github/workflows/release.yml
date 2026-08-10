@@ -2281,6 +2281,71 @@ jobs:
           )
           PY
 
+      # BYO signing (Deliverable 1) non-regression: the manifest must gain
+      # sourceCommit and exactly the expected signing-input entries, and the
+      # signed set's platform-trust classification must be unchanged. Runs
+      # before the manifest is signed so a violation blocks the release.
+      - name: Verify signing-input manifest entries
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          export SOURCE_COMMIT
+          python3 <<'PY'
+          import json
+          import os
+          import re
+
+          with open("release-assets/release-artifact-manifest.json") as fh:
+              manifest = json.load(fh)
+
+          source_commit = manifest.get("sourceCommit")
+          assert isinstance(source_commit, str) and re.fullmatch(r"[0-9a-f]{40}", source_commit), \
+              f"sourceCommit missing or malformed: {source_commit!r}"
+          assert source_commit == os.environ["SOURCE_COMMIT"], \
+              f"sourceCommit {source_commit} != checked-out commit {os.environ['SOURCE_COMMIT']}"
+
+          EXPECTED_UNSIGNED = {
+              "breeze-agent-windows-amd64-unsigned.exe",
+              "breeze-backup-windows-amd64-unsigned.exe",
+              "breeze-watchdog-windows-amd64-unsigned.exe",
+              "breeze-user-helper-windows-amd64-unsigned.exe",
+              "breeze-agent-darwin-amd64-unsigned",
+              "breeze-agent-darwin-arm64-unsigned",
+              "breeze-backup-darwin-amd64-unsigned",
+              "breeze-backup-darwin-arm64-unsigned",
+              "breeze-desktop-helper-darwin-amd64-unsigned",
+              "breeze-desktop-helper-darwin-arm64-unsigned",
+              "breeze-watchdog-darwin-amd64-unsigned",
+              "breeze-watchdog-darwin-arm64-unsigned",
+          }
+          by_name = {a["name"]: a for a in manifest["assets"]}
+          missing = EXPECTED_UNSIGNED - set(by_name)
+          assert not missing, f"missing unsigned signing-input assets: {sorted(missing)}"
+          for name in sorted(EXPECTED_UNSIGNED):
+              entry = by_name[name]
+              assert entry.get("platformTrust") == "none", \
+                  f"{name}: platformTrust {entry.get('platformTrust')!r} != 'none'"
+              assert entry.get("intendedUse") == "signing-input", \
+                  f"{name}: intendedUse {entry.get('intendedUse')!r} != 'signing-input'"
+          for name, entry in by_name.items():
+              if name in EXPECTED_UNSIGNED:
+                  continue
+              assert "-unsigned" not in name, \
+                  f"unexpected -unsigned asset outside the expected set: {name}"
+              assert "intendedUse" not in entry, \
+                  f"{name}: signed-set asset must not carry intendedUse"
+              assert entry.get("platformTrust") != "none", \
+                  f"{name}: signed-set asset must not have platformTrust 'none'"
+          # Signed-set spot checks, one per trust class (classification-order
+          # non-regression for the extension branches).
+          assert by_name["breeze-agent.msi"]["platformTrust"] == "windows-authenticode-required"
+          assert by_name["breeze-agent-windows-amd64.exe"]["platformTrust"] == "windows-authenticode-required"
+          assert by_name["breeze-agent-darwin-arm64"]["platformTrust"] == "macos-developer-id-notarization-required"
+          assert by_name["breeze-agent-linux-amd64"]["platformTrust"] == "release-workflow-produced"
+          print(f"OK: {len(EXPECTED_UNSIGNED)} signing-input assets verified; sourceCommit={source_commit}")
+          PY
+
       - name: Sign release artifact manifest
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -2507,6 +2572,16 @@ jobs:
           path: staging/helper
           pattern: 'breeze-helper-*'
           merge-multiple: true
+
+      # BYO signing (Deliverable 1): -unsigned signing inputs are published
+      # release assets only. Keep them out of the binaries-init image — the
+      # API's local scanner would ignore them (parseBinaryFilename anchors on
+      # breeze-<component>-<os>-<arch>[.exe]) but they'd bloat the image and
+      # the /target volume for nothing.
+      - name: Drop unsigned signing-input files from image staging
+        run: |
+          set -euo pipefail
+          find staging -type f -name '*-unsigned*' -print -delete
 
       - name: Write VERSION file
         env:
