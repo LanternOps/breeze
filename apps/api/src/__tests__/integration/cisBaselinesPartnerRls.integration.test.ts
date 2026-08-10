@@ -33,7 +33,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { cisBaselines, devices } from '../../db/schema';
+import { cisBaselines, cisBaselineResults, devices } from '../../db/schema';
 import { selectCisScanTargetDevices } from '../../jobs/cisJobs';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
@@ -52,6 +52,7 @@ afterEach(async () => {
   if (createdBaselines.length === 0 && createdDevices.length === 0) return;
   await withDbAccessContext(SYSTEM_CTX, async () => {
     if (createdDevices.length > 0) {
+      await db.delete(cisBaselineResults).where(inArray(cisBaselineResults.deviceId, createdDevices));
       await db.delete(devices).where(inArray(devices.id, createdDevices));
     }
     if (createdBaselines.length > 0) {
@@ -291,6 +292,47 @@ describe('cis_baselines RLS — dual-axis (2026-08-10 migration)', () => {
         db.select().from(cisBaselines).where(eq(cisBaselines.id, id)),
       );
       expect(still).toHaveLength(1);
+    });
+  });
+
+  // Risk #2 from the plan, proven rather than inferred. Four readers
+  // INNER JOIN cis_baselines (/cis/compliance, the device report, and two AI
+  // tools). If a partner-wide baseline were invisible to an org session, the
+  // join would drop that org's OWN result rows — a compliance dashboard
+  // silently going empty for a customer who never touched the feature. This
+  // is the concrete reason the SELECT-only read branch exists.
+  describe('inner-joined results survive for an org user', () => {
+    it('an org user still sees their own results joined to a partner-wide baseline', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org.id });
+      const deviceId = await seedDevice(org.id, site.id);
+      const baselineId = await seedPartnerWide(partner.id);
+
+      await withDbAccessContext(SYSTEM_CTX, () =>
+        db.insert(cisBaselineResults).values({
+          orgId: org.id, // the DEVICE's org — the baseline has none
+          deviceId,
+          baselineId,
+          checkedAt: new Date(),
+          totalChecks: 10,
+          passedChecks: 7,
+          failedChecks: 3,
+          score: 70,
+          findings: [],
+        }),
+      );
+
+      const rows = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        db
+          .select({ resultId: cisBaselineResults.id, baselineName: cisBaselines.name })
+          .from(cisBaselineResults)
+          .innerJoin(cisBaselines, eq(cisBaselineResults.baselineId, cisBaselines.id))
+          .where(eq(cisBaselineResults.deviceId, deviceId)),
+      );
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.baselineName).toBe(BASE.name);
     });
   });
 
