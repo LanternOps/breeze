@@ -61,6 +61,24 @@ func makeBenignDir(t *testing.T, root string) string {
 	return filepath.Join(root, "docs")
 }
 
+// scanScope builds a ScanSensitiveData scope rooted at root with the default
+// exclude list explicitly CLEARED.
+//
+// This is load-bearing, not tidiness: defaultSensitiveExcludePaths() contains
+// "/tmp", which is exactly where t.TempDir() lives on Linux — so the fixture
+// would be dropped by the exclude filter before the containment check ever ran,
+// and the test would pass for the wrong reason. (It did: this suite was green on
+// macOS, where t.TempDir() is under /var/folders, and red on Linux CI.) Clearing
+// the excludes leaves containment as the only thing that can filter the fixture.
+// An empty list is honoured because parseSensitiveScope presence-checks the key.
+func scanScope(root string) map[string]any {
+	return map[string]any{
+		"includePaths":   []any{root},
+		"excludePaths":   []any{},
+		"timeoutSeconds": 5,
+	}
+}
+
 // sourceGatedOp is one operation whose SOURCE/target path must be refused when
 // it names a credential store. `invoke` receives the target path plus a scratch
 // directory it may use for a destination.
@@ -136,7 +154,7 @@ func sourceGatedOps() []sourceGatedOp {
 		{name: "scan sensitive data includePaths", needsDir: true, denialInResult: true,
 			invoke: func(_ *testing.T, target, _ string) CommandResult {
 				return ScanSensitiveData(map[string]any{
-					"scope": map[string]any{"includePaths": []any{target}, "timeoutSeconds": 5},
+					"scope": scanScope(target),
 				})
 			}},
 	}
@@ -487,9 +505,7 @@ func TestScanSensitiveDataSkipsCredentialStoresUnderBenignRoot(t *testing.T) {
 		}
 	}
 
-	res := ScanSensitiveData(map[string]any{
-		"scope": map[string]any{"includePaths": []any{root}, "timeoutSeconds": 5},
-	})
+	res := ScanSensitiveData(map[string]any{"scope": scanScope(root)})
 	if res.Status != "completed" {
 		t.Fatalf("expected the scan to complete, got: %q", res.Error)
 	}
