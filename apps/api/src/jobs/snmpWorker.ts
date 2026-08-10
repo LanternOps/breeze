@@ -361,10 +361,19 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
       // `lastPollAttemptedAt` NULL so the scheduler re-selects this device on
       // every 60s tick: exactly the hot loop #3217 fixed.
       //
-      // The failure is self-healing. Nothing retries this payload (no `attempts`
-      // option is set), so the job settles in 'failed'; the next scheduler tick
-      // sees that non-reusable state, removes it, and enqueues a fresh job
-      // carrying the device's current org.
+      // The failure is self-healing, on the device's own polling cadence rather
+      // than the scheduler's. Nothing retries this payload (no `attempts` option
+      // is set), so the job settles in 'failed'. The attempt stamp above is what
+      // keeps this device off the next few 60s ticks, so recovery lands the next
+      // time it is genuinely DUE — one `pollingInterval` later (300s by default;
+      // `consecutiveFailures` is untouched here, so no backoff multiplier
+      // applies). At that point `enqueueSnmpPoll` sees the non-reusable 'failed'
+      // state, removes it, and enqueues a fresh job carrying the current org.
+      //
+      // In practice this branch is the backstop, not the usual route: the
+      // enqueue-side check in `enqueueSnmpPoll` normally replaces a drifted
+      // payload before a worker ever picks it up. Reaching here means the job
+      // was already 'active' when the org changed, or that replacement failed.
       const message =
         `[SnmpWorker] Refusing SNMP poll for device ${data.deviceId}: stale job payload org `
         + `${inputs.payloadOrgId} does not match live device org ${inputs.deviceOrgId}. `
@@ -545,6 +554,7 @@ export async function enqueueSnmpPoll(
       // BullMQ rejects the removal. That job is already in flight, and
       // `loadPollDispatchInputs` will refuse it on the same mismatch, so leave it
       // to the worker-side guard rather than racing the lock.
+      //
       // A payload with no `orgId` at all counts as drifted, not as a match. It
       // cannot be reconciled against the live row, so the worker would refuse it
       // anyway; replacing it here turns a guaranteed job failure into a correct
@@ -558,7 +568,29 @@ export async function enqueueSnmpPoll(
         `[SnmpWorker] Replacing queued poll for device ${deviceId}: payload org ${existingOrgId} `
         + `is stale (device is now in org ${orgId}).`
       );
-      await existing.remove();
+      try {
+        await existing.remove();
+      } catch (err) {
+        // The `state === 'active'` check above is a snapshot: with concurrency 10
+        // a 'waiting' job can be picked up and locked between `getState()` and
+        // here, and BullMQ then rejects the removal ("locked by another worker").
+        // Terminal-state removals below cannot hit this — only this new
+        // drifted-reuse path exposes `remove()` to a lockable job.
+        //
+        // Handled, not swallowed: the race collapses into the case the branch
+        // above already delegates. The job is now in flight with a payload we
+        // know to be stale, and `loadPollDispatchInputs` refuses exactly that on
+        // the same mismatch, so no credentials go out either way. Falling through
+        // to `add()` would be pointless — BullMQ returns the existing job for a
+        // duplicate jobId rather than replacing it — so report the job that is
+        // actually queued and let the worker-side fence finish the job.
+        console.warn(
+          `[SnmpWorker] Could not replace the stale-org poll for device ${deviceId} `
+          + '(it became active mid-replacement); the worker-side org guard will refuse it:',
+          err
+        );
+        return existing.id as string;
+      }
     } else if (state === 'completed' || state === 'failed') {
       await existing.remove();
     }

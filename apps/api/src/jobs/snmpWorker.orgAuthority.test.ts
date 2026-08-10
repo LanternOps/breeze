@@ -290,6 +290,48 @@ describe('snmpWorker org authority (#3226)', () => {
       expect(eqCalls).toContainEqual(['devices.orgId', LIVE_ORG]);
     });
 
+    // The two log lines below were also switched off the payload org by this
+    // fix. Neither is a credential path — nothing dispatches on either — but a
+    // regression to `data.orgId` would silently reintroduce a stale-payload read
+    // into the very function being hardened, and nothing else would catch it.
+    it('reports the live row org, not the payload org, when the org has no online agent', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockDb.select
+        .mockReturnValueOnce(selectChain([deviceRow(LIVE_ORG)]) as never)
+        .mockReturnValueOnce(selectChain([{ oids: [{ oid: '1.3.6.1.2.1.1.3.0' }] }]) as never)
+        .mockReturnValueOnce(selectChain([]) as never);
+
+      const result = await processPollDevice({
+        type: 'poll-device',
+        deviceId: DEVICE_ID,
+        orgId: LIVE_ORG,
+      });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(LIVE_ORG));
+      warn.mockRestore();
+    });
+
+    it('does not dispatch when the selected agent is no longer connected', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      wireDispatchSelects(LIVE_ORG, 'agent-live');
+      agentWsMock.isAgentConnected.mockReturnValue(false);
+
+      const result = await processPollDevice({
+        type: 'poll-device',
+        deviceId: DEVICE_ID,
+        orgId: LIVE_ORG,
+      });
+
+      expect(result).toEqual({ dispatched: false, agentId: null });
+      expect(agentWsMock.sendCommandToAgent).not.toHaveBeenCalled();
+      expect(decryptMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(LIVE_ORG));
+      // A poll that never left the building must not count against the device.
+      expect(updateLog).not.toContain('dispatchCount');
+      warn.mockRestore();
+    });
+
     it('dispatches normally when the payload org matches', async () => {
       wireDispatchSelects(LIVE_ORG, 'agent-live');
 
@@ -375,6 +417,36 @@ describe('snmpWorker org authority (#3226)', () => {
         expect.objectContaining({ orgId: LIVE_ORG }),
         expect.anything()
       );
+    });
+
+    it('falls back to the worker-side guard when the drifted job locks mid-replacement', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // The classic TOCTOU: 'waiting' at getState(), locked by a worker by the
+      // time remove() runs. BullMQ rejects the removal.
+      const remove = vi.fn(async () => {
+        throw new Error('Job snmp-poll-x could not be removed because it is locked by another worker');
+      });
+      queueMock.getJob.mockResolvedValue({
+        id: 'raced-job',
+        data: { type: 'poll-device', deviceId: DEVICE_ID, orgId: STALE_ORG },
+        getState: vi.fn().mockResolvedValue('waiting'),
+        remove,
+      } as never);
+
+      // Must not reject: the scheduler's per-device catch would only log this
+      // without Sentry, and the in-flight job is already covered by the
+      // worker-side org guard.
+      const jobId = await enqueueSnmpPoll(DEVICE_ID, LIVE_ORG);
+
+      expect(jobId).toBe('raced-job');
+      // No duplicate add — BullMQ would return the existing job anyway.
+      expect(queueMock.add).not.toHaveBeenCalled();
+      // Handled, not silent.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('became active mid-replacement'),
+        expect.any(Error)
+      );
+      warn.mockRestore();
     });
 
     it('still removes a completed job before re-adding, and does not double-remove', async () => {
