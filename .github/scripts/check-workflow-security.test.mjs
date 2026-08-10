@@ -1013,15 +1013,18 @@ test('all repository checkout steps disable credential persistence', () => {
   assert.deepEqual(failures, []);
 });
 
-test('community README push uses an ephemeral credential helper', () => {
+test('community README refresh never writes to the repository', () => {
   const workflowText = readFileSync(
     new URL('../workflows/update-community-readme.yml', import.meta.url),
     'utf8',
   );
 
-  assert.match(
-    workflowText,
-    /git -c credential\.helper= -c 'credential\.helper=!f\(\).*push origin HEAD:main/su,
-  );
+  // Issue #3173 retired the direct-to-main push. The job reports drift via an
+  // artifact and the run summary; nothing in it may push, hold a credential
+  // helper, or ask for more than read access.
+  assert.doesNotMatch(workflowText, /push origin/u);
+  assert.doesNotMatch(workflowText, /credential\.helper/u);
   assert.doesNotMatch(workflowText, /persist-credentials:\s*true/u);
+  assert.doesNotMatch(workflowText, /^permissions:\n(?:\s+\w[\w-]*: .*\n)*\s+contents: write$/mu);
+  assert.match(workflowText, /^permissions:\n  contents: read$/mu);
 });
