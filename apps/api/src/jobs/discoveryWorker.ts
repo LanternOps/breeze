@@ -28,6 +28,12 @@ import { attachWorkerObservability } from './workerObservability';
 import { sendCommandToAgent, isAgentConnected, type AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/automationRuntime';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import {
+  buildClassificationWrite,
+  detectionSourceRank,
+  type DiscoveredAssetDetectionSource,
+} from '../services/discoveredAssetClassification';
+import type { discoveredAssetTypeEnum } from '../db/schema';
 import { buildEventFingerprint } from '../services/networkBaseline';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -140,6 +146,7 @@ export interface DiscoveredHostResult {
   lastSeen?: string;
 }
 type DiscoveryJobData = DiscoveryQueueJobData;
+type DiscoveredAssetType = typeof discoveredAssetTypeEnum.enumValues[number];
 
 const PRIVILEGED_JOB_OPTIONS = {
   attempts: 3,
@@ -784,7 +791,11 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     try {
     // Check if asset already exists (by org + IP)
     const [existing] = await db
-      .select({ id: discoveredAssets.id, typeSource: discoveredAssets.typeSource })
+      .select({
+        id: discoveredAssets.id,
+        typeSource: discoveredAssets.typeSource,
+        detectedTypeSource: discoveredAssets.detectedTypeSource,
+      })
       .from(discoveredAssets)
       .where(
         and(
@@ -801,18 +812,35 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       resolvedManufacturer = lookupMacVendor(host.mac);
     }
 
-    // Infer asset type from vendor when agent classification returned unknown
-    let resolvedAssetType = mapAssetType(host.assetType);
-    if (resolvedAssetType === 'unknown' && resolvedManufacturer) {
-      resolvedAssetType = inferAssetTypeFromVendor(resolvedManufacturer) ?? 'unknown';
-    }
+    // What did this scan actually manage to classify, and how strong is that
+    // evidence? The agent's own classification is real observation (ports, SNMP,
+    // OS fingerprint); falling back to the MAC OUI vendor string is a guess that
+    // only narrows the product CATEGORY. They rank differently (#3187), so the
+    // difference has to be recorded, not flattened into one 'auto'.
+    //
+    // `null` means "this scan has no opinion" — NOT "the device is of unknown
+    // type". `mapAssetType` returns 'unknown' for both the agent saying it
+    // couldn't tell and for an unrecognised type string, and writing that back
+    // would erase a classification made by a better-informed source. PR #3185
+    // fixed exactly this on the UniFi path; this is the agent-scan half.
+    const agentType = mapAssetType(host.assetType);
+    const classification: { type: DiscoveredAssetType; source: DiscoveredAssetDetectionSource } | null =
+      agentType !== 'unknown'
+        ? { type: agentType, source: 'agent_scan' }
+        : (() => {
+            const inferred = resolvedManufacturer
+              ? inferAssetTypeFromVendor(resolvedManufacturer)
+              : null;
+            return inferred ? { type: inferred, source: 'vendor_oui' as const } : null;
+          })();
 
+    // assetType/detectedAssetType are deliberately NOT in here — they are applied
+    // per-branch below, guarded by the precedence rules (#3011, #3187).
     const assetData = {
       ipAddress: host.ip,
       macAddress: host.mac ?? null,
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
-      assetType: resolvedAssetType,
       manufacturer: resolvedManufacturer,
       model: host.model ?? null,
       openPorts: host.openPorts ?? null,
@@ -830,14 +858,19 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     let autoLinkedDeviceId: string | null = null;
 
     if (existing) {
-      // Always record what the scan thinks; only overwrite the user-facing
-      // asset_type when the type was NOT set manually.
-      const updateSet: Record<string, unknown> = {
-        ...assetData,
-        detectedAssetType: resolvedAssetType
-      };
-      if (existing.typeSource === 'manual') {
-        delete updateSet.assetType; // preserve the user's manual override
+      // A scan with no opinion writes neither type column, leaving whatever a
+      // better-informed source already decided. When it does have one, all three
+      // type columns are written as guarded SQL CASE expressions: the manual
+      // override and the classifier ranking are both resolved against the stored
+      // row inside the UPDATE, never from the SELECT above, because both can
+      // change in between (a user saving a manual type mid-scan is precisely the
+      // race #3011 was about).
+      const updateSet: Record<string, unknown> = { ...assetData };
+      if (classification) {
+        Object.assign(updateSet, buildClassificationWrite(classification.source, {
+          assetType: sql`${classification.type}`,
+          detectedAssetType: sql`${classification.type}`,
+        }));
       }
       await db
         .update(discoveredAssets)
@@ -869,11 +902,21 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
           ));
       }
     } else {
+      // Net-new row, so there is nothing to outrank — write the classification
+      // straight in. With no opinion, asset_type falls to its 'unknown' column
+      // default and both detection columns stay NULL, which is what lets the
+      // next classifier of any strength claim the row.
       const [inserted] = await db.insert(discoveredAssets).values({
         orgId: data.orgId,
         siteId: data.siteId,
         ...assetData,
-        detectedAssetType: resolvedAssetType,
+        ...(classification
+          ? {
+              assetType: classification.type,
+              detectedAssetType: classification.type,
+              detectedTypeSource: classification.source,
+            }
+          : {}),
         typeSource: 'auto'
       }).returning({ id: discoveredAssets.id });
       upsertedAssetId = inserted?.id ?? null;
@@ -908,8 +951,22 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
             // Propagate asset type to linked device (discovery > auto, but not > manual).
             // Skip propagation when the asset type was manually overridden so the
-            // scan's classification doesn't silently diverge from the user's choice.
-            if (assetData.assetType && assetData.assetType !== 'unknown' && existing?.typeSource !== 'manual') {
+            // scan's classification doesn't silently diverge from the user's choice,
+            // and skip it when this scan's classifier was outranked — otherwise the
+            // OUI guess the asset row just rejected would leak onto the device role
+            // anyway and reintroduce the flap one table over (#3187).
+            //
+            // Unlike the asset write above, this decision is made from the JS
+            // pre-read rather than in SQL. device_role is a denormalised
+            // convenience field on a different table, so it cannot share the
+            // asset's UPDATE, and losing a race here costs at most a stale role
+            // until the next scan — not a flapping user-visible type.
+            const classificationApplied = !!classification
+              && existing?.typeSource !== 'manual'
+              && (!existing?.detectedTypeSource
+                || detectionSourceRank(existing.detectedTypeSource) <= detectionSourceRank(classification.source));
+
+            if (classification && classificationApplied) {
               const [target] = await db
                 .select({ deviceRoleSource: devices.deviceRoleSource })
                 .from(devices)
@@ -918,7 +975,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 
               if (target && target.deviceRoleSource !== 'manual') {
                 await db.update(devices)
-                  .set({ deviceRole: assetData.assetType, deviceRoleSource: 'discovery', updatedAt: new Date() })
+                  .set({ deviceRole: classification.type, deviceRoleSource: 'discovery', updatedAt: new Date() })
                   .where(eq(devices.id, match.deviceId));
               }
             }
@@ -1147,8 +1204,8 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
 /**
  * Map agent asset type string to DB enum value
  */
-function mapAssetType(agentType: string): any {
-  const typeMap: Record<string, string> = {
+function mapAssetType(agentType: string): DiscoveredAssetType {
+  const typeMap: Record<string, DiscoveredAssetType> = {
     workstation: 'workstation',
     server: 'server',
     printer: 'printer',

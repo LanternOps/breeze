@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { mockDb } = vi.hoisted(() => ({
   mockDb: {
@@ -32,7 +33,9 @@ vi.mock('../db/schema', () => ({
     linkedDeviceId: 'discoveredAssets.linkedDeviceId',
     linkSource: 'discoveredAssets.linkSource',
     typeSource: 'discoveredAssets.typeSource',
-    detectedAssetType: 'discoveredAssets.detectedAssetType'
+    assetType: 'discoveredAssets.assetType',
+    detectedAssetType: 'discoveredAssets.detectedAssetType',
+    detectedTypeSource: 'discoveredAssets.detectedTypeSource'
   },
   networkTopology: {
     id: 'networkTopology.id',
@@ -97,6 +100,8 @@ vi.mock('./networkBaselineWorker', () => ({
 
 import { db } from '../db';
 import { buildApprovalDecision } from '../services/assetApproval';
+import { inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { devices, discoveredAssets } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
 const { cleanupSpeculativeTopologyLinks, processResults } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
@@ -142,6 +147,77 @@ function collectSqlLeafStrings(node: unknown, seen = new Set<unknown>(), acc: st
     for (const item of queryChunks) collectSqlLeafStrings(item, seen, acc);
   }
   return acc;
+}
+
+// Render a drizzle `sql` fragment to the exact query Postgres would receive
+// (text + bound params), mirroring unifiSyncService.test.ts's renderSql.
+//
+// Unlike that file, `../db/schema` is mocked here with plain strings standing
+// in for columns (see the vi.mock block above) rather than real PgColumn
+// instances, so a column reference renders as an ordinary bound parameter
+// (e.g. "discoveredAssets.typeSource" as $1) instead of a quoted identifier
+// ("discovered_assets"."type_source"). That still pins everything that
+// matters for these tests: which column is the CASE subject, the
+// (source, rank) ladder in order, the writing classifier's own rank
+// threshold, the proposed value, and which column is read back on the
+// fallback arm — an inverted guard or wrong fallback column changes this
+// output. The real column-identifier rendering is covered by
+// unifiSyncService.test.ts, which imports the actual schema.
+function renderSqlQuery(value: unknown): { sql: string; params: unknown[] } {
+  const { sql, params } = new PgDialect().sqlToQuery(value as never);
+  return { sql, params };
+}
+
+// The (source, rank) ladder, in precedence order — mirrors
+// DISCOVERED_ASSET_DETECTION_SOURCES / DETECTION_SOURCE_RANK in
+// discoveredAssetClassification.ts. Every buildClassificationWrite() guard
+// embeds this same sequence as the stored-rank CASE's arms.
+const RANK_LADDER_PARAMS = ['vendor_oui', 10, 'agent_scan', 20, 'unifi_controller', 30];
+
+// asset_type yields to BOTH axes: a manual pin always wins (first `when`), and
+// among classifiers only an equal-or-stronger source may overwrite (second
+// `when`), falling back to the existing asset_type column when outranked.
+const ASSET_TYPE_CASE_SQL =
+  'case when $1 = \'manual\' then $2 when case $3 when $4 then $5 when $6 then $7 when $8 then $9 else 0 end <= $10 then $11 else $12 end';
+function assetTypeCaseParams(proposed: string, writerRank: number): unknown[] {
+  return [
+    'discoveredAssets.typeSource',
+    'discoveredAssets.assetType',
+    'discoveredAssets.detectedTypeSource',
+    ...RANK_LADDER_PARAMS,
+    writerRank,
+    proposed,
+    'discoveredAssets.assetType',
+  ];
+}
+
+// detected_asset_type ignores the manual axis but still respects precedence,
+// falling back to the existing detected_asset_type column when outranked.
+const DETECTED_ASSET_TYPE_CASE_SQL =
+  'case when case $1 when $2 then $3 when $4 then $5 when $6 then $7 else 0 end <= $8 then $9 else $10 end';
+function detectedAssetTypeCaseParams(proposed: string, writerRank: number): unknown[] {
+  return [
+    'discoveredAssets.detectedTypeSource',
+    ...RANK_LADDER_PARAMS,
+    writerRank,
+    proposed,
+    'discoveredAssets.detectedAssetType',
+  ];
+}
+
+// detected_type_source: same rank guard, proposed value is always the source
+// itself (a bound literal, cast to the enum), falling back to the existing
+// detected_type_source column when outranked.
+const DETECTED_TYPE_SOURCE_CASE_SQL =
+  'case when case $1 when $2 then $3 when $4 then $5 when $6 then $7 else 0 end <= $8 then $9::discovered_asset_detection_source else $10 end';
+function detectedTypeSourceCaseParams(source: string, writerRank: number): unknown[] {
+  return [
+    'discoveredAssets.detectedTypeSource',
+    ...RANK_LADDER_PARAMS,
+    writerRank,
+    source,
+    'discoveredAssets.detectedTypeSource',
+  ];
 }
 
 describe('processResults — type_source', () => {
@@ -225,7 +301,7 @@ describe('processResults — type_source', () => {
   it('preserves asset_type but updates detected_asset_type when type_source=manual', async () => {
     selectQueue = [
       ...baseSelectQueue(),
-      [{ id: 'asset-1', typeSource: 'manual' }], // [6] existing asset
+      [{ id: 'asset-1', typeSource: 'manual', detectedTypeSource: null }], // [6] existing asset
       [{ linkedDeviceId: null }],                  // [7] linkedDeviceId
       [],                                           // [8] auto-link
     ];
@@ -235,16 +311,33 @@ describe('processResults — type_source', () => {
     ]));
 
     expect(capturedUpdateSet).not.toBeNull();
-    // Manual override: user-facing asset_type must NOT be overwritten
-    expect(capturedUpdateSet).not.toHaveProperty('assetType');
-    // But detected_asset_type (what the scan sees) MUST be written
-    expect(capturedUpdateSet!.detectedAssetType).toBe('workstation');
+    // asset_type is now ALWAYS present in the update set — the manual-vs-auto
+    // decision moved entirely into SQL (#3187), evaluated against the real row
+    // at write time rather than the JS-side `existing.typeSource` this test used
+    // to branch on. What must still hold is that the guard's manual arm reads
+    // back the existing asset_type unconditionally, so a manual pin is a no-op
+    // against the real row regardless of what this scan proposed.
+    const assetType = renderSqlQuery(capturedUpdateSet!.assetType);
+    expect(assetType.sql).toBe(ASSET_TYPE_CASE_SQL);
+    expect(assetType.params).toEqual(assetTypeCaseParams('workstation', 20));
+
+    // detected_asset_type (what the scan sees) ignores the manual axis entirely
+    // and is guarded only by rank against the stronger of the two classifiers.
+    const detectedAssetType = renderSqlQuery(capturedUpdateSet!.detectedAssetType);
+    expect(detectedAssetType.sql).toBe(DETECTED_ASSET_TYPE_CASE_SQL);
+    expect(detectedAssetType.params).toEqual(detectedAssetTypeCaseParams('workstation', 20));
+
+    // detected_type_source itself is written as 'agent_scan' (rank 20), guarded
+    // by the same rank check.
+    const detectedTypeSource = renderSqlQuery(capturedUpdateSet!.detectedTypeSource);
+    expect(detectedTypeSource.sql).toBe(DETECTED_TYPE_SOURCE_CASE_SQL);
+    expect(detectedTypeSource.params).toEqual(detectedTypeSourceCaseParams('agent_scan', 20));
   });
 
   it('updates asset_type normally when type_source=auto', async () => {
     selectQueue = [
       ...baseSelectQueue(),
-      [{ id: 'asset-1', typeSource: 'auto' }], // [6] existing asset
+      [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], // [6] existing asset
       [{ linkedDeviceId: null }],                // [7] linkedDeviceId
       [],                                         // [8] auto-link
     ];
@@ -254,10 +347,18 @@ describe('processResults — type_source', () => {
     ]));
 
     expect(capturedUpdateSet).not.toBeNull();
-    // Auto source: asset_type is freely overwritten
-    expect(capturedUpdateSet!.assetType).toBe('printer');
-    // detected_asset_type is always written
-    expect(capturedUpdateSet!.detectedAssetType).toBe('printer');
+    // Auto source: the SQL guard's manual arm reads back the existing column
+    // (a no-op here since type_source isn't 'manual' on the real row), so the
+    // rank-guard arm is what actually lets 'printer' through — same shape as
+    // the manual-row test above, because the decision moved into SQL (#3187).
+    const assetType = renderSqlQuery(capturedUpdateSet!.assetType);
+    expect(assetType.sql).toBe(ASSET_TYPE_CASE_SQL);
+    expect(assetType.params).toEqual(assetTypeCaseParams('printer', 20));
+
+    // detected_asset_type is always written, guarded only by rank.
+    const detectedAssetType = renderSqlQuery(capturedUpdateSet!.detectedAssetType);
+    expect(detectedAssetType.sql).toBe(DETECTED_ASSET_TYPE_CASE_SQL);
+    expect(detectedAssetType.params).toEqual(detectedAssetTypeCaseParams('printer', 20));
   });
 
   it('fresh insert sets type_source=auto and detected_asset_type', async () => {
@@ -281,7 +382,7 @@ describe('processResults — type_source', () => {
 
     selectQueue = [
       ...baseSelectQueue(),
-      [{ id: 'asset-1', typeSource: 'manual' }], // [6] existing — manual typeSource
+      [{ id: 'asset-1', typeSource: 'manual', detectedTypeSource: null }], // [6] existing — manual typeSource
       [{ linkedDeviceId: null }],                  // [7] not yet linked
       [{ deviceId: 'device-1' }],                  // [8] auto-link match found
       [{ deviceRoleSource: 'auto' }],              // [9] target device (consumed if propagation fires)
@@ -356,7 +457,7 @@ describe('processResults — type_source', () => {
   it('clears a stale cross-site link before applying the current scan result', async () => {
     selectQueue = [
       ...baseSelectQueue(),
-      [{ id: 'asset-1', typeSource: 'auto' }],
+      [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }],
       [{ linkedDeviceId: 'sibling-site-device', linkedDeviceSiteId: 'site-2' }],
       [],
     ];
@@ -381,6 +482,151 @@ describe('processResults — type_source', () => {
       linkSource: null,
     }));
     expect(buildApprovalDecision).toHaveBeenCalled();
+  });
+
+  // Nested inside `processResults — type_source` (rather than a sibling
+  // top-level describe) so these tests can reuse the outer beforeEach's
+  // harness — selectQueue/capturedUpdateSet/capturedInsertValues and the
+  // default mockDb.select/update/insert wiring — without duplicating it.
+  describe('processResults — classifier precedence (#3187)', () => {
+    it('writes none of the three type columns when this scan has no opinion (unclassified agent, no vendor match)', async () => {
+      // Headline regression: before #3187 an unrecognised agent type with no
+      // vendor fallback still round-tripped through buildClassificationWrite
+      // (or its precursor) and stamped 'unknown' back over a better answer.
+      // With no classification at all, none of the three columns should be
+      // touched in the update set.
+      selectQueue = [
+        ...baseSelectQueue(),
+        [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], // [6] existing asset
+        [{ linkedDeviceId: null }],                                          // [7] linkedDeviceId
+        [],                                                                    // [8] auto-link (no mac/ip match)
+      ];
+
+      await processResults(makeData([
+        { ip: '192.168.1.60', assetType: 'unknown', methods: [] }, // no mac, no manufacturer
+      ]));
+
+      expect(capturedUpdateSet).not.toBeNull();
+      expect(capturedUpdateSet).not.toHaveProperty('assetType');
+      expect(capturedUpdateSet).not.toHaveProperty('detectedAssetType');
+      expect(capturedUpdateSet).not.toHaveProperty('detectedTypeSource');
+    });
+
+    it('an agent-classified host writes detected_type_source as a guarded SQL CASE on the update path', async () => {
+      selectQueue = [
+        ...baseSelectQueue(),
+        [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: null }], // [6] existing asset
+        [{ linkedDeviceId: null }],                                          // [7] linkedDeviceId
+        [],                                                                    // [8] auto-link
+      ];
+
+      await processResults(makeData([
+        { ip: '192.168.1.61', assetType: 'server', methods: [] }, // agent recognised this host
+      ]));
+
+      expect(capturedUpdateSet).not.toBeNull();
+      const detectedTypeSource = renderSqlQuery(capturedUpdateSet!.detectedTypeSource);
+      expect(detectedTypeSource.sql).toBe(DETECTED_TYPE_SOURCE_CASE_SQL);
+      expect(detectedTypeSource.params).toEqual(detectedTypeSourceCaseParams('agent_scan', 20));
+    });
+
+    it('an agent-classified host stamps detected_type_source=agent_scan as a plain value on a fresh insert', async () => {
+      selectQueue = [
+        ...baseSelectQueue(),
+        [], // [6] no existing asset
+        [], // [7] auto-link
+      ];
+
+      await processResults(makeData([
+        { ip: '192.168.1.62', assetType: 'server', methods: [] },
+      ]));
+
+      expect(capturedInsertValues).not.toBeNull();
+      expect(capturedInsertValues!.assetType).toBe('server');
+      expect(capturedInsertValues!.detectedAssetType).toBe('server');
+      expect(capturedInsertValues!.detectedTypeSource).toBe('agent_scan');
+    });
+
+    it('a host the agent could not classify but whose manufacturer maps via OUI stamps detected_type_source=vendor_oui on a fresh insert', async () => {
+      vi.mocked(inferAssetTypeFromVendor).mockReturnValue('access_point' as never);
+
+      selectQueue = [
+        ...baseSelectQueue(),
+        [], // [6] no existing asset
+        [], // [7] auto-link
+      ];
+
+      await processResults(makeData([
+        {
+          ip: '192.168.1.63',
+          assetType: 'unknown', // agent has no opinion
+          manufacturer: 'Ruckus Wireless', // vendor is single-purpose enough to infer from
+          methods: [],
+        },
+      ]));
+
+      expect(capturedInsertValues).not.toBeNull();
+      expect(capturedInsertValues!.assetType).toBe('access_point');
+      expect(capturedInsertValues!.detectedAssetType).toBe('access_point');
+      expect(capturedInsertValues!.detectedTypeSource).toBe('vendor_oui');
+    });
+
+    it('does not propagate device_role when this scan is outranked by the row\'s stored detection source', async () => {
+      // The row was already classified by the UniFi controller (rank 30). This
+      // scan can only offer a vendor_oui guess (rank 10) — weaker — so it must
+      // not just skip the asset write (covered by buildClassificationWrite's own
+      // SQL guard), it must ALSO skip the JS-side device_role propagation. If it
+      // didn't, the OUI guess the asset row just rejected would leak onto the
+      // linked device's role anyway and reintroduce the flap one table over.
+      vi.mocked(inferAssetTypeFromVendor).mockReturnValue('access_point' as never);
+
+      const updateCalls: Array<{ table: unknown; args: Record<string, unknown> }> = [];
+      vi.mocked(mockDb.update).mockImplementation((table: unknown) => {
+        const chain: Record<string, unknown> = {};
+        chain.set = (args: Record<string, unknown>) => {
+          updateCalls.push({ table, args });
+          return chain;
+        };
+        chain.where = () => Promise.resolve([]);
+        return chain;
+      });
+
+      selectQueue = [
+        ...baseSelectQueue(),
+        [{ id: 'asset-1', typeSource: 'auto', detectedTypeSource: 'unifi_controller' }], // [6] existing — UniFi already won this row
+        [{ linkedDeviceId: null }],                                                        // [7] not yet linked
+        [{ deviceId: 'device-1' }],                                                        // [8] auto-link match found
+        // [9] target-device select: NOT consumed by a correct implementation
+        // (classificationApplied is false before that point), but seeded with
+        // a row that WOULD pass the deviceRoleSource !== 'manual' check anyway
+        // — so if the rank guard regressed to a no-op, this select would be
+        // reached, the row would be consumed, and deviceRole WOULD be updated,
+        // failing the assertion below. An empty row here would let a regressed
+        // guard pass vacuously (target undefined → update skipped for the
+        // wrong reason), which is exactly the trap this test must not fall into.
+        [{ deviceRoleSource: 'auto' }],
+      ];
+
+      await processResults(makeData([
+        {
+          ip: '192.168.1.64',
+          mac: 'aa:bb:cc:11:22:33',
+          assetType: 'unknown',
+          manufacturer: 'Ruckus Wireless',
+          methods: [],
+        },
+      ]));
+
+      const deviceTableUpdates = updateCalls.filter((c) => c.table === devices);
+      expect(deviceTableUpdates.find((c) => 'deviceRole' in c.args)).toBeUndefined();
+
+      // Sanity check the harness actually exercised the auto-link branch (so a
+      // vacuously-empty updateCalls list — e.g. from a wiring mistake — would
+      // fail loudly here instead of the assertion above passing for the wrong
+      // reason).
+      const assetTableUpdates = updateCalls.filter((c) => c.table === discoveredAssets);
+      expect(assetTableUpdates.length).toBeGreaterThan(0);
+    });
   });
 });
 

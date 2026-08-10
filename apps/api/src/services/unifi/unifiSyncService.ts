@@ -1,6 +1,7 @@
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
+import { buildClassificationWrite } from '../discoveredAssetClassification';
 import type { DbExecutor } from './unifiConnectionService';
 import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
 
@@ -85,17 +86,11 @@ async function reconcileDiscoveredAsset(
   // by another source, so leave both type columns alone unless we recognised it.
   const classified = aType === 'unknown' ? null : aType;
 
-  // A type a user set by hand outranks telemetry classification (#3011).
-  //
-  // The guard is evaluated in SQL, not JS, on BOTH write paths. On the conflict
-  // path we never read the colliding row at all; on the update path we did read
-  // it, but `type_source` can change between that SELECT and the UPDATE — and a
-  // user saving a manual type mid-sync is exactly the race this issue is about.
-  // Inside UPDATE ... SET and ON CONFLICT DO UPDATE SET, a reference qualified
-  // with the target table reads the *existing* row, while `excluded` is the row
-  // we proposed to insert.
-  const preserveManualType = (proposed: SQL) =>
-    sql`case when ${discoveredAssets.typeSource} = 'manual' then ${discoveredAssets.assetType} else ${proposed} end`;
+  // Precedence is enforced in SQL, not JS, on BOTH write paths — see
+  // buildClassificationWrite. A type a user set by hand outranks every
+  // classifier (#3011), and among classifiers the controller is authoritative:
+  // it knows the exact model, so it outranks the agent scan's OUI vendor guess
+  // that used to rewrite UniFi switches to access_point (#3187).
 
   // 1. Match by (org_id, mac) first — the stable identifier.
   let existing: { id: string } | null = null;
@@ -142,11 +137,10 @@ async function reconcileDiscoveredAsset(
   if (existing) {
     const updateSet: AssetWriteSet = { ...enrich };
     if (classified) {
-      // Always record what this sync would have assigned, so "reset to auto"
-      // has a value to restore...
-      updateSet.detectedAssetType = classified;
-      // ...but only apply it when the type was not set by hand.
-      updateSet.assetType = preserveManualType(sql`${classified}`);
+      Object.assign(updateSet, buildClassificationWrite('unifi_controller', {
+        assetType: sql`${classified}`,
+        detectedAssetType: sql`${classified}`,
+      }));
     }
     await db
       .update(discoveredAssets)
@@ -158,10 +152,10 @@ async function reconcileDiscoveredAsset(
   // Net-new: insert, absorbing a race with agent discovery via the (org,ip) unique key.
   const conflictSet: AssetWriteSet = { ...enrich };
   if (classified) {
-    conflictSet.detectedAssetType = classified;
-    conflictSet.assetType = preserveManualType(
-      sql.raw(`excluded.${discoveredAssets.assetType.name}`),
-    );
+    Object.assign(conflictSet, buildClassificationWrite('unifi_controller', {
+      assetType: sql.raw(`excluded.${discoveredAssets.assetType.name}`),
+      detectedAssetType: sql.raw(`excluded.${discoveredAssets.detectedAssetType.name}`),
+    }));
   }
 
   const inserted = await db
@@ -174,7 +168,13 @@ async function reconcileDiscoveredAsset(
       // typeSource is set only on the INSERT side; the conflict branch must
       // never reset an existing row's type_source back to 'auto'.
       typeSource: 'auto',
-      ...(classified ? { assetType: classified, detectedAssetType: classified } : {}),
+      ...(classified
+        ? {
+            assetType: classified,
+            detectedAssetType: classified,
+            detectedTypeSource: 'unifi_controller' as const,
+          }
+        : {}),
     })
     .onConflictDoUpdate({
       target: [discoveredAssets.orgId, discoveredAssets.ipAddress],
