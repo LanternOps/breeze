@@ -29,32 +29,32 @@ The CI/CD release pipeline signs the following artifacts:
 
 | Artifact | Platform | Format | Signing Method |
 |----------|----------|--------|----------------|
-| Breeze Agent | Windows | `.exe`, `.msi` | Azure Code Signing (EV certificate) |
+| Breeze Agent | Windows | `.exe`, `.msi` | Azure Artifact Signing (formerly Trusted Signing) |
 | Breeze Agent | macOS | `.pkg`, binary | Apple Developer ID + notarization |
-| Breeze Viewer | Windows | `.exe`, `.msi` | Azure Code Signing (EV certificate) |
+| Breeze Viewer | Windows | `.exe`, `.msi` | Azure Artifact Signing (formerly Trusted Signing) |
 | Breeze Viewer | macOS | `.app`, `.dmg` | Apple Developer ID + notarization |
-| Breeze Helper | Windows | `.exe` | Azure Code Signing (EV certificate) |
+| Breeze Helper | Windows | `.exe` | Azure Artifact Signing (formerly Trusted Signing) |
 | Breeze Helper | macOS | `.app` | Apple Developer ID + notarization |
 
 ---
 
 ## Windows Code Signing
 
-Windows binaries are signed using **Azure Code Signing** with an Extended Validation (EV) certificate. The signing happens in the GitHub Actions release workflow.
+Windows binaries are signed using **Azure Artifact Signing** (formerly Azure Trusted Signing). The signing happens in the GitHub Actions release workflow.
 
 ### How it works
 
 <Steps>
 
-1. The release workflow builds the Windows binaries (agent `.exe`, MSI installer, viewer, helper).
+1. The release workflow rebuilds the resource-stamped Windows binaries (agent, backup, watchdog, user-helper) and signs each with the `azure/artifact-signing-action`, authenticating via an OIDC federated credential (no stored client secret).
 
-2. The `AzureSignTool` utility authenticates to Azure Key Vault using a service principal.
+2. Each binary is signed and RFC 3161-timestamped against the Azure Artifact Signing endpoint; the certificates are short-lived and HSM-backed — the private key never exists outside Azure.
 
-3. Each binary is signed with the EV certificate stored in Azure Key Vault.
+3. The MSI installer is built from the signed binaries with WiX v4, then signed as a separate step.
 
-4. The MSI installer is signed separately after the inner `.exe` is signed.
+4. The workflow verifies every signature with `Get-AuthenticodeSignature` before upload (tolerating `UnknownError`, which means "signed, root not yet cached locally").
 
-5. Signed artifacts are uploaded to the GitHub release.
+5. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
 
 </Steps>
 
@@ -63,7 +63,7 @@ Windows binaries are signed using **Azure Code Signing** with an Extended Valida
 The Windows agent MSI is built using WiX v4. The MSI bundles the signed agent binary, configures the Windows service, and sets appropriate file permissions. The MSI itself is then signed as a separate step.
 
 <Aside>
-  Azure Code Signing uses HSM-backed keys — the private key never leaves Azure Key Vault. This meets the CA/Browser Forum requirements for EV code signing certificates.
+  Azure Artifact Signing keys are HSM-backed and never exportable, meeting the CA/Browser Forum hardware requirements for publicly trusted code signing. Certificates are short-lived and rotated automatically — there is nothing to renew.
 </Aside>
 
 ---
@@ -105,27 +105,12 @@ spctl --assess --verbose /path/to/breeze-agent
 
 ---
 
-## Installer Download Signing
+## Signing Your Own Packages (Self-Hosted)
 
-When you download a pre-configured MSI installer from the dashboard or a public installer link, Breeze can automatically code-sign the installer before delivery. This ensures that the patched MSI — which contains your enrollment key and site assignment — is trusted by Windows SmartScreen and antivirus tools.
-
-### How it works
-
-The API server sends the patched MSI to a dedicated Windows signing service (running `signtool` with Azure Trusted Signing) over HTTPS. The signing service returns the signed MSI, which is then delivered to the browser. The entire process adds a few seconds to the download.
-
-### Configuration
-
-Set three environment variables to enable installer signing:
-
-| Variable | Description |
-|----------|-------------|
-| `MSI_SIGNING_URL` | URL of the signing service endpoint |
-| `MSI_SIGNING_CF_ACCESS_ID` | Cloudflare Access service token Client ID (optional — only needed if the signing service is behind Cloudflare Access) |
-| `MSI_SIGNING_CF_ACCESS_SECRET` | Cloudflare Access service token Client Secret |
-
-When these variables are unset, installer downloads are delivered without an additional signature. The MSI template itself is still signed during the CI build, so the base installer is always signed — this step re-signs the MSI after enrollment data is embedded.
-
-See [Environment Variables](/deploy/environment/) for the full list.
+Self-hosted deployments sign the official agent packages with their own
+certificates — per release, never per download, so SmartScreen and
+Gatekeeper reputation accrues on a stable hash. See
+[Sign Your Own Agent Packages](/deploy/sign-your-own-packages/).
 
 ---
 
@@ -155,7 +140,7 @@ spctl --assess --verbose /usr/local/bin/breeze-agent
 ## Troubleshooting
 
 **Windows SmartScreen still warns after signing.**
-SmartScreen reputation is built over time. Newly signed binaries from a new publisher may still show a warning until enough users have downloaded and run the binary. EV certificates build reputation faster than standard OV certificates. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed.
+SmartScreen reputation is built over time. Newly signed binaries from a new publisher may still show a warning until enough users have downloaded and run the binary. Azure Artifact Signing certificates build reputation faster than traditional OV certificates because Microsoft attests the identity validation. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed. Self-hosters should see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for guidance on establishing their own signing identity.
 
 **macOS notarization timeout.**
 Apple's notarization service can be slow during peak times. The workflow allows up to 30 minutes. If it times out, re-run the release workflow — the binary does not need to be rebuilt, only re-submitted.

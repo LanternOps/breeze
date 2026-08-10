@@ -133,13 +133,14 @@ Push notifications to the iOS app go directly through Apple's push service (APNs
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `BINARY_SOURCE` | `local` | | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
+| `BINARY_SOURCE` | `github` | | Download source: `local` (serve from disk, optional S3) or `github` (redirect to GitHub Releases) |
+| `BINARY_GITHUB_REPOSITORY` | `lanternops/breeze` | | GitHub `owner/repository` used for **all** release consumption in `github` mode — download redirects, release sync, and manifest validation. Point it at your signing repo to serve self-signed packages (see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/)). In production, overriding it requires `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` to be explicitly set to **your** manifest key. |
 | `AGENT_BINARY_DIR` | `./agent/bin` | | Local directory containing agent binaries |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | | Local directory containing viewer installers |
 | `HELPER_BINARY_DIR` | `/data/binaries/helper` | | Local directory containing helper binaries |
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
-| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
+| `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. When `BINARY_GITHUB_REPOSITORY` points at your own signing repository, this **must** be your own manifest key (the workflow run summary prints it). The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
 | `AGENT_AUTO_PROMOTE` | `true` | | Controls whether a newly registered/synced agent release immediately becomes the fleet upgrade target. `true` (default): publishing a release promotes it to the fleet at once. `false`: new binaries stay downloadable but the fleet only advances when you explicitly promote a version (platform admin + MFA) — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout). |
 
 See [Binary Distribution](/deploy/binaries/) for details on local vs GitHub mode and S3 offloading.
@@ -493,18 +494,6 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `BREEZE_VERSION` | `latest` | Breeze release tag for Docker images (e.g. `0.50.0`). Also used by GitHub redirect mode for agent binary downloads. |
 | `DOCKER_PLATFORM` | `linux/amd64` | Container platform. GHCR images are amd64 only. On Apple Silicon, use `docker-compose.override.yml.local-build` to build native arm64 images instead. |
 | `REDIS_MAXMEMORY` | `256mb` | Maximum memory Redis is allowed to use. Redis runs with `noeviction` policy so BullMQ jobs are never silently dropped. |
-
-## MSI Installer Signing
-
-| Variable | Default | Description |
-|---|---|---|
-| `MSI_SIGNING_URL` | — | URL of the remote Windows signing service. When set, pre-configured MSI installer downloads are code-signed before delivery. |
-| `MSI_SIGNING_CF_ACCESS_ID` | — | Cloudflare Access service token Client ID for authenticating to the signing service |
-| `MSI_SIGNING_CF_ACCESS_SECRET` | — | Cloudflare Access service token Client Secret for authenticating to the signing service |
-
-<Aside>
-  MSI signing is fully optional. When these variables are unset, installer downloads are delivered unsigned. See [Code Signing](/deploy/code-signing/) for details.
-</Aside>
 
 ## Billing
 

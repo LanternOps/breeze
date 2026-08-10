@@ -4,7 +4,16 @@ See also: `docs/signing/ARTIFACT_SIGNING_OPERATIONS.md` for official Breeze sign
 
 ## Current State
 
-Raw `.exe` binaries built via `go build` with ldflags version embedding, distributed through GitHub Releases with SHA256 checksums. No signing, no installer, no Windows resource metadata.
+Fully implemented in `.github/workflows/release.yml`: resource-stamped exes
+(go-winres) signed via `azure/artifact-signing-action` (Azure Artifact
+Signing, formerly Trusted Signing) with OIDC auth, a WiX v4 MSI built from
+the signed exes and then itself signed, and a `Get-AuthenticodeSignature`
+verification sweep. Official releases additionally publish the pre-signing
+unsigned outputs (`*-unsigned.exe`) as manifest-tracked signing inputs so
+self-hosters can sign with their own certificates — see the
+`breeze-selfhost-signing` template and the "Sign Your Own Agent Packages"
+docs page. The rest of this document is the original design/evaluation
+record.
 
 ## What We Need
 
