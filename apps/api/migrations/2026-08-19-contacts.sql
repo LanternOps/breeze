@@ -249,9 +249,23 @@ CREATE INDEX IF NOT EXISTS portal_users_contact_idx
 -- than ON CONFLICT, because none of the target indexes covers the natural
 -- key being backfilled — re-running must still be a no-op.
 --
--- jsonb_typeof(...) = 'object' guards are load-bearing: organizations
--- .billing_contact is validated with z.any() on the org routes, so the column
--- can legally hold a string, a number, or an array.
+-- jsonb_typeof(...) = 'object' guards are load-bearing: sites.contact and
+-- organizations.billing_contact are validated as
+-- z.record(z.string(), z.unknown()) on the create routes, and legacy rows /
+-- direct DB writes predate even that, so the columns can hold a string, a
+-- number, or an array.
+--
+-- left(...) is equally load-bearing. Those validators bound the CONTAINER to
+-- an object but leave every VALUE a z.unknown() of unbounded length, while
+-- the destination columns are varchar(255)/(320)/(64). An overlong value --
+-- a free-text phone carrying an extension and an after-hours number clears
+-- 64 characters without looking unusual -- raises 22001 inside the INSERT.
+-- Because each step is ONE set-based INSERT ... SELECT, that does not skip
+-- the offending row: it rolls back the whole step for every tenant. And
+-- because autoMigrate applies the plan in a bare loop with no per-file
+-- try/catch, the throw aborts the run and every later migration, so a
+-- fix-forward migration could never repair it. Truncating at the column
+-- width is the only remedy that keeps the upgrade alive.
 
 -- 1. sites.contact → one site-pinned contact per site with a usable blob.
 DO $$
@@ -259,9 +273,9 @@ DECLARE n integer;
 BEGIN
   INSERT INTO contacts (org_id, site_id, name, email, phone, roles, is_primary)
   SELECT s.org_id, s.id,
-         NULLIF(btrim(s.contact->>'name'), ''),
-         NULLIF(btrim(s.contact->>'email'), ''),
-         NULLIF(btrim(s.contact->>'phone'), ''),
+         left(NULLIF(btrim(s.contact->>'name'), ''), 255),
+         left(NULLIF(btrim(s.contact->>'email'), ''), 320),
+         left(NULLIF(btrim(s.contact->>'phone'), ''), 64),
          ARRAY['site'], true
   FROM sites s
   WHERE s.contact IS NOT NULL
@@ -280,9 +294,9 @@ DECLARE n integer;
 BEGIN
   INSERT INTO contacts (org_id, name, email, phone, roles, is_primary)
   SELECT o.id,
-         NULLIF(btrim(o.billing_contact->>'name'), ''),
-         NULLIF(btrim(o.billing_contact->>'email'), ''),
-         NULLIF(btrim(o.billing_contact->>'phone'), ''),
+         left(NULLIF(btrim(o.billing_contact->>'name'), ''), 255),
+         left(NULLIF(btrim(o.billing_contact->>'email'), ''), 320),
+         left(NULLIF(btrim(o.billing_contact->>'phone'), ''), 64),
          ARRAY['billing'], true
   FROM organizations o
   WHERE o.billing_contact IS NOT NULL

@@ -287,4 +287,53 @@ describe('2026-08-19-contacts.sql backfills — replayed against seeded legacy r
       .where(and(eq(portalUsers.orgId, org.id), isNull(portalUsers.contactId)));
     expect(unlinked).toHaveLength(0);
   });
+
+  // The validators bound these blobs to an object but leave every value an
+  // unbounded z.unknown(), so nothing stops a value longer than the column it
+  // lands in. Before the left(...) bounds this raised 22001 and, because each
+  // step is one set-based INSERT ... SELECT, took the whole step down with it.
+  runDb('an overlong value is truncated instead of aborting the backfill', async () => {
+    const partner = await createPartner();
+    const benign = await createOrganization({ partnerId: partner.id });
+    const hostile = await createOrganization({ partnerId: partner.id });
+    const suffix = unique();
+
+    await setBillingContact(benign.id, {
+      name: 'Jane Doe',
+      email: `ap-${suffix}@example.test`,
+      phone: '555-1234',
+    });
+
+    // 71 characters, into contacts.phone varchar(64). Nothing about it looks
+    // unusual — an extension, an after-hours number and a note is ordinary.
+    const longPhone = '555-1234 ext 567, after hours 555-9999, cell 555-0000 (no texts please)';
+    expect(longPhone.length).toBeGreaterThan(64);
+    await setBillingContact(hostile.id, {
+      name: 'Bob Overflow',
+      email: `bob-${suffix}@example.test`,
+      phone: longPhone,
+    });
+
+    // A site blob on the same org overflows contacts.name varchar(255).
+    const site = await createSite({ orgId: hostile.id, name: `long-${suffix}` });
+    const longName = 'A'.repeat(300);
+    await setSiteContact(site.id, { name: longName, email: `site-${suffix}@example.test` });
+
+    await replayMigration();
+
+    // The control is the assertion that matters: it shares no row with the
+    // hostile org, so if it is missing the failure was global, not per-row.
+    const benignContacts = await contactsFor(benign.id);
+    expect(benignContacts, 'an unrelated org must not lose its backfill').toHaveLength(1);
+    expect(benignContacts[0]!.phone).toBe('555-1234');
+
+    const hostileContacts = await contactsFor(hostile.id);
+    const billing = hostileContacts.find((c) => c.roles?.includes('billing'));
+    const siteContact = hostileContacts.find((c) => c.roles?.includes('site'));
+
+    expect(billing?.phone).toBe(longPhone.slice(0, 64));
+    expect(billing!.phone!.length).toBe(64);
+    expect(siteContact?.name).toBe(longName.slice(0, 255));
+    expect(siteContact!.name!.length).toBe(255);
+  });
 });
