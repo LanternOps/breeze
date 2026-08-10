@@ -405,6 +405,11 @@ type releaseArtifactAsset struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// Edition is optional and additive: "self-host" | "hosted" | "" (absent).
+	// Absent means the manifest predates edition-stamping (or the running
+	// agent is old enough not to look at this field at all) — either way it
+	// is accepted unconditionally. See editionAllowed.
+	Edition string `json:"edition,omitempty"`
 }
 
 func (u *Updater) component() string {
@@ -533,6 +538,9 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	for i := range manifest.Assets {
 		if manifest.Assets[i].Name != name {
 			continue
+		}
+		if !editionAllowed(manifest.Assets[i].Edition) {
+			return "", fmt.Errorf("update rejected: artifact edition %q does not match this build", manifest.Assets[i].Edition)
 		}
 		sha := manifest.Assets[i].SHA256
 		if len(sha) != 64 {
@@ -1059,6 +1067,9 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 	}
 	if selected == nil {
 		return updateManifest{}, fmt.Errorf("release artifact manifest does not include %s", assetName)
+	}
+	if !editionAllowed(selected.Edition) {
+		return updateManifest{}, fmt.Errorf("update rejected: artifact edition %q does not match this build", selected.Edition)
 	}
 	if len(selected.SHA256) != 64 {
 		return updateManifest{}, fmt.Errorf("release artifact manifest checksum must be SHA-256 hex")
