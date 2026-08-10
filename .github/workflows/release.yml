@@ -153,7 +153,7 @@ jobs:
         run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build Agent
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -163,9 +163,9 @@ jobs:
           # where SCK doesn't exist (prevents dyld Symbol not found crash)
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-agent
+          agent/scripts/build-edition.sh --edition self-host --component agent \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" \
+            --out "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload Agent artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -175,7 +175,7 @@ jobs:
           retention-days: 30
 
       - name: Build breeze-backup
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -183,9 +183,9 @@ jobs:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o "breeze-backup-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-backup
+          agent/scripts/build-edition.sh --edition self-host --component backup \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" \
+            --out "breeze-backup-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload breeze-backup artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -195,16 +195,16 @@ jobs:
           retention-days: 30
 
       - name: Build breeze-watchdog
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
           BUILD_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o "breeze-watchdog-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-watchdog
+          agent/scripts/build-edition.sh --edition self-host --component watchdog \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" \
+            --out "breeze-watchdog-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload breeze-watchdog artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -215,7 +215,7 @@ jobs:
 
       - name: Build breeze-desktop-helper
         if: matrix.goos == 'darwin'
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -223,9 +223,9 @@ jobs:
           BUILD_VERSION: ${{ steps.version.outputs.version }}
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o "breeze-desktop-helper-${GOOS}-${GOARCH}" \
-            ./cmd/breeze-desktop-helper
+          agent/scripts/build-edition.sh --edition self-host --component desktop-helper \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" \
+            --out "breeze-desktop-helper-${GOOS}-${GOARCH}"
 
       - name: Upload breeze-desktop-helper artifact
         if: matrix.goos == 'darwin'
@@ -348,29 +348,20 @@ jobs:
             --out ..\cmd\breeze-desktop-helper\rsrc_windows_amd64.syso
           if ($LASTEXITCODE -ne 0) { throw "go-winres simply breeze-desktop-helper failed with exit code $LASTEXITCODE" }
           Pop-Location
-          Push-Location agent
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          $env:CGO_ENABLED = "0"
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-agent-windows-amd64.exe .\cmd\breeze-agent
-          if ($LASTEXITCODE -ne 0) { throw "go build breeze-agent failed with exit code $LASTEXITCODE" }
-          Pop-Location
+          # All four exes below route through agent/scripts/build-edition.sh
+          # (invoked via git-bash, which windows-latest runners provide) so
+          # the self-host/hosted edition rules are enforced in one place
+          # rather than reimplemented per go-build call site. --edition
+          # self-host here is what makes this the public, unrestricted build
+          # (agent/internal/hostpolicy stays inert; see the script's header).
+          bash agent/scripts/build-edition.sh --edition self-host --component agent --goos windows --goarch amd64 --version $env:BUILD_VERSION --out ../dist/breeze-agent-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (agent) failed with exit code $LASTEXITCODE" }
           # Build breeze-backup
-          Push-Location agent
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          $env:CGO_ENABLED = "0"
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-backup-windows-amd64.exe .\cmd\breeze-backup
-          if ($LASTEXITCODE -ne 0) { throw "go build breeze-backup failed with exit code $LASTEXITCODE" }
-          Pop-Location
+          bash agent/scripts/build-edition.sh --edition self-host --component backup --goos windows --goarch amd64 --version $env:BUILD_VERSION --out ../dist/breeze-backup-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (backup) failed with exit code $LASTEXITCODE" }
           # Build breeze-watchdog
-          Push-Location agent
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          $env:CGO_ENABLED = "0"
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" -o ..\dist\breeze-watchdog-windows-amd64.exe .\cmd\breeze-watchdog
-          if ($LASTEXITCODE -ne 0) { throw "go build breeze-watchdog failed with exit code $LASTEXITCODE" }
-          Pop-Location
+          bash agent/scripts/build-edition.sh --edition self-host --component watchdog --goos windows --goarch amd64 --version $env:BUILD_VERSION --out ../dist/breeze-watchdog-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (watchdog) failed with exit code $LASTEXITCODE" }
           # Build breeze-user-helper (GUI-subsystem sibling of breeze-agent).
           # Thin cmd/breeze-user-helper wrapper over the same internal/agentapp
           # code as breeze-agent — only the -H windowsgui linker flag and the
@@ -378,13 +369,8 @@ jobs:
           # lets it ship asInvoker instead of the agent's requireAdministrator.
           # Required by the AgentUserHelper scheduled task and the sessionbroker
           # user-session spawn path (which uses the user's non-elevated token).
-          Push-Location agent
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-          $env:CGO_ENABLED = "0"
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION -H windowsgui" -o ..\dist\breeze-user-helper-windows-amd64.exe .\cmd\breeze-user-helper
-          if ($LASTEXITCODE -ne 0) { throw "go build breeze-user-helper failed with exit code $LASTEXITCODE" }
-          Pop-Location
+          bash agent/scripts/build-edition.sh --edition self-host --component user-helper --goos windows --goarch amd64 --version $env:BUILD_VERSION --windowsgui --out ../dist/breeze-user-helper-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "build-edition.sh (user-helper) failed with exit code $LASTEXITCODE" }
           # Regression guard (#949): assert the SHIPPED manifests are correct.
           # The user-helper MUST be asInvoker and the agent MUST be
           # requireAdministrator — and the inverse for each, since #949 is a
