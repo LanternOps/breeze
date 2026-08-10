@@ -60,6 +60,7 @@ import {
 import { db } from "../db";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
+import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
 function makeSignedReleaseManifest(overrides: Record<string, unknown> = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -103,7 +104,9 @@ function makeSignedReleaseArtifactManifest(args: {
         name: args.assetName,
         sha256: args.checksum,
         size: args.size,
-        platformTrust: "release-workflow-produced",
+        platformTrust:
+          requiredPlatformTrustFor(args.assetName) ??
+          "release-workflow-produced",
       },
     ],
   });

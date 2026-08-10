@@ -50,6 +50,16 @@ describe('binarySource release-source unification', () => {
     );
   });
 
+  it('serving-surface guard: refuses to build URLs for signing-input asset names', async () => {
+    const { HELPER_FILENAMES } = await import('./binarySource');
+    // Simulate a future registry mistake by direct call through a builder that
+    // takes caller-controlled filename mapping.
+    HELPER_FILENAMES.windows = 'breeze-helper-windows-unsigned.msi';
+    const { getGithubHelperUrl } = await import('./binarySource');
+    expect(() => getGithubHelperUrl('windows')).toThrow(/signing-input/);
+    HELPER_FILENAMES.windows = 'breeze-helper-windows.msi';
+  });
+
   it('rejects a malformed repository before building any URL', () => {
     process.env.BINARY_GITHUB_REPOSITORY = 'owner/repo/../evil';
     expect(() => getGithubAgentUrl('windows', 'amd64')).toThrow(

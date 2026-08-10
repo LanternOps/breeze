@@ -71,6 +71,11 @@ const manifestSigningMocks = vi.hoisted(() => ({
 vi.mock("./manifestSigning", () => manifestSigningMocks);
 
 import { syncBinaries, syncFromGitHub } from "./binarySync";
+import { requiredPlatformTrustFor } from "./releaseAssetTrust";
+
+function fixturePlatformTrust(name: string): string {
+  return requiredPlatformTrustFor(name) ?? "release-workflow-produced";
+}
 
 function makeSignedReleaseManifest(
   assetName: string,
@@ -93,7 +98,7 @@ function makeSignedReleaseManifest(
           name: assetName,
           sha256: checksum,
           size: assetBuffer.length,
-          platformTrust: "release-workflow-produced",
+          platformTrust: fixturePlatformTrust(assetName),
         },
       ],
     }),
@@ -132,7 +137,7 @@ function makeSignedReleaseManifestMulti(
         name: a.name,
         sha256: checksums.get(a.name)!,
         size: a.buffer.length,
-        platformTrust: "release-workflow-produced",
+        platformTrust: fixturePlatformTrust(a.name),
       })),
     }),
   );
