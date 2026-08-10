@@ -500,6 +500,11 @@ const envObjectSchema = z
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_NAME: z.string().optional(),
     BINARY_SOURCE: z.string().optional(),
+    // "self-host" (default, today's behavior) | "hosted". A hosted deployment
+    // must fail closed onto local binaries rather than ever falling back to
+    // the public GitHub release — see the production validation block below
+    // and services/binaryEdition.ts / services/binarySync.ts.
+    BINARY_EDITION: z.string().optional(),
     // BYO signing (spec 3a): the release-source repository override consumed by
     // services/releaseSource.ts. Empty string means "unset" — both compose
     // files map it as `${BINARY_GITHUB_REPOSITORY:-}`, which always injects the
@@ -1159,6 +1164,36 @@ const envSchema = envObjectSchema
           message:
             `${releaseRepositoryOverrideKey} overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository's release manifest public key (NOT the official Breeze key).`,
         });
+      }
+
+      // BYO signing edition follow-up: a "hosted" deployment must never serve
+      // binaries pulled from the public GitHub release (that release now
+      // carries the self-host edition, unsigned by default). In production
+      // that only holds if binaries come exclusively from the local volume
+      // (BINARY_SOURCE=local — binarySync.ts's GitHub fallbacks are disabled
+      // for edition=hosted, but the primary BINARY_SOURCE=github sync path
+      // is not, so this is the boot-time backstop) AND a manifest trust root
+      // is configured, so whatever manifest IS found in the local volume can
+      // be verified rather than trusted blindly.
+      const binaryEdition = (data.BINARY_EDITION || 'self-host').trim().toLowerCase();
+      if (binaryEdition === 'hosted') {
+        const binarySourceForEdition = (data.BINARY_SOURCE || 'github').trim().toLowerCase();
+        if (binarySourceForEdition !== 'local') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['BINARY_SOURCE'],
+            message:
+              'BINARY_EDITION=hosted requires BINARY_SOURCE=local in production — a hosted deployment must never serve binaries fetched from the public GitHub release.',
+          });
+        }
+        if (!hasReleaseArtifactManifestPublicKey(data)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
+            message:
+              'BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set in production, so any release manifest found in the local binaries volume can be verified before being trusted.',
+          });
+        }
       }
 
       rejectSecretReuse(

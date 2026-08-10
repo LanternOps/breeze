@@ -674,6 +674,86 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BINARY_EDITION (hosted fail-closed)', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    it('default (unset) boots unchanged in development', () => {
+      withEnv(validEnv, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('default (unset) boots unchanged in production', () => {
+      withEnv(prodBase, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('BINARY_EDITION=self-host boots unchanged in production', () => {
+      withEnv({ ...prodBase, BINARY_EDITION: 'self-host' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('BINARY_EDITION=hosted has no effect in development (production-only rule)', () => {
+      withEnv({ ...validEnv, BINARY_EDITION: 'hosted', BINARY_SOURCE: 'github' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=github refuses to boot', () => {
+      withEnv(
+        { ...prodBase, BINARY_EDITION: 'hosted', BINARY_SOURCE: 'github' },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires BINARY_SOURCE=local/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE unset (defaults to github) refuses to boot', () => {
+      withEnv(
+        { ...prodBase, BINARY_EDITION: 'hosted' },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires BINARY_SOURCE=local/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=local but no manifest trust root refuses to boot', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_EDITION: 'hosted',
+          BINARY_SOURCE: 'local',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=local and a trust root boots cleanly', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_EDITION: 'hosted',
+          BINARY_SOURCE: 'local',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+  });
+
   describe('AGENT_BACKUP_SERVER_URL', () => {
     it('accepts a valid https URL', () => {
       withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'https://new.example.com' }, () => {

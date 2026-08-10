@@ -532,6 +532,73 @@ describe("binarySync", () => {
     }
   });
 
+  describe("BINARY_EDITION=hosted fail-closed (local-mode GitHub fallbacks)", () => {
+    it("throws instead of falling back to GitHub on a stale binaries volume", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      process.env.BREEZE_VERSION = "0.65.9";
+
+      fsMocks.readFile.mockResolvedValue("0.65.8" as any); // stale: != BREEZE_VERSION
+
+      await expect(syncBinaries()).rejects.toThrow(
+        /BINARY_EDITION=hosted refuses to fall back to the public GitHub release/,
+      );
+      expect(fsMocks.readdir).not.toHaveBeenCalled();
+    });
+
+    it("throws instead of falling back to GitHub when no local agent binaries are found", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+      fsMocks.readdir.mockResolvedValue([] as any); // empty dir -> no binaries found
+
+      await expect(syncBinaries()).rejects.toThrow(
+        /BINARY_EDITION=hosted refuses to fall back to the public GitHub release/,
+      );
+    });
+
+    it("still falls back to GitHub normally when BINARY_EDITION is self-host (default)", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "self-host";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+      fsMocks.readdir.mockResolvedValue([] as any);
+
+      const fetchSpy = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "checksums.txt",
+                  browser_download_url: "https://example.com/checksums.txt",
+                  size: 0,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/checksums.txt")) return new Response("");
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+  });
+
   // #1802: the local-binary path historically registered ONLY the agent
   // component, so self-hosters on BINARY_SOURCE=local never got watchdog
   // auto-update. It now also scans + registers breeze-watchdog-* siblings.

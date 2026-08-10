@@ -218,6 +218,11 @@ services:
       BINARY_SOURCE: github
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:?Set RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS in .env}
       BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+      # Binary edition served by this deployment: self-host (default,
+      # unchanged behavior) or hosted (production requires
+      # BINARY_SOURCE=local + a manifest trust root — not compatible with the
+      # BINARY_SOURCE=github hardcoded above without also changing that).
+      BINARY_EDITION: ${BINARY_EDITION:-self-host}
       # Hosted SaaS gate (#570). This template is for hosted deploys, so
       # IS_HOSTED is required-explicit — operators must set it in .env.
       # Misconfiguration here silently drops new partners to status='active'

@@ -8,6 +8,7 @@ import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
 import { getBinarySource, getAgentAutoPromote } from "./binarySource";
+import { getBinaryEdition } from "./binaryEdition";
 import {
   isReleaseArtifactManifestVerificationConfigured,
   verifyReleaseArtifactManifestAsset,
@@ -24,6 +25,22 @@ const GH_PLATFORM_MAP: Record<string, string> = {
   darwin: "macos",
   windows: "windows",
 };
+
+// BINARY_EDITION=hosted fail-closed (BYO signing edition follow-up): a
+// hosted deployment must never silently fall back to the public GitHub
+// release when its local binaries volume is missing or stale — that release
+// now carries the self-host edition, which is not what a hosted deployment
+// is supposed to serve. Throwing here is deliberate: syncBinaries()'s only
+// caller (index.ts startup) treats a thrown error as fatal when
+// BINARY_SOURCE=local, so this turns a would-be silent substitution into a
+// boot failure an operator has to notice and fix.
+function assertLocalGithubFallbackAllowed(context: string): void {
+  if (getBinaryEdition() === "hosted") {
+    throw new Error(
+      `[binarySync] BINARY_EDITION=hosted refuses to fall back to the public GitHub release (${context}). Fix the local binaries volume instead.`,
+    );
+  }
+}
 
 const AGENT_TARGETS = [
   { goos: "linux", goarch: "amd64" },
@@ -431,6 +448,9 @@ export async function syncBinaries(): Promise<void> {
     version !== "unknown" &&
     version !== expectedVersion
   ) {
+    assertLocalGithubFallbackAllowed(
+      `stale binaries volume: v${version} but BREEZE_VERSION=${expectedVersion}`,
+    );
     console.warn(
       `[binarySync] Stale binaries volume detected: volume has v${version} but BREEZE_VERSION=${expectedVersion}. ` +
         `Falling back to GitHub release sync. To fix, run: docker compose up -d --force-recreate binaries-init`,
@@ -510,6 +530,9 @@ export async function syncBinaries(): Promise<void> {
       );
     }
   } else {
+    assertLocalGithubFallbackAllowed(
+      `no local agent binaries found in ${agentBinaryDir}`,
+    );
     console.log(
       "[binarySync] No local agent binaries found, falling back to GitHub sync",
     );
@@ -800,6 +823,20 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
       .limit(1);
 
     if (existing) return; // Already registered
+
+    // This safety net runs after BOTH sync modes. In github mode, syncing the
+    // current version from GitHub is the primary path, not a fallback — leave
+    // it alone. In local mode it IS a fallback (local scan didn't produce the
+    // running version), so it's subject to the same hosted-edition fail-closed
+    // rule as the other local-mode fallbacks above. Unlike those, this
+    // function is a best-effort safety net by design (never crashes boot), so
+    // mirror that here: log and skip rather than throw.
+    if (getBinarySource() === "local" && getBinaryEdition() === "hosted") {
+      console.error(
+        `[binarySync] Version ${currentVersion} not found in agentVersions and BINARY_EDITION=hosted refuses to fall back to the public GitHub release from local mode. Register it via the local binaries volume instead.`,
+      );
+      return;
+    }
 
     console.log(
       `[binarySync] Version ${currentVersion} not found in agentVersions, syncing from GitHub`,
