@@ -102,6 +102,42 @@ export function ipMatchesAny(ip: string, entries: string[]): boolean {
   return false;
 }
 
+/**
+ * The /64 network prefix of an IPv6 address, canonicalized as `a:b:c:d::`.
+ * Returns null for IPv4, non-addresses, and the IPv4-embedding ranges (see
+ * below) — callers should fall back to the input unchanged in that case.
+ *
+ * Exists for RATE-LIMIT KEY derivation only. A single residential or hosting
+ * customer is routinely handed a whole /64 (often a /56 or /48), so per-address
+ * IPv6 buckets are worthless as a limiter: an attacker rotates the low 64 bits
+ * for free and gets an unbounded number of fresh buckets. /64 is the smallest
+ * unit a network operator is guaranteed not to split across customers, which
+ * makes it the correct granularity here. Never use this for audit logging,
+ * allowlists, or session/ticket IP binding — those need the real address.
+ */
+export function ipv6NetworkPrefix64(ip: string): string | null {
+  if (!isV6(ip)) return null;
+  const n = ipv6ToInt(ip);
+  if (n === null) return null;
+
+  // ::ffff:a.b.c.d (IPv4-mapped, what a dual-stack listener reports) and the
+  // legacy IPv4-compatible form both sit in ::/64. Truncating them would pool
+  // EVERY IPv4 client onto one shared bucket — the exact opposite of the point.
+  // Left for the caller to keep as a full address.
+  if (n >> 64n === 0n) return null;
+
+  const groups: string[] = [];
+  for (let i = 3; i >= 0; i--) {
+    groups.push(((n >> (64n + BigInt(i) * 16n)) & 0xffffn).toString(16));
+  }
+  // Drop trailing zero groups so `fe80:0:0:0::` renders as `fe80::`. The `::`
+  // always covers the low 64 bits, which is a run of at least four zero groups
+  // and therefore always the longest run — so absorbing any adjacent zeros into
+  // it stays RFC 5952 canonical, and the result is still a unique bucket id.
+  while (groups.length > 1 && groups[groups.length - 1] === '0') groups.pop();
+  return `${groups.join(':')}::`;
+}
+
 /** Validates a single allowlist entry: an IPv4/IPv6 address or CIDR. */
 export function isValidIpOrCidr(entry: string): boolean {
   const trimmed = entry.trim();

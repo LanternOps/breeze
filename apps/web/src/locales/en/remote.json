@@ -797,6 +797,12 @@
       "copiedLink": "Download link copied to the clipboard",
       "copyFailed": "Could not copy to the clipboard"
     },
+    "detail": {
+      "heading": "Session detail",
+      "noCode": "The one-time code was shown only when this session was created and cannot be retrieved. Start a new session if the person needs another code.",
+      "attribution": "Reference",
+      "close": "Close session detail"
+    },
     "status": {
       "heading": "Session progress",
       "pending": "Waiting for the user to run the client…",
@@ -817,14 +823,16 @@
     },
     "errors": {
       "create": "Could not create the support session",
-      "list": "Could not load recent support sessions"
+      "list": "Could not load recent support sessions",
+      "notFound": "That support session is no longer available."
     },
     "list": {
       "heading": "Recent support sessions",
       "empty": "No support sessions yet.",
       "columnCreated": "Started",
       "columnEnded": "Finished",
-      "unlabeled": "Unlabelled session"
+      "unlabeled": "Unlabelled session",
+      "openSession": "Open session detail"
     }
   }
 }

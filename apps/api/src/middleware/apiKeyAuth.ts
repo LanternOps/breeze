@@ -6,7 +6,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, users } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
 import { getActiveOrgTenant } from '../services/tenantStatus';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { authorizeHumanApiKeyCreator, authorizeServicePrincipalKey } from '../services/apiKeyAuthorization';
 
 export interface ApiKeyContext {
@@ -51,7 +51,9 @@ function envInt(name: string, fallback: number): number {
 export async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> {
   const limit = envInt('API_KEY_PRELOOKUP_RATE_LIMIT', 300);
   const windowSeconds = envInt('API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS', 60);
-  const clientIp = getTrustedClientIp(c, 'unknown');
+  // /64 for IPv6 (rateLimitIpKey) so a client that owns a whole subnet can't
+  // mint a fresh probe bucket per request. IPv4 unchanged.
+  const clientIp = rateLimitIpKey(getTrustedClientIp(c, 'unknown'));
   const rateCheck = await rateLimiter(getRedis(), `api_key_probe:${clientIp}`, limit, windowSeconds);
 
   if (!rateCheck.allowed) {

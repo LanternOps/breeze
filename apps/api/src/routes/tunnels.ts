@@ -18,7 +18,7 @@ import {
   verifyViewerAccessToken,
   type ViewerTokenPayload,
 } from '../services/jwt';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
@@ -1269,7 +1269,7 @@ vncExchangeRoutes.post(
     const ip = getTrustedClientIp(c, 'unknown');
     const rate = await rateLimiter(
       getRedis(),
-      `vnc-exchange:${ip}`,
+      `vnc-exchange:${rateLimitIpKey(ip)}`,
       VNC_EXCHANGE_RATE_LIMIT,
       VNC_EXCHANGE_RATE_WINDOW_SECONDS,
     );

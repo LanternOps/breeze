@@ -797,6 +797,12 @@
       "copiedLink": "Lien de téléchargement copié dans le presse-papiers",
       "copyFailed": "Impossible de copier dans le presse-papiers"
     },
+    "detail": {
+      "heading": "Détail de la séance",
+      "noCode": "Le code à usage unique n'a été affiché qu'à la création de cette séance et ne peut pas être récupéré. Démarrez une nouvelle séance si la personne a besoin d'un autre code.",
+      "attribution": "Référence",
+      "close": "Fermer le détail de la séance"
+    },
     "status": {
       "heading": "Progression de la séance",
       "pending": "En attente que l'utilisateur lance le client…",
@@ -817,14 +823,16 @@
     },
     "errors": {
       "create": "Impossible de créer la séance de soutien",
-      "list": "Impossible de charger les séances de soutien récentes"
+      "list": "Impossible de charger les séances de soutien récentes",
+      "notFound": "Cette séance de soutien n’est plus disponible."
     },
     "list": {
       "heading": "Séances de soutien récentes",
       "empty": "Aucune séance de soutien pour le moment.",
       "columnCreated": "Début",
       "columnEnded": "Fin",
-      "unlabeled": "Séance sans étiquette"
+      "unlabeled": "Séance sans étiquette",
+      "openSession": "Ouvrir le détail de la séance"
     }
   }
 }

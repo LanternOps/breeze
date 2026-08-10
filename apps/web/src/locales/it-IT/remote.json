@@ -797,6 +797,12 @@
       "copiedLink": "Link di download copiato negli appunti",
       "copyFailed": "Impossibile copiare negli appunti"
     },
+    "detail": {
+      "heading": "Dettaglio della sessione",
+      "noCode": "Il codice monouso è stato mostrato solo alla creazione di questa sessione e non può essere recuperato. Avvia una nuova sessione se la persona ha bisogno di un altro codice.",
+      "attribution": "Riferimento",
+      "close": "Chiudi il dettaglio della sessione"
+    },
     "status": {
       "heading": "Avanzamento della sessione",
       "pending": "In attesa che l'utente avvii il client…",
@@ -817,14 +823,16 @@
     },
     "errors": {
       "create": "Impossibile creare la sessione di supporto",
-      "list": "Impossibile caricare le sessioni di supporto recenti"
+      "list": "Impossibile caricare le sessioni di supporto recenti",
+      "notFound": "Questa sessione di supporto non è più disponibile."
     },
     "list": {
       "heading": "Sessioni di supporto recenti",
       "empty": "Nessuna sessione di supporto finora.",
       "columnCreated": "Inizio",
       "columnEnded": "Fine",
-      "unlabeled": "Sessione senza etichetta"
+      "unlabeled": "Sessione senza etichetta",
+      "openSession": "Apri il dettaglio della sessione"
     }
   }
 }

@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 
 /**
  * Global per-IP rate limiter middleware.
@@ -84,7 +84,11 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
     }
 
     const redis = getRedis();
-    const clientIp = getTrustedClientIp(c, 'unknown');
+    // Bucket identity, not the client's address: rateLimitIpKey folds IPv6 to
+    // its /64 so a subscriber holding 2^64 addresses gets one bucket rather
+    // than an unlimited supply. IPv4 and the 'unknown' sentinel pass through.
+    // Used for both the Redis key and the in-memory fallback Map below.
+    const clientIp = rateLimitIpKey(getTrustedClientIp(c, 'unknown'));
 
     if (!redis) {
       // Redis unavailable — use in-memory fallback so requests are still metered.

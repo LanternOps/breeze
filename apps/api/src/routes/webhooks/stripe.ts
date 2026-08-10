@@ -1,6 +1,6 @@
 // apps/api/src/routes/webhooks/stripe.ts
 import { Hono } from 'hono';
-import { getTrustedClientIp } from '../../services/clientIp'; // match the helper used by emailWebhook
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp'; // match the helper used by emailWebhook
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { verifyStripeEvent, handleStripeEvent } from '../../services/stripeWebhook';
@@ -13,7 +13,7 @@ const RATE_WINDOW_SECONDS = 60;
 
 stripeWebhookRoutes.post('/stripe/connect', async (c) => {
   const ip = getTrustedClientIp(c, 'unknown');
-  const rate = await rateLimiter(getRedis(), `stripe-webhook:${ip}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
+  const rate = await rateLimiter(getRedis(), `stripe-webhook:${rateLimitIpKey(ip)}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
   if (!rate.allowed) return c.json({ error: 'Too Many Requests' }, 429);
 
   const sig = c.req.header('stripe-signature');

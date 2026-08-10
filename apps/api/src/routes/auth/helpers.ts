@@ -12,7 +12,7 @@ import {
   verifyPassword,
   getUserEpochs
 } from '../../services';
-import { getImmediatePeerIpOrUndefined, trustsForwardedHeadersFrom } from '../../services/clientIp';
+import { getImmediatePeerIpOrUndefined, rateLimitIpKey, trustsForwardedHeadersFrom } from '../../services/clientIp';
 import { effectiveRequestScheme } from '../../services/requestTransport';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
@@ -114,7 +114,11 @@ export function getClientIP(c: RequestLike): string {
 export function getClientRateLimitKey(c: RequestLike): string {
   const trustedIp = getClientIP(c);
   if (trustedIp && trustedIp !== 'unknown') {
-    return `ip:${trustedIp}`;
+    // rateLimitIpKey, not the raw address: an IPv6 client typically owns its
+    // whole /64, so a per-address bucket is free to rotate and the limit means
+    // nothing. IPv4 is unchanged. Only the KEY is folded — getClientIP() still
+    // returns the real address for audit rows.
+    return `ip:${rateLimitIpKey(trustedIp)}`;
   }
 
   // No proxy-verified client IP. Do NOT fingerprint forwarded IP headers —
@@ -123,7 +127,7 @@ export function getClientRateLimitKey(c: RequestLike): string {
   // immediate TCP peer, which cannot be spoofed at L7.
   const peerIp = getImmediatePeerIpOrUndefined(c);
   if (peerIp) {
-    return `socket:${peerIp}`;
+    return `socket:${rateLimitIpKey(peerIp)}`;
   }
 
   // Only when even the socket address is unavailable (non-Node runtime / test

@@ -47,7 +47,11 @@ vi.mock('../services/auditService', () => ({
   createAuditLogAsync: vi.fn(async () => undefined),
 }));
 
-vi.mock('../services/clientIp', () => ({
+// Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64
+// bucket folding used to build limiter keys) is kept REAL so the test exercises
+// the same key the production path produces.
+vi.mock('../services/clientIp', async (importOriginal) => ({
+  rateLimitIpKey: (await importOriginal<typeof import('../services/clientIp')>()).rateLimitIpKey,
   getTrustedClientIp: vi.fn(() => 'unknown'),
   // Security remediation Wave 5, Task 6 — agentAuthMiddleware now calls
   // readAgentCertificateAssertion (services/agentCertificateBinding.ts),
