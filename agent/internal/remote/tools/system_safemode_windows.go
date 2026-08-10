@@ -20,12 +20,7 @@ import (
 func RebootToSafeMode(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
-	delay := GetPayloadInt(payload, "delay", 0)
-	if delay < 0 {
-		delay = 0
-	} else if delay > 1440 {
-		delay = 1440
-	}
+	delay := clampShutdownDelayMinutes(GetPayloadInt(payload, "delay", 0))
 
 	slog.Info("reboot to safe mode requested", "delayMinutes", delay)
 
