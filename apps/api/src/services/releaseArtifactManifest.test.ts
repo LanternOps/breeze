@@ -4,6 +4,7 @@ import {
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
+  verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
@@ -434,5 +435,165 @@ describe("releaseArtifactManifest", () => {
         expectedPlatformTrust: "windows-authenticode-required",
       }),
     ).rejects.toThrow(/not distributable/);
+  });
+
+  describe("edition field (BYO signing follow-up)", () => {
+    it("surfaces edition on the verified result when present", async () => {
+      const asset = Buffer.from("unsigned self-host msi");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "none", edition: "self-host" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactBuffer({
+          assetName: "breeze-agent.msi",
+          assetBuffer: asset,
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).resolves.toMatchObject({ edition: "self-host", platformTrust: "none" });
+    });
+
+    it("returns edition: null when the manifest predates the field", async () => {
+      const asset = Buffer.from("trusted-msi");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent.msi",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).resolves.toMatchObject({ edition: null });
+    });
+
+    it("rejects an unsigned breeze-agent.msi with no edition claim (backward compatible)", async () => {
+      const asset = Buffer.from("unsigned msi, no edition claim");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "none" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactBuffer({
+          assetName: "breeze-agent.msi",
+          assetBuffer: asset,
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/windows-authenticode-required/);
+    });
+
+    it("accepts an unsigned breeze-agent.msi labeled edition self-host", async () => {
+      const asset = Buffer.from("unsigned self-host msi bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "none", edition: "self-host" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactBuffer({
+          assetName: "breeze-agent.msi",
+          assetBuffer: asset,
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).resolves.toMatchObject({ edition: "self-host", platformTrust: "none" });
+    });
+
+    it("rejects an unsigned breeze-agent.msi labeled edition hosted", async () => {
+      const asset = Buffer.from("unsigned hosted msi bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent.msi",
+        assetBuffer: asset,
+        assetOverrides: { platformTrust: "none", edition: "hosted" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactBuffer({
+          assetName: "breeze-agent.msi",
+          assetBuffer: asset,
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/windows-authenticode-required/);
+    });
+
+    it("rejects an unknown edition value", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+        assetOverrides: { edition: "enterprise" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64",
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(/unknown edition/);
+    });
+  });
+
+  describe("verifyReleaseArtifactManifestIntegrity", () => {
+    it("returns release/repository for a validly-signed manifest without a per-asset lookup", () => {
+      const asset = Buffer.from("agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+        release: "v9.9.9",
+        repository: "acme/breeze-selfhost",
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      expect(
+        verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
+      ).toEqual({ release: "v9.9.9", repository: "acme/breeze-selfhost" });
+    });
+
+    it("throws on a tampered signature", () => {
+      const asset = Buffer.from("agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      const tampered = Buffer.from(
+        signed.manifest.toString("utf8").replace("v1.2.3", "v9.9.9"),
+      );
+
+      expect(() =>
+        verifyReleaseArtifactManifestIntegrity(tampered, signed.signature),
+      ).toThrow(/signature verification failed/);
+    });
+
+    it("throws when no trust root is configured", () => {
+      const asset = Buffer.from("agent bytes");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+      });
+      delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+      delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+
+      expect(() =>
+        verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
+      ).toThrow(/public key is not configured/);
+    });
   });
 });

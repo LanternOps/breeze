@@ -23,6 +23,10 @@ type ReleaseArtifactManifestAsset = {
   // build outputs. Tolerated here; positive rejection at registration/serve
   // time is Deliverable 3c.
   intendedUse?: unknown;
+  // Release edition ("self-host" | "hosted"). Optional — absent on manifests
+  // predating this field, which is tolerated everywhere it's read (treated
+  // as "no edition claim", never as "self-host" by default).
+  edition?: unknown;
 };
 
 type ReleaseArtifactManifest = {
@@ -48,6 +52,7 @@ export type VerifiedReleaseArtifact = {
   repository: string;
   platformTrust: string | null;
   intendedUse: string | null;
+  edition: string | null;
 };
 
 function sha256Hex(buffer: Buffer): string {
@@ -234,6 +239,7 @@ export async function verifyReleaseArtifactBuffer(args: {
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
     intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
   };
 }
 
@@ -296,6 +302,7 @@ function selectManifestAsset(args: {
     assetName: args.assetName,
     platformTrust: typeof entry.platformTrust === 'string' ? entry.platformTrust : null,
     intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
   });
   if (
     args.expectedPlatformTrust &&
@@ -339,6 +346,27 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
     intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
+  };
+}
+
+/**
+ * Verifies just the manifest pair's signature + schema — no per-asset lookup.
+ * Used when a caller needs to know "is this a validly-signed release artifact
+ * manifest" before it knows (or cares) which specific asset it will look up,
+ * e.g. binarySync's local-mode official-manifest registration (spec: BYO
+ * signing edition follow-up), which registers WHICHEVER assets the manifest
+ * happens to cover.
+ */
+export function verifyReleaseArtifactManifestIntegrity(
+  manifestBytes: Buffer,
+  signatureBytes: Buffer,
+): { release: string; repository: string } {
+  verifyManifestSignature(manifestBytes, signatureBytes);
+  const manifest = parseManifest(manifestBytes);
+  return {
+    release: manifest.release as string,
+    repository: manifest.repository as string,
   };
 }
 
