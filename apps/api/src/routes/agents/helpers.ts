@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -1166,30 +1166,52 @@ export async function handleCisCommandResult(
       return;
     }
 
-    const [baseline] = await db
-      .select({
-        id: cisBaselines.id,
-        orgId: cisBaselines.orgId,
-        name: cisBaselines.name,
-      })
-      .from(cisBaselines)
-      .where(eq(cisBaselines.id, baselineId))
-      .limit(1);
+    // Resolve the baseline in a SYSTEM context. This handler runs inside the
+    // agent's ORG-scoped RLS context, where breeze_current_partner_id() is
+    // NULL — so a partner-wide baseline (org_id NULL) is invisible and this
+    // lookup would return nothing. Both callers swallow the error, so the
+    // failure mode is every scheduled scan result silently discarded with
+    // only a log line. The read is by primary key and the result is
+    // immediately re-checked against the device's own org below.
+    const [baseline] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({
+            id: cisBaselines.id,
+            orgId: cisBaselines.orgId,
+            partnerId: cisBaselines.partnerId,
+            name: cisBaselines.name,
+          })
+          .from(cisBaselines)
+          .where(eq(cisBaselines.id, baselineId))
+          .limit(1)
+      )
+    );
 
     if (!baseline) {
       console.warn(`[agents/helpers] cis_benchmark command ${command.id}: baseline ${baselineId} not found`);
       return;
     }
 
-    // Defense-in-depth: verify baseline org matches device org
+    // Defense-in-depth: the device must actually be governed by this baseline.
+    // Org-owned -> same org. Partner-wide -> the device's org must belong to
+    // the owning partner. A plain `deviceRow.orgId !== baseline.orgId` would
+    // reject every partner-wide result, since baseline.orgId is NULL.
     const [deviceRow] = await db
-      .select({ orgId: devices.orgId })
+      .select({ orgId: devices.orgId, partnerId: organizations.partnerId })
       .from(devices)
+      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.id, command.deviceId))
       .limit(1);
-    if (!deviceRow || deviceRow.orgId !== baseline.orgId) {
+
+    const governed = !!deviceRow && (baseline.partnerId
+      ? deviceRow.partnerId === baseline.partnerId
+      : deviceRow.orgId === baseline.orgId);
+    if (!deviceRow || !governed) {
       console.warn(
-        `[agents/helpers] cis_benchmark command ${command.id}: org mismatch baseline.orgId=${baseline.orgId} device.orgId=${deviceRow?.orgId}`,
+        `[agents/helpers] cis_benchmark command ${command.id}: ownership mismatch ` +
+        `baseline.orgId=${baseline.orgId} baseline.partnerId=${baseline.partnerId} ` +
+        `device.orgId=${deviceRow?.orgId} device.partnerId=${deviceRow?.partnerId}`,
       );
       return;
     }
@@ -1281,7 +1303,10 @@ export async function handleCisCommandResult(
     const [inserted] = await db
       .insert(cisBaselineResults)
       .values({
-        orgId: baseline.orgId,
+        // The DEVICE's org, never the baseline's. cis_baseline_results.org_id
+        // is NOT NULL and a partner-wide baseline has no org, so sourcing it
+        // from the baseline would throw here for every partner-wide scan.
+        orgId: deviceRow.orgId,
         deviceId: command.deviceId,
         baselineId: baseline.id,
         checkedAt: parsed.checkedAt,
@@ -1309,7 +1334,7 @@ export async function handleCisCommandResult(
     if (inserted.failedChecks > 0) {
       publishEvent(
         'compliance.cis_deviation',
-        baseline.orgId,
+        deviceRow.orgId,
         {
           baselineId: baseline.id,
           baselineName: baseline.name,
@@ -1329,7 +1354,7 @@ export async function handleCisCommandResult(
     if (previousScore === null || previousScore !== inserted.score) {
       publishEvent(
         'compliance.cis_score_changed',
-        baseline.orgId,
+        deviceRow.orgId,
         {
           baselineId: baseline.id,
           baselineName: baseline.name,

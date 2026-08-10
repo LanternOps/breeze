@@ -13,6 +13,7 @@ import {
   cisBaselines,
   cisBaselineResults,
   cisRemediationActions,
+  organizations,
 } from '../db/schema';
 import { eq, and, desc, sql, inArray, gte, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -426,12 +427,26 @@ registerTool({
         id: cisBaselines.id,
         name: cisBaselines.name,
         orgId: cisBaselines.orgId,
+        partnerId: cisBaselines.partnerId,
         osType: cisBaselines.osType,
       })
       .from(cisBaselines)
       .where(eq(cisBaselines.id, baselineId!))
       .limit(1);
-    if (!baseline || baseline.orgId !== orgId || baseline.osType !== access.device.osType) {
+    // Parity with POST /cis/remediate: an org-owned baseline must match this
+    // device's org, a partner-wide one must own the device's org's partner.
+    // `baseline.orgId !== orgId` alone rejects every partner-wide baseline.
+    const [deviceOrg] = baseline?.partnerId
+      ? await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, orgId))
+          .limit(1)
+      : [undefined];
+    const ownerMatches = !!baseline && (baseline.partnerId
+      ? deviceOrg?.partnerId === baseline.partnerId
+      : baseline.orgId === orgId);
+    if (!baseline || !ownerMatches || baseline.osType !== access.device.osType) {
       return JSON.stringify({ error: 'Baseline is not compatible with the selected device' });
     }
 
