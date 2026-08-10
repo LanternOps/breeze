@@ -1659,6 +1659,10 @@
     "status": {
       "active": "Ativa",
       "inactive": "Inativa"
+    },
+    "badges": {
+      "allOrgs": "Todas as orgs",
+      "partnerWideTitle": "Linha de base para todo o parceiro — aplica-se a dispositivos em todas as organizações"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1699,6 +1703,12 @@
       "cancel": "Cancelar",
       "saving": "Salvando...",
       "save": "Salvar"
+    },
+    "ownership": {
+      "scope": "Escopo",
+      "allOrganizations": "Todas as organizações",
+      "partnerWideBaselineParenthetical": "(linha de base para todo o parceiro)",
+      "thisOrganizationOnly": "Somente esta organização"
     }
   },
   "cisHardeningCisRemediationsTab": {

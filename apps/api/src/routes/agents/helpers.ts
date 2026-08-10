@@ -1198,20 +1198,33 @@ export async function handleCisCommandResult(
     // the owning partner. A plain `deviceRow.orgId !== baseline.orgId` would
     // reject every partner-wide result, since baseline.orgId is NULL.
     const [deviceRow] = await db
-      .select({ orgId: devices.orgId, partnerId: organizations.partnerId })
+      .select({ orgId: devices.orgId })
       .from(devices)
-      .innerJoin(organizations, eq(organizations.id, devices.orgId))
       .where(eq(devices.id, command.deviceId))
       .limit(1);
 
+    // The owning partner is only needed for the partner-wide branch, so it is
+    // a separate lookup rather than a join on the device query: org-owned
+    // baselines are the common case and must not pay for it on every result
+    // the fleet reports.
+    let devicePartnerId: string | null = null;
+    if (deviceRow && baseline.partnerId) {
+      const [orgRow] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, deviceRow.orgId))
+        .limit(1);
+      devicePartnerId = orgRow?.partnerId ?? null;
+    }
+
     const governed = !!deviceRow && (baseline.partnerId
-      ? deviceRow.partnerId === baseline.partnerId
+      ? devicePartnerId === baseline.partnerId
       : deviceRow.orgId === baseline.orgId);
     if (!deviceRow || !governed) {
       console.warn(
         `[agents/helpers] cis_benchmark command ${command.id}: ownership mismatch ` +
         `baseline.orgId=${baseline.orgId} baseline.partnerId=${baseline.partnerId} ` +
-        `device.orgId=${deviceRow?.orgId} device.partnerId=${deviceRow?.partnerId}`,
+        `device.orgId=${deviceRow?.orgId} device.partnerId=${devicePartnerId}`,
       );
       return;
     }
