@@ -110,36 +110,85 @@ func TestIsSensitiveReadPathDirectoryNode(t *testing.T) {
 // the absolute path the OS would actually open. Every entry is anchored with a
 // leading "/", so a relative path handed to the agent would otherwise slip past
 // the check and still resolve to the sensitive target via the process CWD
-// (found auditing #3385; agent services commonly run with CWD "/").
+// (found auditing #3385; agent services commonly run with CWD "/" on Unix and
+// C:\Windows\System32 on Windows). Runs on every OS: matching is pure string
+// logic over separator-folded paths, and filepath.Abs joins against the CWD the
+// same way on both platforms, so only the CWD prefix differs.
 func TestIsSensitiveReadPathRelativeInput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-rooted deny-list entries are not reachable from a Windows CWD")
-	}
-
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "etc", "ssl", "private"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	for _, sub := range []string{
+		filepath.Join("etc", "ssl", "private"),
+		filepath.Join("windows", "system32", "config"),
+		"docs",
+	} {
+		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
 	}
-	t.Chdir(root)
 
 	cases := []struct {
 		name      string
-		path      string
+		cwdRel    string // CWD to evaluate from, relative to root
+		path      string // relative path as the operator would hand it over
 		sensitive bool
 	}{
-		{"relative shadow", "etc/shadow", true},
-		{"relative dot-slash shadow", "./etc/shadow", true},
-		{"relative ssl private dir", "etc/ssl/private", true},
-		{"relative benign", "etc/hosts", false},
-		{"relative benign nested", "docs/readme.md", false},
+		{"relative shadow", ".", "etc/shadow", true},
+		{"relative dot-slash shadow", ".", "./etc/shadow", true},
+		{"relative ssl private dir node", ".", "etc/ssl/private", true},
+		{"relative keychains dir node", ".", "library/keychains", true},
+		// The Windows service case the deny-list comment calls out: a service
+		// running with CWD C:\Windows\System32 reaches the SAM hive with a bare
+		// "config/sam".
+		{"relative windows SAM hive from system32 cwd", filepath.Join("windows", "system32"), "config/sam", true},
+		{"relative benign", ".", "etc/hosts", false},
+		{"relative benign nested", ".", "docs/readme.md", false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			cwd := filepath.Join(root, tc.cwdRel)
+			t.Chdir(cwd)
 			if got := isSensitiveReadPath(filepath.Clean(tc.path)); got != tc.sensitive {
-				t.Fatalf("isSensitiveReadPath(%q) with cwd %q = %v, want %v", tc.path, root, got, tc.sensitive)
+				t.Fatalf("isSensitiveReadPath(%q) with cwd %q = %v, want %v", tc.path, cwd, got, tc.sensitive)
 			}
 		})
+	}
+}
+
+// TestEnforceReadContainmentSymlinkToKeychainsDirNode closes the bypass the
+// deny-list exists to stop, for the entry fixed in #3385: an innocuously-named
+// *directory* symlink whose target is the Keychains directory itself. The
+// pre-#3385 rule only matched paths inside the directory, so the resolved link
+// target would not have matched either.
+func TestEnforceReadContainmentSymlinkToKeychainsDirNode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is unreliable without privilege on Windows CI")
+	}
+
+	dir := t.TempDir()
+	keychains := filepath.Join(dir, "Library", "Keychains")
+	if err := os.MkdirAll(keychains, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keychains, "login.keychain-db"), []byte("kc"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	link := filepath.Join(dir, "innocent-folder")
+	if err := os.Symlink(keychains, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := enforceReadContainment(filepath.Clean(link)); err == nil {
+		t.Fatal("expected symlink to the Keychains dir node to be denied, got nil")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink-specific denial, got: %v", err)
+	}
+
+	if res := ListFiles(map[string]any{"path": link}); res.Status == "completed" {
+		t.Fatal("expected ListFiles through the symlink to be denied")
+	} else if !strings.Contains(res.Error, "sensitive path") {
+		t.Fatalf("expected sensitive-path error, got: %q", res.Error)
 	}
 }
 
@@ -162,6 +211,17 @@ func TestListFilesDeniesKeychainsDirNode(t *testing.T) {
 	}
 	if !strings.Contains(res.Error, "sensitive path") {
 		t.Fatalf("expected sensitive-path error, got: %q", res.Error)
+	}
+
+	// ReadFile must refuse the directory node too, and must refuse it for being
+	// sensitive rather than for being a directory — containment has to run
+	// before the IsDir check, or a refactor could leak the distinction.
+	res = ReadFile(map[string]any{"path": keychains})
+	if res.Status == "completed" {
+		t.Fatal("expected ReadFile of the Keychains directory itself to be denied")
+	}
+	if !strings.Contains(res.Error, "sensitive path") {
+		t.Fatalf("expected sensitive-path error from ReadFile, got: %q", res.Error)
 	}
 
 	// A prefix-sibling directory must still list.
