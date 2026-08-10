@@ -472,9 +472,21 @@ func TestWriteDestinationDeniesSymlinkedParent(t *testing.T) {
 			dest := filepath.Join(link, "authorized_keys")
 			implanted := filepath.Join(ssh, "authorized_keys")
 			if tc.nested {
-				// The op would MkdirAll its way down before writing.
-				dest = filepath.Join(link, "sub", "authorized_keys")
-				implanted = filepath.Join(ssh, "sub", "authorized_keys")
+				// The op would MkdirAll its way down before writing. The depth
+				// is deliberately large: the first version of this fix capped
+				// the ancestor walk at 128 levels, which made the cap itself a
+				// bypass — padding the path past it defeated the check. There
+				// is no cap now, so the number here is arbitrary and the test
+				// fails if one is ever reintroduced.
+				parts := make([]string, 0, 301)
+				parts = append(parts, link)
+				for i := 0; i < 300; i++ {
+					parts = append(parts, "a")
+				}
+				dest = filepath.Join(append(parts, "authorized_keys")...)
+
+				parts[0] = ssh
+				implanted = filepath.Join(append(parts, "authorized_keys")...)
 			}
 
 			res := tc.invoke(t, dest, scratch)

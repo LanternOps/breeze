@@ -206,16 +206,33 @@ func EnforcePathContainment(verb, cleanPath string) error {
 // the literal string carries no "/.ssh/" to match, and EvalSymlinks errored on
 // the missing leaf so the symlink leg never ran — and implanted the key.
 //
-// So walk up to the nearest ancestor that DOES resolve and re-attach the
-// unresolved remainder. That also covers destinations several levels below a
-// symlink, which WriteFile/RenameFile/CopyFile happily MkdirAll into.
+// So walk up to the nearest ancestor that EXISTS and re-attach the unresolved
+// remainder. That also covers destinations several levels below a symlink,
+// which WriteFile/RenameFile/CopyFile happily MkdirAll into.
+//
+// Two properties of this loop are load-bearing, and an earlier version of this
+// fix got both wrong by capping the iteration count at a constant:
+//
+//   - NO DEPTH CAP. The caller controls the destination string, so any fixed
+//     cap is a bypass, not a safety valve: padding the path with more junk
+//     segments than the cap ("<link>/a/a/a/…/authorized_keys") exhausts the
+//     budget before the resolvable ancestor is reached, the function reports
+//     "could not resolve", and EnforcePathContainment reads that as "nothing to
+//     check" — reopening the exact hole. Termination needs no cap: each step
+//     strictly shortens the path and the loop exits at the root.
+//   - CHEAP PROBE, ONE RESOLVE. The ascent probes with os.Lstat (one syscall
+//     per level) and calls EvalSymlinks once, on the ancestor that exists.
+//     Calling EvalSymlinks on every level instead is quadratic in path depth,
+//     which hands the same attacker a CPU-exhaustion knob.
 func resolveForContainment(cleanPath string) (string, bool) {
 	current := cleanPath
 	remainder := ""
-	// Bounded to keep a pathological path from spinning; far deeper than any
-	// real filesystem nesting.
-	for i := 0; i < 128; i++ {
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", false
+			}
 			if remainder != "" {
 				resolved = filepath.Join(resolved, remainder)
 			}
@@ -232,7 +249,6 @@ func resolveForContainment(cleanPath string) (string, bool) {
 		}
 		current = parent
 	}
-	return "", false
 }
 
 // enforceReadContainment blocks reads/lists of obviously-sensitive credential
