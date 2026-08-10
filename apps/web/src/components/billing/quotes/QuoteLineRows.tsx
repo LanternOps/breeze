@@ -97,6 +97,16 @@ const BAND_INPUT_PAD_X = '0.5rem + 2px'; // px-1 + border
 // and border are paid for separately. They weren't: `px-2` + 1px borders is
 // 18px ≈ exactly the 2ch buffer, so a blurred "$45.00" ended up with 0.4px of
 // slack and the browser clipped the final digit ("$45.0", issue #3318).
+// (Those figures are measured, not estimated: the rendered row was compared
+// against the app's compiled Tailwind CSS and self-hosted Plus Jakarta Sans in
+// Chromium, per-input content box vs. the value's text width under that
+// input's own computed `font`/`font-variant-numeric`. Numbers in #3370.)
+//
+// `maxChars` has to clear the WIDEST format the field can show, not just the
+// "$" one: `currencyCode` is free-text, and Intl renders many ISO codes as a
+// prefix rather than a symbol ("CHF 1,234,567.89" is 16 characters against
+// "$1,234,567.89"'s 13), so a ceiling tuned to USD clamps those back into the
+// very clip this function exists to prevent.
 function growWidth(value: string, minChars: number, maxChars: number, padX: string): string {
   const chars = Math.min(maxChars, Math.max(minChars, value.length));
   return `calc(${chars + 2}ch + ${padX})`;
@@ -363,7 +373,7 @@ export function GhostRow({ blockId, busy, currency, onAdd, colSpan }: {
             placeholder="0.00"
             aria-label={t('quotes.editor.table.unitPrice')}
             data-testid={`quote-ghost-price-${blockId}`}
-            style={{ width: growWidth(ghostPriceDisplay, 6, 15, MONEY_INPUT_PAD_X) }}
+            style={{ width: growWidth(ghostPriceDisplay, 6, 18, MONEY_INPUT_PAD_X) }}
             className={`${ghostField} px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
           />
           <select
@@ -1069,7 +1079,7 @@ export function EditableLineRow({
           aria-invalid={fieldErrors.price ? true : undefined}
           aria-describedby={describedByIds(fieldErrors.price && `quote-line-price-error-${line.id}`, priceDirty && unsavedHintId(line.id, 'price'))}
           data-testid={`quote-line-price-${line.id}`}
-          style={{ width: growWidth(priceDisplay, 6, 15, MONEY_INPUT_PAD_X) }}
+          style={{ width: growWidth(priceDisplay, 6, 18, MONEY_INPUT_PAD_X) }}
           className={`h-9 rounded-md border bg-transparent px-2 text-right text-sm tabular-nums transition-colors focus:outline-hidden disabled:opacity-60 ${seamless(fieldRing(priceDirty, saved), !!fieldErrors.price)}`}
         />
         <UnsavedFieldHint id={unsavedHintId(line.id, 'price')} show={priceDirty} />
@@ -1519,7 +1529,7 @@ export function EditableLineRow({
                 costDirty && unsavedHintId(line.id, 'cost'),
               )}
               data-testid={`quote-line-cost-${line.id}`}
-              style={{ width: growWidth(costDisplay, 4, 14, BAND_INPUT_PAD_X) }}
+              style={{ width: growWidth(costDisplay, 4, 18, BAND_INPUT_PAD_X) }}
               // Priority: validation error (destructive) > unsaved edit (amber
               // dirty border) > a genuinely missing cost (warning tint —
               // "distinct from the amber dirty border" treatment, using the same
