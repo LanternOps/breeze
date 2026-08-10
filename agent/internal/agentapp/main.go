@@ -1227,6 +1227,26 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// gateEnrollResponseBackup refuses, in a hosted build, an enroll response
+// backup control-plane URL outside the compiled allowlist. It runs on the
+// RAW response field, BEFORE resolveBackupServerURL's precedence/validation
+// logic — exactly where gateRedeemResponse checks res.BackupServerURL in
+// bootstrap.go — and is gated at Enforced() tier (gap AND strict), not
+// ValidateBackupServerURL's Strict()-only gate on the EXISTING-fleet paths it
+// guards (heartbeat configUpdate push, self-heal). Running before
+// resolveBackupServerURL matters: that function's own ValidateBackupServerURL
+// call already soft-drops (warn + skip) a non-allowlisted backup under
+// Strict(), which would otherwise swallow this gate's hard refusal in a
+// strict build. Fresh enrollment is a fresh-install path, matching
+// gateBootstrapServer/gateRedeemResponse/gateEnrollPrimary. No-op in
+// self-host and when the response carries no backup.
+func gateEnrollResponseBackup(backup string) error {
+	if backup == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(backup)
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1556,6 +1576,16 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	applyEnrollResponseIdentity(cfg, enrollResp)
+
+	// Refused, in a hosted build, BEFORE resolveBackupServerURL's own
+	// Strict()-only validation gets a chance to soft-drop it — see
+	// gateEnrollResponseBackup's doc comment. bootstrapServerURL (the
+	// fallback seed below) needs no separate gate here: it only ever arrives
+	// via the bootstrap flow, which already hard-refused it through
+	// gateRedeemResponse before enrollDevice ever ran.
+	if err := gateEnrollResponseBackup(enrollResp.BackupServerURL); err != nil {
+		return &enrollFailure{cat: catConfig, friendly: "enrollment refused: backup control-plane host not allowed", detail: err}
+	}
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not
