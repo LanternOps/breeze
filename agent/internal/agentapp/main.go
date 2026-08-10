@@ -587,6 +587,47 @@ func runWithTimeout(name string, d time.Duration, fn func()) {
 	}
 }
 
+// enforceBuildModeGate is startAgent's build-mode self-check, extracted as a
+// named helper (mirroring checkPersistedServerAllowed/gateEnrollPrimary
+// above) so the gap/strict decision is directly testable without invoking
+// startAgent's full initialization (mTLS load, heartbeat bring-up, hardware
+// collection). Logs the resolved build mode, then on a persisted-server
+// violation either hard-refuses to start (strict — logs, prints an operator
+// message, calls osExit(1), and returns the violation error as a
+// belt-and-braces measure for a stubbed-osExit test) or warns and returns nil
+// (gap — the migration-needed heartbeat signal covers this case; see
+// migrationSignal). Self-host and an unenrolled/empty ServerURL always
+// return nil (checkPersistedServerAllowed's contract).
+func enforceBuildModeGate(cfg *config.Config) error {
+	buildModeLogArgs := []any{"mode", hostpolicy.Mode()}
+	if hostpolicy.Enforced() {
+		buildModeLogArgs = append(buildModeLogArgs, "allowedHosts", hostpolicy.Hosts())
+	}
+	log.Info("control-plane build mode", buildModeLogArgs...)
+	if err := checkPersistedServerAllowed(cfg); err != nil {
+		if hostpolicy.Strict() {
+			// Belt-and-braces: config.Load -> ValidateTiered already fatals
+			// on a persisted out-of-allowlist ServerURL before any caller
+			// reaches startAgent, but keeping an explicit refusal here makes
+			// the invariant local to the function that actually starts
+			// components, instead of depending on every caller having gone
+			// through config.Load first.
+			log.Error("hosted build refuses to run against this server", "error", err.Error())
+			fmt.Fprintf(os.Stderr,
+				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
+					"Use the self-host build instead. Details: %v\n", err)
+			osExit(1)
+			return err
+		}
+		// Gap build: warn and keep running. The migration-needed signal
+		// (Task 8) surfaces this on the self-hosted dashboard so the admin
+		// can migrate before the strict build ships. Do NOT exit.
+		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
+			"error", err.Error())
+	}
+	return nil
+}
+
 // startAgent performs all agent initialisation assuming cfg is already
 // enrolled. Returns the running components or an error if any
 // initialization step fails (mTLS load, log shipper init, heartbeat
@@ -606,31 +647,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Support session in support.go. runAgent alone would miss the two
 	// primary service deployment modes, which return into runAsService
 	// before ever reaching runAgent's own body.
-	buildModeLogArgs := []any{"mode", hostpolicy.Mode()}
-	if hostpolicy.Enforced() {
-		buildModeLogArgs = append(buildModeLogArgs, "allowedHosts", hostpolicy.Hosts())
-	}
-	log.Info("control-plane build mode", buildModeLogArgs...)
-	if err := checkPersistedServerAllowed(cfg); err != nil {
-		if hostpolicy.Strict() {
-			// Belt-and-braces: config.Load -> ValidateTiered already fatals
-			// on a persisted out-of-allowlist ServerURL before any caller
-			// reaches startAgent, but keeping an explicit refusal here makes
-			// the invariant local to the function that actually starts
-			// components, instead of depending on every caller having gone
-			// through config.Load first.
-			log.Error("hosted build refuses to run against this server", "error", err.Error())
-			fmt.Fprintf(os.Stderr,
-				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
-					"Use the self-host build instead. Details: %v\n", err)
-			osExit(1)
-			return nil, err
-		}
-		// Gap build: warn and keep running. The migration-needed signal
-		// (Task 8) surfaces this on the self-hosted dashboard so the admin
-		// can migrate before the strict build ships. Do NOT exit.
-		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
-			"error", err.Error())
+	if err := enforceBuildModeGate(cfg); err != nil {
+		return nil, err
 	}
 
 	// Quick Support clients are throwaway, unelevated, and live entirely in a
