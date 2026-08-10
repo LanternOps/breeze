@@ -57,9 +57,41 @@ describe('releaseSource', () => {
     'owner/repo#frag',
     'owner /repo',
     'https://github.com/owner/repo',
+    // These satisfy the character class — the repo segment allows dots — so
+    // the regex alone does NOT deliver the module's "no path traversal"
+    // promise. `owner/..` builds https://api.github.com/repos/owner/.. which
+    // normalizes to the API root. Not exploitable (the owner class excludes
+    // `/`, `@`, `%` and dots, so one `..` can never reach a second repository,
+    // and every builder uses a literal host) — but a typo'd override must fail
+    // loudly rather than 404 mysteriously.
+    'owner/..',
+    'owner/.',
+    './repo',
+    '../repo',
+    // Other shapes a hand-edited .env can produce.
+    'owner@evil/repo',
+    'owner\n/repo',   // interior newline (a trailing one is legitimately trimmed)
+    'owner/repо', // Cyrillic 'о' homoglyph
+    '/repo',
+    'owner/',
   ])('rejects malformed repository %j', (bad) => {
     process.env.BINARY_GITHUB_REPOSITORY = bad;
     expect(() => getReleaseSourceRepository()).toThrow(/Invalid release source repository/);
+  });
+
+  it('trims surrounding whitespace rather than rejecting it (.env values often carry a trailing newline)', () => {
+    process.env.BINARY_GITHUB_REPOSITORY = '  acme/breeze-selfhost-signing\n';
+    expect(getReleaseSourceRepository()).toBe('acme/breeze-selfhost-signing');
+  });
+
+  it('treats a whitespace-only override as unset (compose always injects the key)', () => {
+    process.env.BINARY_GITHUB_REPOSITORY = '   ';
+    expect(getReleaseSourceRepository()).toBe('lanternops/breeze');
+  });
+
+  it('still accepts a legitimate repository name containing dots', () => {
+    process.env.BINARY_GITHUB_REPOSITORY = 'my-org/breeze.signing.v2';
+    expect(getReleaseSourceRepository()).toBe('my-org/breeze.signing.v2');
   });
 
   it('accepts dots, underscores, and hyphens in the repository name', () => {

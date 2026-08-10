@@ -173,6 +173,21 @@ function makeSignedReleaseManifestMulti(
   };
 }
 
+// Sign an arbitrary manifest object with a fresh key. Lets a test mutate a
+// manifest (e.g. downgrade one asset's platformTrust) and still present a
+// VALID signature, so the assertion under test is the trust check rather than
+// the signature check.
+function makeSignedReleaseManifestMultiFrom(manifestObject: unknown) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  const manifest = Buffer.from(JSON.stringify(manifestObject));
+  return {
+    manifest,
+    signature: Buffer.from(sign(null, manifest, privateKey).toString("base64")),
+    publicKey: publicDer.subarray(publicDer.length - 32).toString("base64"),
+  };
+}
+
 describe("binarySync", () => {
   const originalEnv = process.env;
 
@@ -432,6 +447,118 @@ describe("binarySync", () => {
       expect(insert.signingKeyId).toBe("release-artifact-manifest-ed25519");
       expect(insert.releaseManifest).toBe(signed.manifest.toString("utf8"));
     });
+
+    // A re-signing failure is a deployment-wide fault (rotated
+    // APP_ENCRYPTION_KEY, undecryptable signing key — the #625 class). It used
+    // to be swallowed by the per-target log-and-continue catch around
+    // upsertVersion, so sync returned { synced: [] } and the route answered 200
+    // while the fleet silently stayed on the old version.
+    it("aborts the whole sync when deployment re-signing fails, writing nothing", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRepoFetch(asset, signed);
+
+      manifestSigningMocks.signManifest.mockRejectedValueOnce(
+        new Error("decryptSecret returned null for active signing key"),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(
+        /decryptSecret returned null/,
+      );
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("aborts before any write when ensureActiveSigningKey fails", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRepoFetch(asset, signed);
+
+      manifestSigningMocks.ensureActiveSigningKey.mockRejectedValueOnce(
+        new Error("encryptSecret returned null for Ed25519 seed"),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(/encryptSecret returned null/);
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+  });
+
+  // AGENT_TARGETS ends with windows/amd64, so a Windows trust failure used to
+  // land after the four linux/darwin agents had already been committed AND
+  // promoted, and it escaped syncFromGitHub before the helper, user-helper and
+  // watchdog loops ran at all — upgraded agents, frozen watchdogs (#1802's
+  // failure mode). All verification now happens before any write.
+  describe("trust failures leave no partial state", () => {
+    it("writes nothing when a late-ordered asset fails the trust check", async () => {
+      const linuxAgent = Buffer.from("linux agent bytes");
+      const windowsAgent = Buffer.from("windows agent bytes");
+      const watchdog = Buffer.from("linux watchdog bytes");
+      const assets = [
+        { name: "breeze-agent-linux-amd64", buffer: linuxAgent },
+        { name: "breeze-agent-windows-amd64.exe", buffer: windowsAgent },
+        { name: "breeze-watchdog-linux-amd64", buffer: watchdog },
+      ];
+      const signed = makeSignedReleaseManifestMulti(assets);
+
+      // Downgrade ONLY the Windows agent's label: a self-hoster whose fork
+      // generates manifests but skips Authenticode signing produces exactly
+      // this. It is the last agent target and the trust assert rejects it.
+      const parsed = JSON.parse(signed.manifest.toString("utf8"));
+      const win = parsed.assets.find(
+        (a: { name: string }) => a.name === "breeze-agent-windows-amd64.exe",
+      );
+      win.platformTrust = "release-workflow-produced";
+      const tampered = makeSignedReleaseManifestMultiFrom(parsed);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = tampered.publicKey;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  ...assets.map((a) => ({
+                    name: a.name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${a.name}`,
+                    size: a.buffer.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: tampered.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: tampered.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(tampered.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(tampered.signature);
+          const hit = assets.find((a) => url.endsWith(a.name));
+          if (hit) return new Response(hit.buffer);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(/platform trust|platformTrust/i);
+      // The point of the fix: the four earlier targets are NOT committed, and
+      // the watchdog loop is not silently skipped.
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
   });
 
   it("syncs GitHub agent versions from the signed release artifact manifest", async () => {
@@ -480,7 +607,7 @@ describe("binarySync", () => {
 
     const result = await syncFromGitHub();
 
-    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"] });
+    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"], failed: [] });
     expect(dbMocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         version: "1.2.3",

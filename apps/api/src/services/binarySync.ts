@@ -810,7 +810,7 @@ export async function syncBinaries(): Promise<void> {
  */
 export async function syncFromGitHub(
   requestedVersion?: string,
-): Promise<{ version: string; synced: string[] }> {
+): Promise<{ version: string; synced: string[]; failed: string[] }> {
   const ghUrl = requestedVersion
     ? `${getReleaseSourceApiBase()}/releases/tags/${requestedVersion}`
     : `${getReleaseSourceApiBase()}/releases/latest`;
@@ -849,184 +849,133 @@ export async function syncFromGitHub(
     ? null
     : await parseChecksumsFallback(release.assets);
 
+  // ------------------------------------------------------------------
+  // Phase 1 — RESOLVE. Verify, trust-check and deployment-sign every asset
+  // before touching the database.
+  //
+  // Everything in this phase throws on failure, aborting the whole sync. That
+  // is deliberate: a manifest that fails signature verification, an asset whose
+  // platformTrust contradicts its name, or an undecryptable deployment signing
+  // key are all deployment-wide faults, not per-target ones. Resolving up front
+  // means such a fault cannot leave agent_versions half-updated — which
+  // previously it did, and asymmetrically: AGENT_TARGETS ends with
+  // windows/amd64, so a bad Windows asset committed and PROMOTED all four
+  // linux/darwin agents and then aborted before the helper, user-helper and
+  // watchdog loops ran at all, freezing watchdogs against upgraded agents.
+  // ------------------------------------------------------------------
+  const componentTargets: {
+    component: string;
+    targets: readonly { goos: string; goarch: string; assetName?: string }[];
+  }[] = [
+    { component: "agent", targets: AGENT_TARGETS },
+    { component: "helper", targets: HELPER_TARGETS },
+    { component: "user-helper", targets: USER_HELPER_TARGETS },
+    { component: "watchdog", targets: WATCHDOG_TARGETS },
+  ];
+
+  const plan: {
+    component: string;
+    platform: string;
+    arch: string;
+    downloadUrl: string;
+    signedMetadata: UpsertMetadata;
+  }[] = [];
+
+  for (const { component, targets } of componentTargets) {
+    for (const target of targets) {
+      const suffix = target.goos === "windows" ? ".exe" : "";
+      const assetName =
+        target.assetName ??
+        `breeze-${component}-${target.goos}-${target.goarch}${suffix}`;
+      const asset = release.assets.find((a) => a.name === assetName);
+      // Legitimate "this release predates that artifact" case — stay silent.
+      if (!asset) continue;
+
+      const metadata = await getReleaseAssetMetadata({
+        asset,
+        trustedManifest,
+        fallbackChecksums,
+        releaseTag: release.tag_name,
+      });
+      if (!metadata) {
+        // Different from `!asset`: the asset IS in the release but its checksum
+        // could not be resolved from the trusted manifest or the fallback
+        // checksums file. An unexpected inconsistency the on-call should see.
+        console.warn(
+          `[binarySync] Missing metadata for ${component} asset (release=${release.tag_name}, asset=${assetName}, component=${component}); skipping`,
+        );
+        continue;
+      }
+
+      const platform = GH_PLATFORM_MAP[target.goos];
+      if (!platform) continue;
+
+      plan.push({
+        component,
+        platform,
+        arch: target.goarch,
+        downloadUrl: asset.browser_download_url,
+        signedMetadata: await applyDeploymentSigning({
+          metadata,
+          version,
+          component,
+          platform,
+          arch: target.goarch,
+          downloadUrl: asset.browser_download_url,
+        }),
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Phase 2 — COMMIT. Only database writes remain, so a failure here is a
+  // transient/storage fault rather than a trust one. Keep going so one bad
+  // upsert does not strand every other component, but record failures and
+  // raise at the end: returning HTTP 200 with `synced: []` let a fully failed
+  // sync read as success while the fleet silently stayed on the old version.
+  // ------------------------------------------------------------------
   const synced: string[] = [];
+  const failures: string[] = [];
 
-  // Sync agent binaries
-  for (const target of AGENT_TARGETS) {
-    const suffix = target.goos === "windows" ? ".exe" : "";
-    const assetName = `breeze-agent-${target.goos}-${target.goarch}${suffix}`;
-    const asset = release.assets.find((a) => a.name === assetName);
-    if (!asset) continue;
-    const metadata = await getReleaseAssetMetadata({
-      asset,
-      trustedManifest,
-      fallbackChecksums,
-      releaseTag: release.tag_name,
-    });
-    if (!metadata) {
-      // `!asset` above is silent (legitimate "release predates this artifact"
-      // case). `!metadata` is different: the asset IS in the release but its
-      // checksum could not be resolved from the trusted manifest or the
-      // fallback checksums file. That's an unexpected manifest/checksums
-      // inconsistency the on-call should be told about — don't skip silently.
-      console.warn(
-        `[binarySync] Missing metadata for agent asset (release=${release.tag_name}, asset=${assetName}, component=agent); skipping`,
-      );
-      continue;
-    }
-    const platform = GH_PLATFORM_MAP[target.goos];
-    if (!platform) continue;
-
+  for (const entry of plan) {
+    const label = `${entry.component}:${entry.platform}/${entry.arch}`;
     try {
       await upsertVersion(
         version,
-        platform,
-        target.goarch,
-        "agent",
-        asset.browser_download_url,
-        metadata,
+        entry.platform,
+        entry.arch,
+        entry.component,
+        entry.downloadUrl,
+        entry.signedMetadata,
         release.body,
       );
-      synced.push(`agent:${platform}/${target.goarch}`);
+      synced.push(label);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error(
-        `[binarySync] Failed to upsert agent version for ${platform}/${target.goarch}:`,
-        err instanceof Error ? err.message : err,
+        `[binarySync] Failed to upsert ${entry.component} version for ${entry.platform}/${entry.arch}:`,
+        message,
       );
+      failures.push(`${label} (${message})`);
     }
   }
 
-  // Sync helper binaries
-  for (const target of HELPER_TARGETS) {
-    const asset = release.assets.find((a) => a.name === target.assetName);
-    if (!asset) continue;
-    const metadata = await getReleaseAssetMetadata({
-      asset,
-      trustedManifest,
-      fallbackChecksums,
-      releaseTag: release.tag_name,
-    });
-    if (!metadata) {
-      // See agent loop above: `!metadata` after `!asset` passed indicates an
-      // unexpected manifest/checksums inconsistency, not a missing artifact.
-      console.warn(
-        `[binarySync] Missing metadata for helper asset (release=${release.tag_name}, asset=${target.assetName}, component=helper); skipping`,
-      );
-      continue;
-    }
-    const platform = GH_PLATFORM_MAP[target.goos];
-    if (!platform) continue;
-
-    try {
-      await upsertVersion(
-        version,
-        platform,
-        target.goarch,
-        "helper",
-        asset.browser_download_url,
-        metadata,
-        release.body,
-      );
-      synced.push(`helper:${platform}/${target.goarch}`);
-    } catch (err) {
-      console.error(
-        `[binarySync] Failed to upsert helper version for ${platform}/${target.goarch}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-
-  // Sync user-helper binaries (Windows-only; issue #816). Missing for any
-  // pre-#816 release — `release.assets.find` returns undefined and the loop
-  // body short-circuits. The agent treats a 404 here as non-fatal and falls
-  // back to an agent-only upgrade.
-  for (const target of USER_HELPER_TARGETS) {
-    const asset = release.assets.find((a) => a.name === target.assetName);
-    if (!asset) continue;
-    const metadata = await getReleaseAssetMetadata({
-      asset,
-      trustedManifest,
-      fallbackChecksums,
-      releaseTag: release.tag_name,
-    });
-    if (!metadata) {
-      // See agent loop above: `!metadata` after `!asset` passed indicates an
-      // unexpected manifest/checksums inconsistency, not a missing artifact.
-      console.warn(
-        `[binarySync] Missing metadata for user-helper asset (release=${release.tag_name}, asset=${target.assetName}, component=user-helper); skipping`,
-      );
-      continue;
-    }
-    const platform = GH_PLATFORM_MAP[target.goos];
-    if (!platform) continue;
-
-    try {
-      await upsertVersion(
-        version,
-        platform,
-        target.goarch,
-        "user-helper",
-        asset.browser_download_url,
-        metadata,
-        release.body,
-      );
-      synced.push(`user-helper:${platform}/${target.goarch}`);
-    } catch (err) {
-      console.error(
-        `[binarySync] Failed to upsert user-helper version for ${platform}/${target.goarch}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-
-  // Sync watchdog binaries. Same per-arch asset shape as the agent. Missing for
-  // any release predating the watchdog component being published — the
-  // `release.assets.find` returns undefined and the loop body short-circuits.
-  for (const target of WATCHDOG_TARGETS) {
-    const suffix = target.goos === "windows" ? ".exe" : "";
-    const assetName = `breeze-watchdog-${target.goos}-${target.goarch}${suffix}`;
-    const asset = release.assets.find((a) => a.name === assetName);
-    if (!asset) continue;
-    const metadata = await getReleaseAssetMetadata({
-      asset,
-      trustedManifest,
-      fallbackChecksums,
-      releaseTag: release.tag_name,
-    });
-    if (!metadata) {
-      // See agent loop above: `!metadata` after `!asset` passed indicates an
-      // unexpected manifest/checksums inconsistency, not a missing artifact.
-      console.warn(
-        `[binarySync] Missing metadata for watchdog asset (release=${release.tag_name}, asset=${assetName}, component=watchdog); skipping`,
-      );
-      continue;
-    }
-    const platform = GH_PLATFORM_MAP[target.goos];
-    if (!platform) continue;
-
-    try {
-      await upsertVersion(
-        version,
-        platform,
-        target.goarch,
-        "watchdog",
-        asset.browser_download_url,
-        metadata,
-        release.body,
-      );
-      synced.push(`watchdog:${platform}/${target.goarch}`);
-    } catch (err) {
-      console.error(
-        `[binarySync] Failed to upsert watchdog version for ${platform}/${target.goarch}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+  // Registering NOTHING while reporting success is the failure that matters:
+  // the caller (POST /agent-versions/sync-github) answered 200 with an empty
+  // `synced`, so a deployment-wide fault read as a successful sync while the
+  // fleet silently stayed on its previous version. A PARTIAL failure keeps the
+  // per-component isolation #816 relies on (a user-helper upsert failing must
+  // not block the agent) — but it is now reported rather than only logged.
+  if (synced.length === 0 && plan.length > 0) {
+    throw new Error(
+      `GitHub sync registered 0 of ${plan.length} binaries for ${version}: ${failures.join("; ")}`,
+    );
   }
 
   console.log(
     `[binarySync] GitHub sync: registered ${synced.length} binaries (version: ${version})`,
   );
-  return { version, synced };
+  return { version, synced, failed: failures };
 }
 
 /**
@@ -1151,23 +1100,22 @@ async function applyDeploymentSigning(args: {
   };
 }
 
+// `signedMetadata` is produced by applyDeploymentSigning BEFORE this is called.
+// Do not move that call in here: every caller wraps upsertVersion in a
+// log-and-continue catch (a DB upsert failing for one target should not strand
+// the rest), and re-signing failures — a rotated APP_ENCRYPTION_KEY, an
+// undecryptable signing key — must NOT be swallowed by it. Those are
+// deployment-wide faults that have to abort the whole sync loudly, the same way
+// manifest-verification failures already do.
 async function upsertVersion(
   version: string,
   platform: string,
   arch: string,
   component: string,
   downloadUrl: string,
-  metadata: UpsertMetadata,
+  signedMetadata: UpsertMetadata,
   releaseNotes?: string | null,
 ) {
-  const signedMetadata = await applyDeploymentSigning({
-    metadata,
-    version,
-    component,
-    platform,
-    arch,
-    downloadUrl,
-  });
   // Controlled fleet rollout (AGENT_AUTO_PROMOTE=false): register but do not
   // promote. Skip the demote UPDATE, insert isLatest:false, and OMIT isLatest
   // from the conflict `set` so an existing promoted row keeps its target.

@@ -90,6 +90,27 @@ function signManifestBytes(
   return Buffer.from(sign(null, manifest, privateKey).toString('base64'));
 }
 
+// Pins the exact bytes of the committed Go fixture. Mirrors
+// deploymentFixtureSHA256 in
+// agent/internal/updater/deployment_trustchain_test.go.
+//
+// The fixture is the only thing tying this API's re-signing output to what the
+// shipped agent accepts, and it is regenerable by script — so without a pin,
+// the cheapest way to green a red trust-chain test is to re-run the generator,
+// silently turning a broken trust chain into a two-file edit. Requiring the
+// hash to be updated in TWO languages makes that a deliberate act.
+const DEPLOYMENT_FIXTURE_SHA256 =
+  '81cd0453706322c83fb127727745a6feecd130356944a1cd9c9aa141317a74bc';
+
+it('the committed Go fixture bytes are pinned (regenerating is not a fix)', () => {
+  const fixturePath = path.join(
+    REPO_ROOT,
+    'agent/internal/updater/testdata/deployment_signed_manifest.json',
+  );
+  const actual = createHash('sha256').update(readFileSync(fixturePath)).digest('hex');
+  expect(actual).toBe(DEPLOYMENT_FIXTURE_SHA256);
+});
+
 describe('trust-chain E2E: official key → self-hoster release key → deployment key (spec 3b/3c)', () => {
   const originalEnv = process.env;
   const REPO = 'acme/breeze-selfhost-signing';

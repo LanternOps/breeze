@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m365ControlPlane/runtimeConfig';
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
-import { OFFICIAL_RELEASE_REPOSITORY } from '../services/releaseSource';
+import {
+  OFFICIAL_RELEASE_REPOSITORY,
+  RELEASE_SOURCE_REPOSITORY_SHAPE,
+  isValidReleaseSourceRepository,
+} from '../services/releaseSource';
 import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
@@ -199,6 +203,34 @@ function hasReleaseArtifactManifestPublicKey(data: {
   return Boolean(
     data.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?.trim()
     || data.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?.trim()
+  );
+}
+
+// The public trust anchor for OFFICIAL Breeze releases. Also embedded in the
+// agent (agent/internal/updater/updater.go) and shipped uncommented in
+// deploy/.env.example — which is exactly why it needs its own check below.
+const OFFICIAL_RELEASE_MANIFEST_PUBLIC_KEY =
+  'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=';
+
+// True when every configured manifest key is the official one. A self-hoster
+// pointing BINARY_GITHUB_REPOSITORY at their own signing repo while leaving the
+// shipped official key in place would boot cleanly and then fail EVERY sync
+// closed (their manifest cannot verify under the official key), freezing the
+// fleet behind a single console.error. Catch it at boot instead.
+function hasOnlyOfficialReleaseManifestPublicKey(data: {
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?: string;
+  BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?: string;
+}): boolean {
+  const configured = [
+    data.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
+    data.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
+  ]
+    .flatMap((value) => (value ?? '').split(','))
+    .map((key) => key.trim())
+    .filter(Boolean);
+  return (
+    configured.length > 0
+    && configured.every((key) => key === OFFICIAL_RELEASE_MANIFEST_PUBLIC_KEY)
   );
 }
 
@@ -514,9 +546,11 @@ const envObjectSchema = z
       (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
       z
         .string()
-        .regex(
-          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
-          'BINARY_GITHUB_REPOSITORY must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        // Shared with the runtime resolver so boot validation and
+        // getReleaseSourceRepository() can never drift apart.
+        .refine(
+          isValidReleaseSourceRepository,
+          `BINARY_GITHUB_REPOSITORY must be ${RELEASE_SOURCE_REPOSITORY_SHAPE}`,
         )
         .optional(),
     ),
@@ -524,9 +558,11 @@ const envObjectSchema = z
       (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
       z
         .string()
-        .regex(
-          /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/,
-          'GITHUB_REPO must be "owner/repository" ([A-Za-z0-9-]+/[A-Za-z0-9._-]+)',
+        // Shared with the runtime resolver so boot validation and
+        // getReleaseSourceRepository() can never drift apart.
+        .refine(
+          isValidReleaseSourceRepository,
+          `GITHUB_REPO must be ${RELEASE_SOURCE_REPOSITORY_SHAPE}`,
         )
         .optional(),
     ),
@@ -1194,6 +1230,24 @@ const envSchema = envObjectSchema
               'BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set in production, so any release manifest found in the local binaries volume can be verified before being trusted.',
           });
         }
+      }
+
+      // "NOT the official Breeze key" above has to be enforced, not just
+      // stated. deploy/.env.example ships the official key as an ACTIVE line
+      // directly above the BINARY_GITHUB_REPOSITORY hint, so leaving it in
+      // place while repointing is the default mistake, not an exotic one — and
+      // it fails closed silently at sync time rather than loudly at boot.
+      if (
+        releaseRepositoryOverride &&
+        releaseRepositoryOverride !== OFFICIAL_RELEASE_REPOSITORY &&
+        hasOnlyOfficialReleaseManifestPublicKey(data)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
+          message:
+            `${releaseRepositoryOverrideKey} points at a non-official release repository, but RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS is still (only) the official Breeze key. Manifests from that repository are signed by YOUR release key and can never verify under the official one, so every sync would fail closed and the fleet would silently stay on its current version. Set it to your own manifest public key — the signing workflow's run summary prints it.`,
+        });
       }
 
       rejectSecretReuse(
