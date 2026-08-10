@@ -44,8 +44,8 @@ func TestHostedExactMatchAndSuffixAttack(t *testing.T) {
 	// Refused: suffix attack, subdomain injection, lookalike, unparseable.
 	for _, bad := range []string{
 		"https://hosted-a.example.evil.com/api", // suffix attack
-		"https://hosted-a.example.evil.com",  // suffix attack
-		"https://evil-hosted-a.example",      // not exact
+		"https://hosted-a.example.evil.com",     // suffix attack
+		"https://evil-hosted-a.example",         // not exact
 		"https://app.hosted-a.example",          // sibling not allowlisted
 		"https://attacker.es",
 		"://nonsense",
