@@ -502,9 +502,11 @@ Self-hosted: your data never leaves your infrastructure. Cloud-hosted: data is i
 
 ## License
 
-Breeze is licensed under [AGPL-3.0](LICENSE).
-
-You can use, modify, and self-host Breeze freely. If you modify Breeze and offer it as a service, you must open source your modifications under the same license.
+Breeze is [AGPL-3.0](LICENSE) licensed, with one exception: everything under
+the [`ee/`](ee/) directory is covered by the
+[Breeze Commercial License](ee/LICENSE) (source-visible, requires a
+commercial agreement for production use). This is the same open-core layout
+used by projects like Cal.com.
 
 ---
 
