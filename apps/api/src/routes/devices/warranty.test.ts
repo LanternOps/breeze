@@ -83,4 +83,20 @@ describe('device warranty routes', () => {
     expect(res.status).toBe(403);
     expect(queueWarrantySyncForDevice).not.toHaveBeenCalled();
   });
+
+  it('queues a manual refresh with force so the VM skip cannot dead-end it (#3201)', async () => {
+    // Pins the route half of the escape hatch: without { force: true } here, a
+    // device flagged virtual never advances lastSyncAt and the warranty card
+    // polls a "queued" refresh that never completes — the exact dead-end the
+    // review blocked on. The service half is pinned in warrantySync.test.ts.
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: 'device-1', orgId: 'org-123' } as never);
+
+    const res = await app.request('/devices/device-1/warranty/refresh', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(queueWarrantySyncForDevice).toHaveBeenCalledWith('device-1', { force: true });
+  });
 });
