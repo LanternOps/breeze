@@ -32,6 +32,7 @@
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../../db';
+import { sqlTimestamp } from '../../db/sqlValues';
 import { devices, scripts } from '../../db/schema';
 import { deviceCommands } from '../../db/schema/devices';
 import {
@@ -661,15 +662,17 @@ export async function pollRunProgress(runId: string): Promise<void> {
   // `status` and `result_summary` are varchar/text (not PG enums), so no cast
   // is needed beyond the uuid on the join key.
   for (const chunk of chunkArray(resolved, TARGET_INSERT_CHUNK_SIZE)) {
+    // Every VALUES column is cast explicitly: the parameters are untyped, and
+    // Postgres cannot infer a column type for a bare `$n` inside a VALUES list.
     const values = sql.join(
-      chunk.map((r) => sql`(${r.deviceId}, ${r.status}, ${r.summary})`),
+      chunk.map((r) => sql`(${r.deviceId}::uuid, ${r.status}::text, ${r.summary}::text)`),
       sql`, `
     );
     await db.execute(sql`
       UPDATE fleet_remediation_run_targets AS t
-      SET status = v.status, result_summary = v.summary, completed_at = ${now}
+      SET status = v.status, result_summary = v.summary, completed_at = ${sqlTimestamp(now)}
       FROM (VALUES ${values}) AS v(device_id, status, summary)
-      WHERE t.run_id = ${runId} AND t.target_device_uuid = v.device_id::uuid
+      WHERE t.run_id = ${runId} AND t.target_device_uuid = v.device_id
     `);
   }
 

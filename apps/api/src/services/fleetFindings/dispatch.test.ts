@@ -1046,6 +1046,32 @@ describe('pollRunProgress', () => {
     expect(write.summary.length).toBeLessThanOrEqual(2000);
   });
 
+  it('never interpolates a raw Date into the set-based UPDATE', async () => {
+    // postgres.js cannot serialise a Date inside a raw `sql` template — it
+    // throws `The "string" argument must be ... Received an instance of Date`
+    // at execution time, which only a real database surfaces (this shipped and
+    // reddened the integration shard). `sqlTimestamp` binds an ISO string
+    // instead — repo bug class #3329/#3368/#3369. Asserted here so the unit job
+    // catches a regression that the mocked DB otherwise hides entirely.
+    h.selectQueue.push([runRow()]);
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-1', queuedAt: new Date() },
+    ]);
+    h.selectQueue.push([{ id: 'cmd-1', status: 'completed', result: {} }]);
+
+    await pollRunProgress(RUN_1);
+
+    expect(h.capturedExecutes.length).toBeGreaterThan(0);
+    const dates: unknown[] = [];
+    const walk = (node: unknown, depth = 0) => {
+      if (depth > 8 || node === null || typeof node !== 'object') return;
+      if (node instanceof Date) { dates.push(node); return; }
+      for (const v of Object.values(node as Record<string, unknown>)) walk(v, depth + 1);
+    };
+    walk(h.capturedExecutes);
+    expect(dates).toEqual([]);
+  });
+
   it('marks a target failed from a failed device_commands row', async () => {
     h.selectQueue.push([runRow()]);
     h.selectQueue.push([
