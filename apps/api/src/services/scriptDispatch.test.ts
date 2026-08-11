@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SQL, Param } from 'drizzle-orm';
 
 vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
 vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
@@ -60,25 +61,44 @@ const mockLiveDeviceStatus = (status: string | undefined) => {
   } as any);
 };
 
-/** Flatten a drizzle SQL node into its literal tokens (column names + values). */
-function collectSqlTokens(node: unknown): string[] {
-  const found: string[] = [];
+// Extracts the actually-BOUND query parameters (column name + literal value)
+// from a drizzle SQL condition tree, e.g. `and(eq(id, 'exec-1'), eq(status,
+// 'pending'))` -> [{ column: 'id', value: 'exec-1' }, { column: 'status',
+// value: 'pending' }].
+//
+// This walks ONLY `SQL`/`Param` nodes (verified via `instanceof` against the
+// classes drizzle-orm exports), not the wider object graph. That matters:
+// an earlier version of this helper (`collectSqlTokens`) walked every
+// object reachable from the condition, including the real (unmocked)
+// `scriptExecutions` table/column metadata — which itself contains the
+// literal strings 'status' and 'pending' (column name + enum value) via
+// circular table<->column references. A `toContain('status')` /
+// `toContain('pending')` assertion against that flattened token list passed
+// even when the `eq(status, 'pending')` guard was deleted from production
+// code entirely, because those tokens leak in from schema metadata
+// regardless of the actual WHERE predicate. Restricting the walk to `Param`
+// (the runtime-bound value) and `SQL` (the composite condition) nodes makes
+// the count and identity of bound parameters reflect the real predicate.
+function collectBoundParams(node: unknown): { column: string; value: unknown }[] {
+  const found: { column: string; value: unknown }[] = [];
   const seen = new WeakSet<object>();
   const visit = (value: unknown) => {
-    if (value == null) return;
-    if (typeof value === 'string') {
-      found.push(value);
-      return;
-    }
-    if (typeof value !== 'object') return;
-    // The real (unmocked) drizzle schema objects backing these SQL nodes
-    // carry circular table<->column references — guard against them.
+    if (value == null || typeof value !== 'object') return;
     if (seen.has(value as object)) return;
     seen.add(value as object);
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      if (Array.isArray(child)) child.forEach(visit);
-      else visit(child);
+    if (value instanceof Param) {
+      // `encoder` is the column the param is bound against — do NOT descend
+      // into it (it carries the circular table<->column graph); just read
+      // its name.
+      const encoder = (value as { encoder?: { name?: string } }).encoder;
+      found.push({ column: encoder?.name ?? '<unknown>', value: (value as { value: unknown }).value });
+      return;
     }
+    if (value instanceof SQL) {
+      for (const chunk of (value as unknown as { queryChunks: unknown[] }).queryChunks) visit(chunk);
+    }
+    // Anything else (columns, tables, StringChunk separators) is not
+    // descended into — only SQL/Param nodes can carry bound parameters.
   };
   visit(node);
   return found;
@@ -303,13 +323,24 @@ describe('dispatchScriptToDevice — delivery', () => {
     expect(db.update).toHaveBeenCalledTimes(1);
     expect(setSpy).toHaveBeenCalledWith({ status: 'running', startedAt: executedAt });
     expect(whereArgs).toHaveLength(1);
-    const tokens = collectSqlTokens(whereArgs[0]);
-    expect(tokens).toContain('exec-1');
-    expect(tokens).toContain('status');
-    expect(tokens).toContain('pending');
+    // Discriminating on the STRUCTURE of the bound parameters (not just
+    // their presence anywhere in the SQL node graph — see the comment on
+    // `collectBoundParams`): the guard must bind exactly two parameters,
+    // one pinning the execution id and one pinning status='pending'. If the
+    // `status='pending'` conjunct is removed from production code, this
+    // drops to a single bound param and the assertion fails.
+    const boundParams = collectBoundParams(whereArgs[0]);
+    expect(boundParams).toHaveLength(2);
+    expect(boundParams).toEqual(
+      expect.arrayContaining([
+        { column: 'id', value: 'exec-1' },
+        { column: 'status', value: 'pending' },
+      ]),
+    );
   });
 
   it('reports claim_lost when claimPendingCommandForDelivery loses the race (no throw)', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue(null);
     const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
     expect(sendCommandToAgent).not.toHaveBeenCalled();
@@ -319,6 +350,11 @@ describe('dispatchScriptToDevice — delivery', () => {
       expect(r.delivered).toBe(false);
       expect(r.deliveryOutcome).toBe('claim_lost');
     }
+    // A8 warn policy: claim_lost is a normal race outcome (another dispatch
+    // path claimed the command first), unlike decrypt_failed/send_failed
+    // (had a connected agent and still failed to reach it) — it must NOT warn.
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
   });
 
   it('releases the claim when decrypt returns null (does NOT send raw payload)', async () => {
