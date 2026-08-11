@@ -53,8 +53,10 @@ import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { db, withSystemDbAccessContext } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
+import { aiSessions, aiToolExecutions } from '../db/schema/ai';
 import { approvalRequests } from '../db/schema/approvals';
 import { auditLogs } from '../db/schema/audit';
+import { partnerUsers } from '../db/schema/users';
 import { createActionIntent } from '../services/actionIntents/intentService';
 import { PERMISSIONS } from '../services/permissions';
 import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
@@ -76,26 +78,44 @@ const SUSPICIOUS_ACTION = 'security.suspicious_report';
 
 interface Scenario {
   partnerId: string;
-  orgId: string;
+  /**
+   * The org the REPORTED intent belongs to — the org every audit assertion
+   * expects. Deliberately NOT the org on the reporting user's own row.
+   */
+  intentOrgId: string;
+  /**
+   * The reporting user's own `users.org_id` / org membership. Distinct from
+   * `intentOrgId` on purpose: if the two were the same value (the obvious way
+   * to seed this), an assertion of "the audit row carries the intent's org"
+   * would pass just as happily against a wrong implementation that read the
+   * REPORTER's org instead. Keeping them different is what makes the assertion
+   * actually discriminate between the two sources.
+   */
+  reporterOwnOrgId: string;
   user: { id: string; email: string };
-  /** Org-scoped role, used only to CREATE the intent being reported. */
+  /** Org-scoped role in `intentOrgId`, used only to CREATE the intent. */
   orgRoleId: string;
   /** Partner-scoped role, used for the report-suspicious token under test. */
   partnerRoleId: string;
 }
 
 /**
- * One user holding BOTH an org membership and a partner membership. The intent
- * is created with the org-scoped context (so the intent has a real `org_id`
- * and the approval row is owned by this user), and then reported with a
- * PARTNER-scoped token for the same user — which is what makes `auth.orgId`
- * null at the audit write. That combination is the whole point of the suite.
+ * One user holding BOTH an org membership and a partner membership, under a
+ * partner with TWO orgs. The intent is created with an org-scoped context for
+ * org A (so the intent has a real `org_id` and the approval row is owned by
+ * this user), and then reported with a PARTNER-scoped token for the same user —
+ * which is what makes `auth.orgId` null at the audit write. That combination is
+ * the whole point of the suite.
+ *
+ * The user's OWN org is org B, so "audit org == org A" can only hold if the
+ * handler really resolved the org from the linked intent.
  */
 async function seedPartnerScopedReporter(): Promise<Scenario> {
   const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
+  const intentOrg = await createOrganization({ partnerId: partner.id });
+  const reporterOwnOrg = await createOrganization({ partnerId: partner.id });
 
-  const orgRole = await createRole({ scope: 'organization', orgId: org.id });
+  const orgRole = await createRole({ scope: 'organization', orgId: intentOrg.id });
   await grantRolePermissions(orgRole.id, [PERMISSIONS.DEVICES_EXECUTE]);
 
   const partnerRole = await createRole({ scope: 'partner', partnerId: partner.id });
@@ -103,10 +123,12 @@ async function seedPartnerScopedReporter(): Promise<Scenario> {
 
   const user = await createUser({
     partnerId: partner.id,
-    orgId: org.id,
+    orgId: reporterOwnOrg.id,
     email: `partner-reporter-${randomUUID()}@reportsuspicious.test`,
   });
-  await assignUserToOrganization(user.id, org.id, orgRole.id);
+  // Membership in the INTENT's org, so createActionIntent's org-scoped context
+  // is legitimate; the user's own `users.org_id` stays org B.
+  await assignUserToOrganization(user.id, intentOrg.id, orgRole.id);
   // orgAccess 'all' so authMiddleware's computeAccessibleOrgIds resolves the
   // partner's orgs. Note the fix must NOT depend on this: the audit org comes
   // from the intent, not from the caller's reachable-org list.
@@ -114,16 +136,17 @@ async function seedPartnerScopedReporter(): Promise<Scenario> {
 
   return {
     partnerId: partner.id,
-    orgId: org.id,
+    intentOrgId: intentOrg.id,
+    reporterOwnOrgId: reporterOwnOrg.id,
     user: { id: user.id, email: user.email },
     orgRoleId: orgRole.id,
     partnerRoleId: partnerRole.id,
   };
 }
 
-/** Org-scoped AuthContext, used ONLY to create the intent under test. */
+/** Org-scoped AuthContext for the INTENT's org, used ONLY to create the intent. */
 function orgScopedAuth(s: Scenario): AuthContext {
-  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([s.orgId]);
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([s.intentOrgId]);
   return {
     principal: { kind: 'user_session' },
     user: { id: s.user.id, email: s.user.email, name: 'Reporter', isPlatformAdmin: false },
@@ -131,16 +154,16 @@ function orgScopedAuth(s: Scenario): AuthContext {
       sub: s.user.id,
       email: s.user.email,
       roleId: s.orgRoleId,
-      orgId: s.orgId,
+      orgId: s.intentOrgId,
       partnerId: s.partnerId,
       scope: 'organization',
       type: 'access',
       mfa: true,
     },
     partnerId: s.partnerId,
-    orgId: s.orgId,
+    orgId: s.intentOrgId,
     scope: 'organization',
-    accessibleOrgIds: [s.orgId],
+    accessibleOrgIds: [s.intentOrgId],
     orgCondition,
     canAccessOrg,
   };
@@ -219,6 +242,78 @@ async function seedStandaloneApproval(s: Scenario): Promise<string> {
   return row.id;
 }
 
+/**
+ * Narrows the reporter's partner membership so its accessible-org list EXCLUDES
+ * the execution's org (org A), leaving only org B selected.
+ *
+ * This is the precondition for the silent-zero-row mirror bug, and it is worth
+ * being exact about it: the trigger is the accessible-ORG-LIST, not the scope.
+ * A partner-scoped caller with `orgAccess: 'all'` still reaches the execution's
+ * row through `ai_tool_executions`' EXISTS-join policy on `ai_sessions.org_id`,
+ * so the pre-fix mirror would have succeeded and the test would pass for the
+ * wrong reason. Only a caller that genuinely cannot see the org reproduces it.
+ */
+async function narrowReporterToOwnOrgOnly(s: Scenario): Promise<void> {
+  await withSystemDbAccessContext(() =>
+    db
+      .update(partnerUsers)
+      .set({ orgAccess: 'selected', orgIds: [s.reporterOwnOrgId] })
+      .where(and(eq(partnerUsers.userId, s.user.id), eq(partnerUsers.partnerId, s.partnerId))),
+  );
+}
+
+/**
+ * An EXECUTION-linked approval: the legacy AI mobile-push shape, where the row
+ * carries `executionId` instead of `intentId` and the handler must mirror the
+ * denial onto `ai_tool_executions` so the SDK's `waitForApproval` unblocks.
+ *
+ * The execution's session belongs to org A. Combined with
+ * `narrowReporterToOwnOrgOnly`, the reporting caller cannot see that org — the
+ * exact shape that made the mirror UPDATE silently match zero rows before the
+ * fix, because `ai_tool_executions` is org-scoped through `ai_sessions.org_id`
+ * via an EXISTS join policy.
+ */
+async function seedExecutionLinkedApproval(
+  s: Scenario,
+): Promise<{ approvalRowId: string; executionId: string }> {
+  return withSystemDbAccessContext(async () => {
+    const [session] = await db
+      .insert(aiSessions)
+      .values({ orgId: s.intentOrgId, userId: s.user.id, status: 'active', type: 'general' })
+      .returning({ id: aiSessions.id });
+    if (!session) throw new Error('seed: ai_sessions insert returned nothing');
+
+    const [execution] = await db
+      .insert(aiToolExecutions)
+      .values({
+        sessionId: session.id,
+        toolName: 'execute_command',
+        toolInput: { deviceId: randomUUID(), commandType: 'kill_process' },
+        status: 'pending',
+      })
+      .returning({ id: aiToolExecutions.id });
+    if (!execution) throw new Error('seed: ai_tool_executions insert returned nothing');
+
+    const [row] = await db
+      .insert(approvalRequests)
+      .values({
+        userId: s.user.id,
+        executionId: execution.id,
+        requestingClientLabel: 'Execution-Linked Reporter Test',
+        actionLabel: 'Execution-linked suspicious action',
+        actionToolName: 'execute_command',
+        riskTier: 'high',
+        riskSummary: 'seeded execution-linked row for #3234 coverage',
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      })
+      .returning({ id: approvalRequests.id });
+    if (!row) throw new Error('seed: execution-linked approval insert returned nothing');
+
+    return { approvalRowId: row.id, executionId: execution.id };
+  });
+}
+
 /** The security audit row for a given approval, read in a system context. */
 async function readSuspiciousAudit(approvalRowId: string) {
   return withSystemDbAccessContext(async () => {
@@ -276,8 +371,10 @@ describe('report-suspicious as a partner-scoped caller (real Postgres, breeze_ap
       expect(audits).toHaveLength(1);
       // The whole point of #3234: the audit row is tenanted to the approval's
       // org, taken from the linked intent — NOT to the reporter's null org.
-      expect(audits[0]?.orgId).toBe(s.orgId);
-      expect(audits[0]?.orgId).not.toBeNull();
+      expect(audits[0]?.orgId).toBe(s.intentOrgId);
+      // Not the reporter's own org either — the assertion above would pass for
+      // the wrong reason if the seed let those two orgs coincide.
+      expect(audits[0]?.orgId).not.toBe(s.reporterOwnOrgId);
       expect(audits[0]?.actorId).toBe(s.user.id);
       expect(audits[0]?.actorType).toBe('user');
       expect(audits[0]?.result).toBe('success');
@@ -316,7 +413,8 @@ describe('report-suspicious as a partner-scoped caller (real Postgres, breeze_ap
       // CAS `.returning()` (which is empty when the race is lost).
       const audits = await readSuspiciousAudit(approvalRowId);
       expect(audits).toHaveLength(1);
-      expect(audits[0]?.orgId).toBe(s.orgId);
+      expect(audits[0]?.orgId).toBe(s.intentOrgId);
+      expect(audits[0]?.orgId).not.toBe(s.reporterOwnOrgId);
     },
   );
 
@@ -341,7 +439,8 @@ describe('report-suspicious as a partner-scoped caller (real Postgres, breeze_ap
 
       const audits = await readSuspiciousAudit(approvalRowId);
       expect(audits).toHaveLength(1);
-      expect(audits[0]?.orgId).toBe(s.orgId);
+      expect(audits[0]?.orgId).toBe(s.intentOrgId);
+      expect(audits[0]?.orgId).not.toBe(s.reporterOwnOrgId);
       const details = audits[0]?.details as Record<string, unknown>;
       // The prior status is preserved for forensics rather than overwritten.
       expect(details.priorStatus).toBe('approved');
@@ -382,6 +481,55 @@ describe('report-suspicious as a partner-scoped caller (real Postgres, breeze_ap
       // under every other scope. Writing NULL beats inventing a tenant.
       expect(audits[0]?.orgId).toBeNull();
       expect(audits[0]?.actorId).toBe(s.user.id);
+    },
+  );
+
+  runDb(
+    'execution-linked: the ai_tool_executions mirror lands even when the caller cannot see the execution org, unblocking the SDK waiter',
+    async () => {
+      const s = seeded!;
+      const { approvalRowId, executionId } = await seedExecutionLinkedApproval(s);
+      // Without this the caller CAN see org A and the pre-fix mirror would have
+      // worked, making the assertion below pass for the wrong reason.
+      await narrowReporterToOwnOrgOnly(s);
+
+      const res = await reportSuspiciousAsPartner(s, approvalRowId);
+      expect(res.status).toBe(204);
+
+      await withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({ status: approvalRequests.status })
+          .from(approvalRequests)
+          .where(eq(approvalRequests.id, approvalRowId));
+        expect(row?.status).toBe('reported');
+
+        const [execution] = await db
+          .select({
+            status: aiToolExecutions.status,
+            approvedBy: aiToolExecutions.approvedBy,
+          })
+          .from(aiToolExecutions)
+          .where(eq(aiToolExecutions.id, executionId));
+        // The mirror is the load-bearing assertion. `ai_tool_executions` is
+        // org-scoped through `ai_sessions.org_id` (EXISTS join policy), so
+        // before the fix this UPDATE silently matched ZERO rows for a caller
+        // that cannot reach the execution's org: no error, no mirror, and the
+        // SDK's waitForApproval never learned the action was denied. It now
+        // runs in its own system-scope transaction. Verified non-vacuous —
+        // reverting just the mirror to the ambient request transaction leaves
+        // this row 'pending' and reds this expectation.
+        expect(execution?.status).toBe('rejected');
+        expect(execution?.approvedBy).toBe(s.user.id);
+      });
+
+      // No linked intent on this shape, so the audit row has no intent org to
+      // inherit and the partner-scoped reporter supplies none — NULL, written
+      // under system scope rather than 500ing. Attribution through
+      // `ai_sessions.org_id` is possible but deliberately out of scope (#3234
+      // settled on intent → caller → NULL); see the PR's follow-ups.
+      const audits = await readSuspiciousAudit(approvalRowId);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]?.orgId).toBeNull();
     },
   );
 });

@@ -845,12 +845,17 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       //      transaction poisoned and the commit threw — a 500 that also rolled
       //      back the 'reported' flip immediately above. Catching an error does
       //      not heal a Postgres transaction.
-      //   2. `ai_tool_executions` is org-scoped through its session, so under a
-      //      partner-scoped caller (or an org-scoped one whose accessible-org
-      //      list excludes the execution's org) the UPDATE silently matched
-      //      ZERO rows — no error, no mirror, and the SDK's waitForApproval
-      //      never unblocks with the denial. Same reasoning as the intent CAS
-      //      above, which is already system-scoped for exactly this.
+      //   2. `ai_tool_executions` is org-scoped through an EXISTS join on
+      //      `ai_sessions.org_id`, so whenever the caller's accessible-org list
+      //      does not cover the execution's org the UPDATE silently matched
+      //      ZERO rows — no error (an UPDATE filtered out by a USING clause is
+      //      not a violation, just an empty match), no mirror, and the SDK's
+      //      waitForApproval never unblocks with the denial. Note the trigger
+      //      is the ORG LIST, not the scope: a partner-scoped caller with
+      //      `orgAccess: 'all'` does reach the row, while one with
+      //      `orgAccess: 'selected'` that excludes the org does not — as does
+      //      any org-scoped caller in a different org. Same reasoning as the
+      //      intent CAS above, which is already system-scoped for exactly this.
       // Still best-effort: the approval flip and the audit row are the
       // authoritative record, and a missed mirror only delays the SDK waiter to
       // its own timeout rather than letting the flagged action through.
@@ -898,7 +903,13 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
       ));
     } catch (err) {
       console.error('[approvals] report-suspicious: revocation failed:', err);
-      // Non-fatal: the approval row + audit log are still authoritative; the
+      // Escalated to Sentry, not just stdout: a swallowed failure here means the
+      // client the user just called compromised still holds a live grant and
+      // refresh tokens, while they get a 204. `revokeUserOauthClient` fails
+      // closed on Redis-marker problems, so this catch fires on real infra
+      // faults — exactly the case nobody would notice from a stdout line.
+      captureException(err);
+      // Still non-fatal: the approval row + audit log are authoritative, and the
       // user can revoke from the connected-apps UI as a fallback.
     }
   }
@@ -911,8 +922,9 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   // request transaction, which is precisely how this endpoint 500'd for every
   // partner-scoped caller:
   //
-  //   - `writeAuditEventAsync` persists via `auditService.persistAuditLog`,
-  //     which runs `runOutsideDbContext(() => withSystemDbAccessContext(...))`.
+  //   - `writeAuditEventAsync` persists via `createAuditLogAsync` →
+  //     `auditService.persistAuditLog`, which runs
+  //     `runOutsideDbContext(() => withSystemDbAccessContext(...))`.
   //     That is what lets a NULL org_id land at all: the `audit_logs` INSERT
   //     policy is `WITH CHECK breeze_has_org_access(org_id)`, and that helper
   //     returns FALSE for a NULL org under any non-system scope but TRUE under
@@ -933,8 +945,15 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   //
   // `writeAuditEventAsync`'s returned promise never rejects — a genuine write
   // failure is queued for retry with backoff and escalated to Sentry on
-  // exhaustion, so the security action still takes effect with a loud signal
-  // instead of a 500. The try/catch is still not redundant: the function is not
+  // exhaustion, so the security action still takes effect instead of 500ing.
+  // Be precise about how strong that is: `auditService`'s retry queue is
+  // in-memory and bounded (3 attempts, drained every 30s), so it covers a
+  // transient DB blip but NOT an outage that outlives the attempts, and a
+  // process restart landing mid-retry drops the entry with no signal at all.
+  // That is the repo-wide audit durability story rather than anything specific
+  // to this handler; it is still strictly better than the raw insert this
+  // replaced, which had no retry AND poisoned the request transaction.
+  // The try/catch is still not redundant: the function is not
   // `async`, so its synchronous prologue (details sanitizing, trusted-client-IP
   // resolution, header reads) can throw BEFORE the retry-backed promise exists.
   // "The audit machinery must never turn this security action into a 500" is
