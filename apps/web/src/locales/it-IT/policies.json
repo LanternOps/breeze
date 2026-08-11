@@ -1588,7 +1588,7 @@
       "failedToDeny": "Impossibile negare",
       "failedToClearStatus": "Impossibile cancellare lo stato",
       "searchSoftware": "Cerca software...",
-      "uniqueSoftware": "software univoco",
+      "uniqueSoftwareSummary": "{{total}} software univoco",
       "vendor": "Fornitore",
       "devices": "Dispositivi",
       "versions": "Versioni",

@@ -1588,7 +1588,7 @@
       "failedToDeny": "No se pudo negar",
       "failedToClearStatus": "No se pudo borrar el estado",
       "searchSoftware": "Buscar software...",
-      "uniqueSoftware": "software único",
+      "uniqueSoftwareSummary": "{{total}} software único",
       "vendor": "Proveedor",
       "devices": "Dispositivos",
       "versions": "Versiones",
