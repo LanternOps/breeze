@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/spf13/cobra"
 )
 
@@ -228,14 +231,19 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
 		}
 
-		// Immediately load the helper LaunchAgents so the desktop helper connects
-		// right away rather than waiting for the first heartbeat.
-		bootstrapDesktopHelperPlists()
-
-		// Create breeze group for IPC socket access without assuming a fixed GID.
+		// Create the breeze group and put the logged-in console users in it
+		// BEFORE bootstrapping the helper LaunchAgents. A helper inherits its
+		// group list when it starts, so a helper bootstrapped first would not be
+		// in the group that owns the IPC socket and would be denied
+		// (#3133/#3134/#3137). This ordering was previously reversed.
 		if err := ensureDarwinBreezeGroup(); err != nil {
 			return err
 		}
+		ensureDarwinBreezeGroupConsoleMembers()
+
+		// Immediately load the helper LaunchAgents so the desktop helper connects
+		// right away rather than waiting for the first heartbeat.
+		bootstrapDesktopHelperPlists()
 
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed.")
@@ -607,27 +615,67 @@ func bootstrapDesktopHelperPlists() {
 	}
 }
 
+// ensureDarwinBreezeGroup creates the breeze group that owns the agent's IPC
+// socket. It delegates to sessionbroker so the daemon (which re-ensures the
+// group on every start, in setupSocket) and this install path cannot drift.
 func ensureDarwinBreezeGroup() error {
-	const script = `
-set -e
-if dscl . -read /Groups/breeze >/dev/null 2>&1; then
-  dscl . -read /Groups/breeze PrimaryGroupID >/dev/null
-  exit 0
-fi
-gid=350
-while [ "$gid" -le 499 ]; do
-  if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
-    dscl . -create /Groups/breeze
-    dscl . -create /Groups/breeze PrimaryGroupID "$gid"
-    exit 0
-  fi
-  gid=$((gid + 1))
-done
-echo "no free local system GID available for breeze group" >&2
-exit 1
-`
-	if out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to ensure breeze group: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := sessionbroker.EnsureIPCGroup(); err != nil {
+		return fmt.Errorf("failed to ensure %s group: %w", sessionbroker.IPCGroupName, err)
 	}
 	return nil
+}
+
+// ensureDarwinBreezeGroupConsoleMembers adds every logged-in GUI user to the
+// breeze group so their desktop helper can dial the 0660 root:breeze IPC socket.
+//
+// Non-fatal by design: failing the whole install because one console user could
+// not be resolved would be worse than an install that works for everyone else,
+// and the daemon retries this on every helper (re)start anyway.
+func ensureDarwinBreezeGroupConsoleMembers() {
+	for _, username := range darwinConsoleUsernames() {
+		added, err := sessionbroker.EnsureIPCGroupMember(username)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not add %s to the %s group (%v); that user's desktop helper will be denied the agent socket\n",
+				username, sessionbroker.IPCGroupName, err)
+			continue
+		}
+		if added {
+			fmt.Printf("Added %s to the %s group for desktop-helper socket access\n", username, sessionbroker.IPCGroupName)
+		}
+	}
+}
+
+// darwinConsoleUsernames lists the usernames with a GUI (loginwindow) session,
+// excluding root and system/service accounts.
+func darwinConsoleUsernames() []string {
+	out, err := exec.Command("ps", "-axo", "uid=,comm=").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not enumerate GUI sessions for %s group membership: %v\n",
+			sessionbroker.IPCGroupName, err)
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(fields[len(fields)-1]), "loginwindow") {
+			continue
+		}
+		uid, err := strconv.Atoi(fields[0])
+		// macOS assigns human accounts UIDs from 500 up; below that are system
+		// and service accounts, which never run a Breeze desktop helper.
+		if err != nil || uid < 500 {
+			continue
+		}
+		u, err := user.LookupId(fields[0])
+		if err != nil || seen[u.Username] {
+			continue
+		}
+		seen[u.Username] = true
+		names = append(names, u.Username)
+	}
+	return names
 }

@@ -65,8 +65,50 @@ if [ -f "$WATCHDOG_PLIST" ]; then
         launchctl load "$WATCHDOG_PLIST" 2>/dev/null || true
 fi
 
+# Add every logged-in GUI user to the breeze group so their desktop helper can
+# dial the 0660 root:breeze IPC socket. Mirrors the equivalent loop in
+# scripts/install/install-linux.sh. Without this the socket is group-owned by a
+# group nobody is in, and Standard (non-admin) users' helpers are denied
+# (#3133/#3134/#3137).
+#
+# Runs BEFORE the LaunchAgents are bootstrapped below: a helper process inherits
+# its group list when it starts, so membership has to exist first.
+add_console_users_to_breeze_group() {
+    local uid username
+    # NOTE: this script runs under `set -e`, so every test below is written as an
+    # `if`. A bare `[ ... ] && continue` returns non-zero when the test is false
+    # and would abort the whole postinstall.
+    for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
+        # macOS gives human accounts UIDs from 500 up; below that are system and
+        # service accounts, which never run a Breeze desktop helper.
+        if ! [ "$uid" -ge 500 ] 2>/dev/null; then
+            continue
+        fi
+        username=$(id -un "$uid" 2>/dev/null) || continue
+        if [ -z "$username" ]; then
+            continue
+        fi
+        if dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$username"; then
+            continue
+        fi
+        if dscl . -append /Groups/breeze GroupMembership "$username" 2>/dev/null; then
+            echo "Added $username to the breeze group for desktop-helper socket access"
+        else
+            echo "Warning: could not add $username to the breeze group; that user's desktop helper will be denied the agent socket" >&2
+        fi
+    done
+}
+
 # Create breeze group for IPC socket access.
 ensure_breeze_group
+add_console_users_to_breeze_group
+
+# Group-own the config directory so anything created inside it inherits the
+# breeze group under BSD semantics. The daemon chowns agent.sock explicitly on
+# every start (sessionbroker.setupSocket); this is defence in depth. Mode is
+# unchanged — agent.yaml is deliberately world-readable for the user helper
+# (#2483) and secrets.yaml stays 0600 root-only.
+chgrp breeze "$CONFIG_DIR" 2>/dev/null || true
 
 # Stop existing service if running
 launchctl bootout system/com.breeze.agent 2>/dev/null || true
