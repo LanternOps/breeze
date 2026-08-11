@@ -101,6 +101,10 @@ var sensitiveReadPatterns = []string{
 	"/windows/system32/config/security",
 	"/windows/system32/config/system",
 	"/windows/ntds/ntds.dit",
+	// macOS keychain stores. Listed without a trailing separator so the
+	// Keychains directory node is denied alongside its contents (#3385) — every
+	// file under it is credential material, so there is nothing to allow through.
+	"/library/keychains",
 }
 
 // sensitiveReadBasenames are lowercased filenames that are credential stores
@@ -125,7 +129,23 @@ func matchesPathFragment(norm, frag string) bool {
 // a well-known secret store. The comparison is OS-agnostic (backslashes are
 // normalized to forward slashes and case is folded), so a Windows target checked
 // on a Unix host still matches.
+//
+// Every deny-list entry is anchored at a path-component boundary, and a
+// directory entry denies the directory node itself as well as everything under
+// it (#3385) — matchesPathFragment covers both, so entries must NOT carry a
+// trailing separator.
 func isSensitiveReadPath(p string) bool {
+	// Resolve against the working directory first: the deny-list entries are all
+	// rooted, so a relative path ("etc/shadow") would slip past every rule while
+	// still opening the sensitive target, because the OS resolves it against the
+	// same CWD. Agent services routinely run with CWD "/" (Unix) or
+	// C:\Windows\System32 (Windows), which puts the deny-list squarely in reach.
+	// If the CWD cannot be determined, fall back to the caller's path — the
+	// rooted-path rules below still apply.
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+
 	// Normalize backslashes explicitly: filepath.ToSlash is a no-op on Unix, but
 	// the agent may be asked to read a Windows path (or a Windows path may reach
 	// a Unix test host), so fold both separators unconditionally.
@@ -156,10 +176,10 @@ func isSensitiveReadPath(p string) bool {
 		}
 	}
 
-	// macOS keychains
-	if strings.Contains(norm, "/library/keychains/") ||
-		strings.HasSuffix(base, ".keychain") ||
-		strings.HasSuffix(base, ".keychain-db") {
+	// macOS keychain files outside the standard Keychains directory. The
+	// directory itself (and everything under it) is covered by the
+	// "/library/keychains" entry in sensitiveReadPatterns.
+	if strings.HasSuffix(base, ".keychain") || strings.HasSuffix(base, ".keychain-db") {
 		return true
 	}
 
