@@ -1783,7 +1783,19 @@ jobs:
             kill "$BOOT_PID" 2>/dev/null || true
             exit 1
           fi
-          kill "$BOOT_PID"
+          # Guarded like the two failure branches above: under this step's
+          # default `bash -e`, an unguarded `kill` on an already-exited PID
+          # (e.g. the process crashed on its own between logging the
+          # built-in load line and this kill — a real failure worth seeing,
+          # just not one that should undo an already-successful migration
+          # load) would abort the step on a bare "process not found" with no
+          # log content, making a correct migration load look like an
+          # unexplained CI failure. Dump the log in that case so it's
+          # diagnosable either way.
+          if ! kill "$BOOT_PID" 2>/dev/null; then
+            echo "API process had already exited after logging the built-in load line — dumping its output:"
+            cat /tmp/ee-workspace-boot.log
+          fi
           wait "$BOOT_PID" 2>/dev/null || true
 
       - name: Integration-test workspace (ee)
