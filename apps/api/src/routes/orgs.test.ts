@@ -1275,6 +1275,135 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — remoteAccessProviders referential validation (#3401)', () => {
+    // Local helper copies, same shape as the sibling blocks above.
+    function mockCurrentPartnerSelect() {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    function provider(id: string, overrides: Record<string, unknown> = {}) {
+      return {
+        id,
+        name: `Provider ${id}`,
+        urlTemplate: 'rustdesk://{id}?password={password}',
+        customFieldKey: 'rustdesk_id',
+        enabled: true,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+    });
+
+    // Resolution is a first-match find over the providers array, and each entry
+    // carries its own urlTemplate and password — duplicated ids make credential
+    // selection order-dependent. Must be rejected before any DB write.
+    it('rejects duplicate provider ids with 400 and never writes', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ settings: { remoteAccessProviders: {
+        defaultProviderId: 'rustdesk',
+        providers: [provider('rustdesk'), provider('rustdesk', { name: 'Shadow copy' })],
+      } } });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    // A dangling default silently resolves to no_provider_configured at launch
+    // time (the Connect button just disappears) — reject it at save time instead.
+    it('rejects a defaultProviderId that names no configured provider', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ settings: { remoteAccessProviders: {
+        defaultProviderId: 'screenconnect',
+        providers: [provider('rustdesk')],
+      } } });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    // The merge replaces the sub-object wholesale, so a default with no provider
+    // list at all is the same dangling state.
+    it('rejects a defaultProviderId sent without any providers', async () => {
+      const setSpy = vi.fn();
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await patchMe({ settings: { remoteAccessProviders: {
+        defaultProviderId: 'rustdesk',
+      } } });
+
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    // The UI's cleared state is defaultProviderId: '' (PartnerRemoteAccessTab) —
+    // it must not be treated as a dangling reference.
+    it('accepts an empty-string defaultProviderId as "no default"', async () => {
+      mockCurrentPartnerSelect();
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { remoteAccessProviders: {
+        defaultProviderId: '',
+        providers: [provider('rustdesk')],
+      } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.remoteAccessProviders.providers).toHaveLength(1);
+    });
+
+    it('round-trips a valid config where the default names an existing provider', async () => {
+      mockCurrentPartnerSelect();
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { remoteAccessProviders: {
+        defaultProviderId: 'mesh',
+        providers: [provider('rustdesk'), provider('mesh', { customFieldKey: 'mesh_node_id' })],
+      } } });
+
+      expect(res.status).toBe(200);
+      const written = getCaptured().settings.remoteAccessProviders;
+      expect(written.defaultProviderId).toBe('mesh');
+      expect(written.providers.map((p: any) => p.id)).toEqual(['rustdesk', 'mesh']);
+    });
+  });
+
   describe('DELETE /orgs/partners/:id', () => {
     it('should delete a partner', async () => {
       vi.mocked(db.update).mockReturnValue({
