@@ -1590,7 +1590,7 @@
       "failedToDeny": "Impossible de nier",
       "failedToClearStatus": "Impossible de valider le statut",
       "searchSoftware": "Rechercher un logiciel...",
-      "uniqueSoftware": "Logiciels uniques",
+      "uniqueSoftwareSummary": "{{total}} logiciels uniques",
       "vendor": "Fournisseur",
       "devices": "Dispositifs",
       "versions": "Versions",

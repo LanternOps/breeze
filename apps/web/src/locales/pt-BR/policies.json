@@ -1590,7 +1590,7 @@
       "failedToDeny": "Falha ao negar",
       "failedToClearStatus": "Falha ao limpar o status",
       "searchSoftware": "Pesquisar software...",
-      "uniqueSoftware": "softwares exclusivos",
+      "uniqueSoftwareSummary": "{{total}} softwares exclusivos",
       "vendor": "Fornecedor",
       "devices": "Dispositivos",
       "versions": "Versões",

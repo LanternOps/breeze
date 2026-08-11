@@ -252,8 +252,9 @@ export default function SoftwareInventory({
           />
         </div>
         <span className="text-sm text-muted-foreground">
-          {total}
-          {i18n.t("policies:software.softwareInventory.uniqueSoftware")}
+          {i18n.t("policies:software.softwareInventory.uniqueSoftwareSummary", {
+            total,
+          })}
         </span>
       </div>
 

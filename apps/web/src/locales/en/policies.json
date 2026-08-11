@@ -1590,7 +1590,7 @@
       "failedToDeny": "Failed to deny",
       "failedToClearStatus": "Failed to clear status",
       "searchSoftware": "Search software...",
-      "uniqueSoftware": "unique software",
+      "uniqueSoftwareSummary": "{{total}} unique software",
       "vendor": "Vendor",
       "devices": "Devices",
       "versions": "Versions",

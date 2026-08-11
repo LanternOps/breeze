@@ -1590,7 +1590,7 @@
       "failedToDeny": "Ablehnen fehlgeschlagen",
       "failedToClearStatus": "Status konnte nicht zurückgesetzt werden",
       "searchSoftware": "Software suchen...",
-      "uniqueSoftware": "einzigartige Software",
+      "uniqueSoftwareSummary": "{{total}} einzigartige Software",
       "vendor": "Anbieter",
       "devices": "Geräte",
       "versions": "Versionen",
