@@ -41,8 +41,8 @@
         "exclude": []
       },
       "workspace_crawl_runs": {
-        "include": ["id", "org_id", "source_id", "device_id", "device_key", "status", "started_at", "last_activity_at", "completed_at", "cursor", "stats", "error_reason"],
-        "exclude": []
+        "include": ["id", "org_id", "source_id", "device_id", "device_key", "status", "started_at", "last_activity_at", "completed_at", "stats", "error_reason"],
+        "exclude": ["cursor"]
       },
       "workspace_email_filings": {
         "include": ["id", "org_id", "file_index_id", "status", "suggested_project_key", "suggested_project_label", "matched_entity_type", "matched_entity_value", "confidence", "rationale", "decided_project_key", "decided_label", "decided_at", "created_at", "updated_at"],

@@ -92,6 +92,8 @@ services:
       - ./apps/api/src:/app/apps/api/src:cached
       - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
+      - ./ee/workspace/src:/app/ee/workspace/src:cached
+      - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # Mount config files
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro
