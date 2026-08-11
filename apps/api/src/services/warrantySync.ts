@@ -23,7 +23,27 @@ function computeWarrantyStatus(endDate: string | null, warnDays = 90): WarrantyS
 
 const SYNC_CADENCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
+export interface SyncWarrantyOptions {
+  /**
+   * Explicit, user-requested refresh. Bypasses the virtual-machine skip only.
+   *
+   * The VM skip exists to stop the 7-day fleet sweep burning vendor quota on
+   * synthetic serials, which is an efficiency rule — so a human asking for one
+   * device is both negligible in cost and the escape hatch when virtualization
+   * detection misfires. `ClassifyVirtualization` matches bare substrings, so a
+   * physical machine with an unlucky SMBIOS string would otherwise lose its
+   * warranty data permanently with no way to override.
+   *
+   * Deliberately does NOT bypass the ephemeral skip: that one is an ownership
+   * rule (never ship a stranger's serial to a vendor), not an efficiency one.
+   */
+  force?: boolean;
+}
+
+export async function syncWarrantyForDevice(
+  deviceId: string,
+  options: SyncWarrantyOptions = {},
+): Promise<void> {
   // Load hardware info for this device
   const [hw] = await db
     .select({
@@ -67,7 +87,12 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
   // cleanHardwareIdentityValue does not catch these the way it catches
   // whitebox OEM placeholders, because a guest's reported values look
   // plausible. Same entry-point-guard role as the isEphemeral check above.
-  if (device.isVirtual) return;
+  //
+  // `force` (an explicit user-requested refresh) bypasses this one — see
+  // SyncWarrantyOptions. Without that, a manual refresh on a device flagged
+  // virtual would never advance lastSyncAt and the UI would poll a success
+  // that never arrives.
+  if (device.isVirtual && !options.force) return;
 
   const provider = getProviderForManufacturer(hw.manufacturer);
   if (!provider) {
