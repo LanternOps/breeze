@@ -337,9 +337,13 @@ jobs:
           # rather than assume: pass -Edition SelfHost only when it exists;
           # an older release then builds under the original ("Breeze Agent")
           # identity, which is what that release actually shipped.
-          $editionArgs = @()
+          # Hashtable splatting, not array splatting: array elements splat to a
+          # .ps1 POSITIONALLY, so @("-Edition","SelfHost") binds the literal
+          # string "-Edition" to the Edition parameter and ValidateSet rejects
+          # it. A hashtable binds by name. (Caught by the first live dry-run.)
+          $editionArgs = @{}
           if (Select-String -Path $buildMsiScript -Pattern '\$Edition\b' -Quiet) {
-            $editionArgs = @("-Edition", "SelfHost")
+            $editionArgs = @{ Edition = "SelfHost" }
           }
           else {
             Write-Host "build-msi.ps1 at this sourceCommit has no -Edition parameter (pre-edition release) — building under the legacy 'Breeze Agent' identity"
