@@ -37,6 +37,12 @@ export const GENERIC_TOOL_ERROR_MESSAGE =
 const SAFE_THROWN_MESSAGE_PATTERNS: RegExp[] = [
   /^Tool execution timed out after \d+ms/i,
   /^Tool .{1,60} timed out/i,
+  // Pagination cursors are opaque to the caller, so "the tool failed" is not an
+  // actionable answer when one is rejected — the client cannot tell a bad cursor
+  // from a server fault and has no way to recover (#3329). These are fixed
+  // string literals in logSearch.ts with nothing interpolated, so they cannot
+  // carry schema or driver detail; the detector below still vets them anyway.
+  /^Invalid cursor (?:format|payload)\.$/i,
 ];
 
 /**

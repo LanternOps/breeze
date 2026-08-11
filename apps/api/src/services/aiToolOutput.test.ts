@@ -64,6 +64,60 @@ describe('compactToolResultForChat', () => {
     expect((parsed._chat as Record<string, unknown>).outputCompacted).toBe(true);
     expect((parsed._chat as Record<string, unknown>).nonJsonOutput).toBe(true);
     expect(typeof parsed.preview).toBe('string');
+    expect(parsed.summarized).toBe(true);
+  });
+
+  describe('summarized discriminator (#3329)', () => {
+    // A row-less digest is HTTP 200 with no error field. Without an explicit
+    // marker a programmatic consumer cannot tell it from a record and stores it
+    // as data. `_chat` alone is not that marker — it also rides along with
+    // payloads whose rows are intact.
+    it('marks the row-less digest that replaces an unshrinkable payload', () => {
+      // Synthetic worst case for the branch, not a realistic log page: string
+      // leaves are budgeted on RAW length while the ceiling is enforced on the
+      // JSON-SERIALIZED length, so all-escapable fields double in size after
+      // every compaction tier has run and the payload still overflows.
+      const escapeDense = '"\n\t'.repeat(400);
+      const raw = JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: 40 }).map((_, idx) => [`field${idx}`, escapeDense]),
+        ),
+      );
+
+      const parsed = JSON.parse(compactToolResultForChat('search_logs', raw)) as Record<string, unknown>;
+
+      expect(parsed.summarized).toBe(true);
+      expect(parsed.logs).toBeUndefined();
+      expect((parsed.summary as Record<string, unknown>).toolName).toBe('search_logs');
+    });
+
+    it('does NOT mark a compacted payload whose rows survived', () => {
+      const raw = JSON.stringify({
+        total: 2_000,
+        alerts: Array.from({ length: 500 }).map((_, idx) => ({
+          id: `alert-${idx}`,
+          title: `Disk usage high on host-${idx}`,
+          severity: 'high',
+        })),
+      });
+
+      const parsed = JSON.parse(compactToolResultForChat('manage_alerts', raw)) as Record<string, unknown>;
+
+      // This is the shape the reporter flagged as ambiguous: `_chat` present,
+      // but the rows are real and must still be read.
+      expect(parsed._chat).toBeDefined();
+      expect(Array.isArray(parsed.alerts)).toBe(true);
+      expect((parsed.alerts as unknown[]).length).toBeGreaterThan(0);
+      expect(parsed.summarized).toBeUndefined();
+    });
+
+    it('does NOT mark a payload that fit without compaction', () => {
+      const raw = JSON.stringify({ logs: [{ id: 'log-1', message: 'ok' }] });
+      const parsed = JSON.parse(compactToolResultForChat('search_logs', raw)) as Record<string, unknown>;
+
+      expect(parsed.summarized).toBeUndefined();
+      expect((parsed.logs as unknown[]).length).toBe(1);
+    });
   });
 
   it('truncates disk cleanup candidates and reports counts', () => {
