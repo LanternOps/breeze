@@ -78,13 +78,13 @@ function readJson(file: string): Record<string, unknown> {
 }
 
 /**
- * pnpm-workspace.yaml uses `apps/*` / `packages/*`. Rather than pull in a YAML
- * parser for two globs, enumerate the two directories directly and assert below
- * that the workspace file still says what we assume.
+ * pnpm-workspace.yaml uses `apps/*` / `packages/*` / `ee/*`. Rather than pull in
+ * a YAML parser for three globs, enumerate the three directories directly and
+ * assert below that the workspace file still says what we assume.
  */
 function loadWorkspacePackages(): Map<string, WorkspacePackage> {
   const byName = new Map<string, WorkspacePackage>();
-  for (const root of ['apps', 'packages']) {
+  for (const root of ['apps', 'packages', 'ee']) {
     for (const entry of readdirSync(path.join(REPO_ROOT, root), { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const dir = `${root}/${entry.name}`;
@@ -351,7 +351,8 @@ describe('Dockerfile workspace-manifest copy scope', () => {
     const workspaceYaml = readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8');
     expect(workspaceYaml).toMatch(/^\s*-\s*'apps\/\*'\s*$/m);
     expect(workspaceYaml).toMatch(/^\s*-\s*'packages\/\*'\s*$/m);
-    expect(workspaceYaml).not.toMatch(/^\s*-\s*'(?!apps\/\*|packages\/\*)/m);
+    expect(workspaceYaml).toMatch(/^\s*-\s*'ee\/\*'\s*$/m);
+    expect(workspaceYaml).not.toMatch(/^\s*-\s*'(?!apps\/\*|packages\/\*|ee\/\*)/m);
   });
 
   it('leaves no Dockerfile silently unchecked', () => {
