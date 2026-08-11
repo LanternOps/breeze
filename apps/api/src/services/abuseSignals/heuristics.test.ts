@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { computeHeuristicSignals, ipPrefixGroup, type PartnerAggregates } from './heuristics';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  computeHeuristicSignals,
+  ipPrefixGroup,
+  classifyHostname,
+  loadHostnameIndicators,
+  type PartnerAggregates,
+} from './heuristics';
 import { SIGNAL_DEFAULTS } from './config';
 
 const now = new Date('2026-07-15T00:00:00Z');
@@ -21,9 +27,14 @@ function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
     commands24h: 0,
     scriptExecutions24h: 0,
     lastSeenIps: [],
+    hostnames: [],
     ...overrides,
   };
 }
+
+const HOST_SIGNAL = 'rmm.provider_default_hostname';
+const hostSignal = (a: PartnerAggregates, indicators = { prefixes: [] as string[] }) =>
+  computeHeuristicSignals([a], SIGNAL_DEFAULTS, now, indicators).find((s) => s.signalKey === HOST_SIGNAL);
 
 describe('computeHeuristicSignals', () => {
   it('emits nothing for a quiet partner', () => {
@@ -291,5 +302,139 @@ describe('ipPrefixGroup', () => {
     expect(ipPrefixGroup('not-an-ip')).toBeNull();
     expect(ipPrefixGroup('999.1.1.1')).toBeNull();
     expect(ipPrefixGroup('2001:db8::1::2')).toBeNull();
+  });
+});
+
+describe('classifyHostname', () => {
+  const none = { prefixes: [] };
+
+  it('classifies a provider serial hostname as generic', () => {
+    expect(classifyHostname('ZQ-40001', none)).toBe('generic');
+    expect(classifyHostname('zq-40002', none)).toBe('generic');
+    expect(classifyHostname('ABCD-12345678', none)).toBe('generic');
+  });
+
+  it('classifies a stock Windows Server computer name as generic', () => {
+    expect(classifyHostname('WIN-A1B2C3D4E5F', none)).toBe('generic');
+    expect(classifyHostname('WIN-K9M2P4Q7R1T', none)).toBe('generic');
+  });
+
+  it('leaves DESKTOP-/LAPTOP- to rmm.consumer_devices so a device is never double-counted', () => {
+    expect(classifyHostname('DESKTOP-A1B2C3D', none)).toBeNull();
+    expect(classifyHostname('LAPTOP-X9Y8Z7W', none)).toBeNull();
+  });
+
+  it('does not match real named or domain-joined machines', () => {
+    for (const h of ['ACME-RECEPTION', 'ACME-FILESRV', 'ACME-DC01', 'jsmith-laptop', 'ACME-WS-SPARE', 'Workstation42']) {
+      expect(classifyHostname(h, none)).toBeNull();
+    }
+  });
+
+  it('does not match a short numeric suffix that a real naming scheme would use', () => {
+    // PC-42 / WS-007 are plausible human schemes; the provider defaults this
+    // targets carry long serials.
+    expect(classifyHostname('PC-42', none)).toBeNull();
+    expect(classifyHostname('WS-007', none)).toBeNull();
+  });
+
+  it('promotes a curated prefix above the generic shape', () => {
+    expect(classifyHostname('XY-99887', { prefixes: ['xy-'] })).toBe('curated');
+    // Curated matching is prefix-based, so it catches names the shape misses.
+    expect(classifyHostname('xy-staging-box', { prefixes: ['xy-'] })).toBe('curated');
+    expect(classifyHostname('xy-staging-box', none)).toBeNull();
+  });
+
+  it('matches curated prefixes case-insensitively and ignores blank hostnames', () => {
+    expect(classifyHostname('  XY-1  ', { prefixes: ['xy-'] })).toBe('curated');
+    expect(classifyHostname('   ', { prefixes: ['xy-'] })).toBeNull();
+  });
+});
+
+describe('loadHostnameIndicators', () => {
+  afterEach(() => {
+    delete process.env.ABUSE_HOSTNAME_INDICATORS;
+  });
+
+  it('is empty when unset, so the public repo names no provider', () => {
+    expect(loadHostnameIndicators()).toEqual({ prefixes: [] });
+  });
+
+  it('parses, lowercases and trims a prefix list', () => {
+    process.env.ABUSE_HOSTNAME_INDICATORS = JSON.stringify({ prefixes: [' XY- ', 'ZZ-'] });
+    expect(loadHostnameIndicators()).toEqual({ prefixes: ['xy-', 'zz-'] });
+  });
+
+  it('falls back to empty on malformed input rather than throwing mid-sweep', () => {
+    process.env.ABUSE_HOSTNAME_INDICATORS = 'not json';
+    expect(loadHostnameIndicators()).toEqual({ prefixes: [] });
+    process.env.ABUSE_HOSTNAME_INDICATORS = '["xy-"]';
+    expect(loadHostnameIndicators()).toEqual({ prefixes: [] });
+    process.env.ABUSE_HOSTNAME_INDICATORS = JSON.stringify({ prefixes: [1, '', 'xy-'] });
+    expect(loadHostnameIndicators()).toEqual({ prefixes: ['xy-'] });
+  });
+});
+
+describe('rmm.provider_default_hostname', () => {
+  it('alerts on a single curated-prefix device', () => {
+    const s = hostSignal(agg({ deviceCount: 1, hostnames: ['XY-22257'] }), { prefixes: ['xy-'] });
+    expect(s).toBeDefined();
+    expect(s!.severity).toBe('alert');
+    // Examples keep the hostname exactly as stored — triage needs the real
+    // string to search on, not a normalized one.
+    expect(s!.evidence).toMatchObject({ tier: 'curated', matchedHostnames: 1, examples: ['XY-22257'] });
+  });
+
+  it('scores curated matches linearly so extra real devices cannot dilute it', () => {
+    const one = hostSignal(agg({ deviceCount: 1, hostnames: ['XY-1'] }), { prefixes: ['xy-'] })!;
+    const three = hostSignal(
+      agg({ deviceCount: 40, hostnames: ['XY-1', 'XY-2', 'XY-3', ...Array.from({ length: 37 }, (_, i) => `ACME-SRV${i}`)] }),
+      { prefixes: ['xy-'] },
+    )!;
+    expect(three.score).toBeGreaterThan(one.score);
+    expect(three.severity).toBe('alert');
+  });
+
+  it('caps the generic tier below the alert threshold', () => {
+    const s = hostSignal(agg({
+      deviceCount: 12,
+      hostnames: Array.from({ length: 12 }, (_, i) => `WIN-A1B2C3D4E${String(i).padStart(2, '0')}`),
+    }))!;
+    expect(s.score).toBeLessThan(SIGNAL_DEFAULTS['severity.alert_score']);
+    expect(s.severity).toBe('watch');
+    expect(s.evidence).toMatchObject({ tier: 'generic' });
+  });
+
+  it('does not fire generic on one stray stock name in a properly-named fleet', () => {
+    const hostnames = ['WIN-A1B2C3D4E5F', ...Array.from({ length: 29 }, (_, i) => `ACME-WS${i}`)];
+    expect(hostSignal(agg({ deviceCount: 30, hostnames }))).toBeUndefined();
+  });
+
+  it('does not fire generic below generic_min_devices', () => {
+    expect(hostSignal(agg({ deviceCount: 2, hostnames: ['ZQ-40001', 'ZQ-40003'] }))).toBeUndefined();
+  });
+
+  it('emits one signal per partner, never both tiers for the same fleet', () => {
+    const signals = computeHeuristicSignals(
+      [agg({ deviceCount: 4, hostnames: ['XY-1', 'WIN-A1B2C3D4E5F', 'WIN-K9M2P4Q7R1T', 'WIN-B3N5V8X2Z6C'] })],
+      SIGNAL_DEFAULTS,
+      now,
+      { prefixes: ['xy-'] },
+    ).filter((s) => s.signalKey === HOST_SIGNAL);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.evidence).toMatchObject({ tier: 'curated' });
+  });
+
+  it('is not age-decayed — an old account running stock VMs still scores', () => {
+    const old = agg({
+      partnerCreatedAt: new Date('2026-01-01T00:00:00Z'), // ~6 months → zero young weight
+      deviceCount: 1,
+      hostnames: ['XY-22257'],
+    });
+    expect(hostSignal(old, { prefixes: ['xy-'] })!.severity).toBe('alert');
+  });
+
+  it('stays silent for a fleet with no stock names', () => {
+    expect(hostSignal(agg({ deviceCount: 5, hostnames: ['ACME-RECEPTION', 'ACME-FILESRV', 'ACME-DC01', 'jsmith-laptop', 'ACME-WS07'] })))
+      .toBeUndefined();
   });
 });

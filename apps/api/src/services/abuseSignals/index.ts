@@ -4,7 +4,7 @@ import { sendOpsAlert, isOpsAlertingConfigured } from '../opsAlerts';
 import { recordAbuseSignalFired } from '../abuseMetrics';
 import { loadSignalConfig } from './config';
 import { computeInvariantSignals } from './invariants';
-import { loadPartnerAggregates, computeHeuristicSignals } from './heuristics';
+import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators } from './heuristics';
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
 import { persistSignals, markDelivered } from './persistence';
@@ -56,7 +56,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
 
   const computed = [
     ...invariants,
-    ...computeHeuristicSignals(aggregates, cfg, now),
+    ...computeHeuristicSignals(aggregates, cfg, now, loadHostnameIndicators()),
     // Content-based signals are never age-decayed (computeScriptSignals takes
     // no partner age at all) — a malicious installer is malicious regardless
     // of account age.

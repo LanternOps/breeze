@@ -21,11 +21,91 @@ export interface PartnerAggregates {
   scriptExecutions24h: number;
   /** last_seen_ip of the partner's non-decommissioned devices (bounded per partner; nulls excluded). */
   lastSeenIps: string[];
+  /** hostname of the partner's non-decommissioned devices (bounded per partner; nulls excluded). */
+  hostnames: string[];
 }
 
 // Default Windows hostnames (DESKTOP-XXXXXXX / LAPTOP-XXXXXXX) mark unmanaged
 // consumer machines — a legit MSP's fleet is mostly named/domain-joined.
 const CONSUMER_HOSTNAME_SQL = `d.hostname ~* '^(DESKTOP|LAPTOP)-[A-Z0-9]{7}$'`;
+
+/**
+ * Shapes that a hosting provider or a stock OS installer leaves behind when
+ * nobody renames the machine.
+ *
+ * Deliberately shape-based, not vendor-named: naming a specific provider here
+ * would publish the exact string to avoid, and the thing actually worth
+ * detecting is not "this provider" but "nobody ever gave this box a real
+ * name". A curated prefix list for specific known-bad providers lives in
+ * ABUSE_HOSTNAME_INDICATORS instead (see loadHostnameIndicators).
+ *
+ * DESKTOP-/LAPTOP- are excluded here on purpose — they mean something
+ * different (a consumer's own machine, i.e. a probable victim) and are already
+ * scored by rmm.consumer_devices. Double-counting one hostname across both
+ * signals would let a single fleet stack two independent-looking scores.
+ */
+const PROVIDER_DEFAULT_HOSTNAME_PATTERNS: RegExp[] = [
+  // Short alpha tag + a numeric serial, e.g. a VPS image's stock hostname.
+  // Bounded at 4 leading letters so DESKTOP-/LAPTOP- can't match here.
+  /^[a-z]{2,4}-\d{4,8}$/,
+  // Windows Server's stock computer name: WIN- plus 11 random alphanumerics.
+  /^win-[a-z0-9]{11}$/,
+];
+
+export interface HostnameIndicators {
+  /** Lowercased hostname prefixes attributed to abusive hosting. */
+  prefixes: string[];
+}
+
+/**
+ * Curated hostname prefixes from ABUSE_HOSTNAME_INDICATORS, e.g.
+ * `{"prefixes":["xy-"]}`. Empty in this repo by design — see the
+ * rmm.provider_default_hostname block in config.ts.
+ *
+ * Matching happens in TS rather than SQL specifically so operator-supplied
+ * strings never reach a query: loadPartnerAggregates builds its SQL with
+ * sql.raw, so an env-interpolated prefix would be an injection sink.
+ */
+export function loadHostnameIndicators(): HostnameIndicators {
+  const empty: HostnameIndicators = { prefixes: [] };
+  const raw = process.env.ABUSE_HOSTNAME_INDICATORS;
+  if (!raw) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn('[AbuseSignals] ABUSE_HOSTNAME_INDICATORS is not valid JSON — using empty indicator list');
+    return empty;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.warn('[AbuseSignals] ABUSE_HOSTNAME_INDICATORS must be a JSON object — using empty indicator list');
+    return empty;
+  }
+  const prefixes = (parsed as Record<string, unknown>).prefixes;
+  return {
+    prefixes: Array.isArray(prefixes)
+      ? prefixes.filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => x.trim().toLowerCase())
+      : [],
+  };
+}
+
+/**
+ * Classify one hostname. 'curated' outranks 'generic' — a hostname matching a
+ * reviewed prefix is counted once, at the higher tier only, so the two tiers
+ * can never both score the same device.
+ *
+ * Pure; exported for tests.
+ */
+export function classifyHostname(
+  raw: string,
+  indicators: HostnameIndicators,
+): 'curated' | 'generic' | null {
+  const host = raw.trim().toLowerCase();
+  if (host.length === 0) return null;
+  if (indicators.prefixes.some((p) => host.startsWith(p))) return 'curated';
+  if (PROVIDER_DEFAULT_HOSTNAME_PATTERNS.some((re) => re.test(host))) return 'generic';
+  return null;
+}
 
 /**
  * One fleet-grouped pass over young-or-recently-active partners.
@@ -156,6 +236,23 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       ) bounded
       WHERE rn <= 5000
       GROUP BY partner_id
+    ),
+    hosts AS (
+      -- Raw hostnames per partner, bounded identically to the ips CTE above.
+      -- Classification (provider-default shapes + the curated prefix list from
+      -- ABUSE_HOSTNAME_INDICATORS) happens in TS (classifyHostname) where it is
+      -- pure, unit-testable, and -- since this query is built with sql.raw --
+      -- keeps operator-supplied prefixes out of the SQL string entirely.
+      SELECT partner_id, array_agg(hostname) AS hostnames
+      FROM (
+        SELECT o.partner_id, d.hostname,
+          row_number() OVER (PARTITION BY o.partner_id ORDER BY d.id) AS rn
+        FROM devices d JOIN organizations o ON o.id = d.org_id
+        WHERE d.status NOT IN ('decommissioned', 'quarantined')
+          AND d.hostname IS NOT NULL
+      ) bounded
+      WHERE rn <= 5000
+      GROUP BY partner_id
     )
     SELECT s.id, s.name, s.created_at,
       COALESCE(dev.device_count, 0) AS device_count,
@@ -169,7 +266,8 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
       COALESCE(denied.denied_24h, 0) AS denied_24h,
       COALESCE(cmds.commands_24h, 0) AS commands_24h,
       COALESCE(scripts.scripts_24h, 0) AS scripts_24h,
-      COALESCE(ips.last_seen_ips, '{}') AS last_seen_ips
+      COALESCE(ips.last_seen_ips, '{}') AS last_seen_ips,
+      COALESCE(hosts.hostnames, '{}') AS hostnames
     FROM scoped s
     LEFT JOIN dev ON dev.partner_id = s.id
     LEFT JOIN sess ON sess.partner_id = s.id
@@ -178,6 +276,7 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
     LEFT JOIN cmds ON cmds.partner_id = s.id
     LEFT JOIN scripts ON scripts.partner_id = s.id
     LEFT JOIN ips ON ips.partner_id = s.id
+    LEFT JOIN hosts ON hosts.partner_id = s.id
   `))) as unknown as Array<Record<string, unknown>>;
 
   return rows.map((r) => ({
@@ -196,6 +295,7 @@ export async function loadPartnerAggregates(): Promise<PartnerAggregates[]> {
     commands24h: Number(r.commands_24h),
     scriptExecutions24h: Number(r.scripts_24h),
     lastSeenIps: Array.isArray(r.last_seen_ips) ? (r.last_seen_ips as unknown[]).map(String) : [],
+    hostnames: Array.isArray(r.hostnames) ? (r.hostnames as unknown[]).map(String) : [],
   }));
 }
 
@@ -265,6 +365,7 @@ export function computeHeuristicSignals(
   aggs: PartnerAggregates[],
   cfg: SignalConfig,
   now: Date,
+  hostnameIndicators: HostnameIndicators = { prefixes: [] },
 ): ComputedSignal[] {
   const signals: ComputedSignal[] = [];
 
@@ -358,6 +459,54 @@ export function computeHeuristicSignals(
           devicesWithIp,
           distinctPrefixes: prefixes.size,
           scatterRatio: Number(scatterRatio.toFixed(2)),
+        }, false);
+      }
+    }
+
+    // rmm.provider_default_hostname — machines still carrying the hostname
+    // their hosting provider or OS installer assigned. See the config.ts block
+    // for why the curated tier is alert-capable and the generic tier is not.
+    // Never age-decayed: this describes what the fleet IS, not how new it is.
+    let curatedHosts = 0;
+    let genericHosts = 0;
+    const curatedExamples: string[] = [];
+    for (const host of a.hostnames) {
+      const kind = classifyHostname(host, hostnameIndicators);
+      if (kind === 'curated') {
+        curatedHosts += 1;
+        if (curatedExamples.length < 5) curatedExamples.push(host);
+      } else if (kind === 'generic') {
+        genericHosts += 1;
+      }
+    }
+    if (curatedHosts > 0) {
+      // A reviewed prefix is an attribution, so one device is enough; extra
+      // devices add linearly rather than by ratio, because an operator mixing
+      // real customer machines in alongside its staging boxes should not be
+      // able to dilute the score by enrolling more of them.
+      push('rmm.provider_default_hostname',
+        cfg['rmm.provider_default_hostname.curated_score']
+          + (curatedHosts - 1) * cfg['rmm.provider_default_hostname.curated_per_extra'],
+        {
+          tier: 'curated',
+          deviceCount: a.deviceCount,
+          matchedHostnames: curatedHosts,
+          examples: curatedExamples,
+        }, false);
+    } else if (a.deviceCount >= cfg['rmm.provider_default_hostname.generic_min_devices']) {
+      // Ratio-gated, unlike the curated tier: one stock-named box among thirty
+      // properly-named ones is an MSP that missed a rename, not a fleet of
+      // disposable VMs.
+      const ratio = genericHosts / a.deviceCount;
+      if (genericHosts > 0 && ratio >= cfg['rmm.provider_default_hostname.generic_ratio']) {
+        push('rmm.provider_default_hostname', Math.min(
+          cfg['rmm.provider_default_hostname.generic_max_score'],
+          cfg['rmm.provider_default_hostname.generic_score'] * (1 + ratio),
+        ), {
+          tier: 'generic',
+          deviceCount: a.deviceCount,
+          matchedHostnames: genericHosts,
+          ratio: Number(ratio.toFixed(2)),
         }, false);
       }
     }

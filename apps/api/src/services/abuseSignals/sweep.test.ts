@@ -6,6 +6,7 @@ const {
   computeInvariantSignals,
   loadPartnerAggregates,
   computeHeuristicSignals,
+  loadHostnameIndicators,
   loadScriptFindings,
   computeScriptSignals,
   loadScriptIndicators,
@@ -19,6 +20,7 @@ const {
   computeInvariantSignals: vi.fn(),
   loadPartnerAggregates: vi.fn(),
   computeHeuristicSignals: vi.fn(),
+  loadHostnameIndicators: vi.fn(),
   loadScriptFindings: vi.fn(),
   computeScriptSignals: vi.fn(),
   loadScriptIndicators: vi.fn(),
@@ -42,7 +44,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('./invariants', () => ({ computeInvariantSignals }));
-vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals }));
+vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators }));
 vi.mock('./scriptContent', () => ({ loadScriptFindings, computeScriptSignals, loadScriptIndicators }));
 vi.mock('./billingIdentity', () => ({ loadBillingIdentityAggregates, computeBillingIdentitySignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
@@ -68,6 +70,7 @@ function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
     commands24h: 0,
     scriptExecutions24h: 0,
     lastSeenIps: [],
+    hostnames: [],
     ...overrides,
   };
 }
@@ -88,6 +91,7 @@ beforeEach(() => {
   computeInvariantSignals.mockResolvedValue([]);
   loadPartnerAggregates.mockResolvedValue([agg({})]);
   computeHeuristicSignals.mockReturnValue([]);
+  loadHostnameIndicators.mockReturnValue({ prefixes: [] });
   loadScriptFindings.mockResolvedValue({ findings: [], sharedHosts: new Map(), scannedPartnerIds: [] });
   computeScriptSignals.mockReturnValue([]);
   loadScriptIndicators.mockReturnValue({ tlds: [], hosts: [] });
