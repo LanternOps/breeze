@@ -20,15 +20,17 @@
 import { db } from '../db';
 import {
   devices,
+  organizations,
   scripts,
   scriptVersions,
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+import { dispatchScriptToDevice } from './scriptDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -164,24 +166,21 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
-      const { executeCommand } = await getCommandQueue();
+      const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
 
       // Resolve script content upfront so the agent receives the full payload
       const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
+      // Partner-wide scripts have org_id NULL; the plain orgCondition would
+      // exclude them even though RLS makes them visible to this session.
+      // Defense-in-depth stays: org-owned scripts must satisfy orgCondition,
+      // org-less rows pass here and are constrained per-device below.
       const orgCond = auth.orgCondition(scripts.orgId);
-      if (orgCond) scriptConditions.push(orgCond);
+      if (orgCond) scriptConditions.push(or(isNull(scripts.orgId), orgCond)!);
 
       const [script] = await db
-        .select({
-          id: scripts.id,
-          orgId: scripts.orgId,
-          language: scripts.language,
-          content: scripts.content,
-          timeoutSeconds: scripts.timeoutSeconds,
-          runAs: scripts.runAs,
-        })
+        .select()
         .from(scripts)
         .where(and(...scriptConditions))
         .limit(1);
@@ -189,6 +188,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (!script || !script.content) {
         return JSON.stringify({ error: 'Script not found or has no content' });
       }
+
+      // Under a system context (intent-release worker) RLS no longer scopes
+      // partner-wide rows — verify partner ownership explicitly against each
+      // target device's org below. Request paths already saw RLS filtering.
+      const scriptPartnerId = script.partnerId ?? null;
 
       for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
         try {
@@ -211,16 +215,32 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             continue;
           }
 
-          const result = await executeCommand(deviceId, 'script', {
-            scriptId: script.id,
-            language: script.language,
-            content: script.content,
-            timeoutSeconds: script.timeoutSeconds,
-            runAs: script.runAs,
-            parameters: input.parameters ?? {}
-          }, { userId: auth.user.id, timeoutMs: 60000 });
+          if (scriptPartnerId !== null) {
+            const [deviceOrg] = await db
+              .select({ partnerId: organizations.partnerId })
+              .from(organizations)
+              .where(eq(organizations.id, access.device.orgId))
+              .limit(1);
+            if (!deviceOrg || deviceOrg.partnerId !== scriptPartnerId) {
+              results[deviceId] = { error: 'Device not found or access denied' };
+              continue;
+            }
+          }
 
-          results[deviceId] = result;
+          const dispatch = await dispatchScriptToDevice({
+            device: access.device,
+            source: { kind: 'saved', script },
+            parameters: (input.parameters as Record<string, unknown>) ?? {},
+            triggerType: 'manual',
+            triggeredBy: auth.user.id,
+            createdBy: auth.user.id,
+            requireOnline: true,
+          });
+          if (!dispatch.ok) {
+            results[deviceId] = { error: dispatch.error };
+            continue;
+          }
+          results[deviceId] = await waitForCommandResult(dispatch.commandId, 60000);
         } catch (err) {
           results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
         }
