@@ -33,16 +33,49 @@ export class SessionEndedError extends Error {
 }
 
 /**
- * Best-effort detection of the server's "session ended" rejection. The server
- * returns HTTP 401 with a body/error mentioning the session has ended; we also
- * treat a bare 401 on the viewer offer/poll path as terminal because a
- * single-session viewer token only ever authorizes one (still-live) session —
- * once it's 401ing there is nothing a retry can recover.
+ * Every 401 on the viewer offer/poll path is terminal.
+ *
+ * A viewer token authorizes exactly one still-live session, so once the server
+ * starts 401ing there is nothing a retry can recover — it has already decided
+ * the token, its JTI, or the session itself is no longer valid.
+ *
+ * This deliberately does NOT inspect the response body. It used to match on the
+ * text ("session ended"/"revoked"/"no longer active"), which silently missed
+ * most of the 401s the API actually returns — `Session closed`, `Missing viewer
+ * token`, `Invalid or expired viewer token` — so the answer poll kept hammering
+ * a dead session until it timed out, burning the caller's per-IP rate-limit
+ * budget and 429ing the operator's own dashboard (issue #3041). Status alone is
+ * the reliable signal; matching prose is not.
  */
-export function isSessionEndedResponse(status: number, body?: string | null): boolean {
-  if (status !== 401) return false;
-  if (!body) return true;
-  return /session\s*ended|ended|revoked|no longer active/i.test(body);
+export function isSessionEndedResponse(status: number): boolean {
+  return status === 401;
+}
+
+/**
+ * True when a response status means this connection attempt can never succeed,
+ * so repeating the identical request is pure wasted load.
+ *
+ * Any 4xx qualifies except the two that explicitly invite a retry — 408
+ * (request timeout) and 429 (rate limited). Everything else the viewer
+ * endpoints return (400 not-a-desktop-session, 403 policy-denied or
+ * owner-mismatch, 404 session-not-found) reflects session, token, or policy
+ * state that the next poll cannot change. 401 is terminal too, but callers
+ * check {@link isSessionEndedResponse} first so it surfaces as the dedicated
+ * SessionEndedError.
+ */
+export function isUnretryableViewerStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
+ * Retry-After as milliseconds, or null when absent/unparseable. Only the
+ * delta-seconds form is honoured — that's what the API emits.
+ */
+export function parseRetryAfterMs(headerValue: string | null): number | null {
+  if (!headerValue) return null;
+  const seconds = Number(headerValue.trim());
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return seconds * 1000;
 }
 
 export interface AuthenticatedConnectionParams {
@@ -61,7 +94,26 @@ export interface WebRTCSession {
 }
 
 const ICE_GATHER_TIMEOUT_MS = 3000;
-const ANSWER_POLL_INTERVAL_MS = 50;
+
+/**
+ * Answer-poll pacing. The poll starts tight so a healthy agent (which answers
+ * within a few hundred ms) is still picked up almost immediately, then backs
+ * off geometrically so a slow or dead session doesn't turn the 15s window into
+ * ~300 requests. With these values a full 15s wait costs ~35 requests instead,
+ * which matters because those requests are metered against the caller's IP
+ * (issue #3041).
+ */
+export const ANSWER_POLL_INITIAL_INTERVAL_MS = 50;
+export const ANSWER_POLL_MAX_INTERVAL_MS = 500;
+const ANSWER_POLL_BACKOFF_FACTOR = 1.5;
+
+/** Next answer-poll delay, geometric up to the cap. */
+export function nextAnswerPollInterval(currentMs: number): number {
+  return Math.min(
+    Math.round(currentMs * ANSWER_POLL_BACKOFF_FACTOR),
+    ANSWER_POLL_MAX_INTERVAL_MS,
+  );
+}
 
 /**
  * Create a WebRTC session with the remote agent.
@@ -157,12 +209,12 @@ export async function createWebRTCSession(
     );
 
     if (!offerResp.ok) {
-      const msg = await offerResp.text().catch(() => 'unknown error');
       // A 401 here means the session was ended/revoked server-side — retrying
       // the same sessionId is futile (Finding #5). Surface a terminal error.
-      if (isSessionEndedResponse(offerResp.status, msg)) {
+      if (isSessionEndedResponse(offerResp.status)) {
         throw new SessionEndedError();
       }
+      const msg = await offerResp.text().catch(() => 'unknown error');
       throw new Error(`Failed to submit WebRTC offer: ${msg}`);
     }
 
@@ -216,6 +268,11 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
  */
 async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: number): Promise<string> {
   const start = Date.now();
+  let intervalMs = ANSWER_POLL_INITIAL_INTERVAL_MS;
+  // Remembered so a timeout can say WHY it timed out. Without this a server
+  // returning 503 for 15s is indistinguishable from an agent that never
+  // answered, and both produce the same misleading "agent didn't respond".
+  let lastErrorStatus: number | null = null;
 
   while (Date.now() - start < timeoutMs) {
     const resp = await apiFetch(
@@ -233,20 +290,49 @@ async function pollForAnswer(params: AuthenticatedConnectionParams, timeoutMs: n
       if (data.status === 'failed') {
         throw new AgentSessionError(data.errorMessage || 'Remote desktop failed to start on agent');
       }
-    } else if (resp.status === 401) {
+    } else if (isSessionEndedResponse(resp.status)) {
       // Session ended/revoked server-side mid-poll — stop immediately so the
       // caller can surface a terminal state instead of polling to timeout
       // and then retrying the same dead session (Finding #5).
-      const body = await resp.text().catch(() => null);
-      if (isSessionEndedResponse(resp.status, body)) {
-        throw new SessionEndedError();
+      throw new SessionEndedError();
+    } else if (isUnretryableViewerStatus(resp.status)) {
+      // 400/403/404: the session, token, or policy state rules this attempt
+      // out. Fail now rather than spending the rest of the window re-asking a
+      // question the server has already answered.
+      const detail = (await resp.text().catch(() => ''))?.trim();
+      throw new Error(
+        `Remote session rejected (${resp.status})${detail ? `: ${detail}` : ''}`,
+      );
+    } else if (resp.status === 429) {
+      // The server has explicitly told us to back off. Honour Retry-After, and
+      // if it outlasts the window we're willing to wait, stop rather than keep
+      // adding load to a bucket we've already exhausted.
+      const retryAfterMs = parseRetryAfterMs(resp.headers.get('Retry-After'));
+      const remainingMs = timeoutMs - (Date.now() - start);
+      if (retryAfterMs !== null && retryAfterMs >= remainingMs) {
+        throw new Error('Remote session is rate limited — please retry in a moment.');
+      }
+      intervalMs = Math.max(retryAfterMs ?? 0, ANSWER_POLL_MAX_INTERVAL_MS);
+    } else {
+      // 5xx/408 — genuinely transient, so keep polling. Log the first of each
+      // kind so a real outage is visible rather than silently absorbed into a
+      // generic timeout 15s later.
+      if (resp.status !== lastErrorStatus) {
+        console.warn(`Answer poll got HTTP ${resp.status}; retrying until timeout`);
       }
     }
 
-    await new Promise((r) => setTimeout(r, ANSWER_POLL_INTERVAL_MS));
+    if (!resp.ok) lastErrorStatus = resp.status;
+
+    await new Promise((r) => setTimeout(r, intervalMs));
+    intervalMs = nextAnswerPollInterval(intervalMs);
   }
 
-  throw new Error('Timed out waiting for WebRTC answer from agent');
+  throw new Error(
+    lastErrorStatus === null
+      ? 'Timed out waiting for WebRTC answer from agent'
+      : `Timed out waiting for WebRTC answer from agent (last response: HTTP ${lastErrorStatus})`,
+  );
 }
 
 /**
