@@ -9,7 +9,8 @@ import { approvalRequests } from '../db/schema/approvals';
 import { elevationRequests, elevationAudit } from '../db/schema/elevations';
 import { aiToolExecutions, aiSessions } from '../db/schema/ai';
 import { delegantM365Connections } from '../db/schema/delegant';
-import { auditLogs } from '../db/schema/audit';
+import { writeAuditEventAsync } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import {
   actionIntents,
   intentOutbox,
@@ -537,6 +538,64 @@ approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
   return decideHandler(c, 'denied', reason);
 });
 
+/**
+ * Which org the `security.suspicious_report` audit row belongs to (#3234).
+ *
+ * The row must be tenanted to the APPROVAL BEING REPORTED, not to whoever
+ * reported it. `approval_requests` has no `org_id` column of its own, so the
+ * linked `action_intents` row is the only authoritative source; the reporter's
+ * own org is a fallback, and for a partner-scoped caller it is `null`.
+ *
+ * Resolution order (per #3234): linked intent's org → reporter's org → NULL.
+ * NULL is therefore only reached when there is honestly no org to name — an
+ * unlinked row (dev seed / PAM) reported by a partner-scoped user — rather than
+ * being the accidental outcome of reading tenancy off the caller's token, which
+ * is what made the endpoint 500 for every partner-scoped caller.
+ *
+ * Runs in a system-scope context of its own: `action_intents` is org-scoped
+ * (Shape 1) and a partner user with `orgAccess: 'selected'` can legitimately
+ * own an approval for an org outside its curated list, so the request context
+ * is not guaranteed to see the intent. Same reasoning as the flip transaction
+ * above. `runOutsideDbContext` is required, not stylistic — a nested
+ * `withDbAccessContext` short-circuits and RETAINS the ambient scope rather
+ * than elevating (see `db/index.ts`).
+ *
+ * Only called when the flip transaction did NOT run — an already-decided row,
+ * or a row with no linked intent at all (which short-circuits to the caller's
+ * org). When that transaction did run it already read the intent's org under
+ * `FOR UPDATE`, on both CAS outcomes, so there is nothing to look up.
+ *
+ * Never throws. A transient failure here degrades the audit row's tenancy to
+ * the caller's org, which is exactly the old (wrong) behaviour — but losing
+ * attribution on one row beats propagating out of a security action and 500ing
+ * the report, which is the very failure mode #3234 is about.
+ */
+async function resolveReportAuditOrgId(
+  intentId: string | null,
+  callerOrgId: string | null,
+): Promise<string | null> {
+  if (!intentId) return callerOrgId;
+  try {
+    const [intent] = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        db
+          .select({ orgId: actionIntents.orgId })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1),
+      ),
+    );
+    return intent?.orgId ?? callerOrgId;
+  } catch (err) {
+    console.error(
+      '[approvals] report-suspicious: failed to resolve the reported approval\'s org; falling back to the caller org:',
+      err,
+    );
+    captureException(err);
+    return callerOrgId;
+  }
+}
+
 // "This wasn't me." Reports the in-flight approval as malicious, denies it,
 // revokes the requesting OAuth client's grant + refresh tokens, and writes a
 // security audit row. Revocation and the audit row are unconditional — the
@@ -565,7 +624,10 @@ approvalRoutes.post('/:id/deny', zValidator('json', denySchema), async (c) => {
 // the intent transaction rolled back.
 approvalRoutes.post('/:id/report-suspicious', async (c) => {
   const userId = c.get('auth').user.id;
-  const orgId = c.get('auth').orgId ?? null;
+  // The REPORTER's own org, which is only the last-resort tenant for the audit
+  // row below — a partner-scoped caller carries `orgId: null` (#3234). See
+  // `resolveReportAuditOrgId` for the resolution order and why it matters.
+  const callerOrgId = c.get('auth').orgId ?? null;
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'Bad request' }, 400);
 
@@ -587,6 +649,14 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
   // security audit row below are exactly what a user reporting a compromised
   // client needs most when the action already slipped through.
   let intentRaceLost: { finalStatus: ActionIntentStatus | null } | null = null;
+
+  // Set IFF the flip transaction below actually ran and read the linked intent
+  // under `FOR UPDATE`. The object's presence is the signal "we already have an
+  // authoritative read, don't look it up again"; its `orgId` is null only in the
+  // narrow case where the intent row vanished from under the lock. Stays null
+  // when there is no linked intent, or when the flip block was skipped because
+  // the row was already decided — those are the cases that need a lookup.
+  let lockedIntent: { orgId: string | null } | null = null;
 
   // Flip status to 'reported' if still pending, else leave as-is. Either way
   // we treat the report as authoritative for revocation + audit.
@@ -649,8 +719,19 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         const outcome = await runOutsideDbContext(() =>
           withSystemDbAccessContext(() =>
             db.transaction(async (tx) => {
+              // `orgId` is selected here — not just taken from the CAS
+              // `.returning()` below — because the audit row needs the
+              // intent's org whether or not the CAS wins. On a lost race
+              // `cas` is empty but the report still writes revocation + an
+              // audit row, and that row must still be tenanted to the
+              // approval's org rather than falling back to the reporter's
+              // (which is NULL for a partner-scoped caller, #3234).
               const [locked] = await tx
-                .select({ id: actionIntents.id, status: actionIntents.status })
+                .select({
+                  id: actionIntents.id,
+                  status: actionIntents.status,
+                  orgId: actionIntents.orgId,
+                })
                 .from(actionIntents)
                 .where(eq(actionIntents.id, intentId))
                 .for('update');
@@ -686,7 +767,11 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   source: actionIntents.source,
                 });
               if (cas.length === 0) {
-                return { rejected: null, finalIntentStatus: locked?.status ?? null };
+                return {
+                  rejected: null,
+                  finalIntentStatus: locked?.status ?? null,
+                  intentOrgId: locked?.orgId ?? null,
+                };
               }
 
               await tx
@@ -700,10 +785,19 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   ),
                 );
 
-              return { rejected: cas[0] ?? null, finalIntentStatus: null };
+              return {
+                rejected: cas[0] ?? null,
+                finalIntentStatus: null,
+                intentOrgId: locked?.orgId ?? null,
+              };
             }),
           ),
         );
+        // Carry the linked intent's org out to the audit write below. Recorded
+        // on BOTH CAS outcomes, so the only report-suspicious path that still
+        // needs a lookup is the one where this whole block never ran (an
+        // already-decided row).
+        lockedIntent = { orgId: outcome.intentOrgId ?? null };
         const rejected = outcome.rejected;
         if (rejected) {
           recordActionIntentEvent({
@@ -742,14 +836,38 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         .where(and(eq(approvalRequests.id, id), eq(approvalRequests.userId, userId)));
 
       // Mirror to ai_tool_executions so the SDK waiter unblocks with denial.
+      //
+      // Runs in its OWN system-scope transaction, for the same two reasons the
+      // audit write below does (#3234) — this try/catch used to be unable to
+      // deliver on either of its apparent promises:
+      //   1. It could not actually contain a failure. A SQL error here aborts
+      //      the ambient REQUEST transaction, so catching the JS error left the
+      //      transaction poisoned and the commit threw — a 500 that also rolled
+      //      back the 'reported' flip immediately above. Catching an error does
+      //      not heal a Postgres transaction.
+      //   2. `ai_tool_executions` is org-scoped through its session, so under a
+      //      partner-scoped caller (or an org-scoped one whose accessible-org
+      //      list excludes the execution's org) the UPDATE silently matched
+      //      ZERO rows — no error, no mirror, and the SDK's waitForApproval
+      //      never unblocks with the denial. Same reasoning as the intent CAS
+      //      above, which is already system-scoped for exactly this.
+      // Still best-effort: the approval flip and the audit row are the
+      // authoritative record, and a missed mirror only delays the SDK waiter to
+      // its own timeout rather than letting the flagged action through.
       if (existing.executionId) {
+        const executionId = existing.executionId;
         try {
-          await db
-            .update(aiToolExecutions)
-            .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
-            .where(eq(aiToolExecutions.id, existing.executionId));
+          await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              db
+                .update(aiToolExecutions)
+                .set({ status: 'rejected', approvedBy: userId, approvedAt: new Date() })
+                .where(eq(aiToolExecutions.id, executionId)),
+            ),
+          );
         } catch (err) {
           console.error('[approvals] report-suspicious: failed to mirror to ai_tool_executions:', err);
+          captureException(err);
         }
       }
     }
@@ -785,10 +903,48 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
     }
   }
 
-  // Audit row — security.suspicious_report, scoped to the user.
+  // Audit row — security.suspicious_report, tenanted to the reported approval.
+  //
+  // Deliberately NOT a raw `db.insert(auditLogs)` inside the request
+  // transaction, and NOT atomic with the approval flip above (#3234). Both
+  // properties are load-bearing; please don't "tidy" this back into the
+  // request transaction, which is precisely how this endpoint 500'd for every
+  // partner-scoped caller:
+  //
+  //   - `writeAuditEventAsync` persists via `auditService.persistAuditLog`,
+  //     which runs `runOutsideDbContext(() => withSystemDbAccessContext(...))`.
+  //     That is what lets a NULL org_id land at all: the `audit_logs` INSERT
+  //     policy is `WITH CHECK breeze_has_org_access(org_id)`, and that helper
+  //     returns FALSE for a NULL org under any non-system scope but TRUE under
+  //     `system`. An org-less report is genuinely unattributable, so writing
+  //     the row NULL-org under system scope beats inventing a tenant.
+  //   - Because it commits independently, a failing audit write can no longer
+  //     abort the caller's transaction. The old inline insert could not be
+  //     rescued by its own try/catch: Postgres aborts the whole TRANSACTION on
+  //     an RLS violation, so the swallowed error resurfaced when the request
+  //     transaction committed — a 500 that ALSO rolled back the 'reported'
+  //     flip, leaving the flagged approval pending. A security action that
+  //     fails open.
+  //   - The lost atomicity is the intended trade, not a side effect: a
+  //     `security.suspicious_report` records that someone reported something,
+  //     which stays true whether or not the flip that followed committed.
+  //     Losing the audit trail when surrounding work rolls back is the worse
+  //     failure for a security action.
+  //
+  // `writeAuditEventAsync`'s returned promise never rejects — a genuine write
+  // failure is queued for retry with backoff and escalated to Sentry on
+  // exhaustion, so the security action still takes effect with a loud signal
+  // instead of a 500. The try/catch is still not redundant: the function is not
+  // `async`, so its synchronous prologue (details sanitizing, trusted-client-IP
+  // resolution, header reads) can throw BEFORE the retry-backed promise exists.
+  // "The audit machinery must never turn this security action into a 500" is
+  // the requirement, so it is enforced here rather than assumed.
+  const auditOrgId = lockedIntent
+    ? (lockedIntent.orgId ?? callerOrgId)
+    : await resolveReportAuditOrgId(existing.intentId, callerOrgId);
   try {
-    await db.insert(auditLogs).values({
-      orgId,
+    await writeAuditEventAsync(c, {
+      orgId: auditOrgId,
       actorType: 'user',
       actorId: userId,
       actorEmail: c.get('auth').user.email,
@@ -803,12 +959,21 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
         actionToolName: existing.actionToolName,
         priorStatus: existing.status,
         grantsRevoked,
-        refreshTokensRevoked,
+        // Named `refreshRevocationCount`, NOT `refreshTokensRevoked`, and please
+        // don't rename it back. `writeAuditEventAsync` runs details through
+        // `sanitizeAuditPayload` → `redactLogFields`, whose `SECRET_KEY_PATTERN`
+        // matches the bare substring `token` anywhere in a key. Any key
+        // containing "token" is replaced wholesale with '[REDACTED]', so
+        // `refreshTokensRevoked` would persist as a string sentinel instead of
+        // the integer count — losing real forensic detail about how much access
+        // the report actually tore down. It is a count, never a credential.
+        refreshRevocationCount: refreshTokensRevoked,
       },
       result: 'success',
     });
   } catch (err) {
-    console.error('[approvals] report-suspicious: audit insert failed:', err);
+    console.error('[approvals] report-suspicious: audit write failed:', err);
+    captureException(err);
   }
 
   // The report did NOT stop the action — a concurrent decide already carried
