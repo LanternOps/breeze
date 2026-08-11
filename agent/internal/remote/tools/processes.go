@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -142,16 +143,31 @@ func ListProcesses(payload map[string]any) CommandResult {
 	return NewSuccessResult(response, time.Since(startTime).Milliseconds())
 }
 
+// parsePayloadPID reads a required pid field and narrows it to the int32
+// gopsutil expects. The range check must precede the conversion: an
+// out-of-int32 pid would otherwise wrap and silently target a DIFFERENT
+// process — catastrophic for a kill command.
+func parsePayloadPID(payload map[string]any, key string) (int32, error) {
+	pid := GetPayloadInt(payload, key, 0)
+	if pid == 0 {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	if pid < 0 || pid > math.MaxInt32 {
+		return 0, fmt.Errorf("%s %d is out of range", key, pid)
+	}
+	return int32(pid), nil
+}
+
 // GetProcess returns details for a specific process
 func GetProcess(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
-	pid := GetPayloadInt(payload, "pid", 0)
-	if pid == 0 {
-		return NewErrorResult(fmt.Errorf("pid is required"), time.Since(startTime).Milliseconds())
+	pid, err := parsePayloadPID(payload, "pid")
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
-	p, err := process.NewProcess(int32(pid))
+	p, err := process.NewProcess(pid)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("process not found: %w", err), time.Since(startTime).Milliseconds())
 	}
@@ -169,14 +185,14 @@ func GetProcess(payload map[string]any) CommandResult {
 func KillProcess(payload map[string]any) CommandResult {
 	startTime := time.Now()
 
-	pid := GetPayloadInt(payload, "pid", 0)
-	if pid == 0 {
-		return NewErrorResult(fmt.Errorf("pid is required"), time.Since(startTime).Milliseconds())
+	pid, err := parsePayloadPID(payload, "pid")
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	force := GetPayloadBool(payload, "force", false)
 
-	p, err := process.NewProcess(int32(pid))
+	p, err := process.NewProcess(pid)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("process not found: %w", err), time.Since(startTime).Milliseconds())
 	}

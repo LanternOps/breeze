@@ -140,17 +140,21 @@ func StopTerminal(mgr *terminal.Manager, payload map[string]any) CommandResult {
 }
 
 func normalizeTerminalSize(cols, rows int) (uint16, uint16) {
-	if cols < minTerminalCols {
-		cols = minTerminalCols
-	} else if cols > maxTerminalCols {
-		cols = maxTerminalCols
-	}
+	return clampTerminalDimension(cols, minTerminalCols, maxTerminalCols),
+		clampTerminalDimension(rows, minTerminalRows, maxTerminalRows)
+}
 
-	if rows < minTerminalRows {
-		rows = minTerminalRows
-	} else if rows > maxTerminalRows {
-		rows = maxTerminalRows
+// clampTerminalDimension clamps a payload-supplied dimension into [lo, hi]
+// before narrowing to uint16. The guards test the incoming value directly and
+// each branch returns — reassigning and converting after the merge hides the
+// bound checks from CodeQL's go/incorrect-integer-conversion analysis, which
+// flagged the previous clamp-then-convert shape.
+func clampTerminalDimension(v, lo, hi int) uint16 {
+	if v < lo {
+		return uint16(lo)
 	}
-
-	return uint16(cols), uint16(rows)
+	if v > hi {
+		return uint16(hi)
+	}
+	return uint16(v)
 }
