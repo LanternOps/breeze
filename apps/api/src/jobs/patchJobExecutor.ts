@@ -828,7 +828,10 @@ async function recordDeviceExecution(
   prep: PreparedDeviceExecution,
   finalCommand: Awaited<ReturnType<typeof pollForPatchCommandResult>>,
 ): Promise<unknown> {
-  const { patchJobId, deviceId } = data;
+  // orgId comes off the job payload and processExecuteDevice has already
+  // asserted it matches the patch job's org before we get here, so it is safe to
+  // use as the cross-tenant guard for the reboot dispatch below.
+  const { patchJobId, deviceId, orgId } = data;
   const { approvedPatches, targets } = prep;
 
   // 5. Parse result and record outcomes
@@ -899,7 +902,21 @@ async function recordDeviceExecution(
   if (overallSuccess) {
     const rebootEval = await evaluateRebootPolicy(deviceId, rebootPolicy, anyRebootRequired);
     if (rebootEval.shouldReboot) {
-      await executeReboot(deviceId, rebootEval.reason);
+      // No delay passed: executeReboot resolves it from the device's effective
+      // patch policy (#3197). It used to default to 5 minutes, which reached
+      // none of the agent's warning thresholds, so the user got no notice.
+      const rebootResult = await executeReboot(deviceId, rebootEval.reason, {
+        expectedOrgId: orgId,
+      });
+      if (!rebootResult.success) {
+        console.warn(
+          `[PatchJobExecutor] reboot dispatch failed for device ${deviceId}: ${rebootResult.error}`
+        );
+      } else {
+        console.log(
+          `[PatchJobExecutor] scheduled reboot for device ${deviceId} in ${rebootResult.delayMinutes}m`
+        );
+      }
     }
   }
 

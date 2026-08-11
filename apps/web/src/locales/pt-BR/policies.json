@@ -881,6 +881,8 @@
         "dayOfWeek": "Dia da semana",
         "dayOfMonth": "Dia do mês",
         "rebootPolicy": "Política de reinicialização",
+        "rebootDelayMinutes": "Reboot delay (minutes)",
+        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
         "windowsUpdateSource": "Origem do Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gerenciar o Windows Update exclusivamente pelo Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suprime o canal nativo de instalação automática do Windows Update no endpoint, para que as atualizações sejam distribuídas somente pelos anéis de aprovação do Breeze — evitando reinicializações inesperadas e patches fora do seu agendamento. Somente para Windows; o fluxo de verificação, aprovação e instalação do próprio Breeze não é afetado. A configuração é revertida de forma segura quando desativada (uma Política de Grupo administrativa preexistente permanece inalterada).",

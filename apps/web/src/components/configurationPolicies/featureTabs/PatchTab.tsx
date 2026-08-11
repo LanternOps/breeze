@@ -33,6 +33,7 @@ type PatchDeploymentSettings = {
   scheduleDayOfWeek: string;
   scheduleDayOfMonth: number;
   rebootPolicy: RebootPolicy;
+  rebootDelayMinutes: number;
   exclusiveWindowsUpdate: boolean;
 };
 const defaults: PatchDeploymentSettings = {
@@ -46,6 +47,7 @@ const defaults: PatchDeploymentSettings = {
   scheduleDayOfWeek: "sun",
   scheduleDayOfMonth: 1,
   rebootPolicy: "if_required",
+  rebootDelayMinutes: 15,
   exclusiveWindowsUpdate: false,
 };
 const OS_VALUE_ALIASES = new Set(["os", "microsoft", "apple", "linux"]);
@@ -710,6 +712,35 @@ export default function PatchTab({
             </label>
           ))}
         </div>
+        {settings.rebootPolicy !== "never" && (
+          <div className="mt-4 max-w-xs">
+            <label
+              htmlFor="patch-reboot-delay-minutes"
+              className="text-xs text-muted-foreground"
+            >
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootDelayMinutes",
+              )}
+            </label>
+            <input
+              id="patch-reboot-delay-minutes"
+              data-testid="patch-reboot-delay-minutes"
+              type="number"
+              min={1}
+              max={1440}
+              value={settings.rebootDelayMinutes}
+              onChange={(e) =>
+                update("rebootDelayMinutes", Number(e.target.value) || 15)
+              }
+              className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootDelayMinutesDescription",
+              )}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Windows Update source enforcement (#1872) */}
