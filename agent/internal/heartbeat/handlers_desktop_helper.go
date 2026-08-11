@@ -739,9 +739,16 @@ var darwinHelperPlists = map[string]string{
 `,
 }
 
-// ensureDarwinHelperPlists writes any missing LaunchAgent plists to disk.
-// The agent runs as root so it can write to /Library/LaunchAgents/.
-func ensureDarwinHelperPlists() {
+// ensureDarwinHelperPrereqs prepares everything a macOS desktop helper needs
+// before it is started: its LaunchAgent plists on disk, and breeze-group
+// membership for the logged-in GUI users so the helper can actually dial the
+// agent's IPC socket (#3133/#3134/#3137).
+//
+// Both must happen before any launchctl kickstart/bootstrap — a helper reads its
+// plist and inherits its group list at start — so every caller invokes this
+// first. The agent runs as root, so it can write to /Library/LaunchAgents/ and
+// edit the group.
+func ensureDarwinHelperPrereqs() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
@@ -755,14 +762,16 @@ func ensureDarwinHelperPlists() {
 			log.Info("installed helper LaunchAgent plist", "path", path)
 		}
 	}
+	ensureDarwinHelperIPCGroupMembership()
 }
 
 // spawnHelperForDesktop spawns a user helper in the target session.
 // If targetSession is empty, it auto-detects the first active non-services session.
 func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 	if runtime.GOOS == "darwin" {
-		// Ensure LaunchAgent plists exist on disk before any kickstart/bootstrap.
-		ensureDarwinHelperPlists()
+		// Ensure the LaunchAgent plists exist on disk and the console users are
+		// in the breeze group before any kickstart/bootstrap.
+		ensureDarwinHelperPrereqs()
 
 		if uids := findGUIUserUIDs(); len(uids) > 0 {
 			bootstrapped := false
@@ -901,7 +910,7 @@ func kickstartDarwinDesktopHelpers() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	ensureDarwinHelperPlists()
+	ensureDarwinHelperPrereqs()
 
 	uids := findGUIUserUIDs()
 	for _, uid := range uids {
