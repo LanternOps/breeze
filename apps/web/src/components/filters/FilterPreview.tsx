@@ -55,25 +55,33 @@ export function FilterPreview({
         </div>
       )}
 
-      {preview && (
+      {preview && (() => {
+        // Defensive: a malformed/enveloped response previously made
+        // `preview.devices` undefined and `.length` threw, taking the whole
+        // page down rather than degrading this one panel. The unwrap in
+        // FilterBuilder is the real fix; this keeps the blast radius small if
+        // the shape ever drifts again.
+        const devices = Array.isArray(preview.devices) ? preview.devices : [];
+        const totalCount = typeof preview.totalCount === 'number' ? preview.totalCount : devices.length;
+        return (
         <div>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold">{preview.totalCount}</span>
+              <span className="text-2xl font-bold">{totalCount}</span>
               <span className="text-sm text-muted-foreground">
-                {t('filters.preview.matchCount', { count: preview.totalCount })}
+                {t('filters.preview.matchCount', { count: totalCount })}
               </span>
             </div>
-            {preview.totalCount > preview.devices.length && (
+            {totalCount > devices.length && (
               <span className="text-xs text-muted-foreground">
-                {t('filters.preview.showing', { shown: preview.devices.length, total: preview.totalCount })}
+                {t('filters.preview.showing', { shown: devices.length, total: totalCount })}
               </span>
             )}
           </div>
 
-          {preview.devices.length > 0 && (
+          {devices.length > 0 && (
             <div className="space-y-1 max-h-48 overflow-y-auto">
-              {preview.devices.map((device) => (
+              {devices.map((device) => (
                 <div
                   key={device.id}
                   className="flex items-center justify-between rounded border bg-background px-3 py-2"
@@ -100,13 +108,14 @@ export function FilterPreview({
             </div>
           )}
 
-          {preview.totalCount === 0 && (
+          {totalCount === 0 && (
             <div className="text-center py-4 text-sm text-muted-foreground">
               {t('filters.preview.noMatches')}
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

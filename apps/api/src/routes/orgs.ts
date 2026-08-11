@@ -464,6 +464,48 @@ const dayScheduleSchema = z.object({
 
 const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
 
+/**
+ * A partner-settings URL restricted to http/https.
+ *
+ * These fields split into two risk classes and both land here:
+ *  - values rendered as links (contact.website → branded PDFs, invoices, email
+ *    footers), where `javascript:`/`data:text/html,…` is stored XSS against the
+ *    partner's own customers;
+ *  - values the SERVER dials outbound (Slack webhook, extra webhooks, the
+ *    Elasticsearch endpoint), where `file://` and friends are an SSRF/scheme-
+ *    confusion problem rather than an XSS one.
+ *
+ * All four were plain `z.string()` and persisted whatever was sent on a 200.
+ * None has a legitimate custom-scheme use — unlike the remote-access launcher
+ * template further down this file, which deliberately allows `rustdesk:` and
+ * similar and therefore keeps its own wider allowlist.
+ *
+ * Empty string is accepted so a field can be cleared.
+ */
+function httpUrlValue(label: string) {
+  return z
+    .string()
+    .max(2000)
+    .refine(
+      (v) => {
+        if (v === '') return true;
+        let parsed: URL;
+        try {
+          parsed = new URL(v);
+        } catch {
+          return false;
+        }
+        return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+      },
+      `${label} must be a full http:// or https:// URL`,
+    );
+}
+
+/** Optional/clearable form of {@link httpUrlValue}, for standalone fields. */
+function httpUrlField(label: string) {
+  return httpUrlValue(label).optional().or(z.literal(''));
+}
+
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
   // so police it as a real IANA zone on write (was previously unvalidated).
@@ -479,32 +521,10 @@ const partnerSettingsSchema = z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
-    // This value is rendered as a link in branded PDFs, invoices and email
-    // footers, so an unvalidated `javascript:`/`data:text/html,...` here is
-    // stored XSS that fires for whoever opens the document — including the
-    // partner's own customers. It previously accepted any string and persisted
-    // the payload verbatim on a 200, while the launcher template field a few
-    // hundred lines below in this same file already gated on a scheme
-    // allowlist. Restricted to http/https only: unlike a remote-access
-    // launcher, a company website has no legitimate custom-scheme use.
-    website: z
-      .string()
-      .max(2000)
-      .refine(
-        (v) => {
-          if (v === '') return true;
-          let parsed: URL;
-          try {
-            parsed = new URL(v);
-          } catch {
-            return false;
-          }
-          return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-        },
-        'Website must be a full http:// or https:// URL',
-      )
-      .optional()
-      .or(z.literal(''))
+    // Rendered as a link in branded PDFs, invoices and email footers, so an
+    // unvalidated scheme here is stored XSS against the partner's own
+    // customers.
+    website: httpUrlField('Website'),
   }).optional(),
   address: z.object({
     street1: z.string().max(255).optional(),
@@ -542,9 +562,10 @@ const partnerSettingsSchema = z.object({
     smtpPort: z.number().int().optional(),
     smtpUsername: z.string().optional(),
     smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
-    slackWebhookUrl: z.string().optional(),
+    // Server dials this outbound; `file://`/internal targets are SSRF.
+    slackWebhookUrl: httpUrlField('Slack webhook URL'),
     slackChannel: z.string().optional(),
-    webhooks: z.array(z.string()).optional(),
+    webhooks: z.array(httpUrlValue('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),
     pushoverDefaultUser: z.string().max(30).optional(),
@@ -553,7 +574,8 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),
-    elasticsearchUrl: z.string().optional(),
+    // Server dials this outbound too — same SSRF reasoning as the Slack hook.
+    elasticsearchUrl: httpUrlField('Log endpoint URL'),
     elasticsearchApiKey: z.string().optional(),
     elasticsearchUsername: z.string().optional(),
     elasticsearchPassword: z.string().optional(),

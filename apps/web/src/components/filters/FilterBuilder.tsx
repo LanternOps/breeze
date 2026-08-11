@@ -91,8 +91,15 @@ export function FilterBuilder({
         throw new Error('Failed to fetch preview');
       }
 
-      const data = await response.json();
-      setPreview(data);
+      // `POST /filters/preview` answers `{ data: { devices, totalCount,
+      // evaluatedAt } }`. Storing the envelope itself left `preview.devices`
+      // undefined, and FilterPreview reads `preview.devices.length`
+      // unconditionally — so building any filter with a condition value threw
+      // and took the whole page down. Unwrap, tolerating a bare body in case
+      // the endpoint is ever called without the envelope.
+      const body = await response.json();
+      const result = body && typeof body === 'object' && 'data' in body ? body.data : body;
+      setPreview(result ?? null);
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : 'Failed to fetch preview');
     } finally {
