@@ -4220,3 +4220,153 @@ Switched the running session to pt-BR via `localStorage['breeze.locale'] = 'pt-B
 7. UI/UX - org-level Remote Access settings page fires a beforeunload warning even after a successful save, likely an overly-broad dirty-state flag. Low severity (no data was actually at risk of loss).
 
 
+
+## UI QA Sweep — 2026-08-11 (post-merge pass, stack 32828)
+
+Env: http://localhost:32828, main @ 3b496e989. Login admin@breeze.local. Fresh seeded DB.
+
+### Priority B.1 — Partner Company Website scheme validation — PASS
+- ✅ `javascript:alert(1)` → PATCH `/api/v1/orgs/partners/me` → 400, alert toast: `settings.contact.website: Website must be a full http:// or https:// URL` (readable, specific, not `[object Object]`).
+- ✅ `data:text/html,<script>alert(1)</script>` → same PATCH → 400, rejected, not persisted.
+- ✅ `https://acme.example.com` → PATCH → 200, toast, and value persisted after full page reload. Confirmed fixed.
+
+### Partner Settings — Regional tab — PASS
+- ✅ Date Format changed to ISO, saved (PATCH 200), persisted after full reload.
+- No URL/link fields on this tab.
+
+### Partner Settings — Defaults tab — PASS
+- ✅ Invalid Maintenance Window (`not-a-valid-window`) → client-side validation blocked the request entirely (no network call), readable inline message: `Maintenance window must be "24/7" or a UTC window like "Sun 02:00-04:00".`
+- ✅ Valid `Sun 02:00-04:00` → PATCH 200, persisted after reload.
+- No URL/link fields on this tab.
+
+### Partner Settings — Security tab — PASS
+- ✅ IP Allowlist invalid entry (`not-an-ip-address`) → PATCH 400 → `[role=alert]` toast with the exact server message: `settings.security.ipAllowlist: Each IP allowlist entry must be a valid IP address or CIDR range`. (Initial read reported this as silent/missing — false positive caused by the toast auto-dismissing before a multi-step tool-call sequence captured the DOM; re-verified by reading the DOM immediately after the click and the toast is present. Correcting for the record.)
+- ✅ Valid IP Allowlist entry (`10.0.0.0/8`) correctly rejected with a distinct, specific 400: `{"code":"proxy_trust_required","error":"Configure proxy trust (TRUST_PROXY_HEADERS + TRUSTED_PROXY_CIDRS) before enabling the IP allowlist..."}` — expected in this environment (no reverse proxy trust configured), not a bug; matches the field's own helper text.
+- ✅ Minimum Password Length = 12 (valid) → PATCH 200 → `[role=status]` toast "Partner settings saved".
+- ⚠️ UI/UX: error/success toasts on this page are short-lived (auto-dismiss within a few seconds) — easy to miss if the user is looking elsewhere or the network is slow. Not a regression, just a papercut worth noting.
+- No URL/link fields on this tab.
+
+### Partner Settings — Event Logs tab — FAIL (same-class stored-payload hole as the fixed Website field)
+- ❌ BUG: "Log endpoint URL" field (`settings.eventLogs.elasticsearchUrl`) accepts `javascript:alert(1)` with **no scheme validation**. PATCH `/api/v1/orgs/partners/me` → **200 OK**, success toast "Partner settings saved", and the raw payload **persists after a full page reload**. This is the same defect class the Company/Website field was just fixed for (this PR's fix comment at `apps/api/src/routes/orgs.ts:482-489` explicitly calls out `javascript:`/`data:text/html,...` as stored XSS when a value is later rendered as a link), but the fix was not applied to `eventLogs.elasticsearchUrl`.
+- Root cause confirmed at source: `apps/api/src/routes/orgs.ts` line ~556, `eventLogs: z.object({ ... elasticsearchUrl: z.string().optional(), ... })` — plain `z.string()`, no `.refine()` scheme check, unlike `contact.website` a few lines above which now has the http/https allowlist.
+- Did not test `data:text/html,...` on this field separately (javascript: alone is sufficient proof; same code path, no validation at all).
+- Severity: HIGH. This is a stored-XSS-class hole confirmed accepted (200) and persisted. Suspected fix location: `apps/api/src/routes/orgs.ts` `eventLogs.elasticsearchUrl` schema — apply the same `.refine()` used for `contact.website`.
+
+### Partner Settings — Notifications tab — FAIL (same-class hole, third field)
+- ❌ BUG: "Slack Webhook URL" field (`settings.notifications.slackWebhookUrl`, rendered as `input[type=url]`) accepts `javascript:alert(1)` → PATCH 200, success toast, no server-side scheme validation. HTML5 `type=url` does NOT block `javascript:` — it only requires URL-shaped text, so this is not a real client-side guard.
+- Root cause: `apps/api/src/routes/orgs.ts` line ~545, `slackWebhookUrl: z.string().optional()` — same unvalidated pattern as `eventLogs.elasticsearchUrl`. Sibling field `webhooks: z.array(z.string()).optional()` (line ~547, used by notification channels) has the identical gap — not separately exercised here but same root cause, flagging for the same fix.
+- Cleaned up (cleared field, re-saved) after confirming.
+
+### Partner Settings — Ticketing tab — PARTIAL
+- Note: this tab is a self-contained subsystem ("This section saves its own changes" — no shared partner Save Settings button; each sub-tab persists independently).
+- Checked sub-tabs for URL/link fields: Statuses, Export (date-range CSV, org selector — no URL), Inbound Email (mailbox address is an email, not a URL; no webhook URL field), Intake Forms (empty state, no form created to inspect field types). No stored-XSS-class field found in the sub-tabs inspected.
+- Did not exercise: Priorities & SLAs, Categories, Canned responses sub-tabs, nor did we create an Intake Form to check its field types (would need to create a form to know if it accepts a URL-typed custom field) — BLOCKED/not fully swept, low suspicion given the domain.
+
+### Partner Settings — AI Budgets tab — PASS
+- ✅ Invalid Monthly Budget (-50) → PATCH 400 → `role=alert` toast shown: `settings.aiBudgets.monthlyBudgetCents: Too small: expected number to be >=0`. Readable and field-specific, though it's a raw Zod message (⚠️ UI/UX papercut — "expected number to be >=0" is developer-facing phrasing, not customer copy; low impact).
+- ✅ Valid Monthly Budget (500) → PATCH 200, saved.
+- No URL/link fields on this tab.
+
+### Partner Settings — Branding tab — PASS (logo URL properly guarded)
+- ✅ Logo "Or paste an image URL" field: `javascript:alert(1)` and `data:text/html,<script>alert(1)</script>` are both rejected **client-side** with inline text "URL not supported. Use an https:// URL or upload a file." and the Save Settings button is disabled while the field holds an invalid value — no network call fires at all. Best-guarded field found in this sweep (blocks before the request, unlike Company/Website which round-trips to the API first).
+- ✅ Valid `https://example.com/logo.png` → PATCH 200, saved (browser's own preview fetch was blocked by ORB in this sandboxed env — expected, not a bug).
+- ⚠️ UI/UX: the Save Settings button's dirty-detection for this field lags by one interaction — typing into the Logo URL field alone did not enable Save; only after focus left the field (e.g. clicking into Custom CSS) did the button reflect the change. Low severity but could read as "my edit didn't register."
+- No issues with Primary/Secondary Color or Theme fields (not URL-ish, not deeply tested beyond presence).
+- Cleaned up (removed logo, saved) after testing.
+
+### Partner Settings — Login Branding tab — PASS (best-in-class validation)
+- ✅ Logo URL field: `javascript:alert(1)` → PUT `/api/v1/partners/me/login-branding` → 400, `role=alert` toast: `logoUrl: logoUrl must be an https:// URL or a base64 data:image/png, jpeg, or webp URI` (readable, specific, and correctly scoped — allows base64 `data:image/{png,jpeg,webp}` for legitimate inline logos while rejecting scheme abuse).
+- ✅ Valid `https://cdn.example.com/logo.png` → PUT 200, persisted after full page reload.
+- ⚠️ UI/UX: the live logo preview fires a new image `GET` on every keystroke while typing the URL (confirmed 20+ requests for one 33-char URL, all failing in this sandboxed env) — not a functional bug, but unnecessary network chatter that would hit a real CDN repeatedly per character typed.
+- Cleaned up (cleared field, saved) after testing.
+- Did not separately test `data:text/html,...` here since the error message explicitly documents the allowed `data:` subtypes (image/png|jpeg|webp only) — the `javascript:` case already proves the scheme gate works, and the message shows deliberate allowlisting rather than a loose prefix check.
+
+### Priority B.2 — Webhook notification channel creation — PARTIAL (create works, but list page then crashes — new regression)
+- ✅ Creating a Webhook channel (name "QA Webhook Test", URL `https://hooks.example.com/incoming/qa-test`, one custom header `X-QA-Test: breeze-qa-value-123`) now succeeds: POST `/api/v1/alerts/channels` → 201 Created. Confirms the previously-reported "Headers must be an object" 400 is fixed.
+- ❌ BUG (new, high severity): Immediately after creation, and on every subsequent load of `/alerts/channels`, the page goes **completely blank** (breadcrumb renders, nothing else) with a React crash in the console: `Error: Objects are not valid as a React child (found: object with keys {redacted, hasSecret, masked}). If you meant to render a collection of children, use an array instead.` Reproduced on fresh navigation, not a transient render glitch — the Channels list is now durably broken for this org as long as this channel exists.
+- Root cause confirmed: GET `/api/v1/alerts/channels` now redacts secret-bearing config fields in list responses — `config.url` and each entry in `config.headers` come back as `{"redacted":true,"hasSecret":true,"masked":"********"}` objects instead of strings (verified via raw response body). `apps/web/src/components/alerts/NotificationChannelList.tsx` line 120: `return (config.url as string) || t('notificationChannelList.customWebhook');` — the `as string` is a compile-time-only assertion; at runtime `config.url` is now an object, which gets rendered directly into JSX and crashes React's reconciler for the whole list.
+- Impact: because the crash is in the list component, this appears to break the ENTIRE Notification Channels page for any org that has at least one webhook channel — not just that row. Could not verify the "reopen for edit, header round-trips" half of this check via the UI because the list that hosts the Edit action never renders past the crash.
+- Suspected fix location: `apps/web/src/components/alerts/NotificationChannelList.tsx` `getChannelDescription()` (line ~102-134) needs to detect the redacted-object shape (`{redacted, hasSecret, masked}`) for `config.url`, `config.channel`, and any `config.headers` values and render `masked` (or a fixed placeholder) instead of the raw object. Likely the same redaction was recently added API-side without updating this consumer.
+- Verified via raw API response (GET `/api/v1/alerts/channels`): `{"data":[{"id":"73daa759-...","type":"webhook","config":{"url":{"redacted":true,"hasSecret":true,"masked":"********"},"headers":{"X-QA-Test":{"redacted":true,"hasSecret":true,"masked":"********"}}, ...}}]}` — data itself persisted correctly (the fix for the original 400 is real), only the list rendering is broken.
+- NOTE for future sweeps: the "QA Webhook Test" channel (id `73daa759-aeec-4569-a706-3ff16189b4c4`) was left in place on Default Organization — attempted cleanup via a direct DELETE fetch failed (401, bearer token isn't exposed in localStorage/sessionStorage for scripted reuse) and the crashed list UI has no reachable delete control. `/alerts/channels` will keep crashing for this org until either the bug is fixed or the row is removed directly in the DB.
+
+### Priority B.3 — Cmd+K finds partner-wide scripts — PASS
+- ✅ Created script "QA Partner Wide Script ZZTOP" via `/scripts/new` (PowerShell, one-line body). Note: this Breeze instance's Script Library is itself partner-wide by default ("Catalog — same for every organization" banner; no per-script ownerScope selector was needed) — the list badges it "Partner-wide" automatically.
+- ✅ Cmd+K → typed the exact script name → result appeared under a "Scripts" section heading in the palette.
+- ✅ Clicking the result navigated correctly to `/scripts/{id}` (Edit Script page). Confirms the previously-reported "partner-wide scripts return zero results" bug is fixed.
+
+### Priority B.4 — `/scripts/new` hydration check — PASS
+- ✅ Loaded `/scripts/new` fresh: 0 console errors, 1 unrelated warning (`react-i18next: NO_I18NEXT_INSTANCE`, pre-existing dev-mode noise, not a hydration mismatch).
+- ✅ Footer hint renders consistently as "⌘S to save" (no "Ctrl+S"/"⌘S" glued-fragment artifact, no duplicated/mismatched text). Confirms the SSR/client hydration mismatch is fixed.
+
+### Priority B.5 — Discovery asset modal (link/unlink removal check) — BLOCKED
+- `/discovery` → Assets tab shows "No assets discovered yet." (fresh seeded DB, no discovery scan has run against a real network segment in this sandboxed Docker environment). Cannot open an asset detail modal without at least one discovered asset.
+- Prerequisite to re-test: run an actual discovery scan (Profiles → Jobs) against a reachable network, or seed a fixture asset row directly in the DB, then open its detail modal and confirm link/unlink controls are absent (per PR description, intentionally removed in favor of the network device detail page).
+
+### Priority C — Alerts actions (acknowledge/resolve/suppress) — PASS
+- ✅ Acknowledge: row action button fires directly (POST `/alerts/{id}/acknowledge` → 200), status cell updates to "Acknowledged" immediately, Ack button removed from remaining actions.
+- ✅ Resolve: row action button opens the alert-details drawer with an inline "Resolution Note" sub-form (textbox + "Resolve Alert" button) rather than resolving directly — initially looked like a silent no-op/bug, but this is intentional (resolve requires a note). Typed a note, clicked "Resolve Alert" → POST `/alerts/{id}/resolve` → 200, status updated to "Resolved", Active Alerts count decremented.
+- ✅ Suppress: row action button opens a proper `role=dialog` "Suppress alert" modal with duration radios (1h/8h/24h/7d/Forever). Confirmed → POST `/alerts/{id}/suppress` → 200.
+- ⚠️ UI/UX: the Resolve and Suppress row-action buttons don't act immediately like Acknowledge does — both open a secondary panel/dialog first. This is reasonable (both need extra input: a note or a duration) but is inconsistent with the Ack button's one-click behavior and could read as broken on first use; worth a visual/hover cue (e.g. a small "..." or chevron) distinguishing "instant action" from "opens a form."
+- ⚠️ Once: an unexplained new browser tab opened to `/fleet` mid-test (`Fleet Orchestration | Breeze RMM`) after a row-action click; could not identify a reproducible trigger and it did not recur on retry. Noting as an anomaly, not a confirmed bug — no corresponding code path found and it may be sandbox/tooling noise rather than app behavior.
+
+### Priority C — Patches (compliance view, approve) — PASS
+- ✅ Compliance tab loaded real fixture data (2 devices, 0% compliant, 1 critical, 2 pending approval) with working device/OS/source filters.
+- ✅ Patches tab: "Review" → "Review Patch" dialog (Approve/Decline/Defer + notes) → Approve → a SECOND confirmation dialog "Confirm patch approval — Approve patch on 1 device in Default Organization?" → confirmed → POST `/api/v1/patches/{id}/approve` → 200, row status updated to "Approved" and its action changed from "Review" to "Deploy". Two-step confirm is intentional (mirrors the alert-resolve note flow), not a bug — but note it for anyone testing quickly and assuming a no-op on first click.
+- Did not exercise Decline/Defer or the source/3rd-party filter buttons ("Microsoft/Apple/Linux/Third-party" chips) beyond visual presence — time-boxed.
+
+### Priority C — Saved Filters (create/apply/delete) — FAIL (blocking crash)
+- ❌ BUG (high severity): `/settings/filters` → "Create your first filter" → filled Name + one condition (`Hostname contains "windows"`) → the moment a condition has a value, the live preview fetch fires and the ENTIRE Create Filter page crashes to blank with: `TypeError: Cannot read properties of undefined (reading 'length') at FilterPreview (FilterPreview.tsx:119:53)`.
+- Root cause confirmed: `apps/web/src/components/filters/FilterBuilder.tsx` line ~94-95:
+  ```
+  const data = await response.json();
+  setPreview(data);
+  ```
+  POST `/api/v1/filters/preview` actually returns `{"data":{"totalCount":1,"devices":[...],"evaluatedAt":"..."}}` (verified via raw response body) — an envelope. `setPreview(data)` stores the whole envelope instead of `data.data`, so `preview.devices` is always `undefined`. `apps/web/src/components/filters/FilterPreview.tsx` line 74 (`preview.devices.length > 0`) then throws reading `.length` of `undefined`, and since `preview` itself (the envelope) is truthy, the `{preview && (...)}` branch renders and crashes immediately — 100% reproducible any time a filter condition has a non-empty value.
+  Fix: `setPreview(data.data)` (or destructure `{ data: preview } = await response.json()`).
+- Impact: the Saved Filters creation flow is completely unusable through the UI — cannot create a single-condition filter without crashing. Could not test apply/delete because creation never completes.
+- BLOCKED: apply and delete saved-filter checks — no filter could be created to apply or delete.
+
+### Priority C — Audit Trail (pagination, filters, export) — PASS
+- ✅ Loaded with real entries, accurately capturing every action from this sweep (partner settings saves, alert ack/resolve/suppress, patch approve, script create, webhook channel create) with correct status codes and payload summaries — good corroborating evidence trail.
+- ✅ Pagination: "Next"/page-number buttons work, "Showing 26-49 of 49", Next correctly disabled on the last page.
+- ✅ Filters panel opens with Date Range presets, User search, Action Type and Resource Type checkboxes, Search Details; "Apply Filters" fires a scoped `GET /api/v1/audit-logs?...&from=...&to=...` → 200.
+- ✅ "Export Logs" downloads `audit-logs-2026-08-11.csv` directly (no dead click, no silent no-op).
+
+### Priority C — Reports (builder, save) — PASS
+- ✅ `/reports/builder`: named report, kept defaults (Devices type, table chart, weekly PDF), live preview correctly showed real fixture device rows (e2e-macos.local, e2e-windows.local) updating as fields were selected.
+- ✅ "Save report" → POST `/api/v1/reports/generate` (preview) then POST `/api/v1/reports` → 201 Created, redirected to `/reports` and the new "QA Test Device Report" appears in the Saved Reports table with correct schedule ("Weekly, Next: Mon, Aug 17, 9:00 AM"), format (PDF), and working row actions (Generate now / Edit / Delete visible).
+
+### Priority C — Analytics — PASS
+- ✅ `/analytics` loads with 0 console errors. Query Builder (Metric type/name/aggregation/time range + Run Query), draggable dashboard widgets (Device Overview, Alert Summary, Weekly enrollments, Uptime, Remote Sessions, Policy Compliance, Performance Trend, OS Distribution, Alert Statistics table) all render with real fixture-derived values (2 total devices, 0 online/2 offline, alert severities all 0 post-cleanup). Did not exercise "Run Query" or widget drag-reorder beyond visual presence — time-boxed.
+
+## Summary table
+
+| Area | Result |
+|---|---|
+| Partner Settings — Company (Website scheme validation) | PASS |
+| Partner Settings — Regional | PASS |
+| Partner Settings — Defaults | PASS |
+| Partner Settings — Security | PASS |
+| Partner Settings — Event Logs | **FAIL** (stored XSS-class: unvalidated `elasticsearchUrl`) |
+| Partner Settings — Notifications | **FAIL** (stored XSS-class: unvalidated `slackWebhookUrl`) |
+| Partner Settings — Ticketing | PARTIAL (no URL field found in sub-tabs checked; some sub-tabs unswept) |
+| Partner Settings — AI Budgets | PASS |
+| Partner Settings — Branding | PASS (best-guarded: client-side block) |
+| Partner Settings — Login Branding | PASS (best-in-class server validation) |
+| Webhook notification channel create (Priority B.2) | PARTIAL (create fixed; new crash on list page) |
+| Cmd+K partner-wide scripts (Priority B.3) | PASS |
+| `/scripts/new` hydration (Priority B.4) | PASS |
+| Discovery asset modal (Priority B.5) | BLOCKED (no assets in fixture) |
+| Alerts actions (ack/resolve/suppress) | PASS |
+| Patches (compliance, approve) | PASS |
+| Saved Filters (create/apply/delete) | **FAIL** (blocking crash on any condition value) |
+| Reports | PASS |
+| Analytics | PASS |
+| Audit Trail (pagination/filters/export) | PASS |
+
+## Top findings (by severity)
+
+1. **HIGH — Same-class stored-XSS gap left open on 2 fields after the Website fix.** `apps/api/src/routes/orgs.ts`: `eventLogs.elasticsearchUrl` and `notifications.slackWebhookUrl` are still plain `z.string()` with no scheme validation, while `contact.website` a few lines above was just hardened. `javascript:alert(1)` saves with a 200 and persists on both.
+2. **HIGH — Saved Filters creation crashes 100% of the time.** `apps/web/src/components/filters/FilterBuilder.tsx:95` — `setPreview(data)` doesn't unwrap the API's `{data: {...}}` envelope, so `FilterPreview.tsx:74` throws reading `.length` of `undefined` the moment a filter condition has a value. Blocks the entire Saved Filters feature.
+3. **HIGH — Notification Channels list crashes for any org with a webhook channel.** `apps/web/src/components/alerts/NotificationChannelList.tsx:120` — `(config.url as string)` is a compile-time-only assertion; the API now redacts `config.url`/`config.headers` values as `{redacted,hasSecret,masked}` objects in list responses, and rendering that object crashes React. The originally-reported webhook-creation 400 is fixed, but this new regression makes the list unusable once one webhook channel exists.
