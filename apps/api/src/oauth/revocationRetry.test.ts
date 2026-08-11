@@ -1,6 +1,9 @@
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { revokeGrant, revokeJti } from './revocationCache';
 import {
+  buildRetryConflictUpdate,
   writeOAuthRevocationMarkerDurably,
   type DbTransaction,
 } from './revocationRetry';
@@ -138,5 +141,93 @@ describe('writeOAuthRevocationMarkerDurably', () => {
     expect(serializedLogs).not.toContain('never-log-this-marker');
     consoleError.mockRestore();
     consoleWarn.mockRestore();
+  });
+});
+
+describe('buildRetryConflictUpdate (#3369)', () => {
+  const dialect = new PgDialect();
+  const ATTEMPTED_AT = new Date('2026-08-10T06:14:42.123Z');
+  const EXPIRES_AT = new Date('2026-08-10T07:00:00.000Z');
+
+  const update = () => buildRetryConflictUpdate({
+    attemptedAt: ATTEMPTED_AT,
+    expiresAt: EXPIRES_AT,
+    errorCode: 'redis_unavailable',
+  });
+
+  /**
+   * The bug: both timestamps were interpolated bare into `sql` templates, so
+   * Drizzle bound them with the NOOP encoder and postgres.js received live
+   * `Date` objects, throwing ERR_INVALID_ARG_TYPE at Bind.
+   *
+   * The severity is in *which* branch this is. `onConflictDoUpdate` fires only
+   * when an open retry row already exists — i.e. exactly when a prior Redis
+   * revocation write failed. `jobs/oauthRevocationRetryWorker.ts` re-runs those
+   * rows every 30s, so the throw rolled back the whole
+   * `withSystemDbAccessContext` batch and was swallowed by the generic `.catch`
+   * in `runScheduledDrain`. The revocation retry queue could therefore never
+   * drain or heal during a Redis outage, silently.
+   */
+  it.each(['nextAttemptAt', 'expiresAt'] as const)('binds no raw Date in %s', (key) => {
+    const { params } = dialect.sqlToQuery(update()[key]);
+
+    expect(params.length).toBeGreaterThan(0);
+    for (const param of params) expect(param).not.toBeInstanceOf(Date);
+  });
+
+  it('casts both timestamps to timestamptz so the arithmetic and GREATEST resolve', () => {
+    // Unlike the device filter columns, `oauth_revocation_retries.expires_at` /
+    // `next_attempt_at` really are `timestamptz`, and neither context can infer
+    // the parameter's type: `$1 + interval` has no unique operator resolution,
+    // and GREATEST would resolve off its other argument.
+    const next = dialect.sqlToQuery(update().nextAttemptAt);
+    const expires = dialect.sqlToQuery(update().expiresAt);
+
+    expect(next.sql).toContain('::timestamptz');
+    expect(next.params).toContain(ATTEMPTED_AT.toISOString());
+    expect(expires.sql).toContain('::timestamptz');
+    expect(expires.params).toContain(EXPIRES_AT.toISOString());
+  });
+
+  it('backs off exponentially, capped at 300s, and never shortens the marker lifetime', () => {
+    const next = dialect.sqlToQuery(update().nextAttemptAt).sql;
+    const expires = dialect.sqlToQuery(update().expiresAt).sql;
+    const attempts = dialect.sqlToQuery(update().attempts).sql;
+
+    expect(next).toContain('LEAST(300');
+    expect(next).toContain('POWER(2');
+    expect(next).toContain("interval '1 second'");
+    // GREATEST(existing, incoming): a later retry must never pull the marker's
+    // expiry in, or the defense-in-depth marker would lapse early.
+    expect(expires).toContain('GREATEST');
+    expect(expires).toContain('"expires_at"');
+    expect(attempts).toContain('+ 1');
+  });
+
+  it('is what the conflict branch actually installs', async () => {
+    // Guards against the extraction drifting from its only caller.
+    vi.mocked(revokeGrant).mockRejectedValueOnce(new Error('redis is required'));
+    const fake = fakeTransaction();
+
+    await writeOAuthRevocationMarkerDurably(fake.tx, {
+      userId: USER_ID,
+      markerType: 'grant',
+      markerId: 'grant-secret',
+      expiresAt: EXPIRES_AT,
+    });
+
+    // The mock records untyped args; the shape is asserted, not assumed.
+    const [conflictArgs] = fake.onConflictDoUpdate.mock.calls[0] as unknown as [
+      { set: Record<string, SQL<unknown>> },
+    ];
+    const set = conflictArgs.set;
+    expect(Object.keys(set).sort()).toEqual(Object.keys(update()).sort());
+    for (const key of ['nextAttemptAt', 'expiresAt'] as const) {
+      const fragment = set[key];
+      expect(fragment, `missing ${key}`).toBeDefined();
+      for (const param of dialect.sqlToQuery(fragment!).params) {
+        expect(param).not.toBeInstanceOf(Date);
+      }
+    }
   });
 });

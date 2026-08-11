@@ -95,7 +95,8 @@ export type FilterValue =
   | Date
   | string[]
   | number[]
-  | { from: Date; to: Date } // for 'between' operator
+  | { from: Date; to: Date } // for 'between' operator on a date/datetime field
+  | { from: number; to: number } // for 'between' operator on a number field
   | { amount: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' }; // for 'withinLast'
 
 /**

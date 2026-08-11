@@ -1,5 +1,6 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
+import { sqlValue } from '../db/sqlValues';
 import { devices, deviceHardware, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
@@ -355,7 +356,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   if (fieldInfo.table === 'groups') {
     // Membership test against device_group_memberships.
     if (operator === 'equals') {
-      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${value})`;
+      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${sqlValue(value)})`;
     }
     if (operator === 'in' && Array.isArray(value)) {
       return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ANY(${value}))`;
@@ -368,20 +369,30 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
 // Build a SQL predicate applying an operator to a column expression. The
 // expression may be a plain device column or a correlated subquery (related
 // tables / latest-metric), so this stays purely about operator semantics.
+//
+// Every user-supplied scalar goes through `sqlValue` rather than being
+// interpolated bare (#3369). `columnRef` is an arbitrary `SQL` expression, not
+// a `Column`, so Drizzle has no encoder to consult and would hand postgres.js
+// the raw JS object — for a `Date` that throws ERR_INVALID_ARG_TYPE at the
+// driver's Bind step, and because the request runs inside a `begin()`
+// transaction the throw escapes as an HTTP 500 rather than a handled error.
+// `FilterValue` really does carry live `Date`s here: `filterValueSchema` parses
+// a `between` range through `z.coerce.date()`, so the advanced filter builder's
+// date-range picker produces them on every `POST /devices/filters/preview`.
 function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value: FilterValue): SQL<unknown> {
   switch (operator) {
     case 'equals':
-      return sql`${columnRef} = ${value}`;
+      return sql`${columnRef} = ${sqlValue(value)}`;
     case 'notEquals':
-      return sql`${columnRef} != ${value}`;
+      return sql`${columnRef} != ${sqlValue(value)}`;
     case 'greaterThan':
-      return sql`${columnRef} > ${value}`;
+      return sql`${columnRef} > ${sqlValue(value)}`;
     case 'greaterThanOrEquals':
-      return sql`${columnRef} >= ${value}`;
+      return sql`${columnRef} >= ${sqlValue(value)}`;
     case 'lessThan':
-      return sql`${columnRef} < ${value}`;
+      return sql`${columnRef} < ${sqlValue(value)}`;
     case 'lessThanOrEquals':
-      return sql`${columnRef} <= ${value}`;
+      return sql`${columnRef} <= ${sqlValue(value)}`;
     case 'contains':
       return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value)) + '%'}`;
     case 'notContains':
@@ -391,7 +402,7 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
     case 'endsWith':
       return sql`${columnRef} ILIKE ${'%' + escapeLikePattern(String(value))}`;
     case 'matches':
-      return sql`${columnRef} ~ ${value}`;
+      return sql`${columnRef} ~ ${sqlValue(value)}`;
     case 'in':
       if (Array.isArray(value)) {
         // Empty IN matches nothing. Build an explicit IN list (each value bound
@@ -400,7 +411,7 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
         // ANY/ALL (array) requires array on right side". Mirrors the software
         // `in` path above.
         if (value.length === 0) return sql`FALSE`;
-        const items = (value as unknown[]).map((v) => sql`${v}`);
+        const items = (value as unknown[]).map((v) => sqlValue(v));
         return sql`${columnRef} IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "in" operator');
@@ -409,7 +420,7 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
         // Empty NOT IN matches everything; otherwise an explicit NOT IN list
         // for the same reason as `in` above.
         if (value.length === 0) return sql`TRUE`;
-        const items = (value as unknown[]).map((v) => sql`${v}`);
+        const items = (value as unknown[]).map((v) => sqlValue(v));
         return sql`${columnRef} NOT IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "notIn" operator');
@@ -432,12 +443,12 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
     case 'isNotNull':
       return sql`${columnRef} IS NOT NULL`;
     case 'before':
-      return sql`${columnRef} < ${value}`;
+      return sql`${columnRef} < ${sqlValue(value)}`;
     case 'after':
-      return sql`${columnRef} > ${value}`;
+      return sql`${columnRef} > ${sqlValue(value)}`;
     case 'between':
       if (typeof value === 'object' && value !== null && 'from' in value && 'to' in value) {
-        return sql`${columnRef} BETWEEN ${value.from} AND ${value.to}`;
+        return sql`${columnRef} BETWEEN ${sqlValue(value.from)} AND ${sqlValue(value.to)}`;
       }
       throw new Error('Value must have from/to for "between" operator');
     case 'withinLast':

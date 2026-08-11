@@ -342,3 +342,121 @@ describe('filterEngine bounds filter-query execution time (#1044 ReDoS)', () => 
     expect(setsStatementTimeout()).toBe(true);
   });
 });
+
+describe('filterEngine datetime binding (#3369)', () => {
+  const dialect = new PgDialect();
+  const FROM = new Date('2026-01-01T00:00:00.000Z');
+  const TO = new Date('2026-02-01T12:30:45.678Z');
+
+  const render = (condition: FilterCondition) => dialect.sqlToQuery(buildConditionSQL(condition));
+
+  /**
+   * The bug: `applyOperator` interpolated the filter value bare into a `sql`
+   * template. `columnRef` there is an arbitrary `SQL` expression rather than a
+   * `Column`, so Drizzle had no encoder to consult and wrapped the value in a
+   * `Param` with the NOOP encoder — handing postgres.js a live `Date`, whose
+   * Bind step throws ERR_INVALID_ARG_TYPE. Because the request runs inside
+   * `withDbAccessContext` (a `begin()` transaction that re-throws at commit),
+   * it escaped as an HTTP 500 for the whole request.
+   *
+   * This is not hypothetical for `between`: `filterValueSchema` parses a range
+   * through `z.coerce.date()`, so the advanced filter builder's date-range
+   * picker produces real `Date`s on every `POST /devices/filters/preview`.
+   */
+  it.each([
+    ['equals', new Date(FROM)],
+    ['notEquals', new Date(FROM)],
+    ['before', new Date(FROM)],
+    ['after', new Date(FROM)],
+    ['lessThan', new Date(FROM)],
+    ['lessThanOrEquals', new Date(FROM)],
+    ['greaterThan', new Date(FROM)],
+    ['greaterThanOrEquals', new Date(FROM)],
+  ] as const)('binds no raw Date for a datetime %s condition', (operator, value) => {
+    const { params } = render({ field: 'lastSeenAt', operator, value });
+
+    expect(params.length).toBeGreaterThan(0);
+    for (const param of params) expect(param).not.toBeInstanceOf(Date);
+    expect(params).toContain(FROM.toISOString());
+  });
+
+  it('binds no raw Date for a between range and keeps both bounds distinct', () => {
+    const { sql: text, params } = render({
+      field: 'lastSeenAt',
+      operator: 'between',
+      value: { from: FROM, to: TO },
+    });
+
+    for (const param of params) expect(param).not.toBeInstanceOf(Date);
+    expect(params).toEqual([FROM.toISOString(), TO.toISOString()]);
+    expect(text).toContain('BETWEEN');
+  });
+
+  it('emits no timestamptz cast — the target columns are naive timestamps', () => {
+    // `devices.last_seen_at` / `enrolled_at` / `quarantined_at` are all
+    // `timestamp` WITHOUT time zone. Casting the bound parameter to
+    // `timestamptz` would make Postgres reinterpret the column in the session
+    // time zone, shifting every result on any non-UTC deployment — a worse bug
+    // than the one being fixed here.
+    const { sql: text } = render({
+      field: 'lastSeenAt',
+      operator: 'between',
+      value: { from: FROM, to: TO },
+    });
+
+    expect(text).not.toContain('timestamptz');
+  });
+
+  it('routes a Date through the related-table and computed-field paths too', () => {
+    // These recurse into applyOperator with a correlated subquery / CASE
+    // expression as columnRef, which is precisely where a typed helper is
+    // unavailable and the bare interpolation used to survive.
+    for (const field of ['enrolledAt', 'quarantinedAt']) {
+      const { params } = render({ field, operator: 'before', value: new Date(FROM) });
+      for (const param of params) expect(param).not.toBeInstanceOf(Date);
+    }
+  });
+
+  it('routes matches, in/notIn and the group membership path through sqlValue too', () => {
+    // `OPERATORS_BY_TYPE` never pairs these operators with a datetime field, and
+    // the public route runs `validateFilter` first — but `FilterCondition` types
+    // `operator` as any `FilterOperator`, and the internal callers
+    // (aiToolsFleet, groupMembership, deploymentTargetResolver) build conditions
+    // by hand and call `evaluateFilter` directly without that gate. Defense in
+    // depth: a Date reaching these branches must still serialize.
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const cases: FilterCondition[] = [
+      { field: 'hostname', operator: 'matches', value: at as unknown as string },
+      { field: 'lastSeenAt', operator: 'in', value: [at] as unknown as string[] },
+      { field: 'lastSeenAt', operator: 'notIn', value: [at] as unknown as string[] },
+      { field: 'groupId', operator: 'equals', value: at },
+    ];
+
+    for (const condition of cases) {
+      const { params } = render(condition);
+      for (const param of params) {
+        expect(param, `${condition.field}/${condition.operator}`).not.toBeInstanceOf(Date);
+      }
+      expect(params).toContain(at.toISOString());
+    }
+  });
+
+  it('still binds ordinary scalars unchanged', () => {
+    expect(render({ field: 'hostname', operator: 'equals', value: 'web-01' }).params).toEqual(['web-01']);
+    expect(render({ field: 'status', operator: 'in', value: ['online', 'offline'] }).params)
+      .toEqual(['online', 'offline']);
+  });
+
+  it('binds a numeric between as numbers, not epoch-millisecond timestamps', () => {
+    // Companion to the validator fix: `z.coerce.date()` accepted a plain number
+    // as epoch-ms, so `{ from: 10, to: 90 }` became 1970-01-01T00:00:00.010Z.
+    // Here we assert the engine's own half — numbers stay numbers.
+    const { params } = render({
+      field: 'metrics.cpuPercent',
+      operator: 'between',
+      value: { from: 10, to: 90 },
+    });
+
+    expect(params).toEqual([10, 90]);
+  });
+});
