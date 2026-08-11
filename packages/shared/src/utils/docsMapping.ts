@@ -215,7 +215,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/analytics', docsPath: '/features/reports/', label: 'Analytics' },
   { pattern: '/audit', docsPath: '/reference/audit-logs/', label: 'Audit Logs' },
   { pattern: '/logs', docsPath: '/features/log-shipping/', label: 'Log Shipping' },
-  { pattern: '/fleet', docsPath: '/features/ai/', label: 'Fleet Orchestration' },
+  { pattern: '/fleet', docsPath: '/features/fleet-hygiene/', label: 'Fleet Hygiene Findings' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
 
   // Account

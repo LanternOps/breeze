@@ -2136,6 +2136,131 @@
       "docs": [
         "agents/self-host-migration.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/routes/fleetFindings.ts",
+      "docs": [
+        "features/fleet-hygiene.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/fleetFindings/**",
+      "docs": [
+        "features/fleet-hygiene.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/fleetFindings.ts",
+      "docs": [
+        "features/fleet-hygiene.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/fleetRemediationDispatch.ts",
+      "docs": [
+        "features/fleet-hygiene.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/fleet/**",
+      "docs": [
+        "features/fleet-hygiene.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/urlSafety.ts",
+      "docs": [
+        "features/webhooks.mdx",
+        "features/notifications.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/psa.ts",
+      "docs": [
+        "features/psa-integrations.mdx",
+        "migration/toolkit.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/psa/**",
+      "docs": [
+        "features/psa-integrations.mdx",
+        "migration/toolkit.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/orgImport/**",
+      "docs": [
+        "migration/toolkit.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/scriptBundle.ts",
+      "docs": [
+        "features/scripts.mdx",
+        "migration/toolkit.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/scriptBundle/**",
+      "docs": [
+        "features/scripts.mdx",
+        "migration/toolkit.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/remoteAccessProviders.ts",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/abuseSignals/**",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/binaryEdition.ts",
+      "docs": [
+        "deploy/binaries.mdx",
+        "deploy/environment.mdx",
+        "deploy/code-signing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/releaseSource.ts",
+      "docs": [
+        "deploy/binaries.mdx",
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/releaseAssetTrust.ts",
+      "docs": [
+        "deploy/binaries.mdx",
+        "deploy/sign-your-own-packages.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/discoveredAssetClassification.ts",
+      "docs": [
+        "features/discovery.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/cisHardening.ts",
+      "docs": [
+        "features/cis-hardening.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/updater/backup_swap.go",
+      "docs": [
+        "deploy/upgrades.mdx",
+        "backup/overview.mdx",
+        "deploy/binaries.mdx"
+      ]
     }
   ]
 }

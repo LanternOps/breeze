@@ -134,6 +134,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/ai' },
                 { slug: 'features/ml-insights' },
+                { slug: 'features/fleet-hygiene' },
                 { slug: 'features/ai-computer-control' },
                 { slug: 'features/ai-for-office' },
                 { slug: 'features/mcp-server' },

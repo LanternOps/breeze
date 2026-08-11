@@ -220,7 +220,7 @@ Network Proxy lets you access web-based admin UIs on an agent's local network wi
 
 **Session lifetime:**
 
-A proxy session stays alive as long as it's actively used: each request slides the session's expiry forward, so there's no fixed cutoff while you're working — up to an absolute cap of 12 hours from when the session started. If the session sits idle for several minutes with no requests, it stops sliding and the page shows a **Session expired — Reconnect** state instead of silently failing behind the scenes. Clicking **Reconnect** reloads the embedded page from scratch, so any in-progress form state on the target device's own web UI (for example, a partially filled-out printer configuration page) is lost — save your work on the target's UI before stepping away for a while.
+A proxy session stays alive as long as it's actively used: each request slides the session's expiry forward, so there's no fixed cutoff while you're working — up to an absolute cap of 12 hours from when the session started. If the session sits idle for 10 minutes with no requests, it stops sliding and the page shows a **Session expired — Reconnect** state instead of silently failing behind the scenes. Clicking **Reconnect** reloads the embedded page from scratch, so any in-progress form state on the target device's own web UI (for example, a partially filled-out printer configuration page) is lost — save your work on the target's UI before stepping away for a while.
 
 **Security model:**
 
@@ -284,6 +284,8 @@ Each device then needs that custom field populated with its identifier for the t
 - Launch URLs are validated against an allowed-scheme list both when the template is saved and again when the URL is issued. Dangerous schemes (`javascript:`, `data:`, `vbscript:`, `file:`, `about:`, `chrome:`, `jar:`, `blob:`, `view-source:`, `filesystem:`) are rejected.
 - Preset passwords are stored server-side only and are never embedded in the web bundle or earlier API responses. The launch URL is issued one-shot in response to an explicit user click and each issuance is audit logged.
 
+**Per-technician preference.** Each technician can pick their own remote tool from the tenant's enabled providers under **Settings → Profile → Preferred remote tool**. The preference only selects among providers the partner has already configured — it can never add one — and only affects that user's own **Connect → Desktop** clicks. If the chosen provider is later disabled or deleted, launches fall back to the tenant default. The chooser is hidden from users without remote-access permission.
+
 ---
 
 ## Remote Terminal
@@ -326,15 +328,17 @@ Quick Support connects you to a machine that runs **no permanently enrolled agen
 
 1. On **Remote Access → Quick Support**, create a session. Optionally attribute it to a customer organization and add a label (e.g. "Contoso — CFO laptop"). Attribution is for reporting only; it does not grant or change access to that customer's data.
 
-2. Breeze returns a one-time code (`KTM-4H7-P2X`) and a link. **The code is shown once and cannot be retrieved again.** It expires in 15 minutes.
+2. Breeze returns a one-time code (`234-567-892`) and a link. Codes are digits only (2–9, with no 0 or 1) and displayed in groups of three so they read cleanly over the phone. **The code is shown once and cannot be retrieved again.** It expires in 15 minutes. Codes issued before v0.105.0 that contain letters remain redeemable.
 
-3. Send the link or read the code out. The end user opens the link, downloads the client, and runs it. The code is embedded in the download's filename, so they normally never type it.
+3. Send the link or read the code out. The end user opens the link, downloads the client, and runs it. The code is embedded in the download's filename, so they normally never type it — the landing page also accepts manual code entry if they arrive without one.
 
 4. When the client connects, the session becomes **Ready** and a Connect button appears. From there it is an ordinary remote desktop session.
 
 5. **End session** revokes the client's credentials, tells it to remove itself, and drops its connection.
 
 </Steps>
+
+Clicking a row in the session history re-opens a live detail panel for that session — you can connect to (or end) a still-active session from history; only the one-time code stays create-time-only.
 
 <Aside type="caution">
   Quick Support requires **partner scope**. An organization-scoped login cannot create these sessions. Sessions are visible to all technicians at your partner, not only their creator.

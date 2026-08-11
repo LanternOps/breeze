@@ -65,7 +65,9 @@ The sender validates email addresses against the pattern `^[^\s@]+@[^\s@]+\.[^\s
 
 ### Webhook
 
-The webhook sender delivers alert data as structured JSON to any HTTPS endpoint. It includes SSRF protection that blocks requests to private/loopback IP ranges, localhost, and `.local` hostnames. DNS resolution is also checked to prevent rebinding attacks.
+The webhook sender delivers alert data as structured JSON to an HTTPS endpoint. It includes SSRF protection that blocks requests to private/loopback IP ranges, localhost, and `.local` hostnames on hosted Breeze. DNS resolution is also checked to prevent rebinding attacks.
+
+**Self-hosted deployments** (`IS_HOSTED=false`) may target private RFC 1918/ULA addresses on their own network — an on-prem SIEM or ticketing system — and plain `http://` is permitted **only** when the target resolves to such a private address. Public destinations still require HTTPS, and cloud-metadata, loopback, and link-local addresses are blocked in every configuration.
 
 **Configuration fields:**
 
@@ -116,7 +118,7 @@ The webhook sender delivers alert data as structured JSON to any HTTPS endpoint.
 **Retry behavior:** Failed requests are retried with exponential backoff (2^attempt seconds). Client errors (4xx) are not retried.
 
 <Aside type="caution">
-  Webhook URLs must use HTTPS. HTTP URLs, localhost, private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x), and link-local addresses are blocked to prevent SSRF.
+  On hosted Breeze, webhook URLs must use HTTPS; HTTP URLs, localhost, private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x), and link-local addresses are blocked to prevent SSRF. Self-hosted deployments may deliver to private addresses (including over HTTP) as described above.
 </Aside>
 
 ### Slack and Teams
@@ -605,7 +607,7 @@ Verify that notification channels exist and are enabled for the organization. Ch
 Ensure the EmailService is configured with valid SMTP settings. Check that the channel config has a `recipients` or `to` field with valid email addresses. The sender validates addresses against a basic pattern; typos in email addresses will cause validation failures.
 
 **Webhook returning errors.**
-Check that the URL uses HTTPS -- HTTP URLs are rejected. Verify the endpoint is publicly reachable; private IP ranges, localhost, and `.local` hostnames are blocked. If the webhook requires authentication, confirm the `authType`, `authToken`, or credential fields are correctly configured. Review the `statusCode` in the error response for HTTP-level failures. 4xx errors are not retried.
+On hosted Breeze, check that the URL uses HTTPS -- HTTP URLs are rejected -- and that the endpoint is publicly reachable; private IP ranges, localhost, and `.local` hostnames are blocked. (Self-hosted deployments may target private addresses; see the Webhook section above.) If the webhook requires authentication, confirm the `authType`, `authToken`, or credential fields are correctly configured. Review the `statusCode` in the error response for HTTP-level failures. 4xx errors are not retried.
 
 **Slack or Teams messages not appearing.**
 Confirm the `webhookUrl` is correctly copied from the Slack/Teams incoming webhook configuration. The URL must be a valid HTTPS URL. Test the channel using `POST /alerts/channels/:id/test` to get a detailed error response.

@@ -72,7 +72,11 @@ Each individual CIS check produces one of these results:
 
 ## Baselines
 
-A baseline defines the CIS benchmark, security level, and optional exclusions for a set of devices. Each baseline is scoped to an organization and targets a specific operating system.
+A baseline defines the CIS benchmark, security level, and optional exclusions for a set of devices. Each baseline targets a specific operating system and is owned either by a single organization or **partner-wide**.
+
+### Baseline ownership: organization vs. partner-wide
+
+When creating a baseline you choose its scope: **a single organization** or **all organizations** (a partner-wide baseline). A partner-wide baseline applies to devices in every organization under your partner and shows an **"All orgs"** badge in the baseline list. Ownership is chosen at creation and is immutable afterwards — to change scope, create a new baseline. Creating or editing partner-wide baselines requires full-partner access (technicians restricted to a subset of organizations can't manage them).
 
 ### Creating a Baseline
 
@@ -101,7 +105,8 @@ Authorization: Bearer <token>
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `orgId` | UUID | Yes | Organization ID (auto-resolved for org-scoped tokens) |
+| `ownerScope` | string | No | `organization` (default) or `partner` for a partner-wide baseline. Create-only — ownership cannot be changed later |
+| `orgId` | UUID | For org-owned baselines | Organization ID (auto-resolved for org-scoped tokens). Omitted and ignored when `ownerScope` is `partner` |
 | `name` | string | Yes | Baseline name (max 200 chars) |
 | `osType` | string | Yes | Target OS: `windows`, `macos`, `linux` |
 | `benchmarkVersion` | string | Yes | CIS benchmark version (e.g., `3.0.0`, `2.1.0`) |

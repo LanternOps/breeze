@@ -52,6 +52,8 @@ Each unique IP address found during a scan is stored as a discovered asset withi
 | `workstation` | RDP (3389), SMB (445), SSH (22), or VNC (5900) open |
 | `unknown` | Insufficient data to classify |
 
+When several detection sources disagree about a device's type, the better-informed source wins: a UniFi controller record outranks an agent network scan, which outranks a MAC/OUI vendor guess — so a lower-confidence source can no longer flip a device's type back and forth between scans (e.g. a UniFi switch flapping to `access_point`). A manual **Asset Type** override always beats all three, and **Reset to auto-detected** restores the best available machine classification, not simply the last one written.
+
 ### Network Topology
 
 Discovery builds an interactive map of how your network actually fits together -- a measured backbone of switches and routers with the hosts attached to them -- and lets you hand-map anything discovery can't see. Connections carry their provenance (how Breeze knows about them) so you can tell measured links from ones you drew yourself. See [Network Topology](#network-topology) below.
@@ -323,11 +325,15 @@ The page has two tabs — **Overview** (identity, IP/MAC, manufacturer/model, SN
 
 From the **Overview** tab you can override the auto-detected device type using the **Asset Type** dropdown. If a device's type was set manually, a **Reset to auto-detected** link appears so you can revert to the type the scan originally detected.
 
-From the **Monitoring** tab you can **Unlink** a device that was manually linked to an enrolled Breeze device — the Unlink action only appears for manually-linked devices, since auto-linked devices are kept in sync automatically by future scans. To link an asset to a device for the first time, use the **Manage in Discovery** link near the top of the page, which opens the asset in the Discovery view where you can complete the link (see [Linking an Asset to a Device](#linking-an-asset-to-a-device) below) and reach Proxy Access (see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui)).
+From the **Monitoring** tab you can see the asset's link state and **Unlink** it from its enrolled Breeze device. Unlinking is **durable** regardless of how the link was made: future scans will not silently re-link the asset — auto-linking is suppressed for it until you deliberately re-link. The network device detail page is also where you link (or re-link) an asset to an enrolled device manually.
 
-### Linking an Asset to a Device
+### Asset-to-Device Linking
 
-Manually link a discovered asset to an enrolled device. This sets the asset status to `managed` and is used for **identity and asset tracking only** — it records which enrolled Breeze device corresponds to this discovered asset. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
+Linking records which enrolled Breeze device corresponds to a discovered asset — it sets the asset status to `managed` and is used for **identity and asset tracking only**. Linking alone does not open remote access; see [Connecting to a discovered device's web UI](#connecting-to-a-discovered-devices-web-ui) below for proxy access.
+
+Linking is **automatic and hidden**: during scan result processing, the worker matches assets to enrolled devices by MAC address or IP address within the same organization, with no action needed from you. The only manual acts are **overriding** a link (pointing the asset at a different enrolled device from its network device detail page) and **unlinking**. A manual unlink is permanent until you re-link — the next scan will not undo it.
+
+The API equivalent:
 
 ```bash
 POST /discovery/assets/:id/link
@@ -338,27 +344,11 @@ Content-Type: application/json
 }
 ```
 
-<Aside>
-  Auto-linking happens automatically during scan result processing. The worker matches assets to enrolled devices by MAC address or IP address within the same organization. Manual linking is only needed when auto-linking does not find a match.
-</Aside>
+The discovery asset list also supports filtering by linked device (`linkedDeviceId`).
 
 ### Connecting to a discovered device's web UI
 
-The asset panel on the **Discovery** page includes a **Proxy Access** section that lets you open a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) directly inside Breeze — no VPN required.
-
-<Steps>
-
-1. Open the asset panel: on the **Discovery** page, click any discovered asset in the list. If you're on a network device's detail page (`/devices/network/:id`) instead, click **Manage in Discovery** to jump to the same panel for that asset.
-
-2. Go to the **Proxy Access** section.
-
-3. Choose a **bridge agent** from the dropdown. Only online agents are shown; the dropdown defaults to the linked enrolled device if it is currently online.
-
-4. Click **Connect**. The device's web UI loads in an iframe inside Breeze, with an **Open in new tab** option for a full-window view.
-
-</Steps>
-
-Traffic is tunneled over the bridge agent's existing WebSocket connection to Breeze — no additional firewall rules or port forwarding required. See [Network Proxy](/features/remote-access/#network-proxy) in the Remote Access docs for allowlist configuration and the full security model.
+Opening a LAN device's built-in web interface (router admin page, NAS panel, printer UI, switch management port, etc.) is done from the network device detail page: find the open web port and click **Open Web UI**. The proxied request rides an online agent on the same network — no VPN, firewall rules, or port forwarding required. See [Network Proxy](/features/remote-access/#network-proxy) in the Remote Access docs for the full workflow, allowlist configuration, session lifetime, and security model.
 
 ### Ignoring an Asset
 
@@ -500,4 +490,4 @@ The discovery worker requires Redis and the background queue to dispatch scan co
 Subnets larger than /16 (65,536+ hosts) are skipped by default to prevent excessive scan times and network traffic. Set `deepScan: true` on the profile to allow scanning of large subnets. Monitor the agent's resource usage when scanning large address ranges.
 
 **Discovered assets are not auto-linking to enrolled devices.**
-Auto-linking matches assets to enrolled devices by MAC address or IP address within the same organization using the `device_network` table. If the enrolled device has a different IP than what discovery sees (e.g., the device is behind NAT or uses a VPN), auto-linking will not find a match. Use `POST /discovery/assets/:id/link` to manually link the asset to the correct device.
+Auto-linking matches assets to enrolled devices by MAC address or IP address within the same organization using the `device_network` table. If the enrolled device has a different IP than what discovery sees (e.g., the device is behind NAT or uses a VPN), auto-linking will not find a match. Use `POST /discovery/assets/:id/link` (or the network device detail page) to manually link the asset to the correct device. Also note that if an asset was manually unlinked, auto-linking is suppressed for it by design until you re-link it.

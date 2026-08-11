@@ -119,6 +119,14 @@ Commit-only per-row fields: `expectedAnnotation`, `expectedOrganizationId`, `rea
 
 The import covers **organizations and sites** (plus their external-link rows). It does not import devices — devices arrive by enrolling agents (Recipes 2–3). The single-record endpoints (`POST /orgs/organizations`, `POST /orgs/sites`) still exist for one-offs and carry fields the import rows don't (`contractStart`, `billingContact`, …).
 
+### Recipe 1b — Import Companies from Your PSA
+
+If your company list already lives in a PSA, skip the CSV: a connected PSA can feed the same org import directly. Supported providers: **ConnectWise, Autotask, ServiceNow, Freshservice, Zendesk, and Jira** (any connection whose adapter can list companies).
+
+In the web UI, open **Integrations → PSA** and choose **Import companies** on a connection. Scripted, the same preview → commit pair lives at `POST /psa/connections/:id/import/preview` and `POST /psa/connections/:id/import` (partner scope, MFA, and both org- and site-write permissions required). The PSA's companies come back as ordinary import rows with the same annotation vocabulary as the CSV import (create / matched / conflict), and each imported organization gets an external-link row carrying the PSA's stable company ID — so re-imports and later PSA syncs match by identity, not by name. Companies already linked to an organization are filtered out of the preview.
+
+The preview is bounded: a company cap, a wall-clock budget, and a page guard each stop a runaway listing, and the response says whether (and why) it was truncated — import a batch, then preview again for the rest.
+
 ---
 
 ## Recipe 2 — Mint Bulk Enrollment Keys
@@ -373,4 +381,3 @@ These are real friction points in the current release. Each is tracked; if one b
 | No bulk import for **devices** (orgs and sites now have one — Recipe 1) | Devices arrive by enrolling agents: Recipes 2–3 |
 | Bulk org import lives on the main API only (JWT + MFA), not the Partner API | One interactive run, or the web UI; unattended provisioning goes through Recipe 2's per-record Partner API creates |
 | `POST /devices/provision` is single-device only | Loop it |
-| PSA `getCompanies()` exists on every adapter but is not wired to org import | Export from the PSA manually — the import's `externalId`/`externalSystem` seam is built for this, and a PSA-backed source is the planned next phase (#3246) |
