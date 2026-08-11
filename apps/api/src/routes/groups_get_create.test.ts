@@ -35,10 +35,21 @@ vi.mock('../services/filterEngine', () => ({
   validateFilter: vi.fn().mockReturnValue({ valid: true, errors: [] })
 }));
 
-vi.mock('../services/groupMembership', () => ({
-  evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
-  pinDeviceToGroup: vi.fn().mockResolvedValue(undefined)
-}));
+vi.mock('../services/groupMembership', async () => {
+  const actual = await vi.importActual<typeof import('../services/groupMembership')>(
+    '../services/groupMembership'
+  );
+  return {
+    evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
+    pinDeviceToGroup: vi.fn().mockResolvedValue(undefined),
+    pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue(undefined),
+    // Real: the extracted tenancy guard + membership insert that group-create
+    // (#3159) and POST /:id/devices now share. These tests are that logic's
+    // coverage, exercised against the already-mocked `../db` / `../db/schema`.
+    validateManualMembershipDevices: actual.validateManualMembershipDevices,
+    addManualGroupMemberships: actual.addManualGroupMemberships
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
@@ -530,6 +541,218 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.error).toContain('Site not found');
       expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // ----------------------------------------------------------------
+    // #3159 — static group creation
+    // ----------------------------------------------------------------
+    // Earlier cases in this file leave unconsumed `mockReturnValueOnce` entries
+    // on db.select and `vi.clearAllMocks()` in the outer `beforeEach` does not
+    // drain that queue — every test here starts with an explicit
+    // `db.select.mockReset()`.
+    describe('#3159 static group creation', () => {
+      it('accepts an explicit filterConditions: null', async () => {
+        vi.mocked(db.select).mockReset();
+        const valuesMock = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeGroup({ type: 'static', filterConditions: null })])
+        });
+        vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Static', type: 'static', filterConditions: null })
+        });
+
+        // The headline regression: before the fix this 400'd with
+        // "filterConditions: Invalid input: expected object, received null".
+        expect(res.status).toBe(201);
+        expect(valuesMock).toHaveBeenCalledTimes(1);
+        expect(valuesMock.mock.calls[0][0]).toMatchObject({ filterConditions: null });
+      });
+
+      it('accepts an omitted filterConditions', async () => {
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeGroup({ type: 'static' })])
+          })
+        } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Static', type: 'static' })
+        });
+
+        expect(res.status).toBe(201);
+      });
+
+      it('accepts a filter object for a dynamic group', async () => {
+        vi.mocked(db.select).mockReset();
+        // getDeviceCountForGroup, read after the (mocked) evaluateGroupMembership.
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 2 }]) })
+        } as any);
+        const filterConditions = {
+          operator: 'AND' as const,
+          conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }]
+        };
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeGroup({ type: 'dynamic', filterConditions })])
+          })
+        } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Dynamic', type: 'dynamic', filterConditions })
+        });
+
+        // Proves widening the field to `.nullable()` did not break the object form.
+        expect(res.status).toBe(201);
+      });
+
+      it('seeds membership from deviceIds on a static create', async () => {
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.select)
+          // validateManualMembershipDevices: device lookup
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                { id: DEVICE_ID, orgId: ORG_ID, siteId: null },
+                { id: DEVICE_ID_2, orgId: ORG_ID, siteId: null }
+              ])
+            })
+          } as any)
+          // addManualGroupMemberships: existing-membership lookup
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+          } as any);
+
+        const created = makeGroup({ type: 'static' });
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([created]) })
+        } as any);
+        const membershipValuesMock = vi.fn().mockResolvedValue(undefined);
+        vi.mocked(db.insert).mockReturnValueOnce({ values: membershipValuesMock } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Static', type: 'static', deviceIds: [DEVICE_ID, DEVICE_ID_2] })
+        });
+
+        expect(res.status).toBe(201);
+        expect(membershipValuesMock).toHaveBeenCalledTimes(1);
+        const rows = membershipValuesMock.mock.calls[0][0] as Array<Record<string, unknown>>;
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          expect(row).toMatchObject({ groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' });
+        }
+        const body = await res.json();
+        expect(body.data.deviceCount).toBe(2);
+      });
+
+      it('rejects deviceIds on a dynamic create', async () => {
+        vi.mocked(db.select).mockReset();
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Dynamic',
+            type: 'dynamic',
+            filterConditions: {
+              operator: 'AND',
+              conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }]
+            },
+            deviceIds: [DEVICE_ID]
+          })
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toContain('dynamic group');
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('rejects a cross-org device and creates no group', async () => {
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID_2, siteId: null }])
+          })
+        } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Static', type: 'static', deviceIds: [DEVICE_ID] })
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.invalidDevices).toContain(DEVICE_ID);
+        // No orphan empty group left behind on a rejected batch.
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it("rejects a device outside a site-bound group's site with 403 and creates no group", async () => {
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.select)
+          // siteBelongsToOrg
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: SITE_ID }])
+              })
+            })
+          } as any)
+          // validateManualMembershipDevices: device lookup
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, orgId: ORG_ID, siteId: SITE_ID_2 }])
+            })
+          } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Static',
+            type: 'static',
+            siteId: SITE_ID,
+            deviceIds: [DEVICE_ID]
+          })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toBe('Access to this site denied');
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('does not query devices when deviceIds is an empty array', async () => {
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.insert).mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([makeGroup({ type: 'static' })])
+          })
+        } as any);
+
+        const res = await app.request('/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ name: 'Static', type: 'static', deviceIds: [] })
+        });
+
+        // An empty list is not an error — it's what the dashboard sends for a
+        // group with no devices selected — and it must not trigger a lookup.
+        expect(res.status).toBe(201);
+        expect(db.select).not.toHaveBeenCalled();
+      });
     });
   });
 

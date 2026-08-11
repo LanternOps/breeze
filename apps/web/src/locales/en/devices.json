@@ -709,7 +709,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Failed to fetch device groups",
     "windows": "windows",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Failed to save device group",
