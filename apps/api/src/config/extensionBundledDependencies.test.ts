@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Options } from 'tsup';
 import { describe, expect, it } from 'vitest';
-import tsupConfig from '../../tsup.config';
+import tsupConfigExport from '../../tsup.config';
 
 /**
  * Guard against the "dangling third-party external" class of bug (found in review during
@@ -53,8 +54,31 @@ const workspaceDeps = dependencyNames(workspaceManifest);
 /** Non-`@breeze/*` names: those are handled by the separate `/^@breeze\//` regex entry. */
 const workspaceThirdPartyDeps = [...workspaceDeps].filter((name) => !name.startsWith('@breeze/'));
 
+/**
+ * `defineConfig`'s return type is `Options | Options[] | ((overrideOptions: Options) =>
+ * MaybePromise<Options | Options[]>)` -- tsup supports multi-build-config arrays and a
+ * factory-function form, neither of which `apps/api/tsup.config.ts` uses today (it exports
+ * one static `Options` object). Narrow explicitly rather than asserting: if the config ever
+ * switches shape, this guard should fail loudly and say why, not silently stop checking.
+ */
+function resolveTsupOptions(config: typeof tsupConfigExport): Options {
+  if (typeof config === 'function') {
+    throw new Error(
+      "apps/api/tsup.config.ts now exports the factory-function form of defineConfig; this " +
+        'guard only understands a static Options object. Update resolveTsupOptions to match.',
+    );
+  }
+  if (Array.isArray(config)) {
+    throw new Error(
+      'apps/api/tsup.config.ts now exports multiple build configs (an Options[] array); this ' +
+        'guard only understands a single Options object. Update resolveTsupOptions to match.',
+    );
+  }
+  return config;
+}
+
 function noExternalStrings(): Set<string> {
-  const entries = tsupConfig.noExternal;
+  const entries = resolveTsupOptions(tsupConfigExport).noExternal;
   const list = Array.isArray(entries) ? entries : entries ? [entries] : [];
   return new Set(list.filter((entry): entry is string => typeof entry === 'string'));
 }
