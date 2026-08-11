@@ -7,6 +7,7 @@
   "main": "src/index.ts",
   "scripts": {
     "build:web": "tsup --config tsup.web.config.ts",
+    "lint": "eslint src",
     "test": "vitest run --config vitest.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit"

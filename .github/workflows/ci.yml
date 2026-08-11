@@ -158,6 +158,16 @@ jobs:
       - name: Type-check legacy extension adapter
         run: pnpm --filter @breeze/extension-api typecheck
 
+      # ee/workspace's own unit + typecheck coverage (424 tests). The
+      # apps/api typecheck step below separately covers the server code
+      # through the static built-in-extension import; this covers the rest
+      # (web/, __tests__/) that apps/api's tsconfig doesn't reach.
+      - name: Test workspace (ee)
+        run: pnpm --filter @breeze/ext-workspace test
+
+      - name: Type-check workspace (ee)
+        run: pnpm --filter @breeze/ext-workspace typecheck
+
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
 
@@ -1727,6 +1737,61 @@ jobs:
         # --shard reaches vitest. Sharding only splits the file list; files
         # within a shard still run sequentially (fileParallelism: false).
         run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
+
+      # ee/workspace's integration suite expects its own tables
+      # (workspace_sources, workspace_file_index, ...) to already exist on
+      # this DB — it has no self-provisioning of its own. Those tables are
+      # created by loadBuiltinExtensions() (apps/api/src/extensions/
+      # builtinExtensions.ts), which — unlike core migrations — runs ONLY at
+      # actual `apps/api` server boot (src/index.ts), never inside the
+      # vitest integration suite's globalSetup (which calls core
+      # autoMigrate() only; see src/db/autoMigrate.ts's planMigrations,
+      # which reads the LEGACY extensions/ dir, not the built-in registry).
+      # Boot the real server once, against this shard's already
+      # core-migrated :5433 DB, wait for its "loaded built-in" line, then
+      # stop it — the same `tsx src/index.ts` boot Task 4 of the ee-merge
+      # plan verified applies workspace's migrations (idempotently on
+      # repeat boots). Shard 1 only: a single-DB schema prerequisite for the
+      # step below, not a sharded suite in itself.
+      - name: Boot API once to apply built-in extension migrations (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          AGENT_ENROLLMENT_SECRET: ci-smoke-agent-enrollment-secret-value
+          NODE_ENV: test
+          AUTO_MIGRATE: 'true'
+          API_PORT: '3199'
+        run: |
+          pnpm --filter=@breeze/api exec tsx src/index.ts > /tmp/ee-workspace-boot.log 2>&1 &
+          BOOT_PID=$!
+          if ! timeout 90 bash -c 'until grep -qE "loaded built-in \"workspace\"|CRITICAL" /tmp/ee-workspace-boot.log 2>/dev/null; do sleep 1; done'; then
+            echo "Timed out waiting for the built-in extension boot line:"
+            cat /tmp/ee-workspace-boot.log
+            kill "$BOOT_PID" 2>/dev/null || true
+            exit 1
+          fi
+          if grep -q CRITICAL /tmp/ee-workspace-boot.log; then
+            echo "API boot failed before loading built-in extensions:"
+            cat /tmp/ee-workspace-boot.log
+            kill "$BOOT_PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$BOOT_PID"
+          wait "$BOOT_PID" 2>/dev/null || true
+
+      - name: Integration-test workspace (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+        run: pnpm --filter @breeze/ext-workspace test:integration
 
       # Dedicated exact-role enforcement runner. The general integration config
       # excludes it because this suite manages a temporary BYPASSRLS role and
