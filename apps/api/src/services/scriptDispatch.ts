@@ -52,11 +52,36 @@ export type DispatchScriptResult =
 export async function dispatchScriptToDevice(input: DispatchScriptInput): Promise<DispatchScriptResult> {
   const { device, source } = input;
 
+  // Decommission is permanent, so the caller's snapshot is fine for it — no
+  // live re-read needed.
   if (device.status === 'decommissioned') {
     return { ok: false, code: 'device_decommissioned', error: 'Device is decommissioned' };
   }
-  if (input.requireOnline && device.status !== 'online') {
-    return { ok: false, code: 'device_offline', error: `Device is ${device.status}, cannot execute command` };
+  if (input.requireOnline) {
+    // Re-read live status rather than trusting `device.status` (the caller's
+    // snapshot). Automation fleet runs snapshot every target device ONCE at
+    // run start (automationRuntime.ts:1712/2269) and can dispatch minutes
+    // later, so a device that went offline in between must still be caught
+    // here. This mirrors the old `queueCommandForExecution`
+    // (commandQueue.ts:650), which re-selected `devices.status` fresh on
+    // every dispatch — a deleted test once pinned the opposite contract
+    // ("must NOT pre-filter on it") for this codepath, which this restores.
+    // Only requireOnline gets the extra query: manual/route dispatch
+    // deliberately queues offline devices, so no live read runs for it.
+    const [liveDevice] = await db
+      .select({ status: devices.status })
+      .from(devices)
+      .where(eq(devices.id, device.id))
+      .limit(1);
+    if (!liveDevice) {
+      // `code` stays 'device_offline' — every caller only branches on
+      // ok/error text, never on `code`, so a distinct value isn't worth
+      // adding just to distinguish "gone" from "offline" here.
+      return { ok: false, code: 'device_offline', error: 'Device not found' };
+    }
+    if (liveDevice.status !== 'online') {
+      return { ok: false, code: 'device_offline', error: `Device is ${liveDevice.status}, cannot execute command` };
+    }
   }
 
   if (source.kind === 'saved') {

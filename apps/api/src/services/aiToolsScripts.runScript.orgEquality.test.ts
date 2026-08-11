@@ -17,31 +17,67 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * partner-wide script visibility. These tests mock dispatchScriptToDevice /
  * waitForCommandResult directly — the dispatch core's own execution-row and
  * queueCommand behavior is covered by Task 1's tests, not re-asserted here.
+ *
+ * C1 fix (#3409 PR0 final review): dispatch + poll must escape the ambient
+ * held transaction (runOutsideDbContext + withSystemDbAccessContext), or the
+ * device_commands INSERT stays invisible to the agent-WS handler on another
+ * connection until the whole 60s poll finishes. `runOutsideDbContext` /
+ * `withSystemDbAccessContext` are mocked below as flag-tracking passthroughs
+ * (not bare identity) specifically so a later describe block can assert
+ * dispatchScriptToDevice actually runs NESTED inside them, not merely that
+ * they were called somewhere.
  */
 
-const mocks = vi.hoisted(() => ({
-  dispatchScriptToDevice: vi.fn().mockResolvedValue({
+const mocks = vi.hoisted(() => {
+  const contextFlags = { runOutside: false, system: false };
+  // Untyped `vi.fn()` + a separate `.mockImplementation` call (rather than
+  // `vi.fn(async () => (...))`) so TS doesn't lock the mock's return type to
+  // this one success shape — the dispatch-failure test below needs to
+  // `.mockResolvedValueOnce` a differently-shaped `{ ok: false, code, error }`.
+  const dispatchScriptToDevice = vi.fn();
+  dispatchScriptToDevice.mockImplementation(async () => ({
     ok: true,
     commandId: 'cmd-1',
     executionId: 'exec-1',
     delivered: true,
     executedAt: new Date('2026-08-11T00:00:00Z'),
-  }),
-  waitForCommandResult: vi.fn().mockResolvedValue({ id: 'cmd-1', status: 'completed' }),
-}));
-const { dispatchScriptToDevice, waitForCommandResult } = mocks;
+    // Snapshot the escape state at the moment dispatch actually runs, so
+    // the C1 test can assert nesting (not just that the mocks were called).
+    __calledUnder: { ...contextFlags },
+  }));
+  return {
+    contextFlags,
+    dispatchScriptToDevice,
+    waitForCommandResult: vi.fn().mockResolvedValue({ id: 'cmd-1', status: 'completed' }),
+  };
+});
+const { dispatchScriptToDevice, waitForCommandResult, contextFlags } = mocks;
 
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: mocks.dispatchScriptToDevice }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: mocks.waitForCommandResult }));
 
 vi.mock('../db', () => ({
-  runOutsideDbContext: vi.fn((fn) => fn()),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+    mocks.contextFlags.runOutside = true;
+    try {
+      return fn();
+    } finally {
+      mocks.contextFlags.runOutside = false;
+    }
+  }),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+    mocks.contextFlags.system = true;
+    try {
+      return await fn();
+    } finally {
+      mocks.contextFlags.system = false;
+    }
+  }),
   db: { select: vi.fn() },
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scripts } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
 import type { AiTool } from './aiTools';
@@ -201,6 +237,38 @@ describe('run_script partner-wide script visibility (#3409 PR0)', () => {
 
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
     expect(out.results[DEVICE_B].error).toMatch(/not found or access denied/i);
+  });
+});
+
+describe('run_script escapes the ambient transaction for dispatch + poll (#3409 C1)', () => {
+  it('runs dispatchScriptToDevice nested inside runOutsideDbContext(withSystemDbAccessContext(...)), and polls after dispatch resolves', async () => {
+    const scriptRow = { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' };
+    const deviceRow = { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' };
+    mockDb(scriptRow, deviceRow);
+
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    // dispatchScriptToDevice's mock snapshots the escape flags the instant it
+    // runs — this proves it executed NESTED inside both wrappers, not merely
+    // that the wrappers were called somewhere in the handler.
+    const dispatchReturn = await dispatchScriptToDevice.mock.results[0]!.value;
+    expect(dispatchReturn.__calledUnder).toEqual({ runOutside: true, system: true });
+
+    // withSystemDbAccessContext wraps ONLY dispatch (never the poll) — nesting
+    // the poll inside it would hold a live transaction across the 60s wait
+    // and reproduce the exact 0-row bug this fix removes, just under a
+    // system-scoped transaction instead of the ambient one.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+    // runOutsideDbContext escapes twice: once wrapping dispatch, once
+    // wrapping the poll.
+    expect(vi.mocked(runOutsideDbContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // The poll must start only after dispatch has fully resolved (i.e. after
+    // its transaction committed), never before.
+    const dispatchOrder = dispatchScriptToDevice.mock.invocationCallOrder[0]!;
+    const waitOrder = waitForCommandResult.mock.invocationCallOrder[0]!;
+    expect(waitOrder).toBeGreaterThan(dispatchOrder);
   });
 });
 

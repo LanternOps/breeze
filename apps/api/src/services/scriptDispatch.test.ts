@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../db', () => ({ db: { insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
+vi.mock('../db', () => ({ db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
 vi.mock('./commandQueue', () => ({ queueCommand: vi.fn() }));
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
@@ -33,6 +33,18 @@ const insertReturning = (rows: unknown[]) => ({
   values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
 });
 
+// Mocks the live `devices.status` re-read the requireOnline gate performs.
+// Pass `undefined` to model a device row that no longer exists.
+const mockLiveDeviceStatus = (status: string | undefined) => {
+  vi.mocked(db.select).mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(status === undefined ? [] : [{ status }]),
+      }),
+    }),
+  } as any);
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'exec-1' }]) as any);
@@ -45,17 +57,66 @@ describe('dispatchScriptToDevice — invariants', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('device_decommissioned');
     expect(db.insert).not.toHaveBeenCalled();
+    // Decommission is permanent — checked against the caller's snapshot with
+    // no live re-read.
+    expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('rejects offline device when requireOnline', async () => {
+  it('rejects offline device when requireOnline (snapshot and live read agree)', async () => {
+    mockLiveDeviceStatus('offline');
     const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('device_offline');
+    if (!r.ok) {
+      expect(r.code).toBe('device_offline');
+      expect(r.error).toBe('Device is offline, cannot execute command');
+    }
   });
 
   it('queues for an offline device when requireOnline is not set (manual semantics)', async () => {
     const r = await dispatchScriptToDevice({ device: device({ status: 'offline' }), source: { kind: 'saved', script: savedScript() } });
     expect(r.ok).toBe(true);
+    // requireOnline:false is deliberate offline-queueing (manual/route
+    // semantics) — no live re-read should fire for it.
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('requireOnline gate re-reads live status: rejects a stale-online snapshot when the live read says offline', async () => {
+    // Automation fleet runs snapshot device status once at run start
+    // (automationRuntime.ts:1712/2269) and can dispatch minutes later — the
+    // snapshot passed in here says 'online', but the live devices row has
+    // since gone offline. The gate must trust the live read, not the
+    // snapshot, or it would dispatch to a device that's actually offline.
+    mockLiveDeviceStatus('offline');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('device_offline');
+      expect(r.error).toBe('Device is offline, cannot execute command');
+    }
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('requireOnline gate proceeds when the live read says online, even off a stale non-online snapshot', async () => {
+    mockLiveDeviceStatus('online');
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'offline' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(true);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('requireOnline gate rejects with "Device not found" when the live row is gone', async () => {
+    mockLiveDeviceStatus(undefined);
+    const r = await dispatchScriptToDevice({
+      device: device({ status: 'online' }), requireOnline: true, source: { kind: 'saved', script: savedScript() },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('device_offline');
+      expect(r.error).toBe('Device not found');
+    }
   });
 
   it('rejects cross-org saved script (org-equality invariant)', async () => {

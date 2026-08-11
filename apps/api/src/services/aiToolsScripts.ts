@@ -17,7 +17,7 @@
  * - registry_operations (Tier 1): Read or modify Windows registry keys/values
  */
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
   organizations,
@@ -227,20 +227,68 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             }
           }
 
-          const dispatch = await dispatchScriptToDevice({
-            device: access.device,
-            source: { kind: 'saved', script },
-            parameters: (input.parameters as Record<string, unknown>) ?? {},
-            triggerType: 'manual',
-            triggeredBy: auth.user.id,
-            createdBy: auth.user.id,
-            requireOnline: true,
-          });
+          // Escape the ambient held transaction before dispatch + poll (#3409 C1).
+          //
+          // Every AI tool handler (this one included) runs inside ONE held
+          // Postgres transaction for the whole turn — aiAgentSdkTools.ts:400
+          // and jobs/intentReleaseWorker.ts:459 both wrap tool dispatch in
+          // withDbAccessContext (see db/index.ts:436-484 for what "held"
+          // means: a real `baseDb.transaction()` that doesn't commit until
+          // the callback returns). Everything above this point (the script
+          // select, verifyDeviceAccess, the partner-org lookup) is RLS-scoped
+          // read work that belongs in that ambient transaction. Dispatch does
+          // not: if the device_commands INSERT stayed inside it, the row
+          // would be invisible to the agent-WS handler that processes the
+          // result on a *different* connection — its `UPDATE device_commands
+          // ... WHERE id = commandId` would match 0 rows, and
+          // waitForCommandResult would burn the full 60s timeout per device
+          // while holding a pooled connection the entire time.
+          //
+          // `executeCommand` (services/commandQueue.ts) hit exactly this and
+          // fixed it with a two-phase runOutsideDbContext escape — read its
+          // docstring there before changing this. Mirror that shape, not one
+          // long-lived transaction spanning the whole poll:
+          //
+          //   Phase 1 (write): runOutsideDbContext + withSystemDbAccessContext
+          //   wrap ONLY dispatchScriptToDevice, so its script_executions /
+          //   device_commands inserts run inside a real (non-contextless)
+          //   transaction that commits the instant dispatch returns. System
+          //   scope is safe here because ownership was already validated
+          //   above under RLS (device access + org-equality + partner guard)
+          //   — same justification as the automation worker path, which runs
+          //   this identical dispatch core under system context for the
+          //   whole run (jobs/automationWorker.ts). The insert must NOT run
+          //   contextless (bare runOutsideDbContext with no
+          //   withSystemDbAccessContext) — that would just trade the 0-row
+          //   trap for the contextless-write guard (#1375).
+          //
+          //   Phase 2 (poll): waitForCommandResult runs OUTSIDE any held
+          //   transaction — still escaped via runOutsideDbContext, but NOT
+          //   nested inside withSystemDbAccessContext — so each poll
+          //   iteration is a plain, quickly-released pool read, exactly like
+          //   executeCommand's own poll loop. Nesting the poll inside the
+          //   same withSystemDbAccessContext call as dispatch would reproduce
+          //   the identical 0-row bug under a different (system-scoped)
+          //   transaction: the INSERT wouldn't commit until the 60s wait
+          //   finished either.
+          const dispatch = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              dispatchScriptToDevice({
+                device: access.device,
+                source: { kind: 'saved', script },
+                parameters: (input.parameters as Record<string, unknown>) ?? {},
+                triggerType: 'manual',
+                triggeredBy: auth.user.id,
+                createdBy: auth.user.id,
+                requireOnline: true,
+              })
+            )
+          );
           if (!dispatch.ok) {
             results[deviceId] = { error: dispatch.error };
             continue;
           }
-          results[deviceId] = await waitForCommandResult(dispatch.commandId, 60000);
+          results[deviceId] = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
         } catch (err) {
           results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
         }
