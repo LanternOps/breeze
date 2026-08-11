@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'http';
+import https from 'https';
 import { EventEmitter } from 'events';
 import type { AddressInfo } from 'net';
 import type { LookupAddress } from 'dns';
@@ -167,6 +168,116 @@ describe('safeFetch — SSRF policy', () => {
     await expect(
       safeFetch('http://[::ffff:a9fe:a9fe]/latest/meta-data', { allowPrivateNetwork: true })
     ).rejects.toBeInstanceOf(SsrfBlockedError);
+  });
+
+  it('rejects cleartext http to a PUBLIC address when requirePrivateForCleartext is set', async () => {
+    // allowPrivateNetwork opts into private targets but does not narrow the
+    // scheme: isAlwaysBlockedIp returns false for public IPs, so without this
+    // flag http://public would be dialed in the clear.
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const err = await safeFetch('http://example.com/hook', {
+      allowPrivateNetwork: true,
+      requirePrivateForCleartext: true
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SsrfBlockedError);
+    expect((err as Error).message).toMatch(/cleartext http/i);
+  });
+
+  it('allows cleartext http to an IPv6 ULA address (fd00::/8)', async () => {
+    // The v6 twin of the RFC1918 accept-case. isRfc1918OrUla treats ULA as the
+    // private range, so an operator on a v6-only LAN is not locked out.
+    __setLookupForTests(async () => [{ address: 'fd00::1', family: 6 }]);
+    const spy = vi.spyOn(http, 'request').mockImplementation((_o: any, cb?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.headers = {};
+        res.setEncoding = vi.fn();
+        cb?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+    await expect(
+      safeFetch('http://collector-v6.lan/hook', {
+        allowPrivateNetwork: true,
+        requirePrivateForCleartext: true
+      })
+    ).resolves.toBeDefined();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('rejects cleartext http to an ::ffff:-mapped PUBLIC address', async () => {
+    // The mapped form is the likeliest way a public address slips past a
+    // v4-only private-range check, so it gets its own reject-case.
+    __setLookupForTests(async () => [{ address: '::ffff:93.184.216.34', family: 6 }]);
+    const err = await safeFetch('http://example.com/hook', {
+      allowPrivateNetwork: true,
+      requirePrivateForCleartext: true
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SsrfBlockedError);
+    expect((err as Error).message).toMatch(/cleartext http/i);
+  });
+
+  it('still allows cleartext http to an RFC1918 address under the same flag', async () => {
+    __setLookupForTests(async () => [{ address: '10.0.0.5', family: 4 }]);
+    const spy = vi.spyOn(http, 'request').mockImplementation((_o: any, cb?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.headers = {};
+        res.setEncoding = vi.fn();
+        cb?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+    await expect(
+      safeFetch('http://collector.lan/hook', {
+        allowPrivateNetwork: true,
+        requirePrivateForCleartext: true
+      })
+    ).resolves.toBeDefined();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('leaves https to a public address untouched by requirePrivateForCleartext', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const spy = vi.spyOn(https, 'request').mockImplementation((_o: any, cb?: any) => {
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = 200;
+        res.headers = {};
+        res.setEncoding = vi.fn();
+        cb?.(res);
+        res.emit('data', Buffer.from('ok'));
+        res.emit('end');
+      });
+      return req;
+    });
+    await expect(
+      safeFetch('https://example.com/hook', {
+        allowPrivateNetwork: true,
+        requirePrivateForCleartext: true
+      })
+    ).resolves.toBeDefined();
+    spy.mockRestore();
   });
 
   it('rejects unsupported schemes', async () => {

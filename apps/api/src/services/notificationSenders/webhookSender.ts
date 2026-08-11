@@ -6,7 +6,13 @@
  */
 
 import { isIP } from 'net';
-import { isAlwaysBlockedIp, isPrivateIp, safeFetch, SsrfBlockedError } from '../urlSafety';
+import {
+  isAlwaysBlockedIp,
+  isPrivateIp,
+  isRfc1918OrUla,
+  safeFetch,
+  SsrfBlockedError
+} from '../urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
 
@@ -104,6 +110,18 @@ export function validateWebhookUrlSafety(rawUrl: string): string[] {
     );
   }
 
+  // The cleartext concession exists for the on-LAN hop a self-host operator
+  // owns end to end, not for the public internet. For a literal address we can
+  // say so now; a hostname needs DNS, handled in the WithDns variant below.
+  if (
+    allowPrivate &&
+    parsed.protocol === 'http:' &&
+    ipVersion !== 0 &&
+    !isRfc1918OrUla(hostname)
+  ) {
+    errors.push('Webhook URL may only use plain http for private (RFC1918/ULA) addresses');
+  }
+
   return errors;
 }
 
@@ -136,12 +154,26 @@ export async function validateWebhookUrlSafetyWithDns(rawUrl: string): Promise<s
       return ['Webhook URL hostname could not be resolved'];
     }
 
-    const blockedTargets = resolved
-      .map((entry) => entry.address)
-      .filter(selfHostAllowsPrivateNetwork() ? isAlwaysBlockedIp : isPrivateIp);
+    const addresses = resolved.map((entry) => entry.address);
+    const blockedTargets = addresses.filter(
+      selfHostAllowsPrivateNetwork() ? isAlwaysBlockedIp : isPrivateIp
+    );
 
     if (blockedTargets.length > 0) {
       errors.push(`Webhook URL resolves to blocked address space: ${blockedTargets.join(', ')}`);
+    }
+
+    // Cleartext to a hostname is only safe if EVERY answer is private: safeFetch
+    // pins one record, and a mixed private/public rotation would otherwise let a
+    // later delivery take the public one in the clear.
+    if (
+      parsed.protocol === 'http:' &&
+      selfHostAllowsPrivateNetwork() &&
+      !addresses.every(isRfc1918OrUla)
+    ) {
+      errors.push(
+        `Webhook URL may only use plain http for private (RFC1918/ULA) addresses; ${hostname} resolves to ${addresses.join(', ')}`
+      );
     }
   } catch {
     errors.push('Webhook URL hostname could not be resolved');
@@ -243,7 +275,11 @@ export async function sendWebhookNotification(
         // Must mirror the save-time decision, or a URL we accepted would be
         // refused at delivery — the TOCTOU re-check is meant to catch DNS
         // rebinding, not to second-guess the deployment's own policy.
-        allowPrivateNetwork: selfHostAllowsPrivateNetwork()
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+        // The cleartext allowance is for the operator's own LAN hop; safeFetch
+        // enforces it against the record it pins, so this cannot drift from the
+        // address actually dialed.
+        requirePrivateForCleartext: true
       });
 
       clearTimeout(timeoutId);

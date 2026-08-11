@@ -103,6 +103,34 @@ describe('webhook delivery worker', () => {
 
     expect(result.success).toBe(false);
     expect(result.errorMessage).toContain('Unsafe webhook URL');
-    expect(validateWebhookUrlSafetyWithDnsMock).toHaveBeenCalled();
+    // The failure now comes from safeFetch's own pinned resolution rather than
+    // a pre-flight re-validation, and reports through the same message.
+    expect(validateWebhookUrlSafetyWithDnsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not re-resolve the URL before delivering — one pinned lookup only', async () => {
+    // Regression pin for the TOCTOU split: a second DNS resolution here could
+    // disagree with the record safeFetch pins and connects to.
+    safeFetchMock.mockResolvedValueOnce(
+      new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } })
+    );
+
+    const result = await deliverWebhook(makeJob());
+
+    expect(result.success).toBe(true);
+    expect(validateWebhookUrlSafetyWithDnsMock).not.toHaveBeenCalled();
+    expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the private-network and cleartext flags into the delivery call', async () => {
+    safeFetchMock.mockResolvedValueOnce(
+      new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } })
+    );
+
+    await deliverWebhook(makeJob());
+
+    const init = safeFetchMock.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(init.requirePrivateForCleartext).toBe(true);
+    expect(init).toHaveProperty('allowPrivateNetwork');
   });
 });
