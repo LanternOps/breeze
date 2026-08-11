@@ -59,6 +59,15 @@ export default function ScriptForm({
   isSystemScript = false,
 }: ScriptFormProps) {
   const { t } = useTranslation('scripts');
+  // Resolved after mount, never during render. Reading `navigator` inline made
+  // SSR emit "Ctrl+S" while the client's first render produced "⌘S" on macOS,
+  // which React reports as a hydration mismatch on every Mac visit. Starting
+  // from the server's value and correcting in an effect keeps the first client
+  // render byte-identical to the SSR output.
+  const [saveShortcut, setSaveShortcut] = useState('Ctrl+S');
+  useEffect(() => {
+    if (navigator.platform?.includes('Mac')) setSaveShortcut('⌘S');
+  }, []);
   const [editorMounted, setEditorMounted] = useState(false);
   const editorInstanceRef = useRef<Parameters<NonNullable<EditorProps['onMount']>>[0] | null>(null);
   const [paramsOpen, setParamsOpen] = useState(false);
@@ -726,9 +735,7 @@ export default function ScriptForm({
       {/* Form Actions */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="hidden text-xs text-muted-foreground sm:block">
-          {t('scriptForm.keyboardSave', {
-            shortcut: typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '⌘S' : 'Ctrl+S'
-          })}
+          {t('scriptForm.keyboardSave', { shortcut: saveShortcut })}
         </p>
         <div className="flex flex-col gap-3 sm:flex-row">
           <button

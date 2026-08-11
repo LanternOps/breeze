@@ -479,7 +479,32 @@ const partnerSettingsSchema = z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
-    website: z.string().optional()
+    // This value is rendered as a link in branded PDFs, invoices and email
+    // footers, so an unvalidated `javascript:`/`data:text/html,...` here is
+    // stored XSS that fires for whoever opens the document — including the
+    // partner's own customers. It previously accepted any string and persisted
+    // the payload verbatim on a 200, while the launcher template field a few
+    // hundred lines below in this same file already gated on a scheme
+    // allowlist. Restricted to http/https only: unlike a remote-access
+    // launcher, a company website has no legitimate custom-scheme use.
+    website: z
+      .string()
+      .max(2000)
+      .refine(
+        (v) => {
+          if (v === '') return true;
+          let parsed: URL;
+          try {
+            parsed = new URL(v);
+          } catch {
+            return false;
+          }
+          return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+        },
+        'Website must be a full http:// or https:// URL',
+      )
+      .optional()
+      .or(z.literal(''))
   }).optional(),
   address: z.object({
     street1: z.string().max(255).optional(),
