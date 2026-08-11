@@ -5,6 +5,7 @@ package patching
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -245,7 +246,42 @@ func TestCancelBeforeOSCountdownDoesNotAbortTheOS(t *testing.T) {
 	_ = notifications
 }
 
-func TestCancelAfterOSCountdownSurfacesAbortFailure(t *testing.T) {
+// TestCancelDuringOSCountdownAbortsTheOS covers the window that matters most: the
+// final minute, after runOSReboot has started the OS countdown. runOSReboot
+// clears RebootScheduled before invoking the OS command, so a Cancel gate that
+// looked only at RebootScheduled rejected these with "no reboot scheduled" and
+// never called abortOSReboot — leaving the machine to reboot while reporting
+// that nothing was pending. Note this drives Cancel through the ordinary public
+// API with no hand-patched state: if it needs a manual re-arm to pass, the gate
+// is wrong again.
+func TestCancelDuringOSCountdownAbortsTheOS(t *testing.T) {
+	rm, timers, _, osCalls := newTestManager(t, 3)
+	aborts := 0
+	rm.abortOSReboot = func() error {
+		aborts++
+		return nil
+	}
+
+	if err := rm.Schedule(5*time.Minute, time.Time{}, "Patch install", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers.runAt(4 * time.Minute) // OS countdown starts here
+	if len(*osCalls) != 1 {
+		t.Fatalf("expected the OS countdown to have started, got %v", *osCalls)
+	}
+
+	if err := rm.Cancel(); err != nil {
+		t.Fatalf("Cancel during the OS countdown: %v", err)
+	}
+	if aborts != 1 {
+		t.Errorf("abortOSReboot called %d times, want 1 — the OS countdown was left running", aborts)
+	}
+}
+
+// TestCancelDuringOSCountdownSurfacesAbortFailure is the macOS shape: the Go
+// timers are cleared either way, but a platform that cannot abort must not
+// report a cancellation that did not happen.
+func TestCancelDuringOSCountdownSurfacesAbortFailure(t *testing.T) {
 	rm, timers, _, _ := newTestManager(t, 3)
 	rm.abortOSReboot = func() error { return errors.New("no cancel flag on this platform") }
 
@@ -254,14 +290,35 @@ func TestCancelAfterOSCountdownSurfacesAbortFailure(t *testing.T) {
 	}
 	timers.runAt(4 * time.Minute) // OS countdown starts here
 
-	// Schedule was cleared by the reboot invocation, so re-arm state the way a
-	// console cancel arriving inside the final minute would find it.
-	rm.mu.Lock()
-	rm.state.RebootScheduled = true
-	rm.mu.Unlock()
-
 	if err := rm.Cancel(); err == nil {
 		t.Fatal("Cancel returned nil while the OS countdown could not be aborted — that reports a cancellation that did not happen")
+	}
+}
+
+// TestCancelIsIdempotentAfterAborting guards the other side of the widened gate:
+// once a cancel has cleared both the schedule and the OS countdown, a second
+// cancel must report that there is nothing left to cancel rather than firing
+// abortOSReboot again.
+func TestCancelIsIdempotentAfterAborting(t *testing.T) {
+	rm, timers, _, _ := newTestManager(t, 3)
+	aborts := 0
+	rm.abortOSReboot = func() error {
+		aborts++
+		return nil
+	}
+
+	if err := rm.Schedule(5*time.Minute, time.Time{}, "Patch install", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers.runAt(4 * time.Minute)
+	if err := rm.Cancel(); err != nil {
+		t.Fatalf("first Cancel: %v", err)
+	}
+	if err := rm.Cancel(); err == nil {
+		t.Error("second Cancel returned nil, want an error — nothing was left scheduled")
+	}
+	if aborts != 1 {
+		t.Errorf("abortOSReboot called %d times across two cancels, want 1", aborts)
 	}
 }
 
@@ -319,5 +376,116 @@ func TestOSRebootFailureIsNotSilent(t *testing.T) {
 	rm.mu.Unlock()
 	if osInvoked {
 		t.Error("osInvoked=true after the OS reboot invocation failed")
+	}
+}
+
+// TestRescheduleDuringOSCountdownAbortsTheOldOne is the regression test for the
+// nastiest shape found in review: runOSReboot starts an OS-level countdown that
+// outlives this process, and Schedule used to clear osInvoked unconditionally.
+// A reschedule arriving in that final minute therefore forgot the live countdown
+// — the machine still went down at the OLD time, and a later Cancel reported
+// success because it no longer believed anything was running.
+func TestRescheduleDuringOSCountdownAbortsTheOldOne(t *testing.T) {
+	rm, timers, _, osCalls := newTestManager(t, 3)
+	aborts := 0
+	rm.abortOSReboot = func() error {
+		aborts++
+		return nil
+	}
+
+	if err := rm.Schedule(5*time.Minute, time.Time{}, "First", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers.runAt(4 * time.Minute) // OS countdown is now live
+	if len(*osCalls) != 1 {
+		t.Fatalf("expected the OS countdown to have started, got %v", *osCalls)
+	}
+
+	if err := rm.Schedule(30*time.Minute, time.Time{}, "Second", "patch_job"); err != nil {
+		t.Fatalf("re-Schedule during the OS countdown: %v", err)
+	}
+	if aborts != 1 {
+		t.Errorf("abortOSReboot called %d times, want 1 — the old OS countdown was left running", aborts)
+	}
+	if rm.State().Reason != "Second" {
+		t.Errorf("Reason=%q, want the new schedule to win", rm.State().Reason)
+	}
+
+	// And the new schedule must be genuinely cancellable, i.e. the manager did
+	// not lose track of state across the abort.
+	if err := rm.Cancel(); err != nil {
+		t.Errorf("Cancel after rescheduling over an aborted countdown: %v", err)
+	}
+}
+
+// TestRescheduleDuringOSCountdownRefusesWhenItCannotAbort is the macOS shape:
+// BSD shutdown(8) has no cancel flag, so the old countdown cannot be stopped.
+// Schedule must refuse rather than promise a new time it cannot deliver.
+func TestRescheduleDuringOSCountdownRefusesWhenItCannotAbort(t *testing.T) {
+	rm, timers, _, _ := newTestManager(t, 3)
+	rm.abortOSReboot = func() error { return errors.New("no cancel flag on this platform") }
+
+	if err := rm.Schedule(5*time.Minute, time.Time{}, "First", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers.runAt(4 * time.Minute) // OS countdown is now live
+
+	err := rm.Schedule(30*time.Minute, time.Time{}, "Second", "patch_job")
+	if err == nil {
+		t.Fatal("Schedule returned nil while an un-abortable OS countdown was live — that promises a reboot time it cannot deliver")
+	}
+	// The original schedule's reason must survive: the reschedule did not happen.
+	if rm.State().Reason != "First" {
+		t.Errorf("Reason=%q, want the original schedule to be untouched after a refused reschedule", rm.State().Reason)
+	}
+}
+
+// TestLastErrorDistinguishesFailureFromRebooting covers the ambiguity review
+// flagged: RebootScheduled goes false both when the machine is going down and
+// when the OS invocation failed and the machine is still up. Only LastError tells
+// an operator (via get_reboot_status) which one happened.
+func TestLastErrorDistinguishesFailureFromRebooting(t *testing.T) {
+	// Success: no LastError.
+	rm, timers, _, _ := newTestManager(t, 3)
+	if err := rm.Schedule(5*time.Minute, time.Time{}, "Patch install", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers.runAt(4 * time.Minute)
+	if got := rm.State().LastError; got != "" {
+		t.Errorf("LastError=%q after a successful invocation, want empty", got)
+	}
+
+	// Failure: LastError explains it.
+	rm2, timers2, _, _ := newTestManager(t, 3)
+	rm2.execOSReboot = func(time.Duration) error { return errors.New("shutdown: command not found") }
+	if err := rm2.Schedule(5*time.Minute, time.Time{}, "Patch install", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers2.runAt(4 * time.Minute)
+	state := rm2.State()
+	if state.RebootScheduled {
+		t.Error("RebootScheduled=true after a failed invocation")
+	}
+	if !strings.Contains(state.LastError, "shutdown: command not found") {
+		t.Errorf("LastError=%q, want it to carry the invocation failure", state.LastError)
+	}
+
+	// Circuit-breaker block is also recorded.
+	rm3, timers3, _, _ := newTestManager(t, 1)
+	rm3.rebootHistory = []time.Time{time.Now().Add(-time.Hour)}
+	if err := rm3.Schedule(5*time.Minute, time.Time{}, "Patch install", "patch_job"); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	timers3.runAt(4 * time.Minute)
+	if !strings.Contains(rm3.State().LastError, "circuit breaker") {
+		t.Errorf("LastError=%q, want it to name the circuit breaker", rm3.State().LastError)
+	}
+
+	// A fresh schedule clears the stale failure.
+	if err := rm2.Schedule(10*time.Minute, time.Time{}, "Retry", "patch_job"); err != nil {
+		t.Fatalf("re-Schedule: %v", err)
+	}
+	if got := rm2.State().LastError; got != "" {
+		t.Errorf("LastError=%q after a fresh schedule, want it cleared", got)
 	}
 }

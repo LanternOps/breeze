@@ -909,8 +909,18 @@ async function recordDeviceExecution(
         expectedOrgId: orgId,
       });
       if (!rebootResult.success) {
+        // captureException, not just a console line: this is the post-patch
+        // reboot — the path #3197 is about — and a failure here leaves the device
+        // patched but never restarted while the job still records success. The
+        // maintenance-window path reports the structurally identical failure to
+        // Sentry, so this one must too.
         console.warn(
           `[PatchJobExecutor] reboot dispatch failed for device ${deviceId}: ${rebootResult.error}`
+        );
+        captureException(
+          new Error(
+            `[PatchJobExecutor] reboot dispatch failed for device ${deviceId}: ${rebootResult.error}`
+          )
         );
       } else {
         console.log(

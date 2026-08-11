@@ -79,7 +79,25 @@ export async function resolveRebootDelayMinutes(
   try {
     const settings = await deps.resolvePatchConfigForDevice(deviceId);
     if (!settings) return DEFAULT_REBOOT_DELAY_MINUTES;
-    return clampRebootDelayMinutes(settings.rebootDelayMinutes);
+    const stored = settings.rebootDelayMinutes;
+    const delay = clampRebootDelayMinutes(stored);
+    // The column is NOT NULL with CHECK (reboot_delay_minutes BETWEEN 1 AND 1440)
+    // and every write path is zod-validated, so a value that needed clamping got
+    // past all of that — a CHECK bypass, a hand-edited row, or a NULL leaking
+    // through a join. Clamping keeps the reboot warned, but the anomaly must not
+    // be the quiet branch: it is more likely to indicate a bug than the throwing
+    // path below, which is already reported.
+    if (stored !== delay) {
+      console.warn(
+        `[PatchReboot] device ${deviceId} had an out-of-range stored reboot delay ${String(stored)}; using ${delay}m`
+      );
+      captureException(
+        new Error(
+          `Out-of-range config_policy_patch_settings.reboot_delay_minutes ${String(stored)} for device ${deviceId} (clamped to ${delay})`
+        )
+      );
+    }
+    return delay;
   } catch (err) {
     console.warn(
       `[PatchReboot] failed to resolve reboot delay for device ${deviceId}, falling back to ${DEFAULT_REBOOT_DELAY_MINUTES}m:`,

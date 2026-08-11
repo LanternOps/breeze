@@ -103,12 +103,12 @@ func TestBroadcastNotificationFiltersOnNotifyScope(t *testing.T) {
 			want:   false,
 		},
 		{
-			// The macOS desktop helper as scopesForRole grants it since #3197:
-			// "desktop" plus "notify", because the cross-platform reboot
+			// The macOS desktop helper: scopesForRole has granted it "desktop"
+			// plus "notify" since #3197, because the cross-platform reboot
 			// warning ladder broadcasts through here and this helper is the
 			// only thing that can render a toast for a logged-in macOS user.
-			// TestScopesForRoleGrantsMacDesktopHelperNotify pins the grant
-			// itself; this case pins that the filter honours it.
+			// TestMacDesktopHelperScopesGrantNotify pins the grant itself;
+			// this case pins that the filter honours it.
 			name:   "macos desktop helper scopes",
 			scopes: macDesktopHelperScopes,
 			want:   true,

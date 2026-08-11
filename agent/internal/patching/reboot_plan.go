@@ -142,8 +142,11 @@ func PlanReboot(totalDelay time.Duration) RebootPlan {
 
 	// Lead notification: the reboot has just been scheduled.
 	plan.Notifications = append(plan.Notifications, RebootNotification{
-		After:   0,
-		Title:   "Reboot Scheduled",
+		After: 0,
+		// "Restart", not "Reboot", throughout: it is what both Windows and macOS
+		// say in their own user-facing UI, and these strings go to an end user
+		// rather than a technician.
+		Title:   "Restart Scheduled",
 		Body:    fmt.Sprintf("A system restart for updates is scheduled in %s. Please save your work.", humanizeRebootDelay(totalDelay)),
 		Urgency: leadUrgency(totalDelay),
 	})

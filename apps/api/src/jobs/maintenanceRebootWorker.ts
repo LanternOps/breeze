@@ -64,6 +64,11 @@ export type RebootCandidate = {
 };
 
 type WindowsRebootPayload = { delayMinutes: number; reason: string; source: string };
+// `delay` is the on-the-wire payload key the agent reads
+// (tools.ShutdownDelayMinutes parses payload["delay"]), and its unit is MINUTES
+// on every platform. Do NOT rename it to delayMinutes for symmetry with
+// WindowsRebootPayload above: these field names ARE the wire contract, so a
+// rename here would leave the agent parsing a missing key.
 type LinuxRebootPayload = { delay: number };
 export type RebootDecision =
   | { type: 'schedule_reboot'; payload: WindowsRebootPayload }

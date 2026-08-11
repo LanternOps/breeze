@@ -40,11 +40,20 @@ type RebootState struct {
 	NotifiedUser     bool      `json:"notifiedUser"`
 	NotificationSent time.Time `json:"notificationSent,omitempty"`
 	Source           string    `json:"source"` // "patch_install", "manual", "policy"
-	// NotificationsPlanned is how many user warnings the current schedule will
-	// emit. Always >= 1 for a scheduled reboot (#3197) — a zero here on a
-	// scheduled reboot means a silent reboot, which is the defect this field
-	// exists to make visible to the console.
+	// NotificationsPlanned is how many user warnings the most recently scheduled
+	// reboot will emit. Read it together with RebootScheduled, which is what
+	// tracks liveness: while RebootScheduled is true this is always >= 1 (#3197
+	// — a zero there would mean a silent reboot, which is why this field is
+	// surfaced to the console at all). Cancel resets it to 0; a reboot that has
+	// already fired deliberately leaves it set, so a status dump can still show
+	// that the reboot which took the machine down had been announced.
 	NotificationsPlanned int `json:"notificationsPlanned"`
+	// LastError records why the most recent reboot attempt did not happen — an
+	// OS shutdown invocation that failed, or a circuit-breaker block. Without it
+	// RebootScheduled:false is ambiguous between "the machine is going down right
+	// now" and "the reboot failed and the machine is still up", which left a
+	// failed reboot visible only in agent logs. Cleared by the next Schedule.
+	LastError string `json:"lastError,omitempty"`
 }
 
 // NotifyFunc is called to send a notification to the logged-in user.
@@ -131,6 +140,25 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 		return fmt.Errorf("reboot manager is stopped")
 	}
 
+	// An OS-level countdown may already be running: runOSReboot fires at
+	// OSInvokeAt, a minute before the machine actually goes down. That countdown
+	// lives in the OS, not this process, so simply re-arming Go timers on top of
+	// it would leave two reboots racing — and worse, would clear osInvoked and so
+	// make a later Cancel() report success while the ORIGINAL countdown still
+	// took the machine down at the old time. Abort it first, and refuse the
+	// reschedule outright if it cannot be aborted rather than promising a new
+	// time we cannot deliver (macOS has no cancel flag).
+	if r.osInvoked {
+		if r.abortOSReboot == nil {
+			return fmt.Errorf("an OS reboot countdown is already running and cannot be aborted on this platform")
+		}
+		if err := r.abortOSReboot(); err != nil {
+			return fmt.Errorf("an OS reboot countdown is already running and could not be aborted: %w", err)
+		}
+		log.Warn("aborted an in-flight OS reboot countdown to honour a new schedule")
+		r.osInvoked = false
+	}
+
 	// Cancel any existing schedule (this bumps the generation, orphaning any
 	// callback from the superseded schedule).
 	r.cancelLocked()
@@ -147,6 +175,8 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 		Reason:               reason,
 		Source:               source,
 		NotificationsPlanned: len(plan.Notifications),
+		// LastError intentionally omitted: a fresh schedule clears any previous
+		// failure, so the field describes only the most recent attempt.
 	}
 
 	for _, n := range plan.Notifications {
@@ -176,10 +206,17 @@ func (r *RebootManager) Schedule(delay time.Duration, deadline time.Time, reason
 }
 
 // Cancel cancels a scheduled reboot.
+//
+// The gate deliberately admits r.osInvoked as well as r.state.RebootScheduled.
+// runOSReboot clears RebootScheduled *before* it invokes the OS command, so for
+// the whole OSGrace window — the final minute, when the OS countdown is really
+// running and abortOSReboot is the only thing that can still stop the machine —
+// RebootScheduled is already false. Gating on RebootScheduled alone made the
+// abort path unreachable in precisely the scenario it exists for, and returned a
+// misleading "no reboot scheduled" while a countdown was live.
 func (r *RebootManager) Cancel() error {
 	r.mu.Lock()
-	scheduled := r.state.RebootScheduled
-	if !scheduled {
+	if !r.state.RebootScheduled && !r.osInvoked {
 		r.mu.Unlock()
 		return fmt.Errorf("no reboot scheduled")
 	}
@@ -272,6 +309,8 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 
 	if recentCount >= r.maxRebootsPerDay {
 		r.state.RebootScheduled = false
+		r.state.LastError = fmt.Sprintf("blocked by circuit breaker: %d reboots in 24h (max %d)",
+			recentCount, r.maxRebootsPerDay)
 		notifyFn := r.notifyFn
 		maxPerDay := r.maxRebootsPerDay
 		r.mu.Unlock()
@@ -302,12 +341,14 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 		log.Error("no OS reboot implementation for this platform")
 		r.mu.Lock()
 		r.osInvoked = false
+		r.state.LastError = "no OS reboot implementation for this platform"
 		r.mu.Unlock()
 		return
 	}
 	if err := exec(grace); err != nil {
 		r.mu.Lock()
 		r.osInvoked = false
+		r.state.LastError = fmt.Sprintf("OS reboot invocation failed: %v", err)
 		r.mu.Unlock()
 		// A failed shutdown invocation used to be discarded entirely: the old
 		// code called exec.Command(...).Run() and ignored the error, so a
@@ -328,6 +369,11 @@ func (r *RebootManager) loadRebootHistory() {
 
 	var history []time.Time
 	if err := json.Unmarshal(data, &history); err != nil {
+		// Loud, not Debug: the history file IS the reboot-loop circuit breaker's
+		// memory, so a corrupt file silently resets the count to zero and
+		// disarms the one protection against rebooting a machine repeatedly.
+		log.Warn("reboot history file is unreadable; circuit-breaker count resets to zero",
+			"path", r.historyPath(), "error", err)
 		return
 	}
 
