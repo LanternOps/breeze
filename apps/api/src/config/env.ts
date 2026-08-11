@@ -1,8 +1,15 @@
+// The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
+// named sets rather than inline literals so a reader that must distinguish
+// "explicitly off" from "unrecognized" (abuseSignalsEnabled below) can never
+// drift from what envFlag() itself accepts. Matches the boolean typo-guards in
+// config/validate.ts.
+const RECOGNIZED_TRUE_FLAG_VALUES: ReadonlySet<string> = new Set(['1', 'true', 'yes', 'on']);
+const RECOGNIZED_FALSE_FLAG_VALUES: ReadonlySet<string> = new Set(['0', 'false', 'no', 'off']);
+
 export function envFlag(name: string, fallback = false): boolean {
   const raw = process.env[name];
   if (!raw) return fallback;
-  const v = raw.trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  return RECOGNIZED_TRUE_FLAG_VALUES.has(raw.trim().toLowerCase());
 }
 
 export type RemoteAccessAdmissionMode = 'open' | 'closed';
@@ -121,6 +128,78 @@ export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
 }
 
+// Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:
+// it exists to police untrusted public signups on a multi-tenant service. A
+// self-hosted install is normally one IT team managing its own machines, where
+// the same heuristics are mostly noise or actively wrong —
+// `invariant.active_no_payment` (services/abuseSignals/invariants.ts: every
+// `status='active'` partner with a NULL `payment_method_attached_at`) fires on
+// every partner forever, because self-host has no billing writer at all: the
+// partner is created `active` directly at email verification (`status:
+// rec.hostedExpectation ? 'pending' : 'active'` in routes/auth/verifyEmail.ts)
+// and nothing on a self-hosted deployment ever stamps that column.
+// `rmm.device_ip_scatter` just describes remote workers, and the fleet-shape
+// detectors flag an ordinary lab of unnamed test VMs.
+//
+// (Deliberately NOT phrased as "payment_method_attached_at is only written by
+// X" — an unqualified claim of exactly that shape about this column was proven
+// false in production and is now retracted at length in
+// services/partnerActivation.ts. The column additionally has an in-repo writer,
+// routes/internal/synthetic.ts. The self-host argument above needs neither
+// claim: no writer runs there at all.)
+//
+// So it defaults to `isHosted()` rather than being on for everyone. Note this
+// keys off the TRUTHY reading of IS_HOSTED, not the affirmative-self-host
+// helper below: the failure that matters here is a hosted deployment silently
+// NOT policing its signups, so an unset/garbage IS_HOSTED leaves detection off
+// entirely rather than half-configured. Be aware that "off" is quiet: the only
+// artifact is one `[AbuseSignals] Disabled` line at boot from
+// jobs/abuseSignalsSweep.ts — no alert, no /health field — so an operator who
+// expected detection has to go read the startup logs to discover it isn't
+// running. That is the opposite polarity from selfHostAllowsPrivateNetwork,
+// which fails closed toward *strictness* because there the risk runs the other
+// way.
+//
+// ABUSE_SIGNALS_ENABLED overrides in both directions, so a self-hoster running
+// a genuine multi-tenant service can opt in, and a hosted deployment can switch
+// the subsystem off without a redeploy. Only the RECOGNIZED vocabularies count:
+// an unrecognized value (`ture`, `enabled`) falls through to the IS_HOSTED
+// default with a warning rather than reading as "off", because the previous
+// `envFlag`-based override turned a hosted deployment's detection OFF on any
+// typo — precisely the silent-non-policing failure this comment says the
+// default exists to avoid. config/validate.ts refuses boot on such a value, so
+// the fallback here is only reachable in a process that skipped the validator.
+// Empty stays "unset" on purpose: both compose files inject the key as
+// `${ABUSE_SIGNALS_ENABLED:-}`, so "" is what the majority of stacks pass.
+export function abuseSignalsEnabled(): boolean {
+  const raw = (process.env.ABUSE_SIGNALS_ENABLED ?? '').trim();
+  if (raw === '') return isHosted();
+  const normalized = raw.toLowerCase();
+  if (RECOGNIZED_TRUE_FLAG_VALUES.has(normalized)) return true;
+  if (RECOGNIZED_FALSE_FLAG_VALUES.has(normalized)) return false;
+  console.warn(
+    `[AbuseSignals] Ignoring unrecognized ABUSE_SIGNALS_ENABLED value ${JSON.stringify(raw)} ` +
+      '— expected true/false, 1/0, yes/no or on/off. Falling back to the IS_HOSTED default.',
+  );
+  return isHosted();
+}
+
+// True ONLY for an affirmative opt-out: ABUSE_SIGNALS_ENABLED explicitly set to
+// a recognized falsey value. Unset / empty / unrecognized / truthy all return
+// false, so this is strictly narrower than `!abuseSignalsEnabled()` — the
+// default-off self-host path and the typo path are both excluded.
+//
+// Exists so a caller can distinguish "the operator turned this off" from
+// "detection merely isn't running here" before taking an action that is
+// destructive or otherwise not safe to perform on the ambiguous default (the
+// abuse queue's Redis teardown, jobs/abuseSignalsSweep.ts). Intentionally
+// unused inside this module.
+export function abuseSignalsExplicitlyDisabled(): boolean {
+  return RECOGNIZED_FALSE_FLAG_VALUES.has(
+    (process.env.ABUSE_SIGNALS_ENABLED ?? '').trim().toLowerCase(),
+  );
+}
+
 // Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to
 // a recognized falsey signal ('false'/'0'/'no'/'off'). Unset / empty / garbage /
 // truthy all return false, so security-weakening, self-host-only features stay
@@ -130,7 +209,7 @@ export function isHosted(): boolean {
 // reading a `source`/`data` object rather than process.env can reuse it.
 // Mirrors the fail-closed gate in services/dnsProviders/index.ts.
 export function isRecognizedSelfHostSignal(raw: string | undefined): boolean {
-  return new Set(['0', 'false', 'no', 'off']).has((raw ?? '').trim().toLowerCase());
+  return RECOGNIZED_FALSE_FLAG_VALUES.has((raw ?? '').trim().toLowerCase());
 }
 
 // Gate for "may this deployment reach RFC1918/ULA (and plain-HTTP) targets over

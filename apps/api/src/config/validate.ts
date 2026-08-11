@@ -580,6 +580,13 @@ const envObjectSchema = z
     // is caught at boot instead of silently parsing to a surprising default.
     AGENT_AUTO_PROMOTE: z.string().optional(),
 
+    // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
+    // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
+    // env.ts. Validated here for boolean format only, for the same reason as
+    // AGENT_AUTO_PROMOTE above — see the superRefine rule for why a typo here
+    // is worse than a typo on most flags.
+    ABUSE_SIGNALS_ENABLED: z.string().optional(),
+
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
     // self-hosted operator may deliberately run 2FA-off).
@@ -1584,6 +1591,28 @@ const envSchema = envObjectSchema
         path: ['AGENT_AUTO_PROMOTE'],
         message:
           'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
+      });
+    }
+
+    // ABUSE_SIGNALS_ENABLED (signup-abuse detection). Same treatment and same
+    // reasoning as AGENT_AUTO_PROMOTE above: independent of NODE_ENV, because
+    // the value silently governs whether the subsystem runs at all. A typo
+    // (ABUSE_SIGNALS_ENABLED=ture / =enabled) used to read as "off" on the
+    // envFlag path, so an operator who believed they had detection ENABLED got
+    // a hosted deployment quietly not policing its signups — and the only
+    // artifact was one `[AbuseSignals] Disabled` line at boot. abuseSignalsEnabled()
+    // now falls back to the IS_HOSTED default on such a value, but the boot
+    // refusal here is what actually surfaces the typo to the operator.
+    // Empty/unset is allowed: both compose files inject
+    // `${ABUSE_SIGNALS_ENABLED:-}`, so "" is the common case and means unset
+    // (defaults to IS_HOSTED). Mirrors abuseSignalsEnabled() in env.ts.
+    const abuseSignalsRaw = (data.ABUSE_SIGNALS_ENABLED ?? '').trim().toLowerCase();
+    if (abuseSignalsRaw && !boolValues.has(abuseSignalsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ABUSE_SIGNALS_ENABLED'],
+        message:
+          'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
       });
     }
 

@@ -6,6 +6,7 @@ const {
   computeInvariantSignals,
   loadPartnerAggregates,
   computeHeuristicSignals,
+  loadHostnameIndicators,
   loadScriptFindings,
   computeScriptSignals,
   loadScriptIndicators,
@@ -19,6 +20,7 @@ const {
   computeInvariantSignals: vi.fn(),
   loadPartnerAggregates: vi.fn(),
   computeHeuristicSignals: vi.fn(),
+  loadHostnameIndicators: vi.fn(),
   loadScriptFindings: vi.fn(),
   computeScriptSignals: vi.fn(),
   loadScriptIndicators: vi.fn(),
@@ -42,7 +44,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('./invariants', () => ({ computeInvariantSignals }));
-vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals }));
+vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators }));
 vi.mock('./scriptContent', () => ({ loadScriptFindings, computeScriptSignals, loadScriptIndicators }));
 vi.mock('./billingIdentity', () => ({ loadBillingIdentityAggregates, computeBillingIdentitySignals }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
@@ -68,6 +70,7 @@ function agg(overrides: Partial<PartnerAggregates>): PartnerAggregates {
     commands24h: 0,
     scriptExecutions24h: 0,
     lastSeenIps: [],
+    hostnames: [],
     ...overrides,
   };
 }
@@ -88,6 +91,7 @@ beforeEach(() => {
   computeInvariantSignals.mockResolvedValue([]);
   loadPartnerAggregates.mockResolvedValue([agg({})]);
   computeHeuristicSignals.mockReturnValue([]);
+  loadHostnameIndicators.mockReturnValue({ prefixes: [] });
   loadScriptFindings.mockResolvedValue({ findings: [], sharedHosts: new Map(), scannedPartnerIds: [] });
   computeScriptSignals.mockReturnValue([]);
   loadScriptIndicators.mockReturnValue({ tlds: [], hosts: [] });
@@ -137,6 +141,21 @@ describe('runAbuseSweep', () => {
     expect(markDelivered).toHaveBeenCalledTimes(1);
     expect(markDelivered.mock.calls[0]![0]).toEqual(['r1', 'r3']);
     expect(result.notified).toBe(2);
+  });
+
+  it('threads the loaded hostname indicators into computeHeuristicSignals', async () => {
+    // computeHeuristicSignals takes the indicator list as its 4th argument and
+    // it feeds the only alert-capable tier of rmm.provider_default_hostname.
+    // Nothing else in this suite would notice the sweep dropping the argument,
+    // so the curated tier could be disconnected with zero test failures.
+    const indicators = { prefixes: ['xy-'] };
+    loadHostnameIndicators.mockReturnValue(indicators);
+
+    await runAbuseSweep();
+
+    expect(loadHostnameIndicators).toHaveBeenCalledTimes(1);
+    expect(computeHeuristicSignals).toHaveBeenCalledTimes(1);
+    expect(computeHeuristicSignals.mock.calls[0]![3]).toBe(indicators);
   });
 
   it('passes persistSignals an evaluatedPartnerIds set built from the aggregates partnerIds', async () => {
