@@ -202,4 +202,22 @@ describe('addManualGroupMemberships', () => {
     expect(mockSelect).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
   });
+
+  it('inserts one row per device when the request repeats an id', async () => {
+    mockSelect.mockReturnValueOnce(whereChain([]));
+
+    const result = await addManualGroupMemberships({
+      groupId: GROUP_ID,
+      orgId: ORG_ID,
+      deviceIds: [D1, D1],
+    });
+
+    // `(device_id, group_id)` is the membership primary key, so a duplicate in
+    // the payload has to collapse before the insert rather than becoming a
+    // constraint violation surfacing as a 500.
+    expect(result).toEqual({ added: [D1], skipped: 0 });
+    expect(insertedRows[0]).toEqual([
+      { deviceId: D1, groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' },
+    ]);
+  });
 });

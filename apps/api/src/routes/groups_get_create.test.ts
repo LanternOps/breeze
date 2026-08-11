@@ -125,6 +125,7 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 import { db } from '../db';
+import { writeRouteAudit } from '../services/auditEvents';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
 import { evaluateGroupMembership } from '../services/groupMembership';
@@ -568,7 +569,9 @@ describe('groups routes', () => {
         // "filterConditions: Invalid input: expected object, received null".
         expect(res.status).toBe(201);
         expect(valuesMock).toHaveBeenCalledTimes(1);
-        expect(valuesMock.mock.calls[0][0]).toMatchObject({ filterConditions: null });
+        const [groupInsert] = valuesMock.mock.calls;
+        if (!groupInsert) throw new Error('the group insert was never called');
+        expect(groupInsert[0]).toMatchObject({ filterConditions: null });
       });
 
       it('accepts an omitted filterConditions', async () => {
@@ -646,13 +649,30 @@ describe('groups routes', () => {
 
         expect(res.status).toBe(201);
         expect(membershipValuesMock).toHaveBeenCalledTimes(1);
-        const rows = membershipValuesMock.mock.calls[0][0] as Array<Record<string, unknown>>;
+        const [membershipInsert] = membershipValuesMock.mock.calls;
+        if (!membershipInsert) throw new Error('the membership insert was never called');
+        const rows = membershipInsert[0] as Array<Record<string, unknown>>;
         expect(rows).toHaveLength(2);
         for (const row of rows) {
           expect(row).toMatchObject({ groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' });
         }
         const body = await res.json();
         expect(body.data.deviceCount).toBe(2);
+
+        // The membership write gets its own audit event, distinguishable from a
+        // later manual add by `viaGroupCreate`.
+        expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            action: 'device_group.device.add',
+            orgId: ORG_ID,
+            details: expect.objectContaining({
+              addedCount: 2,
+              deviceIds: [DEVICE_ID, DEVICE_ID_2],
+              viaGroupCreate: true
+            })
+          })
+        );
       });
 
       it('rejects deviceIds on a dynamic create', async () => {
