@@ -13,16 +13,24 @@ vi.mock('../services/commandQueue', () => ({ queueCommandForExecution: vi.fn() }
 vi.mock('../services/featureConfigResolver', () => ({
   resolveMaintenanceConfigForDevice: vi.fn(),
   isInMaintenanceWindow: vi.fn(),
+  resolvePatchConfigForDevice: vi.fn(),
 }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
 import {
   decideRebootCommand,
+  rebootWarranted,
   processRebootCandidate,
   runMaintenanceRebootSweep,
-  MAINTENANCE_REBOOT_GRACE_MINUTES,
   REBOOT_DEDUP_STATUSES,
 } from './maintenanceRebootWorker';
+import { DEFAULT_REBOOT_DELAY_MINUTES } from '../services/patchRebootHandler';
+
+// #3197: the grace period is no longer a constant in this module. It resolves
+// from the device's effective patch policy — the same setting the post-patch
+// reboot path reads — so the two reboot paths cannot drift apart again. The old
+// MAINTENANCE_REBOOT_GRACE_MINUTES export is gone.
+const POLICY_DELAY = 42;
 
 describe('REBOOT_DEDUP_STATUSES', () => {
   it('covers exactly pending, sent, and completed (not failed/timeout/cancelled)', () => {
@@ -32,33 +40,64 @@ describe('REBOOT_DEDUP_STATUSES', () => {
 
 describe('decideRebootCommand', () => {
   it('returns null when rebootIfPending is false', () => {
-    expect(decideRebootCommand({ rebootIfPending: false, windowActive: true, osType: 'windows' })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: false, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY })).toBeNull();
   });
 
   it('returns null when the window is not active', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: false, osType: 'windows' })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: false, osType: 'windows', delayMinutes: POLICY_DELAY })).toBeNull();
   });
 
   it('returns null on macOS even when active and enabled', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'macos' })).toBeNull();
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'macos', delayMinutes: POLICY_DELAY })).toBeNull();
   });
 
-  it('issues schedule_reboot with a 15-minute grace on Windows', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows' })).toEqual({
+  it('carries the policy-resolved grace onto the Windows schedule_reboot payload', () => {
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes: POLICY_DELAY })).toEqual({
       type: 'schedule_reboot',
       payload: {
-        delayMinutes: MAINTENANCE_REBOOT_GRACE_MINUTES,
+        delayMinutes: POLICY_DELAY,
         reason: 'Pending reboot — maintenance window',
         source: 'maintenance_window',
       },
     });
   });
 
-  it('issues a delayed reboot on Linux', () => {
-    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux' })).toEqual({
+  it('carries the policy-resolved grace onto the Linux reboot payload', () => {
+    expect(decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'linux', delayMinutes: POLICY_DELAY })).toEqual({
       type: 'reboot',
-      payload: { delay: MAINTENANCE_REBOOT_GRACE_MINUTES },
+      payload: { delay: POLICY_DELAY },
     });
+  });
+
+  it('never hardcodes a grace of its own — the delay always comes from the caller (#3197)', () => {
+    for (const delayMinutes of [1, 5, 15, 60, 1440]) {
+      const decision = decideRebootCommand({ rebootIfPending: true, windowActive: true, osType: 'windows', delayMinutes });
+      expect(decision).not.toBeNull();
+      expect((decision as { payload: { delayMinutes: number } }).payload.delayMinutes).toBe(delayMinutes);
+    }
+  });
+});
+
+describe('rebootWarranted', () => {
+  it('gates on rebootIfPending, window activity and OS', () => {
+    expect(rebootWarranted({ rebootIfPending: true, windowActive: true, osType: 'windows' })).toBe(true);
+    expect(rebootWarranted({ rebootIfPending: true, windowActive: true, osType: 'linux' })).toBe(true);
+    expect(rebootWarranted({ rebootIfPending: true, windowActive: true, osType: 'macos' })).toBe(false);
+    expect(rebootWarranted({ rebootIfPending: false, windowActive: true, osType: 'windows' })).toBe(false);
+    expect(rebootWarranted({ rebootIfPending: true, windowActive: false, osType: 'windows' })).toBe(false);
+  });
+
+  it('agrees with decideRebootCommand on every combination', () => {
+    for (const rebootIfPending of [true, false]) {
+      for (const windowActive of [true, false]) {
+        for (const osType of ['windows', 'linux', 'macos'] as const) {
+          const gate = { rebootIfPending, windowActive, osType };
+          expect(rebootWarranted(gate)).toBe(
+            decideRebootCommand({ ...gate, delayMinutes: POLICY_DELAY }) !== null,
+          );
+        }
+      }
+    }
   });
 });
 
@@ -74,6 +113,9 @@ describe('processRebootCandidate', () => {
       isInMaintenanceWindow: vi.fn().mockReturnValue({ active: true }),
       hasRecentRebootCommand: vi.fn().mockResolvedValue(false),
       queueCommandForExecution: vi.fn().mockResolvedValue({ command: { id: 'cmd-1' } }),
+      resolveRebootDelayMinutes: vi.fn().mockResolvedValue(POLICY_DELAY),
+      rebootWarranted,
+      decideRebootCommand,
       ...overrides,
     } as unknown as Deps;
   }
@@ -85,7 +127,7 @@ describe('processRebootCandidate', () => {
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
       'dev-1',
       'schedule_reboot',
-      expect.objectContaining({ delayMinutes: MAINTENANCE_REBOOT_GRACE_MINUTES, source: 'maintenance_window' }),
+      expect.objectContaining({ delayMinutes: POLICY_DELAY, source: 'maintenance_window' }),
       { expectedOrgId: 'org-1' },
     );
   });
@@ -97,7 +139,7 @@ describe('processRebootCandidate', () => {
     expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
       'dev-2',
       'reboot',
-      expect.objectContaining({ delay: MAINTENANCE_REBOOT_GRACE_MINUTES }),
+      expect.objectContaining({ delay: POLICY_DELAY }),
       { expectedOrgId: 'org-1' },
     );
   });
@@ -137,6 +179,54 @@ describe('processRebootCandidate', () => {
     const res = await processRebootCandidate(winDevice, deps);
     expect(res).toEqual({ issued: false, reason: 'no-action' });
     expect(deps.queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  // The policy lookup is a hierarchy walk per device, and this sweep runs over
+  // the whole online fleet every ten minutes. It must not fire for devices that
+  // are not about to reboot anyway.
+  it('does not resolve the reboot delay when no reboot is warranted', async () => {
+    const deps = makeDeps({
+      isInMaintenanceWindow: vi.fn().mockReturnValue({ active: false }),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    expect(deps.resolveRebootDelayMinutes).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve the reboot delay when the dedup guard suppresses the dispatch', async () => {
+    const deps = makeDeps({
+      hasRecentRebootCommand: vi.fn().mockResolvedValue(true),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    expect(deps.resolveRebootDelayMinutes).not.toHaveBeenCalled();
+  });
+
+  it('resolves the delay per device, so two devices can get different graces', async () => {
+    const deps = makeDeps({
+      resolveRebootDelayMinutes: vi.fn(async (id: string) => (id === 'dev-1' ? 30 : 5)),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    await processRebootCandidate(linuxDevice, deps);
+    expect(deps.queueCommandForExecution).toHaveBeenNthCalledWith(
+      1, 'dev-1', 'schedule_reboot', expect.objectContaining({ delayMinutes: 30 }), { expectedOrgId: 'org-1' },
+    );
+    expect(deps.queueCommandForExecution).toHaveBeenNthCalledWith(
+      2, 'dev-2', 'reboot', expect.objectContaining({ delay: 5 }), { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('falls back to the shared default when the device has no patch policy', async () => {
+    const deps = makeDeps({
+      resolveRebootDelayMinutes: vi.fn().mockResolvedValue(DEFAULT_REBOOT_DELAY_MINUTES),
+    } as never);
+    await processRebootCandidate(winDevice, deps);
+    expect(deps.queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-1', 'schedule_reboot',
+      expect.objectContaining({ delayMinutes: DEFAULT_REBOOT_DELAY_MINUTES }),
+      { expectedOrgId: 'org-1' },
+    );
+    // The old hardcoded patch-path value warned nobody; the shared default must
+    // be high enough to reach the agent's warning ladder.
+    expect(DEFAULT_REBOOT_DELAY_MINUTES).toBeGreaterThan(5);
   });
 });
 

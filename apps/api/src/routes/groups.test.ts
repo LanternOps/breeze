@@ -15,10 +15,20 @@ vi.mock('../services/filterEngine', () => ({
   validateFilter: vi.fn(() => ({ valid: true }))
 }));
 
-vi.mock('../services/groupMembership', () => ({
-  evaluateGroupMembership: vi.fn(),
-  pinDeviceToGroup: vi.fn()
-}));
+vi.mock('../services/groupMembership', async () => {
+  const actual = await vi.importActual<typeof import('../services/groupMembership')>(
+    '../services/groupMembership'
+  );
+  return {
+    evaluateGroupMembership: vi.fn(),
+    pinDeviceToGroup: vi.fn(),
+    // Real: the extracted tenancy guard + membership insert that group-create
+    // (#3159) and POST /:id/devices now share. The site-confinement cases below
+    // are that logic's coverage, run against the already-mocked `../db`.
+    validateManualMembershipDevices: actual.validateManualMembershipDevices,
+    addManualGroupMemberships: actual.addManualGroupMemberships
+  };
+});
 
 vi.mock('../db', () => ({
   db: {

@@ -1876,7 +1876,8 @@
     "networkErrorLoadingPermissions": "Netzwerkfehler beim Laden der Berechtigungen",
     "cannotDeleteAssignedRole": "Rolle mit zugewiesenen Benutzern kann nicht gelöscht werden",
     "inheritedFromParentRole": "Von der übergeordneten Rolle geerbt",
-    "waitingForPermissionCatalog": "Warten auf das Laden des Berechtigungskatalogs"
+    "waitingForPermissionCatalog": "Warten auf das Laden des Berechtigungskatalogs",
+    "summary": "{{filtered}} von {{total}} Rollen"
   },
   "roleSelector": {
     "currentRole": "Aktuelle Rolle",

@@ -65,7 +65,8 @@
       "nonCompliant": "Non conforme",
       "check": "Controllo",
       "lastChecked": "Ultimo controllo",
-      "noComplianceResultsYetAssignThisPolicy": "Non ci sono ancora risultati di conformità. Assegna questo criterio ai dispositivi e aggiungi regole di conformità; lo stato apparirà dopo la prossima valutazione."
+      "noComplianceResultsYetAssignThisPolicy": "Non ci sono ancora risultati di conformità. Assegna questo criterio ai dispositivi e aggiungi regole di conformità; lo stato apparirà dopo la prossima valutazione.",
+      "summary": "Visualizzazione dei primi {{shown}} di {{total}} risultati: il riepilogo sotto riflette solo questa pagina."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleziona un'organizzazione per questo criterio.",
@@ -149,7 +150,8 @@
       "page": "Pagina",
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
-      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}"
+      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
+      "summary": "{{filtered}} di {{total}} criteri"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",
@@ -881,6 +883,8 @@
         "dayOfWeek": "Giorno della settimana",
         "dayOfMonth": "Giorno del mese",
         "rebootPolicy": "Criterio di riavvio",
+        "rebootDelayMinutes": "Reboot delay (minutes)",
+        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
         "windowsUpdateSource": "Origine Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gestisci Windows Update esclusivamente tramite Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Disattiva il canale di installazione automatica nativo di Windows Update sull'endpoint, così gli aggiornamenti passano solo dagli anelli di approvazione di Breeze, evitando riavvii e patch inattesi fuori dalla pianificazione. Solo Windows; il percorso di scansione, approvazione e installazione di Breeze resta invariato. Quando l'opzione viene disabilitata, la configurazione precedente viene ripristinata correttamente senza modificare eventuali Criteri di gruppo amministrativi preesistenti.",
@@ -1605,7 +1609,8 @@
       "vendor2": "vendor",
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
-      "blocked2": "blocked"
+      "blocked2": "blocked",
+      "summary": "Visualizzazione {{range}} di {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Impossibile recuperare l'inventario software",

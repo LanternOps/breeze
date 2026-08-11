@@ -257,6 +257,26 @@ actionRoutes.post(
       })
       .returning({ id: automationRuns.id, status: automationRuns.status, startedAt: automationRuns.startedAt });
 
+    if (!run) {
+      // The insert returned no row, so there is nothing to dispatch. Fail
+      // loudly rather than returning the "triggered" message for a run that
+      // does not exist — claiming success we did not achieve is the very bug
+      // this change removes.
+      return c.json({ error: 'Failed to create remediation run' }, 500);
+    }
+
+    // Dispatch for real. Without this the row sits 'running' forever and no
+    // script executes, while the response still claims the automation was
+    // triggered — the same silent no-op fixed for the two policy-evaluation
+    // sites in #3414. No target argument: this route remediates the policy's
+    // own target set, so the runtime resolves targets from the automation
+    // rather than a single device.
+    //
+    // Dynamically imported to keep the BullMQ worker graph out of this route's
+    // module load, matching policyEvaluationService and drExecutionService.
+    const { enqueueAutomationRun } = await import('../../jobs/automationWorker');
+    await enqueueAutomationRun(run.id);
+
     await db
       .update(automations)
       .set({

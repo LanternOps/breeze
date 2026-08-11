@@ -480,7 +480,8 @@ describe('partner desired-configuration material watermarks', () => {
       autoApproveDeferralDays: 7,
       apps: [{ source: 'third_party', packageId: 'Example.App', action: 'block' }],
       scheduleFrequency: 'weekly', scheduleTime: '02:00', scheduleDayOfWeek: 'sun',
-      scheduleDayOfMonth: 1, rebootPolicy: 'if_required', exclusiveWindowsUpdate: false,
+      scheduleDayOfMonth: 1, rebootPolicy: 'if_required', rebootDelayMinutes: 15,
+      exclusiveWindowsUpdate: false,
     });
     expect(settings.maintenance).toEqual({
       recurrence: 'weekly', durationHours: 2, timezone: 'UTC', windowStart: null,

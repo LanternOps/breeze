@@ -155,13 +155,8 @@ export default function ComplianceStatusTab({
             className="mt-3 text-xs text-warning"
           >
             {i18n.t(
-              "policies:configurationPolicies.complianceStatusTab.showingTheFirst",
-            )}
-            {rows.length}
-            {i18n.t("policies:configurationPolicies.complianceStatusTab.of")}
-            {total}
-            {i18n.t(
-              "policies:configurationPolicies.complianceStatusTab.resultsTheSummaryBelowReflectsThisPage",
+              "policies:configurationPolicies.complianceStatusTab.summary",
+              { shown: rows.length, total },
             )}
           </p>
         )}

@@ -709,7 +709,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Impossibile recuperare i gruppi di dispositivi",
     "windows": "windows",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossibile salvare il gruppo di dispositivi",

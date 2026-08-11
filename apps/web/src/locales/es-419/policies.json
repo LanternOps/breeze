@@ -65,7 +65,8 @@
       "nonCompliant": "No conforme",
       "check": "Comprobar",
       "lastChecked": "Última comprobación",
-      "noComplianceResultsYetAssignThisPolicy": "Aún no hay resultados de cumplimiento. Asigne esta política a dispositivos y agregue reglas de cumplimiento; El estado aparece después de la siguiente evaluación."
+      "noComplianceResultsYetAssignThisPolicy": "Aún no hay resultados de cumplimiento. Asigne esta política a dispositivos y agregue reglas de cumplimiento; El estado aparece después de la siguiente evaluación.",
+      "summary": "Mostrando el primero {{shown}} de {{total}} resultados: el resumen a continuación refleja esta página únicamente."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleccione una organización para esta política.",
@@ -149,7 +150,8 @@
       "page": "Página",
       "of2": "de",
       "itsOwningOrganization": "su organización propietaria",
-      "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}"
+      "organizationPolicyTitle": "Política de la organización: se aplica solo a {{organization}}",
+      "summary": "{{filtered}} de {{total}} políticas"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "No se pudieron recuperar las políticas de configuración",
@@ -881,6 +883,8 @@
         "dayOfWeek": "dia de la semana",
         "dayOfMonth": "Día del mes",
         "rebootPolicy": "Política de reinicio",
+        "rebootDelayMinutes": "Reboot delay (minutes)",
+        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
         "windowsUpdateSource": "Fuente de Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Administre la Windows Update exclusivamente a través de Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suprime el canal de instalación automática de Windows Update nativo del terminal para que las actualizaciones solo fluyan a través de los anillos de aprobación de Breeze, lo que evita reinicios inesperados y parches fuera de su programación. Windows-solo; La ruta de escaneo/aprobación/instalación propia de Breeze no se ve afectada. Se revierte limpiamente cuando está deshabilitado (una política de grupo de administrador preexistente no se modifica).",
@@ -1605,7 +1609,8 @@
       "vendor2": "proveedor",
       "deviceCount": "deviceCount",
       "allowed2": "permitido",
-      "blocked2": "bloqueado"
+      "blocked2": "bloqueado",
+      "summary": "Mostrando {{range}} de {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "No se pudo recuperar el inventario de software",

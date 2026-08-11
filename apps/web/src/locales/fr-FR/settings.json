@@ -1876,7 +1876,8 @@
     "networkErrorLoadingPermissions": "Erreur réseau lors du chargement des autorisations",
     "cannotDeleteAssignedRole": "Impossible de supprimer un rôle avec des utilisateurs assignés",
     "inheritedFromParentRole": "Hérité du rôle de parent",
-    "waitingForPermissionCatalog": "En attente du chargement du catalogue des permissions"
+    "waitingForPermissionCatalog": "En attente du chargement du catalogue des permissions",
+    "summary": "{{filtered}} de {{total}} Rôles"
   },
   "roleSelector": {
     "currentRole": "Rôle actuel",

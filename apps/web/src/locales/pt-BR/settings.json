@@ -1876,7 +1876,8 @@
     "networkErrorLoadingPermissions": "Erro de rede ao carregar permissões",
     "cannotDeleteAssignedRole": "Não é possível excluir a função com usuários atribuídos",
     "inheritedFromParentRole": "Herdado da função pai",
-    "waitingForPermissionCatalog": "Aguardando o carregamento do catálogo de permissões"
+    "waitingForPermissionCatalog": "Aguardando o carregamento do catálogo de permissões",
+    "summary": "{{filtered}} de {{total}} funções"
   },
   "roleSelector": {
     "currentRole": "Função atual",
