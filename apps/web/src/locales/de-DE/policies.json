@@ -65,7 +65,8 @@
       "nonCompliant": "Nicht konform",
       "check": "Überprüfen",
       "lastChecked": "Zuletzt überprüft",
-      "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung."
+      "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung.",
+      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Wählen Sie eine Organisation für diese Richtlinie aus.",
@@ -149,7 +150,8 @@
       "page": "Seite",
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
-      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}"
+      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
+      "summary": "{{filtered}} von {{total}} Richtlinien"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",
@@ -255,15 +257,6 @@
         "metricNotSet": "nicht festgelegt"
       },
       "automationTab": {
-        "uTC": "UTC",
-        "easternAmericaNewYork": "Osten (Amerika/New_York)",
-        "centralAmericaChicago": "Zentral (Amerika/Chicago)",
-        "mountainAmericaDenver": "Berg (Amerika/Denver)",
-        "pacificAmericaLosAngeles": "Pazifik (Amerika/Los_Angeles)",
-        "europeLondon": "Europa/London",
-        "europeParis": "Europe/Paris",
-        "asiaTokyo": "Asien/Tokio",
-        "australiaSydney": "Australien/Sydney",
         "schedule": "Zeitplan",
         "event": "Ereignis",
         "manual": "Manuell",
@@ -890,6 +883,8 @@
         "dayOfWeek": "Wochentag",
         "dayOfMonth": "Tag des Monats",
         "rebootPolicy": "Neustartrichtlinie",
+        "rebootDelayMinutes": "Reboot delay (minutes)",
+        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
         "windowsUpdateSource": "Windows Update-Quelle",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Verwalten Sie Windows Update ausschließlich über Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Unterdrückt den nativen automatischen Windows Update-Installationskanal des Endpunkts, sodass Updates nur über die Genehmigungsringe von Breeze fließen und so unerwartete Neustarts und Patches außerhalb Ihres Zeitplans verhindert werden. Nur Windows; Der eigene Scan/approve/install-Pfad von Breeze bleibt davon unberührt. Wird bei Deaktivierung sauber wiederhergestellt (eine bereits vorhandene Administrator-Gruppenrichtlinie bleibt unberührt).",
@@ -1595,7 +1590,7 @@
       "failedToDeny": "Ablehnen fehlgeschlagen",
       "failedToClearStatus": "Status konnte nicht zurückgesetzt werden",
       "searchSoftware": "Software suchen...",
-      "uniqueSoftware": "einzigartige Software",
+      "uniqueSoftwareSummary": "{{total}} einzigartige Software",
       "vendor": "Anbieter",
       "devices": "Geräte",
       "versions": "Versionen",
@@ -1614,7 +1609,8 @@
       "vendor2": "Anbieter",
       "deviceCount": "Geräteanzahl",
       "allowed2": "erlaubt",
-      "blocked2": "blockiert"
+      "blocked2": "blockiert",
+      "summary": "Zeigt {{range}} von {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Das Abrufen des Softwareinventars ist fehlgeschlagen",

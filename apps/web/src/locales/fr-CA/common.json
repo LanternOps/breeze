@@ -583,7 +583,7 @@
     "org": {
       "allOrganizations": "Toutes les organisations",
       "selectTitle": "Organisation sélectionnée (Cmd+O)",
-      "switching": "Échanger...",
+      "switching": "Changement en cours…",
       "organizations": "Organisations",
       "noneAvailable": "Aucune organisation disponible",
       "status": {
@@ -704,6 +704,10 @@
       "retry": "Réessayer"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} appareil(s) utilisent l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
+    "cta": "Comment migrer"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -750,9 +754,9 @@
           "removedLabel": "Supprimé :",
           "title": "Réviser le texte soigné",
           "warningDescription": "Notre vérification automatique pense qu’un numéro, une mesure ou un code a pu changer. Comparez attentivement l’avant/après — l’IA peut reformuler des textes, mais elle ne doit pas modifier une spécification, un prix ou un modèle.",
-          "warningTitle": "⚠️ Vérifiez bien les détails avant de postuler."
+          "warningTitle": "⚠️ Vérifiez attentivement les détails avant d’appliquer les modifications."
         },
-        "title": "Corrigez la formulation avec l’IA — vos chiffres et spécifications restent ; Consultez la prévisualisation avant de postuler"
+        "title": "Améliorez la formulation avec l’IA sans modifier vos chiffres ni vos spécifications ; consultez l’aperçu avant d’appliquer les modifications"
       }
     },
     "monitors": {
@@ -930,21 +934,61 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importer les entreprises",
+        "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
+        "intro": "Les entreprises sont d'abord comparées à vos organisations existantes. Rien n'est créé avant que vous ayez vérifié la liste ci-dessous et confirmé.",
+        "capHint": "Jusqu'à {{cap}} entreprises sont récupérées par importation.",
+        "empty": "Cette connexion n'a retourné aucune entreprise.",
+        "alreadyLinked_one": "{{count}} entreprise a été ignorée parce qu'elle a déjà été importée depuis cette connexion.",
+        "alreadyLinked_other": "{{count}} entreprises ont été ignorées parce qu'elles ont déjà été importées depuis cette connexion.",
+        "malformed_one": "{{count}} enregistrement n'a pas pu être lu (aucun identifiant ni nom exploitable) et a été ignoré.",
+        "malformed_other": "{{count}} enregistrements n'ont pas pu être lus (aucun identifiant ni nom exploitable) et ont été ignorés.",
+        "actions": {
+          "fetch": "Récupérer les entreprises",
+          "fetching": "Récupération des entreprises…",
+          "import": "Importer {{count}} sélectionnées",
+          "importing": "Importation…"
+        },
+        "truncated": {
+          "title": "Liste d'entreprises partielle",
+          "body": "La liste des entreprises a été interrompue après {{fetched}} entreprises sur un maximum de {{cap}}; cette importation sera donc incomplète. Les entreprises jamais lues ne seront pas liées.",
+          "cap": "La limite de {{cap}} entreprises par importation a été atteinte après {{fetched}} entreprises récupérées; cette importation sera donc incomplète. Les entreprises au-delà de cette limite n'ont jamais été lues et ne seront pas liées.",
+          "timeBudget": "Cette connexion a répondu trop lentement; la liste des entreprises a donc été interrompue après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées.",
+          "pageGuard": "La liste des entreprises comptait trop de pages et a été arrêtée après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées."
+        },
+        "errors": {
+          "previewFailed": "Impossible de charger les entreprises de cette connexion.",
+          "importFailed": "Impossible d'importer les entreprises."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Tester la connexion",
-          "testing": "Test..."
+          "testing": "Test...",
+          "toggleVisibility": "Afficher ou masquer cette valeur"
+        },
+        "credentialsNote": {
+          "jira": "Remplissez une seule méthode d’authentification : adresse courriel plus jeton d’API pour Jira Cloud, nom d’utilisateur plus mot de passe pour Jira Server, ou un jeton d’accès personnel."
         },
         "defaultSubmitLabel": "Enregistrer la connexion",
         "fields": {
+          "apiKey": "Clé d’API",
           "apiToken": "API jeton ou clé",
           "clientId": "ID client",
           "clientSecret": "Secret client",
+          "companyId": "ID de l’entreprise",
           "connectionName": "Nom de la connexion",
           "defaultQueue": "Projet ou file d’attente par défaut",
+          "email": "Adresse courriel",
           "instanceUrl": "URL de l’instance",
+          "integrationCode": "Code d’intégration",
           "password": "Mot de passe",
+          "personalAccessToken": "Jeton d’accès personnel",
+          "privateKey": "Clé privée",
           "provider": "Fournisseur",
+          "publicKey": "Clé publique",
+          "secret": "Secret",
           "syncDirection": "Direction de synchronisation",
           "syncInterval": "Intervalle de synchronisation",
           "username": "Nom d’utilisateur ou adresse courriel"
@@ -954,13 +998,21 @@
         },
         "keepExisting": "(laisser vide pour continuer à exister)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "par exemple, Jira Production",
           "defaultQueue": "p. ex., soutien informatique",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "mot de passe",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,16 +1049,25 @@
           "every6Hours": "Toutes les 6 heures",
           "everyHour": "Toutes les heures"
         },
+        "testDirtyHint": "Enregistrez d’abord — le test vérifie les identifiants stockés, et non vos modifications non enregistrées.",
         "validation": {
           "nameRequired": "Le nom de connexion est requis",
           "validUrl": "Doit être un URL valide"
+        },
+        "ownerScope": {
+          "legend": "Propriété",
+          "allOrganizations": "Toutes les organisations",
+          "partnerWideHint": "(à l'échelle du partenaire — le PSA de votre MSP)",
+          "thisOrganizationOnly": "Cette organisation seulement",
+          "organization": "Organisation"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Mettre en pause",
           "resume": "Reprendre",
-          "syncNow": "Synchronisez maintenant"
+          "syncNow": "Synchronisez maintenant",
+          "importCompanies": "Importer les entreprises"
         },
         "connectionCount": "{{filtered}} de {{total}} connexions",
         "empty": {
@@ -1028,7 +1089,10 @@
           "paused": "En pause",
           "syncing": "Synchronisation"
         },
-        "title": "Connexions PSA"
+        "title": "Connexions PSA",
+        "allOrgs": "Toutes les orgs",
+        "partnerWideTitle": "Connexion à l'échelle du partenaire — partagée par toutes les organisations",
+        "partnerWideLocked": "Connexion à l'échelle du partenaire — la modification requiert un accès complet aux organisations du partenaire"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -1730,22 +1794,14 @@
         "partialWarning": "Certaines données peuvent être incomplètes. Échec du chargement : {{endpoints}}",
         "cards": {
           "policies": "Politiques",
-          "activeCount": "{{count}} actif",
           "deployments": "Déploiements",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} en attente",
           "failedCount": "{{count}} échoué",
           "patches": "Correctifs",
-          "pendingInstallation": "Installation en attente",
           "alerts": "Alertes",
-          "alertsSubtitle": "{{critical}} critique, {{high}} élevé",
           "groups": "Groupes",
-          "deviceGroupsSubtitle": "Groupes de périphériques",
           "automations": "Automatisations",
-          "configured": "configuré",
           "maintenance": "Maintenance",
-          "activeWindows": "Fenêtres actives",
-          "reports": "Rapports",
-          "reportDefinitions": "Définitions du rapport"
+          "reports": "Rapports"
         },
         "aiFleetActions": "Actions de flotte IA",
         "aiFleetActionsHint": "Cliquez pour demander à l’assistant IA",
@@ -1774,6 +1830,173 @@
           "high": "Élevée",
           "medium": "Moyenne",
           "low": "Faible"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Constats du parc",
+        "description": "Des tendances communes à plusieurs appareils qui méritent une seule action",
+        "filters": {
+          "orgLabel": "Filtrer par organisation",
+          "kindLabel": "Filtrer par type de constat",
+          "severityLabel": "Filtrer par gravité",
+          "statusLabel": "Filtrer par statut",
+          "allOrgs": "Toutes les organisations",
+          "allKinds": "Tous les types de constat",
+          "allSeverities": "Toutes les gravités"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalie de métrique",
+          "logCorrelation": "Corrélation de journaux",
+          "reliabilityOffenders": "Récidivistes de fiabilité"
+        },
+        "severities": {
+          "critical": "Critique",
+          "error": "Erreur",
+          "warning": "Avertissement",
+          "info": "Informatif"
+        },
+        "statuses": {
+          "open": "Ouvert",
+          "acknowledged": "Pris en charge",
+          "dismissed": "Rejeté",
+          "resolved": "Résolu"
+        },
+        "status": {
+          "active": "Ouverts et pris en charge",
+          "dismissed": "Rejetés",
+          "resolved": "Résolus"
+        },
+        "deviceCount": "{{count}} appareils",
+        "deviceCount_one": "{{count}} appareil",
+        "deviceCount_other": "{{count}} appareils",
+        "showing": "Affichage de {{shown}} sur {{total}}",
+        "loadMore": "Charger plus",
+        "empty": {
+          "title": "Le parc est sain",
+          "noMatchesTitle": "Aucun constat correspondant",
+          "body": "Aucun constat ne correspond à ces filtres pour l'instant."
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement des constats du parc",
+          "banner": "Nous n'avons pas pu charger les constats du parc"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Détails du constat",
+        "meta": {
+          "firstSeen": "Première détection {{when}}",
+          "lastSeen": "Dernière détection {{when}}"
+        },
+        "summaryHeading": "Sommaire",
+        "resolvedNote": {
+          "heading": "Pourquoi ce constat est fermé",
+          "body": "Ce constat a été résolu parce que le signal sous-jacent a disparu. Il réapparaîtra comme un nouveau constat si le problème se reproduit.",
+          "reason": "Motif de résolution : {{reason}}"
+        },
+        "dismissNotesHeading": "Note de rejet",
+        "evidenceHeading": "Éléments probants",
+        "membersHeading": "Appareils touchés",
+        "membersEmpty": "Aucun appareil n'est enregistré pour ce constat.",
+        "table": {
+          "device": "Appareil",
+          "source": "Provenance",
+          "lastSeen": "Dernière détection"
+        },
+        "runsHeading": "Historique des correctifs",
+        "runsEmpty": "Aucun correctif n'a encore été exécuté pour ce constat.",
+        "runCounts": "{{succeeded}} réussis, {{failed}} en échec, {{skipped}} ignorés sur {{targets}} visés",
+        "runStatuses": {
+          "queued": "En attente",
+          "running": "En cours",
+          "partial": "Partiel",
+          "succeeded": "Réussi",
+          "failed": "Échoué",
+          "cancelled": "Annulé"
+        },
+        "dismiss": {
+          "notesLabel": "Pourquoi rejetez-vous ce constat ? (obligatoire)",
+          "notesPlaceholder": "Faux positif connu, suivi ailleurs, risque accepté…",
+          "confirm": "Rejeter le constat"
+        },
+        "actions": {
+          "remediate": "Corriger sur {{count}} appareils",
+          "remediate_one": "Corriger sur {{count}} appareil",
+          "remediate_other": "Corriger sur {{count}} appareils",
+          "remediateDisabledReason": "Il ne reste aucun appareil à corriger dans ce constat.",
+          "acknowledge": "Prendre en charge",
+          "dismiss": "Rejeter",
+          "reopen": "Rouvrir"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement du constat",
+          "lifecycleFailed": "Échec de la mise à jour du constat"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "le signal sous-jacent a disparu"
+        }
+      },
+      "FixPicker": {
+        "title": "Corriger le constat",
+        "actions": {
+          "script": "Lancer un script",
+          "scriptHint": "Sélectionnez un script de votre bibliothèque et remplissez ses paramètres.",
+          "restartService": "Redémarrer un service",
+          "restartServiceHint": "Redémarre un seul service nommé sur chacun des appareils sélectionnés.",
+          "reboot": "Redémarrer les appareils",
+          "rebootHint": "Redémarre les appareils sélectionnés dès que l'exécution est transmise."
+        },
+        "chooseScript": "Sélectionner un script…",
+        "changeScript": "Changer de script",
+        "selectedScript": "Script : {{name}}",
+        "serviceNameLabel": "Nom du service",
+        "serviceNamePlaceholder": "p. ex. Spooler",
+        "rebootWarning": "Les appareils sélectionnés redémarrent immédiatement dès que cette exécution est transmise. Les sessions actives prennent fin et le travail non enregistré est perdu.",
+        "targetsHeading": "Appareils à corriger",
+        "selectAll": "Tout sélectionner",
+        "selectNone": "Vider la sélection",
+        "selectedCount": "{{selected}} appareils sélectionnés sur {{total}}",
+        "noTargets": "Sélectionnez au moins un appareil pour poursuivre.",
+        "osIncompatibleNotice": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} appareil ne peut pas exécuter ce script et a été exclu. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleReason": "Nécessite {{os}}",
+        "confirmAction": "Correctif retenu",
+        "confirmTargets": "Appareils",
+        "confirmRestartService": "Redémarrer le service {{name}}",
+        "confirmRebootNotice": "{{count}} appareils redémarreront immédiatement.",
+        "confirmRebootNotice_one": "{{count}} appareil redémarrera immédiatement.",
+        "confirmRebootNotice_other": "{{count}} appareils redémarreront immédiatement.",
+        "confirm": "Démarrer la correction",
+        "dispatchedSummary": "{{count}} appareils ont été visés par cette exécution.",
+        "dispatchedSummary_one": "{{count}} appareil a été visé par cette exécution.",
+        "dispatchedSummary_other": "{{count}} appareils ont été visés par cette exécution.",
+        "skippedHeading": "Appareils ignorés",
+        "skipReasons": {
+          "siteDenied": "Site auquel vous n'avez pas accès",
+          "notMember": "N'est plus visé par ce constat",
+          "decommissioned": "Appareil mis hors service",
+          "timeout": "Expiré après 30 minutes",
+          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
+        },
+        "viewProgress": "Voir l'avancement",
+        "errors": {
+          "dispatchFailed": "Échec du démarrage de la correction"
+        }
+      },
+      "RunProgress": {
+        "heading": "Exécution de correction",
+        "counts": "{{succeeded}} réussis, {{failed}} en échec, {{skipped}} ignorés sur {{targets}} visés",
+        "polling": "Actualisation en cours tant que l'exécution est active…",
+        "targetsEmpty": "Aucun appareil de cette exécution ne vous est visible.",
+        "targetStatuses": {
+          "pending": "En attente",
+          "queued": "En file",
+          "succeeded": "Réussi",
+          "failed": "Échec",
+          "skipped": "Ignoré"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement de l'exécution de correction"
         }
       }
     },
@@ -1954,7 +2177,7 @@
             "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes, utilisateurs ou paramètres."
           },
           "switchOrgs": {
-            "title": "Organisations de changement",
+            "title": "Changer d’organisation",
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {
@@ -2134,5 +2357,12 @@
         "send": "Envoyer"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Nouveautés de la version {{version}}",
+    "gotIt": "Compris",
+    "later": "Afficher plus tard",
+    "learnMore": "En savoir plus",
+    "link": "Nouveautés"
   }
 }

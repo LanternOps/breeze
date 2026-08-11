@@ -91,6 +91,12 @@ func (c *activeCommandCanceller) cancelAll() bool {
 
 func init() {
 	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
+
+	// Stable, parseable `breeze-backup --version` output, mirroring the
+	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
+	// installedBackupVersion() execs this binary and parses the same prefix.
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
 }
 
 func main() {

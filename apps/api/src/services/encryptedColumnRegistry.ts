@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import {
+  encryptSecret,
   getActiveSecretEncryptionKeyId,
   isEncryptedSecret,
   reencryptSecret,
@@ -140,7 +141,13 @@ function maybeReencryptString(value: string, force: boolean, aad?: string): stri
   if (!force) {
     return value;
   }
-  return reencryptSecret(value, opts) ?? value;
+  // Plaintext reaching a registered column is a first encryption, not a
+  // rotation, so it goes through `encryptSecret`. `reencryptSecret` requires an
+  // active key id and throws without one, which would fail the whole write on a
+  // deployment that has not set APP_ENCRYPTION_KEY_ID — the shipped default.
+  // `encryptSecret` seals to v1 under the global key in that configuration,
+  // matching how every other write path degrades.
+  return encryptSecret(value, opts) ?? value;
 }
 
 function transformJsonSecrets(value: unknown, key?: string, aad?: string): unknown {

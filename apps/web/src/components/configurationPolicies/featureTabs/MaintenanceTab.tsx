@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import TimezoneSelect from "@/components/shared/TimezoneSelect";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type MaintenanceSettings = {
@@ -61,23 +62,6 @@ const createRecurrenceOptions = () => [
     ),
   },
 ];
-const createTimezoneOptions = () => [
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Phoenix",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-  "Europe/London",
-  "Europe/Berlin",
-  "Europe/Paris",
-  "Asia/Tokyo",
-  "Asia/Shanghai",
-  "Asia/Kolkata",
-  "Australia/Sydney",
-  "UTC",
-];
 function ToggleRow({
   label,
   description,
@@ -119,7 +103,6 @@ export default function MaintenanceTab({
 }: FeatureTabProps) {
   useTranslation("policies");
   const recurrenceOptions = createRecurrenceOptions();
-  const timezoneOptions = createTimezoneOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
@@ -258,22 +241,22 @@ export default function MaintenanceTab({
 
         {/* Timezone */}
         <div>
-          <label className="text-sm font-medium">
+          <label htmlFor="maintenance-timezone" className="text-sm font-medium">
             {i18n.t(
               "policies:configurationPolicies.featureTabs.maintenanceTab.timezone",
             )}
           </label>
-          <select
-            value={settings.timezone}
-            onChange={(e) => update("timezone", e.target.value)}
-            className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-          >
-            {timezoneOptions.map((tz) => (
-              <option key={tz} value={tz}>
-                {tz}
-              </option>
-            ))}
-          </select>
+          <div className="mt-2">
+            <TimezoneSelect
+              id="maintenance-timezone"
+              label={i18n.t(
+                "policies:configurationPolicies.featureTabs.maintenanceTab.timezone",
+              )}
+              value={settings.timezone}
+              onChange={(timezone) => update("timezone", timezone)}
+              testId="maintenance-timezone"
+            />
+          </div>
         </div>
 
         {/* Notify before */}

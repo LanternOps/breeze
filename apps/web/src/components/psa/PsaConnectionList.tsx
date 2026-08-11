@@ -1,25 +1,43 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Layers } from 'lucide-react';
+import { isOrgImportCapableProvider, type PsaProviderId } from '@breeze/shared';
 
-export type PsaProvider = 'jira' | 'servicenow' | 'connectwise' | 'autotask' | 'freshservice' | 'zendesk';
+// Derived from the single-source provider list in @breeze/shared.
+export type PsaProvider = PsaProviderId;
 
-export type PsaConnectionStatus = 'active' | 'paused' | 'error' | 'syncing';
+export type PsaConnectionStatus = 'active' | 'paused' | 'error';
 
 export type PsaConnection = {
   id: string;
   provider: PsaProvider;
   name: string;
   status: PsaConnectionStatus;
-  lastSyncAt: string | null;
+  /**
+   * 'partner' = partner-wide ("All orgs"): the MSP's own PSA, shared by every
+   * organization under the partner (epic #2135). Optional so older cached
+   * payloads keep rendering as org-owned.
+   */
+  ownerScope?: 'organization' | 'partner';
 };
 
 type PsaConnectionListProps = {
   connections: PsaConnection[];
+  /**
+   * True for a partner-wide connection the caller may see but not mutate
+   * (epic #2135). Row actions are disabled with a tooltip instead of letting
+   * the click land on the server's 403.
+   */
+  isLockedPartnerWide?: (connection: PsaConnection) => boolean;
   onEdit?: (connection: PsaConnection) => void;
-  onSyncNow?: (connection: PsaConnection) => void;
   onToggleStatus?: (connection: PsaConnection, newStatus: 'active' | 'paused') => void;
   onDelete?: (connection: PsaConnection) => void;
-  timezone?: string;
+  /**
+   * Opens the company-import modal (#3246). The action is rendered only for a
+   * provider whose adapter can enumerate companies — Jira is an issue tracker
+   * with no company object, so the route would answer 400.
+   */
+  onImportCompanies?: (connection: PsaConnection) => void;
 };
 
 const providerMeta: Record<PsaProvider, { label: string; className: string }> = {
@@ -61,10 +79,6 @@ const statusConfig: Record<PsaConnectionStatus, { labelKey: string; className: s
   error: {
     labelKey: 'states.error',
     className: 'border-destructive/40 bg-destructive/10 text-destructive'
-  },
-  syncing: {
-    labelKey: 'longTail.psa.PsaConnectionList.status.syncing',
-    className: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-400'
   }
 };
 
@@ -126,20 +140,14 @@ const ProviderIcon = ({ provider }: { provider: PsaProvider }) => {
 export default function PsaConnectionList({
   connections,
   onEdit,
-  onSyncNow,
   onToggleStatus,
   onDelete,
-  timezone
+  onImportCompanies,
+  isLockedPartnerWide
 }: PsaConnectionListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<PsaConnectionStatus | 'all'>('all');
-
-  const formatDate = (value: string | null) => {
-    if (!value) return t('longTail.psa.PsaConnectionList.never');
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
-  };
 
   const statusOptions = useMemo(() => {
     const uniqueStatuses = Array.from(new Set(connections.map(connection => connection.status)));
@@ -184,7 +192,7 @@ export default function PsaConnectionList({
           >
             {statusOptions.map(status => (
               <option key={status} value={status}>
-                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaConnectionStatus].labelKey)}
+                {status === 'all' ? t('longTail.psa.PsaConnectionList.filters.allStatuses') : t(/* i18n-dynamic */ (statusConfig[status as PsaConnectionStatus] ?? statusConfig.active).labelKey)}
               </option>
             ))}
           </select>
@@ -198,14 +206,13 @@ export default function PsaConnectionList({
               <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.provider')}</th>
               <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.connection')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
-              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.lastSync')}</th>
               <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {filteredConnections.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-12 text-center">
+                <td colSpan={4} className="px-4 py-12 text-center">
                   <div className="space-y-2">
                     <div className="mx-auto h-12 w-12 rounded-full bg-muted flex items-center justify-center">
                       <svg
@@ -233,7 +240,11 @@ export default function PsaConnectionList({
               </tr>
             ) : (
               filteredConnections.map(connection => {
-                const statusStyle = statusConfig[connection.status];
+                // Defensive fallback: an unexpected status string must not
+                // crash the whole list render.
+                const statusStyle = statusConfig[connection.status] ?? statusConfig.active;
+                const locked = isLockedPartnerWide?.(connection) ?? false;
+                const lockedReason = t('longTail.psa.PsaConnectionList.partnerWideLocked');
                 return (
                   <tr key={connection.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3">
@@ -242,30 +253,52 @@ export default function PsaConnectionList({
                         <span className="text-sm font-medium">{providerMeta[connection.provider].label}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-sm font-medium">{connection.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>{connection.name}</span>
+                        {connection.ownerScope === 'partner' && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            title={t('longTail.psa.PsaConnectionList.partnerWideTitle')}
+                            data-testid="partner-wide-badge"
+                          >
+                            <Layers className="h-3 w-3" />
+                            {t('longTail.psa.PsaConnectionList.allOrgs')}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
                         {t(/* i18n-dynamic */ statusStyle.labelKey)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDate(connection.lastSyncAt)}
-                    </td>
                     <td className="px-4 py-3 text-right">
+                      {/* Partner-wide rows a restricted user cannot mutate:
+                          disable rather than let them click into a 403 toast.
+                          The server gate is authoritative either way. */}
                       <div className="flex justify-end gap-2">
+                        {onImportCompanies && isOrgImportCapableProvider(connection.provider) && (
+                          <button
+                            type="button"
+                            onClick={() => onImportCompanies(connection)}
+                            disabled={locked}
+                            title={locked ? lockedReason : undefined}
+                            className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            data-testid="psa-connection-import-companies"
+                          >
+                            {t('longTail.psa.PsaConnectionList.actions.importCompanies')}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => onEdit?.(connection)}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-edit"
                         >
                           {t('common:actions.edit')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onSyncNow?.(connection)}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
-                        >
-                          {t('longTail.psa.PsaConnectionList.actions.syncNow')}
                         </button>
                         <button
                           type="button"
@@ -273,14 +306,20 @@ export default function PsaConnectionList({
                             connection,
                             connection.status === 'active' ? 'paused' : 'active'
                           )}
-                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-toggle"
                         >
                           {connection.status === 'active' ? t('longTail.psa.PsaConnectionList.actions.pause') : t('longTail.psa.PsaConnectionList.actions.resume')}
                         </button>
                         <button
                           type="button"
                           onClick={() => onDelete?.(connection)}
-                          className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          disabled={locked}
+                          title={locked ? lockedReason : undefined}
+                          className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid="psa-connection-delete"
                         >
                           {t('common:actions.delete')}
                         </button>

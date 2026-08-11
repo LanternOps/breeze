@@ -177,4 +177,92 @@ describe('config env', () => {
       }
     });
   });
+
+  // Signup-abuse detection defaults to IS_HOSTED. The failure that matters is a
+  // HOSTED deployment silently not policing its signups, so an unrecognized
+  // ABUSE_SIGNALS_ENABLED must NOT read as "off" — it warns and falls back to
+  // the default. (config/validate.ts refuses boot on such a value; this path is
+  // only reachable in a process that skipped the validator.)
+  describe('abuseSignalsEnabled / abuseSignalsExplicitlyDisabled', () => {
+    afterEach(() => {
+      delete process.env.IS_HOSTED;
+      delete process.env.ABUSE_SIGNALS_ENABLED;
+    });
+
+    it('defaults to on when hosted and off when self-hosted or unset', async () => {
+      const mod = await loadEnv();
+      process.env.IS_HOSTED = 'true';
+      expect(mod.abuseSignalsEnabled()).toBe(true);
+      process.env.IS_HOSTED = 'false';
+      expect(mod.abuseSignalsEnabled()).toBe(false);
+      delete process.env.IS_HOSTED;
+      expect(mod.abuseSignalsEnabled()).toBe(false);
+    });
+
+    // Both compose files inject `${ABUSE_SIGNALS_ENABLED:-}`, so "" is what
+    // most stacks actually pass and it has to keep meaning "unset".
+    it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', async (value) => {
+      const mod = await loadEnv();
+      process.env.ABUSE_SIGNALS_ENABLED = value;
+      process.env.IS_HOSTED = 'true';
+      expect(mod.abuseSignalsEnabled()).toBe(true);
+      expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
+    });
+
+    it('opts a self-hosted install in on an explicit truthy value', async () => {
+      const mod = await loadEnv();
+      process.env.IS_HOSTED = 'false';
+      for (const value of ['true', '1', 'yes', 'on', 'TRUE', ' on ']) {
+        process.env.ABUSE_SIGNALS_ENABLED = value;
+        expect(mod.abuseSignalsEnabled()).toBe(true);
+        expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
+      }
+    });
+
+    it('switches a hosted install off on an explicit falsey value', async () => {
+      const mod = await loadEnv();
+      process.env.IS_HOSTED = 'true';
+      for (const value of ['false', '0', 'no', 'off', 'FALSE', ' off ']) {
+        process.env.ABUSE_SIGNALS_ENABLED = value;
+        expect(mod.abuseSignalsEnabled()).toBe(false);
+        expect(mod.abuseSignalsExplicitlyDisabled()).toBe(true);
+      }
+    });
+
+    // The bug: `ture` used to parse as falsey and silently disable detection on
+    // a hosted box — the exact polarity failure the default exists to prevent.
+    it('falls back to the IS_HOSTED default (with a warning) on an unrecognized value', async () => {
+      const mod = await loadEnv();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        for (const value of ['ture', 'enabled', 'disabled', 'y']) {
+          warn.mockClear();
+          process.env.ABUSE_SIGNALS_ENABLED = value;
+          process.env.IS_HOSTED = 'true';
+          expect(mod.abuseSignalsEnabled()).toBe(true);
+          process.env.IS_HOSTED = 'false';
+          expect(mod.abuseSignalsEnabled()).toBe(false);
+          expect(warn).toHaveBeenCalled();
+          expect(String(warn.mock.calls[0]?.[0])).toContain(value);
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // Strictly narrower than !abuseSignalsEnabled(): the default-off self-host
+    // path and the typo path are both excluded, so a caller gating a
+    // destructive teardown on it never fires on an ambiguous "off".
+    it('reports an explicit opt-out only for recognized falsey values', async () => {
+      const mod = await loadEnv();
+      process.env.IS_HOSTED = 'false';
+      for (const value of ['ture', 'disabled', '', 'true', '1']) {
+        process.env.ABUSE_SIGNALS_ENABLED = value;
+        expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
+      }
+      delete process.env.ABUSE_SIGNALS_ENABLED;
+      expect(mod.abuseSignalsEnabled()).toBe(false);
+      expect(mod.abuseSignalsExplicitlyDisabled()).toBe(false);
+    });
+  });
 });

@@ -16,6 +16,7 @@ vi.mock('../../services/binarySource', () => ({
   getGithubHelperUrl: vi.fn(),
   getGithubUserHelperUrl: vi.fn(),
   getGithubWatchdogUrl: vi.fn(),
+  getGithubBackupUrl: vi.fn(),
   HELPER_FILENAMES: {
     linux: 'breeze-desktop-helper-linux-amd64',
     darwin: 'breeze-desktop-helper-darwin',
@@ -30,7 +31,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadRoutes } from './download';
-import { getBinarySource, getGithubAgentPkgUrl, getGithubUserHelperUrl, getGithubWatchdogUrl } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentPkgUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
 
 describe('public agent binary downloads', () => {
@@ -118,6 +119,51 @@ describe('public agent binary downloads', () => {
     const badOs = await downloadRoutes.request('/download/watchdog/solaris/amd64');
     expect(badOs.status).toBe(400);
     const badArch = await downloadRoutes.request('/download/watchdog/linux/sparc');
+    expect(badArch.status).toBe(400);
+  });
+
+  it('does not disclose AGENT_BINARY_DIR in public backup 404 responses', async () => {
+    // The backup binary is served from the same dir as the agent, mirroring
+    // the watchdog route. The route must exist (404, not route-not-found) and
+    // not leak the path.
+    const res = await downloadRoutes.request('/download/backup/linux/amd64');
+    const body = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
+    expect(console.warn).toHaveBeenCalledWith(
+      '[backup-download] Local binary missing',
+      { filename: 'breeze-backup-linux-amd64' },
+    );
+  });
+
+  it('redirects backup downloads to GitHub in github mode (per-arch, .exe on windows)', async () => {
+    vi.mocked(getBinarySource).mockReturnValue('github');
+    vi.mocked(getGithubBackupUrl).mockImplementation(
+      (os: string, arch: string) =>
+        `https://github.test/${os}-${arch}/breeze-backup`,
+    );
+
+    try {
+      const lin = await downloadRoutes.request('/download/backup/linux/amd64');
+      expect(lin.status).toBe(302);
+      expect(lin.headers.get('location')).toBe('https://github.test/linux-amd64/breeze-backup');
+      expect(getGithubBackupUrl).toHaveBeenCalledWith('linux', 'amd64');
+
+      const win = await downloadRoutes.request('/download/backup/windows/amd64');
+      expect(win.status).toBe(302);
+      expect(getGithubBackupUrl).toHaveBeenCalledWith('windows', 'amd64');
+    } finally {
+      // Restore the module-mock default so later tests still see 'local'
+      // (vi.restoreAllMocks does not reset vi.mock factory fns).
+      vi.mocked(getBinarySource).mockReturnValue('local');
+    }
+  });
+
+  it('rejects invalid OS/arch on the backup route', async () => {
+    const badOs = await downloadRoutes.request('/download/backup/solaris/amd64');
+    expect(badOs.status).toBe(400);
+    const badArch = await downloadRoutes.request('/download/backup/linux/sparc');
     expect(badArch.status).toBe(400);
   });
 
@@ -214,6 +260,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     ['helper', '/download/helper/linux/amd64', '[helper-download]'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]'],
+    ['backup', '/download/backup/linux/amd64', '[backup-download]'],
   ])('returns 500 for the %s route on a non-NotFound S3 error', async (_name, path, logTag) => {
     const res = await downloadRoutes.request(path);
     const body = await res.text();
@@ -232,6 +279,7 @@ describe('S3 transport failures surface as 500, not a masked 404 (issue #1802)',
     ['helper', '/download/helper/linux/amd64', '[helper-download]', 'NoSuchKey'],
     ['watchdog', '/download/watchdog/linux/amd64', '[watchdog-download]', 'NotFound'],
     ['user-helper', '/download/user-helper/windows/amd64', '[user-helper-download]', 'NotFound'],
+    ['backup', '/download/backup/linux/amd64', '[backup-download]', 'NotFound'],
   ])(
     'still falls back to disk and 404s for the %s route when the S3 object genuinely does not exist',
     async (_name, path, logTag, errName) => {
@@ -430,6 +478,33 @@ describe('GET /install.sh — generated installer script', () => {
     expect(script).toMatch(/restorecon -v "\$INSTALL_DIR\/\$BINARY_NAME"/);
   });
 
+  it('fetches and installs breeze-backup as a non-fatal post-agent-install step', async () => {
+    const script = await fetchScript();
+    // Metadata + download URLs target component=backup and the dedicated
+    // /download/backup/:os/:arch route.
+    expect(script).toContain(
+      'BACKUP_VERSION_METADATA_URL="${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=${OS}&arch=${ARCH}&component=backup"',
+    );
+    expect(script).toContain(
+      'BACKUP_DOWNLOAD_URL="${BREEZE_SERVER}/api/v1/agents/download/backup/${OS}/${ARCH}"',
+    );
+    // The whole step is wrapped as the test of an `if`, so a failure inside
+    // (fatal calls exit) only aborts the subshell — the surrounding `if`
+    // catches it and prints a warning instead of aborting the install.
+    expect(script).toMatch(/if \(\s*\n\s*BACKUP_METADATA_FILE=/);
+    expect(script).toContain(
+      'warn "breeze-backup helper could not be installed; backups will not run until it is present"',
+    );
+    expect(script).toContain('mv "$BACKUP_TMPFILE" "$INSTALL_DIR/breeze-backup"');
+    expect(script).toContain('chmod 755 "$INSTALL_DIR/breeze-backup"');
+    expect(script).toMatch(/restorecon -v "\$INSTALL_DIR\/breeze-backup"/);
+    // Must appear after the agent binary is confirmed installed.
+    const agentInstalledIdx = script.indexOf('success "Installed $INSTALL_DIR/$BINARY_NAME"');
+    const backupStepIdx = script.indexOf('Install breeze-backup (non-fatal)');
+    expect(agentInstalledIdx).toBeGreaterThan(-1);
+    expect(backupStepIdx).toBeGreaterThan(agentInstalledIdx);
+  });
+
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
     // Argument parser handles --token and forwards it to `enroll` as the
@@ -520,6 +595,24 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
     expect(script).toContain('Linux*) uninstall_linux');
     expect(script).toContain('launchctl bootout system/com.breeze.agent');
     expect(script).toContain('systemctl stop breeze-agent');
+  });
+
+  it('removes breeze-backup alongside the agent and watchdog binaries on both platforms', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('BACKUP_BINARY="/usr/local/bin/breeze-backup"');
+
+    const macosBlock = script.slice(
+      script.indexOf('uninstall_macos()'),
+      script.indexOf('uninstall_linux()'),
+    );
+    expect(macosBlock).toContain('rm -f "$BACKUP_BINARY"');
+
+    const linuxStart = script.indexOf('uninstall_linux()');
+    const linuxBlock = script.slice(
+      linuxStart,
+      script.indexOf('require_root', linuxStart),
+    );
+    expect(linuxBlock).toContain('rm -f "$BACKUP_BINARY"');
   });
 
   it('matches the checked-in web and agent script copies', async () => {

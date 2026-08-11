@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import PsaConnectionList, { type PsaConnection } from './PsaConnectionList';
-import PsaConnectionForm, { type PsaConnectionFormValues } from './PsaConnectionForm';
+import PsaConnectionForm, {
+  type PsaConnectionFormValues,
+  type PsaCredentialField
+} from './PsaConnectionForm';
 import PsaTicketList, { type PsaTicket } from './PsaTicketList';
-import { fetchWithAuth } from '../../stores/auth';
+import PsaCompanyImport from './PsaCompanyImport';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useOrgStore } from '../../stores/orgStore';
+import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 
-type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test';
+type ModalMode = 'closed' | 'add' | 'edit' | 'delete' | 'test' | 'import';
 
 type TestResult = {
   success: boolean;
@@ -17,14 +25,78 @@ type TestResult = {
   error?: string;
 };
 
-type PsaConnectionDetails = PsaConnectionFormValues & {
+// Server round-trip contract (see serializeConnection in apps/api/src/routes/psa.ts):
+// GET /psa/connections/:id returns nested `settings`, and — only for callers
+// holding organizations:write — the NON-SECRET credential fields for edit
+// prefill plus `credentialFields`, the per-field presence map for the stored
+// secrets. Secrets themselves are never returned, and a read-only caller gets
+// neither block, so both are optional here.
+type PsaConnectionDetails = {
   id: string;
-  hasCredentials?: {
-    password?: boolean;
-    apiToken?: boolean;
-    clientSecret?: boolean;
+  name: string;
+  /** 'partner' = partner-wide ("All orgs"), epic #2135. Immutable after create. */
+  ownerScope?: 'organization' | 'partner';
+  provider: PsaConnectionFormValues['provider'];
+  /** True when ANY credential material is stored (not permission-gated). */
+  hasCredentials?: boolean;
+  /** Deprecated server-side; no PSA sync worker writes it. */
+  lastSyncedAt?: string | null;
+  settings?: {
+    defaultQueue?: string;
+    syncEnabled?: boolean;
+    syncInterval?: PsaConnectionFormValues['syncInterval'];
+    syncDirection?: PsaConnectionFormValues['syncDirection'];
+    syncOnClose?: boolean;
+    includeNotes?: boolean;
   };
+  credentials?: Partial<Record<'baseUrl' | PsaCredentialField, string>>;
+  credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
 };
+
+// Every credential key the form can produce; the server decides which ones a
+// given provider requires. Keep in sync with PROVIDER_CREDENTIAL_FIELDS.
+const CREDENTIAL_FIELDS = [
+  'baseUrl',
+  'username',
+  'password',
+  'apiToken',
+  'clientId',
+  'clientSecret',
+  'email',
+  'companyId',
+  'publicKey',
+  'privateKey',
+  'integrationCode',
+  'secret',
+  'apiKey',
+  'personalAccessToken'
+] as const;
+
+// Map flat form values onto the server's nested {credentials, settings} payload.
+// Empty credential fields are omitted: on PATCH the server merges provided keys
+// over the stored blob, so omitting an untouched secret keeps it.
+function toConnectionPayload(values: PsaConnectionFormValues) {
+  const credentials: Record<string, string> = {};
+  for (const field of CREDENTIAL_FIELDS) {
+    const value = values[field];
+    if (typeof value === 'string' && value.trim() !== '') {
+      credentials[field] = value;
+    }
+  }
+
+  return {
+    name: values.name,
+    credentials,
+    settings: {
+      ...(values.defaultQueue && values.defaultQueue.trim() !== '' ? { defaultQueue: values.defaultQueue } : {}),
+      syncEnabled: values.syncEnabled,
+      syncInterval: values.syncInterval,
+      syncDirection: values.syncDirection,
+      syncOnClose: values.syncOnClose,
+      includeNotes: values.includeNotes
+    }
+  };
+}
 
 export default function PsaConnectionsPage() {
   const { t } = useTranslation('common');
@@ -38,6 +110,32 @@ export default function PsaConnectionsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+
+  // Same UX gate as ScriptForm/ScriptBundleImport (#3262): partner-wide is only
+  // meaningful for partner-scope callers, and within partner scope only for
+  // users holding the partner-wide capability. Absent = capable; the server
+  // (canManagePartnerWidePolicies) enforces regardless — this is UX only.
+  const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+  // Repo-wide rule for "what does a new config object default to" — do not
+  // inline a literal here (epic #2135; 8 surfaces share this hook).
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const showOwnerScope = isPartnerScope && canManagePartnerWide;
+  const organizations = useOrgStore(s => s.organizations);
+  const currentOrgId = useOrgStore(s => s.currentOrgId);
+  const ownerOrgOptions = showOwnerScope
+    ? organizations.map(o => ({ id: o.id, name: o.name }))
+    : [];
+
+  /**
+   * A partner-wide connection the caller may SEE but not MUTATE. Mirrors the
+   * server's canManagePartnerWidePolicies gate so restricted users don't meet a
+   * 403 toast after clicking (finding 7) — the server still enforces.
+   */
+  const isLockedPartnerWide = useCallback(
+    (connection: PsaConnection) =>
+      connection.ownerScope === 'partner' && !canManagePartnerWide,
+    [canManagePartnerWide]
+  );
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -99,43 +197,32 @@ export default function PsaConnectionsPage() {
     setModalMode('edit');
   };
 
-  const handleSyncNow = async (connection: PsaConnection) => {
-    try {
-      const response = await fetchWithAuth(`/psa/connections/${connection.id}/sync`, {
-        method: 'POST'
-      });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.startSync'));
-      }
-
-      await fetchConnections();
-      await fetchTickets();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
-    }
-  };
-
   const handleToggleStatus = async (connection: PsaConnection, newStatus: 'active' | 'paused') => {
     try {
-      const response = await fetchWithAuth(`/psa/connections/${connection.id}/status`, {
-        method: 'POST',
-        body: JSON.stringify({ status: newStatus })
+      await runAction({
+        request: () => fetchWithAuth(`/psa/connections/${connection.id}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status: newStatus })
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.updateStatus')
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.updateStatus'));
-      }
-
       await fetchConnections();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.updateStatus') });
+      }
     }
   };
 
   const handleDelete = (connection: PsaConnection) => {
     setSelectedConnection(connection);
     setModalMode('delete');
+  };
+
+  const handleImportCompanies = (connection: PsaConnection) => {
+    setSelectedConnection(connection);
+    setModalMode('import');
   };
 
   const handleCloseModal = () => {
@@ -152,16 +239,28 @@ export default function PsaConnectionsPage() {
     setTestResult(null);
 
     try {
-      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}/test`, {
-        method: 'POST'
+      // The route answers HTTP 200 with {success:false} on a rejected
+      // credential, which runAction treats as a failure (and toasts). The
+      // result modal still opens in both branches — it carries the provider's
+      // own message, which the toast alone would truncate the context of.
+      const data = await runAction<TestResult>({
+        request: () => fetchWithAuth(`/psa/connections/${selectedConnection.id}/test`, {
+          method: 'POST'
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.testFailed')
       });
-      const data = await response.json();
       setTestResult(data);
       setModalMode('test');
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.testFailed') });
+      }
+      const body = err instanceof ActionError ? (err.body as TestResult | undefined) : undefined;
       setTestResult({
         success: false,
-        error: err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.testFailed')
+        error: body?.error
+          ?? (err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.testFailed'))
       });
       setModalMode('test');
     } finally {
@@ -177,28 +276,38 @@ export default function PsaConnectionsPage() {
         : '/psa/connections';
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
 
-      const payload = { ...values } as Partial<PsaConnectionFormValues>;
-      if (modalMode === 'edit') {
-        if (!payload.password) delete payload.password;
-        if (!payload.apiToken) delete payload.apiToken;
-        if (!payload.clientSecret) delete payload.clientSecret;
-      }
+      const base = toConnectionPayload(values);
+      // ownerScope is create-only (epic #2135) — the PATCH schema rejects it,
+      // and re-homing a connection is deliberately not a supported operation.
+      // Only sent when the selector was actually shown, so an org-scope user's
+      // create keeps the server's 'organization' default.
+      const payload = modalMode === 'edit'
+        ? base
+        : {
+            ...base,
+            provider: values.provider,
+            ...(showOwnerScope && values.ownerScope ? { ownerScope: values.ownerScope } : {}),
+            // Only meaningful on the org-owned branch. A partner with 2+ orgs
+            // MUST send it or the API 400s; org-scope callers omit it and the
+            // server derives the org from their token.
+            ...(showOwnerScope && values.ownerScope === 'organization' && values.orgId
+              ? { orgId: values.orgId }
+              : {})
+          };
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.saveConnection')
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || t('longTail.psa.PsaConnectionsPage.errors.saveConnection'));
-      }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.saveConnection') });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -209,19 +318,21 @@ export default function PsaConnectionsPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/psa/connections/${selectedConnection.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () => fetchWithAuth(`/psa/connections/${selectedConnection.id}`, {
+          method: 'DELETE'
+        }),
+        errorFallback: t('longTail.psa.PsaConnectionsPage.errors.deleteConnection')
       });
-
-      if (!response.ok) {
-        throw new Error(t('longTail.psa.PsaConnectionsPage.errors.deleteConnection'));
-      }
 
       await fetchConnections();
       await fetchTickets();
       handleCloseModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('longTail.psa.PsaConnectionsPage.errors.generic'));
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('longTail.psa.PsaConnectionsPage.errors.deleteConnection') });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -283,9 +394,10 @@ export default function PsaConnectionsPage() {
       <PsaConnectionList
         connections={connections}
         onEdit={handleEdit}
-        onSyncNow={handleSyncNow}
         onToggleStatus={handleToggleStatus}
         onDelete={handleDelete}
+        onImportCompanies={handleImportCompanies}
+        isLockedPartnerWide={isLockedPartnerWide}
       />
 
       <PsaTicketList tickets={tickets} />
@@ -306,35 +418,60 @@ export default function PsaConnectionsPage() {
             <PsaConnectionForm
               onSubmit={handleSubmit}
               onCancel={handleCloseModal}
+              showOwnerScope={showOwnerScope}
+              ownerOrgOptions={ownerOrgOptions}
               onTestConnection={modalMode === 'edit' ? handleTestConnection : undefined}
               defaultValues={
                 selectedConnectionDetails
                   ? {
                       name: selectedConnectionDetails.name,
                       provider: selectedConnectionDetails.provider,
-                      baseUrl: selectedConnectionDetails.baseUrl || '',
-                      defaultQueue: selectedConnectionDetails.defaultQueue || '',
-                      username: selectedConnectionDetails.username || '',
+                      baseUrl: selectedConnectionDetails.credentials?.baseUrl || '',
+                      defaultQueue: selectedConnectionDetails.settings?.defaultQueue || '',
+                      // Non-secret fields prefill from the server; secrets are
+                      // never returned, so they stay empty and an untouched
+                      // field is omitted from the PATCH (the form shows a
+                      // "keep existing" placeholder instead).
+                      username: selectedConnectionDetails.credentials?.username || '',
+                      email: selectedConnectionDetails.credentials?.email || '',
+                      clientId: selectedConnectionDetails.credentials?.clientId || '',
+                      companyId: selectedConnectionDetails.credentials?.companyId || '',
+                      publicKey: selectedConnectionDetails.credentials?.publicKey || '',
                       password: '',
                       apiToken: '',
-                      clientId: selectedConnectionDetails.clientId || '',
                       clientSecret: '',
-                      syncEnabled: selectedConnectionDetails.syncEnabled ?? true,
-                      syncInterval: selectedConnectionDetails.syncInterval || '1h',
-                      syncDirection: selectedConnectionDetails.syncDirection || 'bidirectional',
-                      syncOnClose: selectedConnectionDetails.syncOnClose ?? true,
-                      includeNotes: selectedConnectionDetails.includeNotes ?? true
+                      privateKey: '',
+                      integrationCode: '',
+                      secret: '',
+                      apiKey: '',
+                      personalAccessToken: '',
+                      syncEnabled: selectedConnectionDetails.settings?.syncEnabled ?? true,
+                      syncInterval: selectedConnectionDetails.settings?.syncInterval || '1h',
+                      syncDirection: selectedConnectionDetails.settings?.syncDirection || 'bidirectional',
+                      syncOnClose: selectedConnectionDetails.settings?.syncOnClose ?? true,
+                      includeNotes: selectedConnectionDetails.settings?.includeNotes ?? true
                     }
-                  : undefined
+                  : {
+                      // Create defaults. ownerScope comes from the shared hook,
+                      // not a literal, so this form follows the repo-wide rule.
+                      ownerScope: defaultOwnerScope,
+                      orgId: currentOrgId ?? ownerOrgOptions[0]?.id ?? ''
+                    }
               }
               submitLabel={modalMode === 'add' ? t('longTail.psa.PsaConnectionsPage.actions.createConnection') : t('longTail.psa.PsaConnectionsPage.actions.saveChanges')}
               loading={submitting}
               testingConnection={testingConnection}
               isEditing={modalMode === 'edit'}
-              hasCredentials={selectedConnectionDetails?.hasCredentials}
+              credentialFields={selectedConnectionDetails?.credentialFields}
             />
           </div>
         </div>
+      )}
+
+      {modalMode === 'import' && selectedConnection && (
+        // A company import creates organizations, not connections — nothing on
+        // this page changes, so there is no `onImported` refetch to do here.
+        <PsaCompanyImport connection={selectedConnection} onClose={handleCloseModal} />
       )}
 
       {modalMode === 'delete' && selectedConnection && (

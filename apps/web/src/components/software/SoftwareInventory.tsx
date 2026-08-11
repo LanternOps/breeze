@@ -252,8 +252,9 @@ export default function SoftwareInventory({
           />
         </div>
         <span className="text-sm text-muted-foreground">
-          {total}
-          {i18n.t("policies:software.softwareInventory.uniqueSoftware")}
+          {i18n.t("policies:software.softwareInventory.uniqueSoftwareSummary", {
+            total,
+          })}
         </span>
       </div>
 
@@ -506,10 +507,10 @@ export default function SoftwareInventory({
         {total > limit && (
           <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
             <span className="text-muted-foreground">
-              {i18n.t("policies:software.softwareInventory.showing")}
-              {offset + 1}-{Math.min(offset + limit, total)}
-              {i18n.t("policies:software.softwareInventory.of")}
-              {total}
+              {i18n.t("policies:software.softwareInventory.summary", {
+                range: `${offset + 1}-${Math.min(offset + limit, total)}`,
+                total,
+              })}
             </span>
             <div className="flex items-center gap-2">
               <button

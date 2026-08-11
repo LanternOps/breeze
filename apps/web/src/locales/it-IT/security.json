@@ -1633,7 +1633,8 @@
       "triggerScan": "Attiva scansione"
     },
     "messages": {
-      "triggerScanFailed": "Impossibile attivare la scansione"
+      "triggerScanFailed": "Impossibile attivare la scansione",
+      "triggerScanQueued": "Scansione in coda per {{name}}"
     },
     "table": {
       "name": "Nome",
@@ -1658,6 +1659,10 @@
     "status": {
       "active": "Attiva",
       "inactive": "Inattiva"
+    },
+    "badges": {
+      "allOrgs": "Tutte le org",
+      "partnerWideTitle": "Baseline a livello di Partner: si applica ai dispositivi di ogni organizzazione"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1666,7 +1671,8 @@
       "new": "Nuova baseline"
     },
     "messages": {
-      "saveFailed": "Impossibile salvare la baseline"
+      "saveFailed": "Impossibile salvare la baseline",
+      "saveSuccess": "Baseline “{{name}}” salvata"
     },
     "fields": {
       "name": "Nome",
@@ -1697,6 +1703,12 @@
       "cancel": "Annulla",
       "saving": "Salvataggio...",
       "save": "Salva"
+    },
+    "ownership": {
+      "scope": "Ambito",
+      "allOrganizations": "Tutte le organizzazioni",
+      "partnerWideBaselineParenthetical": "(baseline a livello di Partner)",
+      "thisOrganizationOnly": "Solo questa organizzazione"
     }
   },
   "cisHardeningCisRemediationsTab": {

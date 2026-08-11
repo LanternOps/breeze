@@ -46,9 +46,8 @@ vi.mock('./deploymentEngine', () => ({
   resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('./commandQueue', () => ({
-  CommandTypes: { SCRIPT: 'script' },
-  queueCommandForExecution: vi.fn().mockResolvedValue({ command: null, error: 'mocked' }),
+vi.mock('./scriptDispatch', () => ({
+  dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: false, code: 'insert_failed', error: 'mocked' }),
 }));
 
 vi.mock('./notificationSenders', () => ({

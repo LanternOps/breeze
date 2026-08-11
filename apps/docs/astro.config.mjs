@@ -40,6 +40,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'agents' } }],
         },
         {
+          label: 'Migration',
+          items: [{ autogenerate: { directory: 'migration' } }],
+        },
+        {
           label: 'Security Architecture',
           items: [{ autogenerate: { directory: 'security' } }],
         },
@@ -168,7 +172,6 @@ export default defineConfig({
                 },
                 { slug: 'features/identity-console' },
                 { slug: 'features/webhooks' },
-                { slug: 'features/extensions' },
                 { slug: 'features/plugins' },
                 { slug: 'features/branding' },
                 { slug: 'features/portal' },
@@ -177,6 +180,10 @@ export default defineConfig({
               ],
             },
           ],
+        },
+        {
+          label: 'Migrating to Breeze',
+          items: [{ autogenerate: { directory: 'migration' } }],
         },
         {
           label: 'Monitoring',

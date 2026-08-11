@@ -14,8 +14,11 @@ import {
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
+import { getBinaryEdition } from "../services/binaryEdition";
+import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
 import { verifyReleaseArtifactManifestAsset } from "../services/releaseArtifactManifest";
+import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
 import { getActivePublicKeys as getActiveDeploymentSigningPubKeys } from "../services/manifestSigning";
 
 // Map Go GOOS / user-facing platform names to DB platform names
@@ -37,13 +40,22 @@ const architectureEnum = z.enum(["amd64", "arm64"]);
 // "watchdog" lets the agent's reconcile path (and the watchdog's own failover
 // self-update) resolve and download the watchdog component. Omitting it here is
 // why watchdog auto-update 400'd server-side regardless of registration.
+// "backup" lets install.sh (and any future self-heal fetch) resolve and
+// download the breeze-backup binary the same way.
 const componentEnum = z.enum([
   "agent",
   "helper",
   "viewer",
   "user-helper",
   "watchdog",
+  "backup",
 ]);
+
+// Release edition ("self-host" | "hosted"): lets the same version/platform/
+// arch/component be registered twice — once per edition — so a hosted
+// deployment's own build can coexist with the public self-host build. Admin
+// create defaults to this server's own edition when omitted.
+const editionEnum = z.enum([EDITION_SELF_HOST, EDITION_HOSTED]);
 
 const latestQuerySchema = z.object({
   platform: platformEnum,
@@ -74,6 +86,7 @@ const createVersionSchema = z.object({
   releaseNotes: z.string().optional(),
   isLatest: z.boolean().optional().default(false),
   component: componentEnum.optional().default("agent"),
+  edition: editionEnum.optional(),
 });
 
 // Controlled fleet rollout: explicitly promote a registered version to the
@@ -265,8 +278,8 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 }
 
 // Construct the server-relative download URL the agent should use. Applies to
-// component=agent, helper, user-helper, and watchdog: all are pulled by the
-// agent's verified downloader (updater.downloadFromURL), which enforces host
+// component=agent, helper, user-helper, watchdog, and backup: all are pulled
+// by the agent's verified downloader (updater.downloadFromURL), which enforces host
 // equality with the agent's configured ServerURL. Without this rewrite the
 // response would hand back the canonical github.com asset URL, which the agent
 // rejects — and, more importantly, the helper used to be fetched via an
@@ -290,7 +303,8 @@ function buildServerRelativeAgentDownloadUrl(
     component !== "agent" &&
     component !== "helper" &&
     component !== "user-helper" &&
-    component !== "watchdog"
+    component !== "watchdog" &&
+    component !== "backup"
   ) {
     return null;
   }
@@ -307,6 +321,9 @@ function buildServerRelativeAgentDownloadUrl(
   }
   if (component === "watchdog") {
     return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;
+  }
+  if (component === "backup") {
+    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}`;
   }
   return `${origin}/api/v1/agents/download/${os}/${architecture}`;
 }
@@ -418,6 +435,10 @@ agentVersionRoutes.get(
           eq(agentVersions.architecture, arch),
           eq(agentVersions.component, component),
           eq(agentVersions.isLatest, true),
+          // Each server only serves its own build edition (default
+          // self-host, unchanged for every deployment that never sets
+          // BINARY_EDITION).
+          eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
       .limit(1);
@@ -477,6 +498,7 @@ agentVersionRoutes.get(
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
         signingKeyId: agentVersions.signingKeyId,
+        isLatest: agentVersions.isLatest,
       })
       .from(agentVersions)
       .where(
@@ -485,6 +507,8 @@ agentVersionRoutes.get(
           eq(agentVersions.platform, platform),
           eq(agentVersions.architecture, arch),
           eq(agentVersions.component, component),
+          // Each server only serves its own build edition.
+          eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
       .limit(1);
@@ -520,11 +544,35 @@ agentVersionRoutes.get(
       );
     }
 
-    const serverRelativeUrl = buildServerRelativeAgentDownloadUrl(
-      versionInfo.platform,
-      versionInfo.architecture,
-      versionInfo.component,
-    );
+    // breeze-backup is version-slaved to the agent but requested by EXACT
+    // version (unlike agent/helper/watchdog, which always want "latest").
+    // The versionless /download/backup/:os/:arch route can only ever serve
+    // whatever the server currently considers latest (BINARY_VERSION /
+    // BREEZE_VERSION — see binarySource.getGithubReleaseVersion). Rewriting
+    // to that route for a NON-current backup version would hand an agent
+    // healing to an older pinned version newer bytes than it asked for; the
+    // updater verifies checksum+manifest against the pinned version and
+    // fails safe, but can never actually heal. So for component=backup only,
+    // rewrite exclusively when this row IS the exact version the versionless
+    // route would serve — it matches the server's own pinned version
+    // (getGithubReleaseVersion). isLatest is NOT sufficient: production runs
+    // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
+    // isLatest rows can still point at the still-rolling-out fleet version X.
+    // An agent pinned to X would then get rewritten to the versionless route,
+    // which serves Y's bytes — checksum verification fails fleet-wide for the
+    // entire deploy-to-promote window. Every other component keeps the
+    // unconditional rewrite.
+    const backupVersionIsServableByVersionlessRoute =
+      versionInfo.component !== "backup" ||
+      versionInfo.version === getGithubReleaseVersion();
+
+    const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
+      ? buildServerRelativeAgentDownloadUrl(
+          versionInfo.platform,
+          versionInfo.architecture,
+          versionInfo.component,
+        )
+      : null;
 
     // Return JSON with download URL, checksum, and signed release manifest.
     // url is server-relative when PUBLIC_API_URL is set so the agent's
@@ -552,9 +600,12 @@ agentVersionRoutes.post(
   async (c) => {
     const auth = c.get("auth");
     const data = c.req.valid("json");
+    const edition = data.edition ?? getBinaryEdition();
 
     // If this version is marked as latest, unset isLatest for other versions
-    // with the same platform/architecture/component
+    // with the same platform/architecture/component/edition. Scoped by
+    // edition too — otherwise promoting a "self-host" row could demote a
+    // coexisting "hosted" row's isLatest for the same platform/arch/component.
     if (data.isLatest) {
       await db
         .update(agentVersions)
@@ -564,6 +615,7 @@ agentVersionRoutes.post(
             eq(agentVersions.platform, data.platform),
             eq(agentVersions.architecture, data.architecture),
             eq(agentVersions.component, data.component),
+            eq(agentVersions.edition, edition),
             eq(agentVersions.isLatest, true),
           ),
         );
@@ -584,6 +636,7 @@ agentVersionRoutes.post(
         releaseNotes: data.releaseNotes,
         isLatest: data.isLatest ?? false,
         component: data.component,
+        edition,
       })
       .returning();
     if (!newVersion) {
@@ -616,6 +669,7 @@ agentVersionRoutes.post(
         fileSize: newVersion.fileSize ? Number(newVersion.fileSize) : null,
         releaseNotes: newVersion.releaseNotes,
         isLatest: newVersion.isLatest,
+        edition: newVersion.edition,
         createdAt: newVersion.createdAt,
       },
       201,
@@ -644,9 +698,12 @@ agentVersionRoutes.post(
         resourceType: "agent_version",
         resourceId: result.version,
         resourceName: `v${result.version}`,
-        details: { targets: result.synced },
+        details: { targets: result.synced, failed: result.failed },
       });
 
+      // Partial failures are isolated per component (#816) but must not be
+      // invisible: surface them in the response body so an operator sees a
+      // short registration instead of assuming a clean sync.
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -679,6 +736,10 @@ agentVersionRoutes.get(
         isLatest: agentVersions.isLatest,
       })
       .from(agentVersions)
+      // Scoped to this server's own build edition — a picker offering a
+      // version string that only exists for the OTHER edition would 404 when
+      // promoted (promote is edition-scoped too, see below).
+      .where(eq(agentVersions.edition, getBinaryEdition()))
       .orderBy(desc(agentVersions.createdAt)); // newest-first drives the dedupe order
 
     // Only the two operator-facing binaries are pinnable (agent, watchdog).
@@ -731,6 +792,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
       platform: agentVersions.platform,
       architecture: agentVersions.architecture,
       component: agentVersions.component,
+      edition: agentVersions.edition,
       isLatest: agentVersions.isLatest,
       fileSize: agentVersions.fileSize,
       releaseNotes: agentVersions.releaseNotes,
@@ -740,6 +802,10 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
     .orderBy(desc(agentVersions.createdAt));
 
   return c.json({
+    // Platform-admin diagnostic view: intentionally NOT filtered by this
+    // server's own edition, so an operator can see both editions' registered
+    // rows side by side. Contrast with /pinnable and /promote, which are
+    // scoped to getBinaryEdition() because they drive actual fleet targeting.
     versions: rows.map((r) => ({
       ...r,
       fileSize: r.fileSize != null ? Number(r.fileSize) : null,
@@ -753,6 +819,7 @@ agentVersionRoutes.get("/", platformAdminMiddleware, async (c) => {
         platform: r.platform,
         architecture: r.architecture,
         version: r.version,
+        edition: r.edition,
       })),
   });
 });
@@ -772,8 +839,12 @@ agentVersionRoutes.post(
   zValidator("json", promoteSchema),
   async (c) => {
     const { version, component } = c.req.valid("json");
+    const edition = getBinaryEdition();
 
     // Target rows for this version (optionally narrowed to one component).
+    // Scoped to this server's own edition — promote only ever affects rows
+    // this server actually serves, so it can never flip a coexisting other-
+    // edition row's isLatest as a side effect.
     const targetRows = await db
       .select({
         component: agentVersions.component,
@@ -786,8 +857,12 @@ agentVersionRoutes.post(
           ? and(
               eq(agentVersions.version, version),
               eq(agentVersions.component, component),
+              eq(agentVersions.edition, edition),
             )
-          : eq(agentVersions.version, version),
+          : and(
+              eq(agentVersions.version, version),
+              eq(agentVersions.edition, edition),
+            ),
       );
 
     if (targetRows.length === 0) {
@@ -832,6 +907,7 @@ agentVersionRoutes.post(
               eq(agentVersions.component, t.component),
               eq(agentVersions.platform, t.platform),
               eq(agentVersions.architecture, t.architecture),
+              eq(agentVersions.edition, edition),
               eq(agentVersions.isLatest, true),
             ),
           )
@@ -855,6 +931,7 @@ agentVersionRoutes.post(
               eq(agentVersions.component, t.component),
               eq(agentVersions.platform, t.platform),
               eq(agentVersions.architecture, t.architecture),
+              eq(agentVersions.edition, edition),
               eq(agentVersions.isLatest, true),
             ),
           );
@@ -869,6 +946,7 @@ agentVersionRoutes.post(
               eq(agentVersions.component, t.component),
               eq(agentVersions.platform, t.platform),
               eq(agentVersions.architecture, t.architecture),
+              eq(agentVersions.edition, edition),
             ),
           );
       }

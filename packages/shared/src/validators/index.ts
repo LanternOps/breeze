@@ -28,6 +28,7 @@ export * from './agentVersionPins';
 export * from './enrollmentDefaults';
 export * from './softwareDetection';
 export * from './softwareDownloadPolicy';
+export * from './psa';
 
 // ============================================
 // Device Roles
@@ -721,6 +722,9 @@ export const patchInlineSettingsSchema = z.object({
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
   scheduleDayOfMonth: z.number().int().min(1).max(28).default(1),
   rebootPolicy: z.enum(['never', 'if_required', 'always', 'maintenance_window']).default('if_required'),
+  // #3197: how long the logged-in user is warned before a patch-triggered
+  // reboot fires. Replaces the hardcoded 5-minute delay.
+  rebootDelayMinutes: z.number().int().min(1).max(1440).default(15),
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.

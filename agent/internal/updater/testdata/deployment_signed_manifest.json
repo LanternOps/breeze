@@ -1,0 +1,46 @@
+{
+  "keyId": "deploy-fixture-trustchain",
+  "publicKeyB64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "entries": [
+    {
+      "platform": "linux",
+      "arch": "amd64",
+      "url": "https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-linux-amd64",
+      "checksum": "a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb",
+      "manifest": "{\"version\":\"9.9.9\",\"component\":\"agent\",\"platform\":\"linux\",\"arch\":\"amd64\",\"url\":\"https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-linux-amd64\",\"checksum\":\"a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb\",\"size\":4096}",
+      "signatureB64": "h802liazKu8K1oojOfiPhnkjv9iE7SP5vL5gSzpvDVkRyFu+gSumd388PPwkzzXrLM3FqFmyW8bUN7pSAmQpDA=="
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "url": "https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-linux-arm64",
+      "checksum": "a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb",
+      "manifest": "{\"version\":\"9.9.9\",\"component\":\"agent\",\"platform\":\"linux\",\"arch\":\"arm64\",\"url\":\"https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-linux-arm64\",\"checksum\":\"a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb\",\"size\":4096}",
+      "signatureB64": "1K8CcG7BTMYAc7tTkiLvuCfKWl5l2Gjw46m29a5s97Lc98SOsuphfB3gHtP2HwHgj1kDmf1gOyiQQmCp+ZgVAQ=="
+    },
+    {
+      "platform": "macos",
+      "arch": "amd64",
+      "url": "https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-darwin-amd64",
+      "checksum": "a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb",
+      "manifest": "{\"version\":\"9.9.9\",\"component\":\"agent\",\"platform\":\"macos\",\"arch\":\"amd64\",\"url\":\"https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-darwin-amd64\",\"checksum\":\"a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb\",\"size\":4096}",
+      "signatureB64": "D8Vy45TpWe/+/vR9ULDTbdzPJ7NpYnR5HZ6pVk/iNCQ+OH/POQVlL1zKaXXR5hTLiAoDU0fJ+/Y8EVd4XbEgDA=="
+    },
+    {
+      "platform": "macos",
+      "arch": "arm64",
+      "url": "https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-darwin-arm64",
+      "checksum": "a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb",
+      "manifest": "{\"version\":\"9.9.9\",\"component\":\"agent\",\"platform\":\"macos\",\"arch\":\"arm64\",\"url\":\"https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-darwin-arm64\",\"checksum\":\"a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb\",\"size\":4096}",
+      "signatureB64": "gRJ/Fzce+QWgAWclPzOl4t1gPCf3PDC+xiAGgf2X2y+a+ii++PNG+SHxQLmR02/KWcwa/Q3L4w1bqaqnyV0NCw=="
+    },
+    {
+      "platform": "windows",
+      "arch": "amd64",
+      "url": "https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-windows-amd64.exe",
+      "checksum": "a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb",
+      "manifest": "{\"version\":\"9.9.9\",\"component\":\"agent\",\"platform\":\"windows\",\"arch\":\"amd64\",\"url\":\"https://github.com/acme/breeze-selfhost-signing/releases/download/v9.9.9/breeze-agent-windows-amd64.exe\",\"checksum\":\"a3008dc58ed0bce543a01e3222af4f6ae924716ca754adb80ba0f09cbcad33cb\",\"size\":4096}",
+      "signatureB64": "VluvCi+vfqh2naNTLQJzcutz6QdFfBt6j9hUYCzYSkr4klKoVoQPnnllbzd6S0XKlh8Dtbu6Dexe3E8hb5pCBQ=="
+    }
+  ]
+}

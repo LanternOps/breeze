@@ -2,6 +2,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Hono } from "hono";
 import { generateKeyPairSync, sign } from "node:crypto";
 
+// Real eq/and are opaque drizzle-orm SQL AST builders that aren't easy to
+// assert on directly. Spy-wrap them (mirrors binarySync.test.ts) so
+// edition-scoping tests can inspect exactly which columns/values a route
+// built into its WHERE clause, without changing any chain shape the other
+// (unmodified) tests in this file already rely on.
+const drizzleSpies = vi.hoisted(() => ({
+  eq: vi.fn((column: unknown, value: unknown) => ({ __op: "eq", column, value })),
+  and: vi.fn((...clauses: unknown[]) => ({ __op: "and", clauses })),
+}));
+vi.mock("drizzle-orm", async (importActual) => {
+  const actual = await importActual<typeof import("drizzle-orm")>();
+  return { ...actual, eq: drizzleSpies.eq, and: drizzleSpies.and };
+});
+
 vi.mock("../db", () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(
@@ -58,8 +72,24 @@ import {
   verifyEd25519ManifestSignature,
 } from "./agentVersions";
 import { db } from "../db";
+import { agentVersions } from "../db/schema";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
+import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
+
+// Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
+// eq(agentVersions.edition, expected) leaf clause.
+function hasEditionClause(node: unknown, expected: string): boolean {
+  if (!node || typeof node !== "object") return false;
+  const n = node as { __op?: string; column?: unknown; value?: unknown; clauses?: unknown[] };
+  if (n.__op === "eq") {
+    return n.column === agentVersions.edition && n.value === expected;
+  }
+  if (n.__op === "and" && Array.isArray(n.clauses)) {
+    return n.clauses.some((c) => hasEditionClause(c, expected));
+  }
+  return false;
+}
 
 function makeSignedReleaseManifest(overrides: Record<string, unknown> = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -103,7 +133,9 @@ function makeSignedReleaseArtifactManifest(args: {
         name: args.assetName,
         sha256: args.checksum,
         size: args.size,
-        platformTrust: "release-workflow-produced",
+        platformTrust:
+          requiredPlatformTrustFor(args.assetName) ??
+          "release-workflow-produced",
       },
     ],
   });
@@ -127,6 +159,7 @@ describe("agentVersions routes", () => {
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BINARY_EDITION;
     app = new Hono();
     // Inject mock auth context
     app.use(async (c: any, next: any) => {
@@ -145,9 +178,11 @@ describe("agentVersions routes", () => {
   // multiple sequential selects.
   function selectResolving(rows: unknown[]) {
     // `where()` must be awaitable on its own (the promote target-rows query has
-    // no .limit()) AND expose .limit() (the in-tx "current isLatest" lookup).
+    // no .limit()) AND expose .limit() (the in-tx "current isLatest" lookup)
+    // AND expose .orderBy() (the edition-scoped /pinnable query).
     const whereResult: any = Promise.resolve(rows);
     whereResult.limit = vi.fn().mockResolvedValue(rows);
+    whereResult.orderBy = vi.fn().mockResolvedValue(rows);
     return {
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue(whereResult),
@@ -376,6 +411,89 @@ describe("agentVersions routes", () => {
         }),
       );
     });
+
+    it("scopes the target-rows lookup and the tx demote/promote to this server's edition", async () => {
+      process.env.BINARY_EDITION = "hosted";
+
+      const targetRowsWhere = vi.fn().mockResolvedValue([
+        { component: "agent", platform: "linux", architecture: "amd64" },
+      ]);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: targetRowsWhere }),
+      } as any);
+
+      const { tx, txUpdate, updateSet } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0", component: "agent" }),
+      });
+      delete process.env.BINARY_EDITION;
+
+      expect(res.status).toBe(200);
+      // Pre-tx target-rows lookup scoped to edition=hosted.
+      const targetRowsWhereArg = targetRowsWhere.mock.calls[0]?.[0];
+      expect(hasEditionClause(targetRowsWhereArg, "hosted")).toBe(true);
+
+      // In-tx demote (.set({isLatest:false}).where(...)) and promote
+      // (.set({isLatest:true}).where(...)) share the same mocked `where` fn
+      // (makeTx's updateSet always returns the same object) — both calls
+      // must carry the edition scope.
+      expect(txUpdate).toHaveBeenCalledTimes(2);
+      const sharedWhereMock = updateSet.mock.results[0]?.value.where;
+      expect(sharedWhereMock.mock.calls.length).toBe(2);
+      for (const call of sharedWhereMock.mock.calls) {
+        expect(hasEditionClause(call[0], "hosted")).toBe(true);
+      }
+    });
+
+    // breeze-backup's version is slaved to the agent's (it has no separate
+    // pin — see agentVersionPins.ts, deliberately agent+watchdog only), so
+    // its is_latest must stay in lockstep with whatever the fleet promotes
+    // to. The target-rows lookup when `component` is omitted has no
+    // component filter at all (`eq(agentVersions.version, version)`), so it
+    // was already generic — this proves backup rows ride along rather than
+    // needing a hardcoded component list.
+    it("promoting with component omitted includes backup rows alongside agent/watchdog", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          { component: "agent", platform: "linux", architecture: "amd64" },
+          { component: "watchdog", platform: "linux", architecture: "amd64" },
+          { component: "backup", platform: "linux", architecture: "amd64" },
+        ]) as any,
+      );
+
+      const { tx } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.promoted).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ component: "backup", version: "0.71.0" }),
+        ]),
+      );
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({
+            components: expect.arrayContaining(["backup"]),
+          }),
+        }),
+      );
+    });
   });
 
   describe("GET /agent-versions/latest", () => {
@@ -426,6 +544,37 @@ describe("agentVersions routes", () => {
       );
 
       expect(res.status).toBe(404);
+    });
+
+    it("scopes the lookup to this server's own edition (default self-host)", async () => {
+      const whereMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: whereMock }),
+      } as any);
+
+      delete process.env.BINARY_EDITION;
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+
+      const whereArg = whereMock.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "self-host")).toBe(true);
+    });
+
+    it("scopes the lookup to BINARY_EDITION=hosted when configured", async () => {
+      const whereMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: whereMock }),
+      } as any);
+
+      process.env.BINARY_EDITION = "hosted";
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+      delete process.env.BINARY_EDITION;
+
+      const whereArg = whereMock.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "hosted")).toBe(true);
     });
 
     it("should reject invalid platform", async () => {
@@ -870,6 +1019,294 @@ describe("agentVersions routes", () => {
       }
     });
 
+    it("rewrites downloadUrl to server-relative for component=backup when the row IS the server's current version (and implicitly proves componentEnum accepts \"backup\" — an unrecognized value would 400 before reaching this handler)", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                isLatest: true,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+        );
+        expect(body.checksum).toBe(checksum);
+        expect(body.manifest).toBe(signed.manifest);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    // AGENT_AUTO_PROMOTE=false means isLatest can point at a fleet version
+    // that is NOT what the server currently serves at the versionless route
+    // (deploy-to-promote window). isLatest must never be treated as
+    // sufficient on its own — only an exact match against the server's
+    // pinned current version (getGithubReleaseVersion) may trigger the
+    // rewrite. See the invariant comment on
+    // backupVersionIsServableByVersionlessRoute in agentVersions.ts.
+    it("does NOT rewrite component=backup when the row is isLatest but not the server's current version — returns the stored immutable URL untouched", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "f".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                // isLatest in the DB, but the server has already deployed a
+                // newer version and is pinned to it (AGENT_AUTO_PROMOTE=false
+                // means the fleet-wide promotion of 1.0.0 hasn't happened
+                // yet). The versionless route would serve 1.1.0's bytes, not
+                // this row's — must NOT rewrite.
+                isLatest: true,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.1.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Stored canonical (immutable GitHub asset) URL, NOT the
+        // server-relative versionless route.
+        expect(body.url).toBe(canonical);
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    // Design: breeze-backup's version is slaved to the agent's, and agents
+    // request it by EXACT version. buildServerRelativeAgentDownloadUrl points
+    // at the versionless /download/backup/:os/:arch route, which can only
+    // ever serve whatever the server currently considers latest. Rewriting a
+    // non-latest, non-current backup version to that route would silently
+    // hand the agent NEWER bytes than the version it pinned — the updater's
+    // checksum/manifest check then (correctly) rejects them, and the agent
+    // can never heal. So the rewrite must be gated to rows the versionless
+    // route would actually serve.
+    it("does NOT rewrite component=backup when the row is neither latest nor the server's current version — returns the stored immutable URL untouched", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v0.90.0/breeze-backup-linux-amd64";
+      const checksum = "d".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        version: "0.90.0",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "0.90.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      // Server currently considers a DIFFERENT version current — the
+      // versionless route would serve that, not 0.90.0.
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/0.90.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Stored canonical (immutable GitHub asset) URL, NOT the
+        // server-relative versionless route.
+        expect(body.url).toBe(canonical);
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    it("rewrites component=backup when the requested version matches the server's pinned current version, even though isLatest is false", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "e".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                // Not (yet) flagged isLatest in the DB, but it's the version
+                // BINARY_VERSION pins the server to — the versionless route
+                // would serve exactly this.
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+        );
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    it("other components (agent) keep the unconditional rewrite regardless of isLatest — the backup guard does not affect them", async () => {
+      const checksum = "b".repeat(64);
+      const signed = makeSignedReleaseManifest();
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "agent",
+                downloadUrl: "https://s3.example.com/agent-1.0.0",
+                checksum,
+                fileSize: BigInt(45000000),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/linux/amd64",
+        );
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+      }
+    });
+
+    it("rejects an unrecognized component value with 400 (componentEnum boundary)", async () => {
+      const res = await app.request(
+        "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=not-a-real-component",
+      );
+      expect(res.status).toBe(400);
+    });
+
     it("maps platform=macos to /darwin in the server-relative helper URL", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-helper-macos.dmg";
@@ -1175,6 +1612,113 @@ describe("agentVersions routes", () => {
       const body = await res.json();
       expect(body.version).toBe("1.0.0");
       expect(body.platform).toBe("linux");
+    });
+
+    it("defaults edition to this server's own edition (self-host) when omitted", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: "ver-ed-1", version: "1.0.0", edition: "self-host", isLatest: false },
+        ]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      delete process.env.BINARY_EDITION;
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.edition).toBe("self-host");
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("accepts an explicit edition and stamps it on the row", async () => {
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          { id: "ver-ed-2", version: "1.0.0", edition: "hosted", isLatest: false },
+        ]),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          edition: "hosted",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.edition).toBe("hosted");
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "hosted" }),
+      );
+    });
+
+    it("rejects an unrecognized edition value", async () => {
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          edition: "enterprise",
+        }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it("scopes the isLatest unset to the same edition on create", async () => {
+      const updateWhere = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: updateWhere }),
+      } as any);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            { id: "ver-ed-3", version: "3.0.0", edition: "hosted", isLatest: true },
+          ]),
+        }),
+      } as any);
+
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "3.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-3.0.0",
+          checksum: "e".repeat(64),
+          isLatest: true,
+          edition: "hosted",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const whereArg = updateWhere.mock.calls[0]?.[0];
+      expect(hasEditionClause(whereArg, "hosted")).toBe(true);
     });
 
     it("should unset previous latest when isLatest=true", async () => {

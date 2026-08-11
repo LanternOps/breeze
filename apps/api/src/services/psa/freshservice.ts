@@ -1,5 +1,16 @@
-import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompany,
+  PSACompanyList,
+  PSACompanyListOptions,
+  PSAConnectionTest,
+  PSAProvider,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PSA_COMPANY_LIST_CAP
+} from './types';
 import { psaFetch } from './http';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface FreshserviceCredentials {
   baseUrl: string;
@@ -94,17 +105,38 @@ export class FreshserviceProvider implements PSAProvider {
     }
   }
 
-  async getCompanies(): Promise<PSACompany[]> {
-    const response = await this.request<{ companies: FreshserviceCompany[] }>(
-      'GET',
-      '/api/v2/companies'
-    );
+  /**
+   * Freshservice paginates with a 1-based `page=` and `per_page=` (max 100).
+   * The previous call sent neither, so it silently took the API default of 30.
+   * A `link` header advertises the next page, but it is an upstream-supplied
+   * absolute URL — page arithmetic keeps the walk on our own base URL.
+   */
+  async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
+    const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    return (response.companies || []).map((company) => ({
-      id: company.id.toString(),
-      name: company.name,
-      externalId: company.id.toString()
-    }));
+    // Freshservice companies (departments) have NO active/archived flag and the
+    // list endpoint exposes no sort parameter — there is nothing to filter or
+    // order by here, unlike ConnectWise/ServiceNow. Page order is the API's
+    // default (id ascending in practice), which is stable enough for paging.
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
+      const page = cursor ? Number(cursor) : 1;
+      const response = await this.request<{ companies: FreshserviceCompany[] }>(
+        'GET',
+        `/api/v2/companies?per_page=${PSA_COMPANY_PAGE_SIZE}&page=${page}`
+      );
+      const rows = response?.companies || [];
+
+      // Freshservice clamps `per_page` on some plans, so a short page is NOT
+      // end-of-list — only an empty RAW page is. Inferring from a short page
+      // stopped after 30 rows and reported the PSA as fully onboarded.
+      return companyPage(
+        rows.map((company) => ({ id: company?.id, name: company?.name })),
+        String(page + 1),
+        options.skipExternalIds
+      );
+    });
+
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

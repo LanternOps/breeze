@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/discovery"
@@ -68,9 +69,16 @@ func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
 		snmpVersion = 0x01
 	}
 
+	// The port narrows to uint16 below; an out-of-range value would silently
+	// wrap onto some other port, so reject it instead of probing the wrong one.
+	port := tools.GetPayloadInt(cmd.Payload, "port", 161)
+	if port < 1 || port > 65535 {
+		return tools.NewErrorResult(fmt.Errorf("port must be 1-65535, got %d", port), time.Since(start).Milliseconds())
+	}
+
 	device := snmppoll.SNMPDevice{
 		IP:      target,
-		Port:    uint16(tools.GetPayloadInt(cmd.Payload, "port", 161)),
+		Port:    uint16(port),
 		Version: snmpVersion,
 		Auth: snmppoll.SNMPAuth{
 			Community:      tools.GetPayloadString(cmd.Payload, "community", "public"),

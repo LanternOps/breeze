@@ -797,6 +797,12 @@
       "copiedLink": "Link de download copiado para a área de transferência",
       "copyFailed": "Não foi possível copiar para a área de transferência"
     },
+    "detail": {
+      "heading": "Detalhes da sessão",
+      "noCode": "O código de uso único foi exibido apenas quando esta sessão foi criada e não pode ser recuperado. Inicie uma nova sessão se a pessoa precisar de outro código.",
+      "attribution": "Referência",
+      "close": "Fechar os detalhes da sessão"
+    },
     "status": {
       "heading": "Andamento da sessão",
       "pending": "Aguardando o usuário executar o cliente…",
@@ -817,14 +823,16 @@
     },
     "errors": {
       "create": "Não foi possível criar a sessão de suporte",
-      "list": "Não foi possível carregar as sessões de suporte recentes"
+      "list": "Não foi possível carregar as sessões de suporte recentes",
+      "notFound": "Essa sessão de suporte não está mais disponível."
     },
     "list": {
       "heading": "Sessões de suporte recentes",
       "empty": "Ainda não há sessões de suporte.",
       "columnCreated": "Início",
       "columnEnded": "Término",
-      "unlabeled": "Sessão sem rótulo"
+      "unlabeled": "Sessão sem rótulo",
+      "openSession": "Abrir os detalhes da sessão"
     }
   }
 }

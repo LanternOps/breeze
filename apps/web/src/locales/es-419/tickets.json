@@ -46,7 +46,7 @@
   "ticketQueueList": {
     "empty": "No hay entradas coincidentes.",
     "clearFilters": "Limpiar filtros",
-    "ariaLabel": "Cola de entradas",
+    "ariaLabel": "Cola de tickets",
     "selectTicket": "Seleccione {{ticket}}",
     "timeAgo": {
       "minutes": "hace {{count}}m",
@@ -229,7 +229,7 @@
       "orgNotAccessible": "Esa organización no está disponible bajo su socio.",
       "rowNotFound": "Ese correo electrónico entrante ya no está disponible.",
       "rowAlreadyResolved": "Ese correo electrónico entrante ya fue manejado. Actualizando la lista.",
-      "noSender": "Este correo electrónico no tiene una dirección de remitente utilizable, por lo que no puede convertirse en un ticket. Descartarlo o realizar un seguimiento fuera de banda."
+      "noSender": "Este correo electrónico no tiene una dirección de remitente válida, por lo que no puede convertirse en un ticket. Descártelo o haga el seguimiento por otro medio."
     }
   },
   "createTicketPage": {
@@ -251,7 +251,7 @@
     "creationFailed": "Error al crear el ticket. Reintentar.",
     "createdToast": "Ticket {{number}} creado",
     "startFromForm": "Comenzar desde un formulario (opcional)",
-    "blankTicketOption": "ticket en blanco",
+    "blankTicketOption": "Ticket en blanco",
     "priorityOptions": {
       "low": "Bajo",
       "normal": "Normal",
@@ -422,7 +422,7 @@
     },
     "resolve": {
       "noteLabel": "Nota de resolución (visible para el solicitante)",
-      "submit": "resolver ticket"
+      "submit": "Resolver ticket"
     },
     "pending": {
       "reasonLabel": "¿A qué está esperando? (opcional)",

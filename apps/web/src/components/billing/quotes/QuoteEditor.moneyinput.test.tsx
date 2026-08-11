@@ -76,6 +76,32 @@ const detailWith = (lines: QuoteDetailData['lines']): QuoteDetailData => ({
 
 const updateLineMock = vi.mocked(updateLine);
 
+// The money/percent inputs size themselves as `calc(<n>ch + <padding> + <border>)`.
+// jsdom does no layout, so the assertable contract is the width EXPRESSION:
+//   - `chBudget` — the character allowance, which must clear the displayed
+//     string with room for glyphs wider than the font's "0" ("$", "€", and the
+//     tabular digits themselves), and
+//   - `fundsChrome` — whether the padding/border are added on TOP of that
+//     allowance. `box-sizing: border-box` means a width of bare `<n>ch` spends
+//     the buffer on the input's own chrome instead of on glyphs, which is what
+//     clipped the last digit of "$45.00" in issue #3318.
+// `expectedPadX` must name the field's OWN padding (the `px-2` money inputs are
+// 1rem, the `px-1` internal-band inputs 0.5rem). Asserting the exact value —
+// not merely "some rem term is present" — is what makes the check bite: sizing
+// a px-2 input with the band's 0.5rem constant under-funds its chrome by 8px
+// and silently reopens #3318, and jsdom does no layout to catch it.
+function widthBudget(el: HTMLInputElement, expectedPadX: '1rem' | '0.5rem'): { chBudget: number; fundsChrome: boolean } {
+  const width = el.style.width;
+  const ch = /(\d+(?:\.\d+)?)ch/.exec(width);
+  if (!ch) throw new Error(`expected a ch-based width, got "${width}"`);
+  // jsdom reorders calc() terms, so match on presence, not position.
+  const padRe = new RegExp(`(?<![\\d.])${expectedPadX.replace('.', '\\.')}(?![\\d.])`);
+  return {
+    chBudget: Number(ch[1]),
+    fundsChrome: /^calc\(/.test(width) && /(?<![\d.])2px(?![\d.])/.test(width) && padRe.test(width),
+  };
+}
+
 describe('QuoteLineRows — money-formatted price/cost inputs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -165,10 +191,110 @@ describe('QuoteLineRows — money-formatted price/cost inputs', () => {
     fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
 
     const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
-    // Unfocused display "$1,234,567.89" is 14 characters — width must grow well
+    // Unfocused display "$1,234,567.89" is 13 characters — width must grow well
     // past the old fixed w-24 (~12ch) to avoid clipping the formatted value.
-    const widthCh = parseInt(priceEl.style.width, 10);
-    expect(widthCh).toBeGreaterThanOrEqual(14);
+    expect(priceEl.value).toBe('$1,234,567.89');
+    const { chBudget, fundsChrome } = widthBudget(priceEl, '1rem');
+    expect(chBudget).toBeGreaterThanOrEqual(priceEl.value.length + 2);
+    expect(fundsChrome).toBe(true);
+  });
+
+  // Regression for #3318: the blurred, currency-formatted price was clipped of
+  // its last digit ("$1,850.0" / "$45.0") because the two-character buffer was
+  // consumed by the input's own px-2 padding + border under border-box sizing.
+  it.each([
+    ['1850.00', '$1,850.00'],
+    ['45.00', '$45.00'],
+  ])('sizes the blurred price %s past its formatted glyphs, chrome funded separately', async (unitPrice, formatted) => {
+    render(<QuoteEditor detail={detailWith([{ ...baseLine, unitPrice, lineTotal: unitPrice }])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+
+    const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
+    expect(priceEl.value).toBe(formatted);
+    const { chBudget, fundsChrome } = widthBudget(priceEl, '1rem');
+    expect(chBudget).toBeGreaterThanOrEqual(formatted.length + 2);
+    expect(fundsChrome).toBe(true);
+  });
+
+  // A non-USD quote formats wider (symbol + separators), so the budget has to
+  // track the FORMATTED string rather than the raw decimal behind it.
+  it('sizes a non-USD formatted price off the formatted string, not the raw decimal', async () => {
+    render(
+      <QuoteEditor
+        detail={{
+          quote: { ...baseQuote, currencyCode: 'EUR' },
+          blocks: [block],
+          lines: [{ ...baseLine, unitPrice: '1234.56', lineTotal: '1234.56' }],
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+
+    const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
+    expect(priceEl.value.length).toBeGreaterThan('1234.56'.length); // actually formatted
+    const { chBudget, fundsChrome } = widthBudget(priceEl, '1rem');
+    expect(chBudget).toBeGreaterThanOrEqual(priceEl.value.length + 2);
+    expect(fundsChrome).toBe(true);
+  });
+
+  // The widest case the field can reach: `currencyCode` is free text, and Intl
+  // prefixes many ISO codes instead of using a symbol — "CHF 1,234,567.89" is
+  // 16 characters where the USD form is 13. A ceiling tuned to USD would clamp
+  // this back into a clip, which is the #3318 failure mode all over again, so
+  // the price ceiling has to clear a code-prefixed currency at 7 digits.
+  it.each(['CHF', 'SEK'])('does not clamp a code-prefixed %s price at 7 digits back into a clip', async (currencyCode) => {
+    render(
+      <QuoteEditor
+        detail={{
+          quote: { ...baseQuote, currencyCode },
+          blocks: [block],
+          lines: [{ ...baseLine, unitPrice: '1234567.89', lineTotal: '1234567.89' }],
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+
+    const priceEl = screen.getByTestId('quote-line-price-line-1') as HTMLInputElement;
+    expect(priceEl.value).toContain(currencyCode); // prefixed, not symbolised
+    expect(priceEl.value.length).toBeGreaterThanOrEqual(16);
+    const { chBudget, fundsChrome } = widthBudget(priceEl, '1rem');
+    expect(chBudget).toBeGreaterThanOrEqual(priceEl.value.length + 2);
+    expect(fundsChrome).toBe(true);
+  });
+
+  it('sizes the internal cost input past its formatted value with chrome funded separately', async () => {
+    render(<QuoteEditor detail={detailWith([{ ...baseLine, unitCost: '1234.56' }])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('quote-block-add-line-toggle-blk-1'));
+    fireEvent.click(screen.getByTestId('quote-editor-toggle-internal'));
+    fireEvent.click(screen.getByTestId('quote-line-internal-toggle-line-1'));
+
+    const costEl = screen.getByTestId('quote-line-cost-line-1') as HTMLInputElement;
+    expect(costEl.value).toBe('$1,234.56');
+    const { chBudget, fundsChrome } = widthBudget(costEl, '0.5rem');
+    expect(chBudget).toBeGreaterThanOrEqual(costEl.value.length + 2);
+    expect(fundsChrome).toBe(true);
+  });
+
+  it('sizes the ghost-row price past its formatted value once blurred', async () => {
+    render(<QuoteEditor detail={detailWith([baseLine])} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('quote-ghost-name-blk-1'), { target: { value: 'Backup agent' } });
+    const ghostPrice = screen.getByTestId('quote-ghost-price-blk-1') as HTMLInputElement;
+    fireEvent.focus(ghostPrice);
+    fireEvent.change(ghostPrice, { target: { value: '1234567.89' } });
+    fireEvent.blur(ghostPrice);
+
+    expect(ghostPrice.value).toBe('$1,234,567.89');
+    const { chBudget, fundsChrome } = widthBudget(ghostPrice, '1rem');
+    expect(chBudget).toBeGreaterThanOrEqual(ghostPrice.value.length + 2);
+    expect(fundsChrome).toBe(true);
   });
 
   it('grows the markup input width for a longer value like "155.1"', async () => {
@@ -180,8 +306,9 @@ describe('QuoteLineRows — money-formatted price/cost inputs', () => {
 
     const markupEl = screen.getByTestId('quote-line-markup-line-1') as HTMLInputElement;
     expect(markupEl.value).toBe('155.1'); // (255.10-100)/100
-    const widthCh = parseInt(markupEl.style.width, 10);
-    expect(widthCh).toBeGreaterThanOrEqual(7); // > the old fixed w-16 (~8ch) floor for short values
+    const { chBudget, fundsChrome } = widthBudget(markupEl, '0.5rem');
+    expect(chBudget).toBeGreaterThanOrEqual(markupEl.value.length + 2);
+    expect(fundsChrome).toBe(true);
   });
 
   it('markup is a text/inputMode=decimal field (no spinner) that sanitizes keystrokes but allows a leading minus for a loss', async () => {

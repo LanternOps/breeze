@@ -5,6 +5,7 @@ import {
   verify as verifySignature,
   type KeyObject,
 } from "node:crypto";
+import { assertDistributableReleaseAsset } from './releaseAssetTrust';
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -18,12 +19,23 @@ type ReleaseArtifactManifestAsset = {
   sha256?: unknown;
   size?: unknown;
   platformTrust?: unknown;
+  // BYO signing (Deliverable 1): "signing-input" marks published unsigned
+  // build outputs. Tolerated here; positive rejection at registration/serve
+  // time is Deliverable 3c.
+  intendedUse?: unknown;
+  // Release edition ("self-host" | "hosted"). Optional — absent on manifests
+  // predating this field, which is tolerated everywhere it's read (treated
+  // as "no edition claim", never as "self-host" by default).
+  edition?: unknown;
 };
 
 type ReleaseArtifactManifest = {
   schemaVersion?: unknown;
   repository?: unknown;
   release?: unknown;
+  // BYO signing (Deliverable 1): the release's peeled source commit SHA,
+  // recorded so downstream signing workflows can pin their checkout.
+  sourceCommit?: unknown;
   assets?: unknown;
 };
 
@@ -39,6 +51,8 @@ export type VerifiedReleaseArtifact = {
   release: string;
   repository: string;
   platformTrust: string | null;
+  intendedUse: string | null;
+  edition: string | null;
 };
 
 function sha256Hex(buffer: Buffer): string {
@@ -224,7 +238,25 @@ export async function verifyReleaseArtifactBuffer(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
   };
+}
+
+// `intendedUse` is the field that marks Phase 1's unsigned signing inputs, and
+// assertDistributableReleaseAsset treats ANY non-null value as non-distributable
+// precisely so unknown future values cannot slip through. Coercing a
+// present-but-non-string value to null would defeat that: `intendedUse: 1` or
+// `intendedUse: ["signing-input"]` would read as "no intendedUse" and become
+// registrable and servable. Reject the shape instead of silently discarding it.
+function readIntendedUse(entry: { intendedUse?: unknown }, assetName: string): string | null {
+  if (entry.intendedUse === undefined || entry.intendedUse === null) return null;
+  if (typeof entry.intendedUse !== 'string') {
+    throw new Error(
+      `Release artifact manifest has non-string intendedUse for ${assetName} (got ${typeof entry.intendedUse}) — refusing to treat it as absent`,
+    );
+  }
+  return entry.intendedUse;
 }
 
 function selectManifestAsset(args: {
@@ -278,6 +310,16 @@ function selectManifestAsset(args: {
       `Release artifact manifest has invalid size for ${args.assetName}`,
     );
   }
+  // Spec 3c: positive allowlist, enforced for EVERY manifest verification —
+  // github sync registration, installer/support asset pre-flight, and recovery
+  // media all funnel through here. expectedPlatformTrust (below) remains as a
+  // caller-supplied stricter expectation on top of this baseline.
+  assertDistributableReleaseAsset({
+    assetName: args.assetName,
+    platformTrust: typeof entry.platformTrust === 'string' ? entry.platformTrust : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
+  });
   if (
     args.expectedPlatformTrust &&
     entry.platformTrust !== args.expectedPlatformTrust
@@ -319,6 +361,28 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
+    edition: typeof entry.edition === 'string' ? entry.edition : null,
+  };
+}
+
+/**
+ * Verifies just the manifest pair's signature + schema — no per-asset lookup.
+ * Used when a caller needs to know "is this a validly-signed release artifact
+ * manifest" before it knows (or cares) which specific asset it will look up,
+ * e.g. binarySync's local-mode official-manifest registration (spec: BYO
+ * signing edition follow-up), which registers WHICHEVER assets the manifest
+ * happens to cover.
+ */
+export function verifyReleaseArtifactManifestIntegrity(
+  manifestBytes: Buffer,
+  signatureBytes: Buffer,
+): { release: string; repository: string } {
+  verifyManifestSignature(manifestBytes, signatureBytes);
+  const manifest = parseManifest(manifestBytes);
+  return {
+    release: manifest.release as string,
+    repository: manifest.repository as string,
   };
 }
 

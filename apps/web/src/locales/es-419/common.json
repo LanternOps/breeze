@@ -704,6 +704,10 @@
       "retry": "Reintentar"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo(s) usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "cta": "Cómo migrar"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -930,21 +934,61 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importar empresas",
+        "subtitle": "Crea organizaciones a partir de las empresas de {{name}}.",
+        "intro": "Las empresas se comparan primero con tus organizaciones existentes. No se crea nada hasta que revises la lista de abajo y confirmes.",
+        "capHint": "Se obtienen hasta {{cap}} empresas por importación.",
+        "empty": "Esta conexión no devolvió ninguna empresa.",
+        "alreadyLinked_one": "Se omitió {{count}} empresa porque ya se importó desde esta conexión.",
+        "alreadyLinked_other": "Se omitieron {{count}} empresas porque ya se importaron desde esta conexión.",
+        "malformed_one": "No se pudo leer {{count}} registro (sin ID ni nombre utilizables) y se omitió.",
+        "malformed_other": "No se pudieron leer {{count}} registros (sin ID ni nombre utilizables) y se omitieron.",
+        "actions": {
+          "fetch": "Obtener empresas",
+          "fetching": "Obteniendo empresas…",
+          "import": "Importar {{count}} seleccionadas",
+          "importing": "Importando…"
+        },
+        "truncated": {
+          "title": "Lista de empresas parcial",
+          "body": "El listado de empresas se interrumpió después de {{fetched}} de hasta {{cap}} empresas, por lo que esta importación quedará incompleta. Las empresas que nunca se leyeron no se vincularán.",
+          "cap": "Se alcanzó el límite de {{cap}} empresas por importación después de obtener {{fetched}}, por lo que esta importación quedará incompleta. Las empresas que superan ese límite nunca se leyeron y no se vincularán.",
+          "timeBudget": "Esta conexión respondió demasiado lento, así que el listado de empresas se interrumpió después de {{fetched}} empresas. Esta importación quedará incompleta: las empresas que nunca se leyeron no se vincularán.",
+          "pageGuard": "El listado de empresas abarcó demasiadas páginas y se detuvo después de {{fetched}} empresas. Esta importación quedará incompleta: las empresas que nunca se leyeron no se vincularán."
+        },
+        "errors": {
+          "previewFailed": "No se pudieron cargar las empresas de esta conexión.",
+          "importFailed": "No se pudieron importar las empresas."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Conexión de prueba",
-          "testing": "Probando..."
+          "testing": "Probando...",
+          "toggleVisibility": "Mostrar u ocultar este valor"
+        },
+        "credentialsNote": {
+          "jira": "Complete un solo método de autenticación: correo electrónico más token de API para Jira Cloud, nombre de usuario más contraseña para Jira Server, o un token de acceso personal."
         },
         "defaultSubmitLabel": "Guardar conexión",
         "fields": {
+          "apiKey": "Clave de API",
           "apiToken": "token o clave API",
           "clientId": "Cliente ID",
           "clientSecret": "Secreto del cliente",
+          "companyId": "ID de la empresa",
           "connectionName": "Nombre de conexión",
           "defaultQueue": "Proyecto o cola predeterminados",
+          "email": "Correo electrónico",
           "instanceUrl": "Instancia URL",
+          "integrationCode": "Código de integración",
           "password": "Contraseña",
+          "personalAccessToken": "Token de acceso personal",
+          "privateKey": "Clave privada",
           "provider": "Proveedor",
+          "publicKey": "Clave pública",
+          "secret": "Secreto",
           "syncDirection": "Dirección de sincronización",
           "syncInterval": "Intervalo de sincronización",
           "username": "Nombre de usuario o correo electrónico"
@@ -954,13 +998,21 @@
         },
         "keepExisting": "(déjelo en blanco para seguir existiendo)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "por ejemplo, producción de Jira",
           "defaultQueue": "por ejemplo, IT Soporte",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "contraseña",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,16 +1049,25 @@
           "every6Hours": "Cada 6 horas",
           "everyHour": "Cada hora"
         },
+        "testDirtyHint": "Guarde primero: la prueba verifica las credenciales almacenadas, no sus ediciones sin guardar.",
         "validation": {
           "nameRequired": "El nombre de la conexión es obligatorio.",
           "validUrl": "Debe ser un URL válido."
+        },
+        "ownerScope": {
+          "legend": "Propiedad",
+          "allOrganizations": "Todas las organizaciones",
+          "partnerWideHint": "(a nivel de socio — el PSA propio de su MSP)",
+          "thisOrganizationOnly": "Solo esta organización",
+          "organization": "Organización"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Pausa",
           "resume": "Reanudar",
-          "syncNow": "Sincronizar ahora"
+          "syncNow": "Sincronizar ahora",
+          "importCompanies": "Importar empresas"
         },
         "connectionCount": "{{filtered}} de conexiones {{total}}",
         "empty": {
@@ -1028,7 +1089,10 @@
           "paused": "En pausa",
           "syncing": "Sincronizando"
         },
-        "title": "Conexiones PSA"
+        "title": "Conexiones PSA",
+        "allOrgs": "Todas las orgs",
+        "partnerWideTitle": "Conexión a nivel de socio — compartida por todas las organizaciones",
+        "partnerWideLocked": "Conexión a nivel de socio — modificarla requiere acceso completo a las organizaciones del socio"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -1400,7 +1464,7 @@
         "switchToManual": "Cambiar a entrada manual de credenciales",
         "switchToGrantAccess": "Cambiar a otorgar acceso con un solo clic (recomendado)",
         "enterCredentials": "Ingrese las credenciales de su aplicación {{provider}}.",
-        "tenantId": "Inquilino ID",
+        "tenantId": "ID del inquilino",
         "clientId": "Cliente ID",
         "clientIdPlaceholder": "Aplicación (cliente) ID",
         "clientSecret": "Secreto del cliente",
@@ -1412,7 +1476,7 @@
           "displayName": "Nombre para mostrar:",
           "scopes": "Alcances:",
           "auth": "Autenticación:",
-          "tenantId": "Inquilino ID:"
+          "tenantId": "ID del inquilino:"
         },
         "platformAppConsent": "Aplicación de plataforma (consentimiento con un clic)",
         "redirectingToMicrosoft": "Redirigiendo a Microsoft...",
@@ -1550,7 +1614,7 @@
         "placeholders": {
           "name": "Núcleo de Cisco",
           "vendor": "Cisco",
-          "deviceType": "Interruptor central",
+          "deviceType": "Conmutador central",
           "description": "Conmutadores de alto rendimiento con múltiples enlaces ascendentes",
           "oidName": "Tiempo de actividad del sistema",
           "oidDescription": "Lo que mide este OID"
@@ -1730,22 +1794,14 @@
         "partialWarning": "Algunos datos pueden estar incompletos. No se pudo cargar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",
-          "activeCount": "{{count}} activo",
           "deployments": "Implementaciones",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} pendiente",
           "failedCount": "{{count}} falló",
           "patches": "Parches",
-          "pendingInstallation": "instalación pendiente",
           "alerts": "Alertas",
-          "alertsSubtitle": "{{critical}} crítico, {{high}} alto",
           "groups": "Grupos",
-          "deviceGroupsSubtitle": "grupos de dispositivos",
           "automations": "Automatizaciones",
-          "configured": "configurado",
           "maintenance": "Mantenimiento",
-          "activeWindows": "ventanas activas",
-          "reports": "Informes",
-          "reportDefinitions": "definiciones de informes"
+          "reports": "Informes"
         },
         "aiFleetActions": "AI Acciones de flota",
         "aiFleetActionsHint": "Haga clic para preguntarle al asistente AI",
@@ -1774,6 +1830,173 @@
           "high": "Alto",
           "medium": "Medio",
           "low": "Bajo"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Hallazgos de la flota",
+        "description": "Patrones entre dispositivos que ameritan una sola acción en lugar de muchas",
+        "filters": {
+          "orgLabel": "Filtrar por organización",
+          "kindLabel": "Filtrar por tipo de hallazgo",
+          "severityLabel": "Filtrar por severidad",
+          "statusLabel": "Filtrar por estado",
+          "allOrgs": "Todas las organizaciones",
+          "allKinds": "Todos los tipos de hallazgo",
+          "allSeverities": "Todas las severidades"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalía de métrica",
+          "logCorrelation": "Correlación de registros",
+          "reliabilityOffenders": "Reincidentes de confiabilidad"
+        },
+        "severities": {
+          "critical": "Crítico",
+          "error": "Error",
+          "warning": "Advertencia",
+          "info": "Informativo"
+        },
+        "statuses": {
+          "open": "Abierto",
+          "acknowledged": "Reconocido",
+          "dismissed": "Descartado",
+          "resolved": "Resuelto"
+        },
+        "status": {
+          "active": "Abiertos y reconocidos",
+          "dismissed": "Descartados",
+          "resolved": "Resueltos"
+        },
+        "deviceCount": "{{count}} dispositivos",
+        "deviceCount_one": "{{count}} dispositivo",
+        "deviceCount_other": "{{count}} dispositivos",
+        "showing": "Mostrando {{shown}} de {{total}}",
+        "loadMore": "Cargar más",
+        "empty": {
+          "title": "La flota está limpia",
+          "noMatchesTitle": "No hay hallazgos coincidentes",
+          "body": "Ningún hallazgo coincide con estos filtros en este momento."
+        },
+        "errors": {
+          "loadFailed": "No se pudieron cargar los hallazgos de la flota",
+          "banner": "No pudimos cargar los hallazgos de la flota"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Detalles del hallazgo",
+        "meta": {
+          "firstSeen": "Visto por primera vez {{when}}",
+          "lastSeen": "Visto por última vez {{when}}"
+        },
+        "summaryHeading": "Resumen",
+        "resolvedNote": {
+          "heading": "Por qué está cerrado",
+          "body": "Este hallazgo se resolvió porque la señal subyacente desapareció. Volverá a aparecer como un hallazgo nuevo si el patrón se repite.",
+          "reason": "Motivo de la resolución: {{reason}}"
+        },
+        "dismissNotesHeading": "Nota de descarte",
+        "evidenceHeading": "Evidencia",
+        "membersHeading": "Dispositivos afectados",
+        "membersEmpty": "No hay dispositivos registrados para este hallazgo.",
+        "table": {
+          "device": "Dispositivo",
+          "source": "Origen",
+          "lastSeen": "Visto por última vez"
+        },
+        "runsHeading": "Historial de remediación",
+        "runsEmpty": "Todavía no se ha ejecutado ninguna remediación para este hallazgo.",
+        "runCounts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "runStatuses": {
+          "queued": "En cola",
+          "running": "En ejecución",
+          "partial": "Parcial",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "cancelled": "Cancelado"
+        },
+        "dismiss": {
+          "notesLabel": "¿Por qué lo descartas? (obligatorio)",
+          "notesPlaceholder": "Falso positivo conocido, gestionado en otro lugar, riesgo aceptado…",
+          "confirm": "Descartar hallazgo"
+        },
+        "actions": {
+          "remediate": "Remediar en {{count}} dispositivos",
+          "remediate_one": "Remediar en {{count}} dispositivo",
+          "remediate_other": "Remediar en {{count}} dispositivos",
+          "remediateDisabledReason": "Ya no quedan dispositivos en este hallazgo para remediar.",
+          "acknowledge": "Reconocer",
+          "dismiss": "Descartar",
+          "reopen": "Reabrir"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar el hallazgo",
+          "lifecycleFailed": "No se pudo actualizar el hallazgo"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "la señal subyacente desapareció"
+        }
+      },
+      "FixPicker": {
+        "title": "Remediar hallazgo",
+        "actions": {
+          "script": "Ejecutar un script",
+          "scriptHint": "Elige un script de tu biblioteca y completa sus parámetros.",
+          "restartService": "Reiniciar un servicio",
+          "restartServiceHint": "Reinicia un solo servicio con nombre en cada dispositivo seleccionado.",
+          "reboot": "Reiniciar dispositivos",
+          "rebootHint": "Reinicia los dispositivos seleccionados apenas se despache la ejecución."
+        },
+        "chooseScript": "Elegir un script…",
+        "changeScript": "Cambiar script",
+        "selectedScript": "Script elegido: {{name}}",
+        "serviceNameLabel": "Nombre del servicio",
+        "serviceNamePlaceholder": "p. ej. Spooler",
+        "rebootWarning": "Los dispositivos seleccionados se reinician de inmediato apenas se despache esta ejecución. Las sesiones activas terminan y se pierde el trabajo sin guardar.",
+        "targetsHeading": "Dispositivos por remediar",
+        "selectAll": "Seleccionar todos",
+        "selectNone": "Borrar selección",
+        "selectedCount": "{{selected}} de {{total}} dispositivos seleccionados",
+        "noTargets": "Selecciona al menos un dispositivo para continuar.",
+        "osIncompatibleNotice": "{{count}} dispositivos no pueden ejecutar este script y fueron excluidos. Solo admite {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} dispositivo no puede ejecutar este script y fue excluido. Solo admite {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} dispositivos no pueden ejecutar este script y fueron excluidos. Solo admite {{os}}.",
+        "osIncompatibleReason": "Requiere {{os}}",
+        "confirmAction": "Corrección elegida",
+        "confirmTargets": "Dispositivos",
+        "confirmRestartService": "Reiniciar el servicio {{name}}",
+        "confirmRebootNotice": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirmRebootNotice_one": "{{count}} dispositivo se reiniciará de inmediato.",
+        "confirmRebootNotice_other": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirm": "Iniciar remediación",
+        "dispatchedSummary": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "dispatchedSummary_one": "{{count}} dispositivo fue objetivo de esta ejecución.",
+        "dispatchedSummary_other": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "skippedHeading": "Dispositivos omitidos",
+        "skipReasons": {
+          "siteDenied": "Sitio no accesible para ti",
+          "notMember": "Ya no está afectado por este hallazgo",
+          "decommissioned": "El dispositivo está dado de baja",
+          "timeout": "Se agotó el tiempo tras 30 minutos",
+          "dispatchEnqueueFailed": "Nunca se envió: falló el encolado"
+        },
+        "viewProgress": "Ver progreso",
+        "errors": {
+          "dispatchFailed": "No se pudo iniciar la remediación"
+        }
+      },
+      "RunProgress": {
+        "heading": "Ejecución de remediación",
+        "counts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "polling": "Actualizando mientras la ejecución está activa…",
+        "targetsEmpty": "Ningún dispositivo de esta ejecución es visible para ti.",
+        "targetStatuses": {
+          "pending": "Pendiente",
+          "queued": "En cola",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "skipped": "Omitido"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar la ejecución de remediación"
         }
       }
     },
@@ -1958,7 +2181,7 @@
             "description": "¿Administra varios clientes? Cambie de organización aquí."
           },
           "aiHelp": {
-            "title": "AI-ayuda impulsada",
+            "title": "Ayuda basada en IA",
             "description": "Haga preguntas sobre su flota, solucione problemas o genere informes. Presione Cmd+Shift+A en cualquier momento."
           }
         },
@@ -2134,5 +2357,12 @@
         "send": "Enviar"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Novedades en {{version}}",
+    "gotIt": "Entendido",
+    "later": "Mostrar más tarde",
+    "learnMore": "Más información",
+    "link": "Novedades"
   }
 }

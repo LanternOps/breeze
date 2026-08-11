@@ -6,6 +6,7 @@ import {
   apiLogin,
   apiLogout,
   apiPreviewInvite,
+  apiRegisterPartner,
   apiResetPassword,
   apiVerifyMFA,
   AuthSessionExpiredError,
@@ -353,6 +354,36 @@ describe('auth store fetchWithAuth', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
     expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
     // Two refresh attempts fired (502 then success).
+    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
+    expect(refreshCalls).toHaveLength(2);
+  });
+
+  // Issue #3041: a 429 on /auth/refresh is the rate limiter rejecting the
+  // request before it was ever evaluated — no verdict was reached on the
+  // refresh cookie, so it is transient exactly like a 502. It used to fall
+  // through to the hard-failure branch, which is how a runaway remote-desktop
+  // viewer poll could exhaust the shared per-IP budget and dump an operator
+  // with a perfectly valid session on the login screen.
+  it('retries a 429 on refresh and keeps the session', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
+    const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))       // original request
+      .mockResolvedValueOnce(makeResponse({ error: 'Too many requests' }, false, 429))  // refresh throttled
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200))      // refresh recovers
+      .mockResolvedValueOnce(apiSuccess);                                               // original replayed
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithAuth('/devices');
+
+    expect(response).toBe(apiSuccess);
+    // The session must survive being rate limited.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
     const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
     expect(refreshCalls).toHaveLength(2);
   });
@@ -1108,5 +1139,64 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     const [message] = warnSpy.mock.calls[0] as [string];
     expect(message).toContain('locale resolution skipped');
+  });
+});
+
+describe('apiRegisterPartner recovery action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('surfaces an https recovery link from a rejection body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        makeResponse(
+          {
+            error: 'Please sign up with your business email address.',
+            code: 'BUSINESS_EMAIL_REQUIRED',
+            actionUrl: 'https://breezermm.com/contact',
+            actionLabel: 'Schedule a call'
+          },
+          false,
+          400
+        )
+      )
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@gmail.com', 'pw', 'Jane');
+
+    expect(result).toMatchObject({
+      success: false,
+      action: { url: 'https://breezermm.com/contact', label: 'Schedule a call' }
+    });
+  });
+
+  it.each([
+    ['a javascript: scheme', 'javascript:alert(1)'],
+    ['a data: scheme', 'data:text/html,<script>alert(1)</script>'],
+    ['a relative path', '/contact']
+  ])('drops %s rather than rendering it as an href', async (_label, actionUrl) => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(makeResponse({ error: 'nope', actionUrl, actionLabel: 'Go' }, false, 400))
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@gmail.com', 'pw', 'Jane');
+
+    expect(result).toEqual({ success: false, error: 'nope', action: undefined });
+  });
+
+  it('omits the action when the body carries no next step', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Registration failed' }, false, 400))
+    );
+
+    const result = await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane');
+
+    expect(result).toEqual({ success: false, error: 'Registration failed', action: undefined });
   });
 });

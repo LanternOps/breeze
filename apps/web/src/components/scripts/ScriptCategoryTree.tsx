@@ -12,7 +12,7 @@ import {
 import { cn, leftPxClass, paddingLeftPxClass, topPxClass } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { asList } from '@/lib/asList';
+import { fetchAllScripts } from '@/lib/scriptsFetch';
 
 type ScriptCategory = {
   id: string;
@@ -178,17 +178,14 @@ export default function ScriptCategoryTree({
       setLoading(true);
       setError(undefined);
 
-      const response = await fetchWithAuth('/scripts?includeSystem=true');
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        throw new Error(t('scriptCategoryTree.errors.fetch'));
-      }
-
-      const data = await response.json();
-      const scriptList = asList(data, 'scripts');
+      // #3301 — walk every page so the category tree reflects the whole
+      // library rather than whatever fell in the first 50 rows.
+      const { data: scriptList } = await fetchAllScripts<{
+        id: string;
+        name: string;
+        category?: string | null;
+        status?: string;
+      }>({ includeSystem: true });
 
       // Build categories from script data
       const categoryTree = buildCategoryTree(scriptList);
@@ -196,12 +193,7 @@ export default function ScriptCategoryTree({
       setExpandedIds(new Set(categoryTree.map(cat => cat.id)));
 
       // Build script items
-      const scriptItems: ScriptItem[] = scriptList.map((script: {
-        id: string;
-        name: string;
-        category?: string | null;
-        status?: string;
-      }) => ({
+      const scriptItems: ScriptItem[] = scriptList.map((script) => ({
         id: script.id,
         name: script.name,
         categoryId: script.category
@@ -212,6 +204,16 @@ export default function ScriptCategoryTree({
 
       setScripts(scriptItems);
     } catch (err) {
+      // fetchAllScripts throws the failed Response, so the 401 redirect is
+      // checked on that shape rather than on Error.
+      if (err instanceof Response) {
+        if (err.status === 401) {
+          void navigateTo('/login', { replace: true });
+          return;
+        }
+        setError(t('scriptCategoryTree.errors.fetch'));
+        return;
+      }
       setError(err instanceof Error ? err.message : t('scriptCategoryTree.errors.generic'));
     } finally {
       setLoading(false);

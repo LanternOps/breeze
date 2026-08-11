@@ -3,6 +3,7 @@
  *
  * Tools for analyzing device performance metrics, user sessions, and boot performance.
  * - analyze_metrics (Tier 1): Query and analyze time-series metrics
+ * - analyze_fleet_metrics (Tier 1): Aggregate a metric across the fleet from rollups
  * - get_active_users (Tier 1): Query active user sessions
  * - get_user_experience_metrics (Tier 1): Summarize login performance and session trends
  * - analyze_boot_performance (Tier 1): Analyze boot performance and startup items
@@ -14,6 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -41,6 +43,31 @@ const PERFORMANCE_ROLLUP_METRICS = [
   'disk_percent',
   'disk_used_gb',
 ] as const;
+
+// Real rollup metric names written by services/metricRollups.ts's
+// DERIVED_METRIC_DEFS for `device_metrics` (see analytics.ts's metricRollups
+// table). Note: the task brief's `memory_percent` does not exist as a rollup
+// name — the actual column is `ram_percent`. Using the real names here
+// avoids a tool that would silently return zero rows for every "memory"
+// query.
+const FLEET_METRIC_NAME_VALUES = ['cpu_percent', 'ram_percent', 'disk_percent'] as const;
+type FleetMetricName = (typeof FLEET_METRIC_NAME_VALUES)[number];
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * SQL aggregates come back as strings for the 64-bit types (`SUM(integer)` and
+ * `COUNT(*)` are `bigint`, `AVG(double precision)` is `numeric`), so arithmetic
+ * on them silently concatenates instead of adding. Normalizes to a number, or
+ * `null` for SQL NULL / anything unparseable.
+ */
+function toNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
 async function verifyDeviceAccess(
   deviceId: string,
@@ -280,6 +307,182 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
         source: 'device_metrics',
         buckets
       }, (_, v) => typeof v === 'bigint' ? Number(v) : v);
+    }
+  });
+
+  // ============================================
+  // analyze_fleet_metrics - Tier 1 (auto-execute)
+  // ============================================
+  //
+  // Fleet-wide device metric aggregation for hygiene review (Task 8). Reads
+  // metric_rollups directly (never raw per-second samples), so a fleet-wide
+  // window is bounded by (org devices) x (buckets in window), not raw sample
+  // volume.
+  //
+  // Percentile aggregation caveat: metric_rollups stores one p95 PER BUCKET,
+  // not the underlying raw sample list, so there is no way to recompute a
+  // true percentile across multiple buckets from these rows. `p95` below is
+  // each device's PEAK per-bucket p95 across the window (a MAX, not a
+  // re-aggregated percentile) — the right choice for an offender-hunting
+  // tool (surfaces worst-case pressure moments) but not a statistically
+  // valid fleet-wide percentile. `avg` IS mathematically valid: a
+  // sample-count-weighted mean across buckets.
+
+  registerTool({
+    tier: 1 as AiToolTier,
+    definition: {
+      name: 'analyze_fleet_metrics',
+      description: 'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          metricName: { type: 'string', enum: [...FLEET_METRIC_NAME_VALUES], description: 'Which rollup metric to analyze' },
+          windowHours: { type: 'number', description: 'How many hours back to look (default 24, max 168)' },
+          topN: { type: 'number', description: 'Max devices to return, ranked by peak p95 descending (default 10, max 50)' },
+          orgId: { type: 'string', description: 'Organization UUID to scope to (must be accessible to the caller). Omit to use the caller\'s own org/partner scope.' },
+        },
+        required: ['metricName']
+      }
+    },
+    handler: async (input, auth) => {
+      const metricName = input.metricName as string;
+      if (!(FLEET_METRIC_NAME_VALUES as readonly string[]).includes(metricName)) {
+        return JSON.stringify({ error: `Invalid metricName. Allowed values: ${FLEET_METRIC_NAME_VALUES.join(', ')}` });
+      }
+
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (orgId && !auth.canAccessOrg(orgId)) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+
+      const windowHours = Math.min(Math.max(1, Number(input.windowHours) || 24), 168);
+      const topN = Math.min(Math.max(1, Number(input.topN) || 10), 50);
+      // <=24h windows use the 5-minute rollup tier; longer windows use the
+      // hourly tier (services/metricRollups.ts's METRIC_ROLLUP_BUCKETS: 300 /
+      // 3600 / 86400 seconds) to keep the row count bounded at 168h.
+      const bucketSeconds = windowHours <= 24 ? 300 : 3600;
+      const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+
+      // Zero-site restricted caller: nothing is visible — short-circuit
+      // without querying (mirrors resolveSiteAllowedDeviceIds callers
+      // elsewhere in the AI tools). Both `allowedSiteIds` and `canAccessSite`
+      // are always set together by buildOrgAccessClosures — checking both
+      // matches the aiToolsSiteScope.ts helper convention.
+      const isSiteRestricted = Boolean(auth.allowedSiteIds && auth.canAccessSite);
+      if (isSiteRestricted && auth.allowedSiteIds!.length === 0) {
+        return JSON.stringify({
+          metricName,
+          windowHours,
+          bucketSeconds,
+          topN,
+          deviceCount: 0,
+          fleetSummary: { avg: null, p95ApproxAvgOfDevicePeaks: null, max: null, sampleCount: 0 },
+          topDevices: [],
+          note: SITE_SCOPE_EMPTY_NOTE,
+        });
+      }
+
+      const conditions: SQL[] = [
+        eq(metricRollups.metricName, metricName as FleetMetricName),
+        eq(metricRollups.sourceTable, 'device_metrics'),
+        eq(metricRollups.bucketSeconds, bucketSeconds),
+        gte(metricRollups.bucketStart, since),
+        sql`${metricRollups.sampleCount} > 0`,
+      ];
+      const orgCondition = orgId ? eq(metricRollups.orgId, orgId) : auth.orgCondition(metricRollups.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      // Site is an app-layer authz axis only (RLS does not cover it) — join
+      // devices and narrow by siteId for a site-restricted caller.
+      if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
+
+      // The per-device fold runs in Postgres, not here. Selecting raw rollup
+      // rows materialized (org devices) x (buckets in window) — a 168h window
+      // at the hourly tier is 168 rows PER DEVICE, and the 24h/5-minute tier
+      // is 288 — only to collapse them to one object per device in JS. The
+      // GROUP BY below returns exactly one row per device, and the ORDER BY /
+      // LIMIT means the ranked page never leaves the database either.
+      const perDeviceSubquery = db
+        .select({
+          deviceId: metricRollups.deviceId,
+          hostname: devices.hostname,
+          // Sample-count-weighted numerator; divided by totalSamples below.
+          weightedAvgSum: sql<number | string | null>`SUM(${metricRollups.avgValue} * ${metricRollups.sampleCount})`.as('weighted_avg_sum'),
+          totalSamples: sql<number | string | null>`SUM(${metricRollups.sampleCount})`.as('total_samples'),
+          maxValue: sql<number | string | null>`MAX(${metricRollups.maxValue})`.as('max_value'),
+          // Each device's PEAK per-bucket p95 — a MAX, not a re-aggregated
+          // percentile (see the caveat comment above this tool).
+          peakP95: sql<number | string | null>`MAX(${metricRollups.p95Value})`.as('peak_p95'),
+        })
+        .from(metricRollups)
+        .innerJoin(devices, eq(metricRollups.deviceId, devices.id))
+        .where(and(...conditions))
+        .groupBy(metricRollups.deviceId, devices.hostname)
+        .as('per_device');
+
+      const topRows = await db
+        .select()
+        .from(perDeviceSubquery)
+        // NULLS LAST, not the default: Postgres sorts NULL first under DESC,
+        // so a device with no p95 at all would otherwise head the
+        // worst-offenders list.
+        .orderBy(sql`${perDeviceSubquery.peakP95} DESC NULLS LAST`)
+        .limit(topN);
+
+      // Fleet summary over EVERY device in scope, not just the topN page —
+      // aggregated from the same grouped rows so it never materializes them.
+      const [fleetRow] = await db
+        .select({
+          deviceCount: sql<number | string>`COUNT(*)`,
+          weightedAvgSum: sql<number | string | null>`SUM(${perDeviceSubquery.weightedAvgSum})`,
+          totalSamples: sql<number | string | null>`SUM(${perDeviceSubquery.totalSamples})`,
+          maxValue: sql<number | string | null>`MAX(${perDeviceSubquery.maxValue})`,
+          // AVG of the per-device peaks — the documented approximation, not a
+          // fleet-wide percentile.
+          avgPeakP95: sql<number | string | null>`AVG(${perDeviceSubquery.peakP95})`,
+        })
+        .from(perDeviceSubquery);
+
+      const perDevice = topRows.map((row) => {
+        const totalSamples = toNumber(row.totalSamples) ?? 0;
+        const weightedAvgSum = toNumber(row.weightedAvgSum);
+        const peakP95 = toNumber(row.peakP95);
+        const maxValue = toNumber(row.maxValue);
+        return {
+          deviceId: row.deviceId,
+          hostname: row.hostname,
+          avg: totalSamples > 0 && weightedAvgSum !== null ? round2(weightedAvgSum / totalSamples) : null,
+          p95: peakP95 !== null ? round2(peakP95) : null,
+          max: maxValue !== null ? round2(maxValue) : null,
+          sampleCount: totalSamples,
+        };
+      });
+
+      const fleetTotalSamples = toNumber(fleetRow?.totalSamples) ?? 0;
+      const fleetWeightedAvgSum = toNumber(fleetRow?.weightedAvgSum);
+      const fleetAvgPeakP95 = toNumber(fleetRow?.avgPeakP95);
+      const fleetMax = toNumber(fleetRow?.maxValue);
+
+      return JSON.stringify({
+        metricName,
+        windowHours,
+        bucketSeconds,
+        topN,
+        deviceCount: toNumber(fleetRow?.deviceCount) ?? 0,
+        fleetSummary: {
+          avg: fleetTotalSamples > 0 && fleetWeightedAvgSum !== null
+            ? round2(fleetWeightedAvgSum / fleetTotalSamples)
+            : null,
+          // Self-describing key (not a bare `p95`): this is the AVERAGE of
+          // each device's peak per-bucket p95, not a true recomputed
+          // fleet-wide percentile — see the aggregation-caveat comment above
+          // and the tool description. A bare `p95` name would silently read
+          // as a real percentile to a model consuming this output.
+          p95ApproxAvgOfDevicePeaks: fleetAvgPeakP95 !== null ? round2(fleetAvgPeakP95) : null,
+          max: fleetMax !== null ? round2(fleetMax) : null,
+          sampleCount: fleetTotalSamples,
+        },
+        topDevices: perDevice,
+      });
     }
   });
 

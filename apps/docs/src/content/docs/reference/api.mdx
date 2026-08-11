@@ -23,11 +23,31 @@ curl -H "Authorization: Bearer $TOKEN" \
   https://breeze.yourdomain.com/api/v1/devices
 ```
 
-API keys can also be used via the `X-API-Key` header:
+Tenancy-mutating writes made with a JWT are additionally gated by MFA — the
+session must have completed an MFA challenge, which makes user JWTs a poor fit
+for unattended scripts.
+
+<Aside type="caution" title="X-API-Key is not general-purpose auth">
+  Organization API keys (`brz_…`, sent via the `X-API-Key` header) do **not**
+  authenticate the general REST API. `curl -H "X-API-Key: brz_..." …/devices`
+  returns `401`. A `brz_` key authenticates exactly three surfaces:
+
+  - `POST /mcp/*` — the [MCP server](/features/mcp-server/) for AI integrations
+  - `POST /dev/push` — the development push endpoint
+  - `GET`/`PATCH /devices/:id/custom-fields` — device custom-field values
+    (these accept either a JWT or a `brz_` key)
+
+  Everything else rejects `X-API-Key` with a `brz_` key and requires a JWT.
+</Aside>
+
+For **machine-to-machine integrations** (exports, migration scripts, unattended
+provisioning), use the [Partner API](#partner-api-service-principals) with a
+**partner service-principal key** (`brz_sp_…`) — a distinct credential class,
+also sent via `X-API-Key`, that is not MFA-gated because no human is involved:
 
 ```bash
-curl -H "X-API-Key: brz_..." \
-  https://breeze.yourdomain.com/api/v1/devices
+curl -H "X-API-Key: brz_sp_..." \
+  https://breeze.yourdomain.com/api/v1/partner-api/devices
 ```
 
 ### Login

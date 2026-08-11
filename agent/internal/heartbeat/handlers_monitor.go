@@ -21,6 +21,20 @@ func init() {
 	handlerRegistry[tools.CmdNetworkDnsCheck] = handleNetworkDnsCheck
 }
 
+// maxPingCount bounds the ping-sweep repeat count. Monitor checks never need
+// more than a handful of probes, and the value sizes a slice allocation.
+const maxPingCount = 60
+
+func clampPingCount(count int) int {
+	if count < 1 {
+		return 1
+	}
+	if count > maxPingCount {
+		return maxPingCount
+	}
+	return count
+}
+
 func handleNetworkPing(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	target, errResult := tools.RequirePayloadString(cmd.Payload, "target")
@@ -31,7 +45,10 @@ func handleNetworkPing(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	monitorId := tools.GetPayloadString(cmd.Payload, "monitorId", "")
 	timeout := time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 5)) * time.Second
-	count := tools.GetPayloadInt(cmd.Payload, "count", 4)
+	// count sizes an allocation below, so it must be bounded before use: a
+	// negative value panics make(), and a large one lets an unvalidated
+	// payload field reserve arbitrary memory on the device.
+	count := clampPingCount(tools.GetPayloadInt(cmd.Payload, "count", 4))
 
 	ip := net.ParseIP(target)
 	if ip == nil {

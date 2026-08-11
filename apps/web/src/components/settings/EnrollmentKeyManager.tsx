@@ -35,11 +35,19 @@ interface EnrollmentKey {
    * null in TWO cases, and the API decides both — do not try to re-derive
    * either here:
    *   1. the key never produced an installer;
-   *   2. the key is a short-link / invite CHILD (it carries a shortCode), whose
-   *      bootstrap tokens are one-per-DOWNLOAD rather than one-per-device, so
-   *      the sum would count clicks and render a denominator that grows on
-   *      every click and never reaches the key's real budget. See
-   *      `reportsInstallerCapacity` in routes/enrollmentKeys.ts.
+   *   2. every installer token under the key is one-per-DOWNLOAD rather than
+   *      one-per-device (the public /s/:code and download-handle flows mint one
+   *      per click), so summing them would render a denominator that grows on
+   *      every click and never reaches the key's real budget.
+   *
+   * Case 2 is decided PER TOKEN, on `installer_bootstrap_tokens.usage_kind`
+   * (#3034) — NOT by whether the key carries a `shortCode`. A shortCode does not
+   * imply either answer: an operator can build a real multi-device installer
+   * FROM a short-link child row (that key reports a genuine capacity), and
+   * /s/:code mints a download key with no shortCode at all (that key's tokens
+   * are pure click counts). Branching on `key.shortCode` here would reintroduce
+   * exactly the bug #3034 fixed. See `fetchInstallerTokenUsage` in
+   * routes/enrollmentKeys.ts.
    *
    * `liveConsumed` / `liveMax` (#3039) are the same sums over UNEXPIRED tokens
    * only. They drive two things below: the capacity line marks dead slots

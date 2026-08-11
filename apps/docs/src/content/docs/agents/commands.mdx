@@ -594,13 +594,34 @@ Schedule, cancel, and check the status of managed reboots (separate from the imm
 | `source` | string | `"manual"` | Initiator: `"manual"`, `"patch"`, `"policy"`, etc. |
 | `deadline` | string | -- | Optional RFC 3339 timestamp to override calculated deadline |
 
+Supported on Windows, Linux and macOS. The agent warns the logged-in user
+immediately when the reboot is scheduled, follows up with reminders at 60, 15 and
+5 minutes before (only where those land far enough apart to be worth sending),
+and fires a final critical notice one minute out — which is also when the OS
+shutdown countdown starts, so the countdown the user sees is the one the OS
+honours. Every delay produces at least one warning, including delays shorter than
+any reminder threshold.
+
+For post-patch reboots the API does not choose the delay itself: it resolves
+`rebootDelayMinutes` from the device's effective patch Configuration Policy
+(default 15 minutes, range 1-1440), and the maintenance-window reboot path reads
+the same setting.
+
 ### `cancel_reboot`
 
 No payload parameters. Returns `{ cancelled: true }`.
 
+Cancellation always stops the agent's own timers. If the OS shutdown countdown
+has already started (the final minute), the agent also aborts it where the
+platform allows — `shutdown /a` on Windows, `shutdown -c` on Linux. macOS cannot:
+BSD `shutdown(8)` has no cancel flag, so the call reports the failure rather than
+claiming a cancellation that did not happen.
+
 ### `get_reboot_status`
 
-No payload parameters. Returns the full `RebootState` object with schedule details.
+No payload parameters. Returns the full `RebootState` object with schedule
+details, including `notificationsPlanned` — how many user warnings the current
+schedule will emit.
 
 ---
 

@@ -1,6 +1,6 @@
 import type { RequestLike } from './auditEvents';
 import { isIP } from 'net';
-import { ipMatchesAny } from './ipMatch';
+import { ipMatchesAny, ipv6NetworkPrefix64 } from './ipMatch';
 
 const TRUST_PROXY_AUTO = 'auto';
 
@@ -315,6 +315,35 @@ export function getTrustedClientIp(c: RequestLike, fallback = 'unknown'): string
   }
 
   return fallback;
+}
+
+/**
+ * Collapse a client IP into the bucket identity a per-IP RATE LIMITER should
+ * key on: IPv4 (and IPv4-mapped IPv6) unchanged, real IPv6 folded to its /64
+ * network prefix, non-IP sentinels like `'unknown'` passed straight through so
+ * they keep sharing one bucket exactly as they do today.
+ *
+ * WHY THIS IS SEPARATE FROM getTrustedClientIp
+ * --------------------------------------------
+ * A /64 is the smallest IPv6 allocation an operator will not split across
+ * customers — a single subscriber typically controls 2^64 addresses, so a
+ * per-address bucket means every rate limit in the API is trivially bypassed
+ * by anyone with IPv6 by incrementing the low 64 bits. Keying on the /64 fixes
+ * that, but it is ONLY correct for rate limiting. It is deliberately not folded
+ * into getTrustedClientIp, whose dozens of call sites need the client's actual
+ * address:
+ *   - audit logs / `ipAddress`, `signupIp`, `enrollmentIp` columns would start
+ *     recording a prefix, destroying forensic precision irreversibly;
+ *   - IP allowlists (partner allowlist, METRICS_SCRAPE_IP_ALLOWLIST, the
+ *     synthetic-probe allowlist) do exact `Set.has` / `/128` matching and would
+ *     silently stop matching operator-configured addresses;
+ *   - remote-session WS tickets are bound to the issuing IP so a stolen ticket
+ *     cannot be redeemed from elsewhere — a /64 would hand that to every host
+ *     on the attacker's own subnet.
+ * Call this at the point a limiter key is built, never earlier.
+ */
+export function rateLimitIpKey(ip: string): string {
+  return ipv6NetworkPrefix64(ip) ?? ip;
 }
 
 export function getTrustedClientIpOrUndefined(c: RequestLike): string | undefined {

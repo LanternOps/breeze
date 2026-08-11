@@ -1,10 +1,6 @@
-import {
-  db,
-  getCurrentDbAccessContext,
-  runOutsideDbContext,
-  withSystemDbAccessContext,
-} from '../db';
+import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
+import { policyOwnershipCondition, withPartnerWideVisibility } from './configPolicyOwnership';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -142,26 +138,6 @@ function buildRoleOsFilterConditions(hierarchy: DeviceHierarchy): SQL[] {
   ];
 }
 
-/**
- * Build the policy-ownership condition for a device's hierarchy.
- *
- * A configuration_policies row resolves for this device when it is owned by
- * the device's own org (the original org-scoped shape) OR owned by the
- * device's partner (org_id NULL, partner_id set — the "partner-wide / all orgs"
- * shape, #1724). breeze_has_org_access / breeze_has_partner_access at the RLS
- * layer still gate visibility; this is the additional "does this policy apply
- * to this device" join predicate.
- *
- * Use this in place of a bare org-equality join on every per-device resolver
- * so partner-owned policies span all of the partner's orgs.
- */
-function policyOwnershipCondition(hierarchy: DeviceHierarchy): SQL {
-  if (hierarchy.partnerId) {
-    return sql`(${configurationPolicies.orgId} = ${hierarchy.orgId} OR (${configurationPolicies.orgId} IS NULL AND ${configurationPolicies.partnerId} = ${hierarchy.partnerId}))`;
-  }
-  return sql`${configurationPolicies.orgId} = ${hierarchy.orgId}`;
-}
-
 function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
   const conditions: SQL[] = [];
 
@@ -247,43 +223,48 @@ export async function resolveAlertRulesForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      alertRule: configPolicyAlertRules,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        alertRule: configPolicyAlertRules,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        // Server-evaluated rules live exclusively under alert_rule links since the
-        // 2026-07-30 ownership consolidation migration.
-        eq(configPolicyFeatureLinks.featureType, 'alert_rule')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          // Server-evaluated rules live exclusively under alert_rule links since the
+          // 2026-07-30 ownership consolidation migration.
+          eq(configPolicyFeatureLinks.featureType, 'alert_rule')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyAlertRules,
-      eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt,
-      asc(configPolicyAlertRules.sortOrder)
-    );
+      .innerJoin(
+        configPolicyAlertRules,
+        eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt,
+        asc(configPolicyAlertRules.sortOrder)
+      )
+  );
 
   if (rows.length === 0) return [];
 
@@ -310,41 +291,46 @@ export async function resolveAutomationsForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      automation: configPolicyAutomations,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        automation: configPolicyAutomations,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'automation')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'automation')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyAutomations,
-      eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt,
-      asc(configPolicyAutomations.sortOrder)
-    );
+      .innerJoin(
+        configPolicyAutomations,
+        eq(configPolicyAutomations.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt,
+        asc(configPolicyAutomations.sortOrder)
+      )
+  );
 
   if (rows.length === 0) return [];
 
@@ -529,45 +515,53 @@ export async function resolvePatchConfigDetailsForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      patchSettings: configPolicyPatchSettings,
-      featureLinkId: configPolicyFeatureLinks.id,
-      configPolicyId: configurationPolicies.id,
-      configPolicyName: configurationPolicies.name,
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      assignmentTargetId: configPolicyAssignments.targetId,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context (the agent heartbeat, an org user
+  // token) those rows are invisible and the join silently returns nothing.
+  // Self-tenanted by this device's own hierarchy, so the escape cannot pivot
+  // tenants. Callers on hot paths hoist the whole resolve out of their org
+  // transaction so this opens no second connection.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        patchSettings: configPolicyPatchSettings,
+        featureLinkId: configPolicyFeatureLinks.id,
+        configPolicyId: configurationPolicies.id,
+        configPolicyName: configurationPolicies.name,
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        assignmentTargetId: configPolicyAssignments.targetId,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'patch')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'patch')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyPatchSettings,
-      eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .innerJoin(
+        configPolicyPatchSettings,
+        eq(configPolicyPatchSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 
@@ -585,29 +579,6 @@ export async function resolvePatchConfigDetailsForDevice(
     assignmentPriority: winner.assignmentPriority,
     resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
-}
-
-/**
- * Runs a backup POLICY lookup where partner-wide rows must be visible.
- *
- * `configuration_policies` and `backup_profiles` rows owned by a partner have
- * `org_id NULL`, and an org-scoped token never passes `breeze_has_partner_access`
- * — so under a request's RLS context those rows simply do not exist. A backup
- * reader that runs there silently reports "no policy" for partner-linked
- * devices: manual runs fall back to a legacy single-mode job, dashboards call
- * protected devices unprotected. Same trap the heartbeat probe-config hit
- * (#1105); the playbook's answer is a system context.
- *
- * Only the policy/profile joins go through here — they are self-tenanted by the
- * caller-supplied orgId or the device's own hierarchy. Device expansion stays in
- * the caller's context so RLS keeps guarding which devices a caller may see.
- *
- * No-ops when already system-scoped (the scheduler), so the worker doesn't open
- * a second transaction per resolve.
- */
-async function withPartnerWideVisibility<T>(fn: () => Promise<T>): Promise<T> {
-  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
-  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
 /**
@@ -732,40 +703,45 @@ export async function resolveMaintenanceConfigForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      maintenanceSettings: configPolicyMaintenanceSettings,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        maintenanceSettings: configPolicyMaintenanceSettings,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'maintenance')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'maintenance')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyMaintenanceSettings,
-      eq(configPolicyMaintenanceSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .innerJoin(
+        configPolicyMaintenanceSettings,
+        eq(configPolicyMaintenanceSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 
@@ -786,41 +762,46 @@ export async function resolveComplianceRulesForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      complianceRule: configPolicyComplianceRules,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        complianceRule: configPolicyComplianceRules,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'compliance')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'compliance')
+        )
       )
-    )
-    .innerJoin(
-      configPolicyComplianceRules,
-      eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt,
-      asc(configPolicyComplianceRules.sortOrder)
-    );
+      .innerJoin(
+        configPolicyComplianceRules,
+        eq(configPolicyComplianceRules.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt,
+        asc(configPolicyComplianceRules.sortOrder)
+      )
+  );
 
   if (rows.length === 0) return [];
 
@@ -845,36 +826,43 @@ export async function resolveSoftwarePolicyForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-      assignmentId: configPolicyAssignments.id,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context (e.g. the PAM UAC elevation decision
+  // path, resolved inside the agent request's org-scoped context) those rows
+  // are invisible and the join silently returns nothing. Self-tenanted by this
+  // device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        featurePolicyId: configPolicyFeatureLinks.featurePolicyId,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        assignmentId: configPolicyAssignments.id,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'software_policy')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'software_policy')
+        )
       )
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 
@@ -1044,35 +1032,40 @@ export async function resolveVulnerabilityEnabledForDevice(deviceId: string): Pr
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        inlineSettings: configPolicyFeatureLinks.inlineSettings,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'vulnerability')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'vulnerability')
+        )
       )
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return false;
 
@@ -1703,40 +1696,48 @@ export async function resolveBackupProtectionForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  const rows = await db
-    .select({
-      featureLinkId: configPolicyFeatureLinks.id,
-      retention: configPolicyBackupSettings.retention,
-      assignmentLevel: configPolicyAssignments.level,
-      assignmentPriority: configPolicyAssignments.priority,
-      assignmentCreatedAt: configPolicyAssignments.createdAt,
-    })
-    .from(configPolicyAssignments)
-    .innerJoin(
-      configurationPolicies,
-      and(
-        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
-        eq(configurationPolicies.status, 'active'),
-        policyOwnershipCondition(hierarchy)
+  // #2930 — the ownership predicate below already admits partner-owned rows,
+  // but under an org-scoped RLS context those rows are invisible and the join
+  // silently returns nothing. Self-tenanted by this device's own hierarchy.
+  // The leftJoin to configPolicyBackupSettings is RLS-chained to
+  // configuration_policies (same feature-link id), so it must stay inside
+  // this same escape rather than resolving separately.
+  const rows = await withPartnerWideVisibility(() =>
+    db
+      .select({
+        featureLinkId: configPolicyFeatureLinks.id,
+        retention: configPolicyBackupSettings.retention,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
       )
-    )
-    .innerJoin(
-      configPolicyFeatureLinks,
-      and(
-        eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
-        eq(configPolicyFeatureLinks.featureType, 'backup')
+      .innerJoin(
+        configPolicyFeatureLinks,
+        and(
+          eq(configPolicyFeatureLinks.configPolicyId, configurationPolicies.id),
+          eq(configPolicyFeatureLinks.featureType, 'backup')
+        )
       )
-    )
-    .leftJoin(
-      configPolicyBackupSettings,
-      eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
-    )
-    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
-    .orderBy(
-      configPolicyAssignments.level,
-      configPolicyAssignments.priority,
-      configPolicyAssignments.createdAt
-    );
+      .leftJoin(
+        configPolicyBackupSettings,
+        eq(configPolicyBackupSettings.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      )
+  );
 
   if (rows.length === 0) return null;
 

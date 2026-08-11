@@ -14,20 +14,25 @@ vi.mock('./featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: vi.fn().mockResolvedValue({ active: false, suppressScripts: false }),
 }));
 
-// Command dispatch + agent WS — no real delivery in unit tests.
-vi.mock('./commandDispatch', () => ({
-  claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
-  releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn().mockReturnValue(false),
+// Per-device dispatch core (#3409 PR 0) — the service is now a thin caller
+// of this seam, so unit tests stub it rather than the DB inserts / WS send
+// it owns internally.
+vi.mock('./scriptDispatch', () => ({
+  dispatchScriptToDevice: vi.fn().mockResolvedValue({
+    ok: true,
+    commandId: 'cmd-1',
+    executionId: 'exec-1',
+    delivered: false,
+    executedAt: null,
+  }),
 }));
 
 // Real permissions module is fine; canAccessSite is only consulted when
 // allowedSiteIds is set, which these tests don't exercise.
 
 import { db } from '../db';
+import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
+import { dispatchScriptToDevice } from './scriptDispatch';
 import { executeScriptOnDevices } from './scriptExecution';
 
 // db.select() is used twice per call: first the script (.limit chain), then the
@@ -111,8 +116,8 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
     if (!result.ok) {
       expect(result.status).toBe(400);
     }
-    // No execution/command rows for the cross-org device.
-    expect(db.insert).not.toHaveBeenCalled();
+    // No dispatch for the cross-org device.
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
   it('executes when the script and device share the same org', async () => {
@@ -171,6 +176,127 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
       const targetedIds = result.executions.map((e) => e.deviceId);
       expect(targetedIds).toContain('device-a');
       expect(targetedIds).not.toContain('device-b');
+    }
+  });
+
+  it('splits batches per org for a multi-org run of an org-null script', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: null, isSystem: true })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-1', orgId: 'org-a' }),
+        baseDevice({ id: 'device-2', orgId: 'org-a' }),
+        baseDevice({ id: 'device-3', orgId: 'org-b' }),
+      ]) as any);
+    // One insert per org batch — return a distinct id per call so the test
+    // can assert each device's dispatch carries its own org's batch id
+    // rather than accidentally passing on a shared mock id.
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(insertReturning([{ id: 'batch-org-a' }]) as any)
+      .mockReturnValueOnce(insertReturning([{ id: 'batch-org-b' }]) as any);
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-1', 'device-2', 'device-3'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.batchIds).toHaveLength(2);
+      expect(result.batchIds).toEqual(['batch-org-a', 'batch-org-b']);
+      // A multi-org run has no single batch that represents the whole run —
+      // `batchId` (the legacy scalar) must stay null rather than silently
+      // pointing at one arbitrary org's slice. `batchIds` is the complete list.
+      expect(result.batchId).toBeNull();
+    }
+
+    // Two batch inserts: org-a with 2 devices targeted, org-b with 1.
+    const insertCalls = vi.mocked(db.insert).mock.results;
+    expect(insertCalls).toHaveLength(2);
+    const valuesCalls = insertCalls.map((r: any) => r.value.values.mock.calls[0][0]);
+    expect(valuesCalls).toEqual([
+      expect.objectContaining({ orgId: 'org-a', devicesTargeted: 2 }),
+      expect.objectContaining({ orgId: 'org-b', devicesTargeted: 1 }),
+    ]);
+
+    // Each device's dispatch carries its own org's batch id.
+    const dispatchCalls = vi.mocked(dispatchScriptToDevice).mock.calls;
+    const batchIdByDevice = Object.fromEntries(
+      dispatchCalls.map((call) => [call[0].device.id, call[0].batchId]),
+    );
+    expect(batchIdByDevice).toEqual({
+      'device-1': 'batch-org-a',
+      'device-2': 'batch-org-a',
+      'device-3': 'batch-org-b',
+    });
+
+    // Final status update covers both created batches.
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Full MaintenanceWindowStatus shape (featureConfigResolver.ts) — the mocked
+// resolver must satisfy every field, not just the two this suite cares about.
+const maintenanceStatus = (overrides: { active: boolean; suppressScripts: boolean }) => ({
+  active: overrides.active,
+  suppressScripts: overrides.suppressScripts,
+  suppressAlerts: false,
+  suppressPatching: false,
+  suppressAutomations: false,
+  rebootIfPending: false,
+});
+
+describe('executeScriptOnDevices — maintenance window suppression', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue(maintenanceStatus({ active: false, suppressScripts: false }));
+  });
+
+  it('returns 409 with maintenanceSuppressedDeviceIds when every target device is in a script-suppressing maintenance window', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-b' })]) as any);
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue(maintenanceStatus({ active: true, suppressScripts: true }));
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-1'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.status).toBe(409);
+      expect(result.maintenanceSuppressedDeviceIds).toEqual(['device-1']);
+    }
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
+  it('excludes only the suppressed device from an otherwise-executable batch', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-1', orgId: 'org-b' }),
+        baseDevice({ id: 'device-2', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(checkDeviceMaintenanceWindow).mockImplementation(async (deviceId: string) =>
+      deviceId === 'device-1'
+        ? maintenanceStatus({ active: true, suppressScripts: true })
+        : maintenanceStatus({ active: false, suppressScripts: false }),
+    );
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-1', 'device-2'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.maintenanceSuppressedDeviceIds).toEqual(['device-1']);
+      expect(result.executions.map((e) => e.deviceId)).toEqual(['device-2']);
     }
   });
 });

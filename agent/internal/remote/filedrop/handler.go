@@ -91,6 +91,17 @@ func (h *FileDropHandler) SendFile(path string) error {
 	if h.dc == nil {
 		return errors.New("filedrop: data channel not configured")
 	}
+
+	// CONTAINMENT GAP (#3397) — READ THIS BEFORE WIRING A CALLER.
+	// SendFile is a second, independent file-content egress path: it streams the
+	// whole file over the WebRTC data channel without passing through
+	// tools.ReadFile, so the sensitive-path deny-list
+	// (tools.EnforcePathContainment) does NOT apply. It is unreachable today —
+	// nothing in the repo calls it — which is the only reason #3397 left it
+	// alone. It cannot call tools.EnforcePathContainment directly: that would
+	// close an import cycle (tools → desktop → filedrop → tools).
+	// Any change that gives SendFile a caller must FIRST lift the deny-list into
+	// a leaf package both sides can import, then gate `path` here.
 	file, err := os.Open(path)
 	if err != nil {
 		return err

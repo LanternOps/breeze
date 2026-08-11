@@ -10,6 +10,10 @@ import { formatNumber } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import { getOrgScope } from '@/hooks/useOrgScope';
 import { useAiStore } from '@/stores/aiStore';
+import FindingsFeed from './FindingsFeed';
+import FixPickerModal from './FixPickerModal';
+import RunProgressPanel from './RunProgressPanel';
+import type { FleetFindingDetail } from '@/services/fleetFindings';
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -220,6 +224,12 @@ export default function FleetOrchestrationPage() {
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // Remediation flow: the drawer raises the intent, the picker builds the
+  // request, and the progress panel takes over once a run exists. Kept here
+  // (not in the drawer) so the progress panel survives closing the drawer.
+  const [remediationTarget, setRemediationTarget] = useState<FleetFindingDetail | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
   const loadStats = async () => {
     try {
       setIsLoading(true);
@@ -268,40 +278,12 @@ export default function FleetOrchestrationPage() {
     store.sendMessage(prompt);
   };
 
-  if (isLoading) {
-    return (
-      <div className="space-y-6 p-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.fleet.FleetOrchestrationPage.title')}</h1>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {[...Array(8)].map((_, i) => (
-            <div key={i} className="rounded-lg border bg-card p-6 shadow-xs">
-              <div className="flex items-center justify-center h-20">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="space-y-6 p-6">
-        <h1 className="text-xl font-semibold tracking-tight">{t('longTail.fleet.FleetOrchestrationPage.title')}</h1>
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6">
-          <div className="flex items-center gap-2 text-destructive">
-            <XCircle className="h-5 w-5" />
-            <span className="text-sm font-medium">{error}</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const s = stats!;
+  // The stat strip is now secondary: a failure or a slow load in the stats
+  // endpoints degrades THAT STRIP ONLY. It no longer replaces the page, because
+  // the findings feed is the primary content and its data comes from a
+  // different endpoint entirely — blanking it on an unrelated failure would
+  // hide real findings behind an unrelated outage.
+  const s = stats;
 
   return (
     <div className="space-y-6 p-6">
@@ -334,81 +316,131 @@ export default function FleetOrchestrationPage() {
         </div>
       )}
 
-      {/* Stat Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.policies')}
-          icon={Shield}
-          value={s.policies.total}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.activeCount', { count: s.policies.active })}
-          accent="blue"
-          onClick={() => handleQuickAction('Show me a compliance summary for all configuration policies')}
+      {/* Stats failure — inline and scoped to the strip; the findings feed
+          below is unaffected and still renders. */}
+      {error && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4" data-testid="fleet-stats-error">
+          <div className="flex items-center gap-2 text-destructive">
+            <XCircle className="h-4 w-4 shrink-0" />
+            <span className="text-sm font-medium">{error}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Summary strip — the former stat cards, demoted to a single compact row
+          above the findings feed. Same data, same AI quick-action targets. */}
+      {isLoading && !error && (
+        <div className="flex items-center justify-center rounded-lg border bg-card p-6 shadow-xs" data-testid="fleet-stats-loading">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
+      {s && !error && (
+        <div
+          className="flex flex-wrap items-stretch gap-2 rounded-lg border bg-card p-3 shadow-xs"
+          data-testid="fleet-stat-strip"
+        >
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.policies')}
+            testId="policies"
+            icon={Shield}
+            value={s.policies.total}
+            accent="blue"
+            onClick={() => handleQuickAction('Show me a compliance summary for all configuration policies')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.deployments')}
+            testId="deployments"
+            icon={Rocket}
+            value={s.deployments.active}
+            accent={s.deployments.failed > 0 ? 'red' : 'green'}
+            badge={s.deployments.failed > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.deployments.failed }) : undefined}
+            onClick={() => handleQuickAction('List all active deployments and their progress')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.patches')}
+            testId="patches"
+            icon={Package}
+            value={s.patches.pendingPatches}
+            accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
+            badge={s.patches.failedPatches > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.patches.failedPatches }) : undefined}
+            onClick={() => handleQuickAction('What critical patches are pending approval?')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
+            testId="alerts"
+            icon={Bell}
+            value={s.alerts.total}
+            accent={s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
+            onClick={() => handleQuickAction('Give me a summary of active alerts by severity')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.groups')}
+            testId="groups"
+            icon={FolderTree}
+            value={s.groupCount}
+            accent="blue"
+            onClick={() => handleQuickAction('Show me all device groups and their member counts')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.automations')}
+            testId="automations"
+            icon={Zap}
+            value={s.automationCount}
+            accent="purple"
+            onClick={() => handleQuickAction('List all enabled automations and their recent run history')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
+            testId="maintenance"
+            icon={Clock}
+            // "—" (unknown), never a fabricated 0 — see fetchFleetStats.
+            value={s.maintenanceActive ?? '—'}
+            accent={s.maintenanceActive == null ? 'gray' : s.maintenanceActive > 0 ? 'yellow' : 'green'}
+            onClick={() => handleQuickAction('What maintenance windows are active right now?')}
+          />
+          <StatChip
+            title={t('longTail.fleet.FleetOrchestrationPage.cards.reports')}
+            testId="reports"
+            icon={FileText}
+            value={s.reportCount}
+            accent="blue"
+            onClick={() => handleQuickAction('Generate an executive summary report for the fleet')}
+          />
+        </div>
+      )}
+
+      {/* Findings feed — the primary content of this page. */}
+      <FindingsFeed onRemediate={setRemediationTarget} />
+
+      {remediationTarget && (
+        <FixPickerModal
+          finding={remediationTarget}
+          onClose={() => setRemediationTarget(null)}
+          onRunStarted={(runId) => {
+            setRemediationTarget(null);
+            setActiveRunId(runId);
+          }}
         />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.deployments')}
-          icon={Rocket}
-          value={s.deployments.active}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.deploymentsSubtitle', {
-            total: s.deployments.total,
-            pending: s.deployments.pending,
-          })}
-          accent={s.deployments.failed > 0 ? 'red' : 'green'}
-          badge={s.deployments.failed > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.deployments.failed }) : undefined}
-          onClick={() => handleQuickAction('List all active deployments and their progress')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.patches')}
-          icon={Package}
-          value={s.patches.pendingPatches}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.pendingInstallation')}
-          accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
-          badge={s.patches.failedPatches > 0 ? t('longTail.fleet.FleetOrchestrationPage.cards.failedCount', { count: s.patches.failedPatches }) : undefined}
-          onClick={() => handleQuickAction('What critical patches are pending approval?')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
-          icon={Bell}
-          value={s.alerts.total}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.alertsSubtitle', {
-            critical: s.alerts.critical,
-            high: s.alerts.high,
-          })}
-          accent={s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
-          onClick={() => handleQuickAction('Give me a summary of active alerts by severity')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.groups')}
-          icon={FolderTree}
-          value={s.groupCount}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.deviceGroupsSubtitle')}
-          accent="blue"
-          onClick={() => handleQuickAction('Show me all device groups and their member counts')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.automations')}
-          icon={Zap}
-          value={s.automationCount}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.configured')}
-          accent="purple"
-          onClick={() => handleQuickAction('List all enabled automations and their recent run history')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
-          icon={Clock}
-          value={s.maintenanceActive ?? '—'}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.activeWindows')}
-          accent={s.maintenanceActive == null ? 'gray' : s.maintenanceActive > 0 ? 'yellow' : 'green'}
-          onClick={() => handleQuickAction('What maintenance windows are active right now?')}
-        />
-        <StatCard
-          title={t('longTail.fleet.FleetOrchestrationPage.cards.reports')}
-          icon={FileText}
-          value={s.reportCount}
-          subtitle={t('longTail.fleet.FleetOrchestrationPage.cards.reportDefinitions')}
-          accent="blue"
-          onClick={() => handleQuickAction('Generate an executive summary report for the fleet')}
-        />
-      </div>
+      )}
+
+      {activeRunId && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={() => setActiveRunId(null)}
+            data-testid="run-progress-backdrop"
+            aria-hidden="true"
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('longTail.fleet.RunProgress.heading')}
+            className="fixed right-0 top-0 z-50 h-full w-full max-w-2xl shadow-2xl"
+          >
+            <RunProgressPanel runId={activeRunId} onClose={() => setActiveRunId(null)} />
+          </aside>
+        </>
+      )}
 
       {/* Quick Actions */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -434,7 +466,9 @@ export default function FleetOrchestrationPage() {
         </div>
       </div>
 
-      {/* Status Overview Panels */}
+      {/* Status Overview Panels — omitted entirely when the stats never loaded,
+          rather than rendered against fabricated zeros. */}
+      {s && (
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Deployment Status */}
         <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -520,6 +554,7 @@ export default function FleetOrchestrationPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -535,15 +570,21 @@ const accentColors = {
   gray: 'text-muted-foreground',
 } as const;
 
-function StatCard({
-  title, icon: Icon, value, subtitle, accent, badge, onClick,
+/** The former full-size StatCard, compacted into a single-line chip. The stats
+ *  are now context for the findings feed rather than the page's headline, so
+ *  each one is icon + number + label on one row instead of a 6-unit card. */
+function StatChip({
+  title, testId, icon: Icon, value, accent, badge, onClick,
 }: {
   title: string;
+  /** Stable, locale-independent slug. `title` is translated, so deriving the
+   *  test id from it yielded `fleet-stat-Richtlinien` in de-DE and broke the
+   *  repo's data-testid convention (E2E selectors must not depend on locale). */
+  testId: string;
   icon: React.ComponentType<{ className?: string }>;
   // A string value is rendered verbatim (e.g. "—" for a stat that isn't
   // available in the current scope); a number is locale-formatted.
   value: number | string;
-  subtitle: string;
   accent: keyof typeof accentColors;
   badge?: string;
   onClick?: () => void;
@@ -551,21 +592,19 @@ function StatCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-lg border bg-card p-6 shadow-xs text-left hover:bg-muted/50 transition-colors cursor-pointer w-full"
+      data-testid={`fleet-stat-${testId}`}
+      className="flex flex-1 min-w-[9rem] items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/50 cursor-pointer"
     >
-      <div className="flex items-center justify-between">
-        <Icon className={cn('h-5 w-5', accentColors[accent])} />
-        {badge && (
-          <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-            {badge}
-          </span>
-        )}
-      </div>
-      <div className="mt-4">
-        <div className="text-2xl font-bold">{typeof value === 'number' ? formatNumber(value) : value}</div>
-        <div className="text-sm text-muted-foreground">{title}</div>
-        <div className="text-xs text-muted-foreground/70 mt-1">{subtitle}</div>
-      </div>
+      <Icon className={cn('h-4 w-4 shrink-0', accentColors[accent])} />
+      <span className="text-lg font-semibold leading-none">
+        {typeof value === 'number' ? formatNumber(value) : value}
+      </span>
+      <span className="truncate text-xs text-muted-foreground">{title}</span>
+      {badge && (
+        <span className="ml-auto shrink-0 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

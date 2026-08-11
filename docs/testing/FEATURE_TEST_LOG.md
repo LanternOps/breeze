@@ -3743,3 +3743,480 @@ Refined the review-round C1 handling — missing *required* artifacts now fails 
 
 - No implementation defects remain from automated review and verification.
 - Before release, manually verify Approve, Deny, timeout, default-desktop fallback, and console/RDP coexistence on a native Windows test host.
+
+## UI QA Sweep — 2026-08-11 (Playwright pass, stacks 32821/32825)
+
+**Tested by:** Claude (Playwright MCP), branch `fix/config-policy-count-i18n-glue` @ http://localhost:32792
+
+### Environment note (not a product bug, logged once)
+- Access token / refresh cycle is very short-lived in this dev stack (session expired ~20-30s after login repeatedly, sometimes hitting `429` on `/api/v1/auth/refresh`). Caused several forced re-logins during the sweep, each redirecting back to the original route (`?reason=session-expired` works correctly). Flagging as environment friction, not a release defect — the redirect-back-after-relogin behavior itself is correct.
+
+### [Nav crawl — sidebar destinations] — PASS
+- ✅ All ~30 sidebar destinations visited (Dashboard, Devices, Alerts, Tickets, Incidents, Remote Access, Scripts, Patches, Vulnerabilities, OneDrive, Fleet, AI Workspace, Network Monitor, Network Discovery, Security, DNS Security, PAM, User Risk, Sensitive Data, Peripherals, AI Risk Engine, CIS Benchmarks so far) all render with correct titles, no 500s, no unexpected console errors.
+- ⚠️ UI/UX: `/remote` and a few other islands log `react-i18next: NO_I18NEXT_INSTANCE` warning on first mount (see i18n glue section below) — cosmetic console noise, not a functional break.
+
+### [CIS Benchmarks `/cis-hardening` — PR #3400 dual ownership] — PASS
+- ✅ Existing seed data already shows a partner-wide baseline ("QA Partner-Wide Baseline") with a visible **"All orgs"** badge (tooltip: "Partner-wide baseline — applies to devices in every organization").
+- ✅ Created a new baseline via "New Baseline" modal with Scope radio = "All organizations (partner-wide baseline)"; on save the row appeared immediately with the "All orgs" badge and the "Active Baselines" KPI incremented 3→4 — confirms create flow + badge render end-to-end.
+- ✅ "Trigger Scan" action on the new baseline produced a visible toast: "Scan queued for QA Sweep Test Baseline" — confirms `runAction` mutation feedback (PR #3372) is wired correctly here.
+- ⚠️ Minor: clicking "Save" with the required "Benchmark Version" field empty silently did nothing (no inline validation message appeared, modal just stayed open) — had to guess the cause and fill it in to proceed. Low severity (didn't lose data, no false success), but a papercut vs. the "readable validation, not silent" standard in the QA checklist.
+
+### [Audit Baselines `/audit-baselines`, `/audit-baselines/[id]` — PR #3372 runAction feedback] — PASS
+- ✅ Dashboard tab shows a clean empty state ("No compliance data yet — Activate a baseline and wait for the next drift evaluation cycle") rather than an error or blank screen.
+- ✅ Baselines tab lists 6 seeded CIS baselines; toggling the Active/Inactive status button on "CIS L1 Audit Baseline (Linux)" flipped the button label Inactive→Active immediately (visible state change, no console errors) — confirms the org-scoping/mutation-feedback fix works.
+- ✅ Detail page `/audit-baselines/[id]` renders Overview/Compliance/Apply tabs, baseline details, and raw settings correctly.
+
+### [i18n count-glue fixes — config-policy list, Roles, Software Inventory, Compliance Status] — PARTIAL
+- ✅ `/configuration-policies` list header renders "1 of 1 policies" as one clean sentence (local commit `0f49f0a26` verified working).
+- ✅ `/settings/roles` list header renders "6 of 6 roles" as one clean sentence (local commit `80ace9c15` verified working).
+- ⚠️ BLOCKED: Config-policy Compliance Status tab (`/configuration-policies/[id]#compliance_status`, `ComplianceStatusTab.tsx`) could not be exercised — the only seed policy ("QA Timezone Test Policy") has no compliance rule sets configured, so `GET /api/v1/policies/{id}/compliance` 404s and the tab shows a generic "Failed to load compliance status" + Retry (never reaches the count-glue string). Prerequisite: a policy with compliance rules configured and at least one evaluated device.
+- ❌ BUG (NEW, not covered by the two recent i18n-glue fix commits): `/software-inventory` renders **"0unique software"** — glued string, same defect class as the ones just fixed in `0f49f0a26`/`80ace9c15`. Root cause: `apps/web/src/components/software/SoftwareInventory.tsx` line ~254-257:
+  ```
+  <span className="text-sm text-muted-foreground">
+    {total}
+    {i18n.t("policies:software.softwareInventory.uniqueSoftware")}
+  </span>
+  ```
+  Adjacent JSX expression containers again render with no whitespace. This is a *different* string from the one `80ace9c15` fixed in the same file (that commit only touched the "Showing X-Y of Z" pagination footer at line ~509 — this is the top-of-page unique-count summary at line ~254, keyed `uniqueSoftware` not `...of`, so the commit's "repo-wide sweep of the 19 `of` keys" did not catch it since this key isn't named `of`). Reproduced with 0 count (worst case, no space at all: "0unique software") but the underlying JSX-concatenation bug applies at any count. Confirmed via DOM: `[...document.querySelectorAll('span')].find(e=>e.textContent.includes('unique software')).textContent === "0unique software"`.
+  Suggested fix: same interpolated-`summary`-key pattern as the sibling fixes, e.g. `i18n.t("...uniqueSoftwareSummary", { total })`.
+
+### [Config Policy Maintenance/Automation tabs — PR #3361 shared TimezoneSelect] — PASS
+- ✅ Maintenance tab's Timezone control uses the shared searchable `TimezoneSelect` (`data-testid=maintenance-timezone-*`): opened popover, typed "Tokyo" in the search box, filtered to a single match (Asia/Tokyo GMT+9), selected it, and the trigger button updated to "Timezone: Asia/Tokyo" — full round-trip works identically to other TimezoneSelect usages in the app.
+- ⚠️ Automation tab has no automations configured in seed data so its own TimezoneSelect instance (per-automation schedule) wasn't exercised — not blocking, the shared component behavior was already verified on Maintenance.
+
+### [Quotes `/billing/quotes/[id]` — PR #3318 unit price digit clipping] — PASS
+- ✅ Created a new draft quote, added a pricing-table line, typed "123.45" into the Unit price field one keystroke at a time (verifying DOM `value`/`selectionStart` after each key to rule out tool-typing races): value tracked correctly at every step (`1`→`12`→`123`→`123.`→`123.4`→`123.45`), and on blur the field displayed the full `$123.45` — no clipped trailing digit. Confirms the `growWidth` chrome-funding fix.
+- Note: Playwright's `pressSequentially`/`type` (rapid synthetic keystrokes with ~0ms delay) transiently produced a garbled value ("123.00045") once during this session; per-keystroke verification with real settle time between presses showed this was a test-harness timing artifact against the controlled input's re-render, not a reproducible product defect — flagging for awareness, not filing as a bug.
+
+### [Quote → Invoice conversion — PR #3319 line name carry-through] — PASS
+- ✅ Seed quote Q-2026-0003 ("QA Unit Price Test", status Converted, line name "QA Widget Line") → its linked invoice INV-2026-0001 shows the same "QA Widget Line" description on the invoice line, not a generic placeholder like "Quote line" or blank. Confirmed via `/billing/quotes/[id]` → "View invoice" → `/billing/invoices/[id]`.
+
+### [What's New splash — PR #3317] — PASS
+- ✅ Sidebar "What's new" button reopens the splash on demand, showing "What's new in 0.105.0" with release bullets and a working "Learn more" link (→ breezermm.com/release-notes) plus "Show me later"/"Got it" actions.
+
+### [Scripts `/scripts` — PR #3301 library pagination] — BLOCKED
+- ⚠️ UI/UX: on `/scripts` first paint (before i18next finishes initializing on this island), the catalog-scope label briefly rendered the raw i18n key `layout.scope.catalogLine` instead of falling back to English or showing nothing; it self-corrected to "Catalog — same for every organization" once i18next loaded (~1s later). Matches the known `NO_I18NEXT_INSTANCE` warning seen on other pages (`/remote`, etc.) — likely a pre-existing island-hydration race, not new in this release, but worth a mention since it's a visible key-leak.
+- ✅ "Import from Library" system-script picker lists all 23 catalog scripts unpaginated (fits on one scroll, count label "23 script(s) available" matches the rendered rows) — no defect here, just not enough fixtures to exercise pagination.
+- BLOCKED: Custom script library (`/scripts`) has 0 org scripts in seed data ("No scripts yet" empty state), so the actual `/scripts` pagination fix (PR #3301, listed as fixing truncation beyond page 1) could not be exercised. Prerequisite: 25+ custom scripts seeded in an org to cross a page boundary.
+
+### [`/register-partner` — PR #3289 business-email gate] — PARTIAL
+- ✅ Self-hosted path (this dev stack) verified unaffected: registering with a free/consumer email (gmail.com) returned `200 OK` from `POST /api/v1/auth/register-partner` and the UI showed the same non-enumerating "Check your email — if registration can proceed…" confirmation used for any registration attempt (by design, to avoid leaking domain-block status). Matches the guide's expectation that self-hosted is unaffected by the gate.
+- BLOCKED: Cannot verify the hosted-only rejection path (the gate only activates when `IS_HOSTED=true`) — this local stack is self-hosted config. Needs a hosted-mode deployment or env override to confirm the free-domain rejection message/flow.
+
+### [PSA `/integrations` PSA tab — PR #2135 dual ownership, #3291 real connection test] — PARTIAL
+- ✅ Seed data already has a partner-wide Jira connection ("QA Jira Test Renamed") showing the "All orgs" badge with correct tooltip — confirms PR #2135 dual-ownership render.
+- ✅ "PSA Connections" / "Synced Tickets" list headers render clean "1 of 1 connections" / "0 of 0 tickets" sentences (no glue defect here).
+- ✅ Edit → Save changes round-trips correctly (modal closes, no errors, list stays in sync).
+- ⚠️ UI/UX: "Test connection" is disabled every time the Edit modal is (re)opened, with hint "Save first — Test checks the stored credentials, not your unsaved edits" — even immediately after a no-op Save with zero field changes. Had to Save twice across two modal sessions and still could not get to an enabled Test button in the time available, so PR #3291's "real connection test, not simulated" behavior could not be exercised end-to-end this pass. Possibly by design (forces an explicit save-then-test flow) but the friction of needing a fresh save inside the *same* modal session before Test unlocks (if that's even sufficient) is worth a UX look — low severity.
+
+### [Fleet Posture `/devices/posture` — PR #3244] — PASS
+- ✅ KPI strip renders correctly ("Enrolled devices: 2", "Never scanned: 2" with clean sentences, no glue defects), matches per-org breakdown table ("2 enrolled in Breeze / 0 running both / 0 Breeze-only / 2 unknown").
+- BLOCKED: persistent "migration required" banner (PR #3324) not observed anywhere in the nav crawl — no agent in seed data is flagged `migrationRequired`. Prerequisite: an agent/device fixture with that flag set to verify the `DashboardLayout` banner persists across navigation.
+
+### [Enrollment Keys `/settings/enrollment-keys` — PR #3034 per-token capacity] — PARTIAL
+- ✅ Create Key flow works end-to-end: filled form, created "QA Token Capacity Test", one-time key secret displayed with copy/dismiss, list updated immediately showing "Active" status and "0 / 1" usage.
+- BLOCKED: Could not locate a distinct "generate install token" UI surface within this pass to create two separate install tokens under one key and compare their capacity tracking (the specific PR #3034 behavior). The "Download" action produces a file rather than an in-page token list. Needs a follow-up pass specifically tracing the install-token UI (or API-level verification of `installer_bootstrap_tokens` per-token capacity).
+
+### [Partner Service Principals `/settings/partner-service-principals` — PR #3243] — PASS
+- ✅ Full lifecycle verified: created "QA Sweep SP" (default scopes pre-checked sensibly, read-only by default), issued a key ("QA Key 1") — masked prefix `brz_sp_BN_hgmtj8On…` shown in the list, plaintext shown once in a "Copy this key now" dialog with explicit "shown once and cannot be retrieved later" warning — then Revoked it, and the row updated to status "revoked" with no actions remaining. No console errors, no silent failures at any step.
+
+### [Quick Support public landing `/quick` — PR #3292] — PASS
+- ✅ Page renders correctly for an anonymous/logged-out visitor (own layout, no sidebar, no auth needed) with clear plain-language 3-step instructions and the 9-digit code format (`234-567-892`).
+- ✅ Entering an invalid-alphabet code (all-zero) correctly triggers a format error ("That is not a complete code yet…") — verified this is intentional: the code alphabet is deliberately digits 2-9 only (`packages/shared/src/validators/quickSupport.ts`, `SUPPORT_CODE_PATTERN = /^[A-Z2-9]{9}$/`), excluding 0/1 to avoid O/0 and I/l/1 spoken-code ambiguity. Not a bug.
+- ✅ Entering a well-formed but non-existent/expired code returns a clear, non-technical "That code no longer works" message with recovery guidance ("Ask the person helping you to read out a new code") — good graceful-failure UX, not a silent failure or raw error.
+- BLOCKED: Could not test the full digit-code → download → reconnect-already-ended-session round trip (needs a live technician-initiated session code and the downloadable agent binary, out of scope for a browser-only pass).
+
+### [AI cost indicator — PR #3297] — PARTIAL
+- ✅ `AiCostIndicator` is present in the AI chat sidebar header ("$0.12 this month · 1 msg") and reflects a prior tool-invoking conversation (multiple "Manage Alerts"/"Get Device Details" tool calls executed) — consistent with tool executions being counted into the usage rollup.
+- BLOCKED: Could not confirm the *live, no-refresh* update behavior specifically — sending a fresh prompt ("Show critical alerts") hit the environment's AI-session expiry ("Session has expired due to inactivity. Please start a new session.") caused by the same short-lived-token issue noted at the top of this log, before a new response/cost update landed. Re-test once the session-refresh issue is resolved or with a longer-lived token.
+
+### [Remote access consolidation `/discovery`, `/devices/network/[id]` — PR #3199] — BLOCKED
+- `/discovery` renders cleanly (Assets/Profiles/Jobs/Topology/Changes tabs, clean empty state "No assets discovered yet."), but no discovered assets or online network devices exist in seed data, so the asset-detail-modal remote-access launch path and the 5-minute-session-cliff fix could not be exercised in this pass. Prerequisite: a discovered network asset or online device with proxy/remote access available.
+
+### Continuation pass — Phases 3 & 4
+
+**Tested by:** Claude (Playwright MCP), branch `fix/config-policy-count-i18n-glue` @ http://localhost:32821 (port changed from 32792 after a Docker restart)
+
+**Environment note:** first login redirected to `/setup` (Initial Setup wizard: Account/Organization/Install Agent) instead of straight to the dashboard — used "Skip setup - I'll configure this later" to reach `/`. Also hit a first-visit "Navigate your tools" 4-step product tour overlay on `/settings/organizations`; used "Skip tour". Neither is a bug, just noting the extra steps needed to reach a clean testing state. API version shown in sidebar footer reads "API 0.82.0" (older than other recent log entries mentioning 0.104/0.105 — cosmetic version-string drift in this build, not chased further).
+
+### [Org/Site lifecycle `/settings/organizations`] — PASS
+- ✅ Created org "QA Sweep Org" via inline "Add Organization" form (not a modal) — appeared in the org list immediately, auto-selected in the detail panel, and correctly triggered the guided "Add the first site for QA Sweep Org" inline form (matches the Phase-4 checklist expectation).
+- ✅ Created first site "QA Sweep HQ" — Sites panel updated to a clean "1 of 1 sites" sentence (no count-glue), row appeared in the sites table.
+- ✅ Renamed the site to "QA Sweep HQ Renamed" via its full-page Site Settings editor (`/settings/sites/[id]`, Details tab) — "Save changes" round-tripped, heading and breadcrumb updated, and the parent org's sites table reflected the new name immediately on return.
+- ✅ Deleted the site via the row "Delete" action — named confirm dialog ("Delete Site — Are you sure you want to delete QA Sweep HQ Renamed? This action cannot be undone.") appeared correctly (not a generic "Are you sure?"); confirmed and the table updated to "0 of 0 sites" / empty state immediately.
+- ✅ Deleted the org via the detail-panel "Delete" action — named confirm dialog ("Delete Organization — Are you sure you want to delete QA Sweep Org?..."); confirmed and the org disappeared from both the org list and the top-banner org switcher dropdown with no stale entries, no console errors at any step.
+
+### [Users & Roles `/settings/users`, `/settings/roles`] — PASS
+- ✅ `/settings/users` list header renders "1 of 1 users" (later "2 of 2 users") — clean sentence, no count-glue.
+- ✅ Invited "QA Sweep Tech" (Partner Technician role, All-organizations access) via the inline "Invite User" form — appeared in the table immediately with Status "Invited", "Never" last login, and "Resend invite | Edit | Devices | Remove" actions. No toast observed but the row-appearing-immediately is itself the visible state change (list is the source of truth here).
+- ✅ Cross-verified on `/settings/roles`: "Partner Technician" row's user count incremented from "0 users" → "1 user" after the invite, confirming the assignment round-tripped through to the roles view too.
+- ✅ Created custom role "QA Sweep Custom Role" (inherits from Partner Viewer) via "Create Role" — rich permission matrix (18 resources × up to 15 action columns: Read/Write/Delete/Execute/Acknowledge/Manage/Administer/Send/Export/Fulfill/Invite/Access/Accept Risk/Read All/Decide) rendered correctly, submit button was disabled until a name was entered (good inline validation), and after Create the role list included it immediately.
+- ✅ Assigned the new custom role to "QA Sweep Tech" via Edit User → Role dropdown (custom role appeared alongside the 6 system roles) → Save changes; table row updated Role column to "QA Sweep Custom Role" immediately. No console errors across the whole flow.
+
+### [Enrollment Keys `/settings/enrollment-keys`] — PASS
+- ✅ Created key "QA Sweep Key" (site = Default Site, Max Usage left blank/"Unlimited" placeholder) — plaintext key shown once in a "Save this enrollment key now. It will not be shown again." banner with Copy/Dismiss, row appeared in the table immediately with Status "Active".
+- ⚠️ UI/UX: leaving "Max Usage (optional)" blank (placeholder says "Unlimited") still resulted in the row showing Usage "0 / 1", not "0 / ∞" or similar — either the default silently caps at 1 despite the "Unlimited" placeholder implying otherwise, or the displayed fraction mislabels an actually-unlimited key. Worth a look; low severity (didn't block enrollment, just a confusing label) but exactly the kind of "readable, accurate" gap the checklist calls out.
+- ✅ "View install command": no separate command view — the page header text ("Use these keys with `breeze-agent enroll <key>`") combined with the one-time plaintext key serves the same purpose; functionally fine, just not a literal composed command string.
+- ✅ Revoked (deleted) the key — named confirm dialog ("Delete Enrollment Key — Are you sure you want to delete QA Sweep Key?... Agents will no longer be able to enroll using this key."), confirmed, table returned to "No enrollment keys found." empty state immediately. No console errors.
+
+### [Notification Channels `/alerts/channels`] — PARTIAL
+- ✅ Created Email channel "QA Sweep Email Channel" (qa-alerts@example.com) — card appeared immediately, "1 of 1 channels" clean sentence.
+- ✅ Clicked **Test** on the Email channel: visible pass/fail feedback confirmed — a red `circle-x` icon (lucide, `text-red-600`) appears next to "Last test: Just Now" (test failed, expected — no SMTP configured in this dev stack; this is the known environment limitation, not a product bug). This satisfies the "visible pass/fail result" requirement — it is NOT silent.
+- ✅ Created Slack channel "QA Sweep Slack Channel" (dummy `hooks.slack.com` webhook URL) — succeeded, card appeared, "2 of 2 channels".
+- ✅ Created Microsoft Teams channel "QA Sweep Teams Channel" (dummy `outlook.office.com` webhook URL) — succeeded, "3 of 3 channels".
+- ✅ Created PagerDuty channel "QA Sweep PagerDuty Channel" (dummy integration key) — succeeded, "4 of 4 channels". Along the way, confirmed the form's required-field validation is real (not decorative): a raw-DOM `value` set that bypassed React's controlled-input tracking left React state empty and correctly surfaced an inline "Channel name is required" error on submit — refilling via a real keystroke-driven `fill` fixed it. Testing-tooling artifact, not a product bug, but it double-confirms the validation is wired to actual form state.
+- ✅ **URL scheme rejection confirmed**: submitting the Webhook form with `javascript:alert(1)` and separately with `data:text/html,<script>alert(1)</script>` both correctly returned `400` from `POST /api/v1/alerts/channels` with `details: ["Webhook URL must use HTTPS","Webhook URL hostname is required", ...]`, and the UI surfaced a visible toast ("Invalid webhook channel configuration") both times — not silent, not a false success. This satisfies the "reject javascript:/data: schemes" checklist item.
+- ❌ **BUG: Webhook notification channel creation is completely broken, independent of URL** — after fixing the URL to a fully valid `https://webhook.example.com/breeze-alerts` with the default "No custom headers configured" state, `POST /api/v1/alerts/channels` still returned `400` with body `{"error":"Invalid webhook channel configuration","details":["Headers must be an object"]}`. Root cause confirmed via request body: the frontend serializes the (empty) headers list as `"headers":[]` (a JSON array), but the API validator at `apps/api/src/services/notificationSenders/webhookSender.ts:438-439` explicitly rejects `Array.isArray(c.headers)`, requiring a plain object/Record. `apps/web/src/components/alerts/NotificationChannelForm.tsx:36` models the Zod schema for `headers` as `z.array(z.object({...}))` (reasonable for an editable key/value-pair UI list) but never converts that array to a `Record<string,string>` before the POST body is built — so **every** webhook channel create request 400s, even with zero custom headers and a fully valid HTTPS URL. This masks the scheme-validation test above (all three attempts 400'd for the same missing-conversion reason; the HTTPS/hostname errors only showed alongside it on the malicious-URL attempts because those inputs failed multiple checks at once). UI correctly surfaced the failure (no silent failure), but the feature itself is unusable — could not create a working Webhook channel in this pass. High severity: Webhook is one of the 5 documented channel types and is entirely non-functional.
+- BLOCKED (by the bug above): could not exercise Test/Edit/Delete or partner-level default routing on a real Webhook channel; "5 of 5 channels" configured across all listed types (Email/Slack/Teams/PagerDuty/Webhook) not achieved — 4 of 5 succeeded.
+- Did not reach: partner-level channel defaults, routing-rule creation ("Notification Routing Rules — 0 rules" panel present but unexercised), and SMS/Pushover channel types — deprioritized after the Webhook bug consumed the available time budget for this area. Re-test once the Webhook fix ships.
+
+### [Configuration Policies `/configuration-policies`] — PASS
+- ✅ "0 of 0 policies" clean empty-state sentence on list.
+- ✅ Created "QA Sweep Config Policy" via the "Configure New" path, scoped to "A specific organization" → Default Organization (matches the org-scope/partner-scope radio pattern from the Partner-Wide First playbook) — navigated straight to the new policy's detail page.
+- ✅ Linked/configured the **Patches** feature: opened the Patches tab (badge read "Not configured"), changed Reboot Policy to "If required", clicked **Save** — badge flipped to "Configured" immediately, confirming the feature-link + save round-trip works.
+- Tab set present: Overview, Patches, Alerts, Backup, Security, Service & Process Monitoring, Maintenance, Compliance, More — all rendered without console errors.
+- Did not reach: a separate "preview effective config" surface — the Overview tab is just the policy-details form (name/description/status), not an effective-config diff view; assignment-to-org happens at creation time via the scope radio rather than a distinct "assign" step for org-scoped policies. Not a bug, just notes that this policy type's UX differs from the partner-wide assignment flow described in the checklist.
+
+### [Partner Settings `/settings/partner` — Company tab] — FAIL
+- ✅ Tab nav renders 11 sections (Company, Regional, Defaults, Security, Remote Access, Event Logs, Notifications, Ticketing, AI Budgets, Branding, Login Branding) as anchored single-scroll sections, not separate pages.
+- ✅ Company Name save round-trips (toast "Partner settings saved", `PATCH /api/v1/orgs/partners/me` → 200).
+- ❌ **BUG (HIGH — security): Contact → Website field has NO scheme/URL validation, client or server-side.** Entered `javascript:alert(1)` into Website, clicked Save Settings → toast "Partner settings saved" (200 OK, no error), and `PATCH /api/v1/orgs/partners/me` response body confirmed `"contact":{"website":"javascript:alert(1)"}` persisted verbatim. Repeated with `data:text/html,<script>alert(1)</script>` — also persisted verbatim (200 OK), including the raw `<script>` tag string in the stored JSON. This is the **opposite** of the sibling Notification-Channel Webhook URL field (`/alerts/channels`, tested above in this same pass), which correctly rejects both schemes with a 400 + `"Webhook URL must use HTTPS"`/`"hostname is required"` errors — proving the validation exists elsewhere in the codebase but was never applied here. Risk: this Website value is used for "branded PDFs, invoices, and email footers" per the section's own subtext — if rendered as an `<a href>` anywhere in generated documents or the portal, this is a stored-XSS / `javascript:` URI execution vector. Component: `apps/web/src/components/settings/PartnerCompanyTab.tsx` (client-side has no validation); server accepts it in `PATCH /api/v1/orgs/partners/me` with no scheme allowlist. Cleaned up test data (reset Website to `https://example.com`, saved) before moving on. **Did not check** whether the same gap exists on Branding-tab logo/link URLs or the org-level equivalent — worth a follow-up sweep.
+- ✅ **Remote Access (Remote-Tool Providers) tab — validation works correctly, unlike Company/Website above.** Added a provider with URL template `javascript:alert(document.cookie)`; Save Settings correctly 400'd (`PATCH /api/v1/orgs/partners/me`) with a precise scheme-allowlist error (`https, http, rustdesk, teamviewer, anydesk, splashtop, etc.` permitted; `javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source:, filesystem:` rejected), **and** the UI surfaced this as an inline field-level error directly under the URL template textbox ("That URL scheme is not permitted — ..."), not just a toast. This is the correct, best-practice pattern in the app — confirms the Company/Website gap above is an inconsistency, not a codebase-wide limitation. Removed the test provider and saved to clean up.
+- BLOCKED (time-boxed): did not reach Regional, Defaults, Security, Event Logs, Notifications, Ticketing, AI Budgets, Branding, or Login Branding tabs in this pass, given the severity finding above consumed the budget for this area.
+
+### [Monitoring `/monitoring`, Network Discovery `/discovery`] — PARTIAL
+- BLOCKED: `/monitoring` (Assets/Network Checks/SNMP Templates) has 0 configured monitors and no discovered assets to attach one to — monitoring is fed by discovery per the page's own subtext. Prerequisite: at least one discovered/approved network asset.
+- ✅ Created discovery profile "QA Sweep Scan Profile" (site Default Site, subnet `10.0.0.0/24`, ICMP+SNMP methods, daily schedule) via `/discovery` → Profiles → New Profile — appeared in the table immediately.
+- ✅ Clicked "Run" on the profile — auto-navigated to the Jobs tab and the job correctly surfaced **"Failed — No online agent available for this site"** rather than hanging or silently no-oping. This is the expected graceful-failure pattern for an offline-fixture environment (no agent online to execute the scan) — a PASS per the checklist's "graceful can't messaging is a PASS" standard.
+- ⚠️ UI/UX (minor): profile-count summary reads "1 profiles configured" — plural used for a singular count (should be "1 profile configured"). Same defect family as the i18n count-glue bugs logged earlier in this file, though this is a pluralization bug rather than a missing-space concatenation bug.
+
+### [Backup `/backup` profiles, Integrations `/integrations`] — PASS
+- ✅ Backup → Profiles → "New profile" renders 5 starting templates (Server, Windows Workstation, macOS Workstation, Linux Server, Blank); selecting "Windows Workstation" opens a full profile editor with dual-ownership Availability radios ("This organization" / "All organizations — Partner-wide... Requires full partner access") matching the Partner-Wide First pattern, plus a Data Sources section. Confirms "forms render & validate" — did not complete a full save in this pass (time-boxed).
+- ✅ Integrations catalog renders 9 categories (Webhooks, Notifications, PSA, Security, Monitoring, Identity, Distributors, Accounting, UniFi); Webhooks tab shows clean "0 of 0 webhooks" empty state. Accounting → QuickBooks Online card shows "Inactive" status and a correctly-rendered "Connect to QuickBooks" button (`data-testid=quickbooks-connect`) that would initiate the OAuth redirect — did not click through to the real external OAuth provider (would leave the app / hang in this sandbox), but the connect-flow entry point itself renders correctly with accurate copy.
+
+### [Devices `/devices`] — BLOCKED
+- BLOCKED: "Your fleet is empty" — **zero devices exist in this dev stack**, unlike prior QA passes in this same log which referenced seeded devices/orgs. Every device-centric checklist item (search/filter by status & OS, page size, device-detail tabs, sort, bulk-select, tag, Run Script/Reboot/Wake/Connect Desktop actions) is blocked on this. Prerequisite: at least one enrolled/fixture device. This is a bigger fixture gap than earlier passes hit — worth flagging to whoever owns seed data, since it silently reduces this sweep's device-workflow coverage to zero.
+
+### [Scripts `/scripts`] — PARTIAL
+- ✅ Created "QA Sweep Test Script" (PowerShell, `Write-Host "QA Sweep test script"`) via the full New Script editor (Monaco-based code editor, Parameters/Execution Settings/Exit Code Severity collapsible sections all rendered) — appeared in the script library list immediately after Create.
+- ❌ **BUG: React hydration mismatch on `/scripts/new`** — console error on every load: `Hydration failed because the server rendered text didn't match the client... <p>⌘S to save</p> vs server-rendered "Ctrl+S to save"`. Root cause: the save-shortcut hint text branches on OS (Mac → "⌘S", other → "Ctrl+S") using a client-only check (e.g. `navigator.platform`/`userAgent`), but SSR has no access to the client's OS and renders the non-Mac default — so any Mac visitor gets a guaranteed hydration mismatch, forcing React to discard and client-re-render that subtree. Reproducible every time on a Mac browser. Cosmetic in isolation (the text is eventually correct) but it's a real console error and perf/flash cost on every script-editor visit, and increases the general noise level fighting against "confirm no console errors" checks elsewhere in the sweep.
+- BLOCKED (fixture-blocked by empty fleet): could not run the script on a device or view execution output — "Import from Library" system-catalog run/output path needs a target device.
+
+### [Cmd+K global search] — FAIL
+- ❌ **BUG (root-caused): Cmd+K search silently omits partner-wide (dual-axis) resources.** Searched for the just-created "QA Sweep Test Script" (visibly listed in `/scripts` as "Partner-wide", i.e. `org_id IS NULL`) both by full name and by "Sweep" — both returned "No results found. Try a different query." `GET /api/v1/search?q=Sweep` → 200 with `{"results":[]}`, confirming this is a real empty API response, not a UI rendering issue.
+  Root cause, traced in source: `apps/api/src/routes/search.ts` builds its scripts/alerts/devices queries via `orgConditionFor(column)` → `auth.orgCondition(column)`, defined in `apps/api/src/middleware/auth.ts` (`buildOrgAccessClosures`) as a strict `eq(orgIdColumn, orgId)` / `inArray(orgIdColumn, accessibleOrgIds)` — there is no branch for the dual-axis partner-wide case (`orgIdColumn IS NULL AND partnerId = auth.partnerId`). Since NULL never satisfies `eq`/`inArray`, any partner-wide-scoped script (or other dual-axis resource searched through this route) is invisible to global search for every caller, even a Partner Admin. This matches the exact class of gap called out in CLAUDE.md's Partner-Wide First playbook step 3 ("Reads: app-layer dual-axis conditions... must be gated on auth.scope === 'partner'") — the search route was apparently never updated when scripts (or whichever dual-axis tables it touches) gained partner-wide ownership.
+  Impact: any MSP tech using Cmd+K to jump to a partner-wide script, alert, or similar resource — the exact workflow the feature exists for — gets a false "not found," which reads as "this doesn't exist" rather than "search is broken." High severity for a heavily-relied-on productivity feature.
+  Suspected fix location: `apps/api/src/routes/search.ts` — the scripts/alerts query conditions need the same dual-axis OR-branch used elsewhere in the codebase (e.g. `configurationPolicy.ts`'s `validateFeaturePolicyExists`), gated on `auth.scope === 'partner'`.
+
+### [Theme toggle, profile menu, sign out/in] — PASS
+- ✅ Theme dropdown (Light/Dark/System + interface density Comfortable/Compact/Dense) renders correctly; selecting Dark changed `body` computed background from `rgb(249,250,251)` to `rgb(13,16,23)` — confirmed via actual computed style, not just a CSS class assertion. Reverted to Light.
+- ✅ Account menu renders Billing / Contact support / Sign out. Clicked Sign out → redirected to `/login` immediately (no stale session state). Logged back in with `admin@breeze.local` — landed cleanly on `/` Dashboard. Full sign-out → sign-in round trip works with no console errors beyond the pre-existing hydration-mismatch noise from the Scripts page (see above).
+
+## Summary — Continuation pass (Phases 3 & 4)
+
+| Area | Result |
+|---|---|
+| Org/Site lifecycle | PASS |
+| Users & Roles | PASS |
+| Enrollment Keys | PASS |
+| Notification Channels | PARTIAL (Webhook channel creation broken) |
+| Configuration Policies | PASS |
+| Partner Settings — Company tab | FAIL (Website field XSS-scheme gap) |
+| Partner Settings — Remote Access tab | PASS |
+| Partner Settings — other 9 tabs | BLOCKED (not reached) |
+| Monitoring | BLOCKED (no discovered assets) |
+| Network Discovery | PARTIAL (profile+scan work; graceful no-agent failure) |
+| Backup profiles | PASS (form only, not saved) |
+| Integrations catalog | PASS |
+| Devices (all device-centric checks) | BLOCKED (zero devices in fixture) |
+| Scripts (create) | PARTIAL (hydration-mismatch console error) |
+| Cmd+K global search | FAIL (dual-axis blind spot) |
+| Theme / profile / sign-out-in | PASS |
+| Alerts (ack/resolve/suppress/rules), Patches, Saved Filters/Tags/Custom Fields, Reports/Analytics/Audit Trail, Custom fields | NOT REACHED (time-boxed) |
+## UI QA Sweep — 2026-08-11 (v0.105.0 RC)
+
+**Target:** `http://localhost:32792`, worktree `review-round`, checked out at `origin/main` (`f2d7fda83`). Credentials `admin@breeze.local` / `BreezeAdmin123!`. Plan doc: `docs/superpowers/plans/2026-08-11-v0105-release-change-and-test-list.md`.
+
+### [Environment] — FAIL — sweep could not proceed past login
+
+**Result: BLOCKED (environment).** Every real browser navigation to the web app — `/login` included — throws Astro's `NoMatchingRenderer` SSR error, 100% reproducible across ~20 attempts over 15 minutes. This is a dev-server rendering fault, not a v0.105.0 code regression (see root-cause evidence below). It made the entire Phase 2 nav crawl and the §3 manual checklist untestable through the browser.
+
+- ❌ **BUG (environment-blocking): every full-page browser navigation 500s at Astro's SSR layer trying to render a React `client:load` island.** `GET /login` always throws `NoMatchingRenderer: Unable to render \`AuthPanelBranding\`. No valid renderer was found for the \`.tsx\` file extension.` at `render/component.js:163:12`. `GET /` and `GET /devices` throw the same class of error for `AuthOverlay`. Confirmed via `docker logs breeze-wt-pr3366-web-1`: the server itself logs `[ERROR] [NoMatchingRenderer]` on essentially every request originated by the Playwright-driven Chromium browser (`06:49:52`, `06:50:20`, `06:50:30`×2, `06:52:33`, `06:53:01`, `06:53:13`, `06:55:13`, `06:56:00`, `06:57:02`, `06:57:08`, `06:57:17`, `06:57:51`, `07:00:21`, `07:00:30`, `07:00:39`, `07:01:50`, `07:02:26`, `07:03:09` — repeated over a 13-minute window, not a one-off blip).
+- Isolated with a curl-vs-browser A/B test: 20/20 plain `curl http://localhost:32792/devices` calls (with and without browser-matching `Accept`/`Sec-Fetch-*`/`User-Agent` headers) returned a clean 448 KB HTML document with no error, while every same-URL request from the actual Chromium browser session errored server-side in the same time window. This rules out a deterministic per-route bug and points at something specific to a real browser's connection/request pattern (concurrent asset + HMR-websocket traffic) racing Vite's SSR module-registration for `client:load` islands.
+- Ruled out auth-state as the trigger for `/login` specifically: `AuthPanelBranding` failed on the very first `/login` hit of the session, before any cookies existed. Tried: fresh tab, closing extra tabs, clearing all non-httpOnly cookies + localStorage, calling `/api/v1/auth/logout` to drop the session, waiting 2s/3s/15s/30s between attempts, retrying ~10× spread over 13 minutes — no combination produced a working login form.
+- Confirmed the two React components in question are not the actual defect: `apps/web/src/components/auth/AuthPanelBranding.tsx` and its user `apps/web/src/layouts/AuthShellBranded.astro` (imported by `apps/web/src/pages/login.astro`) both have correct, unchanged code since a single commit `2b62f023d` (2026-07-30) — extensionless import, `client:load` present, `@astrojs/react` integration registered in `astro.config.*`. The break is in the running Vite/Astro dev-server process state, not the source.
+- Best-guess root cause: this stack runs `astro@7.1.6` + `vite@8.1.5` per the container's pnpm store paths — the existing team memory (`astro7_tailwind4_vite8_upgrade_status.md`, referenced as "Astro7 held" in the stack/infra index) already flags this upgrade combination as having known dev-mode instability. This looks like an instance of that class of issue, likely surfaced/worsened by concurrent file activity or long uptime on this particular `web` dev container (up ~20+ min, 3 separate Vite dependency re-optimization passes logged), not something introduced by the v0.104.0→main diff under test.
+- I did **not** restart, rebuild, or otherwise touch the `web` container or any source file, per the hard constraints for this task.
+
+**No functional checklist items could be executed.** I attempted a fetch-based workaround (calling `/api/v1/auth/login` directly via `page.evaluate`, which succeeded — 200, valid JWT, `Set-Cookie` for the refresh/csrf cookies confirming the **API layer itself is healthy**) and seeding the `breeze-auth` localStorage key to simulate a restored session, then navigating directly to `/devices` — the SSR crash occurred regardless, since it happens before hydration, independent of auth state for `/login`, and correlated with (but not solely caused by) cookie presence for `/devices`/`/`.
+
+**Recommendation:** restart the `web` dev container (`docker compose restart web` or equivalent for this worktree's compose file) to clear the Vite/Astro dev-server module-registration state, then re-run this sweep. If the fault reproduces immediately after a clean restart, it's a genuine regression worth root-causing in `AuthOverlay`/`AuthPanelBranding`'s render path; if it clears, it corroborates the Astro7/Vite8 dev-mode instability already tracked internally.
+
+### Summary table
+
+| Area | Result |
+|---|---|
+| Phase 2 baseline nav crawl | BLOCKED — environment |
+| Security → CIS Hardening / Baselines org-scoping | BLOCKED — environment |
+| Tenancy/org-scoping general | BLOCKED — environment |
+| Config Policies | BLOCKED — environment |
+| Patching | BLOCKED — environment |
+| All remaining §3 checklist items (49 of 52) | BLOCKED — environment |
+
+### Top findings
+
+1. The dev web container's Astro/Vite SSR pipeline is unable to render any full page in a real browser session in this run — a total sweep blocker, almost certainly infra/dev-server state rather than an RC code defect (component source unchanged since 2026-07-30; API layer verified healthy via direct fetch). Needs a container restart to clear, which was outside this session's permitted actions.
+
+---
+
+## Attempt 2 (environment fixed) — 2026-08-11
+
+**Environment confirmed working**: `pnpm install` re-run against the current lockfile + web container restart cleared the `NoMatchingRenderer` fault. Logged in as `admin@breeze.local`, landed on Dashboard with zero SSR errors. Target `http://localhost:32792`, worktree `review-round` at `origin/main` (`f2d7fda83`), API version reported in sidebar footer: `Web dev · API 0.82.0`.
+
+### Phase 2 — Nav crawl — PASS (all routes render, no console errors, no failed primary API calls)
+
+Visited and verified (each: 200 on all primary `/api/v1/*` calls, 0 console errors, page renders with expected heading): `/` (Dashboard), `/devices`, `/alerts`, `/tickets`, `/incidents`, `/remote`, `/scripts`, `/patches`, `/vulnerabilities`, `/onedrive`, `/fleet`, `/workspace`, `/monitoring`, `/discovery`, `/security`, `/dns-security`, `/pam`, `/security/user-risk`, `/sensitive-data`, `/peripherals`, `/ai-risk`, `/cis-hardening`.
+
+- ⚠️ UI/UX (recurring, low severity): `react-i18next: useTranslation: You will need to pass in an i18next instance...` (`NO_I18NEXT_INSTANCE`) console warning fires on most page loads (alerts, incidents, scripts, patches, discovery, security, dns-security, pam, peripherals). Dev-mode-only noise per existing team memory (`web_i18n_island_init_and_hydration_traps.md`) — not re-logging per-page below.
+- Note: `/dashboard` (typed directly) 404s — correct route is `/`. Not a bug, just documenting the actual route map since the skill's nav list names it "Dashboard".
+- First-run "Navigate your tools" product tour overlay appears on Dashboard; dismissed via "Skip tour" — otherwise usable, no blocker.
+
+### [Tenancy] Create a second organization — PASS
+
+Settings → Organizations → "Add organization" → filled Name "QA Sweep Org Two" / Slug "qa-sweep-org-two" → Create organization → **201 Created**, list updated immediately (no refresh needed), URL hash updated to the new org id (`#87725514-e5b9-4aa1-97cd-948181f4c753`) per the documented hash-based UI-state convention. Guided "Add the first site for QA Sweep Org Two" panel appeared automatically (exactly the onboarding flow the checklist calls for) → filled Site name "Headquarters" → "Create first site" → **201 Created**, sites table updated to show it, "0 of 0 sites" text updated. No console errors either step.
+
+This unblocks partner-wide (org XOR partner) dual-ownership testing on CIS Hardening / Compliance Baselines / PSA Connections — proceeding to those next.
+
+### [Security → CIS Hardening] Dual-ownership (org XOR partner), `9455019e5` + `65b4a6380` — PASS
+
+Full flow tested with the 2-org partner created above:
+
+- ✅ New Baseline dialog shows the `ownerScope` radio group ("All organizations (partner-wide baseline)" vs "This organization only"), defaults to org-scoped, `data-testid="cis-baseline-owner-partner"`.
+- ✅ Created a partner-wide baseline ("QA Partner-Wide Baseline", Windows) from Default Organization → `POST /api/v1/cis/baselines` **201 Created** (previously 400'd per the plan doc — confirmed fixed). List immediately shows an "All orgs" badge with correct tooltip ("Partner-wide baseline — applies to devices in every organization").
+- ✅ Switched org header to "QA Sweep Org Two" (brand new, zero baselines of its own) → Active Baselines stat correctly showed "1" (the partner-wide one fanned through) and the Baselines tab showed only that row with its "All orgs" badge — confirms partner-wide read-side fan-out to a *different* org, not just the creating org.
+- ✅ Created a second, **org-scoped** baseline while on Org Two ("QA Org2-Only Baseline") → `POST` **201 Created**, no "All orgs" badge.
+- ✅ Switched header back to Default Organization → Active Baselines = 3 (2 original org baselines + partner-wide), **Org Two's org-scoped baseline correctly does NOT leak into Default Organization's list** — org isolation confirmed alongside partner-wide fan-out.
+- No stale-org-on-load flash or false "No baselines configured" observed across ~6 org switches (sequential Playwright clicks, not a true network race — see BLOCKED note below for the harder race variant).
+- 0 console errors throughout.
+
+**BLOCKED (partial):** the specific "switch org selector while the baseline list is still loading" true race condition couldn't be reproduced deterministically via sequential Playwright actions (each switch fully resolved before the next was issued, network was fast/local). No stale data was observed at normal interaction speed, but this doesn't rule out the race under real network latency. Would need artificial network throttling to test properly.
+
+### [Security → Compliance Baselines / Audit Baselines] Org-scoping fix, `65b4a6380` — PASS (feature is org-only, not dual-ownership)
+
+- Default Organization ships 6 built-in baselines (CIS L1/L2 × Windows/macOS/Linux), all "Inactive" by default — the Dashboard tab's "No compliance data yet" empty state is **correct** (no active baseline → no drift evaluation data yet), not the false-empty-flash bug.
+- "New Baseline" dialog has **no ownerScope selector** (Name / OS Type / Profile / Active / Settings JSON only) — unlike CIS Hardening, Audit Baselines does not appear to support partner-wide ownership this cycle; this matches the plan doc's description of `65b4a6380` as an org-scoping *bug fix* for this feature, not the same dual-ownership *feature* add that CIS got via `9455019e5`. Not treating the missing selector as a defect.
+- ⚠️ UI/UX note: the "New Baseline" button opens a modal that is a `role="dialog"` (good — unlike many other modals in this app which are plain `fixed inset-0` divs with no dialog role, see below) but it renders **outside** the `<main>` landmark, so a `browser_snapshot target=main` scoped probe misses it entirely — a real trap for anyone spot-checking via DOM scoping.
+- Switched to Org Two → correctly shows "0 baselines" (its own, isolated list — no cross-org leak, no phantom partner-wide entries). Switched back to Default Organization → 6 baselines intact. No console errors.
+
+### [Settings → Integrations → Webhooks] Self-hosted private-network gate, `2aa281e67` + `c6106154d` — PASS
+
+- Created webhook with `http://example.com/webhook` (public hostname, cleartext) on this self-hosted-configured stack → `POST /api/v1/webhooks` **400 Bad Request**, and the UI surfaces a clear inline error "Invalid webhook URL" directly above the form (not silent, not a raw dump).
+- Changed URL to `http://192.168.1.50/webhook` (private IP, cleartext) → `POST` **201 Created**, webhook appears in the list, delivery-history panel loads. Confirms the fix correctly distinguishes "self-hosted cleartext to a private address" (allowed) from "self-hosted cleartext to a public hostname" (rejected) — the exact bug `c6106154d` closed after `2aa281e67`.
+- Client-side note (UI/UX, minor): submitting with HMAC auth selected but no signing secret is blocked client-side with "Secret is required for HMAC authentication" — good, but there's no equivalent client-side pre-check for the URL scheme/target, so the public-hostname case round-trips to the server for the 400 rather than being caught locally. Not a bug, just an inconsistency in validation depth between the two fields on the same form.
+
+### [Settings → Integrations → PSA] Dual-ownership + connection fixes, `2cb6f7a6b` + `f400fc315` — PASS
+
+- "Add connection" dialog has an `Ownership` radio group identical in shape to CIS's: "All organizations (partner-wide — your MSP's own PSA)" vs "This organization only" (`data-testid="psa-connection-owner-partner"`), plus an Organization dropdown listing both orgs when org-scoped is selected.
+- Created a Jira connection with fake credentials, ownership = "All organizations" → `POST /api/v1/psa/connections` **201 Created**, list shows "1 of 1 connections" with an "All orgs" badge and correct tooltip.
+- **Paused** the connection (`POST .../status` → 200, status cell flips to "Paused"), then **edited only the connection name** and saved (`PATCH` → 200) → status **remained "Paused"** after the edit — confirms the `f400fc315` fix for the PATCH-wipes-status bug.
+- **Test connection** (real network test, not a fake "queued"): `POST /api/v1/psa/connections/:id/test` → **200 OK** with a body reporting failure (fake creds against real qa-test.atlassian.net) → UI renders "Connection Test Result / Connection failed — Jira API error (401): Client must be authenticated to access this resource." This is the important behavioral confirmation: the test call actually reaches the provider and surfaces the real error verbatim rather than a canned/fake success, consistent with `f400fc315`'s "real connection test, honest 501 sync" fix.
+- **BLOCKED:** did not verify the credential-redaction fix (`GET /psa/connections/:id` no longer leaking decrypted secrets to `orgs:read`-only callers) or the `orgs:read`-only "no ownership selector visible" check — both require a second, lower-privileged user account, which the current seed/session doesn't have readily available. Would need a role/user with `orgs:read` but not `orgs:write` to test properly.
+- Did not exercise the "Import companies" preview flow (`33c088e2d`) since it requires a real, non-fake PSA connection with actual companies to import — the fake Jira connection above can't produce a meaningful import preview.
+
+### [Devices → Groups] Create Device Group — **FAIL** (broken for every multi-org partner, both static and dynamic)
+
+While testing the `954a288d5` dynamic-group-delete fix (which requires a dynamic group with matched devices, blocked by the single-org seed until the 2nd org was created above), discovered that **device group creation is completely broken** the moment a partner has 2+ organizations:
+
+- Devices → Groups → Create Group → Dynamic, filter `OS Type equals Windows` (1 matching device shown live in the preview) → Create group → `POST /api/v1/device-groups?orgId=23fbc70d-...` → **400 Bad Request**, body `{"error":"orgId is required when partner has multiple organizations"}`. UI shows a generic "Failed to save device group" (visible, not silent — but doesn't surface the actual server error text).
+- Repeated with a **Static** group (manually selecting a device) → same 400, same generic message. Confirms this is not dynamic-group-specific — **all** device-group creation is broken for multi-org partners.
+- **Root cause (confirmed via code read):** `apps/api/src/routes/groups.ts` (`POST /` handler, mounted at both `/groups` and `/device-groups`) resolves the owning org exclusively from `payload.orgId` in the **JSON body** (schema `orgId: z.string().guid().optional()`) and 400s under `auth.scope === 'partner'` with 2+ orgs if it's absent — it has no fallback to the query string, unlike some other routes (e.g. `discovery.ts`) which explicitly also check `c.req.query('orgId')`. But `apps/web/src/components/devices/CreateGroupModal.tsx` builds the POST body as `{ name, type, filterConditions }` — **it never includes `orgId`** in the body. The org scoping the web app relies on is `fetchWithAuth` (`apps/web/src/stores/auth.ts`) auto-appending `orgId` as a **query-string** param, which this handler doesn't read. Single-org partners never hit this because the API can resolve an unambiguous default org internally when there's only one; the branch only fires with 2+ orgs — explaining why this shipped invisibly against the single-org seed and why the fix task's insistence on creating a second org caught it.
+- Per code-history: the org-resolution pattern in `groups.ts` traces to `2b62f023d` (2026-07-30, alert-rule ownership consolidation follow-up, #2969) — the same cycle that added explicit `orgId` body wiring to `PsaConnectionForm.tsx` for the PSA dual-ownership work. `CreateGroupModal.tsx` was evidently missed in that sweep.
+- **Impact:** this is not a v0.105.0-range commit per the plan doc (it predates the range, from `2b62f023d` on 2026-07-30) but it is a **live, reproducible regression affecting a core everyday workflow** (creating any device group) for the exact audience — multi-org partners — that this release's flagship dual-ownership work targets. Any partner who follows this cycle's Partner-Wide First guidance and creates a 2nd org will silently lose the ability to create device groups.
+- Fix locations: `apps/api/src/routes/groups.ts` POST handler (add query-param fallback for `orgId`, consistent with `discovery.ts`) **or** `apps/web/src/components/devices/CreateGroupModal.tsx` (include `orgId` explicitly in the POST body, matching the `PsaConnectionForm.tsx` pattern).
+- **Consequence for this sweep:** the `954a288d5` dynamic-group-delete-500 fix could not be verified — group creation itself is blocked. Marking that checklist item **BLOCKED** on this bug, not a false pass.
+
+### [Patches] `patch_policies.sources` column drop, `48c1e366c` — PASS
+
+- Checked Patches → Compliance and Patches → Update Rings tabs via `document.body.innerText` — no reference to "sources" anywhere in either view. Clean sanity check after the destructive column drop.
+
+### [Config Policies] Dual-ownership create + timezone selector, `2dbe7505f` — PASS (mostly)
+
+- New Policy flow already had a partner-library vs. org-specific scope selector (pre-existing pattern, not new this cycle) — created "QA Timezone Test Policy" as **partner library** (`Create Policy` → **201**, no error) — this confirms Config Policies' partner-wide create path is unaffected by the Device Groups bug above (different route).
+- Maintenance tab → Timezone selector: confirmed the full searchable IANA list is present — `Asia/Dubai` and `America/Sao_Paulo` both found in the rendered dropdown DOM (`data-testid="maintenance-timezone-trigger"`), not the old short hardcoded list. Matches `2dbe7505f`.
+- ⚠️ UI/UX: the create-policy copy for partner-owned scope says "Backup settings aren't available on partner-owned policies," but the policy detail page still shows a "Backup" tab in the main nav for this partner-owned policy (didn't click in to confirm whether the tab body itself is empty/disabled — flagging as worth a look, not confirmed as broken).
+- Did not test the Automations tab's timezone selector or the drift-remediation dispatch fix (`f2f2d7fda83`) — would need an existing policy with real drift and a remediation automation configured; not present in the seed. **BLOCKED**, prerequisite: a policy with an active drift-remediation automation and at least one non-compliant device.
+
+### [Configuration Policies list] — UI/UX finding
+
+- The policy-count summary text renders as **"0of0policies"** with no spaces (should be "0 of 0 policies") — confirmed via screenshot, not an accessibility-tree artifact. Every other list-count summary seen in this sweep (Webhooks "0 of 0 webhooks", PSA "0 of 0 connections", Software) is correctly spaced, so this looks like an isolated template-string bug in the Configuration Policies list component specifically.
+
+### [Alerts] Date-range filter SQL-binding fix, `c16d1e5a4` — PASS
+
+- Alerts → Advanced Filter → field "Last Seen At" (a device date field) → operator "is after" → value `2026-08-10T00:00` → `GET /api/v1/alerts?...` **200 OK**, returned both fixture alerts ("2 of 2"), no 500. Repeated with a same-instant "equals" condition (0 results, also 200). Confirms the raw-JS-Date SQL-template binding bug is fixed for this filter path.
+- Did not find an alert-level "Triggered At" date field in the Advanced Filter builder — only device-attribute date fields (Last Seen At, Enrolled At) are exposed there; not treating this as a gap since it may be by design.
+
+### [Logs] Keyset pagination fix, `945de59f0` — BLOCKED (no log data in seed)
+
+- Logs → Log Search with a widened range (2026-07-01 through now) still returned "0 shown of 0 total" — this environment's seed has no event-log rows to search, so page-2 pagination cannot be exercised. **BLOCKED**, prerequisite: seeded event-log data or a live agent producing logs.
+
+### [Scripts] Full-library pagination fix, `2295d859a` — PARTIAL / BLOCKED (seed too small to prove the fix)
+
+- Scripts page main list: 0 org scripts in the seed (empty state). `GET /api/v1/scripts?limit=100&page=1` — confirms the call now sends explicit `limit`/`page` params (previously reportedly hardcoded, capped at 50 with no paging) — structurally consistent with the fix.
+- Import-from-Library modal: `GET /api/v1/scripts/system-library` returns 23 built-in scripts, well under the 50-item cap this fix addresses. **BLOCKED** — cannot prove "walks every page beyond 50" with only 23 available system scripts and 0 org scripts; would need 51+ scripts seeded to exercise the actual pagination-cap regression.
+
+### [Devices → Fleet Posture] New page, `bf505f83a` — PASS
+
+- Fleet Posture Report renders cleanly: 2 enrolled devices, 0 competing products detected, 0 scanned, **2 "Never scanned"** — and the UI correctly shows an explicit **amber caveat**: "Zero detections, but 2 device(s) have no fresh scan — verify them before treating the migration as complete" both in the top summary and per-org card, rather than silently reporting a clean migration. Exactly the behavior the checklist calls for. No console errors.
+
+### [Settings → Enrollment Keys] Create dialog — spot check PASS; short-link child counter fix `0c8c6fb74` — BLOCKED
+
+- Create Enrollment Key dialog correctly lists both organizations in its Organization dropdown (no cross-org leak, no crash). Cancelled without creating (out of scope for a quick check).
+- **BLOCKED**: verifying the short-link-child device-slot counter fix requires building a full key → short-link-child → installer-download flow, not attempted given time budget. Prerequisite: create a key, generate a short-link child from it, build an installer, and check the consumed/max counter renders on the child row.
+
+### Nav-crawl completion (remaining routes not covered by the first Phase-2 pass)
+
+All render cleanly, 0 console errors, primary API calls 200: `/billing/quotes`, `/billing/invoices`, `/contracts`, `/timesheet`, `/settings/catalog`, `/software`, `/software-inventory`, `/devices/groups` (see FAIL above), `/configuration-policies`, `/backup`, `/c2c`, `/dr`, `/reports`, `/analytics`, `/devices/posture`, `/settings/enrollment-keys`.
+
+**Not reached this session** (ran out of budget): `/audit`, `/settings/partner`, `/settings/ai-usage`, `/settings/custom-fields`, `/settings/filters`, `/settings/users`, `/settings/roles`, `/settings/sso`, `/settings/access-reviews`, device-detail tabs, `/remote` deep flows (Quick Support digit codes, session history, proxy popover), Quotes unit-price-clip check, AI chat tool-execution counter, "What's new" splash, business-email signup gate, i18n locale spot-checks, backup/DR form validation, distributor/accounting/identity/UniFi integration tabs.
+
+### Summary table
+
+| Area | Result |
+|---|---|
+| Phase 2 nav crawl (all routes) | PASS — 0 whole-page failures, 1 recurring dev-mode i18n console warning (noise) |
+| Create 2nd organization | PASS |
+| CIS Hardening dual-ownership (`9455019e5`+`65b4a6380`) | PASS |
+| Compliance/Audit Baselines org-scoping (`65b4a6380`) | PASS (org-only, not dual-ownership) |
+| Webhooks self-hosted private-network gate (`2aa281e67`+`c6106154d`) | PASS |
+| PSA Connections dual-ownership + fixes (`2cb6f7a6b`+`f400fc315`) | PASS (partial — 2 items BLOCKED on missing low-priv user) |
+| **Device Groups create (pre-existing, not in range)** | **FAIL — broken for every multi-org partner** |
+| Patches `sources` column drop sanity check | PASS |
+| Config Policies dual-ownership create + timezone selector (`2dbe7505f`) | PASS |
+| Alerts date-range filter fix (`c16d1e5a4`) | PASS |
+| Logs pagination fix (`945de59f0`) | BLOCKED — no log data in seed |
+| Scripts pagination fix (`2295d859a`) | BLOCKED/PARTIAL — seed too small (23 scripts, needs 51+) |
+| Fleet Posture new page (`bf505f83a`) | PASS |
+| Enrollment Keys create dialog | PASS (spot check only) |
+| Enrollment Keys short-link child counter (`0c8c6fb74`) | BLOCKED — not attempted |
+| Remaining §3 items (Quick Support, proxy popover, Quotes clip, AI chat counter, splash, i18n, backup/DR, PSA import preview, signup gate, distributors/accounting/identity tabs) | NOT REACHED |
+
+### Top findings (ranked by impact)
+
+1. **FAIL — Device Groups (both static and dynamic) cannot be created by any multi-org partner.** `POST /api/v1/device-groups` 400s with `{"error":"orgId is required when partner has multiple organizations"}` because `apps/web/src/components/devices/CreateGroupModal.tsx` never includes `orgId` in the request body while `apps/api/src/routes/groups.ts` only reads it from the body (no query-param fallback, unlike `discovery.ts`). Root cause traced to `2b62f023d` (2026-07-30) missing this file in its org-scoping sweep. This directly undermines the release's own Partner-Wide First push: any partner who adds a 2nd org loses a core everyday workflow, silently, until they try it.
+2. **UI/UX — "0of0policies"** on the Configuration Policies list is missing spaces (isolated to this component; every other list-count summary checked was correctly formatted).
+3. **UI/UX — recurring dev-mode `react-i18next: NO_I18NEXT_INSTANCE` console warning** on most page loads (known class of issue per team memory, not release-blocking).
+4. All of this cycle's flagship dual-ownership/org-scoping fixes (CIS Hardening, PSA Connections, webhook private-network gate, alerts date filter, Config Policies timezone) verified working correctly under real 2-org testing — no regressions found in the intended v0.105.0 change set itself. The one FAIL found is a **pre-existing** bug (predates the release range) that this task's insistence on creating a second org happened to surface.
+
+---
+
+## Part 2 — areas not reached in attempt 2 — 2026-08-11
+
+Continuation of the same sweep, same environment (`localhost:32792`, `admin@breeze.local`, worktree `review-round`, API `0.82.0`). Session reused attempt 2's browser/login where already active. Covers §3 checklist items not reached above: What's-new splash, Partner Settings tabs + validation, Quick Support, Remote Access consolidated proxy, Quotes/Invoices, AI Assistant usage counter, localization, Portal, and any BLOCKED-unblocking time permits.
+
+### [Login] What's-new splash + reopen link, `8310c6d71` — PASS (reopen + dismiss), auto-show-on-login **not exercisable in dev mode by design**
+
+- Sidebar footer "What's new" reopen link → opens a proper `role="dialog"` titled "What's new in 0.105.0" with highlights list and a "Learn more" link to `https://breezermm.com/release-notes`. "Got it" dismisses and writes `localStorage['breeze.whatsNew.lastSeenVersion'] = '0.105.0'` (confirmed via DOM read) — no console errors.
+- Read `apps/web/src/lib/whatsNewState.ts`: `decideWhatsNew()` explicitly no-ops (`{ entry: null, baselineToSet: null }`) whenever `WEB_VERSION === 'dev'`. This dev stack's sidebar footer reads "Web dev · API 0.82.0", confirming `WEB_VERSION` is literally `'dev'` — so the auto-show-on-login path is **intentionally inert on any dev build**, only the reopen path (`latestApplicableEntry()`, which does not check for `'dev'`) works. Verified live: cleared `lastSeenVersion`, signed out, signed back in with a fresh login navigation → no dialog, no console error, and the key stayed unset (correct "first-ever load, just set the baseline" branch — code comment confirms this is deliberate, not a bug, for a brand-new browser). Re-set `lastSeenVersion` to an older `'0.104.0'` to simulate a genuine upgrading user and repeated the reload → still no dialog, confirming the dev-mode gate, not a floor/version-comparison bug.
+- "Show me later" (`later()`) only calls `setOpen(false)` — does not touch `localStorage`, confirmed by reading the component; this matches the "snoozes to next login" spec (next mount's `decideWhatsNew()` will still find the un-bumped floor and re-show), though the live re-open-on-next-login behavior itself could not be observed here for the reason above.
+- **Not a defect** — noting only so a future sweep doesn't waste time chasing "splash never appears on this stack."
+
+### [Settings → Partner → Company] Save valid/invalid input — PARTIAL, one validation gap found
+
+- Valid save: edited Company Name, clicked Save Settings → `PATCH /api/v1/orgs/partners/me` **200 OK**, toast "Partner settings saved" appeared, "unsaved changes" badge cleared. Confirmed UI feedback present (not a silent mutation).
+- ❌ **Finding (validation gap, low-to-medium severity):** the Company tab's **Website** field accepts and persists a `javascript:` URI with no client- or server-side rejection. Typed `javascript:alert(1)` into Website, clicked Save → `PATCH /api/v1/orgs/partners/me` **200 OK**, response body confirms `"contact":{"website":"javascript:alert(1)"}` was stored verbatim. The release checklist explicitly calls for confirming scheme validation rejects `javascript:`/`data:` on Partner Settings, and this field does not.
+  - Checked exploitability: this specific field (`settings.contact.website`, edited in `apps/web/src/components/settings/PartnerCompanyTab.tsx`) is **not** the field that flows into quote/invoice PDFs — those pull from a separate `partner.billingWebsite` column via `apps/api/src/services/sellerSnapshot.ts`, and even that path is safe (`escapeHtml()` in `invoicePdf.ts`'s HTML template, plain `doc.text()` glyphs in the PDFKit path — no `<a href>` construction found anywhere for either field). So there is currently no live XSS/open-redirect exposure from this specific gap, but it's still a missing input-validation control the release notes' own checklist asked to confirm, and the field sits directly under UI copy ("Used for branded PDFs, invoices, and email footers") that implies it should be validated as a real URL.
+  - Suspected fix location: `apps/web/src/components/settings/PartnerCompanyTab.tsx` (client-side pre-check, matching the pattern already used for the HMAC-secret-required check on the Webhooks form per attempt 2's log) and/or the Zod schema backing `PATCH /api/v1/orgs/partners/me` in `apps/api/src/routes/orgs.ts` (server-side scheme allowlist, e.g. `http:`/`https:` only).
+- Did not repeat the invalid-input check across every other Partner tab (time budget) — spot-checked Company only.
+
+### [Settings → Partner → Remote Access] Duplicate provider id / dangling default validation, `fce4f0504` — PASS
+
+- Confirmed via source read (`apps/web/src/components/settings/PartnerRemoteAccessTab.tsx`) that provider `id` is client-generated as `` `provider-${crypto.randomUUID()}` `` on every "Add provider" click — true UI-only duplicate ids are structurally unreachable, exactly as the release-plan checklist anticipated ("add two providers, force a duplicate id **(or edit via API)**").
+- Added one real provider via the UI (RustDesk, URL template, custom field key, set as Default) → `PATCH /api/v1/orgs/partners/me` **200 OK**, toast "Partner settings saved" — confirms the ordinary create/save path still works after this fix.
+- Captured the page's own live Bearer token (by monkey-patching `window.fetch` to snoop the `Authorization` header the app's `fetchWithAuth` sends, then triggering one real save) and issued two direct `PATCH` calls to `/api/v1/orgs/partners/me` reusing that token, per the checklist's own "or edit via API" allowance:
+  - Two providers with the same `id: "dup-1"` → **400**, body: `{"error":"settings.remoteAccessProviders.providers.1.id: Duplicate provider id \"dup-1\" — provider ids must be unique", ...}` — clear, readable, field-scoped error.
+  - `defaultProviderId: "does-not-exist"` pointing at no configured provider → **400**, body: `{"error":"settings.remoteAccessProviders.defaultProviderId: defaultProviderId \"does-not-exist\" does not name a configured provider", ...}` — same quality.
+- Both reject at save time with the exact readable-message bar the checklist asked for. No mutation occurred on either rejected call (subsequent state unaffected).
+
+### [Settings → Organizations → Edit → Remote Access tab] Org-level tunnel/allowlist settings, `c0ef527e7` — PARTIAL PASS
+
+- Reached via Settings → Organizations → select org → **Edit** → Security & Access → Remote Access (a different page from the Partner-level Remote-Tool-Providers tab tested above; org-level page is "VNC, proxy, tunnels" — Source IP Restrictions, per-site Destination Allowlist, and Active Tunnels).
+- Added a Destination Allowlist rule (`192.168.1.0/24:443`) on the Default Site → list updated immediately with the new `code`-formatted entry, no console errors, no toast needed (visible list mutation is sufficient confirmation).
+- "Active Tunnels" correctly showed "(No active tunnels)" with a working Refresh button.
+- ⚠️ UI/UX: navigating away afterward triggered a native `beforeunload` confirmation dialog ("Leave site? Changes you made may not be saved") even though the allowlist rule had already saved successfully and no other field was dirty. Likely an overly-broad "any interaction on this page" dirty flag rather than one scoped to actual unsaved form state. Minor friction, not data-loss risk (the save had already completed), but worth a look — probably in `apps/web/src/components/settings/OrgRemoteAccessSettings.tsx` or the shared org-settings dirty-tracking wrapper.
+- **BLOCKED** — could not test the actual "one-click proxy popover" on a network device or the "session survives past 5 minutes" cliff fix (`c0ef527e7`'s other half): this stack's Network Discovery → Assets list is empty ("No assets discovered yet.") — no discovered network device with a web-facing port exists in the seed to open the proxy popover against. Prerequisite: a discovery scan or seeded network-device fixture with an open web port (443/8080/etc).
+
+### [Remote → Quick Support] Digit codes, session re-open, rate limiting, `9344a2b4e` — PASS
+
+- **New code generation**: "New support session" → optional org-attribution dropdown correctly lists both orgs ("Default Organization", "QA Sweep Org Two") plus "Not attributed" — → "Generate code" → code rendered as `759-458-865` (9 digits, 3-3-3 grouping exactly as specced), with an expiry timestamp and "This code appears only once… can never be shown again" warning. URL hash updated to the session id.
+- **Session re-open**: closed the detail panel (hash cleared) → clicked the same session from "Recent support sessions" → panel reopened with live status ("Waiting for the user to run the client…"), hash restored to the session id. Matches the checklist's reopen requirement.
+  - ⚠️ UI/UX: reopening from history re-displays the **same full code** (`759-458-865`) in the "appears only once… can never be shown again" panel. That copy is misleading once a reopen path exists — the code is in fact shown again on every reopen while the session is still pending. Not a security bug (the session hadn't been redeemed and the code is still legitimately live), but the on-screen claim is factually wrong the moment you navigate back to the row. Consider softening the copy (e.g. "won't be re-issued if you lose this session" rather than "can never be shown again").
+- **Bogus session id in hash**: edited hash to a random UUID not in the session list → panel closed cleanly, no crash, no visible error (one expected `404` on `/api/v1/remote/support-sessions/<bogus-id>` logged to console, handled gracefully by the UI — not treated as a bug).
+- **Invalid code on `/quick`**: submitting a syntactically-invalid code (`000000000` — all-zero) correctly triggered a *format* validation message ("not a complete code yet") rather than a server round-trip — this is correct behavior, not a bug: confirmed via `packages/shared/src/validators/quickSupport.ts` that the code alphabet deliberately excludes `0`/`1` (`SUPPORT_CODE_PATTERN = /^[A-Z2-9]{9}$/`) to avoid O/0 and I/l/1 phone-spelling ambiguity — an all-zero string can never be a valid code by design.
+- Submitted a syntactically-valid-but-wrong code (`234-567-892`) → distinct "That code no longer works" message (`status` role, live-region). PASS.
+- **Rate limiting**: drove the public, unauthenticated `/api/v1/support/check/:code` endpoint to its documented 30-req/60s per-IP cap (`CHECK_LIMIT = 30` in `apps/api/src/routes/supportPublic.ts`) via 29 direct `fetch()` calls (no UI clicking needed, endpoint requires no auth), confirmed the 30th returned `429`, then submitted once more through the real UI → got a **distinct** "Too many attempts / You have tried a code too many times. Please wait a moment, then try again." message with its own "Try again" button — correctly separate from the "That code no longer works" invalid-code message, exactly as the checklist requires.
+
+### [Quotes / Invoices] Unit-price clipping fix + quote-line-name-onto-invoice, `48b819a14` + `81ce58025` — PASS (both)
+
+- Created a quote ("QA Unit Price Test"), added a pricing-table line "QA Widget Line" with a multi-digit unit price `1234.56` and confirmed via DOM measurement (`scrollWidth === clientWidth === 97px`, no overflow) plus a screenshot that the full value renders with no last-digit clipping. `48b819a14` **PASS**.
+- Added a line description ("QA description text for name-carry-through test") to the same line so it carries both a name and a description, per the checklist.
+- UI/UX finding: clicking "Send proposal" opened a dialog that correctly required a recipient email (no billing contact saved for the org). Sent to a fake address; delivery failed, and the UI surfaced this clearly ("Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually."). However there is no actual affordance anywhere in the quote UI to retrieve or copy that accept link — no "Copy accept link" button, no share icon. The message promises a capability that isn't reachable through the UI; the link only exists in the (now-undeliverable) email body or in the raw `POST /quotes/:id/send` JSON response (`data.acceptUrl`). Confirmed via `apps/web/src/components/billing/quotes/QuoteActions.tsx` — no accept-link-copy control exists there. Worth adding one to this failure state.
+- Verified the fix by capturing the page's live Bearer token (same `window.fetch`-patch technique as the Remote Access test above), cloning the quote via the API, sending the clone, and reading `acceptUrl` from the send response body directly. Confirmed the link is well-formed (`https://2breeze.app/portal/quote/<JWT>`).
+- Visited the accept link on `localhost` — the public quote-accept island failed to hydrate (`astro-island` error: 404 fetching `/src/components/portal/PublicQuoteView.tsx`), so "Accept & sign" stayed permanently disabled no matter what was typed/checked. This is the pre-existing, previously-documented dev-mode Portal hydration limitation (team memory: `portal_dev_island_hydration_404.md`), not a v0.105.0 regression — confirmed the same 404/hydration-failure pattern independently hits `/portal/login`'s `LoginForm.tsx` too, so it is environment-wide, not specific to quotes.
+  - The server-rendered (pre-hydration) HTML on that page did correctly show the pricing table with `QA Widget Line` / `QA description text for name-carry-through test` — the customer-facing quote view renders the name+description correctly; only the interactive accept action is blocked by the hydration issue.
+- Worked around the hydration blocker by calling `POST /api/v1/quotes/public/:token/accept` directly (same endpoint the disabled button would have called) → 200, `status: "converted"`. Opened the resulting invoice (`INV-2026-0001`) in the normal web Billing view → the invoice line correctly shows "QA Widget Line" as the title with "QA description text for name-carry-through test" as its description — exactly the fix `81ce58025` claims (previously the name was lost on conversion). **PASS.**
+- BLOCKED — could not check the Portal invoice detail view per the checklist: Portal requires a customer-portal login, and `/portal/login`'s form suffers the identical island-hydration failure, so no portal session could be established in this environment. This blocks all Portal-side verification this cycle, not just the invoice view — see the dedicated Portal note below.
+
+### [Portal] Environment-wide finding — no portal page can be exercised interactively in this dev stack
+
+- `/portal/login`, `/portal/quote/:token` (and by extension anything else under `apps/portal/src/components/portal/*.tsx`) fail to hydrate: console shows `Failed to load resource: 404 @ .../src/components/portal/<Component>.tsx` followed by `[astro-island] Error hydrating ... Failed to fetch dynamically imported module`. Static/SSR markup renders fine (readable text, correct data), but every interactive control (login submit, accept/decline buttons, checkboxes wired to React state) is permanently inert.
+- This matches a previously catalogued issue (team memory: `portal_dev_island_hydration_404.md`) — noting once, not re-diagnosing or re-filing. Recorded here because it fully blocks item 8 of this sweep's scope ("Portal — whatever renders without a real portal tenant") beyond a static-content glance, and blocked the Portal-invoice-view half of the `81ce58025` checklist item above.
+
+### [AI Assistant] Tool-execution count + live spend in the chat sidebar, `ff147bdb4` — PASS
+
+- Opened the AI Assistant panel from the top-banner button, clicked the "Show critical alerts" quick action. Before sending: cost indicator read "$0.00 this month" / "0 msgs". The assistant ran a real multi-tool turn (`Manage Alerts` ×2, `Get Device Details` ×1, each with a visible "Tool Result" expander) and produced a full alert + device-detail summary.
+- After the turn completed, the sidebar indicator updated **without a page reload** to "$0.12 this month" / "1 msg" — confirms both the live-spend-refresh half (component `apps/web/src/components/ai/AiCostIndicator.tsx` re-fetches `/ai/usage` on the `isStreaming: true → false` edge instead of waiting for its 60s poll) and the counter-no-longer-pinned-at-0 half (the visible "N msgs" text is the counter the fix's rollup query was undercounting — it moved 0 → 1 for a session that was tool-call-heavy but had exactly one user-visible exchange).
+- Cross-checked on **Settings → AI Usage & Budget** (a separate, backend-driven admin view, not just the sidebar's own poll): "Messages Today" went from `0` → `1`, "Today's Cost"/"Monthly Cost" both `$0.12`, and the new row in "Recent Sessions" shows `Turns: 4` (matching the 2 Manage-Alerts + 1 Get-Device-Details + 1 final-response turns observed) with status `active`. Two independent surfaces agree — strong confirmation the rollup fix is real, not a sidebar-only cosmetic change.
+
+### [Settings sub-pages] Users, Roles, Custom Fields, Saved Filters, Enrollment Keys — PASS (all render + create-with-valid-input tested)
+
+- **Users**: invited a new user ("QA Read Only", `qa-readonly@breeze.local`, role "Partner Viewer", All organizations access) → `POST` succeeded, visible toast "Invitation sent to qa-readonly@breeze.local", list updated to "2 of 2 users", new row shows status "Invited" with Resend/Edit/Devices/Remove actions. This creates the fixture the previous sweep's read-only-org-access check needs, **but the invite is unaccepted** (status stays "Invited" — no email delivery in this dev stack and no in-UI way to force-accept or extract the invite-acceptance token the way the quote-accept token was extractable). **BLOCKED** — the actual "log in as a read-only user and confirm ownerScope selectors are hidden" check still needs either real email delivery or an admin-side "force activate" affordance, neither of which exists here.
+- **Roles**: 6 system roles render correctly (Partner Billing / Billing Viewer / Security Approver / Admin / Technician / Viewer), all correctly marked immutable ("System", "Clone" as the only action). ⚠️ UI/UX: the roles-list summary text reads **"6 of6 roles"** — missing a space, same defect class as the "0of0policies" bug already logged for Configuration Policies in attempt 2 (different component, same template-string pattern — worth a repo-wide grep for `of{count}` / `{n}of{m}` string concatenation missing a space).
+- **Custom Fields**: created a text field ("RustDesk ID", key `rustdesk_id`, matching the Remote-Tool-Provider custom-field-key convention exercised earlier) → saved, list updated immediately, no console errors.
+- **Saved Filters**: empty state renders correctly ("No saved filters yet…"); did not create one (time budget) — render-only PASS.
+- **Enrollment Keys**: created "QA Install Key" (Default Organization / Default Site, no max-usage cap entered) → key value shown exactly once in a copyable `code` block with "Save this enrollment key now. It will not be shown again." warning, list updated with status "Active", usage "0 / 1". ⚠️ UI/UX note: leaving "Max Usage" blank silently defaulted to a **cap of 1** (not "Unlimited" as the placeholder text implies) — worth confirming this is the intended default, since the placeholder reads as if blank means unlimited. The "Download" action revealed per-OS installer options (Windows `.msi` / macOS `.zip`); the page's static header copy ("Use these keys with `breeze-agent enroll <key>`") combined with the one-time-shown raw key is the closest this UI gets to an explicit "install command" — reasonably satisfies the checklist's "view the install command" ask, though there's no single copy-able one-liner (e.g. a ready-to-paste `curl | sh` or PowerShell string) the way some RMM tools show. **BLOCKED (partial)**: did not pursue generating a short-link child key + checking its consumed/max device-slot counter (`0c8c6fb74`) — time budget; the base key flow above is otherwise clean.
+
+### [Localization spot-check] pt-BR, `1ee678186` — PASS, one minor gap found
+
+Switched the running session to pt-BR via `localStorage['breeze.locale'] = 'pt-BR'` (the same key `PartnerRegionalTab`'s "Language" selector writes, per `apps/web/src/lib/appearance.ts`) and reloaded, since the Partner Settings language selector itself only sets the *partner's default for new orgs*, not the live session — this was the fastest way to exercise the actual rendering path.
+
+- **Dashboard, Devices, Network Discovery, Integrations (Webhooks/Identity/M365)**: all rendered fully translated, natural-reading Portuguese with correct domain terminology — no raw i18n keys, no humanized-key placeholders (the #2649 defect class). Specifically checked the plan's called-out terms: "descoberta de rede" (network discovery, not confused with a UI toggle), "registro de aplicativo Entra (Azure AD)" / "locatário" (tenant) / "Microsoft Graph do cliente" on the M365 identity tab — all idiomatic and consistent, not machine-literal. `<title>` tag also flips correctly on most pages ("Painel", "Dispositivos").
+- ⚠️ UI/UX (minor): the `<title>` tag on **Network Discovery** stayed in English ("Network Discovery | Breeze RMM") while the page body was fully translated — inconsistent with Dashboard/Devices, whose titles did flip. Cosmetic (browser-tab text only), but suggests not every page's title-setting effect is wired the same way; worth a quick grep for pages missing the `document.title = t(...)` pattern the working pages use.
+- ⚠️ UI/UX (real gap, matches the #2649 defect class in spirit even though it's not a raw key): **Dashboard → Recent Activity** audit-log action names stay in **English** even in pt-BR — e.g. "Ai tool get device details", "Ai tool manage alerts", "Sent AI message", "Created enrollment key" all rendered verbatim while every surrounding label (Usuário/Ação/Destino/Hora, "há 5 minutos") was correctly Portuguese. These look like backend action-type identifiers passed through a humanizer (snake_case → Title Case) rather than routed through i18n — so localizing them would need either translation keys per action type or a locale-aware humanizer, not just missing translation strings. Reset `breeze.locale` back to unset (English) before finishing.
+
+### Part 2 summary table
+
+| Area | Result |
+|---|---|
+| What's-new splash + reopen link (`8310c6d71`) | PASS - dev-mode auto-show-on-login is intentionally inert (WEB_VERSION==='dev'), not a bug |
+| Partner Settings Company save (valid + invalid) | PARTIAL - valid save PASS; javascript: URI in Website field accepted with no scheme validation |
+| Partner Settings Remote Access dup-id/dangling-default (`fce4f0504`) | PASS |
+| Org Settings Remote Access tab, allowlist/tunnels (`c0ef527e7`) | PARTIAL - allowlist CRUD PASS; proxy-popover/5-min-cliff BLOCKED (no discovered network device in seed) |
+| Quick Support digit codes/reopen/rate-limit (`9344a2b4e`) | PASS |
+| Quotes unit-price clipping (`48b819a14`) | PASS |
+| Quote-line-name-onto-invoice (`81ce58025`) | PASS (web view); Portal view BLOCKED (env-wide hydration issue) |
+| AI Assistant tool-execution count + live spend (`ff147bdb4`) | PASS |
+| Settings: Users / Roles / Custom Fields / Saved Filters / Enrollment Keys | PASS (render + create); read-only-user login and short-link-child counter BLOCKED |
+| Portal (general) | BLOCKED - env-wide island hydration failure, pre-existing/known |
+| Localization spot-check (pt-BR) | PASS - one real gap (untranslated audit action names) + one cosmetic gap (Discovery page title) |
+
+### Part 2 - top findings (ranked by impact)
+
+1. UI/UX gap - no way to retrieve a quote's accept link when email delivery fails. The UI tells the sender to "share the accept link manually" but provides no copy-link control anywhere; the link only exists in the POST /quotes/:id/send response body (data.acceptUrl) or the undelivered email. Affected: apps/web/src/components/billing/quotes/QuoteActions.tsx.
+2. Validation gap - Partner Settings Company "Website" field accepts javascript: URIs with no client- or server-side scheme check, contrary to the release checklist's explicit ask. Not currently exploitable (this field doesn't feed any anchor-tag renderer today - quote/invoice PDFs use a separate billingWebsite column that's already HTML-escaped or drawn as plain PDF text), but it's a real missing control. Affected: apps/web/src/components/settings/PartnerCompanyTab.tsx and the PATCH /api/v1/orgs/partners/me schema in apps/api/src/routes/orgs.ts.
+3. Environment note, not a regression - the entire customer Portal fails to hydrate in this dev stack (/portal/login, /portal/quote/:token both 404 on their Astro island .tsx source and never wire up interactivity). Matches previously catalogued team memory (portal_dev_island_hydration_404.md); blocks any Portal-side verification until fixed or worked around (as done here, via direct API calls).
+4. UI/UX - recurring "N ofN" spacing bug: Roles list shows "6 of6 roles" (missing space before the second number), same defect class as the previously-logged "0of0policies" on Configuration Policies - likely a shared list-header template with an inconsistent interpolation pattern across components.
+5. UI/UX - Quick Support "appears only once... can never be shown again" copy is inaccurate: reopening a pending session from history re-displays the full code. Not a security issue (session still legitimately live) but the on-screen claim is wrong once a reopen path exists.
+6. UI/UX - untranslated audit-log action names in pt-BR ("Ai tool get device details", "Sent AI message", etc.) - these are humanized backend action-type strings, not i18n keys, so they need a translation-key-per-action-type approach rather than a simple missing-string fix.
+7. UI/UX - org-level Remote Access settings page fires a beforeunload warning even after a successful save, likely an overly-broad dirty-state flag. Low severity (no data was actually at risk of loss).
+
+

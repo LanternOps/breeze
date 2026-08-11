@@ -48,6 +48,14 @@ export async function deleteDeviceCascade(
   await tx.execute(sql`DELETE FROM ai_action_plans WHERE session_id IN ${deviceAiSessionIds}`);
   await tx.execute(sql`DELETE FROM alert_correlations WHERE parent_alert_id IN ${deviceAlertIds} OR child_alert_id IN ${deviceAlertIds}`);
   await tx.execute(sql`DELETE FROM alert_notifications WHERE alert_id IN ${deviceAlertIds}`);
+  // psa_ticket_mappings.alert_id -> alerts(id) has NO explicit ON DELETE (so
+  // NO ACTION), and 'alerts' sits in the "Monitoring & logs" block of
+  // CORE_DEVICE_CASCADE_DELETE_TABLES, ~30 entries AHEAD of
+  // 'psa_ticket_mappings' in "Portal & integrations". The list-driven loop
+  // below therefore deletes the alerts first and raises 23503 on any mapping
+  // that referenced one. Clear both FK arms here, with the other transitive
+  // alert children. The list entry stays — this just makes it a no-op.
+  await tx.execute(sql`DELETE FROM psa_ticket_mappings WHERE alert_id IN ${deviceAlertIds} OR device_id = ${deviceId}`);
   await tx.execute(sql`UPDATE log_correlations SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
   await tx.execute(sql`UPDATE network_change_events SET alert_id = NULL WHERE alert_id IN ${deviceAlertIds}`);
 

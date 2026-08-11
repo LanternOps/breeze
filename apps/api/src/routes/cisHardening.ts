@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db } from '../db';
@@ -9,6 +9,7 @@ import {
   cisBaselineResults,
   cisRemediationActions,
   devices,
+  organizations,
 } from '../db/schema';
 import { scheduleCisRemediation, scheduleCisRemediationWithResult, scheduleCisScan } from '../jobs/cisJobs';
 import { captureException } from '../services/sentry';
@@ -16,6 +17,7 @@ import { authMiddleware, requirePermission, requireScope, type AuthContext } fro
 import { canAccessSite, type UserPermissions } from '../services/permissions';
 import { extractFailedCheckIds, normalizeCisSchedule } from '../services/cisHardening';
 import { writeRouteAudit } from '../services/auditEvents';
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { resolveOrgId } from './networkShared';
 
 export const cisHardeningRoutes = new Hono();
@@ -40,6 +42,13 @@ const baselineScanScheduleSchema = z.object({
 const upsertBaselineSchema = z.object({
   id: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+  // Ownership axis (#2135, mirroring software policies #2126). 'organization'
+  // (default) = classic org-scoped baseline. 'partner' = partner-wide /
+  // all-orgs template; the server derives the partner from the caller's own
+  // token — a client-supplied partner id is NEVER trusted. orgId is ignored
+  // when ownerScope is 'partner'. Create-only: an existing baseline's owner
+  // is immutable (see the update path).
+  ownerScope: z.enum(['organization', 'partner']).optional(),
   name: z.string().trim().min(1).max(200),
   osType: osTypeSchema,
   benchmarkVersion: z.string().trim().min(1).max(40),
@@ -85,6 +94,36 @@ const approveRemediationSchema = z.object({
   approved: z.boolean(),
   note: z.string().trim().max(1000).optional(),
 });
+
+/**
+ * Visibility filter for `cis_baselines` under dual ownership (#2135): the
+ * caller's own org-axis rows, OR the partner-wide rows of their own partner.
+ *
+ * Unlike most partner-wide readers this is NOT gated on `auth.scope ===
+ * 'partner'`. The table carries a SELECT-only
+ * `cis_baselines_partner_wide_select` RLS policy keyed on
+ * `breeze_current_partner_id()`, and that GUC is populated from the token's
+ * partnerId for org-scoped sessions too (`buildDbAccessContext`) — so an org
+ * user genuinely may read their partner's partner-wide baselines, and gating
+ * this on partner scope would hide rows RLS is happy to return. It stays
+ * read-only: `breeze_has_partner_access` is still false for an org token, so
+ * every write path is unaffected.
+ *
+ * Returns undefined for system scope (no filter).
+ */
+function baselineVisibilityCondition(auth: AuthContext): SQL | undefined {
+  const orgCondition = auth.orgCondition(cisBaselines.orgId);
+  const partnerWide = auth.partnerId
+    ? and(isNull(cisBaselines.orgId), eq(cisBaselines.partnerId, auth.partnerId))
+    : undefined;
+
+  // undefined orgCondition means UNRESTRICTED (system scope), not "match
+  // nothing" — an empty accessible-org list yields an always-false SQL
+  // instead. Narrowing to the partner branch here would silently hide every
+  // org-owned baseline from system callers.
+  if (!orgCondition) return undefined;
+  return partnerWide ? or(orgCondition, partnerWide) : orgCondition;
+}
 
 function mapBaselineRow(row: typeof cisBaselines.$inferSelect) {
   return {
@@ -173,10 +212,18 @@ cisHardeningRoutes.get(
 
     const conditions: SQL[] = [];
     if (orgResult.orgId) {
-      conditions.push(eq(cisBaselines.orgId, orgResult.orgId));
+      // An explicit orgId narrows to that org's own baselines PLUS the
+      // partner-wide ones that apply to it — a partner-wide baseline governs
+      // every org under the partner, so filtering it out here would make the
+      // list disagree with what actually gets scanned.
+      const partnerWide = auth.partnerId
+        ? and(isNull(cisBaselines.orgId), eq(cisBaselines.partnerId, auth.partnerId))
+        : undefined;
+      const orgScoped = eq(cisBaselines.orgId, orgResult.orgId);
+      conditions.push(partnerWide ? or(orgScoped, partnerWide)! : orgScoped);
     } else {
-      const orgCondition = auth.orgCondition(cisBaselines.orgId);
-      if (orgCondition) conditions.push(orgCondition);
+      const visibility = baselineVisibilityCondition(auth);
+      if (visibility) conditions.push(visibility);
     }
     if (query.osType) conditions.push(eq(cisBaselines.osType, query.osType));
     if (typeof query.active === 'boolean') conditions.push(eq(cisBaselines.isActive, query.active));
@@ -218,32 +265,45 @@ cisHardeningRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgResult = resolveOrgId(auth, body.orgId, true);
-    if ('error' in orgResult) {
-      return c.json({ error: orgResult.error }, orgResult.status);
-    }
-    const orgId = orgResult.orgId;
-    if (!orgId) {
-      return c.json({ error: 'orgId is required' }, 400);
-    }
-
     if (body.id) {
+      // Look the row up by id ALONE and authorise from its own ownership axis.
+      // The old (id, orgId) lookup cannot express partner ownership, and RLS
+      // is not sufficient on its own here: the partner-wide SELECT branch lets
+      // an ORG-scoped user READ their partner's rows, so a select-by-id can
+      // legitimately return a row this caller must not write.
       const [existing] = await db
         .select()
         .from(cisBaselines)
-        .where(and(
-          eq(cisBaselines.id, body.id),
-          eq(cisBaselines.orgId, orgId),
-        ))
+        .where(eq(cisBaselines.id, body.id))
         .limit(1);
 
       if (!existing) {
-        return c.json({ error: 'Baseline not found for this organization' }, 404);
+        return c.json({ error: 'Baseline not found' }, 404);
+      }
+
+      if (existing.partnerId) {
+        // Partner-wide row: only a full-partner admin of THAT partner may edit
+        // it. canManagePartnerWidePolicies is false for org scope, which is
+        // what stops the org-visible-but-not-writable case above.
+        if (!canManagePartnerWidePolicies(auth) || auth.partnerId !== existing.partnerId) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
+      } else {
+        const orgResult = resolveOrgId(auth, existing.orgId ?? undefined, true);
+        if ('error' in orgResult) {
+          return c.json({ error: orgResult.error }, orgResult.status);
+        }
+        if (!orgResult.orgId || orgResult.orgId !== existing.orgId) {
+          return c.json({ error: 'Baseline not found for this organization' }, 404);
+        }
       }
 
       const [updated] = await db
         .update(cisBaselines)
         .set({
+          // Ownership is immutable: no orgId/partnerId in the SET. Moving a
+          // baseline between owners would silently re-tenant every historical
+          // result that references it.
           name: body.name,
           osType: body.osType,
           benchmarkVersion: body.benchmarkVersion,
@@ -257,7 +317,9 @@ cisHardeningRoutes.post(
         .returning();
 
       writeRouteAudit(c, {
-        orgId,
+        // null for a partner-wide row — writeRouteAudit maps null to undefined.
+        // Do NOT substitute a fallback org; there isn't one.
+        orgId: existing.orgId,
         action: 'cis.baseline.update',
         resourceType: 'cis_baseline',
         resourceId: existing.id,
@@ -265,6 +327,7 @@ cisHardeningRoutes.post(
           name: body.name,
           osType: body.osType,
           level: body.level,
+          ownerScope: existing.partnerId ? 'partner' : 'organization',
         },
       });
 
@@ -273,10 +336,35 @@ cisHardeningRoutes.post(
       });
     }
 
+    // Create. Partner-wide baselines fan out to devices in EVERY org under the
+    // partner (including orgs created later), so creation is gated on the
+    // partner-wide capability. The partner is ALWAYS derived from the caller's
+    // own token — a client-supplied partner id is never trusted.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (body.ownerScope === 'partner') {
+      if (!auth.partnerId) {
+        return c.json({ error: 'Partner-wide CIS baselines require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgResult = resolveOrgId(auth, body.orgId, true);
+      if ('error' in orgResult) {
+        return c.json({ error: orgResult.error }, orgResult.status);
+      }
+      if (!orgResult.orgId) {
+        return c.json({ error: 'orgId is required' }, 400);
+      }
+      owner = { orgId: orgResult.orgId, partnerId: null };
+    }
+
     const [created] = await db
       .insert(cisBaselines)
       .values({
-        orgId,
+        orgId: owner.orgId,
+        partnerId: owner.partnerId,
         name: body.name,
         osType: body.osType,
         benchmarkVersion: body.benchmarkVersion,
@@ -290,7 +378,7 @@ cisHardeningRoutes.post(
       .returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'cis.baseline.create',
       resourceType: 'cis_baseline',
       resourceId: created?.id,
@@ -298,6 +386,7 @@ cisHardeningRoutes.post(
         name: body.name,
         osType: body.osType,
         level: body.level,
+        ownerScope: body.ownerScope === 'partner' ? 'partner' : 'organization',
       },
     });
 
@@ -317,9 +406,13 @@ cisHardeningRoutes.post(
     const body = c.req.valid('json');
 
     const conditions: SQL[] = [eq(cisBaselines.id, body.baselineId)];
-    const orgCondition = auth.orgCondition(cisBaselines.orgId);
-    if (orgCondition) conditions.push(orgCondition);
-    if (body.orgId) conditions.push(eq(cisBaselines.orgId, body.orgId));
+    const visibility = baselineVisibilityCondition(auth);
+    if (visibility) conditions.push(visibility);
+    // body.orgId narrows an org-owned baseline; it must NOT exclude a
+    // partner-wide one, which has no org_id and legitimately applies here.
+    if (body.orgId) {
+      conditions.push(or(eq(cisBaselines.orgId, body.orgId), isNull(cisBaselines.orgId))!);
+    }
 
     const [baseline] = await db
       .select()
@@ -335,12 +428,27 @@ cisHardeningRoutes.post(
     }
 
     if (Array.isArray(body.deviceIds) && body.deviceIds.length > 0) {
+      // Device eligibility follows the baseline's OWNER. `eq(devices.orgId,
+      // baseline.orgId)` silently matches nothing when org_id is NULL, so a
+      // partner-wide baseline resolves its devices through the org's partner
+      // instead. Never widen past the caller's own org access.
+      const deviceOwnerCondition = baseline.partnerId
+        ? inArray(
+            devices.orgId,
+            db.select({ id: organizations.id })
+              .from(organizations)
+              .where(eq(organizations.partnerId, baseline.partnerId))
+          )
+        : eq(devices.orgId, baseline.orgId!);
+      const deviceOrgAccess = auth.orgCondition(devices.orgId);
+
       const scopedDevices = await db
         .select({ id: devices.id, siteId: devices.siteId })
         .from(devices)
         .where(and(
           inArray(devices.id, body.deviceIds),
-          eq(devices.orgId, baseline.orgId),
+          deviceOwnerCondition,
+          ...(deviceOrgAccess ? [deviceOrgAccess] : []),
           eq(devices.osType, baseline.osType),
         ));
 
@@ -708,13 +816,29 @@ cisHardeningRoutes.post(
       .select({
         id: cisBaselines.id,
         orgId: cisBaselines.orgId,
+        partnerId: cisBaselines.partnerId,
         osType: cisBaselines.osType,
       })
       .from(cisBaselines)
       .where(eq(cisBaselines.id, baselineId!))
       .limit(1);
 
-    if (!baseline || baseline.orgId !== device.orgId || baseline.osType !== device.osType) {
+    // Compatibility follows the baseline's OWNER: an org-owned baseline must
+    // match the device's org; a partner-wide one governs every org under its
+    // partner. `baseline.orgId !== device.orgId` alone rejects every
+    // partner-wide baseline, since its org_id is NULL.
+    const [deviceOrg] = baseline?.partnerId
+      ? await db
+          .select({ partnerId: organizations.partnerId })
+          .from(organizations)
+          .where(eq(organizations.id, device.orgId))
+          .limit(1)
+      : [undefined];
+    const ownerMatches = !!baseline && (baseline.partnerId
+      ? deviceOrg?.partnerId === baseline.partnerId
+      : baseline.orgId === device.orgId);
+
+    if (!baseline || !ownerMatches || baseline.osType !== device.osType) {
       return c.json({ error: 'Baseline is not compatible with the selected device' }, 400);
     }
 

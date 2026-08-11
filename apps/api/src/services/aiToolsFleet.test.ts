@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
@@ -164,6 +164,11 @@ vi.mock('../db/schema', async (importOriginal) => {
   };
 });
 
+const { fleetFindingsQueryMock } = vi.hoisted(() => ({
+  fleetFindingsQueryMock: { listFleetFindings: vi.fn() },
+}));
+vi.mock('./fleetFindings/query', () => fleetFindingsQueryMock);
+
 vi.mock('../routes/patches/helpers', () => ({
   upsertPatchApproval: vi.fn(() => Promise.resolve()),
   resolvePartnerIdForOrg: vi.fn(() => Promise.resolve('partner-1')),
@@ -179,6 +184,9 @@ vi.mock('../routes/patches/helpers', () => ({
 import { registerFleetTools } from './aiToolsFleet';
 import type { AiTool } from './aiTools';
 import { upsertPatchApproval } from '../routes/patches/helpers';
+import { listFleetFindings } from './fleetFindings/query';
+
+const mockListFleetFindings = listFleetFindings as unknown as ReturnType<typeof vi.fn>;
 
 const EXPECTED_TOOLS = [
   'manage_deployments',
@@ -197,12 +205,24 @@ describe('registerFleetTools', () => {
   // Register once for all tests
   registerFleetTools(toolMap);
 
-  it('registers exactly 8 fleet tools', () => {
-    expect(toolMap.size).toBe(8);
+  it('registers exactly 9 fleet tools', () => {
+    expect(toolMap.size).toBe(9);
   });
 
   it.each(EXPECTED_TOOLS)('registers %s', (toolName) => {
     expect(toolMap.has(toolName)).toBe(true);
+  });
+
+  // get_fleet_findings is a single-purpose (no `action`) read-only tool, so
+  // it's excluded from EXPECTED_TOOLS (whose generic assertions assume an
+  // action-dispatch schema) — verified directly here, and with its own
+  // handler-level describe block below.
+  it('registers get_fleet_findings', () => {
+    expect(toolMap.has('get_fleet_findings')).toBe(true);
+    const tool = toolMap.get('get_fleet_findings')!;
+    expect(tool.tier).toBe(1);
+    expect(typeof tool.handler).toBe('function');
+    expect(tool.definition.description!.length).toBeGreaterThan(10);
   });
 
   it.each(EXPECTED_TOOLS)('%s has a valid definition with name and description', (toolName) => {
@@ -486,5 +506,144 @@ describe('manage_service_monitors handler', () => {
   it('returns error for unknown action', async () => {
     const result = JSON.parse(await tool.handler({ action: 'restart' }, mockAuth));
     expect(result.error).toContain('Unknown action');
+  });
+});
+
+describe('get_fleet_findings handler', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('get_fleet_findings')!;
+
+  const mockAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  const sampleFinding = {
+    id: 'f1',
+    orgId: 'org-1',
+    orgName: 'Acme',
+    kind: 'metric_anomaly_pattern',
+    status: 'open',
+    severity: 'warning',
+    title: 'High CPU across 5 devices',
+    deviceCount: 5,
+    lastSeenAt: '2026-08-07T00:00:00.000Z',
+    // Extra fields listFleetFindings returns that the tool should NOT leak
+    // into its slimmed-down tool-output shape.
+    semanticKey: 'k1',
+    evidence: { secret: 'internal-detail' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListFleetFindings.mockResolvedValue({ findings: [sampleFinding], total: 1 });
+  });
+
+  it('denies an inaccessible orgId WITHOUT calling listFleetFindings (mirrors the route\'s canAccessOrg check)', async () => {
+    const restrictedAuth = { ...mockAuth, canAccessOrg: () => false };
+    const result = JSON.parse(await tool.handler({ orgId: 'org-other' }, restrictedAuth));
+    expect(result.error).toBe('Access to this organization denied');
+    expect(mockListFleetFindings).not.toHaveBeenCalled();
+  });
+
+  it('forwards an accessible orgId straight through to listFleetFindings', async () => {
+    await tool.handler({ orgId: 'org-1' }, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(
+      mockAuth,
+      expect.objectContaining({ orgId: 'org-1' }),
+    );
+  });
+
+  it('omits orgId (org-scoping left to auth.orgCondition inside listFleetFindings) when not given', async () => {
+    await tool.handler({}, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(
+      mockAuth,
+      expect.objectContaining({ orgId: undefined }),
+    );
+  });
+
+  it('defaults status to open+acknowledged', async () => {
+    await tool.handler({}, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(
+      mockAuth,
+      expect.objectContaining({ statuses: ['open', 'acknowledged'] }),
+    );
+  });
+
+  it('parses a custom status CSV', async () => {
+    await tool.handler({ status: 'dismissed,resolved' }, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(
+      mockAuth,
+      expect.objectContaining({ statuses: ['dismissed', 'resolved'] }),
+    );
+  });
+
+  it('rejects an invalid status without calling listFleetFindings', async () => {
+    const result = JSON.parse(await tool.handler({ status: 'bogus' }, mockAuth));
+    expect(result.error).toContain('Invalid status filter');
+    expect(mockListFleetFindings).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid kind without calling listFleetFindings', async () => {
+    const result = JSON.parse(await tool.handler({ kind: 'not_a_kind' }, mockAuth));
+    expect(result.error).toContain('Invalid kind');
+    expect(mockListFleetFindings).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid severity without calling listFleetFindings', async () => {
+    const result = JSON.parse(await tool.handler({ severity: 'catastrophic' }, mockAuth));
+    expect(result.error).toContain('Invalid severity');
+    expect(mockListFleetFindings).not.toHaveBeenCalled();
+  });
+
+  it('defaults limit to 25 and clamps an oversized limit to 50', async () => {
+    await tool.handler({}, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(mockAuth, expect.objectContaining({ limit: 25 }));
+
+    await tool.handler({ limit: 500 }, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenLastCalledWith(mockAuth, expect.objectContaining({ limit: 50 }));
+  });
+
+  it('floors a negative limit to 1 (0/falsy falls back to the default 25, matching the repo\'s existing hoursBack/limit convention)', async () => {
+    await tool.handler({ limit: -5 }, mockAuth);
+    expect(mockListFleetFindings).toHaveBeenCalledWith(mockAuth, expect.objectContaining({ limit: 1 }));
+  });
+
+  it('shapes output to title/kind/severity/status/deviceCount/orgName/lastSeenAt/id and does not leak raw evidence', async () => {
+    const result = JSON.parse(await tool.handler({}, mockAuth));
+    expect(result.total).toBe(1);
+    expect(result.showing).toBe(1);
+    expect(result.findings).toEqual([
+      {
+        id: 'f1',
+        title: 'High CPU across 5 devices',
+        kind: 'metric_anomaly_pattern',
+        severity: 'warning',
+        status: 'open',
+        deviceCount: 5,
+        orgName: 'Acme',
+        lastSeenAt: '2026-08-07T00:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('site filtering is delegated entirely to listFleetFindings — the tool trusts whatever it returns', async () => {
+    // listFleetFindings is the sole place that applies the site-axis
+    // narrowing (recomputed deviceCount, zero-in-scope-member findings
+    // omitted). A site-restricted auth is passed straight through; this test
+    // proves the tool does not re-filter or re-derive that result.
+    const restrictedAuth = { ...mockAuth, allowedSiteIds: ['site-A'], canAccessSite: (s: string) => s === 'site-A' };
+    mockListFleetFindings.mockResolvedValue({ findings: [], total: 0 });
+
+    const result = JSON.parse(await tool.handler({}, restrictedAuth));
+
+    expect(mockListFleetFindings).toHaveBeenCalledWith(restrictedAuth, expect.anything());
+    expect(result.findings).toEqual([]);
+    expect(result.total).toBe(0);
   });
 });

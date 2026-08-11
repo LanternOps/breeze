@@ -824,7 +824,7 @@
     "unifiSyncStarted": "La synchronisation UniFi a commencé",
     "failedToDisconnectUniFi": "Impossible de déconnecter UniFi.",
     "unifiDisconnected": "UniFi déconnecté",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "L’intégration UniFi est mise en place au niveau du partenaire. Passez à votre oscilloire partenaire pour la configurer.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "L’intégration UniFi se configure au niveau du partenaire. Passez au périmètre partenaire pour la configurer.",
     "loadingUniFiStatus": "Chargement de l’état UniFi...",
     "reconnectRequired": "Reconnexion requise",
     "syncError": "Erreur de synchronisation",

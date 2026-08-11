@@ -14,10 +14,14 @@ Breeze is a fast, modern Remote Monitoring and Management (RMM) platform for MSP
 
 ## Authentication
 
-The API supports two authentication methods:
-
-- **Bearer Token (JWT)**: Include the token in the \`Authorization\` header as \`Bearer <token>\`
-- **API Key**: Include the API key in the \`X-API-Key\` header
+- **Bearer Token (JWT)**: Include the token in the \`Authorization\` header as \`Bearer <token>\`.
+  This is the credential for the endpoints documented here; tenancy-mutating writes additionally
+  require the session to have completed MFA.
+- **API Key (\`X-API-Key\`)**: organization API keys (\`brz_…\`) are **not** general-purpose API
+  auth. They authenticate exactly three surfaces: \`POST /mcp/*\`, \`POST /dev/push\`, and
+  \`GET\`/\`PATCH /devices/{id}/custom-fields\`. Every other endpoint rejects them with 401.
+- **Partner service-principal key (\`brz_sp_…\`, also via \`X-API-Key\`)**: the machine-to-machine
+  credential for the \`/partner-api/*\` export and provisioning surface (not documented in this spec).
 
 ## Multi-Tenant Architecture
 
@@ -81,7 +85,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         type: 'apiKey',
         in: 'header',
         name: 'X-API-Key',
-        description: 'API key for service-to-service authentication'
+        description:
+          'Organization API key (brz_…). Only valid on POST /mcp/*, POST /dev/push, and ' +
+          'GET/PATCH /devices/{id}/custom-fields — all other endpoints reject it with 401. ' +
+          'For machine-to-machine access use a partner service-principal key (brz_sp_…) ' +
+          'against the /partner-api/* surface.'
       }
     },
     schemas: {
@@ -834,9 +842,12 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       }
     }
   },
+  // Global security is JWT-only: organization API keys (apiKeyAuth) authenticate only the
+  // three surfaces named in the scheme description, so advertising apiKeyAuth globally
+  // would be wrong for every documented path. Paths that accept a brz_ key declare it
+  // in their own per-operation `security` array.
   security: [
-    { bearerAuth: [] },
-    { apiKeyAuth: [] }
+    { bearerAuth: [] }
   ],
   paths: {
     // ============================================

@@ -24,7 +24,11 @@ describe('cascadeDeletePartner', () => {
 
     execMock
       .mockResolvedValueOnce([{ id: 'org-1' }])
-      // SSO FK-child pre-clears (#2195): user_sso_identities, then sso_sessions
+      // FK-child pre-clears, in list order: user_sso_identities and
+      // sso_sessions (#2195), then psa_ticket_mappings (epic #2135 — it has no
+      // partner_id column, so the sweep below cannot reach it, yet its
+      // connection_id FK into psa_connections is NO ACTION).
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ table_name: 'scripts' }, { table_name: 'users' }])
@@ -52,6 +56,13 @@ describe('cascadeDeletePartner', () => {
     expect(firstSweepIdx).toBeGreaterThan(-1);
     expect(identityClearIdx).toBeLessThan(firstSweepIdx);
     expect(sessionsClearIdx).toBeLessThan(firstSweepIdx);
+
+    // psa_ticket_mappings (epic #2135): same shape — no partner_id column, so
+    // it MUST be pre-cleared before `DELETE FROM psa_connections WHERE
+    // partner_id = ...` or the sweep aborts with 23503.
+    const psaClearIdx = calls.findIndex((c) => c.includes('psa_ticket_mappings'));
+    expect(psaClearIdx).toBeGreaterThan(-1);
+    expect(psaClearIdx).toBeLessThan(firstSweepIdx);
 
     // exactly one partners delete, and it is the LAST execute() call
     expect(calls.filter((c) => c.includes('partners')).length).toBe(1);

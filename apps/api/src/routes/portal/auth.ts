@@ -9,6 +9,7 @@ import { portalBranding, portalUsers } from '../../db/schema';
 import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
+import { rateLimitIpKey } from '../../services/clientIp';
 import {
   loginSchema,
   forgotPasswordSchema,
@@ -229,7 +230,7 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   const { email, password, orgId } = c.req.valid('json');
   const normalizedEmail = normalizeEmail(email);
   const clientIp = getClientIp(c);
-  const ipRateKey = `portal:login:ip:${clientIp}`;
+  const ipRateKey = `portal:login:ip:${rateLimitIpKey(clientIp)}`;
   const accountRateKey = `portal:login:account:${orgId ?? 'any'}:${normalizedEmail}`;
 
   for (const rateKey of [ipRateKey, accountRateKey]) {
@@ -358,7 +359,7 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
   const { email, orgId } = c.req.valid('json');
   const normalizedEmail = normalizeEmail(email);
   const clientIp = getClientIp(c);
-  const ipRateKey = `portal:forgot:ip:${clientIp}`;
+  const ipRateKey = `portal:forgot:ip:${rateLimitIpKey(clientIp)}`;
   const accountRateKey = `portal:forgot:account:${orgId ?? 'any'}:${normalizedEmail}`;
 
   for (const rateKey of [ipRateKey, accountRateKey]) {
@@ -430,7 +431,7 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
   const { token, password } = c.req.valid('json');
   const clientIp = getClientIp(c);
   const tokenHash = createHash('sha256').update(token).digest('hex');
-  const ipRateKey = `portal:reset:ip:${clientIp}`;
+  const ipRateKey = `portal:reset:ip:${rateLimitIpKey(clientIp)}`;
   const tokenRateKey = `portal:reset:token:${tokenHash}`;
 
   for (const rateKey of [ipRateKey, tokenRateKey]) {
@@ -536,7 +537,7 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   const clientIp = getClientIp(c);
   const tokenHash = createHash('sha256').update(token).digest('hex');
 
-  for (const rateKey of [`portal:accept:ip:${clientIp}`, `portal:accept:token:${tokenHash}`]) {
+  for (const rateKey of [`portal:accept:ip:${rateLimitIpKey(clientIp)}`, `portal:accept:token:${tokenHash}`]) {
     const rate = await checkRateLimit(rateKey, RESET_PASSWORD_RATE_LIMIT);
     if (!rate.allowed) {
       c.header('Retry-After', String(rate.retryAfterSeconds));

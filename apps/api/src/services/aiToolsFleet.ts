@@ -84,6 +84,12 @@ import {
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { listFleetFindings } from './fleetFindings/query';
+import type {
+  FleetFindingKind,
+  FleetFindingSeverity,
+  FleetFindingStatus,
+} from '../db/schema/fleetFindings';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -375,6 +381,35 @@ function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
       });
     }
   };
+}
+
+// ============================================
+// get_fleet_findings helpers
+// ============================================
+//
+// Mirrors the validation constants in routes/fleetFindings.ts (kept local
+// here rather than imported — a service importing a route module would be
+// the wrong dependency direction). The actual scoping/site-filtering logic
+// is NOT duplicated: it lives solely in services/fleetFindings/query.ts's
+// `listFleetFindings`, which this tool calls directly, per CLAUDE.md's
+// warning about AI-tool/route dual-map drift. Keep these value lists in
+// sync with routes/fleetFindings.ts's KIND_VALUES/SEVERITY_VALUES/STATUS_VALUES.
+
+const FLEET_FINDING_KIND_VALUES = ['metric_anomaly_pattern', 'log_correlation', 'reliability_offenders'] as const;
+const FLEET_FINDING_SEVERITY_VALUES = ['info', 'warning', 'error', 'critical'] as const;
+const FLEET_FINDING_STATUS_VALUES = ['open', 'acknowledged', 'dismissed', 'resolved'] as const;
+const FLEET_FINDING_STATUS_SET = new Set<string>(FLEET_FINDING_STATUS_VALUES);
+const DEFAULT_FLEET_FINDING_STATUSES: FleetFindingStatus[] = ['open', 'acknowledged'];
+
+/** `status=open,acknowledged` CSV -> validated array, or `null` on an unknown value. */
+function parseFleetFindingStatusCsv(raw: string | undefined): FleetFindingStatus[] | null {
+  if (!raw) return [...DEFAULT_FLEET_FINDING_STATUSES];
+  const items = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (items.length === 0) return [...DEFAULT_FLEET_FINDING_STATUSES];
+  for (const item of items) {
+    if (!FLEET_FINDING_STATUS_SET.has(item)) return null;
+  }
+  return items as FleetFindingStatus[];
 }
 
 // ============================================
@@ -2472,6 +2507,80 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });
+    }),
+  });
+
+  // ============================================
+  // 10. get_fleet_findings — Fleet hygiene findings feed (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_fleet_findings',
+      description: 'List fleet hygiene findings: deduplicated, aggregate issues detected across the fleet (metric anomaly patterns, log correlations, reliability offenders). Read-only — use manage_deployments/manage_patches/run_script etc. to act on a finding\'s remediation.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          kind: { type: 'string', enum: [...FLEET_FINDING_KIND_VALUES], description: 'Filter by finding kind' },
+          severity: { type: 'string', enum: [...FLEET_FINDING_SEVERITY_VALUES], description: 'Filter by severity' },
+          status: { type: 'string', description: `Comma-separated statuses to include, e.g. "open,acknowledged". Allowed values: ${FLEET_FINDING_STATUS_VALUES.join(', ')}. Default: open,acknowledged.` },
+          orgId: { type: 'string', description: 'Organization UUID to scope to (must be accessible to the caller). Omit to use the caller\'s own org/partner scope.' },
+          limit: { type: 'number', description: 'Max findings to return (default 25, max 50)' },
+        },
+      },
+    },
+    handler: safeHandler('get_fleet_findings', async (input, auth) => {
+      const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (orgId && !auth.canAccessOrg(orgId)) {
+        return JSON.stringify({ error: 'Access to this organization denied' });
+      }
+
+      const kind = typeof input.kind === 'string' ? (input.kind as FleetFindingKind) : undefined;
+      if (kind && !(FLEET_FINDING_KIND_VALUES as readonly string[]).includes(kind)) {
+        return JSON.stringify({ error: `Invalid kind. Allowed values: ${FLEET_FINDING_KIND_VALUES.join(', ')}` });
+      }
+
+      const severity = typeof input.severity === 'string' ? (input.severity as FleetFindingSeverity) : undefined;
+      if (severity && !(FLEET_FINDING_SEVERITY_VALUES as readonly string[]).includes(severity)) {
+        return JSON.stringify({ error: `Invalid severity. Allowed values: ${FLEET_FINDING_SEVERITY_VALUES.join(', ')}` });
+      }
+
+      const statuses = parseFleetFindingStatusCsv(typeof input.status === 'string' ? input.status : undefined);
+      if (!statuses) {
+        return JSON.stringify({ error: `Invalid status filter. Allowed values: ${FLEET_FINDING_STATUS_VALUES.join(', ')}` });
+      }
+
+      const limit = Math.min(Math.max(1, Number(input.limit) || 25), 50);
+
+      // listFleetFindings owns ALL scoping: org (RLS/orgCondition or the
+      // access-checked orgId above) and site-axis narrowing (app-layer,
+      // recomputes deviceCount and omits zero-in-scope-member findings for a
+      // site-restricted caller). Not re-derived here — see CLAUDE.md's
+      // AI-tool/route dual-map drift warning.
+      const result = await listFleetFindings(auth, {
+        orgId,
+        kind,
+        severity,
+        statuses,
+        limit,
+        offset: 0,
+      });
+
+      return JSON.stringify({
+        findings: result.findings.map((f) => ({
+          id: f.id,
+          title: f.title,
+          kind: f.kind,
+          severity: f.severity,
+          status: f.status,
+          deviceCount: f.deviceCount,
+          orgName: f.orgName,
+          lastSeenAt: f.lastSeenAt,
+        })),
+        total: result.total,
+        showing: result.findings.length,
+      });
     }),
   });
 }

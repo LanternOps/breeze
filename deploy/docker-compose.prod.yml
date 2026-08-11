@@ -217,6 +217,12 @@ services:
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: github
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:?Set RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS in .env}
+      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+      # Binary edition served by this deployment: self-host (default,
+      # unchanged behavior) or hosted (production requires
+      # BINARY_SOURCE=local + a manifest trust root — not compatible with the
+      # BINARY_SOURCE=github hardcoded above without also changing that).
+      BINARY_EDITION: ${BINARY_EDITION:-self-host}
       # Hosted SaaS gate (#570). This template is for hosted deploys, so
       # IS_HOSTED is required-explicit — operators must set it in .env.
       # Misconfiguration here silently drops new partners to status='active'
@@ -267,9 +273,6 @@ services:
       PARTNER_HOOKS_URL: http://billing:3002/hooks
       BILLING_SERVICE_URL: http://billing:3002
       BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
-      MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
-      MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
-      MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
       # Signup-abuse-detection sweep (docs/superpowers/specs/security-auth/2026-07-11-signup-abuse-detection-design.md).
       # Optional — empty/unmapped means ops alerting stays dark and per-signal
       # thresholds fall back to config.ts defaults.
@@ -278,6 +281,8 @@ services:
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
       ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
+      ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
+      ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
       # Native APNs push for the iOS app (all optional; unset = push disabled).
       # All-or-none: setting ANY of these makes the four credentials required,
       # so a half-configured relay fails at boot instead of silently at first
@@ -300,6 +305,18 @@ services:
       # these MUST be mapped here for compose interpolation to reach the API).
       SYNTHETIC_TEST_TOKEN: ${SYNTHETIC_TEST_TOKEN:-}
       SYNTHETIC_TEST_IP_ALLOWLIST: ${SYNTHETIC_TEST_IP_ALLOWLIST:-}
+      # Optional knobs documented as COMMENTED-OUT defaults in
+      # deploy/.env.example. The parity guard read only uncommented assignments
+      # until #3239, so this whole class was exempt from it and never reached
+      # the container. Same `${VAR:-}` reasoning as the block above.
+      MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+      LOGIN_ACCOUNT_LOCKOUT_MAX: ${LOGIN_ACCOUNT_LOCKOUT_MAX:-}
+      LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS: ${LOGIN_ACCOUNT_LOCKOUT_WINDOW_SECONDS:-}
+      AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+      # Break-glass only: lets the API connect to an unauthenticated Redis.
+      # Mapped so it can be set deliberately in an incident rather than being
+      # inert; leave it unset in normal operation.
+      BREEZE_ALLOW_UNAUTH_REDIS: ${BREEZE_ALLOW_UNAUTH_REDIS:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

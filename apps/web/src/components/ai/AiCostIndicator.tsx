@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { cn, widthPercentClass } from "@/lib/utils";
@@ -19,14 +19,50 @@ interface UsageData {
 
 interface AiCostIndicatorProps {
   enabled?: boolean;
+  /**
+   * True while an AI turn is actively streaming, false once it completes.
+   * Used to trigger an immediate usage refetch on the true→false edge — the
+   * indicator otherwise only refreshes on its 60s poll, which left the header
+   * ("$0.00 this month" / "0 msgs") stale through an entire completed
+   * exchange, including one with a tool call, until the next tick or a full
+   * page reload. Omit this prop to keep the old poll-only behavior.
+   */
+  isStreaming?: boolean;
 }
 
 export default function AiCostIndicator({
   enabled = true,
+  isStreaming,
 }: AiCostIndicatorProps) {
   const { t } = useTranslation("ai");
   const [usage, setUsage] = useState<UsageData | null>(null);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const wasStreamingRef = useRef(false);
+
+  // Refresh immediately when a turn just finished (true -> false), instead of
+  // waiting up to 60s for the next poll tick. Kept as a separate effect from
+  // the polling one below so it doesn't disturb the poll interval's lifecycle
+  // (401/error backoff, mount/unmount) on every streaming-state change.
+  useEffect(() => {
+    const wasStreaming = wasStreamingRef.current;
+    wasStreamingRef.current = !!isStreaming;
+    if (!enabled || !isAuthenticated || !wasStreaming || isStreaming) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth("/ai/usage");
+        if (res.ok && !cancelled) {
+          setUsage(await res.json());
+        }
+      } catch (err) {
+        console.warn("[AiCostIndicator] post-turn usage refresh failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isStreaming, enabled, isAuthenticated]);
 
   useEffect(() => {
     if (!enabled || !isAuthenticated) {

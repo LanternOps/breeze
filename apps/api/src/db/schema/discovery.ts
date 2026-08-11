@@ -52,6 +52,17 @@ export const discoveredAssetTypeSourceEnum = pgEnum('discovered_asset_type_sourc
   'auto'
 ]);
 
+// WHICH automatic classifier produced detected_asset_type. Orthogonal to
+// type_source (which only records whether a human pinned the type). Declaration
+// order here is NOT the precedence order — the rank lives in
+// services/discoveredAssetClassification.ts, where a missing entry is a compile
+// error. See that module before adding a member. (#3187)
+export const discoveredAssetDetectionSourceEnum = pgEnum('discovered_asset_detection_source', [
+  'vendor_oui',
+  'agent_scan',
+  'unifi_controller'
+]);
+
 export const discoveryJobStatusEnum = pgEnum('discovery_job_status', [
   'scheduled',
   'running',
@@ -145,6 +156,8 @@ export const discoveredAssets = pgTable('discovered_assets', {
   autoLinkSuppressedAt: timestamp('auto_link_suppressed_at', { withTimezone: true }),
   typeSource: discoveredAssetTypeSourceEnum('type_source').notNull().default('auto'),
   detectedAssetType: discoveredAssetTypeEnum('detected_asset_type'),
+  // NULL = no classifier has ever had an opinion; ranks below every real source.
+  detectedTypeSource: discoveredAssetDetectionSourceEnum('detected_type_source'),
   firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
   lastSeenAt: timestamp('last_seen_at'),
   lastJobId: uuid('last_job_id').references(() => discoveryJobs.id),

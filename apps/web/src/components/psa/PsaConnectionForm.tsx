@@ -2,19 +2,42 @@ import { useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { psaProviderIdSchema } from '@breeze/shared';
 import { providerMeta, type PsaProvider } from './PsaConnectionList';
 import { useTranslation } from 'react-i18next';
 
 const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
+  // Ownership axis (epic #2135). 'partner' = partner-wide / all-orgs: the MSP's
+  // own PSA. CREATE ONLY — ownership is immutable afterwards, and the server
+  // derives the partner from the caller's token, never from this value.
+  ownerScope: z.enum(['organization', 'partner']).optional(),
+  // Which org owns the connection when ownerScope is 'organization'. Required
+  // in that branch for a partner with 2+ orgs — the API cannot guess, and
+  // omitting it used to 400 ("orgId is required when partner has multiple
+  // organizations"). Org-scope callers never send it; the server derives it.
+  orgId: z.string().optional(),
   name: z.string().min(1, t('longTail.psa.PsaConnectionForm.validation.nameRequired')),
-  provider: z.enum(['jira', 'servicenow', 'connectwise', 'autotask', 'freshservice', 'zendesk']),
+  // Single-source provider list — @breeze/shared PSA_PROVIDERS.
+  provider: psaProviderIdSchema,
   baseUrl: z.string().url(t('longTail.psa.PsaConnectionForm.validation.validUrl')).optional().or(z.literal('')),
   defaultQueue: z.string().optional(),
+  // Every credential key any adapter reads. Which ones are RENDERED is decided
+  // per provider by PROVIDER_CREDENTIAL_FIELDS below; they are all optional
+  // here because the server is the authority on per-provider requirements
+  // (apps/api/src/services/psa/credentials.ts).
   username: z.string().optional(),
   password: z.string().optional(),
   apiToken: z.string().optional(),
   clientId: z.string().optional(),
   clientSecret: z.string().optional(),
+  email: z.string().optional(),
+  companyId: z.string().optional(),
+  publicKey: z.string().optional(),
+  privateKey: z.string().optional(),
+  integrationCode: z.string().optional(),
+  secret: z.string().optional(),
+  apiKey: z.string().optional(),
+  personalAccessToken: z.string().optional(),
   syncEnabled: z.boolean(),
   syncInterval: z.enum(['15m', '30m', '1h', '6h', '24h']),
   syncDirection: z.enum(['inbound', 'outbound', 'bidirectional']),
@@ -23,6 +46,74 @@ const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
 });
 
 export type PsaConnectionFormValues = z.infer<ReturnType<typeof createPsaConnectionSchema>>;
+
+/** Credential keys, i.e. everything in the form that lands in `credentials`. */
+export type PsaCredentialField =
+  | 'username'
+  | 'password'
+  | 'apiToken'
+  | 'clientId'
+  | 'clientSecret'
+  | 'email'
+  | 'companyId'
+  | 'publicKey'
+  | 'privateKey'
+  | 'integrationCode'
+  | 'secret'
+  | 'apiKey'
+  | 'personalAccessToken';
+
+type CredentialFieldDescriptor = {
+  name: PsaCredentialField;
+  /** Masked with a reveal toggle, and shown as "keep existing" when stored. */
+  secret?: boolean;
+};
+
+/**
+ * What each provider's adapter ACTUALLY reads, mirroring
+ * REQUIRED_CREDENTIAL_KEYS in apps/api/src/services/psa/credentials.ts.
+ *
+ * The form used to offer one generic set (baseUrl/username/password/apiToken/
+ * clientId/clientSecret) for every provider, so ConnectWise and Autotask
+ * connections could not be created at all — their required keys (companyId /
+ * publicKey / privateKey, integrationCode / secret) had no input, and every
+ * Test returned 400 (#3291 review).
+ *
+ * Typed as a total Record over the shared PsaProviderId union, so adding a
+ * provider to @breeze/shared PSA_PROVIDERS fails this file to compile until
+ * its fields are declared. `baseUrl` is rendered separately (Instance URL).
+ */
+const PROVIDER_CREDENTIAL_FIELDS: Record<PsaProvider, readonly CredentialFieldDescriptor[]> = {
+  jira: [
+    { name: 'email' },
+    { name: 'apiToken', secret: true },
+    { name: 'username' },
+    { name: 'password', secret: true },
+    { name: 'personalAccessToken', secret: true }
+  ],
+  servicenow: [
+    { name: 'username' },
+    { name: 'password', secret: true }
+  ],
+  connectwise: [
+    { name: 'companyId' },
+    { name: 'publicKey' },
+    { name: 'privateKey', secret: true },
+    { name: 'clientId' }
+  ],
+  autotask: [
+    { name: 'username' },
+    { name: 'secret', secret: true },
+    { name: 'integrationCode', secret: true }
+  ],
+  freshservice: [
+    { name: 'apiKey', secret: true }
+  ],
+  zendesk: [
+    { name: 'email' },
+    { name: 'apiToken', secret: true }
+  ]
+};
 
 type PsaConnectionFormProps = {
   onSubmit?: (values: PsaConnectionFormValues) => void | Promise<void>;
@@ -33,17 +124,29 @@ type PsaConnectionFormProps = {
   loading?: boolean;
   testingConnection?: boolean;
   isEditing?: boolean;
-  hasCredentials?: {
-    password?: boolean;
-    apiToken?: boolean;
-    clientSecret?: boolean;
-  };
+  /**
+   * Show the ownership-scope selector. Create-only, and only for partner users
+   * who may administer partner-wide state (epic #2135).
+   */
+  showOwnerScope?: boolean;
+  /** Orgs the caller may create an org-owned connection for (partner scope). */
+  ownerOrgOptions?: ReadonlyArray<{ id: string; name: string }>;
+  /** Per-field presence of the STORED secrets (server: `credentialFields`). */
+  credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
 };
 
-const providerDescriptions: Record<PsaProvider, { hintKey: string; urlPlaceholder: string }> = {
+const providerDescriptions: Record<PsaProvider, {
+  hintKey: string;
+  urlPlaceholder: string;
+  /** Extra note above the credential inputs, for providers with alternatives. */
+  credentialsNoteKey?: string;
+}> = {
   jira: {
     hintKey: 'longTail.psa.PsaConnectionForm.providerHints.jira',
-    urlPlaceholder: 'https://your-domain.atlassian.net'
+    urlPlaceholder: 'https://your-domain.atlassian.net',
+    // Jira accepts three mutually exclusive auth modes; the server derives
+    // which one is in use from the fields actually filled in.
+    credentialsNoteKey: 'longTail.psa.PsaConnectionForm.credentialsNote.jira'
   },
   servicenow: {
     hintKey: 'longTail.psa.PsaConnectionForm.providerHints.servicenow',
@@ -90,23 +193,30 @@ export default function PsaConnectionForm({
   loading,
   testingConnection,
   isEditing,
-  hasCredentials
+  showOwnerScope = false,
+  ownerOrgOptions = [],
+  credentialFields
 }: PsaConnectionFormProps) {
   const { t } = useTranslation('common');
   const resolvedSubmitLabel = submitLabel ?? t('longTail.psa.PsaConnectionForm.defaultSubmitLabel');
   const psaConnectionSchema = useMemo(() => createPsaConnectionSchema(t), [t]);
-  const [showPassword, setShowPassword] = useState(false);
-  const [showApiToken, setShowApiToken] = useState(false);
-  const [showClientSecret, setShowClientSecret] = useState(false);
+  const [revealed, setRevealed] = useState<Partial<Record<PsaCredentialField, boolean>>>({});
 
   const {
     register,
     handleSubmit,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, dirtyFields },
     control
   } = useForm<PsaConnectionFormValues>({
     resolver: zodResolver(psaConnectionSchema),
     defaultValues: {
+      // Default comes from the caller via defaultValues (useDefaultOwnerScope
+      // in the page) — the repo-wide rule, not a literal, so this form tracks
+      // the convention if it changes. Partner-wide remains the default in the
+      // All-organizations view. The API's own default stays 'organization' for
+      // non-browser clients.
+      ownerScope: 'partner',
+      orgId: '',
       name: '',
       provider: 'jira',
       baseUrl: '',
@@ -116,6 +226,14 @@ export default function PsaConnectionForm({
       apiToken: '',
       clientId: '',
       clientSecret: '',
+      email: '',
+      companyId: '',
+      publicKey: '',
+      privateKey: '',
+      integrationCode: '',
+      secret: '',
+      apiKey: '',
+      personalAccessToken: '',
       syncEnabled: true,
       syncInterval: '1h',
       syncDirection: 'bidirectional',
@@ -126,10 +244,19 @@ export default function PsaConnectionForm({
   });
 
   const selectedProvider = useWatch({ control, name: 'provider' });
+  const selectedOwnerScope = useWatch({ control, name: 'ownerScope' });
   const syncEnabled = useWatch({ control, name: 'syncEnabled' });
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
   const credentialHint = providerDescriptions[selectedProvider];
+  const credentialInputs = PROVIDER_CREDENTIAL_FIELDS[selectedProvider];
+
+  // Test posts to the server, which tests the STORED credentials — so a green
+  // result would vouch for credentials the user is about to overwrite. Block it
+  // while any credential input (baseUrl included) has unsaved edits (#3291).
+  const credentialsDirty =
+    Boolean(dirtyFields.baseUrl) ||
+    credentialInputs.some((field) => Boolean(dirtyFields[field.name]));
 
   return (
     <form
@@ -138,6 +265,60 @@ export default function PsaConnectionForm({
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
+      {/* Ownership scope — create-only, partner admins only (epic #2135) */}
+      {showOwnerScope && !isEditing && (
+        <fieldset
+          className="space-y-2 rounded-md border p-4"
+          data-testid="psa-connection-owner"
+        >
+          <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+            {t('longTail.psa.PsaConnectionForm.ownerScope.legend')}
+          </legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="partner"
+              {...register('ownerScope')}
+              data-testid="psa-connection-owner-partner"
+            />
+            {t('longTail.psa.PsaConnectionForm.ownerScope.allOrganizations')}
+            <span className="text-muted-foreground">
+              {t('longTail.psa.PsaConnectionForm.ownerScope.partnerWideHint')}
+            </span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              value="organization"
+              {...register('ownerScope')}
+              data-testid="psa-connection-owner-org"
+            />
+            {t('longTail.psa.PsaConnectionForm.ownerScope.thisOrganizationOnly')}
+          </label>
+
+          {/* Which org owns it. Without this a partner with 2+ orgs sends no
+              orgId and the create 400s. */}
+          {selectedOwnerScope === 'organization' && ownerOrgOptions.length > 0 && (
+            <div className="space-y-1 pl-6">
+              <label htmlFor="connection-owner-org" className="text-sm font-medium">
+                {t('longTail.psa.PsaConnectionForm.ownerScope.organization')}
+              </label>
+              <select
+                id="connection-owner-org"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                {...register('orgId')}
+                data-testid="psa-connection-owner-org-select"
+              >
+                {ownerOrgOptions.map((org) => (
+                  <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+              {errors.orgId && <p className="text-sm text-destructive">{errors.orgId.message}</p>}
+            </div>
+          )}
+        </fieldset>
+      )}
+
       <div className="space-y-4">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           {t('longTail.psa.PsaConnectionForm.sections.basicInformation')}
@@ -216,132 +397,73 @@ export default function PsaConnectionForm({
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           {t('longTail.psa.PsaConnectionForm.sections.credentials')}
         </h3>
+        {credentialHint.credentialsNoteKey && (
+          <p className="text-xs text-muted-foreground">
+            {t(/* i18n-dynamic */ credentialHint.credentialsNoteKey)}
+          </p>
+        )}
         <div className="grid gap-6 md:grid-cols-2">
-          <div className="space-y-2">
-            <label htmlFor="connection-username" className="text-sm font-medium">
-              {t('longTail.psa.PsaConnectionForm.fields.username')}
-            </label>
-            <input
-              id="connection-username"
-              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.username')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register('username')}
-            />
-          </div>
+          {credentialInputs.map((field) => {
+            const stored = Boolean(isEditing && credentialFields?.[field.name]);
+            const inputId = `connection-${field.name}`;
+            // Template-literal form on purpose: the i18n keyUsage guard checks
+            // that the static prefix names a real, non-empty group in the en
+            // catalog, which a precomputed identifier would skip entirely.
+            const label = t(/* i18n-dynamic */ `longTail.psa.PsaConnectionForm.fields.${field.name}`);
+            const placeholder = stored
+              ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential')
+              : t(/* i18n-dynamic */ `longTail.psa.PsaConnectionForm.placeholders.${field.name}`);
 
-          <div className="space-y-2">
-            <label htmlFor="connection-password" className="text-sm font-medium">
-              {t('longTail.psa.PsaConnectionForm.fields.password')}
-              {isEditing && hasCredentials?.password && (
-                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
-              )}
-            </label>
-            <div className="relative">
-              <input
-                id="connection-password"
-                type={showPassword ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.password ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.password')}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                {...register('password')}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showPassword ? (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
+            return (
+              <div key={field.name} className="space-y-2">
+                <label htmlFor={inputId} className="text-sm font-medium">
+                  {label}
+                  {stored && (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {t('longTail.psa.PsaConnectionForm.keepExisting')}
+                    </span>
+                  )}
+                </label>
+                {field.secret ? (
+                  <div className="relative">
+                    <input
+                      id={inputId}
+                      data-testid={`psa-credential-${field.name}`}
+                      type={revealed[field.name] ? 'text' : 'password'}
+                      placeholder={placeholder}
+                      className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      {...register(field.name)}
+                    />
+                    <button
+                      type="button"
+                      aria-label={t('longTail.psa.PsaConnectionForm.actions.toggleVisibility')}
+                      onClick={() => setRevealed((prev) => ({ ...prev, [field.name]: !prev[field.name] }))}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {revealed[field.name] ? (
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                      ) : (
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
                 ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
+                  <input
+                    id={inputId}
+                    data-testid={`psa-credential-${field.name}`}
+                    placeholder={placeholder}
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    {...register(field.name)}
+                  />
                 )}
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="connection-api-token" className="text-sm font-medium">
-              {t('longTail.psa.PsaConnectionForm.fields.apiToken')}
-              {isEditing && hasCredentials?.apiToken && (
-                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
-              )}
-            </label>
-            <div className="relative">
-              <input
-                id="connection-api-token"
-                type={showApiToken ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.apiToken ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.apiToken')}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                {...register('apiToken')}
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiToken(!showApiToken)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showApiToken ? (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
-                ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="connection-client-id" className="text-sm font-medium">
-              {t('longTail.psa.PsaConnectionForm.fields.clientId')}
-            </label>
-            <input
-              id="connection-client-id"
-              placeholder={t('longTail.psa.PsaConnectionForm.placeholders.clientId')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register('clientId')}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label htmlFor="connection-client-secret" className="text-sm font-medium">
-              {t('longTail.psa.PsaConnectionForm.fields.clientSecret')}
-              {isEditing && hasCredentials?.clientSecret && (
-                <span className="ml-2 text-xs text-muted-foreground">{t('longTail.psa.PsaConnectionForm.keepExisting')}</span>
-              )}
-            </label>
-            <div className="relative">
-              <input
-                id="connection-client-secret"
-                type={showClientSecret ? 'text' : 'password'}
-                placeholder={isEditing && hasCredentials?.clientSecret ? t('longTail.psa.PsaConnectionForm.placeholders.existingCredential') : t('longTail.psa.PsaConnectionForm.placeholders.clientSecret')}
-                className="h-10 w-full rounded-md border bg-background px-3 pr-10 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                {...register('clientSecret')}
-              />
-              <button
-                type="button"
-                onClick={() => setShowClientSecret(!showClientSecret)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showClientSecret ? (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
-                ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -437,10 +559,13 @@ export default function PsaConnectionForm({
       </div>
 
       <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:justify-between">
+        <div className="flex flex-col gap-1">
         <button
           type="button"
+          data-testid="psa-test-connection"
           onClick={onTestConnection}
-          disabled={testingConnection}
+          disabled={testingConnection || credentialsDirty}
+          title={credentialsDirty ? t('longTail.psa.PsaConnectionForm.testDirtyHint') : undefined}
           className="flex h-11 w-full items-center justify-center gap-2 rounded-md border bg-background text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
           {testingConnection ? (
@@ -457,6 +582,12 @@ export default function PsaConnectionForm({
             </>
           )}
         </button>
+          {credentialsDirty && (
+            <p data-testid="psa-test-dirty-hint" className="text-xs text-muted-foreground">
+              {t('longTail.psa.PsaConnectionForm.testDirtyHint')}
+            </p>
+          )}
+        </div>
 
         <div className="flex flex-col gap-3 sm:flex-row">
           <button

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { eq, and, gt, ne, isNull, inArray, sql } from 'drizzle-orm';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { nanoid } from 'nanoid';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, getCurrentDbAccessContext } from '../db';
 import {
   ssoProviders,
   ssoSessions,
@@ -17,7 +17,7 @@ import {
   roles
 } from '../db/schema';
 import { createPendingDomain, verifyDomain, recordNameFor, recordValueFor, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
-import { authMiddleware, dbAccessContextFromAuth, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import {
   generateState,
   generateNonce,
@@ -38,7 +38,7 @@ import {
 import { createTokenPair, createSession, mintRefreshTokenFamily, bindRefreshJtiToFamily, getUserEpochs, getRefreshFamily, rateLimiter, getRedis } from '../services';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
-import { getTrustedClientIp } from '../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { captureException } from '../services/sentry';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -194,7 +194,9 @@ const tokenExchangeSchema = z.object({
 });
 
 /**
- * Run one short DB access context in the CALLER's exact tenant scope.
+ * DB CONTEXT NOTE — every db op in the provider routes below must be wrapped in
+ * `withAuthDbAccessContext` (middleware/auth.ts), which runs one short DB
+ * access context in the CALLER's exact tenant scope.
  *
  * The three provider routes that perform OIDC discovery (POST /providers,
  * PATCH /providers/:id, POST /providers/:id/test) are registered in
@@ -219,9 +221,6 @@ const tokenExchangeSchema = z.object({
  * context to exit) that keeps this correct if the route is ever removed from the
  * allowlist. Pattern: services/accounting/quickbooksCustomerImport.ts.
  */
-function withProviderDbContext<T>(auth: AuthContext, fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withDbAccessContext(dbAccessContextFromAuth(auth), fn));
-}
 
 /**
  * Operator-facing reason a discovery attempt failed. discoverOIDCConfig already
@@ -951,7 +950,7 @@ ssoRoutes.post(
     // SR2-10: existence + scope + tenant (as before) AND the permission-subset
     // ceiling against the configuring admin.
     if (body.defaultRoleId) {
-      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+      const roleError = await withAuthDbAccessContext(auth, () => validateProviderDefaultRole(
         c, auth, body.defaultRoleId!, { scope: 'partner', partnerId: auth.partnerId! },
       ));
       if (roleError) {
@@ -968,7 +967,7 @@ ssoRoutes.post(
     // JIT-provisions, so an org admin could delegate a role broader than their
     // own authority to every future SSO sign-in.
     if (body.defaultRoleId) {
-      const roleError = await withProviderDbContext(auth, () => validateProviderDefaultRole(
+      const roleError = await withAuthDbAccessContext(auth, () => validateProviderDefaultRole(
         c, auth, body.defaultRoleId!, { scope: 'organization', orgId: orgResult.orgId },
       ));
       if (roleError) {
@@ -991,7 +990,7 @@ ssoRoutes.post(
   }
 
   // If issuer provided, discover endpoints. NOTE: this outbound call runs with
-  // NO ambient DB context (see withProviderDbContext) — do not add a db op to
+  // NO ambient DB context (see withAuthDbAccessContext) — do not add a db op to
   // this block or move it inside one.
   if (body.issuer && body.type === 'oidc') {
     try {
@@ -1025,7 +1024,7 @@ ssoRoutes.post(
     }
   }
 
-  const [provider] = await withProviderDbContext(auth, () => db
+  const [provider] = await withAuthDbAccessContext(auth, () => db
     .insert(ssoProviders)
     .values({
       ...ownerColumns,
@@ -1086,7 +1085,7 @@ ssoRoutes.patch(
   const { id: providerId } = c.req.valid('param');
   const body = c.req.valid('json');
 
-  const existing = await withProviderDbContext(auth, async () => {
+  const existing = await withAuthDbAccessContext(auth, async () => {
     const [row] = await db
       .select({
         id: ssoProviders.id,
@@ -1117,7 +1116,7 @@ ssoRoutes.patch(
     if (!scopeContext) {
       return c.json({ error: 'Provider has no owning organization or partner' }, 400);
     }
-    const roleError = await withProviderDbContext(auth, () =>
+    const roleError = await withAuthDbAccessContext(auth, () =>
       validateProviderDefaultRole(c, auth, body.defaultRoleId!, scopeContext));
     if (roleError) {
       return c.json({ error: roleError }, 400);
@@ -1142,7 +1141,7 @@ ssoRoutes.patch(
   // because the issuer never changes without them.
   //
   // NOTE: the discovery call below runs with NO ambient DB context (see
-  // withProviderDbContext) — do not add a db op to this block.
+  // withAuthDbAccessContext) — do not add a db op to this block.
   const issuerChanged = body.issuer !== undefined && body.issuer !== existing.issuer;
   const rediscovered: Partial<typeof ssoProviders.$inferInsert> = {};
   if (issuerChanged && (body.type ?? existing.type) === 'oidc') {
@@ -1222,7 +1221,7 @@ ssoRoutes.patch(
     updates.clientSecret = encryptSecret(body.clientSecret);
   }
 
-  const [updated] = await withProviderDbContext(auth, () => db
+  const [updated] = await withAuthDbAccessContext(auth, () => db
     .update(ssoProviders)
     .set(updates)
     .where(eq(ssoProviders.id, providerId))
@@ -1395,7 +1394,7 @@ ssoRoutes.post(
   // Short, explicit DB context — this route is in SELF_MANAGED_DB_CONTEXT_ROUTES
   // (the discovery call below is tenant-controlled and 10s-bounded), so there is
   // no ambient request transaction to read under.
-  const provider = await withProviderDbContext(auth, async () => {
+  const provider = await withAuthDbAccessContext(auth, async () => {
     const [row] = await db
       .select()
       .from(ssoProviders)
@@ -1829,7 +1828,7 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   const redis = getRedis();
   const ipRateCheck = await rateLimiter(
     redis,
-    `sso:login:ip:${ip}`,
+    `sso:login:ip:${rateLimitIpKey(ip)}`,
     SSO_LOGIN_IP_RATE_LIMIT.limit,
     SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
   );
@@ -1841,7 +1840,7 @@ ssoRoutes.get('/login/partner/:partnerId', zValidator('param', partnerIdParamSch
   }
   const rateCheck = await rateLimiter(
     redis,
-    `sso:login:partner:${ip}:${partnerId}`,
+    `sso:login:partner:${rateLimitIpKey(ip)}:${partnerId}`,
     PARTNER_SSO_LOGIN_RATE_LIMIT.limit,
     PARTNER_SSO_LOGIN_RATE_LIMIT.windowSeconds
   );
@@ -1932,7 +1931,7 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   const redis = getRedis();
   const ipRateCheck = await rateLimiter(
     redis,
-    `sso:login:ip:${ip}`,
+    `sso:login:ip:${rateLimitIpKey(ip)}`,
     SSO_LOGIN_IP_RATE_LIMIT.limit,
     SSO_LOGIN_IP_RATE_LIMIT.windowSeconds
   );
@@ -1944,7 +1943,7 @@ ssoRoutes.get('/login/:orgId', zValidator('param', orgIdParamSchema), async (c) 
   }
   const rateCheck = await rateLimiter(
     redis,
-    `sso:login:org:${ip}:${orgId}`,
+    `sso:login:org:${rateLimitIpKey(ip)}:${orgId}`,
     ORG_SSO_LOGIN_RATE_LIMIT.limit,
     ORG_SSO_LOGIN_RATE_LIMIT.windowSeconds
   );

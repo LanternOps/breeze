@@ -160,7 +160,7 @@
     "description": "Aprovisione el asistente de Excel AI por organización del cliente: asigne el inquilino de Entra, otorgue el consentimiento del administrador, habilite la política, implemente el complemento.",
     "columns": {
       "aiEnabled": "AI habilitado",
-      "entraTenant": "Inquilino entrante",
+      "entraTenant": "Inquilino de Entra",
       "costMtd": "Costo (MTD)",
       "messagesMtd": "Mensajes (MTD)"
     },
@@ -184,8 +184,8 @@
       "title": "Configurar AI para Office - {{orgName}}",
       "mapDescription": "Asigne esta organización a su inquilino Microsoft Entra (directorio ID). El mapeo es el eje del aislamiento del inquilino: cada inicio de sesión de Excel de este inquilino llega a esta organización.",
       "prefilled": "Precargado desde la conexión Microsoft 365 existente de la organización.",
-      "entraTenantId": "Entra inquilino ID",
-      "guidError": "Debe ser un GUID (Centro de administración de Entra → Descripción general → Inquilino ID).",
+      "entraTenantId": "ID del inquilino de Entra",
+      "guidError": "Debe ser un GUID (Centro de administración de Entra → Información general → ID del inquilino).",
       "saveContinue": "Guardar y continuar",
       "consentDescription": "Un administrador de Microsoft 365 del inquilino del cliente debe otorgar consentimiento de administrador a la aplicación Breeze AI for Office. Envíeles este enlace (o ábralo usted mismo si tiene Global Admin en el inquilino del cliente):",
       "loadingConsent": "Cargando consentimiento URL…",
@@ -193,7 +193,7 @@
       "openNewTab": "Abrir en nueva pestaña",
       "afterConsent": "Después de otorgar, Microsoft redirige a una página de confirmación de Breeze. El consentimiento se muestra otorgado aquí una vez que el primer usuario inicia sesión desde Excel; no hay ninguna encuesta en vivo contra Microsoft (decisión 1 del Plan-4).",
       "consentGranted": "he dado consentimiento",
-      "enableDescription": "Habilite el asistente para esta organización. Esto escribe <code>enabled: true</code> en la política de la organización con valores predeterminados seguros (todos los usuarios, lectura/escritura con la aprobación del usuario final, redacción DLP para tipos financieros/credenciales). Sintonice todo en el editor de políticas después.",
+      "enableDescription": "Habilite el asistente para esta organización. Esto escribe <code>enabled: true</code> en la política de la organización con valores predeterminados seguros (todos los usuarios, lectura/escritura con la aprobación del usuario final y ocultamiento DLP de datos financieros y credenciales). Ajuste después las opciones en el editor de políticas.",
       "enabling": "Habilitando…",
       "alreadyEnabled": "Ya habilitado - continuar",
       "enableAi": "Habilite AI para Office",

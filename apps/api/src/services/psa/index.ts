@@ -11,7 +11,16 @@ import { ConnectWiseProvider } from './connectwise';
 import { FreshserviceProvider } from './freshservice';
 import { ServiceNowProvider } from './servicenow';
 import { ZendeskProvider } from './zendesk';
-import { PSAProvider, PSAProviderType, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompanyList,
+  PSAProvider,
+  PSAProviderType,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PsaCapabilityError
+} from './types';
+import { validateProviderCredentials } from './credentials';
 
 export * from './types';
 export * from './jira';
@@ -32,8 +41,18 @@ class JiraProvider implements PSAProvider {
     return this.client.testConnection();
   }
 
-  async getCompanies() {
-    return [];
+  /**
+   * Jira is an issue tracker: it has no company/account object to map onto a
+   * Breeze organization, so it is absent from
+   * `ORG_IMPORT_CAPABLE_PSA_PROVIDERS`.
+   *
+   * This used to `return []`, which made "Jira cannot do this" indistinguishable
+   * from "this PSA has no companies" — an org-import preview would have rendered
+   * as a successful read of an empty PSA. Throwing keeps the two apart; the
+   * import routes map `PsaCapabilityError` to 400.
+   */
+  async getCompanies(): Promise<PSACompanyList> {
+    throw new PsaCapabilityError('jira', 'company listing');
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {
@@ -102,47 +121,52 @@ class JiraProvider implements PSAProvider {
 }
 
 /**
- * Create PSA provider based on type
+ * Create PSA provider based on type.
+ *
+ * Validates + normalizes credentials first (`validateProviderCredentials`):
+ * a missing required key (e.g. baseUrl) throws a typed `PsaConfigError` the
+ * routes map to 400, instead of a deep TypeError inside an adapter.
  */
 export function createPSAProvider(
-  provider: PSAProviderType,
+  provider: PSAProviderType | string,
   credentials: Record<string, unknown>,
   settings: Record<string, unknown> = {}
 ): PSAProvider {
-  switch (provider) {
+  const validated = validateProviderCredentials(provider, credentials);
+  const creds = validated.credentials;
+
+  switch (validated.provider) {
     case 'jira': {
       const client = createJiraClient(
-        credentials as unknown as Parameters<typeof createJiraClient>[0],
+        creds as unknown as Parameters<typeof createJiraClient>[0],
         settings as unknown as Parameters<typeof createJiraClient>[1]
       );
       return new JiraProvider(client);
     }
     case 'servicenow':
       return new ServiceNowProvider(
-        credentials as unknown as ConstructorParameters<typeof ServiceNowProvider>[0],
+        creds as unknown as ConstructorParameters<typeof ServiceNowProvider>[0],
         settings as unknown as ConstructorParameters<typeof ServiceNowProvider>[1]
       );
     case 'connectwise':
       return new ConnectWiseProvider(
-        credentials as unknown as ConstructorParameters<typeof ConnectWiseProvider>[0],
+        creds as unknown as ConstructorParameters<typeof ConnectWiseProvider>[0],
         settings as unknown as ConstructorParameters<typeof ConnectWiseProvider>[1]
       );
     case 'autotask':
       return new AutotaskProvider(
-        credentials as unknown as ConstructorParameters<typeof AutotaskProvider>[0],
+        creds as unknown as ConstructorParameters<typeof AutotaskProvider>[0],
         settings as unknown as ConstructorParameters<typeof AutotaskProvider>[1]
       );
     case 'freshservice':
       return new FreshserviceProvider(
-        credentials as unknown as ConstructorParameters<typeof FreshserviceProvider>[0],
+        creds as unknown as ConstructorParameters<typeof FreshserviceProvider>[0],
         settings as unknown as ConstructorParameters<typeof FreshserviceProvider>[1]
       );
     case 'zendesk':
       return new ZendeskProvider(
-        credentials as unknown as ConstructorParameters<typeof ZendeskProvider>[0],
+        creds as unknown as ConstructorParameters<typeof ZendeskProvider>[0],
         settings as unknown as ConstructorParameters<typeof ZendeskProvider>[1]
       );
-    default:
-      throw new Error(`Unknown PSA provider: ${provider}`);
   }
 }

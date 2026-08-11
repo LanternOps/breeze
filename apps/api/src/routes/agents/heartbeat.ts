@@ -474,6 +474,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
+    // Migration-banner Task 2 — self-reported install edition + migration
+    // flag. Written UNCONDITIONALLY every heartbeat, mirroring
+    // outboundNetworkPolicyVersion above: an agent that stops reporting these
+    // (old build, or a build that no longer believes migration is required)
+    // must self-heal back to the default rather than leaving a stale value.
+    agentEdition: data.agentEdition ?? null,
+    migrationRequired: data.migrationRequired ?? false,
     // Task 5 (#2764) — a live heartbeat is proof the agent is still installed,
     // so it unconditionally clears any uninstall-intent stamp left by a prior
     // /uninstall-intent call (aborted uninstall, or a reinstall on the same
@@ -505,6 +512,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // — leave the stored value untouched in that case.
   if (data.watchdogVersion) {
     deviceUpdates.watchdogVersion = data.watchdogVersion;
+  }
+
+  // Keep devices.backup_version fresh from the agent's heartbeat, mirroring
+  // watchdog_version above. Absent (old agent, or breeze-backup not installed)
+  // leaves the stored value untouched.
+  if (data.backupVersion) {
+    deviceUpdates.backupVersion = data.backupVersion;
   }
 
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
@@ -980,36 +994,12 @@ if (latestHelper) {
   // resolving it here would silently miss it regardless of the resolver's own
   // query condition.
 
-  let eventLogSettings: Record<string, unknown> | null = null;
-  try {
-    eventLogSettings = await buildEventLogConfigUpdate(device.id);
-  } catch (err) {
-    console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
-  }
-
-  let monitoringSettings: Record<string, unknown> | null = null;
-  try {
-    monitoringSettings = await buildMonitoringConfigUpdate(device.id) as Record<string, unknown> | null;
-  } catch (err) {
-    console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
-  }
-
-  let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
-  try {
-    pamSettings = await buildPamConfigUpdate(device.id);
-  } catch (err) {
-    // Opt-in default means a resolver failure leaves pamSettings null and we
-    // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
-    // (grandfather flag or an explicit enabling policy) this momentarily drops
-    // elevation gating until the next successful heartbeat — call it out so the
-    // Sentry event isn't mistaken for a benign config-build hiccup. Not cached,
-    // so it self-heals on the next heartbeat.
-    console.error(
-      `[agents] failed to build pam config update for ${agentId} — sending uacInterceptionEnabled:false this heartbeat:`,
-      err,
-    );
-    captureException(err);
-  }
+  // #2930 — event_log, monitoring, pam and patch_source config are ALSO built
+  // after this org transaction closes, for the same reason as helper settings
+  // above: each reads configuration_policies, each can match a partner-wide
+  // policy (org_id NULL, partner_id set), and such a row is invisible under
+  // this context's RLS (accessiblePartnerIds: [] above) no matter how the
+  // resolver's own WHERE clause is written. See the post-scoped block below.
 
   // #1105 — onedrive_helper config is built AFTER this org transaction closes
   // (see the post-scoped section below), because Phase 4 per-UPN Graph
@@ -1017,35 +1007,16 @@ if (latestHelper) {
   // would hold a pooled connection in the open org transaction across those
   // calls. Mirrors buildPolicyProbeConfigUpdate's placement.
 
-  // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
-  // a transient failure never reverts an endpoint already under enforcement;
-  // a successful resolve with no patch policy returns false → agent reverts.
-  let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
-  try {
-    patchSourceSettings = await buildPatchSourceConfigUpdate(device.id);
-  } catch (err) {
-    console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
-    captureException(err);
-  }
-
   // #2288 — backup control-plane URL. ALWAYS present: the configured value,
   // or '' so agents clear a previously-pushed backup (absent = old API =
   // no change; '' = authoritative clear). Always non-null, so the final
   // configUpdate assembly below always carries the key.
-  // onedrive_helper_settings is NOT merged here — it is built post-scoped and
-  // merged into the final configUpdate below (#1105 hoist).
+  // event_log_settings / monitoring_settings / patch_source_settings and
+  // onedrive_helper_settings are NOT merged here — they are built post-scoped
+  // and merged into the final configUpdate below (#1105 / #2930 hoist).
   const mergedConfigUpdate: Record<string, unknown> = {
     backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
   };
-  if (eventLogSettings) {
-    mergedConfigUpdate.event_log_settings = eventLogSettings;
-  }
-  if (monitoringSettings) {
-    mergedConfigUpdate.monitoring_settings = monitoringSettings;
-  }
-  if (patchSourceSettings) {
-    mergedConfigUpdate.patch_source_settings = patchSourceSettings;
-  }
 
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
@@ -1165,10 +1136,8 @@ if (latestHelper) {
       confirmTokenRotation:
         (pendingRotationLive && c.get('agentPendingTokenPresented') === true) || undefined,
       // helperEnabled/helperSettings are merged in AFTER this org-scoped block
-      // closes — see the #1105 comment below.
-      // Opt-in default: a null pamSettings (resolver error, logged above) sends
-      // false so we never prompt users on a device that opted into nothing.
-      uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
+      // closes — see the #1105 comment below. uacInterceptionEnabled likewise
+      // (#2930): the pam resolver moved out with the other policy readers.
       manageRemoteManagement: manageRemoteManagement || undefined,
     },
   };
@@ -1252,9 +1221,123 @@ if (latestHelper) {
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
 
+  // #2930 — event_log / monitoring / pam / patch_source policy readers. These
+  // used to run inside the org transaction, where a partner-wide policy
+  // (org_id NULL) is RLS-invisible, so a partner-authored policy for any of the
+  // four never reached an agent. Same treatment as policyProbeConfig /
+  // onedriveSettings / helperSettings above: resolved after the org tx is
+  // released, under a system context anchored to `scoped.deviceId` — an id
+  // derived from the device the agent already authenticated as, so this cannot
+  // pivot tenants.
+  //
+  // All four share ONE context on purpose. They previously shared the org
+  // transaction, so a DB error already poisoned the others; giving each its own
+  // system transaction would cost four connection acquisitions per heartbeat
+  // against the 25-connection production ceiling for no isolation gain. The
+  // per-resolver try/catch below keeps each feature's documented fallback.
+  //
+  // The whole block is ALSO wrapped in an outer catch. The per-resolver catches
+  // below cannot see a transaction setup or COMMIT failure, and a SQL error
+  // caught locally still leaves the shared transaction aborted — so its commit
+  // throws. By this point the org transaction has committed and the commands in
+  // `scoped.mainResponse` are already marked delivered, so letting that escape
+  // would 500 the heartbeat and lose the claimed commands. Degrading to "no
+  // config update this cycle" is the safe failure: every field here is
+  // re-resolved on the next heartbeat.
+  type PolicyConfigUpdates = {
+    eventLogSettings: Record<string, unknown> | null;
+    monitoringSettings: Record<string, unknown> | null;
+    pamSettings: { uacInterceptionEnabled: boolean } | null;
+    patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
+  };
+  let policyConfigs: PolicyConfigUpdates = {
+    eventLogSettings: null,
+    monitoringSettings: null,
+    pamSettings: null,
+    patchSourceSettings: null,
+  };
+  try {
+    policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
+      let eventLogSettings: Record<string, unknown> | null = null;
+      let monitoringSettings: Record<string, unknown> | null = null;
+      let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
+      let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
+
+      // Sentry on all four, not just pam/patch_source. Losing an event_log or
+      // monitoring policy is precisely the invisible failure #2930 is about:
+      // the agent keeps collecting on stale defaults and nothing surfaces it.
+      // A stdout line is not an alerting channel.
+      try {
+        eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      try {
+        monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId) as Record<string, unknown> | null;
+      } catch (err) {
+        console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      try {
+        pamSettings = await buildPamConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        // Opt-in default means a resolver failure leaves pamSettings null and we
+        // send uacInterceptionEnabled:false below. For an org that *enforces* PAM
+        // (grandfather flag or an explicit enabling policy) this momentarily drops
+        // elevation gating until the next successful heartbeat — call it out so the
+        // Sentry event isn't mistaken for a benign config-build hiccup. Not cached,
+        // so it self-heals on the next heartbeat.
+        console.error(
+          `[agents] failed to build pam config update for ${agentId} — sending uacInterceptionEnabled:false this heartbeat:`,
+          err,
+        );
+        captureException(err);
+      }
+
+      // #1872: sole-patch-source enforcement. Omit the block on a resolver error so
+      // a transient failure never reverts an endpoint already under enforcement;
+      // a successful resolve with no patch policy returns false → agent reverts.
+      try {
+        patchSourceSettings = await buildPatchSourceConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build patch_source config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings };
+    });
+  } catch (err) {
+    // Transaction setup/commit failure — see the note above. Every resolver's
+    // documented "no policy this cycle" fallback already applies because
+    // policyConfigs keeps its all-null initial value.
+    console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
+    captureException(err);
+  }
+  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings } = policyConfigs;
+
+  const policyConfigUpdate: Record<string, unknown> = {};
+  if (eventLogSettings) {
+    policyConfigUpdate.event_log_settings = eventLogSettings;
+  }
+  if (monitoringSettings) {
+    policyConfigUpdate.monitoring_settings = monitoringSettings;
+  }
+  if (patchSourceSettings) {
+    policyConfigUpdate.patch_source_settings = patchSourceSettings;
+  }
+  const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
+
   const scopedConfigUpdate = scoped.mainResponse.configUpdate as Record<string, unknown> | null;
-  const configUpdate = policyProbeConfig || scopedConfigUpdate || onedriveConfigUpdate
-    ? { ...(policyProbeConfig ?? {}), ...(scopedConfigUpdate ?? {}), ...(onedriveConfigUpdate ?? {}) }
+  const configUpdate = policyProbeConfig || scopedConfigUpdate || hasPolicyConfigUpdate || onedriveConfigUpdate
+    ? {
+      ...(policyProbeConfig ?? {}),
+      ...(scopedConfigUpdate ?? {}),
+      ...policyConfigUpdate,
+      ...(onedriveConfigUpdate ?? {}),
+    }
     : null;
 
   // #1105 — helper settings resolved OUTSIDE the org context too (same
@@ -1279,6 +1362,9 @@ if (latestHelper) {
     configUpdate,
     manifestTrustKeys,
     manifestKeyDelegations,
+    // Opt-in default: a null pamSettings (resolver error, logged above) sends
+    // false so we never prompt users on a device that opted into nothing.
+    uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
   });

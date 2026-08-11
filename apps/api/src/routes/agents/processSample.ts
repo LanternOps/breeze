@@ -17,13 +17,15 @@ processSampleRoutes.post(
   bodyLimit({ maxSize: 256 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }),
   zValidator('json', processSampleSchema),
   async (c) => {
-    const deviceId = c.req.param('id');
+    const agentId = c.req.param('id');
     const data = c.req.valid('json');
     const agent = c.get('agent') as AgentAuthContext | undefined;
 
     // Tenancy is derived server-side from the authenticated device — the agent
     // payload is never trusted for org_id, and the path id must match the token.
-    if (!agent || agent.deviceId !== deviceId) {
+    // `:id` is the AGENT id here, matching every sibling agent ingest route
+    // (inventory, connections, heartbeat) and what the agent actually sends.
+    if (!agent || agent.agentId !== agentId) {
       return c.json({ error: 'Forbidden' }, 403);
     }
 

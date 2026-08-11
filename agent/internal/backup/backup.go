@@ -61,6 +61,24 @@ type BackupConfig struct {
 	VSSEnabled         bool   // Windows only: create VSS shadow copy before backup
 	SystemStateEnabled bool   // Collect system state alongside file backup
 	StagingDir         string // Base directory for temporary staging (empty = OS temp dir)
+
+	// VSSProvider overrides where a VSS-enabled run gets its provider from.
+	// Nil — the production case, and what every real caller sets — means
+	// "use the platform provider", i.e. vss.NewProvider on Windows and no VSS
+	// anywhere else. See resolveVSSProvider for the exact resolution.
+	//
+	// It exists because the snapshot-liveness wiring in RunBackupContext
+	// (#3260/#3266: build the shadow-root probe from the live session and hand
+	// it to the upload loop) was otherwise unreachable from a test — the only
+	// real provider is Windows-only and process-global, so a refactor could
+	// drop or misroute that wiring while every liveness unit test still passed
+	// and the protection was silently disconnected (#3270).
+	//
+	// Scoped to the provider ONLY, deliberately. It says nothing about how a
+	// session is created, held or released, so the COM-lifetime rewrite of that
+	// plumbing (#3269) is free to change the session's shape underneath without
+	// touching this field.
+	VSSProvider vss.Provider
 }
 
 // BackupJob tracks the state of a backup run.
@@ -179,6 +197,33 @@ func (m *BackupManager) GetSystemStateEnabled() bool {
 // before a file-mode backup (Windows only; see BackupConfig.VSSEnabled).
 func (m *BackupManager) GetVSSEnabled() bool {
 	return m.config.VSSEnabled
+}
+
+// resolveVSSProvider decides whether a run takes the VSS path, and with which
+// provider. The second return is the whole gate: false means "no shadow copy
+// this run" and the caller skips the block entirely.
+//
+// An injected BackupConfig.VSSProvider bypasses the runtime.GOOS check on
+// purpose. That check is not a statement about the platform, it is a statement
+// about the only provider that used to be reachable here: vss.NewProvider
+// compiles to a stub off Windows, and calling it there would fail every run
+// with ErrVSSNotSupported and stamp a spurious "VSS failed" warning onto the
+// job. Supplying a provider is the caller asserting it works on this host, so
+// re-deriving that answer from GOOS would just make the seam unusable off
+// Windows — which is exactly the platform the wiring needs to be testable on.
+// Nothing in production sets the field, so the production decision is
+// unchanged.
+func (m *BackupManager) resolveVSSProvider() (vss.Provider, bool) {
+	if !m.config.VSSEnabled {
+		return nil, false
+	}
+	if m.config.VSSProvider != nil {
+		return m.config.VSSProvider, true
+	}
+	if runtime.GOOS != "windows" {
+		return nil, false
+	}
+	return vss.NewProvider(vss.DefaultConfig()), true
 }
 
 // Stop cancels an in-flight backup job and waits for it to unwind. It reports
@@ -315,15 +360,23 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 
 	// VSS: create shadow copy on Windows for application-consistent backup
 	var vssSession *vss.VSSSession
-	if m.config.VSSEnabled && runtime.GOOS == "windows" {
+	if provider, useVSS := m.resolveVSSProvider(); useVSS {
 		if err := runCtx.Err(); err != nil {
 			return stopBackupRun()
 		}
 		vssStart := time.Now()
-		provider := vss.NewProvider(vss.DefaultConfig())
 		vssCtx, cancel := context.WithTimeout(runCtx, 10*time.Minute)
 		session, vssErr := provider.CreateShadowCopy(vssCtx, extractVolumes(m.config.Paths))
 		cancel()
+		if vssErr == nil && session == nil {
+			// (nil, nil) is a contract violation, not a success: the success
+			// branch below dereferences the session immediately. Now that the
+			// provider is injectable (BackupConfig.VSSProvider) that branch is
+			// reachable from an implementation this package does not own, so
+			// convert it into the same visible no-VSS outcome as a creation
+			// failure rather than panicking the whole agent run.
+			vssErr = errors.New("vss provider returned no session and no error")
+		}
 		if vssErr != nil {
 			log.Warn("VSS shadow copy failed, proceeding without VSS",
 				"elapsedMs", time.Since(vssStart).Milliseconds(),

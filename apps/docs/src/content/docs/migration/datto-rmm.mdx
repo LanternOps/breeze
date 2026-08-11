@@ -1,0 +1,191 @@
+---
+title: Datto RMM → Breeze
+description: Export sites, devices and UDFs from Datto RMM, deploy the Breeze agent via a Datto component, and decommission the CentraStage agent cleanly.
+sidebar:
+  order: 3
+  label: Datto RMM
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Datto RMM (formerly CentraStage) is one of the easier migrations. Its API is clean and well-documented, its Components are ordinary PowerShell and bash with an environment-variable wrapper, and its job engine is a reliable way to push the Breeze agent.
+
+The two things that need real thought are **UDFs** and the **flat site model**.
+
+Read [Migrating to Breeze](/migration/overview/) first — this page only covers the Datto-specific parts.
+
+---
+
+## Hierarchy Mapping
+
+Datto RMM is flat: an account contains **Sites**, and a Site contains Devices. There is no client-above-site layer, so most MSPs use one Datto site per customer.
+
+| Datto RMM | Breeze | Notes |
+|---|---|---|
+| Account | Partner | Your MSP tenant. |
+| Site | **Organization** | One Breeze org per Datto site. |
+| — | Site | Create one site per org (name it `Main`) unless the customer genuinely has multiple locations. |
+| Device Group / filter | Device Group | Datto's saved device filters map to Breeze [dynamic device groups](/features/device-groups/). |
+| Device | Device | |
+
+<Aside type="caution">
+  Resist the temptation to map Datto Sites onto Breeze *Sites* under one big organization. Breeze scopes tenancy, RLS, billing, and portal access at the **organization** level — a customer that is only a Site cannot be isolated, billed, or given portal access independently. One customer, one organization.
+</Aside>
+
+---
+
+## Phase 0 — Export from Datto
+
+Datto RMM's API v2 is at `https://<zone>-api.centrastage.net/api/v2`, where `<zone>` matches your web console (`concord`, `merlot`, `pinotage`, `syrah`, `vidal`, `zinfandel`). Create an API key under **Setup → Users → your user → API Access**, which yields an API key and secret key.
+
+<Steps>
+
+1. **Get a token** (OAuth2 password grant, with the fixed public client):
+
+   ```bash
+   ZONE=merlot
+   TOKEN=$(curl -sf -u 'public-client:public' \
+     -X POST "https://$ZONE-api.centrastage.net/auth/oauth/token" \
+     -d 'grant_type=password' \
+     --data-urlencode "username=$DATTO_API_KEY" \
+     --data-urlencode "password=$DATTO_SECRET_KEY" | jq -r .access_token)
+   ```
+
+2. **Export the site list** — this becomes your Breeze organization list:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$ZONE-api.centrastage.net/api/v2/account/sites?max=250" \
+     | jq -r '.sites[] | [.name, "Main"] | @csv' > tree.csv
+   sed -i '1i organization,site' tree.csv
+   ```
+
+   Feed `tree.csv` straight into [Recipe 1](/migration/toolkit/#recipe-1--bootstrap-the-tenancy-tree-from-csv).
+
+3. **Export devices per site** — your reconciliation checklist and your license clean-up list:
+
+   ```bash
+   for uid in $(curl -sf -H "Authorization: Bearer $TOKEN" \
+       "https://$ZONE-api.centrastage.net/api/v2/account/sites?max=250" | jq -r '.sites[].uid'); do
+     curl -sf -H "Authorization: Bearer $TOKEN" \
+       "https://$ZONE-api.centrastage.net/api/v2/site/$uid/devices?max=500" \
+       | jq -r --arg s "$uid" '.devices[] |
+            [$s, .hostname, .operatingSystem, .deviceType.category, .lastSeen, .online] | @tsv'
+   done > datto-devices.tsv
+   ```
+
+4. **Export UDFs.** Datto gives every device 30 user-defined fields (`udf1`…`udf30`), and they are usually load-bearing — warranty dates, asset tags, install dates. `GET /api/v2/device/{uid}` returns them under `udf`. Dump them before you lose access:
+
+   ```bash
+   curl -sf -H "Authorization: Bearer $TOKEN" \
+     "https://$ZONE-api.centrastage.net/api/v2/device/$DEVICE_UID" | jq '{hostname, udf}'
+   ```
+
+</Steps>
+
+<Aside type="tip" title="Use this as your licence audit">
+  Filter `datto-devices.tsv` on `lastSeen` older than 90 days. On a typical fleet this is 5–15% of devices, all of them billable and none of them real. Do not migrate them.
+</Aside>
+
+---
+
+## Phase 3 — Deploy the Breeze Agent with a Datto Component
+
+This is the fastest part of the migration and the reason to keep Datto running until the end.
+
+<Steps>
+
+1. **Create a component.** In Datto RMM go to **Automation → Components → New Component**, category **Scripts**, and add two variables so one component serves every site:
+
+   | Variable | Type | Purpose |
+   |---|---|---|
+   | `BreezeServer` | Value | `https://breeze.yourdomain.com` |
+   | `BreezeKey` | Value | The per-site enrollment key from [Recipe 2](/migration/toolkit/#recipe-2--mint-bulk-enrollment-keys) |
+   | `BreezeSecret` | Value | Your `AGENT_ENROLLMENT_SECRET`, if configured |
+
+   Datto exposes component variables to the script as environment variables of the same name.
+
+2. **Paste the script.** Use the Windows PowerShell payload from [Recipe 3](/migration/toolkit/#recipe-3--the-push-payload), reading the variables from the environment:
+
+   ```powershell
+   $Server = $env:BreezeServer
+   $Key    = $env:BreezeKey
+   $Secret = $env:BreezeSecret
+   ```
+
+   Datto components run as SYSTEM, so no elevation wrapper is needed.
+
+3. **Add antivirus exclusions first.** Push the [Breeze AV exclusions](/deploy/antivirus-exceptions/) — and add Datto's own paths to any Breeze-managed AV policy — *before* the enrollment job. Two RMM agents each running a watchdog is a well-known trigger for behavioural detections.
+
+4. **Run it as a scheduled job, not a quick job.** Create a **Job** targeting one site, scheduled daily for the length of your rollout window. The `agent.yaml` existence check makes re-runs a no-op, so the daily schedule quietly sweeps up laptops that were offline on the first pass. A one-shot Quick Job typically reaches 85–92% of a fleet; a two-week daily job reaches 98%+.
+
+5. **Roll in waves.** Pilot site → 10% of sites → the rest.
+
+</Steps>
+
+---
+
+## Migrating Components
+
+Datto Components are ordinary scripts with a variable wrapper, so the bodies port with minimal edits.
+
+| Datto concept | Breeze equivalent |
+|---|---|
+| Component **variables** (`$env:VarName`) | Script [parameters](/features/scripts/) |
+| **stdout** → job output | Script output, captured per execution |
+| Exit code `0` = success | Same, plus `exitCodeSeverityMapping` to raise alerts by exit code |
+| `Write-Host '<-Start Result->…'` UDF writes | Breeze [custom fields](/features/custom-fields/) |
+| ComStore components | Check the Breeze [system script library](/features/scripts/) first |
+
+The one genuine rewrite is Datto's **result-to-UDF** convention — components that emit `<-Start Result->key=value<-End Result->` to write back into a UDF. In Breeze, write to a custom field via the API from within the script instead.
+
+Import the converted bodies in bulk with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import). Set `availability: "partner"` so one copy serves every customer.
+
+---
+
+## Migrating UDFs
+
+<Steps>
+
+1. Decide which of `udf1`…`udf30` are actually populated — usually 3 to 6 of them. Dump all thirty across a sample of 50 devices and count non-empty values.
+2. Create matching Breeze [custom fields](/features/custom-fields/) with real names and types. This is the moment to stop calling it `udf7`.
+3. Backfill by joining your Datto per-device UDF export against Breeze devices on hostname, then `POST` the values via the device custom-field-values endpoint — one of the few surfaces that does accept an `X-API-Key`.
+
+</Steps>
+
+---
+
+## Monitors and Alerting
+
+Datto monitors live inside **Policies**, one monitor type per policy, targeted by site or device filter. Breeze splits this differently: [monitors](/features/service-monitoring/) define *what* is measured and [alert rules](/features/alerts/) define *when it fires and who hears about it*.
+
+Do not port one-for-one. Export your last 90 days of Datto alerts, sort by volume, and rebuild only what actually generated action. The top three alert types on most Datto fleets are disk space, offline, and patch failure — start there, and define them **partner-wide** so they apply to every organization at once.
+
+Re-point ticketing at the same time: connect your PSA to Breeze via [PSA integrations](/features/psa-integrations/), then disable Datto's PSA integration for that site so you are not double-ticketing.
+
+---
+
+## Phase 6 — Decommission the Datto Agent
+
+Only after [Recipe 4](/migration/toolkit/#recipe-4--reconcile-enrollment) shows zero unexplained gaps for that site.
+
+<Steps>
+
+1. **Disable alerting** in the Datto policies bound to that site. Leave the agent installed.
+2. **Wait one full patch cycle** — a month. This is where you find the monitor you forgot.
+3. **Uninstall via Datto itself**, using the ComStore *Agent Removal* component, or a script step:
+
+   ```powershell
+   & "${env:ProgramFiles(x86)}\CentraStage\uninst.exe" /S
+   ```
+
+   On macOS, run Datto's supplied `uninstall.sh` from `/usr/local/share/CentraStage/`.
+
+4. **Verify from Breeze, not from Datto.** Run [Recipe 5](/migration/toolkit/#recipe-5--find-endpoints-still-running-the-old-agent) — Breeze's [Management Posture](/features/management-posture/) fingerprints Datto RMM directly, so it reports machines whose Datto agent was already broken and therefore invisible in the Datto console. Drive the count to zero.
+5. **Delete the site in Datto** and reduce your licence count. Export anything you are contractually required to retain first — site deletion is irreversible.
+
+</Steps>
+
+<Aside type="caution">
+  Uninstalling the Datto agent removes its ability to reach the endpoint. If Breeze enrollment on that machine is not verified *before* you run the uninstall, you have just created an unmanaged endpoint that needs a site visit. Verify per device, not per site.
+</Aside>

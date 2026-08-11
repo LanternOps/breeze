@@ -43,6 +43,12 @@ export type ComplianceEntry = {
 
 export type Baseline = {
   id: string;
+  // Dual ownership (#2135): exactly one of these is set. A partner-wide
+  // baseline has `orgId: null` and applies to every org under the partner;
+  // an org-owned one has `partnerId: null`. Ownership is immutable after
+  // create, so neither field is ever sent on an update.
+  orgId: string | null;
+  partnerId: string | null;
   name: string;
   osType: string;
   level: string;

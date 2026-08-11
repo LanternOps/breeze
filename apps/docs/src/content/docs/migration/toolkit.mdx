@@ -1,0 +1,376 @@
+---
+title: Migration Toolkit
+description: Ready-to-run API recipes for bootstrapping the tenancy tree, minting bulk enrollment keys, and reconciling enrollment against your old RMM.
+sidebar:
+  order: 2
+  label: Migration Toolkit
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every migration step that needs to happen a hundred times is either a bulk endpoint (orgs, sites, scripts) or a scripted loop against the REST API. This page holds the recipes; the per-vendor pages tell you how to produce their inputs.
+
+Everything here uses only documented, stable endpoints — see the [API Reference](/reference/api/).
+
+---
+
+## Authentication for Migration Scripts
+
+Two credentials matter here, and they split cleanly by job:
+
+- **A partner service principal** — for anything unattended: Recipe 2's provisioning loop, scheduled syncs, anything that must run without a human at the keyboard. It authenticates against the Partner API (`$BREEZE_URL/partner-api/*`) via the `X-API-Key` header, never touches MFA, and never expires mid-run. Deliberately create-only: it can mint orgs, sites, and enrollment keys, but there is **no** DELETE surface — tearing down tenancy stays a human, MFA-gated act.
+- **A partner-admin user JWT** — for the bulk endpoints that live on the main API: org/site import (Recipe 1) and script bundles (Recipe 6). These are `requireMfa()`-gated: log in as a partner admin, complete the MFA challenge (when `ENABLE_2FA` is on, the JWT must carry `mfa: true` — a bare `POST /auth/login` token gets `403 MFA required`), and export the access token. Tokens are short-lived, so long runs should refresh via `POST /auth/refresh`.
+
+<Aside title="Setting up the service principal (once, as a human)">
+  Creating the principal is itself MFA-gated — that's the point: one interactive act mints a credential your scripts use unattended afterwards.
+
+  1. `POST /partner-service-principals` with the `scopes` the run needs. The default delegation is **read-only**; the write scopes — `organizations:write`, `sites:write`, `enrollment-keys:write` — are opt-in per principal and never granted implicitly. Ask for exactly what the migration needs, nothing more.
+  2. `POST /partner-service-principals/:id/keys` returns `{ keyId, key, keyPrefix }` — the raw `key` exactly once. Store it like the credential it is.
+
+  Both steps also exist in the web UI on the partner service principals settings page. Note the Partner API's `X-API-Key` is its own credential — it is not the narrow main-API `X-API-Key` surface (MCP, dev-push, custom-field values), and it works nowhere but `/partner-api/*`.
+</Aside>
+
+```bash
+export BREEZE_URL="https://breeze.yourdomain.com/api/v1"
+export BREEZE_TOKEN="eyJ..."         # partner-admin JWT with MFA satisfied (Recipes 1, 6)
+export BREEZE_PARTNER_KEY="..."      # partner service principal key (Recipe 2)
+
+# Sanity check the JWT — should return your partner record
+curl -sf -H "Authorization: Bearer $BREEZE_TOKEN" "$BREEZE_URL/orgs/partners/me" | jq .name
+
+# Sanity check the service principal — counts the orgs it can see
+curl -sf -H "X-API-Key: $BREEZE_PARTNER_KEY" "$BREEZE_URL/partner-api/organizations" | jq '.data | length'
+```
+
+Partner API writes share a deliberately tight rate bucket — `min(key limit, 120)` writes per hour per principal, answered with `429` + `Retry-After` when exhausted. A few hundred sites will fit in a couple of waves; pace the loop rather than fighting the limiter.
+
+---
+
+## Recipe 1 — Bootstrap the Tenancy Tree from CSV
+
+Every per-vendor page produces a CSV in this shape:
+
+```csv
+organization,site
+Acme Manufacturing,Head Office
+Acme Manufacturing,Detroit Plant
+Bright Dental,Main Clinic
+```
+
+The easiest way to load it is the web UI: **Settings → Organizations → Bulk import** takes the CSV, lets you map columns, shows a per-row preview (create / matched / conflict), and commits. Scripted, the same preview → commit pair lives at `POST /orgs/import/preview` and `POST /orgs/import`. Both take JSON — the CSV is parsed on your side, the API never sees it — and accept up to **1,000 rows per request**. Rows sharing an `organization` value become one org with many sites; slugs are derived and de-duplicated for you.
+
+Preview annotates every row before anything is written:
+
+| Annotation | Meaning |
+|---|---|
+| `create` | New org (and site) will be created |
+| `link-match` | Matched an existing org by `(externalSystem, externalId)` — the safe, stable match |
+| `name-match` | Matched an existing org by name only — commit refuses it unless you acknowledge with `expectedAnnotation: "name-match"` |
+| `matched-soft-deleted` | Matched a deleted org — commit refuses unless you also pass `reactivate: true` |
+| `conflict` | Row can't proceed (see `conflictReason`) |
+
+```bash
+#!/usr/bin/env bash
+# import-tree.sh — preview, then commit, a two-column CSV (organization,site).
+# Usage: ./import-tree.sh tree.csv
+set -euo pipefail
+: "${BREEZE_URL:?}" "${BREEZE_TOKEN:?}"
+CSV="$1"
+AUTH=(-H "Authorization: Bearer $BREEZE_TOKEN" -H "Content-Type: application/json")
+
+# CSV → {"rows":[{"organization":...,"site":...},...]} (≤1000 rows per request)
+payload=$(tail -n +2 "$CSV" | jq -Rnc '
+  [inputs | split(",") | select((.[0] // "") != "")
+   | {organization: (.[0] | gsub("^\\s+|\\s+$";"")),
+      site:         ((.[1] // "") | gsub("^\\s+|\\s+$";""))}
+   | if .site == "" then del(.site) else . end]
+  | {rows: .}')
+
+# 1. Preview — writes nothing. Eyeball everything that is not a plain create.
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/orgs/import/preview" -d "$payload" \
+  | jq -r '.rows[] | select(.annotation != "create")
+           | "\(.annotation)\t\(.organization)\t\(.matchedOrganizationName // .conflictReason // "")"'
+
+# 2. Commit. mode=skip leaves matched orgs untouched, so re-runs are idempotent;
+#    mode=update patches only the fields present in the row.
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/orgs/import" \
+  -d "$(jq -c '. + {mode:"skip"}' <<<"$payload")" \
+  | jq '{imported: (.imported|length), updated: (.updated|length),
+         skipped: (.skipped|length), errors: .errors}'
+```
+
+Commit re-derives every row's annotation against fresh database state and rejects (into `errors`, per row — the rest proceed) any row whose annotation changed since preview. `name-match` rows are never committed silently: echo back `expectedAnnotation: "name-match"` (and ideally `expectedOrganizationId`) to confirm the match. The web UI does this handshake for you.
+
+<Aside type="tip">
+  Two optional row fields are worth the extra CSV columns. `externalId` + `externalSystem` (the incumbent's stable company UID, e.g. `{"externalId":"1042","externalSystem":"datto_rmm"}`) make the import idempotent by identity instead of by name — re-imports and later PSA syncs match the link, not the label. And a real IANA `timezone` per site beats the `UTC` default: maintenance windows, patch schedules, and business-hours alerting all resolve against the site timezone.
+</Aside>
+
+**Row fields for `POST /orgs/import` and `/orgs/import/preview`**
+
+| Field | Required | Notes |
+|---|---|---|
+| `organization` | yes | ≤255 chars; repeat across rows to attach multiple sites |
+| `site` | no | A group with no sites gets one default site named after the org |
+| `externalId` / `externalSystem` | no | Dedupe identity, stored as an `organization_external_links` row |
+| `timezone` | no | IANA, validated |
+| `address`, `contact` | no | `contact` is `{name, email, phone}` |
+
+Commit-only per-row fields: `expectedAnnotation`, `expectedOrganizationId`, `reactivate`. Top-level: `mode` (`skip` default, or `update`).
+
+The import covers **organizations and sites** (plus their external-link rows). It does not import devices — devices arrive by enrolling agents (Recipes 2–3). The single-record endpoints (`POST /orgs/organizations`, `POST /orgs/sites`) still exist for one-offs and carry fields the import rows don't (`contractStart`, `billingContact`, …).
+
+---
+
+## Recipe 2 — Mint Bulk Enrollment Keys
+
+This is the unattended step, so it runs on the Partner API with a service principal (scopes: `sites:read` to enumerate, `enrollment-keys:write` to mint — add `organizations:write`/`sites:write` if the same principal also provisions the tree). Enrollment-key defaults are tuned for installing one agent by hand: **`maxUsage: 1`** and a short TTL. For a migration wave you want the opposite end of both ranges.
+
+| Field | Range | Migration value |
+|---|---|---|
+| `maxUsage` | 1 – 100,000 | Device count + 20% |
+| `ttlMinutes` | 1 – 525,600 (365 days) | Length of your rollout window, e.g. `43200` for 30 days |
+| `siteId` | — | Pin it. Devices land in the right site with no per-device logic. |
+
+<Aside type="caution">
+  Pass **either** `ttlMinutes` **or** `expiresAt`, never both — the schema rejects the combination. The schema is also `.strict()`: an unknown key (the classic being `maxUses` instead of `maxUsage`) returns `400` rather than being silently ignored. Your partner may additionally enforce a maximum TTL cap, applied to both forms; an over-cap request returns `400` with code `partner_provisioning_ttl_exceeds_cap`.
+</Aside>
+
+```bash
+#!/usr/bin/env bash
+# mint-keys.sh — one long-lived, high-capacity enrollment key per site,
+# fully unattended via a partner service principal. No JWT, no MFA.
+# Prints: site<TAB>orgId<TAB>siteId<TAB>rawKey
+set -euo pipefail
+: "${BREEZE_URL:?}" "${BREEZE_PARTNER_KEY:?}"
+AUTH=(-H "X-API-Key: $BREEZE_PARTNER_KEY" -H "Content-Type: application/json")
+TTL_MINUTES="${TTL_MINUTES:-43200}"   # 30 days
+CAPACITY="${CAPACITY:-250}"
+
+curl -sf "${AUTH[@]}" "$BREEZE_URL/partner-api/sites?limit=500" \
+  | jq -r '.data[] | [.orgId, .siteId, .name] | @tsv' \
+| while IFS=$'\t' read -r orgId siteId siteName; do
+    raw=$(curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/partner-api/enrollment-keys" \
+      -d "$(jq -nc --arg o "$orgId" --arg s "$siteId" \
+              --arg n "migration: $siteName" \
+              --argjson m "$CAPACITY" --argjson t "$TTL_MINUTES" \
+              '{orgId:$o, siteId:$s, name:$n, maxUsage:$m, ttlMinutes:$t}')" \
+      | jq -r .key)
+    printf '%s\t%s\t%s\t%s\n' "$siteName" "$orgId" "$siteId" "$raw"
+  done
+```
+
+Over 500 sites? The list endpoints paginate by cursor — follow `nextCursor` while `hasMore` is true (`limit` caps at 500). The same principal can build the tree itself: `POST /partner-api/organizations` (`name`, `slug`, `type?`, `status?` — `active`|`trial` only; lifecycle transitions stay human) and `POST /partner-api/sites` (`orgId`, `name`, `timezone?`, `address?`, `contact?`). Two responses to handle deliberately: a duplicate slug returns `409` `partner_provisioning_slug_conflict`, and hitting your partner's organization cap returns `409` `partner_provisioning_org_limit_reached` — the latter is a billing conversation, not a retry. `partnerId` never comes from the request body; the principal's partner always wins.
+
+<Aside type="caution" title="The raw key is returned exactly once">
+  `POST /partner-api/enrollment-keys` returns the raw `key` as a top-level field of the `201` body and never again — only a SHA-256 hash is stored (`data` carries the id, org/site, usage, and expiry). Capture the output. If you lose a key, `POST /enrollment-keys/:id/rotate` on the main API (JWT) issues a new one.
+</Aside>
+
+If the Partner API doesn't cover something you need mid-run, the JWT flow from the auth section still works: the same enrollment-key shape lives at `POST /enrollment-keys` (there `orgId` can be omitted for single-org partners, and the default TTL is 60 minutes via `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`).
+
+Treat the resulting file as a credential: it is a list of tokens that can enroll devices into your customers' tenants. Delete it once the wave is complete, or shorten the TTL by rotating.
+
+---
+
+## Recipe 3 — The Push Payload
+
+This is what you paste into your incumbent RMM's script engine. It runs as SYSTEM, downloads the agent binary, enrolls, and installs the service. Substitute the per-site enrollment key from Recipe 2.
+
+<Tabs>
+  <TabItem label="Windows (PowerShell)">
+    ```powershell
+    $ErrorActionPreference = 'Stop'
+    $Server = 'https://breeze.yourdomain.com'
+    $Key    = '<64-hex-enrollment-key>'
+    $Secret = '<AGENT_ENROLLMENT_SECRET>'   # omit if not configured server-side
+
+    $Dir = "$env:ProgramFiles\Breeze"
+    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    $Exe = Join-Path $Dir 'breeze-agent.exe'
+
+    # Already enrolled? Do nothing — makes the job safe to re-run on a schedule.
+    if (Test-Path "$env:ProgramData\Breeze\agent.yaml") { Write-Output 'already enrolled'; exit 0 }
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing -Uri "$Server/api/v1/agents/download/windows/amd64" -OutFile $Exe
+
+    & $Exe enroll $Key --server $Server --enrollment-secret $Secret --quiet
+    if ($LASTEXITCODE -ne 0) { throw "enroll failed: $LASTEXITCODE" }
+    & $Exe service install
+    Write-Output 'breeze agent enrolled'
+    ```
+  </TabItem>
+  <TabItem label="macOS / Linux (bash)">
+    ```bash
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SERVER='https://breeze.yourdomain.com'
+    KEY='<64-hex-enrollment-key>'
+    SECRET='<AGENT_ENROLLMENT_SECRET>'
+    SITE_ID='<site-uuid>'
+
+    case "$(uname -s)" in
+      Darwin) OS=darwin; CFG='/Library/Application Support/Breeze/agent.yaml' ;;
+      Linux)  OS=linux;  CFG='/etc/breeze/agent.yaml' ;;
+    esac
+    case "$(uname -m)" in
+      x86_64) ARCH=amd64 ;;
+      arm64|aarch64) ARCH=arm64 ;;
+    esac
+
+    [ -f "$CFG" ] && { echo 'already enrolled'; exit 0; }
+
+    curl -fsSL -o /usr/local/bin/breeze-agent "$SERVER/api/v1/agents/download/$OS/$ARCH"
+    chmod +x /usr/local/bin/breeze-agent
+
+    /usr/local/bin/breeze-agent enroll "$KEY" \
+      --server "$SERVER" --enrollment-secret "$SECRET" --site-id "$SITE_ID" --quiet
+    /usr/local/bin/breeze-agent service install
+    echo 'breeze agent enrolled'
+    ```
+  </TabItem>
+</Tabs>
+
+The `agent.yaml` existence check is what makes this safe to schedule. Set the job to run daily for the length of your rollout window and it will pick up machines that were offline on the first pass without re-enrolling the ones that succeeded.
+
+<Aside>
+  Prefer the MSI when your incumbent can push files rather than just script text — `msiexec /i breeze-agent.msi /qn SERVER_URL=… ENROLLMENT_KEY=…` enrolls during install with no PowerShell wrapper. See [Advanced Install Methods](/agents/advanced-install/) for MSI properties, ZIP bundles, and pre-staging for golden images.
+</Aside>
+
+---
+
+## Recipe 4 — Reconcile Enrollment
+
+The verification gate for Phase 4. Compare a per-org device-name list from the incumbent against what actually enrolled.
+
+```bash
+#!/usr/bin/env bash
+# reconcile.sh — list devices present in the old RMM but missing from Breeze.
+# Usage: ./reconcile.sh <breeze-org-id> <old-rmm-hostnames.txt>
+set -euo pipefail
+: "${BREEZE_URL:?}" "${BREEZE_TOKEN:?}"
+
+ORG_ID="$1"; EXPECTED="$2"
+
+curl -sf -H "Authorization: Bearer $BREEZE_TOKEN" \
+  "$BREEZE_URL/devices?orgId=$ORG_ID&limit=100" \
+  | jq -r '[.data[]?,.devices[]?][] | .hostname' \
+  | tr '[:upper:]' '[:lower:]' | sort -u > /tmp/breeze-devices.txt
+
+tr '[:upper:]' '[:lower:]' < "$EXPECTED" | sort -u > /tmp/expected.txt
+
+echo "expected: $(wc -l < /tmp/expected.txt)  enrolled: $(wc -l < /tmp/breeze-devices.txt)"
+echo '--- missing from Breeze ---'
+comm -23 /tmp/expected.txt /tmp/breeze-devices.txt
+```
+
+Mind the pagination — `limit` is capped at 100 per page, so page through `?page=N` for orgs above that size.
+
+---
+
+## Recipe 5 — Find Endpoints Still Running the Old Agent
+
+Breeze's agent fingerprints other management tooling already installed on each endpoint and reports it as **[Management Posture](/features/management-posture/)**. Datto RMM, NinjaOne, ConnectWise Automate, ScreenConnect, Kaseya VSA, N-able, Atera, SyncroMSP, Pulseway, Level, Tactical RMM and Automox are all fingerprinted.
+
+This is the authoritative decommission report — far better than trusting the incumbent's own console, which cannot tell you about a machine whose agent is broken.
+
+One call summarises the whole fleet (drop `orgId` to sweep every org you can see):
+
+```bash
+# Fleet-wide: which products are still installed, and how many devices per org?
+curl -sf -H "Authorization: Bearer $BREEZE_TOKEN" \
+  "$BREEZE_URL/devices/management-posture/summary?orgId=$ORG_ID" \
+  | jq -r '.data.orgs[] | .orgId as $o
+           | .products[] | "\($o)\t\(.product)\t\(.status)\t\(.deviceCount) devices"'
+```
+
+Two numbers in the response matter as much as the detections. `totals.neverScanned` is devices that have **never reported posture** — they are unknowns, not clean, and each one is typically a broken or ancient agent. `totals.stale` is devices whose last posture report is older than `stalenessDays` (default 7, tunable to 365). A migration is not done while either is non-zero.
+
+To list the actual machines behind a count, page through the drill-down endpoint:
+
+```bash
+# Which devices still run NinjaOne?
+curl -sf -H "Authorization: Bearer $BREEZE_TOKEN" \
+  "$BREEZE_URL/devices/management-posture/devices?product=NinjaOne&limit=500" \
+  | jq -r '.data.devices[] | "\(.hostname)\t\(.orgId)"'
+```
+
+Use it twice: before cutover to confirm you know what you are replacing, and after uninstall to prove the count reached zero. The same report lives in the web UI under **Devices → Posture**, with CSV export.
+
+---
+
+## Recipe 6 — Bulk Script Import
+
+Breeze moves whole script libraries as a **bundle**: one JSON document, up to **200 scripts** (≤256KB of content each, ≤20MB total request), imported in a single preview → import pair. The same format exports, so it doubles as backup and portability — pull your library out of one Breeze tenant (staging, another region) and load it into another, or keep the bundle file in version control.
+
+```bash
+# Export selected scripts as a bundle (ids = comma-separated, up to 200)
+curl -sf -H "Authorization: Bearer $BREEZE_TOKEN" \
+  "$BREEZE_URL/scripts/bundle/export?ids=$IDS" > breeze-scripts.json
+```
+
+Migrating off another RMM, you build the bundle yourself from a directory of script files:
+
+```bash
+#!/usr/bin/env bash
+# import-scripts.sh — bundle a directory of scripts, preview, then import.
+set -euo pipefail
+: "${BREEZE_URL:?}" "${BREEZE_TOKEN:?}"
+AUTH=(-H "Authorization: Bearer $BREEZE_TOKEN" -H "Content-Type: application/json")
+
+entries=()
+for f in "$1"/*; do
+  case "$f" in
+    *.ps1)       lang=powershell; os='["windows"]' ;;
+    *.sh)        lang=bash;       os='["linux","macos"]' ;;
+    *.py)        lang=python;     os='["windows","linux","macos"]' ;;
+    *.bat|*.cmd) lang=cmd;        os='["windows"]' ;;
+    *) continue ;;
+  esac
+  name=$(basename "$f"); name="${name%.*}"
+  entries+=("$(jq -nc --arg n "$name" --arg l "$lang" --argjson o "$os" --rawfile c "$f" \
+    '{name:$n, language:$l, osTypes:$o, content:$c, runAs:"system",
+      timeoutSeconds:300, description:"Imported during RMM migration"}')")
+done
+bundle=$(printf '%s\n' "${entries[@]}" | jq -sc '{bundleVersion: 1, scripts: .}')
+
+# 1. Preview — writes nothing; annotates each entry new / name-conflict / invalid.
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/scripts/bundle/preview" \
+  -d "$(jq -nc --argjson b "$bundle" '{bundle: $b, availability: "partner"}')" \
+  | jq -r '.entries[] | "\(.status)\t\(.name)\t\(.error // "")"'
+
+# 2. Import. mode picks the name-conflict strategy:
+#    skip | rename ("Name (2)") | new-version (snapshots the old body, bumps version)
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/scripts/bundle/import" \
+  -d "$(jq -nc --argjson b "$bundle" '{bundle: $b, availability: "partner", mode: "skip"}')" \
+  | jq '{imported, skipped, renamed, versioned, errors}'
+```
+
+**Bundle entry fields** (same vocabulary as `POST /scripts`)
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | ≤255 chars |
+| `osTypes` | yes | Array, at least one of `windows`, `macos`, `linux` |
+| `language` | yes | `powershell`, `bash`, `python`, `cmd` |
+| `content` | yes | The script body, ≤256KB |
+| `runAs` | no | `system` (default), `user`, `elevated` |
+| `timeoutSeconds` | no | Default 300, hard cap 3600 — the agent clamps at one hour |
+| `description`, `category`, `tags`, `parameters` | no | Tags are resolved/created in the target scope |
+| `exitCodeSeverityMapping` | no | Map exit codes to alert severities; a mapping that maps *every* code to null is rejected |
+
+Two availability notes. `availability` defaults to `org` — publishing to your whole partner library (`"partner"`, the right choice for a shared MSP toolkit) must be an explicit ask, and it requires **full partner org access**: a technician whose partner account is restricted to selected orgs gets a `403` on the partner-wide path rather than a mystery. And bundles are treated as untrusted input — entries are validated one by one (a bad entry lands in `errors` while the rest import), nothing in a bundle is ever executed at import time, system/tenancy flags inside a bundle are stripped and never honored, and every imported script is individually audited with the bundle's SHA-256.
+
+Check `GET /scripts/system-library` before importing — a large share of typical custom scripts already ship with Breeze, and `POST /scripts/import/:id` clones one into your library without you maintaining it.
+
+---
+
+## Known Rough Edges
+
+These are real friction points in the current release. Each is tracked; if one blocks you, say so on the issue.
+
+| Gap | Workaround |
+|---|---|
+| No bulk import for **devices** (orgs and sites now have one — Recipe 1) | Devices arrive by enrolling agents: Recipes 2–3 |
+| Bulk org import lives on the main API only (JWT + MFA), not the Partner API | One interactive run, or the web UI; unattended provisioning goes through Recipe 2's per-record Partner API creates |
+| `POST /devices/provision` is single-device only | Loop it |
+| PSA `getCompanies()` exists on every adapter but is not wired to org import | Export from the PSA manually — the import's `externalId`/`externalSystem` seam is built for this, and a PSA-backed source is the planned next phase (#3246) |

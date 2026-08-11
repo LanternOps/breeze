@@ -127,6 +127,31 @@ const TARGET_GLOBS = [
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
   'src/components/remote/QuickSupportPage.tsx',
+  // PSA connections: create/update/delete/status/test all mutate stored PSA
+  // credentials or a live connection's state. They were rewritten with bare
+  // fetchWithAuth + setError, which the page's error banner only renders when
+  // the connection list is empty — so a failed save on a populated page was
+  // silent (#3291 review).
+  'src/components/psa/PsaConnectionsPage.tsx',
+  // CIS hardening: the whole directory has exactly two mutations (baseline
+  // create/update, trigger scan) and both now route through runAction. The scan
+  // queues work that changes nothing on screen — the results land minutes later
+  // on another tab — so before the migration a queued scan and a no-op looked
+  // identical to the tech.
+  'src/components/cisHardening/CisBaselineForm.tsx',
+  'src/components/cisHardening/CisBaselinesTab.tsx',
+  // PSA company import (#3246): the commit creates organizations and sites in
+  // the partner's tenant tree from a remote list. A silent failure would leave
+  // the tech believing a tenant tree was provisioned when nothing was written.
+  'src/components/psa/PsaCompanyImport.tsx',
+  // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
+  // the service, and the two components must not grow their own bare mutations
+  // alongside it.
+  'src/services/fleetFindings.ts',
+  'src/components/fleet/FindingsFeed.tsx',
+  'src/components/fleet/FindingDrawer.tsx',
+  'src/components/fleet/FixPickerModal.tsx',
+  'src/components/fleet/RunProgressPanel.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -318,7 +343,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(82);
+    expect(absoluteFiles.length).toBe(91);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

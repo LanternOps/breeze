@@ -56,6 +56,19 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/m365/consent/callback/'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/'],
+    // PSA connection test — real outbound PSA API call between short contexts.
+    ['POST', '/api/v1/psa/connections/conn-1/test'],
+    ['POST', '/api/v1/psa/connections/conn-1/test/'],
+    ['post', '/api/v1/psa/connections/conn-1/test'], // method is case-insensitive
+    // PSA company import (#3246) — preview walks the PSA's pagination (many
+    // 20s outbound calls); commit runs the org-import seam's own per-group
+    // transactions. Neither may inherit the ambient request transaction.
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview/'],
+    ['post', '/api/v1/psa/connections/conn-1/import/preview'],
+    ['POST', '/api/v1/psa/connections/conn-1/import'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/'],
+    ['post', '/api/v1/psa/connections/conn-1/import'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -113,6 +126,24 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest', 'retest is POST-only'],
     ['POST', '/api/v1/m365/connections//retest', 'empty connection id must not match'],
     ['POST', '/api/v1/m365/connections/44444444-4444-4444-8444-444444444444/retest/extra', 'extra segment must not match'],
+    // PSA — every OTHER psa route does only DB work and MUST keep the ambient
+    // RLS transaction (the sync route is a DB-free 501 stub).
+    ['GET', '/api/v1/psa/connections', 'list is DB-only'],
+    ['POST', '/api/v1/psa/connections', 'create is DB-only'],
+    ['GET', '/api/v1/psa/connections/conn-1', 'detail read is DB-only'],
+    ['PATCH', '/api/v1/psa/connections/conn-1', 'update is DB-only'],
+    ['DELETE', '/api/v1/psa/connections/conn-1', 'delete is DB-only'],
+    ['POST', '/api/v1/psa/connections/conn-1/sync', 'sync is a 501 stub — no outbound call'],
+    ['POST', '/api/v1/psa/connections/conn-1/status', 'status flip is DB-only'],
+    ['GET', '/api/v1/psa/connections/conn-1/test', 'test is POST-only'],
+    ['POST', '/api/v1/psa/connections//test', 'empty connection id must not match'],
+    ['POST', '/api/v1/psa/connections/conn-1/test/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/psa/connections/conn-1/import', 'import is POST-only'],
+    ['GET', '/api/v1/psa/connections/conn-1/import/preview', 'preview is POST-only'],
+    ['POST', '/api/v1/psa/connections//import', 'empty connection id must not match'],
+    ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

@@ -24,6 +24,17 @@ import { users } from "./users";
  * this lifetime. Compare by equality. Note a leaked token is worth up to
  * max_usage enrollments, so keep the TTL short and the max_usage bounded.
  */
+/**
+ * The one `usage_kind` value whose `max_usage` is a DEVICE-SLOT BUDGET (#3034).
+ *
+ * Exported as a constant, and imported by every reader that filters on it
+ * (`fetchInstallerTokenUsage`, `enrollmentKeyPurgeGuards`), so the string
+ * appears once. The read side is a whitelist of this single value rather than a
+ * blacklist of the others: a `usage_kind` added later must be opted IN to the
+ * capacity figure deliberately, never inherit it by not being on a deny list.
+ */
+export const CAPACITY_USAGE_KIND = "capacity";
+
 export const installerBootstrapTokens = pgTable(
   "installer_bootstrap_tokens",
   {
@@ -58,6 +69,36 @@ export const installerBootstrapTokens = pgTable(
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
     consumedFromIp: text("consumed_from_ip"),
     installerPlatform: text("installer_platform"),
+    /**
+     * What this token's `max_usage` MEANS (#3034). Constrained to
+     * `('capacity','per_download','legacy_unknown')` by DB CHECK
+     * `installer_bootstrap_tokens_usage_kind_valid`.
+     *
+     *   - `capacity`      — minted by an AUTHENTICATED path, where `max_usage`
+     *                       is the device count the operator chose. Only these
+     *                       rows are summed into the Enrollment Keys page's
+     *                       installer figure.
+     *   - `per_download`  — minted by a PUBLIC download (`serveInstaller`), one
+     *                       hardcoded `max_usage: 1` token per click. Summing
+     *                       these counts downloads, not device slots, so they
+     *                       are excluded from that figure.
+     *   - `legacy_unknown`— pre-#3034 single-slot rows whose mint path the data
+     *                       cannot prove, plus the column DEFAULT. Excluded from
+     *                       the figure: unknown must degrade to showing nothing,
+     *                       never to showing a number that might be a click
+     *                       count. Self-draining (24h default token TTL +
+     *                       nightly cleanup).
+     *
+     * This lives on the TOKEN, not the parent key, because the two mint paths
+     * are not separable by any property of the key: the authenticated installer
+     * routes accept a short-link CHILD id, and `/s/:code` mints a fresh
+     * short_code-LESS download key. `parent.short_code` — the previous proxy —
+     * was wrong in both directions.
+     *
+     * `usageKind` is a REQUIRED input to `issueBootstrapTokenForKey` precisely
+     * so a new mint path cannot inherit a meaning by omission.
+     */
+    usageKind: text("usage_kind").notNull().default("legacy_unknown"),
   },
   (t) => ({
     expiresIdx: index("idx_installer_bootstrap_tokens_expires").on(t.expiresAt),

@@ -25,6 +25,7 @@ const {
   setCooldownMock,
   emitAlertStateFeedbackMock,
   writeRouteAuditMock,
+  executeScriptOnDevicesMock,
   rateLimitState,
   authState
 } = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const {
   setCooldownMock: vi.fn().mockResolvedValue(undefined),
   emitAlertStateFeedbackMock: vi.fn().mockResolvedValue(undefined),
   writeRouteAuditMock: vi.fn(),
+  executeScriptOnDevicesMock: vi.fn(),
   rateLimitState: { allowed: true },
   authState: {
     permissions: undefined as { allowedSiteIds?: string[] } | undefined,
@@ -100,6 +102,10 @@ vi.mock('../services/auditEvents', async (importOriginal) => ({
 
 vi.mock('../services/alertCooldown', () => ({
   setCooldown: setCooldownMock
+}));
+
+vi.mock('../services/scriptExecution', () => ({
+  executeScriptOnDevices: executeScriptOnDevicesMock
 }));
 
 vi.mock('../services/mlFeedbackEmitters', () => ({
@@ -230,6 +236,7 @@ describe('mobile routes', () => {
     authState.token = undefined;
     rateLimitState.allowed = true;
     vi.mocked(db.transaction).mockReset();
+    executeScriptOnDevicesMock.mockReset();
     _resetRegistrationFallbackReportsForTests();
     app = new Hono();
     app.route('/mobile', mobileRoutes);
@@ -1408,72 +1415,121 @@ describe('mobile routes', () => {
       expect(res.status).toBe(400);
     });
 
-    it.skip('should return 404 when script is missing', async () => {
-      // Skipped: Complex mock chain required
-      vi.mocked(db.select)
-        .mockReturnValueOnce(
-          mockSelectLimitChain([
-            { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux' }
-          ]) as any
-        )
-        .mockReturnValueOnce(mockSelectLimitChain([]) as any);
+    it('returns the executeScriptOnDevices error status and message (e.g. script missing)', async () => {
+      // #3409 PR0 Task 3: the route no longer looks up the script itself —
+      // it delegates entirely to executeScriptOnDevices and passes through
+      // whatever {status, error} the service returns.
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        error: 'Script not found'
+      });
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'run_script', scriptId: 'script-1' })
+        body: JSON.stringify({ action: 'run_script', scriptId: '22222222-2222-2222-2222-222222222222' })
       });
 
       expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Script not found');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
 
-    it.skip('should run a script action', async () => {
-      // Skipped: Complex mock chain required
-      vi.mocked(db.select)
-        .mockReturnValueOnce(
-          mockSelectLimitChain([
-            { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux' }
-          ]) as any
-        )
-        .mockReturnValueOnce(
-          mockSelectLimitChain([
-            {
-              id: 'script-1',
-              orgId: 'org-123',
-              osTypes: ['linux'],
-              language: 'bash',
-              content: 'echo ok',
-              timeoutSeconds: 60,
-              runAs: 'root'
-            }
-          ]) as any
-        );
-      vi.mocked(db.insert)
-        .mockReturnValueOnce(
-          mockInsertReturning([
-            { id: 'exec-1' }
-          ]) as any
-        )
-        .mockReturnValueOnce(
-          mockInsertReturning([
-            { id: 'cmd-1' }
-          ]) as any
-        );
+    it('surfaces a 409 from executeScriptOnDevices (e.g. maintenance-window suppression)', async () => {
+      // Reachable from mobile now that this route delegates entirely to
+      // executeScriptOnDevices (#3409 PR0 Task 3) — the maintenance-window
+      // suppression branch (409 + maintenanceSuppressedDeviceIds) is newly
+      // exercisable from this caller and existing tests only covered 403/404.
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        error: 'All target devices are in a maintenance window with script execution suppressed',
+        maintenanceSuppressedDeviceIds: ['11111111-2222-4333-8444-555555555555'],
+      });
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'run_script', scriptId: '22222222-2222-2222-2222-222222222222' })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('All target devices are in a maintenance window with script execution suppressed');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    it('should run a script action by delegating to executeScriptOnDevices', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: 'batch-1',
+        scriptId: '22222222-2222-2222-2222-222222222222',
+        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [
+          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
+        ],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: 'org-123'
+      });
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'run_script',
-          scriptId: 'script-1',
+          scriptId: '22222222-2222-2222-2222-222222222222',
           parameters: { key: 'value' }
         })
       });
 
       expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.executionId).toBe('exec-1');
-      expect(body.commandId).toBe('cmd-1');
+      expect(body).toEqual({
+        action: 'run_script',
+        executionId: 'exec-1',
+        commandId: 'cmd-1'
+      });
+      expect(executeScriptOnDevicesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scriptId: '22222222-2222-2222-2222-222222222222',
+          deviceIds: ['11111111-2222-4333-8444-555555555555'],
+          parameters: { key: 'value' },
+          triggerType: 'manual'
+        })
+      );
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'mobile.device.action',
+          resourceId: '11111111-2222-4333-8444-555555555555',
+          details: expect.objectContaining({
+            scriptId: '22222222-2222-2222-2222-222222222222',
+            executionId: 'exec-1',
+            commandId: 'cmd-1'
+          })
+        })
+      );
     });
 
     it.skip('should submit device action commands', async () => {
@@ -1500,14 +1556,20 @@ describe('mobile routes', () => {
       expect(body.commandId).toBe('cmd-1');
     });
 
-    describe('run_script cross-org isolation', () => {
+    // #3409 PR0 Task 3: the org-equality invariant itself now lives inside
+    // executeScriptOnDevices (see scriptExecution.test.ts — "cross-org
+    // isolation" describe block) since the route no longer re-derives script
+    // access or org-equality. What the route still owns is passing the
+    // single targeted deviceId through and surfacing whatever result the
+    // service returns, which is what these cases now pin.
+    describe('run_script cross-org isolation (route passthrough)', () => {
       const DEVICE_ORG = 'org-b';
-      const SCRIPT_ORG = 'org-a';
       const SCRIPT_ID = '11111111-1111-1111-1111-111111111111';
+      const DEVICE_ID = '11111111-2222-4333-8444-555555555555';
 
-      // A multi-org partner caller whose canAccessOrg passes for BOTH the
-      // script's org and the device's org. Without the same-org invariant both
-      // access checks pass and org A's script content lands on org B's device.
+      // A multi-org partner caller — shape mirrors a real caller whose token
+      // can reach multiple orgs; executeScriptOnDevices (mocked here) is what
+      // actually enforces the same-org invariant against it now.
       const useMultiOrgPartnerAuth = () => {
         vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
           c.set('auth', {
@@ -1515,74 +1577,60 @@ describe('mobile routes', () => {
             scope: 'partner',
             orgId: null,
             partnerId: 'partner-123',
-            accessibleOrgIds: [SCRIPT_ORG, DEVICE_ORG],
-            canAccessOrg: (orgId: string) => orgId === SCRIPT_ORG || orgId === DEVICE_ORG,
+            accessibleOrgIds: ['org-a', DEVICE_ORG],
+            canAccessOrg: (orgId: string) => orgId === 'org-a' || orgId === DEVICE_ORG,
           });
           return next();
         });
       };
 
-      it('rejects running an org A script on an org B device (no insert)', async () => {
-        useMultiOrgPartnerAuth();
-        vi.mocked(db.select)
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
-            ]) as any
-          )
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              {
-                id: SCRIPT_ID,
-                orgId: SCRIPT_ORG,
-                isSystem: false,
-                osTypes: ['linux'],
-                language: 'bash',
-                content: 'echo pwned',
-                timeoutSeconds: 60,
-                runAs: 'root'
-              }
-            ]) as any
-          );
-        vi.mocked(db.insert).mockReturnValue(mockInsertReturning([{ id: 'exec-1' }]) as any);
+      const mockDeviceLookup = () => {
+        vi.mocked(db.select).mockReturnValue(
+          mockSelectLimitChain([
+            { id: DEVICE_ID, orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
+          ]) as any
+        );
+      };
 
-        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+      it('rejects running an org A script on an org B device (error passthrough, no audit)', async () => {
+        useMultiOrgPartnerAuth();
+        mockDeviceLookup();
+        executeScriptOnDevicesMock.mockResolvedValueOnce({
+          ok: false,
+          status: 403,
+          error: 'Script and device must belong to the same organization'
+        });
+
+        const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
         });
 
         expect(res.status).toBe(403);
-        expect(db.insert).not.toHaveBeenCalled();
+        const body = await res.json();
+        expect(body.error).toBe('Script and device must belong to the same organization');
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
       });
 
       it('allows running a same-org script on its own org device', async () => {
         useMultiOrgPartnerAuth();
-        vi.mocked(db.select)
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
-            ]) as any
-          )
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              {
-                id: SCRIPT_ID,
-                orgId: DEVICE_ORG,
-                isSystem: false,
-                osTypes: ['linux'],
-                language: 'bash',
-                content: 'echo ok',
-                timeoutSeconds: 60,
-                runAs: 'root'
-              }
-            ]) as any
-          );
-        vi.mocked(db.insert)
-          .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
-          .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
+        mockDeviceLookup();
+        executeScriptOnDevicesMock.mockResolvedValueOnce({
+          ok: true,
+          batchId: 'batch-1',
+          scriptId: SCRIPT_ID,
+          script: { id: SCRIPT_ID } as any,
+          devicesTargeted: 1,
+          maintenanceSuppressedDeviceIds: [],
+          executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
+          status: 'queued',
+          triggerType: 'manual',
+          runAs: 'system',
+          auditOrgId: DEVICE_ORG
+        });
 
-        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
@@ -1591,35 +1639,27 @@ describe('mobile routes', () => {
         expect(res.status).toBe(201);
         const body = await res.json();
         expect(body.executionId).toBe('exec-1');
+        expect(writeRouteAuditMock).toHaveBeenCalled();
       });
 
       it('allows running a system (org-less) script on any accessible device', async () => {
         useMultiOrgPartnerAuth();
-        vi.mocked(db.select)
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              { id: '11111111-2222-4333-8444-555555555555', orgId: DEVICE_ORG, status: 'online', osType: 'linux', siteId: null }
-            ]) as any
-          )
-          .mockReturnValueOnce(
-            mockSelectLimitChain([
-              {
-                id: SCRIPT_ID,
-                orgId: null,
-                isSystem: true,
-                osTypes: ['linux'],
-                language: 'bash',
-                content: 'echo system',
-                timeoutSeconds: 60,
-                runAs: 'root'
-              }
-            ]) as any
-          );
-        vi.mocked(db.insert)
-          .mockReturnValueOnce(mockInsertReturning([{ id: 'exec-1' }]) as any)
-          .mockReturnValueOnce(mockInsertReturning([{ id: 'cmd-1' }]) as any);
+        mockDeviceLookup();
+        executeScriptOnDevicesMock.mockResolvedValueOnce({
+          ok: true,
+          batchId: null,
+          scriptId: SCRIPT_ID,
+          script: { id: SCRIPT_ID } as any,
+          devicesTargeted: 1,
+          maintenanceSuppressedDeviceIds: [],
+          executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
+          status: 'queued',
+          triggerType: 'manual',
+          runAs: 'system',
+          auditOrgId: null
+        });
 
-        const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })

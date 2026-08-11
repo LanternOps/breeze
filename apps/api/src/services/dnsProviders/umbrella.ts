@@ -1,5 +1,5 @@
 import type { DnsEvent, DnsProvider } from './index';
-import { requestJson } from './http';
+import { DnsProviderHttpError, requestJson } from './http';
 import { asArray, asBoolean, asNumber, asRecord, asString, asStringArray } from './helpers';
 
 export interface UmbrellaProviderConfig {
@@ -8,19 +8,115 @@ export interface UmbrellaProviderConfig {
   allowlistId?: string;
 }
 
+/** Cisco's OAuth2 client-credentials token endpoint (Umbrella API). */
+const UMBRELLA_TOKEN_URL = 'https://api.umbrella.com/auth/v2/token';
+
+/**
+ * Refresh this many ms before the advertised expiry so a token can't lapse
+ * mid-request. Umbrella tokens live 3600s, so 60s is ~1.7% of the lifetime.
+ */
+const TOKEN_EXPIRY_SAFETY_MS = 60_000;
+
+/** Fallback lifetime if Umbrella ever omits `expires_in` (documented as 3600). */
+const DEFAULT_TOKEN_LIFETIME_S = 3600;
+
 export class UmbrellaProvider implements DnsProvider {
+  private tokenCache: { accessToken: string; expiresAt: number } | null = null;
+  /** In-flight exchange, so concurrent calls share one token request. */
+  private tokenInFlight: Promise<string> | null = null;
+
   constructor(
     private readonly apiKey: string,
     private readonly apiSecret: string | null | undefined,
     private readonly config: UmbrellaProviderConfig
   ) {}
 
-  private basicAuthHeader(): string {
+  /**
+   * Umbrella retired direct Basic Auth on its APIs: the key/secret now buy a
+   * short-lived bearer token from the OAuth2 client-credentials endpoint, and
+   * every API call carries that token instead (#3271). Sending Basic straight
+   * at the API returns 401 for every key type, which is what made the old code
+   * look like a credentials problem rather than an auth-scheme one.
+   *
+   * One token covers every Umbrella surface — the reporting host and
+   * `policies/v2` alike — so it is cached on the provider instance.
+   */
+  private async getAccessToken(forceRefresh = false): Promise<string> {
     if (!this.apiSecret) {
       throw new Error('Cisco Umbrella integration requires apiSecret');
     }
-    const token = Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString('base64');
-    return `Basic ${token}`;
+
+    if (!forceRefresh) {
+      const cached = this.tokenCache;
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.accessToken;
+      }
+      if (this.tokenInFlight) return this.tokenInFlight;
+    }
+
+    const basic = Buffer.from(`${this.apiKey}:${this.apiSecret}`).toString('base64');
+    const exchange = (async (): Promise<string> => {
+      const payload = await requestJson<Record<string, unknown>>(UMBRELLA_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${basic}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=client_credentials'
+      });
+
+      const accessToken = asString(payload.access_token);
+      if (!accessToken) {
+        // Deliberately body-free: the token response is credential material.
+        throw new Error('Cisco Umbrella token endpoint returned no access_token');
+      }
+
+      const lifetimeS = asNumber(payload.expires_in) ?? DEFAULT_TOKEN_LIFETIME_S;
+      this.tokenCache = {
+        accessToken,
+        expiresAt: Date.now() + Math.max(0, lifetimeS * 1000 - TOKEN_EXPIRY_SAFETY_MS)
+      };
+      return accessToken;
+    })();
+
+    this.tokenInFlight = exchange;
+    try {
+      return await exchange;
+    } finally {
+      if (this.tokenInFlight === exchange) this.tokenInFlight = null;
+    }
+  }
+
+  /**
+   * Run an Umbrella API call with a bearer token, refreshing once if the token
+   * turns out to be dead.
+   *
+   * Note the status: an EXPIRED Umbrella token yields **400** with
+   * `{"error":"invalid_request"}`, not 401 — so a plain retry-on-401 would miss
+   * exactly the case a cache makes possible. 401 is still handled for a token
+   * revoked or scoped away mid-run. Genuine validation 400s (a malformed
+   * destination, say) are left alone by matching on the error body.
+   */
+  private async withAuth<T>(call: (authHeader: string) => Promise<T>): Promise<T> {
+    const attempt = async (forceRefresh: boolean): Promise<T> => {
+      const token = await this.getAccessToken(forceRefresh);
+      return call(`Bearer ${token}`);
+    };
+
+    try {
+      return await attempt(false);
+    } catch (error) {
+      if (!this.isAuthFailure(error)) throw error;
+      this.tokenCache = null;
+      return attempt(true);
+    }
+  }
+
+  private isAuthFailure(error: unknown): boolean {
+    if (!(error instanceof DnsProviderHttpError)) return false;
+    if (error.status === 401) return true;
+    // Umbrella signals an expired/invalid token as 400 invalid_request.
+    return error.status === 400 && /invalid_request|invalid_token|unauthorized/i.test(error.responseBody);
   }
 
   async syncEvents(since: Date, until: Date): Promise<DnsEvent[]> {
@@ -47,11 +143,11 @@ export class UmbrellaProvider implements DnsProvider {
         url.searchParams.set('page', String(page));
       }
 
-      const payload = await requestJson<Record<string, unknown>>(url, {
-        headers: {
-          Authorization: this.basicAuthHeader(),
-        }
-      });
+      const payload = await this.withAuth((authorization) =>
+        requestJson<Record<string, unknown>>(url, {
+          headers: { Authorization: authorization }
+        })
+      );
 
       const requests = asArray(payload.requests ?? payload.data);
       const mapped = requests.flatMap((entry): DnsEvent[] => {
@@ -152,17 +248,17 @@ export class UmbrellaProvider implements DnsProvider {
   async addBlocklistDomain(domain: string, reason?: string): Promise<void> {
     const listId = this.getDestinationListId('block');
     const url = `https://api.umbrella.com/policies/v2/destinationlists/${listId}/destinations`;
-    await requestJson(url, {
+    await this.withAuth((authorization) => requestJson(url, {
       method: 'POST',
       headers: {
-        Authorization: this.basicAuthHeader(),
+        Authorization: authorization,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         destination: domain,
         comment: reason
       })
-    });
+    }));
   }
 
   async removeBlocklistDomain(domain: string): Promise<void> {
@@ -170,28 +266,28 @@ export class UmbrellaProvider implements DnsProvider {
     const url = new URL(`https://api.umbrella.com/policies/v2/destinationlists/${listId}/destinations`);
     url.searchParams.set('destination', domain);
 
-    await requestJson(url, {
+    await this.withAuth((authorization) => requestJson(url, {
       method: 'DELETE',
       headers: {
-        Authorization: this.basicAuthHeader()
+        Authorization: authorization
       }
-    });
+    }));
   }
 
   async addAllowlistDomain(domain: string): Promise<void> {
     const listId = this.getDestinationListId('allow');
     const url = `https://api.umbrella.com/policies/v2/destinationlists/${listId}/destinations`;
 
-    await requestJson(url, {
+    await this.withAuth((authorization) => requestJson(url, {
       method: 'POST',
       headers: {
-        Authorization: this.basicAuthHeader(),
+        Authorization: authorization,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         destination: domain
       })
-    });
+    }));
   }
 
   async removeAllowlistDomain(domain: string): Promise<void> {
@@ -199,11 +295,11 @@ export class UmbrellaProvider implements DnsProvider {
     const url = new URL(`https://api.umbrella.com/policies/v2/destinationlists/${listId}/destinations`);
     url.searchParams.set('destination', domain);
 
-    await requestJson(url, {
+    await this.withAuth((authorization) => requestJson(url, {
       method: 'DELETE',
       headers: {
-        Authorization: this.basicAuthHeader()
+        Authorization: authorization
       }
-    });
+    }));
   }
 }

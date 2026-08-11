@@ -333,14 +333,17 @@ describe('enrollment key routes — list & create', () => {
     });
 
     // ------------------------------------------------------------------
-    // #2992 review round 2 — short-link children report no installer line.
+    // #3034 — the installer line follows the TOKEN, not the parent key.
     //
-    // `/s/:code` mints a `maxUsage: 1` bootstrap token per DOWNLOAD against the
-    // installer-link child key, so Σ max_usage there counts clicks, not device
-    // slots: a 7-device link clicked 3 times would render "3 / 7" over
-    // "Installer devices 0 / 3". See reportsInstallerCapacity.
+    // #2992 suppressed the line for every short_code-bearing row, because
+    // `/s/:code` mints a `maxUsage: 1` token per DOWNLOAD and Σ max_usage there
+    // counts clicks, not device slots. But the authenticated build routes accept
+    // ANY key id the caller can reach — including a short-link child, which is a
+    // visible row on this very page — so that per-key proxy hid figures that
+    // were real. The discriminator is now `installer_bootstrap_tokens.usage_kind`
+    // and the route asks for every key on the page.
     // ------------------------------------------------------------------
-    it('suppresses the installer line for a short-link child even when the aggregate returns rows for it', async () => {
+    it('reports the installer line for a short-link child that has a capacity token (#3034)', async () => {
       mockSelectFromWhere([{ count: 2 }]);
       mockSelectFromWhereOrderByLimitOffset([
         makeEnrollmentKey({ name: 'Add Device parent' }),
@@ -352,18 +355,15 @@ describe('enrollment key routes — list & create', () => {
           usageCount: 3,
         }),
       ]);
-      // The aggregate deliberately hands back a row for the short-link child
-      // too — the shape you get if the WHERE predicate is ever wrong or a
-      // future caller widens the id set. Suppression must not depend on the
-      // QUERY having filtered it out, so this kills the mutant that drops the
-      // `reportsInstallerCapacity` gate on the READ and leaves only the id-list
-      // filter. (It caught exactly that: the first cut of this fix gated only
-      // the id list, and the `.get()` reattached the figure from this row.)
-      // The id-list filter is killed separately, by the transaction assertion
-      // in the all-short-link test below.
+      // The operator built a 3-device installer FROM the short-link child row.
+      // The aggregate — which filters `usage_kind = 'capacity'` in SQL — returns
+      // a group for it, and the route must surface that group rather than
+      // discarding it because the key happens to carry a short_code. This is the
+      // exact regression #3034 reported; reinstating any per-key `shortCode`
+      // gate on the read turns `data[1].installerTokens` back to null.
       mockSelectFromWhereGroupBy([
         { parentEnrollmentKeyId: KEY_ID, consumed: 0, max: 5, liveConsumed: 0, liveMax: 5 },
-        { parentEnrollmentKeyId: 'key-link', consumed: 0, max: 3, liveConsumed: 0, liveMax: 3 },
+        { parentEnrollmentKeyId: 'key-link', consumed: 1, max: 3, liveConsumed: 1, liveMax: 3 },
       ]);
 
       const res = await app.request('/enrollment-keys', {
@@ -381,23 +381,29 @@ describe('enrollment key routes — list & create', () => {
         liveConsumed: 0,
         liveMax: 5,
       });
-      expect(body.data[1].installerTokens).toBeNull();
-      // …and its own counters, which ARE atomically claimed on /s/:code, are
-      // left to tell the story.
+      expect(body.data[1].installerTokens).toEqual({
+        consumed: 1,
+        max: 3,
+        liveConsumed: 1,
+        liveMax: 3,
+      });
+      // The child's own counters are untouched and still tell their own story —
+      // they are what `/s/:code` atomically claims.
       expect(body.data[1].usageCount).toBe(3);
       expect(body.data[1].maxUsage).toBe(7);
     });
 
-    it('never issues the aggregate for a page of only short-link children', async () => {
+    it('reports no installer line for a short-link child whose tokens are all per-download', async () => {
       mockSelectFromWhere([{ count: 1 }]);
       mockSelectFromWhereOrderByLimitOffset([
-        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5' }),
+        makeEnrollmentKey({ shortCode: 'A1B2C3D4E5', maxUsage: 7, usageCount: 3 }),
       ]);
-      // No groupBy mock, and no aggregate is allowed to run: filtering happens
-      // on the ID LIST, so an all-short-link page hits the empty-ids
-      // early-return. Mutant killed: filtering the RESULT map instead (the
-      // response would look identical, but the savepoint + third select would
-      // fire).
+      // The aggregate runs (see the call-count assertions below) but its
+      // `usage_kind = 'capacity'` predicate matches nothing, so the key gets no
+      // group back and the route renders null — the same shape as a key that
+      // never built an installer. This is what stops a 7-device link clicked 3
+      // times from rendering "Installer devices 0 / 3" under its own "3 / 7".
+      mockSelectFromWhereGroupBy([]);
 
       const res = await app.request('/enrollment-keys', {
         method: 'GET',
@@ -407,8 +413,14 @@ describe('enrollment key routes — list & create', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data[0].installerTokens).toBeNull();
-      expect(dbMock.transaction).not.toHaveBeenCalled();
-      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+      // The route no longer pre-filters the id list by shortCode (#3034): no key
+      // property predicts which tokens count, so every id on the page is handed
+      // to the aggregate and the WHERE clause decides. Mutant killed:
+      // reintroducing an id-list filter would skip the query entirely here.
+      expect(dbMock.transaction).toHaveBeenCalledTimes(1);
+      // Three selects: count, page, aggregate. The old gate stopped at two for
+      // an all-short-link page.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
     });
 
     it('lists enrollment keys for org-scoped user', async () => {

@@ -117,6 +117,52 @@ describe('BulkOrgImport', () => {
     expect(screen.getByTestId('bulk-org-import-select-2')).not.toBeChecked();
   });
 
+  it('refuses to confirm a name match whose org is already linked to the same system', async () => {
+    // The link table is unique on (partner, system, external id), so confirming
+    // this match would write a SECOND link row and collapse two source records
+    // onto one tenant. The guard lives in the shared preview table, so the CSV
+    // importer inherits it — the API refuses it too (match-already-linked).
+    render(<BulkOrgImport />);
+    await uploadCsv();
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      rows: [
+        { index: 0, organization: 'Acme', annotation: 'create', slug: 'acme', organizationId: null },
+        {
+          index: 1, organization: 'Contoso Ltd', externalId: '77', externalSystem: 'datto_rmm',
+          annotation: 'name-match', slug: null, organizationId: 'org-contoso',
+          matchedOrganizationName: 'Contoso', matchedOrganizationLinkedToSystem: true,
+        },
+      ],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-org-import-preview'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-org-import-table')).toBeInTheDocument(),
+    );
+
+    expect(screen.getByTestId('bulk-org-import-select-1')).toBeDisabled();
+    expect(screen.getByTestId('bulk-org-import-select-1')).not.toBeChecked();
+    expect(screen.getByTestId('bulk-org-import-already-linked-1'))
+      .toHaveTextContent(/Contoso.*already linked/i);
+
+    // Round-tripping select-all (create row is pre-selected, so the first click
+    // clears the bulk set and the second re-adds it) must not sneak it in.
+    fireEvent.click(screen.getByTestId('bulk-org-import-select-all'));
+    fireEvent.click(screen.getByTestId('bulk-org-import-select-all'));
+    expect(screen.getByTestId('bulk-org-import-select-0')).toBeChecked();
+    expect(screen.getByTestId('bulk-org-import-select-1')).not.toBeChecked();
+
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      imported: [{ index: 0, organization: 'Acme', organizationId: 'org-a' }],
+      updated: [], skipped: [], errors: [],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-org-import-submit'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    const body = JSON.parse((fetchWithAuthMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect(body.rows).toEqual([
+      { organization: 'Acme', expectedAnnotation: 'create' },
+    ]);
+  });
+
   it('commits selected rows with expectedAnnotation and shows a success toast', async () => {
     render(<BulkOrgImport />);
     await uploadAndPreview();

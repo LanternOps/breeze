@@ -63,6 +63,7 @@ import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
 import { getJwtClaims } from '../../lib/authScope';
+import { REOPEN_EVENT } from '../whatsNew/WhatsNewSplash';
 import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
@@ -797,6 +798,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             )}
             {apiVersion === 'unavailable' && ' · API unavailable'}
           </p>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event(REOPEN_EVENT))}
+            className="hover:text-muted-foreground hover:underline"
+          >
+            {t('whatsNew.link')}
+          </button>
         </div>
       )}
     </aside>

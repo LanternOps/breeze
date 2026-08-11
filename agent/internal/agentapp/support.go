@@ -16,6 +16,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/pkg/api"
 	"github.com/spf13/cobra"
@@ -55,9 +56,11 @@ neither is available the client prompts.`,
 	},
 }
 
-// supportCodeAlphabet is the server's code alphabet: A-Z minus I/L/O/U, plus
-// 2-9. The excluded characters are the ones users mis-hear or mis-read over
-// the phone (I/1/L, O/0), which is the whole point of a spoken support code.
+// supportCodeAlphabet is every symbol a support code may contain. The server
+// now MINTS digits 2-9 only (they read like a phone number, which is the whole
+// point of a spoken support code), but this set stays wide enough to also
+// accept the legacy letters+digits codes — A-Z minus I/L/O/U, plus 2-9 — so a
+// code minted just before a server upgrade still validates here.
 const supportCodeAlphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
 
 var supportCodeRe = regexp.MustCompile(`^[` + supportCodeAlphabet + `]{9}$`)
@@ -71,7 +74,17 @@ var supportCodeRe = regexp.MustCompile(`^[` + supportCodeAlphabet + `]{9}$`)
 // interactive prompt for a code they were told is already "in the file".
 //
 // The host group is non-greedy so the dedup marker is never folded into it.
-var supportFilenameRe = regexp.MustCompile(`(?i)^breeze-support-([a-z2-9]{9})-(.+?)(?:\s?\(\d+\))?\.exe$`)
+//
+// The code group is the deliberately loose `[a-z0-9]{9}` rather than the exact
+// server alphabet. This regex is compiled into binaries that are ALREADY in
+// the field and are never updated (a Quick Support client is downloaded fresh,
+// runs once, and deletes itself — but the copy in someone's Downloads folder
+// is whatever build they got). A future narrowing or widening of the mint
+// alphabet must not strand them, so the filename parser accepts any
+// alphanumeric 9-char code and lets supportCodeRe (and ultimately the server's
+// hash lookup) decide validity. Both the current digits-only codes and the
+// legacy letters+digits ones match.
+var supportFilenameRe = regexp.MustCompile(`(?i)^breeze-support-([a-z0-9]{9})-(.+?)(?:\s?\(\d+\))?\.exe$`)
 
 // supportHostPortRe decodes the `host_PORT` suffix the download route emits
 // for a nonstandard port. `:` is illegal in a Windows filename and Chromium
@@ -139,7 +152,7 @@ func resolveSupportInput(argv0, codeFlag, serverFlag string) (code, server strin
 		return "", server, errNoSupportCode
 	}
 	if !supportCodeRe.MatchString(code) {
-		return "", server, fmt.Errorf("%q is not a valid support code (9 characters, letters and digits, no I/L/O/U/0/1)", code)
+		return "", server, fmt.Errorf("%q is not a valid support code (9 characters, like 234-567-892)", code)
 	}
 	return code, server, nil
 }
@@ -258,9 +271,21 @@ func promptSupportInput(prefillServer string) (code, server string, err error) {
 		if readErr != nil {
 			return "", server, fmt.Errorf("could not read the support code: %w", readErr)
 		}
-		fmt.Println("That doesn't look like a support code — it's 9 characters, like ABC-123-XYZ.")
+		fmt.Println("That doesn't look like a support code — it's 9 characters, like 234-567-892.")
 	}
 	return "", server, errors.New("no valid support code entered")
+}
+
+// gateSupportServer refuses, in a hosted build, to redeem a support code
+// against (or adopt a redirect to) a control-plane host outside the compiled
+// allowlist. The support flow is a fresh connection with no prior enrollment
+// to fall back on, so it gates on hostpolicy.Enforced() the same way
+// AllowedURL already does — a signed binary must not be turned into an
+// arbitrary-server client via the Quick Support code path any more than via
+// bootstrap or normal enrollment. No-op in self-host builds. Mirrors
+// gateBootstrapServer/gateRedeemResponse in bootstrap.go.
+func gateSupportServer(server string) error {
+	return hostpolicy.AllowedURL(server)
 }
 
 // supportFail prints a user-facing failure and exits nonzero. The end user is
@@ -357,6 +382,12 @@ func runSupportSession() {
 		osType = runtime.GOOS
 	}
 
+	if err := gateSupportServer(server); err != nil {
+		_ = os.RemoveAll(workDir)
+		supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
+		return
+	}
+
 	resp, err := api.RedeemSupportCode(server, code, hostname, osType)
 	if err != nil {
 		_ = os.RemoveAll(workDir)
@@ -372,8 +403,15 @@ func runSupportSession() {
 
 	// The redeem response is authoritative for the control-plane URL: a
 	// self-hosted deployment can hand back a different (e.g. externally
-	// reachable) address than the one the download link used.
+	// reachable) address than the one the download link used. Gated the same
+	// as the initial server: a hosted build must not adopt a redirect to a
+	// non-allowlisted host any more than it may redeem against one.
 	if strings.TrimSpace(resp.ServerURL) != "" {
+		if err := gateSupportServer(resp.ServerURL); err != nil {
+			_ = os.RemoveAll(workDir)
+			supportFail("This build can only contact its configured Breeze server. Ask your technician for a new code.", err)
+			return
+		}
 		cfg.ServerURL = strings.TrimSpace(resp.ServerURL)
 	}
 	cfg.SupportSessionID = resp.SessionID

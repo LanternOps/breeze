@@ -45,6 +45,7 @@ vi.mock('../../middleware/auth', () => ({
   // context from auth via dbAccessContextFromAuth; stub it to pass the auth
   // straight through to the (also-stubbed) withDbAccessContext.
   dbAccessContextFromAuth: (auth: any) => auth,
+  withAuthDbAccessContext: (_auth: any, fn: () => Promise<unknown>) => fn(),
 }));
 
 // Minimal insert/update/select builder — shared across insert/update/select

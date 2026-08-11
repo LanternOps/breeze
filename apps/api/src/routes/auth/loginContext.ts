@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { LoginContext } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, ssoProviders, partnerLoginBranding } from '../../db/schema';
-import { getTrustedClientIp } from '../../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { getRedis, rateLimiter } from '../../services';
 import { captureException } from '../../services/sentry';
 import { envFlag } from '../../utils/envFlag';
@@ -20,7 +20,7 @@ loginContextRoutes.get('/login-context', async (c) => {
   // entry route (GET /sso/login/partner/:partnerId): rateLimiter fails
   // CLOSED (allowed: false) when redis is null, so a missing Redis denies
   // the request rather than silently skipping the limit.
-  const check = await rateLimiter(redis, `login-context:${getTrustedClientIp(c)}`, 30, 60);
+  const check = await rateLimiter(redis, `login-context:${rateLimitIpKey(getTrustedClientIp(c))}`, 30, 60);
   if (!check.allowed) {
     return c.json({ error: 'Too many requests' }, 429);
   }

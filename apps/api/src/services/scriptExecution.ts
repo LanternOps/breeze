@@ -2,19 +2,14 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
-  deviceCommands,
   devices,
   scriptExecutionBatches,
   scriptExecutions,
   scripts,
 } from '../db/schema';
-import {
-  claimPendingCommandForDelivery,
-  releaseClaimedCommandDelivery,
-} from './commandDispatch';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchScriptToDevice } from './scriptDispatch';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -43,6 +38,7 @@ type ExecuteScriptOnDevicesFailure = {
 type ExecuteScriptOnDevicesSuccess = {
   ok: true;
   batchId: string | null;
+  batchIds: string[];
   scriptId: string;
   script: typeof scripts.$inferSelect;
   devicesTargeted: number;
@@ -153,107 +149,103 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   const parameters = input.parameters ?? {};
   const runAs = input.runAs ?? script.runAs;
 
-  let batchId: string | null = null;
-  if (executableDevices.length > 1) {
-    const batchOrgId = executableDevices[0]!.orgId;
+  // A multi-org run (partner/system script fanned out across orgs) must not
+  // stamp every batch row with the first device's org — split one batch per
+  // org instead. A single-org, single-device run keeps today's no-batch
+  // behavior; a single-org multi-device run keeps today's one-batch
+  // behavior. Once more than one org is targeted, every org's group gets its
+  // own batch (even an org with just one device in that run) so no execution
+  // is misattributed to another org's batch.
+  const devicesByOrg = new Map<string, typeof executableDevices>();
+  for (const device of executableDevices) {
+    const group = devicesByOrg.get(device.orgId);
+    if (group) {
+      group.push(device);
+    } else {
+      devicesByOrg.set(device.orgId, [device]);
+    }
+  }
+  const multiOrg = devicesByOrg.size > 1;
+
+  const batchIdByOrg = new Map<string, string>();
+  const createdBatchIds: string[] = [];
+  for (const [orgId, orgDevices] of devicesByOrg) {
+    if (orgDevices.length <= 1 && !multiOrg) continue;
     const [batch] = await db
       .insert(scriptExecutionBatches)
       .values({
         scriptId: input.scriptId,
-        orgId: batchOrgId,
+        orgId,
         triggeredBy: input.auth.user.id,
         triggerType,
         parameters,
-        devicesTargeted: executableDevices.length,
+        devicesTargeted: orgDevices.length,
         status: 'pending',
       })
       .returning();
     if (!batch) {
       throw new Error('Failed to create batch');
     }
-    batchId = batch.id;
+    batchIdByOrg.set(orgId, batch.id);
+    createdBatchIds.push(batch.id);
   }
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
+  // This loop itself is sequential/awaited and therefore bounded, but
+  // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
+  // fire-and-forget audit transaction PER DEVICE for 'script' commands
+  // (AUDITED_COMMANDS in commandQueue.ts) that this loop cannot see or wait
+  // on. That's the actual unbounded fan-out risk — a large batch launches
+  // that many concurrent transactions against a pool sized for far fewer
+  // while this request also holds a connection (pool-starvation shape).
+  // The real mitigation is the `.max(500)` cap on `deviceIds` in
+  // executeScriptSchema (routes/scripts.ts) — do not raise that cap without
+  // also addressing this fan-out, and do not "fix" it by restructuring
+  // queueCommand's audit dispatch out from under this loop.
   for (const device of executableDevices) {
-    const [execution] = await db
-      .insert(scriptExecutions)
-      .values({
-        scriptId: input.scriptId,
-        deviceId: device.id,
-        orgId: device.orgId,
-        triggeredBy: input.auth.user.id,
-        triggerType,
-        parameters,
-        status: 'pending',
-      })
-      .returning();
-
-    if (!execution) {
-      throw new Error('Failed to create execution');
+    const dispatch = await dispatchScriptToDevice({
+      device,
+      source: { kind: 'saved', script },
+      parameters,
+      triggerType,
+      triggeredBy: input.auth.user.id,
+      createdBy: input.auth.user.id,
+      runAs,
+      targetSessionId: input.targetSessionId,
+      batchId: batchIdByOrg.get(device.orgId) ?? null,
+    });
+    if (!dispatch.ok) {
+      // Pre-checks above (org access, os filter, decommissioned filter) make
+      // these unreachable for this caller; treat as the insert failures the
+      // old code threw on.
+      throw new Error(dispatch.error);
     }
-
-    const [command] = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId: device.id,
-        type: 'script',
-        payload: {
-          scriptId: input.scriptId,
-          executionId: execution.id,
-          batchId,
-          language: script.language,
-          content: script.content,
-          parameters,
-          timeoutSeconds: script.timeoutSeconds,
-          runAs,
-          ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
-        },
-        status: 'pending',
-        createdBy: input.auth.user.id,
-      })
-      .returning();
-
-    if (!command) {
-      throw new Error('Failed to create command');
-    }
-
-    if (device.agentId) {
-      const claimed = await claimPendingCommandForDelivery(command.id);
-      if (claimed) {
-        const sent = sendCommandToAgent(device.agentId, {
-          id: command.id,
-          type: 'script',
-          payload: command.payload as Record<string, unknown>,
-        });
-        if (sent) {
-          await db
-            .update(scriptExecutions)
-            .set({ status: 'running', startedAt: claimed.executedAt })
-            .where(eq(scriptExecutions.id, execution.id));
-        } else {
-          await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-        }
-      }
-    }
-
     executions.push({
-      executionId: execution.id,
+      executionId: dispatch.executionId!,
       deviceId: device.id,
-      commandId: command.id,
+      commandId: dispatch.commandId,
     });
   }
 
-  if (batchId) {
+  if (createdBatchIds.length > 0) {
     await db
       .update(scriptExecutionBatches)
       .set({ status: 'queued' })
-      .where(eq(scriptExecutionBatches.id, batchId));
+      .where(inArray(scriptExecutionBatches.id, createdBatchIds));
   }
 
   return {
     ok: true,
-    batchId,
+    // `batchId` is a legacy scalar convenience for the common single-batch
+    // case. In a multi-org run there is no single batch that represents the
+    // whole run — createdBatchIds[0] would silently pick an arbitrary org's
+    // batch, and a consumer polling just that id would track only a slice of
+    // the run. Prefer absent-and-loud over misleadingly partial: `batchId` is
+    // only populated when exactly one batch was created. `batchIds` (below)
+    // always carries the complete list and is what multi-batch callers must
+    // use.
+    batchId: createdBatchIds.length === 1 ? createdBatchIds[0]! : null,
+    batchIds: createdBatchIds,
     scriptId: input.scriptId,
     script,
     devicesTargeted: executableDevices.length,

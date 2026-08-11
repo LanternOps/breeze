@@ -643,7 +643,7 @@
     "eGRestoredDbServer": "par exemple Restored-DB-Server",
     "virtualSwitch": "Commutateur virtuel",
     "optional": "(optionnel)",
-    "defaultSwitch": "Interrupteur par défaut",
+    "defaultSwitch": "Commutateur par défaut",
     "restoreMode": "Mode de restauration",
     "chooseHowTheVmWillBeCreatedFrom": "Choisissez comment la VM sera créée à partir de la sauvegarde.",
     "fullRestore": "Restauration complète",

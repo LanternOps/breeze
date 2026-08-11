@@ -271,7 +271,11 @@ describe('POST /organizations', () => {
 describe('POST /sites', () => {
   function primeSuccess() {
     insertResults = [[siteRow]];
-    selectResults = [[{ partnerExportUpdatedAt: UPDATED_AT }]];
+    // Two reads now, in order: the contacts mirror's existing-primary lookup
+    // (none — the site was just created), then the partner-export stamp
+    // re-read. Priming only the stamp would feed its row to the mirror, which
+    // would read as an existing contact and take the update path.
+    selectResults = [[], [{ partnerExportUpdatedAt: UPDATED_AT }]];
   }
 
   it('requires the sites:write scope', async () => {

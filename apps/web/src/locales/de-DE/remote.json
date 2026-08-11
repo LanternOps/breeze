@@ -797,6 +797,12 @@
       "copiedLink": "Download-Link in die Zwischenablage kopiert",
       "copyFailed": "Kopieren in die Zwischenablage nicht möglich"
     },
+    "detail": {
+      "heading": "Sitzungsdetails",
+      "noCode": "Der Einmalcode wurde nur beim Erstellen dieser Sitzung angezeigt und kann nicht erneut abgerufen werden. Starten Sie eine neue Sitzung, wenn die Person einen weiteren Code braucht.",
+      "attribution": "Referenz",
+      "close": "Sitzungsdetails schließen"
+    },
     "status": {
       "heading": "Sitzungsfortschritt",
       "pending": "Warten darauf, dass der Benutzer den Client startet…",
@@ -817,14 +823,16 @@
     },
     "errors": {
       "create": "Supportsitzung konnte nicht erstellt werden",
-      "list": "Aktuelle Supportsitzungen konnten nicht geladen werden"
+      "list": "Aktuelle Supportsitzungen konnten nicht geladen werden",
+      "notFound": "Diese Supportsitzung ist nicht mehr verfügbar."
     },
     "list": {
       "heading": "Letzte Supportsitzungen",
       "empty": "Noch keine Supportsitzungen.",
       "columnCreated": "Gestartet",
       "columnEnded": "Beendet",
-      "unlabeled": "Sitzung ohne Bezeichnung"
+      "unlabeled": "Sitzung ohne Bezeichnung",
+      "openSession": "Sitzungsdetails öffnen"
     }
   }
 }

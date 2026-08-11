@@ -1340,7 +1340,7 @@
     "status": "Estado",
     "actions": "Acciones",
     "noAPIKeysFound": "No se encontraron claves API",
-    "mintedByTheMCPAgentBootstrapFlow": "Acuñado por el flujo de arranque del agente MCP",
+    "mintedByTheMCPAgentBootstrapFlow": "Generada por el flujo de arranque del agente MCP",
     "mCPProvisioning": "MCP Aprovisionamiento",
     "view": "Ver",
     "rotate": "Rotar",
@@ -1876,7 +1876,8 @@
     "networkErrorLoadingPermissions": "Error de red al cargar permisos",
     "cannotDeleteAssignedRole": "No se puede eliminar el rol con usuarios asignados",
     "inheritedFromParentRole": "Heredado del rol de padre",
-    "waitingForPermissionCatalog": "Esperando a que se cargue el catálogo de permisos"
+    "waitingForPermissionCatalog": "Esperando a que se cargue el catálogo de permisos",
+    "summary": "{{filtered}} de {{total}} roles"
   },
   "roleSelector": {
     "currentRole": "Rol actual",
@@ -2796,7 +2797,8 @@
       "externalId": "ID externo",
       "status": "Estado",
       "matches": "coincide con “{{name}}”",
-      "reactivateHint": "Seleccionarla reactivará la organización eliminada"
+      "reactivateHint": "Seleccionarla reactivará la organización eliminada",
+      "matchAlreadyLinked": "«{{name}}» ya está vinculada a este sistema con otro ID: confirmar esta coincidencia fusionaría dos registros en una sola organización."
     },
     "badges": {
       "create": "Nueva",

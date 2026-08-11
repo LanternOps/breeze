@@ -20,6 +20,7 @@ interface PartnerRegisterPageProps {
 export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {}) {
   const { t } = useTranslation('auth');
   const [error, setError] = useState<string>();
+  const [errorAction, setErrorAction] = useState<{ url: string; label: string }>();
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
@@ -43,6 +44,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   }) => {
     setLoading(true);
     setError(undefined);
+    setErrorAction(undefined);
 
     const result = await apiRegisterPartner(
       values.companyName,
@@ -53,6 +55,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
 
     if (!result.success) {
       setError(result.error);
+      setErrorAction(result.action);
       setLoading(false);
       return;
     }
@@ -101,6 +104,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
     <PartnerRegisterForm
       onSubmit={handleRegister}
       errorMessage={error}
+      errorAction={errorAction}
       loading={loading}
     />
   );

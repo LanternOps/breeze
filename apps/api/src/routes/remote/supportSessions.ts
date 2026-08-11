@@ -116,6 +116,7 @@ supportSessionRoutes.post(
     );
 
     const webBase = process.env.PUBLIC_WEB_URL ?? '';
+
     return c.json({
       id: session.id,
       // The one and only time the plaintext code leaves the server.

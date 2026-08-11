@@ -65,6 +65,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_active_users', description: 'Active user sessions', category: 'Devices & Hardware' },
       { name: 'get_user_experience_metrics', description: 'Login performance and session trends', category: 'Devices & Hardware' },
       { name: 'get_fleet_health', description: 'Fleet health overview and aggregates', category: 'Devices & Hardware' },
+      { name: 'get_fleet_findings', description: 'Deduplicated fleet hygiene findings', category: 'Devices & Hardware' },
+      { name: 'analyze_fleet_metrics', description: 'Fleet-wide metric aggregation from rollups', category: 'Devices & Hardware' },
       { name: 'analyze_boot_performance', description: 'Boot performance analysis', category: 'Devices & Hardware' },
       // Network & DNS
       { name: 'get_network_changes', description: 'Network change detection', category: 'Network & DNS' },
@@ -328,6 +330,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   get_active_users: 'devices.read',
   get_user_experience_metrics: 'devices.read',
   get_fleet_health: 'devices.read',
+  get_fleet_findings: 'devices.read',
+  analyze_fleet_metrics: 'devices.read',
   analyze_boot_performance: 'devices.read',
   analyze_disk_usage: 'devices.read',
   manage_processes: { list: 'devices.read', kill: 'devices.execute' },

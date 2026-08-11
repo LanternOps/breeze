@@ -124,6 +124,44 @@ describe('alert correlation group materializer', () => {
     expect(groupInsert![0]?.values).toContain(66);
   });
 
+  /**
+   * #3369. `first_seen_at`/`last_seen_at` are taken straight off
+   * `alerts.triggeredAt`, which Drizzle hands back as a live JS `Date`. They
+   * were interpolated bare into the upsert template, so Drizzle bound them with
+   * the NOOP encoder and postgres.js received `Date` objects — its Bind step
+   * throws ERR_INVALID_ARG_TYPE, failing the entire correlation-grouping pass
+   * every time a group had to be written.
+   *
+   * `drizzle-orm` is mocked in this file, so `sql` captures its interpolated
+   * values verbatim: a `Date` surviving anywhere in the bound values is exactly
+   * the pre-fix behaviour, and `sqlTimestamp` replaces it with an ISO string.
+   */
+  it('binds no raw Date into any upsert — timestamps are serialized first', async () => {
+    const containsDate = (value: unknown, depth = 0): boolean => {
+      if (value instanceof Date) return true;
+      if (depth > 6 || value === null || typeof value !== 'object') return false;
+      return Object.values(value as Record<string, unknown>).some((v) => containsDate(v, depth + 1));
+    };
+
+    await persistAlertCorrelationGroupsForAlerts({
+      orgId: ORG_1,
+      alertIds: [ALERT_1, ALERT_2, ALERT_3],
+    });
+
+    expect(dbMock.execute).toHaveBeenCalled();
+    for (const call of dbMock.execute.mock.calls) {
+      expect(containsDate(call[0]?.values ?? [])).toBe(false);
+    }
+
+    const groupInsert = dbMock.execute.mock.calls.find((call) =>
+      JSON.stringify(call[0]?.strings ?? []).includes('first_seen_at')
+    );
+    expect(groupInsert).toBeDefined();
+    // The earliest and latest member timestamps, ISO-serialized.
+    expect(JSON.stringify(groupInsert![0]?.values)).toContain('2026-06-18T12:00:00.000Z');
+    expect(JSON.stringify(groupInsert![0]?.values)).toContain('2026-06-18T12:02:00.000Z');
+  });
+
   it('skips materialization when fewer than two alerts are in scope', async () => {
     const result = await persistAlertCorrelationGroupsForAlerts({
       orgId: ORG_1,

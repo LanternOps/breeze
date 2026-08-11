@@ -711,7 +711,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Gerätegruppen konnten nicht abgerufen werden",
     "windows": "Fenster",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Die Gerätegruppe konnte nicht gespeichert werden",
@@ -1005,7 +1004,7 @@
       "server": "Server",
       "printer": "Drucker",
       "router": "Router",
-      "switch": "Wechseln",
+      "switch": "Netzwerk-Switch",
       "firewall": "Firewall",
       "access_point": "Zugangspunkt",
       "phone": "Telefon",

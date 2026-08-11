@@ -127,7 +127,7 @@
       },
       "refresh": "Actualiser",
       "retry": "Réessayer",
-      "noOrg": "Choisissez une organisation dans le commutateur d’organisation pour consulter ses applications connectées.",
+      "noOrg": "Choisissez une organisation dans le sélecteur d’organisation pour consulter ses applications connectées.",
       "thisOrganization": "Cette organisation",
       "errors": {
         "network": "Erreur réseau",
@@ -257,7 +257,7 @@
         "testQueued": "Test en file d’attente pour {{name}}. Sondage pour le résultat..."
       },
       "prompt": {
-        "runSmokeTest": "Faire un test de fumée pour {{name}} à quelle version ?"
+        "runSmokeTest": "Sur quelle version souhaitez-vous exécuter le test de vérification de {{name}} ?"
       },
       "platformAdmin": {
         "title": "Accès administrateur de plateforme requis",
@@ -291,7 +291,7 @@
       },
       "actions": {
         "retest": "Retester",
-        "runSmokeTest": "Effectuez un test de fumée",
+        "runSmokeTest": "Exécuter un test de vérification",
         "edit": "Modifier",
         "delete": "Supprimer"
       }

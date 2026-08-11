@@ -35,6 +35,7 @@ import { createHash } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
 import { createAuditLogAsync } from '../../services/auditService';
 import { recordFailedLogin } from '../../services/anomalyMetrics';
+import { rateLimitIpKey } from '../../services/clientIp';
 import { TenantInactiveError } from '../../services/tenantStatus';
 import { nanoid } from 'nanoid';
 import { ENABLE_2FA, loginSchema } from './schemas';
@@ -220,7 +221,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     // botnet (50 IPs × 10/5min = 6,000/hr vs the prior 18,000/hr) this
     // is a meaningful cut. Real shared-NAT users still get 10 attempts
     // before they're forced to wait — well above any human's miss rate.
-    const ipRateKey = `login:ip:${ip}`;
+    const ipRateKey = `login:ip:${rateLimitIpKey(ip)}`;
     const ipRateCheck = await rateLimiter(redis, ipRateKey, 10, 5 * 60);
     if (!ipRateCheck.allowed) {
       recordFailedLogin('rate_limited_ip');

@@ -15,6 +15,24 @@ var (
 	ErrVSSTimeout      = errors.New("vss: operation timed out")
 	ErrVSSWriterFailed = errors.New("vss: one or more writers failed")
 	ErrVSSNoVolumes    = errors.New("vss: no volumes specified")
+
+	// ErrVSSSessionInProgress means this run could not start creating a snapshot
+	// set because another one was being created. It does NOT mean only one
+	// session may be live at a time: concurrent runs on separate providers each
+	// get their own shadow copy, and only the creation interval is serialised
+	// (#3269 — see snapshotCreationGate for why the scope stops there).
+	//
+	// It is returned in two situations:
+	//   - the caller's context ended while waiting for the process-wide
+	//     creation gate, i.e. another run's snapshot creation outlasted this
+	//     run's creation deadline; and
+	//   - CreateShadowCopy was called on a provider that is already holding a
+	//     live session, which is a caller bug and fails immediately.
+	//
+	// Callers should treat it as "no VSS for this run" and degrade to a live
+	// read with a visible warning, exactly as they do for any other creation
+	// failure — not as a reason to retry in a loop.
+	ErrVSSSessionInProgress = errors.New("vss: another shadow copy session is already active in this process")
 )
 
 // WriterStatus describes the state of a single VSS writer.
@@ -82,14 +100,30 @@ func DefaultConfig() Config {
 
 // Provider abstracts VSS operations so callers are platform-agnostic.
 type Provider interface {
-	// CreateShadowCopy creates a VSS snapshot set for the given volumes.
+	// CreateShadowCopy creates a VSS snapshot set for the given volumes and
+	// keeps it alive until ReleaseShadowCopy is called for the same session.
+	//
+	// On Windows the returned session is backed by real COM resources held open
+	// on a dedicated thread, so a successful call MUST be paired with exactly
+	// one ReleaseShadowCopy.
+	//
+	// Concurrency, precisely: snapshot *creation* is serialised process-wide, so
+	// a call made while another run is creating a snapshot set QUEUES rather
+	// than failing, and then proceeds — two concurrent runs on two providers may
+	// each end up holding their own live session. ErrVSSSessionInProgress means
+	// only that this call gave up: either ctx ended while it was queued, or it
+	// was made on a provider that already holds a live session.
 	CreateShadowCopy(ctx context.Context, volumes []string) (*VSSSession, error)
 
-	// ReleaseShadowCopy marks the end of the session. On Windows this does not
-	// delete anything and cannot fail: the shadow copies are non-persistent and
-	// Windows reclaims them when the process exits. Do not read a nil return as
-	// "cleanup was verified" — see the Windows implementation for what it
-	// deliberately does not do.
+	// ReleaseShadowCopy ends the session. On Windows it signals BackupComplete
+	// to the VSS writers and then drops the last reference to the
+	// IVssBackupComponents, which is what allows Windows to reclaim the
+	// auto-release shadow copies. It is idempotent, and it does not fail a
+	// backup: a non-nil return reports that the writer handshake or the session
+	// identity was wrong, never that the caller's data is at risk.
+	//
+	// Not calling it leaks the snapshot and blocks every later session in the
+	// process until a lifetime backstop reclaims it.
 	ReleaseShadowCopy(session *VSSSession) error
 
 	// ListWriters enumerates registered VSS writers and their current state.

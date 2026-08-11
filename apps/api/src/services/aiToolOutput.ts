@@ -581,6 +581,24 @@ function safeStringify(value: unknown): string {
   }
 }
 
+/**
+ * Shrink a tool result to something a chat turn can carry, and mark it honestly.
+ *
+ * Three outcomes, and a programmatic consumer has to be able to tell them apart
+ * (#3329 — a poller silently stored a digest as if it were a record):
+ *
+ * 1. **Result fits** — returned verbatim.
+ * 2. **Result was compacted but the data survived** — the payload keeps its own
+ *    shape (`logs`, `alerts`, …) and gains a `_chat` note describing what was
+ *    trimmed. Rows are still there; keep reading them.
+ * 3. **Result could not be made to fit** — the payload is REPLACED by a digest
+ *    (`summary`/`preview`) that contains no rows at all.
+ *
+ * `summarized: true` is set on outcome 3 only, and is the supported way to
+ * detect it. Do NOT branch on the presence of `_chat`: it is also present in
+ * outcome 2, where the rows are intact and must be consumed — `manage_alerts`
+ * in particular returns `_chat` right next to a real `alerts` array.
+ */
 export function compactToolResultForChat(toolName: string, rawResult: string): string {
   const parsed = tryParseJson(rawResult);
   if (parsed === null) {
@@ -595,6 +613,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
       return redactedRaw;
     }
     return JSON.stringify({
+      summarized: true,
       _chat: {
         outputCompacted: true,
         nonJsonOutput: true,
@@ -635,6 +654,7 @@ export function compactToolResultForChat(toolName: string, rawResult: string): s
   }
 
   return JSON.stringify({
+    summarized: true,
     _chat: {
       outputCompacted: true,
       originalChars: rawResult.length,

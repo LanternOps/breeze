@@ -32,6 +32,7 @@ import {
 } from '../../middleware/partnerApiAuth';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { assertTtlWithinCap } from '../../services/enrollmentDefaults';
+import { syncSiteContactRow } from '../../services/contacts/compat';
 import {
   generateEnrollmentKey,
   getDefaultEnrollmentKeyTtlMinutes,
@@ -349,6 +350,13 @@ partnerProvisioningRoutes.post(
         })
         .returning();
       if (!site) return null;
+      // Mirror into `contacts` inside the same partner-scoped context as the
+      // insert — `contacts` is policed by breeze_has_org_access(org_id), the
+      // same predicate the `sites` insert above just satisfied. actorId is null
+      // because a partner API principal is an API key, not a user.
+      if (data.contact) {
+        await syncSiteContactRow(db, site.orgId, site.id, data.contact, null);
+      }
       const [stamped] = await db
         .select({ partnerExportUpdatedAt: sites.partnerExportUpdatedAt })
         .from(sites)

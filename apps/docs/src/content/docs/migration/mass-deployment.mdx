@@ -1,0 +1,237 @@
+---
+title: Mass Deployment (GPO, Intune, JAMF)
+description: Deploy the Breeze agent fleet-wide with Group Policy, Microsoft Intune, JAMF, or configuration management tools.
+sidebar:
+  order: 2
+  label: Mass Deployment
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This guide covers rolling the Breeze agent out to hundreds or thousands of
+endpoints with the deployment tooling you already run: Group Policy, Microsoft
+Intune, JAMF, or a configuration-management system such as Ansible. It assumes
+you are migrating a fleet from another RMM or standing up a new one — for
+single-machine installs see [Agent Installation](/agents/installation/), and
+for the full flag-by-flag reference see
+[Advanced Install Methods](/agents/advanced-install/).
+
+## Before You Start: Enrollment Keys
+
+Every deployment method below needs an [enrollment key](/agents/enrollment-keys/).
+Keys are created per organization (optionally pinned to a site) and carry a
+usage cap (`maxUsage`) and a TTL, so plan them around your rollout:
+
+- Create **one key per site** so devices land in the right place — there is no
+  `SITE_ID` install parameter; site assignment is encoded in the key.
+- Set `maxUsage` to the number of devices you are deploying, and a TTL that
+  covers your rollout window (the default is 60 minutes, which is too short
+  for a phased GPO rollout — set an explicit expiry).
+- If your server enforces `AGENT_ENROLLMENT_SECRET`, you will also need that
+  shared secret at deploy time.
+
+## Windows: the MSI Is the Deployment Vehicle
+
+Deploy Windows agents with the **MSI package** and its public properties.
+The canonical silent-install payload and the full property table live in
+[MSI with Properties](/agents/advanced-install/#msi-with-properties-silent-install);
+the short version:
+
+```powershell
+msiexec /i breeze-agent.msi /qn `
+  SERVER_URL=https://breeze.yourdomain.com `
+  ENROLLMENT_KEY=<64-hex-enrollment-key> `
+  ENROLLMENT_SECRET=<shared-enrollment-secret>
+```
+
+`SERVER_URL` and `ENROLLMENT_KEY` must be provided **together or not at all**
+(a WiX launch condition enforces this). `ENROLLMENT_SECRET` is optional, and
+`BOOTSTRAP_TOKEN` exists for the dashboard's pre-signed installer flow — you
+will not normally set it by hand.
+
+<Aside type="note" title="install-windows.ps1 is not an installer">
+  The `install-windows.ps1` script in the agent repository takes no
+  parameters — it is the user-helper scheduled-task registrar that the MSI
+  itself invokes during install. Do not build a deployment around it; deploy
+  the MSI.
+</Aside>
+
+### Enrollment happens at install time — network required
+
+When `ENROLLMENT_KEY` is set, the MSI's deferred `EnrollAgent` custom action
+runs `breeze-agent.exe enroll` **during the install**. That means the machine
+must be able to reach your Breeze server at the moment `msiexec` runs. This
+is the single most important constraint when choosing a GPO mechanism.
+
+### Group Policy
+
+Use a **startup script** (or an immediate scheduled task pushed via Group
+Policy Preferences) that runs `msiexec`, **not** a GPO software-installation
+policy. Software-installation assignments execute in the foreground boot phase
+and, on some network/VPN/802.1X configurations, run before the network is up —
+the install then fails or rolls back because the enrollment custom action
+cannot reach the server.
+
+A minimal startup script, with a guard so it only runs once:
+
+```bat
+@echo off
+if exist "C:\ProgramData\Breeze\agent.yaml" goto :eof
+msiexec /i "\\fileserver\deploy\breeze-agent.msi" /qn ^
+  SERVER_URL=https://breeze.yourdomain.com ^
+  ENROLLMENT_KEY=YOUR_64_HEX_KEY ^
+  ENROLLMENT_SECRET=YOUR_SECRET ^
+  /l*v "C:\Windows\Temp\breeze-install.log"
+```
+
+`C:\ProgramData\Breeze\agent.yaml` is written by successful enrollment, so it
+doubles as an idempotency marker. If a machine boots off-network, the script
+simply runs again on the next boot.
+
+<Aside>
+  If a machine has no network at install time by design (imaging, air-gapped
+  staging), install the MSI **without** `ENROLLMENT_KEY` — it lays down the
+  binaries and services but skips enrollment — then enroll later. See
+  [Golden images](#golden-images-and-vm-templates) below.
+</Aside>
+
+### Microsoft Intune
+
+Package the MSI as a **Win32 app** (`.intunewin`) rather than a line-of-business
+MSI app, so you control the command line and detection:
+
+<Steps>
+1. Wrap `breeze-agent.msi` with the
+   [Microsoft Win32 Content Prep Tool](https://learn.microsoft.com/en-us/intune/intune-service/apps/apps-win32-prepare)
+   to produce `breeze-agent.intunewin`.
+2. **Install command** — the same silent payload as above:
+   `msiexec /i breeze-agent.msi /qn SERVER_URL=https://breeze.yourdomain.com ENROLLMENT_KEY=... ENROLLMENT_SECRET=...`
+3. **Uninstall command**: `msiexec /x breeze-agent.msi /qn`
+4. **Detection rule** — either of the enrollment footprints:
+   - File exists: `C:\ProgramData\Breeze\agent.yaml`, or
+   - Service exists: `BreezeAgent` (the watchdog installs as `BreezeWatchdog`)
+5. Assign to your device groups. Intune Win32 installs run in SYSTEM context
+   after the network is up, so the install-time enrollment constraint is
+   satisfied on ordinary corporate networks.
+</Steps>
+
+If you prefer not to embed the enrollment key in the Intune app definition,
+deploy the MSI with no properties and push a separate script (Intune
+remediation or platform script) that runs `breeze-agent.exe enroll <key>
+--server <url>` afterwards.
+
+## macOS: JAMF (and Other MDMs)
+
+macOS agents ship as **per-architecture PKGs**:
+`breeze-agent-darwin-amd64.pkg` (Intel) and `breeze-agent-darwin-arm64.pkg`
+(Apple silicon).
+
+<Aside type="caution" title="The PKG does not enroll">
+  Unlike the Windows MSI, the PKG's `postinstall` script only installs
+  binaries, creates directories, and loads the LaunchDaemons. It does **not**
+  run enrollment — there are no PKG parameters to carry the key. A JAMF
+  deployment is therefore always two steps: install the PKG, then run an
+  enrollment script.
+</Aside>
+
+A typical JAMF policy:
+
+<Steps>
+1. Upload both PKGs and scope each to the matching architecture (or use a
+   smart group on `Architecture Type`).
+2. In the **same policy** (packages install before scripts within a policy),
+   add a script step that enrolls:
+
+   ```bash
+   #!/bin/bash
+   # Idempotent: enroll exits 0 with a notice if already enrolled.
+   /usr/local/bin/breeze-agent enroll "$4" \
+     --server "$5" \
+     --enrollment-secret "$6" \
+     --quiet
+   ```
+
+   Pass the enrollment key, server URL, and (if required) enrollment secret
+   as JAMF script parameters `$4`–`$6` so they are not hard-coded in the
+   script body. Omit `--enrollment-secret` if your server does not require
+   one.
+3. The running daemon (`com.breeze.agent`) starts in a waiting-for-enrollment
+   state and picks up the new credentials within a few seconds of the enroll
+   command succeeding — no restart step is needed.
+</Steps>
+
+The same two-step shape (install PKG, then run the enroll command as root)
+applies to any other macOS MDM.
+
+## Linux: Configuration Management
+
+There is **no `.deb` or `.rpm` package** today. Linux deployment is the agent
+binary plus two commands, which maps cleanly onto Ansible, Puppet, Chef, or
+Salt:
+
+<Steps>
+1. Copy the `breeze-agent` binary for the target architecture to
+   `/usr/local/bin/breeze-agent` (mode `0755`).
+2. Install the service: `breeze-agent service install` (systemd unit +
+   watchdog; see the
+   [flag reference](/agents/advanced-install/#breeze-agent-service-install--flag-reference)).
+3. Enroll: `breeze-agent enroll <key> --server https://breeze.yourdomain.com`
+</Steps>
+
+The agent reads the enrollment secret from the
+`BREEZE_AGENT_ENROLLMENT_SECRET` environment variable when the
+`--enrollment-secret` flag is not passed — use that to keep the secret out of
+process listings and shell history. The server URL has no environment
+variable: pass `--server` (or rely on an existing `agent.yaml` from a
+pre-staged image).
+
+An Ansible sketch:
+
+```yaml
+- name: Install Breeze agent binary
+  ansible.builtin.copy:
+    src: "breeze-agent-linux-{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+    dest: /usr/local/bin/breeze-agent
+    mode: "0755"
+
+- name: Install the agent service
+  ansible.builtin.command: /usr/local/bin/breeze-agent service install
+  args:
+    creates: /etc/systemd/system/breeze-agent.service
+
+- name: Enroll the agent
+  ansible.builtin.command: >-
+    /usr/local/bin/breeze-agent enroll {{ breeze_enrollment_key }}
+    --server {{ breeze_server_url }} --quiet
+  environment:
+    BREEZE_AGENT_ENROLLMENT_SECRET: "{{ breeze_enrollment_secret | default('') }}"
+  args:
+    creates: /etc/breeze/agent.yaml
+```
+
+`/etc/breeze/agent.yaml` only exists after successful enrollment, so both
+steps are naturally idempotent.
+
+## Golden Images and VM Templates
+
+For imaging workflows, install **without** enrolling (MSI with no
+`ENROLLMENT_KEY`, PKG as-is, or binary + `service install` on Linux), seal the
+image, and enroll each clone on first boot. The exact pattern — including how
+the waiting service auto-detects the new credentials — is documented in
+[Pre-Staging Without Enrollment](/agents/advanced-install/#pre-staging-without-enrollment).
+
+<Aside type="danger">
+  Never enroll the template itself and then clone it: every clone would share
+  one agent identity and token. Enrollment must happen per-clone.
+</Aside>
+
+## Verifying the Rollout
+
+- Watch the device list fill in — new devices appear within seconds of
+  enrollment and report inventory on the first check-in.
+- Track enrollment-key consumption (`usageCount` vs `maxUsage`) via
+  [`GET /enrollment-keys`](/agents/enrollment-keys/#listing-keys) to spot
+  stalled cohorts.
+- On a machine that failed to appear, check the local logs:
+  `C:\ProgramData\Breeze\logs\` (Windows), `/Library/Logs/Breeze/` (macOS),
+  or run `breeze-agent enroll` interactively to see the error.

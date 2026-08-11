@@ -543,3 +543,122 @@ export async function removeDeviceFromAllGroups(deviceId: string): Promise<void>
     .delete(deviceGroupMemberships)
     .where(eq(deviceGroupMemberships.deviceId, deviceId));
 }
+
+/**
+ * Outcome of validating a batch of client-supplied device ids for MANUAL
+ * (static-group) membership. A result object rather than a thrown error on
+ * purpose: both callers turn it straight into an HTTP status, and the group
+ * CREATE route has to be able to reject a batch *before* it inserts the group
+ * row.
+ */
+export type ManualMembershipValidation =
+  | { ok: true }
+  | { ok: false; status: 400 | 403; error: string; invalidDevices?: string[] };
+
+/**
+ * Tenancy guard for manually assigned static-group membership.
+ *
+ * Every id passed here is client-supplied, so this is the only thing standing
+ * between a forged payload and a cross-tenant membership row. Two properties
+ * are enforced, both against the GROUP's own org/site — never against anything
+ * else in the request body:
+ *
+ * 1. Every requested device must exist AND belong to `orgId`. A device the
+ *    caller cannot see reads back as absent under RLS and lands in the same
+ *    `invalidDevices` bucket, so "not yours" and "not there" are
+ *    indistinguishable to the caller. That is deliberate.
+ * 2. A site-bound group IS the membership boundary: when the group carries a
+ *    `siteId`, every device must sit in that same site even if the caller can
+ *    access several sites. The whole batch is rejected before any write.
+ *
+ * Extracted from `POST /:id/devices` so group-create can apply the identical
+ * rules: #3159 shipped a create route that silently dropped `deviceIds`, and
+ * the fix must not reimplement this check a second time and let the two copies
+ * drift.
+ */
+export async function validateManualMembershipDevices(params: {
+  deviceIds: readonly string[];
+  orgId: string;
+  siteId: string | null;
+}): Promise<ManualMembershipValidation> {
+  const { orgId, siteId } = params;
+  const requested = [...new Set(params.deviceIds)];
+  if (requested.length === 0) return { ok: true };
+
+  const deviceRows = await db
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
+    .from(devices)
+    .where(inArray(devices.id, requested));
+
+  const deviceMap = new Map(deviceRows.map((row) => [row.id, row]));
+  const invalidDevices = requested.filter((deviceId) => {
+    const device = deviceMap.get(deviceId);
+    return !device || device.orgId !== orgId;
+  });
+
+  if (invalidDevices.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Some devices are invalid or belong to a different organization',
+      invalidDevices
+    };
+  }
+
+  if (siteId !== null && deviceRows.some((device) => device.siteId !== siteId)) {
+    return { ok: false, status: 403, error: 'Access to this site denied' };
+  }
+
+  return { ok: true };
+}
+
+export interface ManualMembershipWrite {
+  /** Device ids that gained a membership row on this call. */
+  added: string[];
+  /** Requested devices that were already members. */
+  skipped: number;
+}
+
+/**
+ * Inserts manual membership rows for a STATIC group, skipping devices that are
+ * already members.
+ *
+ * Callers MUST have run `validateManualMembershipDevices` first: this function
+ * trusts `orgId` and stamps it onto every row, so it is the wrong place to
+ * accept a client-supplied org.
+ */
+export async function addManualGroupMemberships(params: {
+  groupId: string;
+  orgId: string;
+  deviceIds: readonly string[];
+}): Promise<ManualMembershipWrite> {
+  const { groupId, orgId } = params;
+  const requested = [...new Set(params.deviceIds)];
+  if (requested.length === 0) return { added: [], skipped: 0 };
+
+  const existing = await db
+    .select({ deviceId: deviceGroupMemberships.deviceId })
+    .from(deviceGroupMemberships)
+    .where(
+      and(
+        eq(deviceGroupMemberships.groupId, groupId),
+        inArray(deviceGroupMemberships.deviceId, requested)
+      )
+    );
+
+  const existingSet = new Set(existing.map((row) => row.deviceId));
+  const added = requested.filter((deviceId) => !existingSet.has(deviceId));
+
+  if (added.length > 0) {
+    await db.insert(deviceGroupMemberships).values(
+      added.map((deviceId) => ({
+        deviceId,
+        groupId,
+        orgId,
+        addedBy: 'manual' as const
+      }))
+    );
+  }
+
+  return { added, skipped: existingSet.size };
+}

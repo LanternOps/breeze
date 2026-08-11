@@ -56,7 +56,11 @@ warrantyRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
-    await queueWarrantySyncForDevice(deviceId);
+    // force: an explicit click is the escape hatch when virtualization
+    // detection misfires, and it keeps this endpoint's "queued" promise
+    // truthful — without it a device flagged virtual would never advance
+    // lastSyncAt and the card would poll a refresh that never completes.
+    await queueWarrantySyncForDevice(deviceId, { force: true });
 
     return c.json({ message: 'Warranty refresh queued' });
   }

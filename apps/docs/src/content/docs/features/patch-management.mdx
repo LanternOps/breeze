@@ -392,6 +392,7 @@ Content-Type: application/json
 | `scheduleDayOfWeek` | string | For weekly schedules: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
 | `scheduleDayOfMonth` | integer | For monthly schedules: day 1–28 |
 | `rebootPolicy` | string | Post-patch reboot behavior: `never`, `if_required`, `always`, or `maintenance_window` |
+| `rebootDelayMinutes` | integer | How long the logged-in user is warned before a post-patch reboot fires (1–1440 minutes). Default: `15` |
 | `exclusiveWindowsUpdate` | boolean | **Manage Windows Update exclusively through Breeze.** When enabled, Breeze disables the device's native Windows Update automatic-install channel, so updates on that device only arrive through Breeze's approval rings and schedule — no unexpected OS-initiated installs or reboots outside your policy. Turning it back off restores Windows' native update behavior. **Windows-only** — has no effect on macOS or Linux devices. Default: `false` |
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.

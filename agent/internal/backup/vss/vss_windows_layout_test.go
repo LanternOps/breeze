@@ -116,6 +116,7 @@ func TestVtableIndices_MatchHeaderOrder(t *testing.T) {
 		"GetWriterStatusCount":  vtblGetWriterStatusCount,
 		"FreeWriterStatus":      vtblFreeWriterStatus,
 		"GetWriterStatus":       vtblGetWriterStatus,
+		"SetBackupSucceeded":    vtblSetBackupSucceeded,
 		"BackupComplete":        vtblBackupComplete,
 		"StartSnapshotSet":      vtblStartSnapshotSet,
 		"AddToSnapshotSet":      vtblAddToSnapshotSet,
@@ -135,6 +136,50 @@ func TestVtableIndices_MatchHeaderOrder(t *testing.T) {
 	// The specific mis-mapping that caused #2999.
 	if vtblInitializeForBackup == index["GetWriterComponentsCount"] {
 		t.Error("InitializeForBackup is mapped to GetWriterComponentsCount — this is bug #2999")
+	}
+}
+
+// TestBackupCompleteSlotIsDistinctFromNeighbours guards the release-path
+// handshake added for #3269. BackupComplete is the call that moves writers out
+// of VSS_WS_WAITING_FOR_BACKUP_COMPLETE, and it now runs against a components
+// object that has a real snapshot open — so calling the wrong slot would not
+// merely be inert (the #2999 failure mode), it would operate on a live backup.
+//
+// SaveAsXML (26) takes a BSTR* and BackupComplete (27) takes an IVssAsync**;
+// both are one pointer-sized argument, so an off-by-one here type-checks, links,
+// and silently does the wrong thing.
+func TestBackupCompleteSlotIsDistinctFromNeighbours(t *testing.T) {
+	if vtblBackupComplete != 27 {
+		t.Errorf("IVssBackupComponents::BackupComplete = %d, want 27", vtblBackupComplete)
+	}
+	const saveAsXML, addAlternativeLocationMapping = 26, 28
+	if vtblBackupComplete == saveAsXML {
+		t.Error("BackupComplete is mapped to SaveAsXML — the writers would never be told the backup finished")
+	}
+	if vtblBackupComplete == addAlternativeLocationMapping {
+		t.Error("BackupComplete is mapped to AddAlternativeLocationMapping")
+	}
+}
+
+// TestSetBackupSucceededSlotIsPinned records the slot for a method the provider
+// deliberately does NOT call.
+//
+// CreateShadowCopy sets bSelectComponents=FALSE and never calls AddComponent, so
+// there are no components to mark and BackupComplete alone is the whole
+// handshake (see finishBackupOnThread). The constant exists so that whoever adds
+// component selection later inherits a checked slot number instead of counting
+// header lines by hand — which is the exact mistake that shipped #2999. It also
+// pins the adjacency that makes a miscount dangerous: 19 and 21 both take
+// arguments a wrong call would accept.
+func TestSetBackupSucceededSlotIsPinned(t *testing.T) {
+	if vtblSetBackupSucceeded != 20 {
+		t.Errorf("IVssBackupComponents::SetBackupSucceeded = %d, want 20", vtblSetBackupSucceeded)
+	}
+	if vtblSetBackupSucceeded == vtblGetWriterStatus {
+		t.Error("SetBackupSucceeded collides with GetWriterStatus (19)")
+	}
+	if vtblSetBackupSucceeded == vtblBackupComplete {
+		t.Error("SetBackupSucceeded collides with BackupComplete (27)")
 	}
 }
 

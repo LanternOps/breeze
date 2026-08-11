@@ -78,6 +78,7 @@ const { dbMock, redisMock, getRedisImpl } = vi.hoisted(() => {
 // ---------------------------------------------------------------------------
 
 vi.mock('../../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

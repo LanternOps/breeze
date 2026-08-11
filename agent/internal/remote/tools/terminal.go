@@ -140,17 +140,34 @@ func StopTerminal(mgr *terminal.Manager, payload map[string]any) CommandResult {
 }
 
 func normalizeTerminalSize(cols, rows int) (uint16, uint16) {
+	return clampTerminalCols(cols), clampTerminalRows(rows)
+}
+
+// clampTerminalCols / clampTerminalRows clamp a payload-supplied dimension
+// into its [min, max] range before narrowing to uint16.
+//
+// The shape is deliberate, for CodeQL's go/incorrect-integer-conversion
+// barrier analysis: each guard compares the converted value against a NAMED
+// CONSTANT and early-returns. A merged clamp variable (phi) hides the guards
+// from the analysis, and so does a generic clamp(v, lo, hi) helper — bounds
+// passed as parameters carry no provable range, so `uint16(v)` stays flagged.
+// Two constant-bound copies are the price of a checkable conversion.
+func clampTerminalCols(cols int) uint16 {
 	if cols < minTerminalCols {
-		cols = minTerminalCols
-	} else if cols > maxTerminalCols {
-		cols = maxTerminalCols
+		return minTerminalCols
 	}
+	if cols > maxTerminalCols {
+		return maxTerminalCols
+	}
+	return uint16(cols)
+}
 
+func clampTerminalRows(rows int) uint16 {
 	if rows < minTerminalRows {
-		rows = minTerminalRows
-	} else if rows > maxTerminalRows {
-		rows = maxTerminalRows
+		return minTerminalRows
 	}
-
-	return uint16(cols), uint16(rows)
+	if rows > maxTerminalRows {
+		return maxTerminalRows
+	}
+	return uint16(rows)
 }

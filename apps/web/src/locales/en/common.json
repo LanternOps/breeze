@@ -704,6 +704,10 @@
       "retry": "Retry"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} device(s) are running the hosted agent edition on this self-hosted server. Migrate to the self-host agent edition.",
+    "cta": "How to migrate"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -930,21 +934,61 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Import companies",
+        "subtitle": "Create organizations from the companies in {{name}}.",
+        "intro": "Companies are matched against your existing organizations first. Nothing is created until you review the list below and confirm.",
+        "capHint": "Up to {{cap}} companies are fetched per import.",
+        "empty": "This connection returned no companies.",
+        "alreadyLinked_one": "{{count}} company was skipped because it has already been imported from this connection.",
+        "alreadyLinked_other": "{{count}} companies were skipped because they have already been imported from this connection.",
+        "malformed_one": "{{count}} record could not be read (no usable ID or name) and was skipped.",
+        "malformed_other": "{{count}} records could not be read (no usable ID or name) and were skipped.",
+        "actions": {
+          "fetch": "Fetch companies",
+          "fetching": "Fetching companies…",
+          "import": "Import {{count}} selected",
+          "importing": "Importing…"
+        },
+        "truncated": {
+          "title": "Partial company list",
+          "body": "The company listing was cut short after {{fetched}} of up to {{cap}} companies, so this import will be incomplete. Any company that was never read will not be linked.",
+          "cap": "The per-import limit of {{cap}} companies was reached after {{fetched}} were fetched, so this import will be incomplete. Any company beyond that limit was never read and will not be linked.",
+          "timeBudget": "This connection responded too slowly, so the company listing was cut short after {{fetched}} companies. This import will be incomplete — the companies that were never read will not be linked.",
+          "pageGuard": "The company listing spanned too many pages and was stopped after {{fetched}} companies. This import will be incomplete — the companies that were never read will not be linked."
+        },
+        "errors": {
+          "previewFailed": "Failed to load companies from this connection.",
+          "importFailed": "Failed to import companies."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Test connection",
-          "testing": "Testing..."
+          "testing": "Testing...",
+          "toggleVisibility": "Show or hide this value"
+        },
+        "credentialsNote": {
+          "jira": "Fill in one authentication method: email plus API token for Jira Cloud, username plus password for Jira Server, or a personal access token."
         },
         "defaultSubmitLabel": "Save connection",
         "fields": {
+          "apiKey": "API key",
           "apiToken": "API token or key",
           "clientId": "Client ID",
           "clientSecret": "Client Secret",
+          "companyId": "Company ID",
           "connectionName": "Connection name",
           "defaultQueue": "Default project or queue",
+          "email": "Email address",
           "instanceUrl": "Instance URL",
+          "integrationCode": "Integration code",
           "password": "Password",
+          "personalAccessToken": "Personal access token",
+          "privateKey": "Private key",
           "provider": "Provider",
+          "publicKey": "Public key",
+          "secret": "Secret",
           "syncDirection": "Sync direction",
           "syncInterval": "Sync interval",
           "username": "Username or email"
@@ -954,13 +998,21 @@
         },
         "keepExisting": "(leave blank to keep existing)",
         "placeholders": {
+          "apiKey": "api-key",
           "apiToken": "api-token",
           "clientId": "oauth-client-id",
           "clientSecret": "client-secret",
+          "companyId": "company-id",
           "connectionName": "e.g., Jira Production",
           "defaultQueue": "e.g., IT Support",
+          "email": "admin@example.com",
           "existingCredential": "********",
+          "integrationCode": "integration-code",
           "password": "password",
+          "personalAccessToken": "personal-access-token",
+          "privateKey": "private-key",
+          "publicKey": "public-key",
+          "secret": "api-secret",
           "username": "admin@example.com"
         },
         "providerHints": {
@@ -997,16 +1049,25 @@
           "every6Hours": "Every 6 hours",
           "everyHour": "Every hour"
         },
+        "testDirtyHint": "Save first — Test checks the stored credentials, not your unsaved edits.",
         "validation": {
           "nameRequired": "Connection name is required",
           "validUrl": "Must be a valid URL"
+        },
+        "ownerScope": {
+          "legend": "Ownership",
+          "allOrganizations": "All organizations",
+          "partnerWideHint": "(partner-wide — your MSP's own PSA)",
+          "thisOrganizationOnly": "This organization only",
+          "organization": "Organization"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Pause",
           "resume": "Resume",
-          "syncNow": "Sync now"
+          "syncNow": "Sync now",
+          "importCompanies": "Import companies"
         },
         "connectionCount": "{{filtered}} of {{total}} connections",
         "empty": {
@@ -1028,7 +1089,10 @@
           "paused": "Paused",
           "syncing": "Syncing"
         },
-        "title": "PSA Connections"
+        "title": "PSA Connections",
+        "allOrgs": "All orgs",
+        "partnerWideTitle": "Partner-wide connection — shared by every organization",
+        "partnerWideLocked": "Partner-wide connection — requires full partner organization access to modify"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -1730,22 +1794,14 @@
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",
-          "activeCount": "{{count}} active",
           "deployments": "Deployments",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} pending",
           "failedCount": "{{count}} failed",
           "patches": "Patches",
-          "pendingInstallation": "pending installation",
           "alerts": "Alerts",
-          "alertsSubtitle": "{{critical}} critical, {{high}} high",
           "groups": "Groups",
-          "deviceGroupsSubtitle": "device groups",
           "automations": "Automations",
-          "configured": "configured",
           "maintenance": "Maintenance",
-          "activeWindows": "active windows",
-          "reports": "Reports",
-          "reportDefinitions": "report definitions"
+          "reports": "Reports"
         },
         "aiFleetActions": "AI Fleet Actions",
         "aiFleetActionsHint": "Click to ask the AI assistant",
@@ -1774,6 +1830,173 @@
           "high": "High",
           "medium": "Medium",
           "low": "Low"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Fleet Findings",
+        "description": "Cross-device patterns worth one action instead of many",
+        "filters": {
+          "orgLabel": "Filter by organization",
+          "kindLabel": "Filter by finding type",
+          "severityLabel": "Filter by severity",
+          "statusLabel": "Filter by status",
+          "allOrgs": "All organizations",
+          "allKinds": "All finding types",
+          "allSeverities": "All severities"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metric anomaly",
+          "logCorrelation": "Log correlation",
+          "reliabilityOffenders": "Reliability offenders"
+        },
+        "severities": {
+          "critical": "Critical",
+          "error": "Error",
+          "warning": "Warning",
+          "info": "Informational"
+        },
+        "statuses": {
+          "open": "Open",
+          "acknowledged": "Acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "status": {
+          "active": "Open & acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "deviceCount": "{{count}} devices",
+        "deviceCount_one": "{{count}} device",
+        "deviceCount_other": "{{count}} devices",
+        "showing": "Showing {{shown}} of {{total}}",
+        "loadMore": "Load more",
+        "empty": {
+          "title": "Fleet is clean",
+          "noMatchesTitle": "No matching findings",
+          "body": "No findings match these filters right now."
+        },
+        "errors": {
+          "loadFailed": "Failed to load fleet findings",
+          "banner": "We couldn't load fleet findings"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Finding details",
+        "meta": {
+          "firstSeen": "First seen {{when}}",
+          "lastSeen": "Last seen {{when}}"
+        },
+        "summaryHeading": "Summary",
+        "resolvedNote": {
+          "heading": "Why this is closed",
+          "body": "This finding was resolved because its underlying signal cleared. It will reappear as a new finding if the pattern recurs.",
+          "reason": "Resolution reason: {{reason}}"
+        },
+        "dismissNotesHeading": "Dismissal note",
+        "evidenceHeading": "Evidence",
+        "membersHeading": "Affected devices",
+        "membersEmpty": "No member devices are recorded for this finding.",
+        "table": {
+          "device": "Device",
+          "source": "Source",
+          "lastSeen": "Last seen"
+        },
+        "runsHeading": "Remediation history",
+        "runsEmpty": "No remediation has been run for this finding yet.",
+        "runCounts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "runStatuses": {
+          "queued": "Queued",
+          "running": "Running",
+          "partial": "Partial",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        },
+        "dismiss": {
+          "notesLabel": "Why are you dismissing this? (required)",
+          "notesPlaceholder": "Known false positive, tracked elsewhere, accepted risk…",
+          "confirm": "Dismiss finding"
+        },
+        "actions": {
+          "remediate": "Remediate across {{count}} devices",
+          "remediate_one": "Remediate on {{count}} device",
+          "remediate_other": "Remediate across {{count}} devices",
+          "remediateDisabledReason": "No devices remain in this finding to remediate.",
+          "acknowledge": "Acknowledge",
+          "dismiss": "Dismiss",
+          "reopen": "Reopen"
+        },
+        "errors": {
+          "loadFailed": "Failed to load finding",
+          "lifecycleFailed": "Failed to update finding"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "the underlying signal cleared"
+        }
+      },
+      "FixPicker": {
+        "title": "Remediate finding",
+        "actions": {
+          "script": "Run a script",
+          "scriptHint": "Pick a script from your library and fill in its parameters.",
+          "restartService": "Restart a service",
+          "restartServiceHint": "Restarts a single named service on every selected device.",
+          "reboot": "Reboot devices",
+          "rebootHint": "Restarts the selected devices as soon as the run dispatches."
+        },
+        "chooseScript": "Choose a script…",
+        "changeScript": "Change script",
+        "selectedScript": "Script: {{name}}",
+        "serviceNameLabel": "Service name",
+        "serviceNamePlaceholder": "e.g. Spooler",
+        "rebootWarning": "The selected devices restart immediately once this run dispatches. Active sessions end and unsaved work is lost.",
+        "targetsHeading": "Devices to remediate",
+        "selectAll": "Select all",
+        "selectNone": "Clear selection",
+        "selectedCount": "{{selected}} of {{total}} devices selected",
+        "noTargets": "Select at least one device to continue.",
+        "osIncompatibleNotice": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} device can't run this script and was excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleReason": "Requires {{os}}",
+        "confirmAction": "Chosen fix",
+        "confirmTargets": "Devices",
+        "confirmRestartService": "Restart the service {{name}}",
+        "confirmRebootNotice": "{{count}} devices will restart immediately.",
+        "confirmRebootNotice_one": "{{count}} device will restart immediately.",
+        "confirmRebootNotice_other": "{{count}} devices will restart immediately.",
+        "confirm": "Start remediation",
+        "dispatchedSummary": "{{count}} devices were targeted by this run.",
+        "dispatchedSummary_one": "{{count}} device was targeted by this run.",
+        "dispatchedSummary_other": "{{count}} devices were targeted by this run.",
+        "skippedHeading": "Skipped devices",
+        "skipReasons": {
+          "siteDenied": "Site not accessible to you",
+          "notMember": "No longer affected by this finding",
+          "decommissioned": "Device is decommissioned",
+          "timeout": "Timed out after 30 minutes",
+          "dispatchEnqueueFailed": "Never dispatched — queueing failed"
+        },
+        "viewProgress": "View progress",
+        "errors": {
+          "dispatchFailed": "Failed to start remediation"
+        }
+      },
+      "RunProgress": {
+        "heading": "Remediation run",
+        "counts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "polling": "Refreshing while the run is active…",
+        "targetsEmpty": "No devices on this run are visible to you.",
+        "targetStatuses": {
+          "pending": "Pending",
+          "queued": "Queued",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "skipped": "Skipped"
+        },
+        "errors": {
+          "loadFailed": "Failed to load remediation run"
         }
       }
     },
@@ -2134,5 +2357,12 @@
         "send": "Send"
       }
     }
+  },
+  "whatsNew": {
+    "title": "What's new in {{version}}",
+    "gotIt": "Got it",
+    "later": "Show me later",
+    "learnMore": "Learn more",
+    "link": "What's new"
   }
 }

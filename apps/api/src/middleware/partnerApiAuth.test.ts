@@ -114,10 +114,16 @@ vi.mock('../services', () => ({
   rateLimiter: mocks.rateLimiter,
 }));
 
-vi.mock('../services/clientIp', () => ({
-  getTrustedClientIp: vi.fn(() => '203.0.113.10'),
-  getTrustedClientIpOrUndefined: mocks.getTrustedClientIpOrUndefined,
-}));
+// Partial mock: only the IP SOURCES are stubbed. rateLimitIpKey (the IPv6 /64
+// bucket folding applied to per-IP limiter keys) stays real.
+vi.mock('../services/clientIp', async () => {
+  const actual = await vi.importActual<typeof import('../services/clientIp')>('../services/clientIp');
+  return {
+    ...actual,
+    getTrustedClientIp: vi.fn(() => '203.0.113.10'),
+    getTrustedClientIpOrUndefined: mocks.getTrustedClientIpOrUndefined,
+  };
+});
 
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),

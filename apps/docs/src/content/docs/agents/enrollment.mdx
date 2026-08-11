@@ -63,17 +63,27 @@ Enrollment keys are created in the dashboard and can be scoped to:
 
 ## Bulk Enrollment
 
-For deploying agents at scale:
+For deploying agents at scale from a script:
 
 ```bash
-# Environment variable method (for scripts/GPO/MDM)
-export BREEZE_SERVER_URL=https://breeze.yourdomain.com
+# Keep the enrollment secret out of the command line / shell history.
+# BREEZE_AGENT_ENROLLMENT_SECRET is the only environment variable the
+# agent reads — there is no server-URL env var.
 export BREEZE_AGENT_ENROLLMENT_SECRET=your-secret
 
-breeze-agent enroll YOUR_ENROLLMENT_KEY
+breeze-agent enroll YOUR_ENROLLMENT_KEY --server https://breeze.yourdomain.com
 ```
 
-The enrollment key is a required positional argument. The site is determined by the enrollment key on the server side. The agent reads `BREEZE_SERVER_URL` and `BREEZE_AGENT_ENROLLMENT_SECRET` from environment variables when flags aren't provided.
+The enrollment key is a required positional argument, and the server URL must
+come from the `--server` flag (or an existing `agent.yaml` on a pre-staged
+image — see
+[Pre-Staging Without Enrollment](/agents/advanced-install/#pre-staging-without-enrollment)).
+The site is determined by the enrollment key on the server side. The agent
+reads `BREEZE_AGENT_ENROLLMENT_SECRET` from the environment when the
+`--enrollment-secret` flag isn't provided.
+
+For fleet-wide rollout recipes (GPO, Intune, JAMF, Ansible), see the
+[Mass Deployment guide](/migration/mass-deployment/).
 
 ## Re-enrollment
 

@@ -65,7 +65,8 @@
       "nonCompliant": "Non conforme",
       "check": "Vérifié",
       "lastChecked": "Dernière vérification",
-      "noComplianceResultsYetAssignThisPolicy": "Aucun résultat de conformité pour l’instant. Attribuer cette politique aux dispositifs et ajouter des règles de conformité ; Le statut apparaît après la prochaine évaluation."
+      "noComplianceResultsYetAssignThisPolicy": "Aucun résultat de conformité pour l’instant. Attribuer cette politique aux dispositifs et ajouter des règles de conformité ; Le statut apparaît après la prochaine évaluation.",
+      "summary": "Affichage du premier {{shown}} de {{total}} Résultats — Le résumé ci-dessous reflète uniquement cette page."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Choisissez une organisation pour cette politique.",
@@ -149,7 +150,8 @@
       "page": "Page",
       "of2": "de",
       "itsOwningOrganization": "son organisation propriétaire",
-      "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}"
+      "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
+      "summary": "{{filtered}} de {{total}} politiques"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",
@@ -255,15 +257,6 @@
         "metricNotSet": "non défini"
       },
       "automationTab": {
-        "uTC": "UTC",
-        "easternAmericaNewYork": "Est (Amérique/New_York)",
-        "centralAmericaChicago": "Centre (Amérique / Chicago)",
-        "mountainAmericaDenver": "Mountain (Amérique/Denver)",
-        "pacificAmericaLosAngeles": "Pacifique (Amérique/Los_Angeles)",
-        "europeLondon": "Europe/Londres",
-        "europeParis": "Europe/Paris",
-        "asiaTokyo": "Asie/Tokyo",
-        "australiaSydney": "Australie/Sydney",
         "schedule": "Calendrier",
         "event": "Événement",
         "manual": "Manuel",
@@ -890,6 +883,8 @@
         "dayOfWeek": "Jour de la semaine",
         "dayOfMonth": "Jour du mois",
         "rebootPolicy": "Politique de redémarrage",
+        "rebootDelayMinutes": "Reboot delay (minutes)",
+        "rebootDelayMinutesDescription": "How long the logged-in user is warned before a post-patch reboot.",
         "windowsUpdateSource": "Source Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gérer Windows Update exclusivement avec Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Désactive le canal Windows Update automatique natif du terminal afin que les mises à jour passent uniquement par les anneaux d’approbation Breeze. Cela évite les redémarrages inattendus et les correctifs hors calendrier. Windows uniquement ; le processus d’analyse, d’approbation et d’installation de Breeze n’est pas affecté. La configuration est restaurée proprement à la désactivation, sans modifier une stratégie de groupe administrateur préexistante.",
@@ -1595,7 +1590,7 @@
       "failedToDeny": "Impossible de nier",
       "failedToClearStatus": "Impossible de valider le statut",
       "searchSoftware": "Rechercher un logiciel...",
-      "uniqueSoftware": "Logiciels uniques",
+      "uniqueSoftwareSummary": "{{total}} logiciels uniques",
       "vendor": "Fournisseur",
       "devices": "Dispositifs",
       "versions": "Versions",
@@ -1614,7 +1609,8 @@
       "vendor2": "Fournisseur",
       "deviceCount": "DeviceCount",
       "allowed2": "autorisé",
-      "blocked2": "bloqué"
+      "blocked2": "bloqué",
+      "summary": "Affichage {{range}} de {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Impossible de récupérer l’inventaire logiciel",

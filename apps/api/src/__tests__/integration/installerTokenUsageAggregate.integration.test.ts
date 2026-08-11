@@ -93,9 +93,10 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
           .returning({ id: enrollmentKeys.id });
 
         // withoutTokens: a plain key (CLI flavour) that must come back absent
-        // from the map so the UI falls back to its own counters. Short-link
-        // children never reach this function at all — the routes drop them
-        // from the id list up front (see reportsInstallerCapacity).
+        // from the map so the UI falls back to its own counters. Since #3034
+        // the routes hand EVERY key on the page to this function — there is no
+        // per-key pre-filter any more — so `mixedKind` below covers the case
+        // that pre-filter used to handle, per token and against real SQL.
         const [withoutTokens] = await db
           .insert(enrollmentKeys)
           .values({
@@ -105,6 +106,26 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
             key: `agg-plain-key-${unique}`,
             expiresAt: new Date(Date.now() + 60 * 60 * 1000),
             maxUsage: 10,
+          })
+          .returning({ id: enrollmentKeys.id });
+
+        // mixedKind (#3034): a short-link CHILD that carries BOTH kinds of
+        // token — the per-download ones every public click mints, and one real
+        // capacity token from an authenticated build off that child row. The
+        // pre-#3034 code discriminated on the parent's `short_code` and so had
+        // to suppress the whole key; the aggregate must instead sum the capacity
+        // token ALONE. This is the fixture the mocked unit suites cannot
+        // provide: only real Postgres evaluates the `usage_kind` predicate.
+        const [mixedKind] = await db
+          .insert(enrollmentKeys)
+          .values({
+            orgId: org!.id,
+            siteId: site!.id,
+            name: 'installer parent (link x7)',
+            key: `agg-mixed-key-${unique}`,
+            shortCode: `aggmix${unique.slice(-4)}`.slice(0, 12),
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+            maxUsage: 7,
           })
           .returning({ id: enrollmentKeys.id });
 
@@ -118,6 +139,7 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
             orgId: org!.id,
             parentEnrollmentKeyId: withTokens!.id,
             siteId: site!.id,
+            usageKind: "capacity",
             maxUsage: 7,
             consumedCount: 3,
             expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -128,6 +150,7 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
             orgId: org!.id,
             parentEnrollmentKeyId: withTokens!.id,
             siteId: site!.id,
+            usageKind: "capacity",
             maxUsage: 5,
             consumedCount: 1,
             // Deliberately already expired: the aggregation rule includes
@@ -140,6 +163,58 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
             expiresAt: new Date(Date.now() - 60 * 60 * 1000),
             installerPlatform: 'macos',
           },
+          // Two public downloads off the short link. maxUsage 1 each, exactly as
+          // serveInstaller hardcodes. Summing these would report "2 slots",
+          // which is a click count wearing a capacity's clothes.
+          {
+            token: `agg-token-dl1-${unique}`,
+            orgId: org!.id,
+            parentEnrollmentKeyId: mixedKind!.id,
+            siteId: site!.id,
+            usageKind: 'per_download',
+            maxUsage: 1,
+            consumedCount: 1,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            installerPlatform: 'windows',
+          },
+          {
+            token: `agg-token-dl2-${unique}`,
+            orgId: org!.id,
+            parentEnrollmentKeyId: mixedKind!.id,
+            siteId: site!.id,
+            usageKind: 'per_download',
+            maxUsage: 1,
+            consumedCount: 0,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            installerPlatform: 'windows',
+          },
+          // A pre-#3034 row whose mint path the backfill could not prove. Also
+          // excluded: unknown provenance must degrade to showing nothing, never
+          // to a number that might be a click count.
+          {
+            token: `agg-token-legacy-${unique}`,
+            orgId: org!.id,
+            parentEnrollmentKeyId: mixedKind!.id,
+            siteId: site!.id,
+            usageKind: 'legacy_unknown',
+            maxUsage: 1,
+            consumedCount: 1,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            installerPlatform: 'windows',
+          },
+          // The authenticated build off the child row — 6 device slots, 2 taken.
+          // The ONLY token of the three that is a device-slot budget.
+          {
+            token: `agg-token-cap-${unique}`,
+            orgId: org!.id,
+            parentEnrollmentKeyId: mixedKind!.id,
+            siteId: site!.id,
+            usageKind: 'capacity',
+            maxUsage: 6,
+            consumedCount: 2,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            installerPlatform: 'windows',
+          },
         ]);
 
         return {
@@ -148,18 +223,23 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
           siteId: site!.id,
           withTokensId: withTokens!.id,
           withoutTokensId: withoutTokens!.id,
+          mixedKindId: mixedKind!.id,
         };
       });
 
       try {
         const usage = await withSystemDbAccessContext(() =>
-          fetchInstallerTokenUsage([ids.withTokensId, ids.withoutTokensId]),
+          fetchInstallerTokenUsage([
+            ids.withTokensId,
+            ids.withoutTokensId,
+            ids.mixedKindId,
+          ]),
         );
 
         // One entry per PARENT KEY, not per token — this is the property the
         // avoided leftJoin exists to preserve. Two tokens on one key must not
-        // become two rows.
-        expect(usage.size).toBe(1);
+        // become two rows. Two entries: withTokens and mixedKind.
+        expect(usage.size).toBe(2);
 
         // Totals span both tokens; the live pair (#3039) is FILTERed to the
         // unexpired one (token A: 3 / 7). The expired token B (1 / 5) must be
@@ -175,6 +255,22 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
         // A key that never minted an installer is absent, so the route maps it
         // to null and the UI keeps showing usage_count / max_usage.
         expect(usage.get(ids.withoutTokensId)).toBeUndefined();
+
+        // #3034 — the whole point. mixedKind carries four tokens: two
+        // per_download (1 slot each), one legacy_unknown (1 slot), and one
+        // capacity (6 slots, 2 consumed). Only the capacity token counts, so the
+        // answer is exactly that token and nothing else.
+        //
+        // Every wrong implementation lands on a DIFFERENT number here, which is
+        // what makes this assertion worth a real DB: summing everything gives
+        // 9 max / 4 consumed; dropping only per_download gives 7 / 3; the old
+        // per-key short_code gate gives `undefined`.
+        expect(usage.get(ids.mixedKindId)).toEqual({
+          consumed: 2,
+          max: 6,
+          liveConsumed: 2,
+          liveMax: 6,
+        });
 
         // The predicate really filters: asking for only the plain key must not
         // drag in the other key's tokens.
@@ -192,6 +288,7 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
         await withSystemDbAccessContext(async () => {
           await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, ids.withTokensId));
           await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, ids.withoutTokensId));
+          await db.delete(enrollmentKeys).where(eq(enrollmentKeys.id, ids.mixedKindId));
           await db.delete(sites).where(eq(sites.id, ids.siteId));
           await db.delete(organizations).where(eq(organizations.id, ids.orgId));
           await db.delete(partners).where(eq(partners.id, ids.partnerId));

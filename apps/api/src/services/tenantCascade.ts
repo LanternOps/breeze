@@ -122,6 +122,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'config_policy_onedrive_libraries',
   'config_policy_onedrive_settings',
   'configuration_policies',
+  // NB: 'contact_external_links' sorts BEFORE 'contacts' — localeCompare puts
+  // the '_' in 'contact_' ahead of the 's' in 'contacts' (the same
+  // prefix-extension trap noted below for custom_field_definitions).
+  'contact_external_links',
+  'contacts',
   'contract_billing_periods',
   'contract_documents',
   'contract_lines',
@@ -194,6 +199,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'event_bus_events',
   'executive_summaries',
   'extension_org_installs',
+  'fleet_finding_devices',
+  'fleet_findings',
+  'fleet_remediation_run_targets',
+  'fleet_remediation_runs',
   'google_workspace_connections',
   'group_membership_log',
   'huntress_agents',
@@ -413,6 +422,26 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
     clearSql: (orgId) => sql`
       DELETE FROM sso_sessions
       WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
+    `,
+  },
+  // psa_ticket_mappings has NO org_id/partner_id column, so neither the org
+  // cascade list nor the partner-axis sweep reaches it — yet it holds THREE
+  // FKs into the cascade set, every one of them declared without an explicit
+  // ON DELETE (so NO ACTION): connection_id -> psa_connections (NOT NULL),
+  // alert_id -> alerts, device_id -> devices. Without this pre-clear the org
+  // erasure aborts with 23503 on whichever of those parents is deleted first
+  // for any org that ever opened a PSA ticket. All three arms are required:
+  // `alerts` and `devices` are deleted by the main cascade loop regardless of
+  // which org owns the CONNECTION, so a mapping whose connection is
+  // partner-owned (org_id NULL, epic #2135) still pins this org's alert and
+  // device rows.
+  {
+    table: 'psa_ticket_mappings',
+    clearSql: (orgId) => sql`
+      DELETE FROM psa_ticket_mappings
+      WHERE connection_id IN (SELECT id FROM psa_connections WHERE org_id = ${orgId})
+         OR alert_id IN (SELECT id FROM alerts WHERE org_id = ${orgId})
+         OR device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
     `,
   },
 ];
@@ -817,7 +846,7 @@ export async function cascadeDeletePartner(
   // partner that ever exercised SSO would fail the sweep on the
   // sso_providers/users DELETEs (FK violation) without this pre-clear.
   // Mirrors the ASSOCIATED_SYSTEM_SCOPED_TABLES step in cascadeDeleteOrg.
-  const partnerSsoPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
+  const partnerAssociatedPreClears: ReadonlyArray<{ table: string; clearSql: ReturnType<typeof sql> }> = [
     {
       table: 'user_sso_identities',
       clearSql: sql`
@@ -833,8 +862,22 @@ export async function cascadeDeletePartner(
         WHERE provider_id IN (SELECT id FROM sso_providers WHERE partner_id = ${partnerId})
       `,
     },
+    // psa_ticket_mappings (epic #2135): same no-tenancy-column shape as the SSO
+    // children above. psa_connections gained partner_id, so the partner-axis
+    // sweep below now runs `DELETE FROM psa_connections WHERE partner_id = ...`
+    // — which raises 23503 against the NO ACTION connection_id FK for any
+    // mapping created under a partner-owned connection. Mappings under the
+    // partner's CHILD orgs are already gone: cascadeDeleteOrg ran for each of
+    // them above and its own psa_ticket_mappings pre-clear covers those.
+    {
+      table: 'psa_ticket_mappings',
+      clearSql: sql`
+        DELETE FROM psa_ticket_mappings
+        WHERE connection_id IN (SELECT id FROM psa_connections WHERE partner_id = ${partnerId})
+      `,
+    },
   ];
-  for (const assoc of partnerSsoPreClears) {
+  for (const assoc of partnerAssociatedPreClears) {
     try {
       const count = await dbModule.withSystemDbAccessContext(async () => {
         const result = await dbModule.db.execute(assoc.clearSql);

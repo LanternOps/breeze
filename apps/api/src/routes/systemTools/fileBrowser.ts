@@ -49,7 +49,13 @@ fileBrowserRoutes.get(
 
     try {
       const data = JSON.parse(result.stdout || '{}');
-      return c.json({ data: data.entries || [] });
+      // Echo the path the agent actually listed. It normally equals the
+      // requested path, but the agent resolves a macOS Finder alias to its
+      // target before listing (issue #3344), and the client needs the resolved
+      // path so breadcrumbs, "go up" and the upload destination refer to a real
+      // directory rather than to the alias file.
+      const listedPath = typeof data.path === 'string' && data.path ? data.path : path;
+      return c.json({ data: data.entries || [], path: listedPath });
     } catch {
       return c.json({ error: 'Failed to parse agent response for file listing' }, 502);
     }

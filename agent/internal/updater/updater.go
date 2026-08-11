@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -105,6 +106,42 @@ func New(cfg *Config) *Updater {
 	}
 }
 
+// filterControlPlaneOrigins drops any control-plane origin outside the
+// compiled allowlist from the ControlPlaneOrigins list passed to netpolicy.
+// Identity (no filtering) in self-host AND in a gap build (allowlist
+// compiled in, strict mode off) — existing-fleet agents on a gap build must
+// keep functioning unchanged; only a strict build filters.
+//
+// What dropping an origin actually gates: ControlPlaneOrigins membership
+// grants exactly two things at that origin — reachability to a private
+// address, and (for ControlPlaneDownload) permission to use plain HTTP (see
+// netpolicy.Policy.ControlPlaneOrigins). It does NOT, by itself, block an
+// HTTPS request to a public host at that origin — netpolicy permits that
+// regardless of ControlPlaneOrigins membership. So filtering a
+// non-allowlisted control-plane origin here is not a guarantee that a
+// strict build refuses to talk to it; it only withdraws the private-address
+// and cleartext-HTTP grants for that origin.
+//
+// It filters ONLY the control-plane origin set passed to netpolicy, never
+// the signed download target, which may legitimately be a cross-origin CDN
+// URL (checksum + Ed25519 manifest-signature bound) — see updaterPolicy's
+// doc comment below.
+func filterControlPlaneOrigins(origins []string) []string {
+	if !hostpolicy.Strict() {
+		return origins
+	}
+	out := make([]string, 0, len(origins))
+	for _, o := range origins {
+		if o == "" {
+			continue
+		}
+		if hostpolicy.AllowedURL(o) == nil {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // updaterPolicy builds the netpolicy.Policy that governs every network
 // destination this Updater talks to. ControlPlaneOrigins carries BOTH the
 // primary (cfg.ServerURL()) and the configured backup server URL, snapshotted
@@ -114,7 +151,8 @@ func New(cfg *Config) *Updater {
 // what grants cleartext HTTP and private-address reachability for the
 // ControlPlaneDownload purpose; omitting either origin silently makes that
 // control plane's downloads fail with cleartext_not_allowed or
-// private_address_not_allowed.
+// private_address_not_allowed. Origins are then passed through
+// filterControlPlaneOrigins, which is a no-op outside a strict hosted build.
 func updaterPolicy(cfg *Config) netpolicy.Policy {
 	var origins []string
 	if cfg != nil {
@@ -123,6 +161,7 @@ func updaterPolicy(cfg *Config) netpolicy.Policy {
 		}
 		origins = append(origins, cfg.BackupServerURL)
 	}
+	origins = filterControlPlaneOrigins(origins)
 	return netpolicy.Policy{
 		Purpose:             netpolicy.ControlPlaneDownload,
 		ControlPlaneOrigins: origins,
@@ -366,6 +405,11 @@ type releaseArtifactAsset struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// Edition is optional and additive: "self-host" | "hosted" | "" (absent).
+	// Absent means the manifest predates edition-stamping (or the running
+	// agent is old enough not to look at this field at all) — either way it
+	// is accepted unconditionally. See editionAllowed.
+	Edition string `json:"edition,omitempty"`
 }
 
 func (u *Updater) component() string {
@@ -457,6 +501,18 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		return map[string]struct{}{
 			fmt.Sprintf("breeze-watchdog-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
+	case "backup":
+		// breeze-backup is the on-demand backup helper spawned by sessionbroker
+		// (internal/sessionbroker/backup.go) when backup commands arrive; it is
+		// bundled by every platform installer and, since this change, auto-updated
+		// the same way the agent and watchdog are.
+		suffix := ""
+		if runtime.GOOS == "windows" {
+			suffix = ".exe"
+		}
+		return map[string]struct{}{
+			fmt.Sprintf("breeze-backup-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
+		}
 	}
 	return map[string]struct{}{}
 }
@@ -494,6 +550,9 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	for i := range manifest.Assets {
 		if manifest.Assets[i].Name != name {
 			continue
+		}
+		if !editionAllowed(manifest.Assets[i].Edition) {
+			return "", fmt.Errorf("update rejected: artifact edition %q does not match this build", manifest.Assets[i].Edition)
 		}
 		sha := manifest.Assets[i].SHA256
 		if len(sha) != 64 {
@@ -735,13 +794,18 @@ func (u *Updater) UpdateTo(version string) error {
 // UpdateToWithOptions downloads and installs a new version. When
 // opts.UserHelper is non-nil and the host is Windows, the Windows restart
 // helper script also swaps the user-helper binary alongside the agent.
+// opts.Backup behaves the same way but applies on every platform (see
+// UpdateOptions.Backup).
 //
 // Cleanup contract: on update failure (any error returned from this method),
-// if opts.UserHelper != nil the user-helper temp file is removed. The agent
-// caller pre-downloaded the helper to a temp file before invoking this method;
-// if we never spawn the restart script, nothing else will ever clean it up.
-// On success (this method returns nil) the helper temp is intentionally left
-// in place — the spawned restart script owns it and removes it after the swap.
+// if opts.UserHelper != nil the user-helper temp file is removed, and likewise
+// for opts.Backup. The agent caller pre-downloaded these to temp files before
+// invoking this method; if the swap never happens, nothing else will ever
+// clean them up. On success (this method returns nil) a companion's temp is
+// intentionally left in place only where a LATER step still owns consuming
+// it (the Windows restart script for both companions); the non-Windows Backup
+// swap (swapCompanionBinary) consumes and removes its own temp inline, so
+// there is nothing left for this method to clean up on that path.
 //
 // Issue #816 / #845 follow-up (PR B): replaces UpdateToWithUserHelper and the
 // u.extras action-at-a-distance state with an explicit options parameter.
@@ -751,6 +815,9 @@ func (u *Updater) UpdateToWithOptions(version string, opts UpdateOptions) error 
 		// Cleanup contract: see method doc. Preserved verbatim from
 		// PR A's UpdateToWithUserHelper error-path cleanup.
 		removeCleanup(opts.UserHelper.Temp)
+	}
+	if err != nil && opts.Backup != nil && opts.Backup.Temp != "" {
+		removeCleanup(opts.Backup.Temp)
 	}
 	return err
 }
@@ -794,20 +861,24 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	//    The agent exits normally after spawning the script.
 	if runtime.GOOS == "windows" {
 		writeUpdateMarker(version)
-		// User-helper swap is wired in by the heartbeat-layer caller
-		// (heartbeat.doUpgrade), not here — the updater package is
+		// User-helper and backup swaps are wired in by the heartbeat-layer
+		// caller (heartbeat.doUpgrade), not here — the updater package is
 		// component-agnostic, and downloading a second component requires
 		// the caller's AuthToken/server context. Pass nil for an agent-only
-		// swap (backward compatible). Issue #816.
-		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper); err != nil {
+		// swap (backward compatible). Issue #816 (user-helper); breeze-backup
+		// follows the same pattern.
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper, opts.Backup); err != nil {
 			removeCleanup(tempPath)
-			// Defense in depth: UpdateToWithOptions also cleans the helper
-			// temp on any returned error, but we mirror the agent tempPath
+			// Defense in depth: UpdateToWithOptions also cleans the companion
+			// temps on any returned error, but we mirror the agent tempPath
 			// removal here too so the cleanup happens in the same branch as
 			// the agent's, keeping the spawn-failure flow tidy. The
 			// outer-layer cleanup is then a no-op for this case.
 			if opts.UserHelper != nil && opts.UserHelper.Temp != "" {
 				removeCleanup(opts.UserHelper.Temp)
+			}
+			if opts.Backup != nil && opts.Backup.Temp != "" {
+				removeCleanup(opts.Backup.Temp)
 			}
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)
@@ -841,6 +912,14 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 			key, value := SafeDownloadErrorFields(installErr)
 			log.Warn("pkg install failed, falling back to binary replacement", key, value)
 		} else {
+			// The .pkg already contains /usr/local/bin/breeze-backup — a
+			// staged Backup pair must be discarded, not swapped, or we'd
+			// stomp the binary the installer just placed. Only the raw-binary
+			// fallback below (pkg unavailable or failed) needs the explicit
+			// swap.
+			if opts.Backup != nil {
+				removeCleanup(opts.Backup.Temp)
+			}
 			return nil // .pkg install handles binary replacement + restart
 		}
 	} else {
@@ -858,6 +937,22 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 			return fmt.Errorf("failed to replace binary: %w (rollback also failed: %v)", err, rbErr)
 		}
 		return fmt.Errorf("failed to replace binary (rolled back): %w", err)
+	}
+
+	// Swap the pre-fetched breeze-backup binary (if any) into place BEFORE
+	// restarting the agent — this is the Linux / macOS-pkg-fallback half of
+	// the delivery contract (Windows swaps inside the restart-helper script
+	// above; the macOS .pkg success path already returned above). A swap
+	// failure here is logged and left for the next heartbeat's
+	// reconcileBackupHelper to retry rather than aborting an agent upgrade
+	// that has already fully replaced the (already-live) agent binary —
+	// unlike doUpgrade's pre-flight abort, backing out at this point would
+	// mean un-replacing an agent binary the OS may already be executing.
+	if opts.Backup != nil {
+		if err := swapCompanionBinary(opts.Backup); err != nil {
+			log.Error("failed to swap breeze-backup binary during agent upgrade; will retry via reconcile", "error", err.Error())
+			removeCleanup(opts.Backup.Temp)
+		}
 	}
 
 	writeUpdateMarker(version)
@@ -1020,6 +1115,9 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 	}
 	if selected == nil {
 		return updateManifest{}, fmt.Errorf("release artifact manifest does not include %s", assetName)
+	}
+	if !editionAllowed(selected.Edition) {
+		return updateManifest{}, fmt.Errorf("update rejected: artifact edition %q does not match this build", selected.Edition)
 	}
 	if len(selected.SHA256) != 64 {
 		return updateManifest{}, fmt.Errorf("release artifact manifest checksum must be SHA-256 hex")
@@ -1324,7 +1422,7 @@ func (u *Updater) UpdateFromURL(rawURL, expectedChecksum string, opts UpdateOpti
 
 	// 4. Windows: spawn helper script for binary swap
 	if runtime.GOOS == "windows" {
-		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper); err != nil {
+		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper, opts.Backup); err != nil {
 			removeCleanup(tempPath)
 			if rbErr := u.Rollback(); rbErr != nil {
 				log.Error("rollback also failed", "originalError", err, "rollbackError", rbErr)

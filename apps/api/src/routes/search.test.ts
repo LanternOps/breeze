@@ -11,6 +11,10 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   return {
     ...actual,
     inArray: vi.fn((...args: Parameters<typeof actual.inArray>) => actual.inArray(...args)),
+    // Spied for the scripts dual-axis assertions: the partner-wide branch is
+    // the only thing in this route that pairs isNull(orgId) with eq(partnerId).
+    eq: vi.fn((...args: Parameters<typeof actual.eq>) => actual.eq(...args)),
+    isNull: vi.fn((...args: Parameters<typeof actual.isNull>) => actual.isNull(...args)),
   };
 });
 
@@ -35,6 +39,7 @@ vi.mock('../db/schema', () => ({
   scripts: {
     id: 'scripts.id',
     orgId: 'scripts.orgId',
+    partnerId: 'scripts.partnerId',
     name: 'scripts.name',
     description: 'scripts.description'
   },
@@ -48,9 +53,13 @@ vi.mock('../db/schema', () => ({
   }
 }));
 
+const authState = vi.hoisted(() => ({
+  current: null as Record<string, unknown> | null,
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
+    c.set('auth', authState.current ?? {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       orgId: 'org-1',
@@ -88,7 +97,7 @@ vi.mock('../services/permissions', () => ({
 }));
 
 import { db } from '../db';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray, isNull } from 'drizzle-orm';
 import { getUserPermissions } from '../services/permissions';
 
 describe('search routes', () => {
@@ -96,6 +105,7 @@ describe('search routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.current = null;
     app = new Hono();
     app.route('/search', searchRoutes);
   });
@@ -397,4 +407,65 @@ describe('search routes', () => {
       expect(body.results.some((r: { type?: string }) => r.type === 'devices')).toBe(true);
     });
   });
+
+  describe('scripts dual-axis visibility', () => {
+    // Scripts are org_id XOR partner_id. A strict org condition hides every
+    // partner-wide script from global search, so a tech could see a script on
+    // /scripts and get zero Cmd+K results for its exact name.
+    function stubThreeSelects() {
+      const empty = () => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(empty() as never)
+        .mockReturnValueOnce(empty() as never)
+        .mockReturnValueOnce(empty() as never);
+    }
+
+    it('widens the scripts filter to partner-wide rows for a partner-scoped caller', async () => {
+      authState.current = {
+        user: { id: 'user-1', email: 'p@example.com', name: 'Partner User' },
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-9',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: () => true,
+        orgCondition: (col: unknown) => inArray(col as never, ['org-1'] as never),
+      };
+      stubThreeSelects();
+
+      const res = await app.request('/search?q=cleanup');
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(isNull)).toHaveBeenCalledWith('scripts.orgId');
+      expect(vi.mocked(eq)).toHaveBeenCalledWith('scripts.partnerId', 'partner-9');
+    });
+
+    it('does NOT widen for an org-scoped caller, even though it carries a partnerId', async () => {
+      // RLS is stricter than the app layer here: an org token never passes
+      // breeze_has_partner_access, so widening would ask for rows the database
+      // refuses to return and the two layers would disagree.
+      authState.current = {
+        user: { id: 'user-1', email: 'o@example.com', name: 'Org User' },
+        scope: 'organization',
+        orgId: 'org-1',
+        partnerId: 'partner-9',
+        accessibleOrgIds: ['org-1'],
+        canAccessOrg: () => true,
+        orgCondition: (col: unknown) => inArray(col as never, ['org-1'] as never),
+      };
+      stubThreeSelects();
+
+      const res = await app.request('/search?q=cleanup');
+
+      expect(res.status).toBe(200);
+      expect(vi.mocked(eq)).not.toHaveBeenCalledWith('scripts.partnerId', expect.anything());
+    });
+  });
+
 });
