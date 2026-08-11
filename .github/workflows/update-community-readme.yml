@@ -1,12 +1,30 @@
 name: Update community README
 
+# Manual only, and deliberately read-only.
+#
+# This job used to run on a daily schedule and push the refreshed README
+# straight to `main`. The main-branch ruleset rejects direct pushes, so every
+# scheduled run failed (issue #3173) and attached a red check run to whatever
+# commit happened to be at the head of `main`.
+#
+# Neither obvious repair works on this repository:
+#   * Opening a bot PR instead would never merge — ci.yml's `paths-ignore`
+#     skips `**/*.md`, so the ruleset's only required check, `CI Success`,
+#     never reports on a README-only PR.
+#   * Adding `github-actions` to the ruleset bypass list would hand
+#     main-branch push bypass to every workflow holding `contents: write`.
+#
+# So the run now only *reports*: it publishes the refreshed README as an
+# artifact plus a diff in the job summary, and a human lands that change on a
+# normal branch alongside other work. Sponsors and contributors change on a
+# scale of weeks and nothing downstream reads the README programmatically, so
+# the daily cadence was never load-bearing.
+
 on:
-  schedule:
-    - cron: '17 5 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: update-community-readme
@@ -22,7 +40,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -37,17 +54,34 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/update-community-readme.mjs
 
-      - name: Commit and push README changes
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Report README drift
+        id: drift
         run: |
           if git diff --quiet -- README.md; then
-            echo "README.md is already current"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'README.md is already current - no sponsor or contributor drift.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git commit --only -m "docs: refresh sponsors and contributors [skip ci]" -- README.md
-          git -c credential.helper= -c 'credential.helper=!f() { printf "%s\n" "username=x-access-token" "password=$GITHUB_TOKEN"; }; f' push origin HEAD:main
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          {
+            echo '### README.md is out of date'
+            echo
+            echo 'Download the community-readme artifact from this run, apply it on a branch, and open a normal pull request.'
+            echo
+            # Four backticks, not three: every diff line carries a one-char
+            # prefix, so a README line of ``` renders as " ```" - which is a
+            # valid closing fence for a three-backtick block and would truncate
+            # the report without failing the run.
+            echo '````diff'
+            git --no-pager diff -- README.md
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload refreshed README
+        if: steps.drift.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: community-readme
+          path: README.md
+          if-no-files-found: error
