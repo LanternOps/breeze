@@ -33,7 +33,7 @@ export type DispatchScriptInput = {
   device: Pick<typeof devices.$inferSelect, 'id' | 'orgId' | 'osType' | 'status' | 'agentId'>;
   source: ScriptDispatchSource;
   parameters?: Record<string, unknown>;
-  triggerType?: string;
+  triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';
   triggeredBy?: string | null;
   createdBy?: string | null;
   runAs?: 'system' | 'user' | 'elevated';
