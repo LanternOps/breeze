@@ -8,6 +8,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
+import RemoteToolSettings from './RemoteToolSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { createPasskeyCredential, fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -914,6 +915,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* Approval security (Breeze Authenticator) */}
       <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
       <ThemingSettings
+        preferences={user?.preferences}
+        onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
+      />
+      <RemoteToolSettings
         preferences={user?.preferences}
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />

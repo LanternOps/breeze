@@ -26,6 +26,14 @@ export interface UserPreferences {
   font?: FontPreference;
   timeFormat?: TimeFormatPreference;
   locale?: LocalePreference;
+  /**
+   * #3389: the technician's preferred remote-access provider. An ID only — it
+   * SELECTS from the tenant's configured providers and never supplies a URL
+   * template, password or custom-field key, which is what keeps the launcher's
+   * post-substitution scheme guard meaningful. An unknown or since-disabled id
+   * falls back to the tenant default server-side rather than failing a launch.
+   */
+  remoteAccessProviderId?: string;
 }
 
 /** A single permission grant ({ resource, action }), mirroring the API. */
