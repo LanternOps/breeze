@@ -709,7 +709,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Impossible de récupérer les groupes d’appareils",
     "windows": "Fenêtres",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossible d’enregistrer le groupe de périphériques",
