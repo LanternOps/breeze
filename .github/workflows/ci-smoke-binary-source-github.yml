@@ -41,8 +41,12 @@ jobs:
     timeout-minutes: 10
 
     services:
+      # pgvector-enabled image required: this job boots the API directly
+      # (`pnpm --filter=@breeze/api start`), which now runs the Workspace
+      # built-in's ee/workspace/migrations/*.sql (CREATE EXTENSION vector)
+      # on boot. Stock postgres:16-alpine lacks the extension.
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: breeze
           POSTGRES_PASSWORD: breeze
