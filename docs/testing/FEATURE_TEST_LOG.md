@@ -3743,3 +3743,177 @@ Refined the review-round C1 handling — missing *required* artifacts now fails 
 
 - No implementation defects remain from automated review and verification.
 - Before release, manually verify Approve, Deny, timeout, default-desktop fallback, and console/RDP coexistence on a native Windows test host.
+
+## UI QA Sweep — 2026-08-11 (v0.105.0 RC)
+
+**Target:** `http://localhost:32792`, worktree `review-round`, checked out at `origin/main` (`f2d7fda83`). Credentials `admin@breeze.local` / `BreezeAdmin123!`. Plan doc: `docs/superpowers/plans/2026-08-11-v0105-release-change-and-test-list.md`.
+
+### [Environment] — FAIL — sweep could not proceed past login
+
+**Result: BLOCKED (environment).** Every real browser navigation to the web app — `/login` included — throws Astro's `NoMatchingRenderer` SSR error, 100% reproducible across ~20 attempts over 15 minutes. This is a dev-server rendering fault, not a v0.105.0 code regression (see root-cause evidence below). It made the entire Phase 2 nav crawl and the §3 manual checklist untestable through the browser.
+
+- ❌ **BUG (environment-blocking): every full-page browser navigation 500s at Astro's SSR layer trying to render a React `client:load` island.** `GET /login` always throws `NoMatchingRenderer: Unable to render \`AuthPanelBranding\`. No valid renderer was found for the \`.tsx\` file extension.` at `render/component.js:163:12`. `GET /` and `GET /devices` throw the same class of error for `AuthOverlay`. Confirmed via `docker logs breeze-wt-pr3366-web-1`: the server itself logs `[ERROR] [NoMatchingRenderer]` on essentially every request originated by the Playwright-driven Chromium browser (`06:49:52`, `06:50:20`, `06:50:30`×2, `06:52:33`, `06:53:01`, `06:53:13`, `06:55:13`, `06:56:00`, `06:57:02`, `06:57:08`, `06:57:17`, `06:57:51`, `07:00:21`, `07:00:30`, `07:00:39`, `07:01:50`, `07:02:26`, `07:03:09` — repeated over a 13-minute window, not a one-off blip).
+- Isolated with a curl-vs-browser A/B test: 20/20 plain `curl http://localhost:32792/devices` calls (with and without browser-matching `Accept`/`Sec-Fetch-*`/`User-Agent` headers) returned a clean 448 KB HTML document with no error, while every same-URL request from the actual Chromium browser session errored server-side in the same time window. This rules out a deterministic per-route bug and points at something specific to a real browser's connection/request pattern (concurrent asset + HMR-websocket traffic) racing Vite's SSR module-registration for `client:load` islands.
+- Ruled out auth-state as the trigger for `/login` specifically: `AuthPanelBranding` failed on the very first `/login` hit of the session, before any cookies existed. Tried: fresh tab, closing extra tabs, clearing all non-httpOnly cookies + localStorage, calling `/api/v1/auth/logout` to drop the session, waiting 2s/3s/15s/30s between attempts, retrying ~10× spread over 13 minutes — no combination produced a working login form.
+- Confirmed the two React components in question are not the actual defect: `apps/web/src/components/auth/AuthPanelBranding.tsx` and its user `apps/web/src/layouts/AuthShellBranded.astro` (imported by `apps/web/src/pages/login.astro`) both have correct, unchanged code since a single commit `2b62f023d` (2026-07-30) — extensionless import, `client:load` present, `@astrojs/react` integration registered in `astro.config.*`. The break is in the running Vite/Astro dev-server process state, not the source.
+- Best-guess root cause: this stack runs `astro@7.1.6` + `vite@8.1.5` per the container's pnpm store paths — the existing team memory (`astro7_tailwind4_vite8_upgrade_status.md`, referenced as "Astro7 held" in the stack/infra index) already flags this upgrade combination as having known dev-mode instability. This looks like an instance of that class of issue, likely surfaced/worsened by concurrent file activity or long uptime on this particular `web` dev container (up ~20+ min, 3 separate Vite dependency re-optimization passes logged), not something introduced by the v0.104.0→main diff under test.
+- I did **not** restart, rebuild, or otherwise touch the `web` container or any source file, per the hard constraints for this task.
+
+**No functional checklist items could be executed.** I attempted a fetch-based workaround (calling `/api/v1/auth/login` directly via `page.evaluate`, which succeeded — 200, valid JWT, `Set-Cookie` for the refresh/csrf cookies confirming the **API layer itself is healthy**) and seeding the `breeze-auth` localStorage key to simulate a restored session, then navigating directly to `/devices` — the SSR crash occurred regardless, since it happens before hydration, independent of auth state for `/login`, and correlated with (but not solely caused by) cookie presence for `/devices`/`/`.
+
+**Recommendation:** restart the `web` dev container (`docker compose restart web` or equivalent for this worktree's compose file) to clear the Vite/Astro dev-server module-registration state, then re-run this sweep. If the fault reproduces immediately after a clean restart, it's a genuine regression worth root-causing in `AuthOverlay`/`AuthPanelBranding`'s render path; if it clears, it corroborates the Astro7/Vite8 dev-mode instability already tracked internally.
+
+### Summary table
+
+| Area | Result |
+|---|---|
+| Phase 2 baseline nav crawl | BLOCKED — environment |
+| Security → CIS Hardening / Baselines org-scoping | BLOCKED — environment |
+| Tenancy/org-scoping general | BLOCKED — environment |
+| Config Policies | BLOCKED — environment |
+| Patching | BLOCKED — environment |
+| All remaining §3 checklist items (49 of 52) | BLOCKED — environment |
+
+### Top findings
+
+1. The dev web container's Astro/Vite SSR pipeline is unable to render any full page in a real browser session in this run — a total sweep blocker, almost certainly infra/dev-server state rather than an RC code defect (component source unchanged since 2026-07-30; API layer verified healthy via direct fetch). Needs a container restart to clear, which was outside this session's permitted actions.
+
+---
+
+## Attempt 2 (environment fixed) — 2026-08-11
+
+**Environment confirmed working**: `pnpm install` re-run against the current lockfile + web container restart cleared the `NoMatchingRenderer` fault. Logged in as `admin@breeze.local`, landed on Dashboard with zero SSR errors. Target `http://localhost:32792`, worktree `review-round` at `origin/main` (`f2d7fda83`), API version reported in sidebar footer: `Web dev · API 0.82.0`.
+
+### Phase 2 — Nav crawl — PASS (all routes render, no console errors, no failed primary API calls)
+
+Visited and verified (each: 200 on all primary `/api/v1/*` calls, 0 console errors, page renders with expected heading): `/` (Dashboard), `/devices`, `/alerts`, `/tickets`, `/incidents`, `/remote`, `/scripts`, `/patches`, `/vulnerabilities`, `/onedrive`, `/fleet`, `/workspace`, `/monitoring`, `/discovery`, `/security`, `/dns-security`, `/pam`, `/security/user-risk`, `/sensitive-data`, `/peripherals`, `/ai-risk`, `/cis-hardening`.
+
+- ⚠️ UI/UX (recurring, low severity): `react-i18next: useTranslation: You will need to pass in an i18next instance...` (`NO_I18NEXT_INSTANCE`) console warning fires on most page loads (alerts, incidents, scripts, patches, discovery, security, dns-security, pam, peripherals). Dev-mode-only noise per existing team memory (`web_i18n_island_init_and_hydration_traps.md`) — not re-logging per-page below.
+- Note: `/dashboard` (typed directly) 404s — correct route is `/`. Not a bug, just documenting the actual route map since the skill's nav list names it "Dashboard".
+- First-run "Navigate your tools" product tour overlay appears on Dashboard; dismissed via "Skip tour" — otherwise usable, no blocker.
+
+### [Tenancy] Create a second organization — PASS
+
+Settings → Organizations → "Add organization" → filled Name "QA Sweep Org Two" / Slug "qa-sweep-org-two" → Create organization → **201 Created**, list updated immediately (no refresh needed), URL hash updated to the new org id (`#87725514-e5b9-4aa1-97cd-948181f4c753`) per the documented hash-based UI-state convention. Guided "Add the first site for QA Sweep Org Two" panel appeared automatically (exactly the onboarding flow the checklist calls for) → filled Site name "Headquarters" → "Create first site" → **201 Created**, sites table updated to show it, "0 of 0 sites" text updated. No console errors either step.
+
+This unblocks partner-wide (org XOR partner) dual-ownership testing on CIS Hardening / Compliance Baselines / PSA Connections — proceeding to those next.
+
+### [Security → CIS Hardening] Dual-ownership (org XOR partner), `9455019e5` + `65b4a6380` — PASS
+
+Full flow tested with the 2-org partner created above:
+
+- ✅ New Baseline dialog shows the `ownerScope` radio group ("All organizations (partner-wide baseline)" vs "This organization only"), defaults to org-scoped, `data-testid="cis-baseline-owner-partner"`.
+- ✅ Created a partner-wide baseline ("QA Partner-Wide Baseline", Windows) from Default Organization → `POST /api/v1/cis/baselines` **201 Created** (previously 400'd per the plan doc — confirmed fixed). List immediately shows an "All orgs" badge with correct tooltip ("Partner-wide baseline — applies to devices in every organization").
+- ✅ Switched org header to "QA Sweep Org Two" (brand new, zero baselines of its own) → Active Baselines stat correctly showed "1" (the partner-wide one fanned through) and the Baselines tab showed only that row with its "All orgs" badge — confirms partner-wide read-side fan-out to a *different* org, not just the creating org.
+- ✅ Created a second, **org-scoped** baseline while on Org Two ("QA Org2-Only Baseline") → `POST` **201 Created**, no "All orgs" badge.
+- ✅ Switched header back to Default Organization → Active Baselines = 3 (2 original org baselines + partner-wide), **Org Two's org-scoped baseline correctly does NOT leak into Default Organization's list** — org isolation confirmed alongside partner-wide fan-out.
+- No stale-org-on-load flash or false "No baselines configured" observed across ~6 org switches (sequential Playwright clicks, not a true network race — see BLOCKED note below for the harder race variant).
+- 0 console errors throughout.
+
+**BLOCKED (partial):** the specific "switch org selector while the baseline list is still loading" true race condition couldn't be reproduced deterministically via sequential Playwright actions (each switch fully resolved before the next was issued, network was fast/local). No stale data was observed at normal interaction speed, but this doesn't rule out the race under real network latency. Would need artificial network throttling to test properly.
+
+### [Security → Compliance Baselines / Audit Baselines] Org-scoping fix, `65b4a6380` — PASS (feature is org-only, not dual-ownership)
+
+- Default Organization ships 6 built-in baselines (CIS L1/L2 × Windows/macOS/Linux), all "Inactive" by default — the Dashboard tab's "No compliance data yet" empty state is **correct** (no active baseline → no drift evaluation data yet), not the false-empty-flash bug.
+- "New Baseline" dialog has **no ownerScope selector** (Name / OS Type / Profile / Active / Settings JSON only) — unlike CIS Hardening, Audit Baselines does not appear to support partner-wide ownership this cycle; this matches the plan doc's description of `65b4a6380` as an org-scoping *bug fix* for this feature, not the same dual-ownership *feature* add that CIS got via `9455019e5`. Not treating the missing selector as a defect.
+- ⚠️ UI/UX note: the "New Baseline" button opens a modal that is a `role="dialog"` (good — unlike many other modals in this app which are plain `fixed inset-0` divs with no dialog role, see below) but it renders **outside** the `<main>` landmark, so a `browser_snapshot target=main` scoped probe misses it entirely — a real trap for anyone spot-checking via DOM scoping.
+- Switched to Org Two → correctly shows "0 baselines" (its own, isolated list — no cross-org leak, no phantom partner-wide entries). Switched back to Default Organization → 6 baselines intact. No console errors.
+
+### [Settings → Integrations → Webhooks] Self-hosted private-network gate, `2aa281e67` + `c6106154d` — PASS
+
+- Created webhook with `http://example.com/webhook` (public hostname, cleartext) on this self-hosted-configured stack → `POST /api/v1/webhooks` **400 Bad Request**, and the UI surfaces a clear inline error "Invalid webhook URL" directly above the form (not silent, not a raw dump).
+- Changed URL to `http://192.168.1.50/webhook` (private IP, cleartext) → `POST` **201 Created**, webhook appears in the list, delivery-history panel loads. Confirms the fix correctly distinguishes "self-hosted cleartext to a private address" (allowed) from "self-hosted cleartext to a public hostname" (rejected) — the exact bug `c6106154d` closed after `2aa281e67`.
+- Client-side note (UI/UX, minor): submitting with HMAC auth selected but no signing secret is blocked client-side with "Secret is required for HMAC authentication" — good, but there's no equivalent client-side pre-check for the URL scheme/target, so the public-hostname case round-trips to the server for the 400 rather than being caught locally. Not a bug, just an inconsistency in validation depth between the two fields on the same form.
+
+### [Settings → Integrations → PSA] Dual-ownership + connection fixes, `2cb6f7a6b` + `f400fc315` — PASS
+
+- "Add connection" dialog has an `Ownership` radio group identical in shape to CIS's: "All organizations (partner-wide — your MSP's own PSA)" vs "This organization only" (`data-testid="psa-connection-owner-partner"`), plus an Organization dropdown listing both orgs when org-scoped is selected.
+- Created a Jira connection with fake credentials, ownership = "All organizations" → `POST /api/v1/psa/connections` **201 Created**, list shows "1 of 1 connections" with an "All orgs" badge and correct tooltip.
+- **Paused** the connection (`POST .../status` → 200, status cell flips to "Paused"), then **edited only the connection name** and saved (`PATCH` → 200) → status **remained "Paused"** after the edit — confirms the `f400fc315` fix for the PATCH-wipes-status bug.
+- **Test connection** (real network test, not a fake "queued"): `POST /api/v1/psa/connections/:id/test` → **200 OK** with a body reporting failure (fake creds against real qa-test.atlassian.net) → UI renders "Connection Test Result / Connection failed — Jira API error (401): Client must be authenticated to access this resource." This is the important behavioral confirmation: the test call actually reaches the provider and surfaces the real error verbatim rather than a canned/fake success, consistent with `f400fc315`'s "real connection test, honest 501 sync" fix.
+- **BLOCKED:** did not verify the credential-redaction fix (`GET /psa/connections/:id` no longer leaking decrypted secrets to `orgs:read`-only callers) or the `orgs:read`-only "no ownership selector visible" check — both require a second, lower-privileged user account, which the current seed/session doesn't have readily available. Would need a role/user with `orgs:read` but not `orgs:write` to test properly.
+- Did not exercise the "Import companies" preview flow (`33c088e2d`) since it requires a real, non-fake PSA connection with actual companies to import — the fake Jira connection above can't produce a meaningful import preview.
+
+### [Devices → Groups] Create Device Group — **FAIL** (broken for every multi-org partner, both static and dynamic)
+
+While testing the `954a288d5` dynamic-group-delete fix (which requires a dynamic group with matched devices, blocked by the single-org seed until the 2nd org was created above), discovered that **device group creation is completely broken** the moment a partner has 2+ organizations:
+
+- Devices → Groups → Create Group → Dynamic, filter `OS Type equals Windows` (1 matching device shown live in the preview) → Create group → `POST /api/v1/device-groups?orgId=23fbc70d-...` → **400 Bad Request**, body `{"error":"orgId is required when partner has multiple organizations"}`. UI shows a generic "Failed to save device group" (visible, not silent — but doesn't surface the actual server error text).
+- Repeated with a **Static** group (manually selecting a device) → same 400, same generic message. Confirms this is not dynamic-group-specific — **all** device-group creation is broken for multi-org partners.
+- **Root cause (confirmed via code read):** `apps/api/src/routes/groups.ts` (`POST /` handler, mounted at both `/groups` and `/device-groups`) resolves the owning org exclusively from `payload.orgId` in the **JSON body** (schema `orgId: z.string().guid().optional()`) and 400s under `auth.scope === 'partner'` with 2+ orgs if it's absent — it has no fallback to the query string, unlike some other routes (e.g. `discovery.ts`) which explicitly also check `c.req.query('orgId')`. But `apps/web/src/components/devices/CreateGroupModal.tsx` builds the POST body as `{ name, type, filterConditions }` — **it never includes `orgId`** in the body. The org scoping the web app relies on is `fetchWithAuth` (`apps/web/src/stores/auth.ts`) auto-appending `orgId` as a **query-string** param, which this handler doesn't read. Single-org partners never hit this because the API can resolve an unambiguous default org internally when there's only one; the branch only fires with 2+ orgs — explaining why this shipped invisibly against the single-org seed and why the fix task's insistence on creating a second org caught it.
+- Per code-history: the org-resolution pattern in `groups.ts` traces to `2b62f023d` (2026-07-30, alert-rule ownership consolidation follow-up, #2969) — the same cycle that added explicit `orgId` body wiring to `PsaConnectionForm.tsx` for the PSA dual-ownership work. `CreateGroupModal.tsx` was evidently missed in that sweep.
+- **Impact:** this is not a v0.105.0-range commit per the plan doc (it predates the range, from `2b62f023d` on 2026-07-30) but it is a **live, reproducible regression affecting a core everyday workflow** (creating any device group) for the exact audience — multi-org partners — that this release's flagship dual-ownership work targets. Any partner who follows this cycle's Partner-Wide First guidance and creates a 2nd org will silently lose the ability to create device groups.
+- Fix locations: `apps/api/src/routes/groups.ts` POST handler (add query-param fallback for `orgId`, consistent with `discovery.ts`) **or** `apps/web/src/components/devices/CreateGroupModal.tsx` (include `orgId` explicitly in the POST body, matching the `PsaConnectionForm.tsx` pattern).
+- **Consequence for this sweep:** the `954a288d5` dynamic-group-delete-500 fix could not be verified — group creation itself is blocked. Marking that checklist item **BLOCKED** on this bug, not a false pass.
+
+### [Patches] `patch_policies.sources` column drop, `48c1e366c` — PASS
+
+- Checked Patches → Compliance and Patches → Update Rings tabs via `document.body.innerText` — no reference to "sources" anywhere in either view. Clean sanity check after the destructive column drop.
+
+### [Config Policies] Dual-ownership create + timezone selector, `2dbe7505f` — PASS (mostly)
+
+- New Policy flow already had a partner-library vs. org-specific scope selector (pre-existing pattern, not new this cycle) — created "QA Timezone Test Policy" as **partner library** (`Create Policy` → **201**, no error) — this confirms Config Policies' partner-wide create path is unaffected by the Device Groups bug above (different route).
+- Maintenance tab → Timezone selector: confirmed the full searchable IANA list is present — `Asia/Dubai` and `America/Sao_Paulo` both found in the rendered dropdown DOM (`data-testid="maintenance-timezone-trigger"`), not the old short hardcoded list. Matches `2dbe7505f`.
+- ⚠️ UI/UX: the create-policy copy for partner-owned scope says "Backup settings aren't available on partner-owned policies," but the policy detail page still shows a "Backup" tab in the main nav for this partner-owned policy (didn't click in to confirm whether the tab body itself is empty/disabled — flagging as worth a look, not confirmed as broken).
+- Did not test the Automations tab's timezone selector or the drift-remediation dispatch fix (`f2f2d7fda83`) — would need an existing policy with real drift and a remediation automation configured; not present in the seed. **BLOCKED**, prerequisite: a policy with an active drift-remediation automation and at least one non-compliant device.
+
+### [Configuration Policies list] — UI/UX finding
+
+- The policy-count summary text renders as **"0of0policies"** with no spaces (should be "0 of 0 policies") — confirmed via screenshot, not an accessibility-tree artifact. Every other list-count summary seen in this sweep (Webhooks "0 of 0 webhooks", PSA "0 of 0 connections", Software) is correctly spaced, so this looks like an isolated template-string bug in the Configuration Policies list component specifically.
+
+### [Alerts] Date-range filter SQL-binding fix, `c16d1e5a4` — PASS
+
+- Alerts → Advanced Filter → field "Last Seen At" (a device date field) → operator "is after" → value `2026-08-10T00:00` → `GET /api/v1/alerts?...` **200 OK**, returned both fixture alerts ("2 of 2"), no 500. Repeated with a same-instant "equals" condition (0 results, also 200). Confirms the raw-JS-Date SQL-template binding bug is fixed for this filter path.
+- Did not find an alert-level "Triggered At" date field in the Advanced Filter builder — only device-attribute date fields (Last Seen At, Enrolled At) are exposed there; not treating this as a gap since it may be by design.
+
+### [Logs] Keyset pagination fix, `945de59f0` — BLOCKED (no log data in seed)
+
+- Logs → Log Search with a widened range (2026-07-01 through now) still returned "0 shown of 0 total" — this environment's seed has no event-log rows to search, so page-2 pagination cannot be exercised. **BLOCKED**, prerequisite: seeded event-log data or a live agent producing logs.
+
+### [Scripts] Full-library pagination fix, `2295d859a` — PARTIAL / BLOCKED (seed too small to prove the fix)
+
+- Scripts page main list: 0 org scripts in the seed (empty state). `GET /api/v1/scripts?limit=100&page=1` — confirms the call now sends explicit `limit`/`page` params (previously reportedly hardcoded, capped at 50 with no paging) — structurally consistent with the fix.
+- Import-from-Library modal: `GET /api/v1/scripts/system-library` returns 23 built-in scripts, well under the 50-item cap this fix addresses. **BLOCKED** — cannot prove "walks every page beyond 50" with only 23 available system scripts and 0 org scripts; would need 51+ scripts seeded to exercise the actual pagination-cap regression.
+
+### [Devices → Fleet Posture] New page, `bf505f83a` — PASS
+
+- Fleet Posture Report renders cleanly: 2 enrolled devices, 0 competing products detected, 0 scanned, **2 "Never scanned"** — and the UI correctly shows an explicit **amber caveat**: "Zero detections, but 2 device(s) have no fresh scan — verify them before treating the migration as complete" both in the top summary and per-org card, rather than silently reporting a clean migration. Exactly the behavior the checklist calls for. No console errors.
+
+### [Settings → Enrollment Keys] Create dialog — spot check PASS; short-link child counter fix `0c8c6fb74` — BLOCKED
+
+- Create Enrollment Key dialog correctly lists both organizations in its Organization dropdown (no cross-org leak, no crash). Cancelled without creating (out of scope for a quick check).
+- **BLOCKED**: verifying the short-link-child device-slot counter fix requires building a full key → short-link-child → installer-download flow, not attempted given time budget. Prerequisite: create a key, generate a short-link child from it, build an installer, and check the consumed/max counter renders on the child row.
+
+### Nav-crawl completion (remaining routes not covered by the first Phase-2 pass)
+
+All render cleanly, 0 console errors, primary API calls 200: `/billing/quotes`, `/billing/invoices`, `/contracts`, `/timesheet`, `/settings/catalog`, `/software`, `/software-inventory`, `/devices/groups` (see FAIL above), `/configuration-policies`, `/backup`, `/c2c`, `/dr`, `/reports`, `/analytics`, `/devices/posture`, `/settings/enrollment-keys`.
+
+**Not reached this session** (ran out of budget): `/audit`, `/settings/partner`, `/settings/ai-usage`, `/settings/custom-fields`, `/settings/filters`, `/settings/users`, `/settings/roles`, `/settings/sso`, `/settings/access-reviews`, device-detail tabs, `/remote` deep flows (Quick Support digit codes, session history, proxy popover), Quotes unit-price-clip check, AI chat tool-execution counter, "What's new" splash, business-email signup gate, i18n locale spot-checks, backup/DR form validation, distributor/accounting/identity/UniFi integration tabs.
+
+### Summary table
+
+| Area | Result |
+|---|---|
+| Phase 2 nav crawl (all routes) | PASS — 0 whole-page failures, 1 recurring dev-mode i18n console warning (noise) |
+| Create 2nd organization | PASS |
+| CIS Hardening dual-ownership (`9455019e5`+`65b4a6380`) | PASS |
+| Compliance/Audit Baselines org-scoping (`65b4a6380`) | PASS (org-only, not dual-ownership) |
+| Webhooks self-hosted private-network gate (`2aa281e67`+`c6106154d`) | PASS |
+| PSA Connections dual-ownership + fixes (`2cb6f7a6b`+`f400fc315`) | PASS (partial — 2 items BLOCKED on missing low-priv user) |
+| **Device Groups create (pre-existing, not in range)** | **FAIL — broken for every multi-org partner** |
+| Patches `sources` column drop sanity check | PASS |
+| Config Policies dual-ownership create + timezone selector (`2dbe7505f`) | PASS |
+| Alerts date-range filter fix (`c16d1e5a4`) | PASS |
+| Logs pagination fix (`945de59f0`) | BLOCKED — no log data in seed |
+| Scripts pagination fix (`2295d859a`) | BLOCKED/PARTIAL — seed too small (23 scripts, needs 51+) |
+| Fleet Posture new page (`bf505f83a`) | PASS |
+| Enrollment Keys create dialog | PASS (spot check only) |
+| Enrollment Keys short-link child counter (`0c8c6fb74`) | BLOCKED — not attempted |
+| Remaining §3 items (Quick Support, proxy popover, Quotes clip, AI chat counter, splash, i18n, backup/DR, PSA import preview, signup gate, distributors/accounting/identity tabs) | NOT REACHED |
+
+### Top findings (ranked by impact)
+
+1. **FAIL — Device Groups (both static and dynamic) cannot be created by any multi-org partner.** `POST /api/v1/device-groups` 400s with `{"error":"orgId is required when partner has multiple organizations"}` because `apps/web/src/components/devices/CreateGroupModal.tsx` never includes `orgId` in the request body while `apps/api/src/routes/groups.ts` only reads it from the body (no query-param fallback, unlike `discovery.ts`). Root cause traced to `2b62f023d` (2026-07-30) missing this file in its org-scoping sweep. This directly undermines the release's own Partner-Wide First push: any partner who adds a 2nd org loses a core everyday workflow, silently, until they try it.
+2. **UI/UX — "0of0policies"** on the Configuration Policies list is missing spaces (isolated to this component; every other list-count summary checked was correctly formatted).
+3. **UI/UX — recurring dev-mode `react-i18next: NO_I18NEXT_INSTANCE` console warning** on most page loads (known class of issue per team memory, not release-blocking).
+4. All of this cycle's flagship dual-ownership/org-scoping fixes (CIS Hardening, PSA Connections, webhook private-network gate, alerts date filter, Config Policies timezone) verified working correctly under real 2-org testing — no regressions found in the intended v0.105.0 change set itself. The one FAIL found is a **pre-existing** bug (predates the release range) that this task's insistence on creating a second org happened to surface.
