@@ -61,7 +61,15 @@ const localeOptions = [
   { value: 'it-IT' as const, labelKey: 'language.itITLabel', defaultLabel: 'Italiano (Italia)', descriptionKey: 'language.itITDescription', defaultDescription: 'Italian (Italy)' },
 ];
 
-function resolveAppearance(preferences?: UserPreferences | null): Required<UserPreferences> {
+/**
+ * The appearance subset of UserPreferences. Was `Required<UserPreferences>`,
+ * which silently meant "every preference" and broke as soon as a non-appearance
+ * preference was added (#3389's remoteAccessProviderId). Naming the keys keeps
+ * this type honest about what the appearance controls own.
+ */
+type AppearancePreferences = Required<Pick<UserPreferences, 'theme' | 'density' | 'font' | 'timeFormat' | 'locale'>>;
+
+function resolveAppearance(preferences?: UserPreferences | null): AppearancePreferences {
   return {
     theme: normalizeTheme(preferences?.theme) ?? readThemePreference(),
     density: normalizeDensity(preferences?.density) ?? readDensity(),
@@ -117,9 +125,9 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
   }, []);
 
   const handleAppearanceChange = async (
-    patch: Partial<Pick<Required<UserPreferences>, 'theme' | 'density' | 'font' | 'timeFormat' | 'locale'>>
+    patch: Partial<AppearancePreferences>
   ) => {
-    const next: Required<UserPreferences> = {
+    const next: AppearancePreferences = {
       theme: patch.theme ?? themePreference,
       density: patch.density ?? densityPreference,
       font: patch.font ?? fontPreference,
