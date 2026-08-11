@@ -20,12 +20,14 @@ export function deriveDeclaredProject(relPath: string): DeclaredProject | null {
   // A declared project needs root/<project folder>/<file…> — a file sitting
   // directly under a root (or at the share root) is unclaimed by design.
   if (segments.length < 3) return null;
-  const [root, folder] = segments;
+  // `segments.length >= 3` above guarantees both of these are present.
+  const root = segments[0]!;
+  const folder = segments[1]!;
   if (root === 'Emails') {
     return EMAIL_KEY_RE.test(folder) ? { key: folder, label: null } : null;
   }
   if (!PROJECT_ROOTS.has(root)) return null;
   const m = folder.match(KEY_FOLDER_RE);
   if (!m) return null;
-  return { key: m[1], label: m[2]?.trim() || null };
+  return { key: m[1]!, label: m[2]?.trim() || null };
 }

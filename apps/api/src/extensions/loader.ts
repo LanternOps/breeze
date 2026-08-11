@@ -161,8 +161,11 @@ const DEPRECATION_DOCS = 'docs/extensions/build-time-transition.md';
  * same extensions root. Only names are extracted — full validation stays the
  * reconciler's job (config.ts) — but a PRESENT-yet-unreadable file fails
  * closed: the same-name gate cannot prove the absence of a collision.
+ *
+ * Exported because the BUILT-IN loading path (builtinExtensions.ts) enforces
+ * the same one-delivery-path-per-name gate against this exact set.
  */
-function declaredRuntimeExtensionNames(root: string): Set<string> {
+export function declaredRuntimeExtensionNames(root: string): Set<string> {
   const configPath = path.join(root, 'extensions.yaml');
   if (!existsSync(configPath)) return new Set();
   let raw: unknown;

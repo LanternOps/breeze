@@ -22,7 +22,7 @@ interface Pattern {
 // Order matters only for readability; matches are deduped by (type, valueNorm).
 const PATTERNS: Pattern[] = [
   // Assessor parcel numbers: 057-071-012 (the "APN" literal is optional).
-  { type: 'apn', re: /\b(\d{3}-\d{3}-\d{3})\b/g, norm: (m) => m[1] },
+  { type: 'apn', re: /\b(\d{3}-\d{3}-\d{3})\b/g, norm: (m) => m[1]! },
   // Purchase orders: PO 4021, P.O. #4021, po#4021 — but never a P.O. Box, and
   // never a glued token (PO4021 is a part/lot-number shape, not a PO mention):
   // at least one space/# separator is required before the digits.
@@ -31,7 +31,7 @@ const PATTERNS: Pattern[] = [
   { type: 'wdr', re: /\bWDR[- ]?(\d{4})[- ]?(\d{4})\b/gi, norm: (m) => `WDR-${m[1]}-${m[2]}` },
   // Agency reference ids like FP-26-1142 (fish passage). WDR is caught above;
   // exclude it here so one mention never lands in two buckets.
-  { type: 'permit', re: /\b(?!WDR)([A-Z]{2,3}-\d{2,4}-\d{3,5})\b/g, norm: (m) => m[1] },
+  { type: 'permit', re: /\b(?!WDR)([A-Z]{2,3}-\d{2,4}-\d{3,5})\b/g, norm: (m) => m[1]! },
   // Invoices: invoice 8841, Invoice #23-1088, inv 92-311 (separator required —
   // same glued-token rule as PO).
   { type: 'invoice', re: /\binv(?:oice)?\.?[\s#]+(\d{2,4}(?:-\d{3,4})?)\b/gi, norm: (m) => `INV ${m[1]}` },

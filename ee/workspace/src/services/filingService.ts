@@ -139,7 +139,9 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
         if (!(STRONG_TYPES as readonly string[]).includes(e.entity_type)) continue;
         const hits = await deps.crosswalkService.lookup(orgId, e.entity_type, e.value_norm);
         if (hits.length === 0) continue;
-        const [winner, runnerUp] = hits;
+        // `hits.length === 0` was skipped above, so hits[0] is present.
+        const winner = hits[0]!;
+        const runnerUp = hits[1];
         const dominant = winner.evidenceCount >= DOMINANCE_MIN_EVIDENCE
           && (!runnerUp || winner.evidenceCount >= DOMINANCE_MARGIN * runnerUp.evidenceCount);
         // An org participant mentioned in the email makes the rationale read

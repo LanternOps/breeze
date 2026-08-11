@@ -76,7 +76,7 @@ const SYSTEM = [
 /** Extract the first JSON object from (possibly fenced) model output. */
 export function extractJson(text: string, label: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
+  const candidate = fenced?.[1] ?? text;
   const start = candidate.indexOf('{');
   const end = candidate.lastIndexOf('}');
   if (start === -1 || end === -1 || end < start) {

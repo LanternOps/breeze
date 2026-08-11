@@ -64,7 +64,7 @@ export class FakeEmbedder implements Embedder {
           seed = createHash('sha256').update(seed).digest();
           offset = 0;
         }
-        vec[i] = (seed[offset] - 127.5) / 127.5;
+        vec[i] = (seed[offset]! - 127.5) / 127.5;
         offset += 1;
       }
       const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0));

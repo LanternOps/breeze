@@ -327,7 +327,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
             for (let i = 0; i < chunks.length; i += 1) {
               await d.execute(sql`
                 INSERT INTO workspace_content_chunks (org_id, file_index_id, chunk_index, text, embedding)
-                VALUES (${orgId}, ${file.id}, ${i}, ${chunks[i]}, ${toVectorLiteral(vectors[i])}::vector)
+                VALUES (${orgId}, ${file.id}, ${i}, ${chunks[i]}, ${toVectorLiteral(vectors[i]!)}::vector)
               `);
             }
           }

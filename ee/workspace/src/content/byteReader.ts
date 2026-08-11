@@ -47,7 +47,8 @@ export function parseHostMap(env: string | undefined): Record<string, string> {
 export function parseUncRoot(rootPath: string): { host: string; share: string } {
   const m = rootPath.match(/^\\\\([^\\]+)\\([^\\]+)\\?$/);
   if (!m) throw new Error(`not a UNC root path: ${rootPath}`);
-  return { host: m[1], share: m[2] };
+  // Both groups are structurally guaranteed by the match above.
+  return { host: m[1]!, share: m[2]! };
 }
 
 export class MountedDirReader implements ContentByteReader {
