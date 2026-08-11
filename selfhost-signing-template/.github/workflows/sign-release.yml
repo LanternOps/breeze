@@ -1129,13 +1129,16 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          # Build into a scratch file and move into place: writing the same name
-          # the pipeline also filters on is a read/write-in-one-pipeline hazard.
+          # Build into a scratch file OUTSIDE this directory and move into
+          # place: a scratch file inside it races the very find that feeds the
+          # pipeline (find can enumerate checksums.new mid-write, hash it into
+          # the list, and the post-rename `sha256sum -c` then fails on a file
+          # that no longer exists — caught by the live dry-run).
           find . -maxdepth 1 -type f \
             ! -name checksums.txt \
             ! -name 'release-artifact-manifest.json*' \
-            -printf '%P\0' | sort -z | xargs -0 sha256sum > checksums.new
-          mv checksums.new checksums.txt
+            -printf '%P\0' | sort -z | xargs -0 sha256sum > ../checksums.new
+          mv ../checksums.new checksums.txt
 
           # Re-hash and compare. The previous form only grepped checksums.txt
           # for the filename — a check generated from the same bytes one step
