@@ -32,7 +32,10 @@ func swapCompanionBinary(pair *BinaryPair) error {
 	if err != nil {
 		return fmt.Errorf("open downloaded binary: %w", err)
 	}
-	defer src.Close()
+	// Read-only handle: a close error carries nothing the caller can act on,
+	// and the bytes have already been copied out by then. Explicitly discarded
+	// so errcheck can tell "ignored on purpose" from "forgotten".
+	defer func() { _ = src.Close() }()
 
 	destDir := filepath.Dir(pair.Target)
 	staging, err := os.CreateTemp(destDir, ".breeze-backup-*.new")
@@ -48,12 +51,15 @@ func swapCompanionBinary(pair *BinaryPair) error {
 		}
 	}()
 
+	// On these two bail-outs the copy has already failed, so the staging file is
+	// garbage that the deferred cleanup above is about to remove — a close error
+	// would only mask the real error being returned. Discarded explicitly.
 	if _, err := io.Copy(staging, src); err != nil {
-		staging.Close()
+		_ = staging.Close()
 		return fmt.Errorf("copy binary bytes: %w", err)
 	}
 	if err := staging.Sync(); err != nil {
-		staging.Close()
+		_ = staging.Close()
 		return fmt.Errorf("sync staging file: %w", err)
 	}
 	if err := staging.Close(); err != nil {
