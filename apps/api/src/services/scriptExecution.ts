@@ -2,19 +2,14 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
-  deviceCommands,
   devices,
   scriptExecutionBatches,
   scriptExecutions,
   scripts,
 } from '../db/schema';
-import {
-  claimPendingCommandForDelivery,
-  releaseClaimedCommandDelivery,
-} from './commandDispatch';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
-import { sendCommandToAgent } from '../routes/agentWs';
+import { dispatchScriptToDevice } from './scriptDispatch';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -176,71 +171,27 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
   for (const device of executableDevices) {
-    const [execution] = await db
-      .insert(scriptExecutions)
-      .values({
-        scriptId: input.scriptId,
-        deviceId: device.id,
-        orgId: device.orgId,
-        triggeredBy: input.auth.user.id,
-        triggerType,
-        parameters,
-        status: 'pending',
-      })
-      .returning();
-
-    if (!execution) {
-      throw new Error('Failed to create execution');
+    const dispatch = await dispatchScriptToDevice({
+      device,
+      source: { kind: 'saved', script },
+      parameters,
+      triggerType,
+      triggeredBy: input.auth.user.id,
+      createdBy: input.auth.user.id,
+      runAs,
+      targetSessionId: input.targetSessionId,
+      batchId,
+    });
+    if (!dispatch.ok) {
+      // Pre-checks above (org access, os filter, decommissioned filter) make
+      // these unreachable for this caller; treat as the insert failures the
+      // old code threw on.
+      throw new Error(dispatch.error);
     }
-
-    const [command] = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId: device.id,
-        type: 'script',
-        payload: {
-          scriptId: input.scriptId,
-          executionId: execution.id,
-          batchId,
-          language: script.language,
-          content: script.content,
-          parameters,
-          timeoutSeconds: script.timeoutSeconds,
-          runAs,
-          ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
-        },
-        status: 'pending',
-        createdBy: input.auth.user.id,
-      })
-      .returning();
-
-    if (!command) {
-      throw new Error('Failed to create command');
-    }
-
-    if (device.agentId) {
-      const claimed = await claimPendingCommandForDelivery(command.id);
-      if (claimed) {
-        const sent = sendCommandToAgent(device.agentId, {
-          id: command.id,
-          type: 'script',
-          payload: command.payload as Record<string, unknown>,
-        });
-        if (sent) {
-          await db
-            .update(scriptExecutions)
-            .set({ status: 'running', startedAt: claimed.executedAt })
-            .where(eq(scriptExecutions.id, execution.id));
-        } else {
-          await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-        }
-      }
-    }
-
     executions.push({
-      executionId: execution.id,
+      executionId: dispatch.executionId!,
       deviceId: device.id,
-      commandId: command.id,
+      commandId: dispatch.commandId,
     });
   }
 

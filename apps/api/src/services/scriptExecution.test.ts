@@ -14,20 +14,24 @@ vi.mock('./featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: vi.fn().mockResolvedValue({ active: false, suppressScripts: false }),
 }));
 
-// Command dispatch + agent WS — no real delivery in unit tests.
-vi.mock('./commandDispatch', () => ({
-  claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
-  releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../routes/agentWs', () => ({
-  sendCommandToAgent: vi.fn().mockReturnValue(false),
+// Per-device dispatch core (#3409 PR 0) — the service is now a thin caller
+// of this seam, so unit tests stub it rather than the DB inserts / WS send
+// it owns internally.
+vi.mock('./scriptDispatch', () => ({
+  dispatchScriptToDevice: vi.fn().mockResolvedValue({
+    ok: true,
+    commandId: 'cmd-1',
+    executionId: 'exec-1',
+    delivered: false,
+    executedAt: null,
+  }),
 }));
 
 // Real permissions module is fine; canAccessSite is only consulted when
 // allowedSiteIds is set, which these tests don't exercise.
 
 import { db } from '../db';
+import { dispatchScriptToDevice } from './scriptDispatch';
 import { executeScriptOnDevices } from './scriptExecution';
 
 // db.select() is used twice per call: first the script (.limit chain), then the
@@ -111,8 +115,8 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
     if (!result.ok) {
       expect(result.status).toBe(400);
     }
-    // No execution/command rows for the cross-org device.
-    expect(db.insert).not.toHaveBeenCalled();
+    // No dispatch for the cross-org device.
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
   it('executes when the script and device share the same org', async () => {

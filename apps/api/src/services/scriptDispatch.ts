@@ -36,7 +36,7 @@ export type DispatchScriptInput = {
   triggerType?: string;
   triggeredBy?: string | null;
   createdBy?: string | null;
-  runAs?: 'system' | 'user';
+  runAs?: 'system' | 'user' | 'elevated';
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
