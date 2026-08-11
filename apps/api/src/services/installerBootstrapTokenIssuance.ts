@@ -8,6 +8,16 @@ import {
 } from './installerBootstrapToken';
 import { clampTtlToCap } from './enrollmentDefaults';
 
+/**
+ * What the `maxUsage` on a minted token MEANS (#3034) — see the `usageKind`
+ * column docblock in `db/schema/installerBootstrapTokens.ts`.
+ *
+ * `legacy_unknown` is deliberately NOT assignable: it is a backfill/DEFAULT
+ * value for rows whose mint path was never recorded, and no new token may claim
+ * that it doesn't know its own provenance.
+ */
+export type BootstrapTokenUsageKind = "capacity" | "per_download";
+
 export interface IssueBootstrapTokenInput {
   parentEnrollmentKeyId: string;
   /**
@@ -18,6 +28,16 @@ export interface IssueBootstrapTokenInput {
    * fails the uuid cast: `invalid input syntax for type uuid: ""`).
    */
   createdByUserId: string | null;
+  /**
+   * REQUIRED, and deliberately has no default (#3034). `maxUsage` alone is
+   * ambiguous — the same integer is a device-slot budget on the authenticated
+   * paths and a per-click constant on the public download path — and the read
+   * side has no way to recover the difference after the fact. Forcing every
+   * call site to state it is what stops a future mint path from silently
+   * inheriting the wrong meaning, which is exactly how the `short_code` proxy
+   * this replaces became wrong in both directions.
+   */
+  usageKind: BootstrapTokenUsageKind;
   maxUsage?: number;
   installerPlatform?: "windows" | "macos";
   /**
@@ -156,6 +176,7 @@ export async function issueBootstrapTokenForKey(
     parentEnrollmentKeyId: parent.id,
     siteId: parent.siteId,
     maxUsage: input.maxUsage ?? 1,
+    usageKind: input.usageKind,
     createdBy: input.createdByUserId,
     expiresAt,
     installerPlatform: input.installerPlatform ?? "macos",
