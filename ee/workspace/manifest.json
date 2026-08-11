@@ -1,0 +1,31 @@
+{
+  "apiVersion": "breeze.extensions/v1",
+  "name": "workspace",
+  "version": "0.2.0",
+  "routeNamespace": "workspace",
+  "requires": {
+    "breeze": ">=0.1.0 <0.2.0",
+    "serverSdk": "^1.0.0",
+    "webSdk": "^1.0.0",
+    "capabilities": ["server.routes.v1", "server.agent-routes.v1", "server.db.rls.v1", "server.secrets.v1", "server.audit.v1", "web.pages.v1", "web.navigation.v1", "web.slots.v1"]
+  },
+  "server": { "entry": "server/index.cjs" },
+  "web": {
+    "entry": "web/index.js",
+    "pages": [{ "id": "sources", "path": "/extensions/workspace/sources", "element": "workspace-sources-page" }],
+    "navigation": [{ "id": "sources", "label": "Workspace Sources", "path": "/extensions/workspace/sources", "order": 100 }],
+    "slots": [{ "id": "device-index", "slot": "device.detail.tabs", "contractVersion": 1, "label": "Workspace", "element": "workspace-device-index", "order": 100 }]
+  },
+  "migrationsDir": "migrations",
+  "schemaCompatibilityFloor": "0.2.0",
+  "publicRoutes": [],
+  "agentRoutes": true,
+  "jobs": [],
+  "aiTools": [],
+  "tenancy": {
+    "orgCascadeDeleteTables": ["memory_blocks", "workspace_content_chunks", "workspace_content_entities", "workspace_crawl_runs", "workspace_email_filings", "workspace_file_activity", "workspace_file_content", "workspace_file_enrichment", "workspace_file_index", "workspace_org_settings", "workspace_project_crosswalk", "workspace_projects", "workspace_sources"],
+    "deviceCascadeDeleteTables": ["workspace_file_index"],
+    "deviceOrgDenormalizedTables": ["workspace_file_activity"],
+    "deviceOrgMoveDeleteTables": ["workspace_file_index"]
+  }
+}
