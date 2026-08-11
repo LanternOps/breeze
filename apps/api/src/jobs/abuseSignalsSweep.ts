@@ -3,6 +3,7 @@ import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { runAbuseSweep, runAbuseDigest } from '../services/abuseSignals';
 import { recordAbuseSweepRun } from '../services/abuseMetrics';
+import { abuseSignalsEnabled } from '../config/env';
 
 const ABUSE_QUEUE = 'abuse-signals';
 const SWEEP_JOB = 'abuse-sweep';
@@ -25,15 +26,20 @@ export function getAbuseSignalsQueue(): Queue<AbuseJobData> {
   return abuseQueue;
 }
 
-export async function scheduleAbuseSignalsJobs(): Promise<void> {
-  const queue = getAbuseSignalsQueue();
-  // Clear prior repeatables so interval/cron changes take effect on redeploy.
+/** Drop this queue's repeatables. Shared by the reschedule path and the disable path. */
+async function removeAbuseRepeatables(queue: Queue<AbuseJobData>): Promise<void> {
   const existing = await queue.getRepeatableJobs();
   for (const job of existing) {
     if (job.name === SWEEP_JOB || job.name === DIGEST_JOB) {
       await queue.removeRepeatableByKey(job.key);
     }
   }
+}
+
+export async function scheduleAbuseSignalsJobs(): Promise<void> {
+  const queue = getAbuseSignalsQueue();
+  // Clear prior repeatables so interval/cron changes take effect on redeploy.
+  await removeAbuseRepeatables(queue);
   await queue.add(SWEEP_JOB, {}, {
     jobId: SWEEP_REPEAT_ID,
     repeat: { every: SWEEP_INTERVAL_MS },
@@ -76,6 +82,25 @@ export function createAbuseSignalsWorker(): Worker<AbuseJobData> {
 }
 
 export async function initializeAbuseSignalsWorker(): Promise<void> {
+  // Signup-abuse detection is hosted-only by default — see abuseSignalsEnabled().
+  if (!abuseSignalsEnabled()) {
+    // Tearing down matters as much as not scheduling: repeatables live in Redis,
+    // so an install that upgrades into this gate (or flips IS_HOSTED / opts out
+    // via ABUSE_SIGNALS_ENABLED) would otherwise keep firing the sweep forever
+    // from jobs a previous boot registered, with no worker left to report it.
+    // Best-effort — a Redis blip must not take the API down over an inert job.
+    try {
+      const queue = getAbuseSignalsQueue();
+      await removeAbuseRepeatables(queue);
+      await queue.close();
+    } catch (error) {
+      console.warn('[AbuseSignals] Could not clear repeatables while disabled:', error);
+    } finally {
+      abuseQueue = null;
+    }
+    console.log('[AbuseSignals] Disabled (self-hosted default) — set ABUSE_SIGNALS_ENABLED=true to opt in');
+    return;
+  }
   abuseWorker = createAbuseSignalsWorker();
   attachWorkerObservability(abuseWorker, 'abuseSignalsWorker');
   await scheduleAbuseSignalsJobs();

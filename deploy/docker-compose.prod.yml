@@ -281,6 +281,8 @@ services:
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
       ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
+      ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
+      ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
       # Native APNs push for the iOS app (all optional; unset = push disabled).
       # All-or-none: setting ANY of these makes the four credentials required,
       # so a half-configured relay fails at boot instead of silently at first

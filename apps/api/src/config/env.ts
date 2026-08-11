@@ -121,6 +121,32 @@ export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
 }
 
+// Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:
+// it exists to police untrusted public signups on a multi-tenant service. A
+// self-hosted install is normally one IT team managing its own machines, where
+// the same heuristics are mostly noise or actively wrong —
+// `invariant.active_no_payment` can never clear (payment_method_attached_at is
+// only ever written by the external hosted billing service),
+// `rmm.device_ip_scatter` just describes remote workers, and the fleet-shape
+// detectors flag an ordinary lab of unnamed test VMs.
+//
+// So it defaults to `isHosted()` rather than being on for everyone. Note this
+// keys off the TRUTHY reading of IS_HOSTED, not the affirmative-self-host
+// helper below: the failure that matters here is a hosted deployment silently
+// NOT policing its signups, so an unset/garbage IS_HOSTED leaves detection off
+// and loudly absent rather than half-configured. That is the opposite polarity
+// from selfHostAllowsPrivateNetwork, which fails closed toward *strictness*
+// because there the risk runs the other way.
+//
+// ABUSE_SIGNALS_ENABLED overrides in both directions, so a self-hoster running
+// a genuine multi-tenant service can opt in, and a hosted deployment can switch
+// the subsystem off without a redeploy.
+export function abuseSignalsEnabled(): boolean {
+  const raw = process.env.ABUSE_SIGNALS_ENABLED;
+  if (raw && raw.trim() !== '') return envFlag('ABUSE_SIGNALS_ENABLED');
+  return isHosted();
+}
+
 // Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to
 // a recognized falsey signal ('false'/'0'/'no'/'off'). Unset / empty / garbage /
 // truthy all return false, so security-weakening, self-host-only features stay
