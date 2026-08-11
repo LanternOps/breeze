@@ -28,19 +28,7 @@ func init() {
 // /etc/group, which never contains the dscl-created `breeze` group, so relying
 // on os/user first would fail on exactly the shipped configuration.
 func lookupGroupIDDarwin(name string) (int, error) {
-	out, dsclErr := runDscl(dsclGroupReadArgs(name))
-	if dsclErr == nil {
-		gid, parseErr := parseDsclPrimaryGroupID(out)
-		if parseErr == nil {
-			return gid, nil
-		}
-		dsclErr = parseErr
-	}
-	gid, stdlibErr := lookupGroupIDStdlib(name)
-	if stdlibErr == nil {
-		return gid, nil
-	}
-	return -1, fmt.Errorf("dscl: %v; os/user: %w", dsclErr, stdlibErr)
+	return lookupGroupIDViaDscl(runDscl, name, lookupGroupIDStdlib)
 }
 
 // runDscl executes dscl with args and returns its combined output.
@@ -103,27 +91,16 @@ func EnsureIPCGroup() error {
 // dscl's exit status, so a caller that sees a nil error knows the user really
 // is a member.
 func EnsureIPCGroupMember(username string) (bool, error) {
-	if err := validIPCGroupMember(username); err != nil {
-		return false, fmt.Errorf("ensure %q group member: %w", IPCGroupName, err)
+	outcome, err := ensureGroupMemberViaDscl(runDscl, IPCGroupName, username)
+	if outcome.ReadErr != nil {
+		// Logged rather than swallowed because this branch cannot tell the benign
+		// "freshly created group has no GroupMembership key yet" case apart from a
+		// real read failure (wedged opendirectoryd, a directory-bound node, a
+		// permissions problem). In the benign case it fires at most once per host
+		// — the append gives the group a member, so every later read succeeds — so
+		// a line that keeps recurring is itself the signal something is wrong.
+		log.Warn("could not read IPC group membership; assuming the group is empty and appending",
+			"group", IPCGroupName, "user", username, "error", outcome.ReadErr.Error())
 	}
-	if out, err := runDscl(dsclGroupMembershipReadArgs(IPCGroupName)); err == nil {
-		if userInDsclGroupMembership(out, username) {
-			return false, nil
-		}
-	}
-	// A read failure is not fatal here: a group with no members at all makes
-	// dscl exit non-zero for the missing GroupMembership key, which is the
-	// normal state on a freshly created group. Fall through to the append and
-	// let the verification read below be the authority.
-	if _, err := runDscl(dsclGroupAppendMemberArgs(IPCGroupName, username)); err != nil {
-		return false, err
-	}
-	out, err := runDscl(dsclGroupMembershipReadArgs(IPCGroupName))
-	if err != nil {
-		return false, fmt.Errorf("verify %q group membership for %q: %w", IPCGroupName, username, err)
-	}
-	if !userInDsclGroupMembership(out, username) {
-		return false, fmt.Errorf("dscl reported success but %q is not in group %q", username, IPCGroupName)
-	}
-	return true, nil
+	return outcome.Added, err
 }

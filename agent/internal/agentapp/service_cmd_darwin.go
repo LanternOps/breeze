@@ -231,19 +231,20 @@ var serviceInstallCmd = &cobra.Command{
 			fmt.Printf("LaunchAgent plist installed to %s\n", darwinDesktopLoginWindowPlistDst)
 		}
 
-		// Create the breeze group and put the logged-in console users in it
-		// BEFORE bootstrapping the helper LaunchAgents. A helper inherits its
-		// group list when it starts, so a helper bootstrapped first would not be
-		// in the group that owns the IPC socket and would be denied
-		// (#3133/#3134/#3137). This ordering was previously reversed.
-		if err := ensureDarwinBreezeGroup(); err != nil {
+		// Create the breeze group, put the logged-in console users in it, and only
+		// THEN bootstrap the helper LaunchAgents so the desktop helper connects
+		// right away rather than waiting for the first heartbeat. A helper
+		// inherits its group list when it starts, so a helper bootstrapped first
+		// would not be in the group that owns the IPC socket and would be denied
+		// (#3133/#3134/#3137). This ordering was previously reversed; it is
+		// pinned by TestInstallIPCPrereqsThenHelpersOrdering.
+		if err := installIPCPrereqsThenHelpers(
+			ensureDarwinBreezeGroup,
+			ensureDarwinBreezeGroupConsoleMembers,
+			bootstrapDesktopHelperPlists,
+		); err != nil {
 			return err
 		}
-		ensureDarwinBreezeGroupConsoleMembers()
-
-		// Immediately load the helper LaunchAgents so the desktop helper connects
-		// right away rather than waiting for the first heartbeat.
-		bootstrapDesktopHelperPlists()
 
 		fmt.Println()
 		fmt.Println("Breeze Agent service installed.")

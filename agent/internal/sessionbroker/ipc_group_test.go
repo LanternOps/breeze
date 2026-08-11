@@ -3,15 +3,22 @@ package sessionbroker
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
 // These tests deliberately live in an untagged file. The bug they cover
-// (#3133/#3134/#3137) is macOS-only, but CI has no macOS runner — `test-agent`
-// is ubuntu-latest and `test-agent-windows` is windows-latest — so anything in a
-// //go:build darwin file is compiled and run nowhere (the #3019/#3046 lesson).
-// The socket-ownership decision and the dscl argv/parsing helpers are therefore
-// pure and platform-independent, and are exercised on every CI runner.
+// (#3133/#3134/#3137) is macOS-only, and every CI job that GATES a merge runs on
+// a platform where a //go:build darwin file is not even compiled: `test-agent` is
+// ubuntu-latest and `test-agent-windows` is windows-latest. There IS a macOS job
+// — `test-agent-race` on macos-latest — but it is absent from `ci-success`'s
+// needs list, so it cannot block a merge. Putting the coverage for a
+// darwin-triggered bug there alone would repeat the #3019/#3046 lesson in a
+// subtler form: it would run, and a failure would be advisory.
+//
+// So the socket-ownership decision, the dscl argv builders/parsers and the dscl
+// orchestration are all pure and platform-independent, and are exercised by a
+// required job. Only the exec.Command calls stay behind the darwin tag.
 
 func TestIPCSocketModeIsNotWorldAccessible(t *testing.T) {
 	if ipcSocketMode != 0o660 {
@@ -96,7 +103,7 @@ func TestApplySocketOwnerChownsThenChmods(t *testing.T) {
 	var calls []string
 	var gotUID, gotGID int
 	var gotMode os.FileMode
-	err := applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
+	res := applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
 		func(name string, uid, gid int) error {
 			calls = append(calls, "chown "+name)
 			gotUID, gotGID = uid, gid
@@ -107,8 +114,8 @@ func TestApplySocketOwnerChownsThenChmods(t *testing.T) {
 			gotMode = mode
 			return nil
 		})
-	if err != nil {
-		t.Fatalf("applySocketOwner: %v", err)
+	if res.ChownErr != nil || res.ChmodErr != nil {
+		t.Fatalf("applySocketOwner: chown=%v chmod=%v", res.ChownErr, res.ChmodErr)
 	}
 	// Order matters: chown can clear mode bits on some platforms, so the chmod
 	// has to be the last word.
@@ -130,11 +137,11 @@ func TestApplySocketOwnerChownsThenChmods(t *testing.T) {
 func TestApplySocketOwnerSkipsChownWhenGroupUnknown(t *testing.T) {
 	chownCalled := false
 	chmodCalled := false
-	err := applySocketOwner("/tmp/agent.sock", socketOwner{GID: -1, Mode: ipcSocketMode},
+	res := applySocketOwner("/tmp/agent.sock", socketOwner{GID: -1, Mode: ipcSocketMode},
 		func(string, int, int) error { chownCalled = true; return nil },
 		func(string, os.FileMode) error { chmodCalled = true; return nil })
-	if err != nil {
-		t.Fatalf("applySocketOwner: %v", err)
+	if res.ChownErr != nil || res.ChmodErr != nil {
+		t.Fatalf("applySocketOwner: chown=%v chmod=%v", res.ChownErr, res.ChmodErr)
 	}
 	if chownCalled {
 		t.Error("chown was called with an unknown group; it would clear the existing group")
@@ -144,23 +151,41 @@ func TestApplySocketOwnerSkipsChownWhenGroupUnknown(t *testing.T) {
 	}
 }
 
-func TestApplySocketOwnerSurfacesChownAndChmodErrors(t *testing.T) {
+func TestApplySocketOwnerSurfacesChownAndChmodErrorsSeparately(t *testing.T) {
 	chownErr := errors.New("chown boom")
 	chmodErr := errors.New("chmod boom")
 
-	err := applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
-		func(string, int, int) error { return chownErr },
-		func(string, os.FileMode) error { t.Fatal("chmod must not run after a failed chown"); return nil })
-	if !errors.Is(err, chownErr) {
-		t.Errorf("chown error = %v, want it to wrap %v", err, chownErr)
-	}
+	t.Run("a failed chown still applies the mode", func(t *testing.T) {
+		// The two errors are reported separately because they differ in severity:
+		// a lost group is survivable, an unapplied mode is not. Skipping the chmod
+		// here would leave the socket at net.Listen's umask-derived mode, the one
+		// outcome that could be MORE permissive than intended.
+		chmodCalled := false
+		res := applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
+			func(string, int, int) error { return chownErr },
+			func(string, os.FileMode) error { chmodCalled = true; return nil })
+		if !errors.Is(res.ChownErr, chownErr) {
+			t.Errorf("ChownErr = %v, want it to wrap %v", res.ChownErr, chownErr)
+		}
+		if res.ChmodErr != nil {
+			t.Errorf("ChmodErr = %v, want nil", res.ChmodErr)
+		}
+		if !chmodCalled {
+			t.Error("chmod was skipped after a failed chown, leaving the socket at the listener's default mode")
+		}
+	})
 
-	err = applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
-		func(string, int, int) error { return nil },
-		func(string, os.FileMode) error { return chmodErr })
-	if !errors.Is(err, chmodErr) {
-		t.Errorf("chmod error = %v, want it to wrap %v", err, chmodErr)
-	}
+	t.Run("a failed chmod is reported on its own channel", func(t *testing.T) {
+		res := applySocketOwner("/tmp/agent.sock", socketOwner{GID: 350, Mode: ipcSocketMode},
+			func(string, int, int) error { return nil },
+			func(string, os.FileMode) error { return chmodErr })
+		if res.ChownErr != nil {
+			t.Errorf("ChownErr = %v, want nil", res.ChownErr)
+		}
+		if !errors.Is(res.ChmodErr, chmodErr) {
+			t.Errorf("ChmodErr = %v, want it to wrap %v", res.ChmodErr, chmodErr)
+		}
+	})
 }
 
 func TestDsclArgvBuilders(t *testing.T) {
@@ -301,5 +326,249 @@ func TestLookupIPCGroupIDUsesTheInstalledLookup(t *testing.T) {
 	}
 	if gid != 412 {
 		t.Errorf("LookupIPCGroupID = %d, want 412", gid)
+	}
+}
+
+// --- dscl orchestration (the branches that used to live behind //go:build darwin) ---
+
+// fakeDscl replays canned responses keyed by the dscl verb+key, and records the
+// argv of every call so ordering can be asserted.
+type fakeDscl struct {
+	readMembership []struct {
+		out string
+		err error
+	}
+	appendErr  error
+	readGID    string
+	readGIDErr error
+	calls      [][]string
+}
+
+func (f *fakeDscl) run(args []string) (string, error) {
+	f.calls = append(f.calls, args)
+	switch {
+	case len(args) >= 4 && args[1] == "-read" && args[3] == "PrimaryGroupID":
+		return f.readGID, f.readGIDErr
+	case len(args) >= 4 && args[1] == "-read" && args[3] == "GroupMembership":
+		if len(f.readMembership) == 0 {
+			return "", errors.New("fakeDscl: unexpected extra membership read")
+		}
+		next := f.readMembership[0]
+		f.readMembership = f.readMembership[1:]
+		return next.out, next.err
+	case len(args) >= 2 && args[1] == "-append":
+		return "", f.appendErr
+	}
+	return "", errors.New("fakeDscl: unexpected argv")
+}
+
+func membershipReads(entries ...struct {
+	out string
+	err error
+}) []struct {
+	out string
+	err error
+} {
+	return entries
+}
+
+func read(out string) struct {
+	out string
+	err error
+} {
+	return struct {
+		out string
+		err error
+	}{out: out}
+}
+
+func readErr(err error) struct {
+	out string
+	err error
+} {
+	return struct {
+		out string
+		err error
+	}{err: err}
+}
+
+func TestEnsureGroupMemberViaDsclAlreadyAMemberDoesNotAppend(t *testing.T) {
+	f := &fakeDscl{readMembership: membershipReads(read("GroupMembership: alice jingxie\n"))}
+	outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+	if err != nil {
+		t.Fatalf("ensureGroupMemberViaDscl: %v", err)
+	}
+	if outcome.Added {
+		t.Error("Added = true for a user that was already a member")
+	}
+	if outcome.ReadErr != nil {
+		t.Errorf("ReadErr = %v, want nil", outcome.ReadErr)
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("made %d dscl calls, want 1 (the membership read only): %v", len(f.calls), f.calls)
+	}
+	for _, c := range f.calls {
+		if len(c) > 1 && c[1] == "-append" {
+			t.Error("appended a membership that already existed")
+		}
+	}
+}
+
+func TestEnsureGroupMemberViaDsclAppendsAndVerifies(t *testing.T) {
+	f := &fakeDscl{readMembership: membershipReads(
+		read("GroupMembership: alice\n"),         // pre-append: not a member
+		read("GroupMembership: alice jingxie\n"), // post-append verification
+	)}
+	outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+	if err != nil {
+		t.Fatalf("ensureGroupMemberViaDscl: %v", err)
+	}
+	if !outcome.Added {
+		t.Error("Added = false after a successful append")
+	}
+	// read, append, read — the trailing read is the verification that makes a nil
+	// error mean the user really is a member.
+	if len(f.calls) != 3 {
+		t.Fatalf("made %d dscl calls, want 3: %v", len(f.calls), f.calls)
+	}
+	if f.calls[1][1] != "-append" {
+		t.Errorf("second call = %v, want the append", f.calls[1])
+	}
+	if f.calls[2][3] != "GroupMembership" {
+		t.Errorf("third call = %v, want the verification membership read", f.calls[2])
+	}
+}
+
+func TestEnsureGroupMemberViaDsclSurfacesTheToleratedReadFailure(t *testing.T) {
+	// A group created moments ago has no GroupMembership key, so dscl exits
+	// non-zero. That is benign and must not block the append — but it must be
+	// reported so a read that keeps failing for a real reason is diagnosable.
+	sentinel := errors.New("eDSRecordNotFound")
+	f := &fakeDscl{readMembership: membershipReads(
+		readErr(sentinel),
+		read("GroupMembership: jingxie\n"),
+	)}
+	outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+	if err != nil {
+		t.Fatalf("a failed pre-append read must not be fatal: %v", err)
+	}
+	if !outcome.Added {
+		t.Error("Added = false; the append should have proceeded")
+	}
+	if !errors.Is(outcome.ReadErr, sentinel) {
+		t.Errorf("ReadErr = %v, want it to carry %v so the caller can log it", outcome.ReadErr, sentinel)
+	}
+}
+
+func TestEnsureGroupMemberViaDsclAppendFailureIsReported(t *testing.T) {
+	appendErr := errors.New("append denied")
+	f := &fakeDscl{
+		readMembership: membershipReads(read("GroupMembership: alice\n")),
+		appendErr:      appendErr,
+	}
+	outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+	if !errors.Is(err, appendErr) {
+		t.Fatalf("error = %v, want it to wrap %v", err, appendErr)
+	}
+	if outcome.Added {
+		t.Error("Added = true despite a failed append")
+	}
+}
+
+func TestEnsureGroupMemberViaDsclVerificationFailuresAreNotReportedAsSuccess(t *testing.T) {
+	verifyErr := errors.New("verify read failed")
+	t.Run("verification read errors", func(t *testing.T) {
+		f := &fakeDscl{readMembership: membershipReads(
+			read("GroupMembership: alice\n"),
+			readErr(verifyErr),
+		)}
+		outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+		if !errors.Is(err, verifyErr) {
+			t.Fatalf("error = %v, want it to wrap %v", err, verifyErr)
+		}
+		if outcome.Added {
+			t.Error("Added = true although the membership could not be verified")
+		}
+	})
+	t.Run("dscl exits 0 but the user is still absent", func(t *testing.T) {
+		// The reason verification exists at all: a zero exit status is not proof.
+		f := &fakeDscl{readMembership: membershipReads(
+			read("GroupMembership: alice\n"),
+			read("GroupMembership: alice\n"),
+		)}
+		outcome, err := ensureGroupMemberViaDscl(f.run, "breeze", "jingxie")
+		if err == nil {
+			t.Fatal("expected an error when the verification read does not show the user")
+		}
+		if outcome.Added {
+			t.Error("Added = true although the user is not in the group")
+		}
+	})
+}
+
+func TestEnsureGroupMemberViaDsclRejectsAnUnsafeUsernameBeforeRunningAnything(t *testing.T) {
+	f := &fakeDscl{}
+	if _, err := ensureGroupMemberViaDscl(f.run, "breeze", "-delete"); err == nil {
+		t.Fatal("expected an error for a username that dscl would read as a flag")
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("ran %v; an unsafe username must never reach a privileged argv", f.calls)
+	}
+}
+
+func TestLookupGroupIDViaDsclPrefersDscl(t *testing.T) {
+	f := &fakeDscl{readGID: "PrimaryGroupID: 350\n"}
+	gid, err := lookupGroupIDViaDscl(f.run, "breeze", func(string) (int, error) {
+		t.Error("fallback was used even though dscl succeeded")
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("lookupGroupIDViaDscl: %v", err)
+	}
+	if gid != 350 {
+		t.Errorf("gid = %d, want 350", gid)
+	}
+}
+
+func TestLookupGroupIDViaDsclFallsBackToOsUser(t *testing.T) {
+	tests := []struct {
+		name string
+		f    *fakeDscl
+	}{
+		// Release darwin binaries are cgo-less, so os/user reads /etc/group and
+		// cannot see a dscl-created group. The fallback covers the reverse: a host
+		// where dscl is unavailable or unparseable but /etc/group has the answer.
+		{name: "dscl errors", f: &fakeDscl{readGIDErr: errors.New("dscl unavailable")}},
+		{name: "dscl output unparseable", f: &fakeDscl{readGID: "No such key: PrimaryGroupID\n"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gid, err := lookupGroupIDViaDscl(tc.f.run, "breeze", func(string) (int, error) { return 412, nil })
+			if err != nil {
+				t.Fatalf("lookupGroupIDViaDscl: %v", err)
+			}
+			if gid != 412 {
+				t.Errorf("gid = %d, want 412 from the fallback", gid)
+			}
+		})
+	}
+}
+
+func TestLookupGroupIDViaDsclReportsBothFailures(t *testing.T) {
+	f := &fakeDscl{readGIDErr: errors.New("dscl exploded")}
+	fallbackErr := errors.New("no such group in /etc/group")
+	gid, err := lookupGroupIDViaDscl(f.run, "breeze", func(string) (int, error) { return 0, fallbackErr })
+	if err == nil {
+		t.Fatal("expected an error when both lookups fail")
+	}
+	if gid != -1 {
+		t.Errorf("gid = %d, want -1", gid)
+	}
+	// Both causes must appear: knowing only one of them makes this undiagnosable.
+	if !errors.Is(err, fallbackErr) {
+		t.Errorf("error %v does not wrap the fallback failure", err)
+	}
+	if !strings.Contains(err.Error(), "dscl exploded") {
+		t.Errorf("error %v does not mention the dscl failure", err)
 	}
 }

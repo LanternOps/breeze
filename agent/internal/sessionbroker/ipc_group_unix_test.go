@@ -12,9 +12,10 @@ import (
 )
 
 // These exercise the real chown/chmod syscalls against a real unix socket, so
-// they prove the production path rather than just the decision logic. They run
-// on the ubuntu `test-agent` CI job (the file is !windows, not darwin), which is
-// the only Unix runner CI has.
+// they prove the production path rather than just the decision logic. Tagged
+// !windows rather than darwin so they run on the REQUIRED ubuntu `test-agent`
+// job, not only on the non-blocking macOS `test-agent-race` job (which is not in
+// ci-success's needs list). They run on both.
 
 // newTestSocketPath returns a short-enough path for a unix socket. sun_path caps
 // at 104 bytes on darwin / 108 on linux, and t.TempDir() under macOS's
@@ -43,12 +44,18 @@ func chownTargetGID(t *testing.T) (int, bool) {
 		t.Logf("os.Getgroups: %v", err)
 		return 0, false
 	}
+	// Callers t.Skip when this returns false. A runner that silently started
+	// skipping would leave the chown assertions unexercised with no signal, so the
+	// no-supplementary-group case is logged loudly rather than skipped quietly.
 	primary := os.Getgid()
 	for _, g := range groups {
 		if g != primary && g >= 0 {
 			return g, true
 		}
 	}
+	t.Logf("VACUOUS-GUARD: this runner exposes no supplementary group distinct from "+
+		"primary gid %d (groups=%v), so the socket chown assertions cannot be made "+
+		"non-vacuously and will be skipped", primary, groups)
 	return 0, false
 }
 
@@ -90,7 +97,7 @@ func TestSetupSocketAppliesGroupAndRestrictiveMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupSocket: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	mode, gotGID := statSocket(t, path)
 	if mode != 0o660 {
@@ -116,7 +123,7 @@ func TestSetupSocketStillTightensModeWhenGroupIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupSocket must not fail when the group is missing: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	mode, _ := statSocket(t, path)
 	if mode != 0o660 {
@@ -141,7 +148,7 @@ func TestSetupSocketCreatesTraversableParentDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupSocket: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	fi, err := os.Stat(filepath.Dir(path))
 	if err != nil {
@@ -190,7 +197,7 @@ func TestSetupSocketReplacesAStaleSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second setupSocket: %v", err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 
 	mode, gotGID := statSocket(t, path)
 	if mode != 0o660 {
@@ -199,4 +206,53 @@ func TestSetupSocketReplacesAStaleSocket(t *testing.T) {
 	if gotGID != gid {
 		t.Errorf("socket gid after restart = %d, want %d", gotGID, gid)
 	}
+}
+
+func TestSetupSocketSurvivesAFailedChown(t *testing.T) {
+	// chown and chmod failures have different severities in setupSocket: a lost
+	// group is survivable, an unapplied mode is not. Only the survivable half is
+	// reachable here — making a real os.Chmod fail needs a read-only filesystem,
+	// so setupSocket's fail-closed chmod branch is covered at the unit level by
+	// TestApplySocketOwnerSurfacesChownAndChmodErrorsSeparately instead.
+	orig := ipcGroupIDLookup
+	t.Cleanup(func() { ipcGroupIDLookup = orig })
+
+	t.Run("an unresolvable group leaves a working socket", func(t *testing.T) {
+		// Already covered by TestSetupSocketStillTightensModeWhenGroupIsMissing;
+		// asserted here too as the sibling of the chmod case below, so the
+		// asymmetry between the two is visible in one place.
+		ipcGroupIDLookup = func(string) (int, error) { return -1, errors.New("no such group") }
+		path := newTestSocketPath(t)
+		l, err := New(path, nil).setupSocket()
+		if err != nil {
+			t.Fatalf("setupSocket must not fail when the group is unresolvable: %v", err)
+		}
+		defer func() { _ = l.Close() }()
+		if mode, _ := statSocket(t, path); mode != 0o660 {
+			t.Errorf("socket mode = %#o, want 0660", mode)
+		}
+	})
+
+	t.Run("a chown to a group we do not belong to does not kill the broker", func(t *testing.T) {
+		// gid 0 (root/wheel) is not a group an unprivileged test process may chown
+		// to, so os.Chown genuinely fails here — while the chmod still succeeds
+		// because we own the file. The broker must survive with a tightened mode.
+		if os.Geteuid() == 0 {
+			t.Skip("running as root: chown to gid 0 would succeed, so this cannot exercise the failure path")
+		}
+		ipcGroupIDLookup = func(string) (int, error) { return 0, nil }
+		path := newTestSocketPath(t)
+		l, err := New(path, nil).setupSocket()
+		if err != nil {
+			t.Fatalf("setupSocket must not fail when only the chown fails: %v", err)
+		}
+		defer func() { _ = l.Close() }()
+		mode, _ := statSocket(t, path)
+		if mode != 0o660 {
+			t.Errorf("socket mode = %#o, want 0660 — the mode must still be applied when the chown fails", mode)
+		}
+		if mode&0o007 != 0 {
+			t.Errorf("socket mode = %#o is world-accessible", mode)
+		}
+	})
 }

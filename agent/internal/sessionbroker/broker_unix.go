@@ -55,11 +55,21 @@ func (b *Broker) setupSocket() (net.Listener, error) {
 			"remedy", "reinstall the agent, or create the group manually, to restore user-helper IPC",
 			"error", resolveErr.Error())
 	}
-	if err := applySocketOwner(b.socketPath, owner, os.Chown, os.Chmod); err != nil {
-		listener.Close()
-		return nil, err
+	res := applySocketOwner(b.socketPath, owner, os.Chown, os.Chmod)
+	if res.ChownErr != nil {
+		// Non-fatal for the same reason as the lookup failure above: a socket only
+		// root can reach still serves the watchdog and backup IPC, whereas no
+		// socket at all serves nothing.
+		log.Warn("could not group-own the IPC socket; user-session helpers will be denied",
+			"group", IPCGroupName, "socket", b.socketPath, "error", res.ChownErr.Error())
 	}
-	if owner.GID >= 0 {
+	if res.ChmodErr != nil {
+		// Fatal: the socket would keep net.Listen's umask-derived mode, which is
+		// the one case that could be more permissive than intended. Fail closed.
+		listener.Close()
+		return nil, res.ChmodErr
+	}
+	if owner.GID >= 0 && res.ChownErr == nil {
 		log.Info("IPC socket permissions applied",
 			"socket", b.socketPath, "group", IPCGroupName, "gid", owner.GID, "mode", fmt.Sprintf("%#o", owner.Mode))
 	}

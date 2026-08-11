@@ -2,9 +2,15 @@ package heartbeat
 
 import "testing"
 
-// Untagged on purpose: CI has no macOS runner, so a //go:build darwin test would
-// run nowhere (#3019/#3046). The eligibility predicate is pure, so it is covered
-// on both the ubuntu and windows CI jobs.
+// Untagged on purpose. A //go:build darwin test would only ever run on the macOS
+// `test-agent-race` job, which is not in ci-success's needs list and therefore
+// cannot block a merge (#3019/#3046 is the same lesson). The eligibility
+// predicate is pure, so keeping it untagged puts it under the REQUIRED ubuntu
+// `test-agent` job.
+//
+// It does not run on `test-agent-windows`: that job names an explicit package
+// list which omits internal/heartbeat (pre-existing carve-out, #2523). Ubuntu
+// plus the macOS race job is the real coverage.
 
 func TestGUIUIDEligibleForIPCGroup(t *testing.T) {
 	tests := []struct {

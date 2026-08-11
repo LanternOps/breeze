@@ -93,24 +93,116 @@ func resolveSocketOwner(lookupGID func(string) (int, error)) (socketOwner, error
 	return owner, nil
 }
 
-// applySocketOwner applies owner to path. chown runs before chmod so the mode
-// is the last word (some platforms clear mode bits on ownership change).
+// socketOwnerResult reports the outcome of applying ownership to the socket.
+// The two errors are deliberately separate because they have different
+// severities — see applySocketOwner.
+type socketOwnerResult struct {
+	// ChownErr is non-fatal. Losing the group means user-session helpers stay
+	// denied (the pre-fix status quo), but the socket still works for root
+	// clients, so the broker must keep running: aborting would also take down
+	// remote desktop, backup IPC and the watchdog link.
+	ChownErr error
+	// ChmodErr is fatal. net.Listen creates the socket at 0777&^umask, so a
+	// socket whose chmod failed keeps whatever the listener's umask produced.
+	// Under an unusual umask that could be world-writable, so this path fails
+	// closed rather than serving a socket with an unverified mode.
+	ChmodErr error
+}
+
+// applySocketOwner applies owner to path.
+//
+// chown runs before chmod so the mode is the last word (some platforms clear
+// mode bits on ownership change), and the chmod is attempted even when the chown
+// failed — skipping it would leave the socket at the listener's default mode,
+// which is the one outcome that could be more permissive than intended.
 func applySocketOwner(
 	path string,
 	owner socketOwner,
 	chown func(name string, uid, gid int) error,
 	chmod func(name string, mode os.FileMode) error,
-) error {
+) socketOwnerResult {
+	var res socketOwnerResult
 	if owner.GID >= 0 {
 		// uid -1 keeps the existing owner (root).
 		if err := chown(path, -1, owner.GID); err != nil {
-			return fmt.Errorf("chown %s to group %d: %w", path, owner.GID, err)
+			res.ChownErr = fmt.Errorf("chown %s to group %d: %w", path, owner.GID, err)
 		}
 	}
 	if err := chmod(path, owner.Mode); err != nil {
-		return fmt.Errorf("chmod %s to %#o: %w", path, owner.Mode, err)
+		res.ChmodErr = fmt.Errorf("chmod %s to %#o: %w", path, owner.Mode, err)
 	}
-	return nil
+	return res
+}
+
+// dsclRunner runs dscl with args and returns its combined output. It exists so
+// the orchestration below (lookup composition, membership ensure) can live in
+// this untagged file and be table-tested on every CI runner, leaving only the
+// exec.Command call behind the darwin build tag.
+type dsclRunner func(args []string) (string, error)
+
+// lookupGroupIDViaDscl resolves a group name through dscl, falling back to
+// fallback (os/user) when dscl either fails or returns output it cannot parse.
+//
+// dscl is tried first because it is the store the installers write to, and
+// because cgo-less os/user only parses /etc/group, which never contains a
+// dscl-created group. When both fail the returned error names both causes —
+// diagnosing this without knowing which layer said what is guesswork.
+func lookupGroupIDViaDscl(run dsclRunner, name string, fallback func(string) (int, error)) (int, error) {
+	out, dsclErr := run(dsclGroupReadArgs(name))
+	if dsclErr == nil {
+		gid, parseErr := parseDsclPrimaryGroupID(out)
+		if parseErr == nil {
+			return gid, nil
+		}
+		dsclErr = parseErr
+	}
+	gid, fallbackErr := fallback(name)
+	if fallbackErr == nil {
+		return gid, nil
+	}
+	return -1, fmt.Errorf("dscl: %v; os/user: %w", dsclErr, fallbackErr)
+}
+
+// groupMemberOutcome is the result of ensureGroupMemberViaDscl.
+type groupMemberOutcome struct {
+	// Added is true when this call appended the membership, false when the user
+	// was already a member.
+	Added bool
+	// ReadErr is the non-fatal error from the membership read that precedes the
+	// append, if any. A freshly created group with no members makes dscl exit
+	// non-zero for the missing GroupMembership key, which is benign — but this
+	// layer cannot tell that apart from a real read failure, so it hands the
+	// error up to be logged rather than discarding it.
+	ReadErr error
+}
+
+// ensureGroupMemberViaDscl adds username to group if it is not already a member.
+//
+// The append is verified by re-reading the membership rather than trusting
+// dscl's exit status, so a nil error genuinely means the user is a member.
+func ensureGroupMemberViaDscl(run dsclRunner, group, username string) (groupMemberOutcome, error) {
+	if err := validIPCGroupMember(username); err != nil {
+		return groupMemberOutcome{}, fmt.Errorf("ensure %q group member: %w", group, err)
+	}
+
+	out, readErr := run(dsclGroupMembershipReadArgs(group))
+	if readErr == nil && userInDsclGroupMembership(out, username) {
+		return groupMemberOutcome{Added: false}, nil
+	}
+	outcome := groupMemberOutcome{ReadErr: readErr}
+
+	if _, err := run(dsclGroupAppendMemberArgs(group, username)); err != nil {
+		return outcome, err
+	}
+	out, err := run(dsclGroupMembershipReadArgs(group))
+	if err != nil {
+		return outcome, fmt.Errorf("verify %q group membership for %q: %w", group, username, err)
+	}
+	if !userInDsclGroupMembership(out, username) {
+		return outcome, fmt.Errorf("dscl reported success but %q is not in group %q", username, group)
+	}
+	outcome.Added = true
+	return outcome, nil
 }
 
 // validIPCGroupMember rejects usernames that must never reach a privileged

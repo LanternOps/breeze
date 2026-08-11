@@ -39,15 +39,21 @@ ensure_breeze_group() {
     exit 1
 }
 
+# breeze_group_has_member reports whether $1 is in the breeze group.
+breeze_group_has_member() {
+    dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
+}
+
 # Add every logged-in GUI user to the breeze group so their desktop helper can
 # dial the 0660 root:breeze IPC socket. Mirrors the loop in
 # scripts/install/install-linux.sh; without it the socket is group-owned by a
 # group nobody is in and Standard (non-admin) users' helpers are denied
 # (#3133/#3134/#3137).
 #
-# NOTE: this script runs under `set -euo pipefail`, so every test is written as an
-# `if`. A bare `[ ... ] && continue` returns non-zero when false and would abort
-# the install.
+# This script runs under `set -euo pipefail`. The `|| continue` on the id lookup
+# is load-bearing: a bare failing assignment would abort the install. (A failing
+# `[ ... ] && continue` would NOT — set -e exempts a command that is part of an
+# && list other than the last one.)
 add_console_users_to_breeze_group() {
     local uid username
     for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
@@ -60,10 +66,13 @@ add_console_users_to_breeze_group() {
         if [ -z "$username" ]; then
             continue
         fi
-        if dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$username"; then
+        if breeze_group_has_member "$username"; then
             continue
         fi
-        if dscl . -append /Groups/breeze GroupMembership "$username" 2>/dev/null; then
+        dscl . -append /Groups/breeze GroupMembership "$username" 2>/dev/null || true
+        # Verify by re-reading rather than trusting dscl's exit status, so the
+        # success line below cannot claim a membership that did not take.
+        if breeze_group_has_member "$username"; then
             echo "Added $username to the 'breeze' group for desktop-helper socket access."
         else
             echo "Warning: could not add $username to the 'breeze' group; that user's desktop helper will be denied the agent socket" >&2
