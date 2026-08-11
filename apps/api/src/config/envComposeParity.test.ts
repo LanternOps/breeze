@@ -20,13 +20,22 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * and — the reason this test exists — a self-hoster whose CORS/2FA/platform-admin
  * settings all no-op'd because they were never threaded through Compose).
  *
- * The guard, per env-example ↔ compose pair: every active variable in the
- * `.env.example` MUST be either
+ * The guard, per env-example ↔ compose pair: every variable DOCUMENTED in the
+ * `.env.example` — live assignments AND commented-out defaults alike, see
+ * documentedEnvExampleVars() — MUST be either
  *   (a) referenced in the compose file (mapped into a container, sourced into a
  *       secret, or used for interpolation), or
  *   (b) listed in that pair's allow-list below with a reason.
  * Adding a documented var without doing one of those two fails CI here, in the
  * required test-api job, instead of silently in someone's production deploy.
+ *
+ * Mapping a var in costs nothing when the operator leaves it unset: the
+ * `${VAR:-}` form passes an empty string, which every consumer below treats as
+ * "unset" and falls back to its own default. Where a consumer did NOT treat ''
+ * that way, the consumer was fixed rather than the var left unmapped — see
+ * resolveAuthCookieSameSite() in routes/auth/helpers.ts, which resolves its
+ * override chain with nested envStr() instead of `??` for exactly this reason
+ * (#3239).
  */
 
 // Variables intentionally NOT threaded into the self-host (root) stack's
@@ -48,6 +57,7 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   BREEZE_PROXY_TARGET_HOST: 'guided-setup external-proxy bookkeeping',
   BREEZE_EXTERNAL_PROXY: 'guided-setup external-proxy bookkeeping',
   BREEZE_EXTERNAL_PROXY_CIDRS: 'guided-setup copies this into TRUSTED_PROXY_CIDRS (which IS mapped)',
+  COMPOSE_PROFILES: 'read by the `docker compose` CLI itself to select profiles — host-level, never a container env',
 
   // REDIS_URL is not consumed by the API container (it derives its connection
   // from REDIS_HOST/REDIS_PORT + the file-backed redis_password secret).
@@ -61,11 +71,23 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   // misleading, not functional.
   PUBLIC_RELEASE_VERSION: 'web build-time (baked into the prebuilt web image)',
   PUBLIC_TICKET_MAILBOX_APP_ID: 'web build-time PUBLIC_ var (baked into the prebuilt web image)',
+  PUBLIC_DOCS_URL: 'web build-time PUBLIC_ var (apps/web/astro.config.mjs — baked into the prebuilt web image)',
   ENABLE_SENTRY_SMOKE: 'web build/SSR smoke flag (baked into the prebuilt web image)',
   SENTRY_DSN_WEB_SERVER: 'web SSR Sentry DSN (baked into the prebuilt web image)',
   SENTRY_AUTH_TOKEN: 'build-time source-map upload (CI only, never a runtime container env)',
   SENTRY_ORG: 'build-time source-map upload (CI only)',
   SENTRY_PROJECT: 'build-time source-map upload (CI only)',
+
+  // Documented but read by NO code in this repo, so there is nothing to thread
+  // them into — mapping them would manufacture a knob that still does nothing.
+  // Listed here (rather than deleted from .env.example) so the dead
+  // documentation stays visible and the decision to keep or drop each line
+  // stays the maintainer's; see #3239.
+  C2C_M365_CERT_THUMBPRINT: 'no consumer — .env.example marks it "Future: certificate-based auth"',
+  C2C_M365_CERT_PRIVATE_KEY_PATH: 'no consumer — .env.example marks it "Future: certificate-based auth"',
+  USE_AGENT_SDK: 'no consumer anywhere in the repo (documented in deploy/environment.mdx only)',
+  BUSINESS_EMAIL_ALLOW_OVERRIDES:
+    'no consumer — the shipped business-email gate reads SIGNUP_REQUIRE_BUSINESS_EMAIL / SIGNUP_BUSINESS_EMAIL_CONTACT_URL instead',
 };
 
 // The digest-pinned droplet stack. Its api block is well-maintained; after
@@ -94,14 +116,44 @@ const PAIRS: Pair[] = [
   },
 ];
 
-function activeEnvExampleVars(relPath: string): string[] {
-  const text = readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
+/**
+ * Every variable the `.env.example` DOCUMENTS — both live assignments
+ * (`FOO=bar`) and commented-out ones (`# FOO=bar`).
+ *
+ * Commenting a line out is how this repo documents an OPTIONAL tuning knob
+ * while leaving the code's own default in force, so the commented form carries
+ * exactly the same promise to the operator as the uncommented one: "set this in
+ * .env and it takes effect". Reading only uncommented lines therefore exempted
+ * the entire optional-knob surface from the guard — the class most likely to be
+ * forgotten, since an unmapped optional var still boots fine and just silently
+ * ignores the operator (#3239; #3236 was one instance, #3224 got wired only by
+ * hand).
+ *
+ * Only `# NAME=` is collected, not prose. A comment has to look like an
+ * assignment to count, so ordinary explanatory text above a var is not mistaken
+ * for a documented knob.
+ *
+ * Prose that OPENS with `# SOME_VAR=value` — e.g. the sentence at
+ * `.env.example` "# OAUTH_DCR_ALLOW_ANONYMOUS=true. The API refuses to boot…" —
+ * does match, and that is the deliberate bias. Such a line is indistinguishable
+ * from a real documented default without parsing English, and this guard exists
+ * to fail LOUD: a spurious hit costs one allow-list line, while the miss it
+ * would otherwise permit is a knob that silently ignores the operator forever.
+ * (That particular line is a no-op anyway — the var is genuinely documented a
+ * few lines below and the Set de-duplicates.)
+ */
+export function parseDocumentedVars(text: string): string[] {
   const names = new Set<string>();
   for (const line of text.split('\n')) {
-    const m = /^([A-Z][A-Z0-9_]*)=/.exec(line); // uncommented assignments only
+    // `FOO=…` (live) or `# FOO=…` / `#FOO=…` (documented default, commented out)
+    const m = /^(?:#\s*)?([A-Z][A-Z0-9_]*)=/.exec(line);
     if (m?.[1]) names.add(m[1]);
   }
   return [...names].sort();
+}
+
+function documentedEnvExampleVars(relPath: string): string[] {
+  return parseDocumentedVars(readFileSync(path.join(REPO_ROOT, relPath), 'utf8'));
 }
 
 function isReferencedInCompose(varName: string, compose: string): boolean {
@@ -118,7 +170,7 @@ function isReferencedInCompose(varName: string, compose: string): boolean {
 
 describe.each(PAIRS)('.env.example ↔ compose parity: $name', ({ envExample, compose, allowlist }) => {
   const composeText = readFileSync(path.join(REPO_ROOT, compose), 'utf8');
-  const envVars = activeEnvExampleVars(envExample);
+  const envVars = documentedEnvExampleVars(envExample);
 
   it('every documented variable is either mapped in compose or explicitly allow-listed', () => {
     const unwired = envVars.filter(
@@ -149,5 +201,42 @@ describe.each(PAIRS)('.env.example ↔ compose parity: $name', ({ envExample, co
       `These vars are BOTH referenced in ${compose} and allow-listed — drop them from the allow-list:\n  ` +
         redundant.join('\n  '),
     ).toEqual([]);
+  });
+});
+
+describe('parseDocumentedVars — what counts as a documented variable (#3239)', () => {
+  it('collects commented-out assignments, the form used for optional knobs', () => {
+    expect(parseDocumentedVars('# MCP_REQUIRE_EXECUTE_ADMIN=true')).toEqual([
+      'MCP_REQUIRE_EXECUTE_ADMIN',
+    ]);
+    expect(parseDocumentedVars('#NO_SPACE_AFTER_HASH=1')).toEqual(['NO_SPACE_AFTER_HASH']);
+    expect(parseDocumentedVars('#   INDENTED=1')).toEqual(['INDENTED']);
+  });
+
+  it('still collects live assignments, and de-duplicates against the commented form', () => {
+    expect(parseDocumentedVars('LIVE=1\n# LIVE=2\nOTHER=3')).toEqual(['LIVE', 'OTHER']);
+  });
+
+  it('ignores prose comments — a comment must LOOK like an assignment to count', () => {
+    const prose = [
+      '# Set this to harden the deploy. See docs/deploy/environment.mdx.',
+      '# Values: strict, lax, none',
+      '#   Mail.Read, Files.Read.All, Sites.Read.All',
+      '# lowercase_name=1',
+      '# 9NUMERIC_LEAD=1',
+      '',
+    ].join('\n');
+    expect(parseDocumentedVars(prose)).toEqual([]);
+  });
+
+  it('does not treat an indented non-comment line as an assignment', () => {
+    expect(parseDocumentedVars('    INDENTED_NO_HASH=1')).toEqual([]);
+  });
+
+  it('REGRESSION: the guard would be vacuous on a .env.example of only optional knobs', () => {
+    // Before #3239 this returned [] and the whole file sailed past the parity
+    // assertions — which is exactly how ~39 documented knobs stayed unmapped.
+    const optionalKnobsOnly = '# A_KNOB=1\n# B_KNOB=2\n# C_KNOB=3';
+    expect(parseDocumentedVars(optionalKnobsOnly)).toEqual(['A_KNOB', 'B_KNOB', 'C_KNOB']);
   });
 });

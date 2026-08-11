@@ -544,6 +544,71 @@ describe('auth cookie Secure flag (#1618 regression)', () => {
   });
 });
 
+// Both names are now threaded through Compose as `VAR: ${VAR:-}` (#3239), so an
+// operator who sets only the GENERIC name still has the AUTH_-prefixed one
+// present in the container — as an empty string. These pin that '' means
+// "unconfigured" and falls through, which `??` did not do.
+describe('auth cookie AUTH_COOKIE_* vs generic COOKIE_* precedence (#3239)', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  beforeEach(() => {
+    enableProxyTrust();
+    process.env.NODE_ENV = 'production';
+  });
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    disableProxyTrustEnv();
+    delete process.env.AUTH_COOKIE_FORCE_SECURE;
+    delete process.env.AUTH_COOKIE_SAME_SITE;
+    delete process.env.COOKIE_FORCE_SECURE;
+    delete process.env.COOKIE_SAME_SITE;
+  });
+
+  it('an EMPTY AUTH_COOKIE_SAME_SITE does not shadow COOKIE_SAME_SITE (compose sends "" for an unset knob)', () => {
+    process.env.AUTH_COOKIE_SAME_SITE = '';
+    process.env.COOKIE_SAME_SITE = 'None';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    // With `??` this silently fell back to the Lax default and dropped Secure.
+    expect(setCookies[0]).toContain('SameSite=None; Secure');
+    expect(setCookies[1]).toContain('SameSite=None; Secure');
+  });
+
+  it('an EMPTY AUTH_COOKIE_FORCE_SECURE does not shadow COOKIE_FORCE_SECURE', () => {
+    process.env.AUTH_COOKIE_FORCE_SECURE = '';
+    process.env.COOKIE_FORCE_SECURE = 'true';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'http' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('; Secure');
+    expect(setCookies[1]).toContain('; Secure');
+  });
+
+  it('a whitespace-only override is also treated as unconfigured', () => {
+    process.env.AUTH_COOKIE_SAME_SITE = '   ';
+    process.env.COOKIE_SAME_SITE = 'Strict';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('SameSite=Strict');
+  });
+
+  it('a CONFIGURED AUTH_COOKIE_* override still wins over the generic name', () => {
+    process.env.AUTH_COOKIE_SAME_SITE = 'Strict';
+    process.env.COOKIE_SAME_SITE = 'None';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('SameSite=Strict');
+    expect(setCookies[0]).not.toContain('SameSite=None');
+  });
+
+  it('both empty falls all the way through to the Lax default', () => {
+    process.env.AUTH_COOKIE_SAME_SITE = '';
+    process.env.COOKIE_SAME_SITE = '';
+    const { c, setCookies } = makeCookieContext({ forwardedProto: 'https' });
+    setRefreshTokenCookie(c, 'refresh.jwt.value');
+    expect(setCookies[0]).toContain('SameSite=Lax');
+  });
+});
+
 describe('auth cookie transport warnings (#1618 diagnostics)', () => {
   const originalNodeEnv = process.env.NODE_ENV;
   let warnSpy: ReturnType<typeof vi.spyOn>;
