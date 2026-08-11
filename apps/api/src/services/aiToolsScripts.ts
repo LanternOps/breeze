@@ -17,18 +17,20 @@
  * - registry_operations (Tier 1): Read or modify Windows registry keys/values
  */
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   devices,
+  organizations,
   scripts,
   scriptVersions,
   scriptTemplates,
   scriptExecutions,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, isNull, SQL } from 'drizzle-orm';
+import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+import { dispatchScriptToDevice } from './scriptDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -164,24 +166,21 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
-      const { executeCommand } = await getCommandQueue();
+      const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
 
       // Resolve script content upfront so the agent receives the full payload
       const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
+      // Partner-wide scripts have org_id NULL; the plain orgCondition would
+      // exclude them even though RLS makes them visible to this session.
+      // Defense-in-depth stays: org-owned scripts must satisfy orgCondition,
+      // org-less rows pass here and are constrained per-device below.
       const orgCond = auth.orgCondition(scripts.orgId);
-      if (orgCond) scriptConditions.push(orgCond);
+      if (orgCond) scriptConditions.push(or(isNull(scripts.orgId), orgCond)!);
 
       const [script] = await db
-        .select({
-          id: scripts.id,
-          orgId: scripts.orgId,
-          language: scripts.language,
-          content: scripts.content,
-          timeoutSeconds: scripts.timeoutSeconds,
-          runAs: scripts.runAs,
-        })
+        .select()
         .from(scripts)
         .where(and(...scriptConditions))
         .limit(1);
@@ -189,6 +188,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (!script || !script.content) {
         return JSON.stringify({ error: 'Script not found or has no content' });
       }
+
+      // Under a system context (intent-release worker) RLS no longer scopes
+      // partner-wide rows — verify partner ownership explicitly against each
+      // target device's org below. Request paths already saw RLS filtering.
+      const scriptPartnerId = script.partnerId ?? null;
 
       for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
         try {
@@ -211,16 +215,80 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             continue;
           }
 
-          const result = await executeCommand(deviceId, 'script', {
-            scriptId: script.id,
-            language: script.language,
-            content: script.content,
-            timeoutSeconds: script.timeoutSeconds,
-            runAs: script.runAs,
-            parameters: input.parameters ?? {}
-          }, { userId: auth.user.id, timeoutMs: 60000 });
+          if (scriptPartnerId !== null) {
+            const [deviceOrg] = await db
+              .select({ partnerId: organizations.partnerId })
+              .from(organizations)
+              .where(eq(organizations.id, access.device.orgId))
+              .limit(1);
+            if (!deviceOrg || deviceOrg.partnerId !== scriptPartnerId) {
+              results[deviceId] = { error: 'Device not found or access denied' };
+              continue;
+            }
+          }
 
-          results[deviceId] = result;
+          // Escape the ambient held transaction before dispatch + poll (#3409 C1).
+          //
+          // Every AI tool handler (this one included) runs inside ONE held
+          // Postgres transaction for the whole turn — aiAgentSdkTools.ts:400
+          // and jobs/intentReleaseWorker.ts:459 both wrap tool dispatch in
+          // withDbAccessContext (see db/index.ts:436-484 for what "held"
+          // means: a real `baseDb.transaction()` that doesn't commit until
+          // the callback returns). Everything above this point (the script
+          // select, verifyDeviceAccess, the partner-org lookup) is RLS-scoped
+          // read work that belongs in that ambient transaction. Dispatch does
+          // not: if the device_commands INSERT stayed inside it, the row
+          // would be invisible to the agent-WS handler that processes the
+          // result on a *different* connection — its `UPDATE device_commands
+          // ... WHERE id = commandId` would match 0 rows, and
+          // waitForCommandResult would burn the full 60s timeout per device
+          // while holding a pooled connection the entire time.
+          //
+          // `executeCommand` (services/commandQueue.ts) hit exactly this and
+          // fixed it with a two-phase runOutsideDbContext escape — read its
+          // docstring there before changing this. Mirror that shape, not one
+          // long-lived transaction spanning the whole poll:
+          //
+          //   Phase 1 (write): runOutsideDbContext + withSystemDbAccessContext
+          //   wrap ONLY dispatchScriptToDevice, so its script_executions /
+          //   device_commands inserts run inside a real (non-contextless)
+          //   transaction that commits the instant dispatch returns. System
+          //   scope is safe here because ownership was already validated
+          //   above under RLS (device access + org-equality + partner guard)
+          //   — same justification as the automation worker path, which runs
+          //   this identical dispatch core under system context for the
+          //   whole run (jobs/automationWorker.ts). The insert must NOT run
+          //   contextless (bare runOutsideDbContext with no
+          //   withSystemDbAccessContext) — that would just trade the 0-row
+          //   trap for the contextless-write guard (#1375).
+          //
+          //   Phase 2 (poll): waitForCommandResult runs OUTSIDE any held
+          //   transaction — still escaped via runOutsideDbContext, but NOT
+          //   nested inside withSystemDbAccessContext — so each poll
+          //   iteration is a plain, quickly-released pool read, exactly like
+          //   executeCommand's own poll loop. Nesting the poll inside the
+          //   same withSystemDbAccessContext call as dispatch would reproduce
+          //   the identical 0-row bug under a different (system-scoped)
+          //   transaction: the INSERT wouldn't commit until the 60s wait
+          //   finished either.
+          const dispatch = await runOutsideDbContext(() =>
+            withSystemDbAccessContext(() =>
+              dispatchScriptToDevice({
+                device: access.device,
+                source: { kind: 'saved', script },
+                parameters: (input.parameters as Record<string, unknown>) ?? {},
+                triggerType: 'manual',
+                triggeredBy: auth.user.id,
+                createdBy: auth.user.id,
+                requireOnline: true,
+              })
+            )
+          );
+          if (!dispatch.ok) {
+            results[deviceId] = { error: dispatch.error };
+            continue;
+          }
+          results[deviceId] = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
         } catch (err) {
           results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
         }
