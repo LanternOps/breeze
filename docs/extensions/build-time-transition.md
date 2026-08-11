@@ -7,8 +7,21 @@ and the loader imported their entry at boot. That path is **deprecated**. The
 supported delivery mechanism is a **signed runtime bundle**: a
 `breeze-ext`-packed artifact declared in `extensions.yaml`, verified against a
 pinned digest and trusted publisher key, migrated, staged through the v1 SDK
-contract, and activated by the reconciler — all against a stock Breeze image
-that contains public SDK/host code only.
+contract, and activated by the reconciler. Third-party delivery still targets
+a stock Breeze image — see "Built-in (first-party) extensions" below for how
+that image's contents changed as of 2026-08.
+
+## Built-in (first-party) extensions
+
+Since 2026-08, first-party extensions under `ee/` (currently `ee/workspace`)
+are compiled into the API image and registered at boot through the same
+staged v1 pipeline as signed bundles (`builtinExtensions.ts`) — no signing,
+no artifact verification, no source-directory scan. This path is reserved
+for code that lives in this repository. Third-party delivery remains signed
+runtime bundles; the deprecated source-directory path and its removal gate
+below are unaffected. The stock image therefore contains AGPL core plus
+built-in `ee/` code — "extension-free" in the removal-gate sense refers to
+*externally delivered* extension code only.
 
 ## What changed
 
@@ -52,8 +65,10 @@ Removal additionally requires ALL of:
    and the blocking API CI gate described in `sdk-compatibility.md`) are green
    on the release candidate.
 2. A published migration guide covering the source-directory → signed-bundle
-   conversion (pack, sign, declare in `extensions.yaml`), with
-   `breeze-workspace` as the reference implementation.
+   conversion (pack, sign, declare in `extensions.yaml`). `breeze-workspace`
+   no longer fits as the reference implementation (it moved to the built-in
+   `ee/` path, not signed-bundle delivery); a different third-party extension
+   on the signed-bundle path is needed as the guide's worked example.
 3. A release-note entry announcing the removal.
 
 What removal covers: `loadSourceExtensions`, `discoverExtensions`'
@@ -79,6 +94,8 @@ bump; the v1 SDK remains governed by the separate policy in
 4. Remove the source checkout from `extensions/` (or leave it and drop the
    flag: it will be skipped with a warning; the same NAME cannot be both).
 
-The end-to-end conformance reference is the `breeze-workspace` repository
-(`test/conformance`), which proves this pipeline against an unmodified stock
-image.
+The end-to-end conformance reference is `apps/api/src/extensions/packerConformance.test.ts`,
+which proves this pipeline against an unmodified stock image. (Prior to
+2026-08, the `breeze-workspace` repository's own live stock-host conformance
+suite played this role; it is retired now that Workspace is a built-in
+extension rather than a third-party signed-bundle reference.)
