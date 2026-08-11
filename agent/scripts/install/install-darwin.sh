@@ -39,6 +39,47 @@ ensure_breeze_group() {
     exit 1
 }
 
+# breeze_group_has_member reports whether $1 is in the breeze group.
+breeze_group_has_member() {
+    dscl . -read /Groups/breeze GroupMembership 2>/dev/null | tr ' ' '\n' | grep -qx "$1"
+}
+
+# Add every logged-in GUI user to the breeze group so their desktop helper can
+# dial the 0660 root:breeze IPC socket. Mirrors the loop in
+# scripts/install/install-linux.sh; without it the socket is group-owned by a
+# group nobody is in and Standard (non-admin) users' helpers are denied
+# (#3133/#3134/#3137).
+#
+# This script runs under `set -euo pipefail`. The `|| continue` on the id lookup
+# is load-bearing: a bare failing assignment would abort the install. (A failing
+# `[ ... ] && continue` would NOT — set -e exempts a command that is part of an
+# && list other than the last one.)
+add_console_users_to_breeze_group() {
+    local uid username
+    for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
+        # macOS gives human accounts UIDs from 500 up; below that are system and
+        # service accounts, which never run a Breeze desktop helper.
+        if ! [ "$uid" -ge 500 ] 2>/dev/null; then
+            continue
+        fi
+        username=$(id -un "$uid" 2>/dev/null) || continue
+        if [ -z "$username" ]; then
+            continue
+        fi
+        if breeze_group_has_member "$username"; then
+            continue
+        fi
+        dscl . -append /Groups/breeze GroupMembership "$username" 2>/dev/null || true
+        # Verify by re-reading rather than trusting dscl's exit status, so the
+        # success line below cannot claim a membership that did not take.
+        if breeze_group_has_member "$username"; then
+            echo "Added $username to the 'breeze' group for desktop-helper socket access."
+        else
+            echo "Warning: could not add $username to the 'breeze' group; that user's desktop helper will be denied the agent socket" >&2
+        fi
+    done
+}
+
 # Stop existing service before replacing binary (safe for upgrades).
 if [ -f "$PLIST_DST" ]; then
     if launchctl unload "$PLIST_DST" 2>&1; then
@@ -146,6 +187,7 @@ fi
 
 # Create breeze group for IPC socket access
 ensure_breeze_group
+add_console_users_to_breeze_group
 
 # Create IPC socket directory
 mkdir -p "$CONFIG_DIR"
@@ -161,12 +203,14 @@ if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yam
     echo "  1. Start:   sudo launchctl load $PLIST_DST"
     echo "  2. Status:  sudo launchctl list | grep breeze"
     echo "  3. Logs:    tail -f $LOG_DIR/agent.log"
-    echo "  4. Add users to breeze group:  sudo dscl . -append /Groups/breeze GroupMembership <username>"
+    echo "  4. Users logged in now were added to the breeze group automatically."
+    echo "     Users who log in later are added by the agent when their helper starts."
 else
     echo "Next steps:"
     echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
     echo "  2. Start:   sudo launchctl load $PLIST_DST"
     echo "  3. Status:  sudo launchctl list | grep breeze"
     echo "  4. Logs:    tail -f $LOG_DIR/agent.log"
-    echo "  5. Add users to breeze group:  sudo dscl . -append /Groups/breeze GroupMembership <username>"
+    echo "  5. Users logged in now were added to the breeze group automatically."
+    echo "     Users who log in later are added by the agent when their helper starts."
 fi

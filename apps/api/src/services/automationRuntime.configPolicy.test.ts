@@ -35,9 +35,8 @@ vi.mock('./deploymentEngine', () => ({
   resolveDeploymentTargets: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('./commandQueue', () => ({
-  CommandTypes: { SCRIPT: 'script' },
-  queueCommandForExecution: vi.fn().mockResolvedValue({ command: null, error: 'mocked' }),
+vi.mock('./scriptDispatch', () => ({
+  dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: false, code: 'insert_failed', error: 'mocked' }),
 }));
 
 vi.mock('./notificationSenders', () => ({
@@ -48,7 +47,7 @@ vi.mock('./notificationSenders', () => ({
 
 import { db } from '../db';
 import { createConfigPolicyAutomationRun, executeConfigPolicyAutomationRun } from './automationRuntime';
-import { queueCommandForExecution } from './commandQueue';
+import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
 
 function makeConfigPolicyAutomation(overrides: Record<string, unknown> = {}): any {
@@ -440,9 +439,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    // Mock command queue to succeed
-    vi.mocked(queueCommandForExecution).mockResolvedValue({
-      command: { id: 'cmd-1' },
+    // Mock the dispatch core to succeed
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
@@ -512,10 +511,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    // Command queue fails
-    vi.mocked(queueCommandForExecution).mockResolvedValue({
-      command: null,
-      error: 'Queue error',
+    // Dispatch fails
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
@@ -585,13 +583,13 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     vi.mocked(db.update).mockReturnValue({ set: setMock } as any);
 
-    // First device fails, second succeeds (counter-based: queueCommandForExecution
+    // First device fails, second succeeds (counter-based: dispatchScriptToDevice
     // does not receive deviceId directly, so we rely on call order)
     let cmdCallCount = 0;
-    vi.mocked(queueCommandForExecution).mockImplementation(async () => {
+    vi.mocked(dispatchScriptToDevice).mockImplementation(async () => {
       cmdCallCount++;
-      if (cmdCallCount === 1) return { command: null, error: 'fail' } as any;
-      return { command: { id: 'cmd-2' } } as any;
+      if (cmdCallCount === 1) return { ok: false, code: 'insert_failed', error: 'fail' } as any;
+      return { ok: true, commandId: 'cmd-2', executionId: null, delivered: true, executedAt: new Date() } as any;
     });
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1', 'dev-2'], 'scheduler');
@@ -661,8 +659,8 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    vi.mocked(queueCommandForExecution).mockResolvedValue({
-      command: { id: 'cmd-1' },
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
     await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
@@ -736,9 +734,8 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    vi.mocked(queueCommandForExecution).mockResolvedValue({
-      command: null,
-      error: 'Queue error',
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: false, code: 'insert_failed', error: 'Queue error',
     } as any);
 
     await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
@@ -869,8 +866,8 @@ describe('executeConfigPolicyAutomationRun', () => {
       }),
     } as any);
 
-    vi.mocked(queueCommandForExecution).mockResolvedValue({
-      command: { id: 'cmd-1' },
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
     vi.mocked(publishEvent).mockRejectedValue(new Error('Redis down'));

@@ -70,11 +70,15 @@ export interface DueDeploymentCandidate {
 
 /**
  * Whether the deployment's linked maintenance window is currently OPEN.
- * Mirrors System B's interpretation (jobs/deploymentWorker.ts →
- * services/deploymentEngine.ts isDeviceInMaintenanceWindow): a window counts
- * as open while `status = 'scheduled'` and `startTime <= now <= endTime` —
- * start/end are absolute timestamps, so recurrence/timezone need no extra
- * evaluation here, exactly as in the System B gate.
+ * Mirrors `services/deploymentEngine.ts`'s `isDeviceInMaintenanceWindow`: a
+ * window counts as open while `status = 'scheduled'` and
+ * `startTime <= now <= endTime` — start/end are absolute timestamps, so
+ * recurrence/timezone need no extra evaluation here, exactly as in that gate.
+ * (`jobs/deploymentWorker.ts`, the other consumer this used to be compared
+ * against, was removed as a dead script-dispatch path in #3409 PR0 — this
+ * scheduler is now standalone: it owns its own BullMQ queue/worker and calls
+ * `services/softwareDeployment.ts`'s `buildAndDispatchSoftwareInstalls`
+ * directly rather than handing off to another job.)
  */
 export function isMaintenanceWindowOpen(
   candidate: Pick<DueDeploymentCandidate, 'windowStatus' | 'windowStartTime' | 'windowEndTime'>,

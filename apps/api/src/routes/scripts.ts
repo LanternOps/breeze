@@ -895,6 +895,7 @@ scriptRoutes.post(
       resourceName: result.script.name,
       details: {
         batchId: result.batchId,
+        batchIds: result.batchIds,
         devicesTargeted: result.devicesTargeted,
         maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
         triggerType: result.triggerType,
@@ -904,6 +905,7 @@ scriptRoutes.post(
 
     return c.json({
       batchId: result.batchId,
+      batchIds: result.batchIds,
       scriptId,
       devicesTargeted: result.devicesTargeted,
       maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds.length > 0

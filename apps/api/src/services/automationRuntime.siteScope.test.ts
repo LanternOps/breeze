@@ -33,9 +33,8 @@ vi.mock('./deploymentEngine', () => ({
   resolveDeploymentTargets: vi.fn(async () => ['device-deploy-1']),
 }));
 
-vi.mock('./commandQueue', () => ({
-  CommandTypes: {},
-  queueCommandForExecution: vi.fn(),
+vi.mock('./scriptDispatch', () => ({
+  dispatchScriptToDevice: vi.fn(),
 }));
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn() }));

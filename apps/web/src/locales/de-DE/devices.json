@@ -709,7 +709,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Gerätegruppen konnten nicht abgerufen werden",
     "windows": "Fenster",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Die Gerätegruppe konnte nicht gespeichert werden",
