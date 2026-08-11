@@ -211,8 +211,12 @@ function buildQuery(filters: FleetFindingFilters): string {
 
 /** Reads throw on failure so callers render an explicit error state — never an
  *  empty list that reads as "the fleet is clean". */
-async function readJson<T>(path: string, fallback: string): Promise<T> {
-  const res = await fetchWithAuth(path);
+async function readJson<T>(
+  path: string,
+  fallback: string,
+  init?: Parameters<typeof fetchWithAuth>[1]
+): Promise<T> {
+  const res = await fetchWithAuth(path, init);
   if (!res.ok) {
     let body: unknown = null;
     try {
@@ -228,9 +232,14 @@ async function readJson<T>(path: string, fallback: string): Promise<T> {
 export async function listFindings(
   filters: FleetFindingFilters = {}
 ): Promise<FleetFindingListResult> {
+  // No org filter means "all accessible orgs" — the API already implements
+  // that when orgId is absent, but fetchWithAuth would re-inject the active
+  // org and silently narrow the feed to it (the org dropdown could then never
+  // offer any other org, since its options are built from the rows returned).
   return readJson<FleetFindingListResult>(
     `/fleet/findings${buildQuery(filters)}`,
-    'Failed to load fleet findings'
+    'Failed to load fleet findings',
+    filters.orgId ? undefined : { skipOrgIdInjection: true }
   );
 }
 
