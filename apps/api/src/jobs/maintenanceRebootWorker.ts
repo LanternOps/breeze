@@ -6,13 +6,21 @@
  * have a pending reboot, and for any whose effective maintenance policy is in an
  * active window with `rebootIfPending` enabled, it issues a reboot.
  *
- * Windows gets the rich warn-then-reboot manager (schedule_reboot). At a
- * 15-minute delay the agent's staged warning fires the 5-minutes-before "save
- * your work" notification (its thresholds are 60/15/5 min with strict `>`),
- * plus the circuit-breaker. Linux gets an OS-scheduled reboot
- * (`shutdown -r +15`, wall warning to logged-in users). macOS is never a
- * candidate because `DetectPendingReboot()` is a deliberate no-op stub on
- * macOS — `pending_reboot` is therefore never true there.
+ * Windows gets the rich warn-then-reboot manager (schedule_reboot): the agent
+ * emits a warning the moment the reboot is scheduled and then a ladder of
+ * reminders, plus the circuit-breaker. Linux still gets an OS-scheduled reboot
+ * (`shutdown -r +N`, wall warning to logged-in terminal sessions) — migrating
+ * this path onto schedule_reboot now that the agent's RebootManager is
+ * cross-platform (#3197) is a deliberate follow-up, kept out of #3197 so a
+ * regression in either behaviour stays attributable. macOS is never a candidate
+ * because `DetectPendingReboot()` is a deliberate no-op stub on macOS —
+ * `pending_reboot` is therefore never true there.
+ *
+ * The grace period is NOT a constant here any more. It resolves from the
+ * device's effective patch Configuration Policy, the same setting the
+ * post-patch reboot path reads, so the two paths cannot drift apart again
+ * (#3197: this worker used 15 while patchRebootHandler used a hardcoded 5, and
+ * at 5 the agent warned nobody).
  */
 
 import { Worker, Queue, Job } from 'bullmq';
@@ -27,6 +35,7 @@ import {
   isInMaintenanceWindow,
 } from '../services/featureConfigResolver';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { resolveRebootDelayMinutes } from '../services/patchRebootHandler';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -35,7 +44,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const REBOOT_QUEUE = 'maintenance-reboot';
-export const MAINTENANCE_REBOOT_GRACE_MINUTES = 15;
 const DEDUP_WINDOW_MINUTES = 60;
 const REBOOT_COMMAND_TYPES = ['reboot', 'schedule_reboot', 'reboot_safe_mode'] as const;
 // 'completed' is intentionally included: schedule_reboot (Windows) and the
@@ -56,6 +64,11 @@ export type RebootCandidate = {
 };
 
 type WindowsRebootPayload = { delayMinutes: number; reason: string; source: string };
+// `delay` is the on-the-wire payload key the agent reads
+// (tools.ShutdownDelayMinutes parses payload["delay"]), and its unit is MINUTES
+// on every platform. Do NOT rename it to delayMinutes for symmetry with
+// WindowsRebootPayload above: these field names ARE the wire contract, so a
+// rename here would leave the agent parsing a missing key.
 type LinuxRebootPayload = { delay: number };
 export type RebootDecision =
   | { type: 'schedule_reboot'; payload: WindowsRebootPayload }
@@ -64,25 +77,52 @@ export type RebootDecision =
 
 // ── Pure decision logic ──────────────────────────────────────────────────────
 
+/**
+ * Whether this device warrants a reboot at all, independent of the grace period.
+ *
+ * Split out from decideRebootCommand so the sweep can answer it without a
+ * database round-trip: resolving the grace period costs a policy-hierarchy
+ * lookup per device (#3197), and this worker walks the whole online fleet every
+ * ten minutes, of which almost none are in an active window at any given tick.
+ * Both callers share this one predicate so the gate cannot drift.
+ */
+export function rebootWarranted(params: {
+  rebootIfPending: boolean;
+  windowActive: boolean;
+  osType: 'windows' | 'macos' | 'linux';
+}): boolean {
+  const { rebootIfPending, windowActive, osType } = params;
+  if (!rebootIfPending || !windowActive) return false;
+  // macOS is never rebooted by this worker; see the file header.
+  return osType === 'windows' || osType === 'linux';
+}
+
 export function decideRebootCommand(params: {
   rebootIfPending: boolean;
   windowActive: boolean;
   osType: 'windows' | 'macos' | 'linux';
+  /**
+   * Grace period in minutes, resolved from the device's effective patch policy
+   * by the caller. Passed in rather than read from a module constant so this
+   * path and the post-patch reboot path share one operator-configurable value
+   * (#3197).
+   */
+  delayMinutes: number;
 }): RebootDecision {
-  const { rebootIfPending, windowActive, osType } = params;
-  if (!rebootIfPending || !windowActive) return null;
+  const { rebootIfPending, windowActive, osType, delayMinutes } = params;
+  if (!rebootWarranted({ rebootIfPending, windowActive, osType })) return null;
   if (osType === 'windows') {
     return {
       type: 'schedule_reboot',
       payload: {
-        delayMinutes: MAINTENANCE_REBOOT_GRACE_MINUTES,
+        delayMinutes,
         reason: 'Pending reboot — maintenance window',
         source: 'maintenance_window',
       },
     };
   }
   if (osType === 'linux') {
-    return { type: 'reboot', payload: { delay: MAINTENANCE_REBOOT_GRACE_MINUTES } };
+    return { type: 'reboot', payload: { delay: delayMinutes } };
   }
   return null; // macOS / unknown — never rebooted
 }
@@ -137,22 +177,32 @@ export async function processRebootCandidate(
     isInMaintenanceWindow,
     hasRecentRebootCommand,
     queueCommandForExecution,
+    resolveRebootDelayMinutes,
+    rebootWarranted,
+    decideRebootCommand,
   },
 ): Promise<{ issued: boolean; reason: string }> {
   const settings = await deps.resolveMaintenanceConfigForDevice(device.id);
   if (!settings) return { issued: false, reason: 'no-maintenance-policy' };
 
   const windowActive = deps.isInMaintenanceWindow(settings).active;
-  const decision = decideRebootCommand({
+  const gate = {
     rebootIfPending: settings.rebootIfPending,
     windowActive,
     osType: device.osType,
-  });
-  if (!decision) return { issued: false, reason: 'no-action' };
+  };
+  if (!deps.rebootWarranted(gate)) return { issued: false, reason: 'no-action' };
 
   if (await deps.hasRecentRebootCommand(device.id)) {
     return { issued: false, reason: 'recent-reboot-command' };
   }
+
+  // Only now, once a reboot is actually going out, pay for the policy lookup.
+  const decision = deps.decideRebootCommand({
+    ...gate,
+    delayMinutes: await deps.resolveRebootDelayMinutes(device.id),
+  });
+  if (!decision) return { issued: false, reason: 'no-action' };
 
   const result = await deps.queueCommandForExecution(device.id, decision.type, decision.payload, {
     expectedOrgId: device.orgId,

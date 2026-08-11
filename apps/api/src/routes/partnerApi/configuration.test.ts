@@ -21,6 +21,7 @@ const NORMALIZED_PATCH_FACTS = {
   scheduleDayOfWeek: 'sun',
   scheduleDayOfMonth: 1,
   rebootPolicy: 'if_required',
+  rebootDelayMinutes: 15,
   exclusiveWindowsUpdate: false,
 };
 

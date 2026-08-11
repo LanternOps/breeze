@@ -219,6 +219,22 @@ const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: str
     mirror: { ...meaningfulMirror, exclusiveWindowsUpdate: 1 },
   },
   {
+    name: 'rebootDelayMinutes must be numeric',
+    mirror: { ...meaningfulMirror, rebootDelayMinutes: '15' },
+  },
+  {
+    name: 'rebootDelayMinutes must be integral',
+    mirror: { ...meaningfulMirror, rebootDelayMinutes: 15.5 },
+  },
+  {
+    name: 'rebootDelayMinutes rejects values below one',
+    mirror: { ...meaningfulMirror, rebootDelayMinutes: 0 },
+  },
+  {
+    name: 'rebootDelayMinutes rejects values above fourteen forty',
+    mirror: { ...meaningfulMirror, rebootDelayMinutes: 1441 },
+  },
+  {
     name: 'exact duplicate app identities fail whole-document refinement',
     mirror: { ...meaningfulMirror, apps: [appRule, appRule] },
   },
