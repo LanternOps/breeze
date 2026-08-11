@@ -169,6 +169,10 @@ describe('reconcileOrgFindings', () => {
       deviceCount: 2,
       revision: 1,
     });
+    // A brand-new episode was reconciled at `now` too — last_reconciled_at must
+    // not start out null (it is the only "when did the reconciler last look at
+    // this?" signal the API exposes).
+    expect((findingInsert!.values as Record<string, unknown>).lastReconciledAt).toBeInstanceOf(Date);
     const memberInsert = dbMocks.state.insertCalls.find((c) => c.table === fleetFindingDevices);
     expect(memberInsert).toBeDefined();
     expect(memberInsert!.values).toEqual([
@@ -231,12 +235,23 @@ describe('reconcileOrgFindings', () => {
       { findingId: 'finding-1', orgId: ORG_ID, deviceId: 'device-b', sourceKind: 'metric_anomaly', sourceRowId: 'anomaly-b', memberEvidence: {}, firstSeenAt: new Date(), lastSeenAt: new Date() },
     ];
 
-    // Case A: identical membership + identical evidence -> no finding-level bump.
+    // Case A: identical membership + identical evidence -> liveness stamps only.
     dbMocks.state.selectQueue = [[liveRow], existingMembers];
     const unchangedCandidate = candidate({ evidence: { totalAffected: 2 } });
     let result = await reconcileOrgFindings(ORG_ID, [unchangedCandidate]);
     expect(result).toEqual({ opened: 0, updated: 0, resolved: 0 });
-    expect(dbMocks.state.updateCalls.find((c) => c.table === fleetFindings)).toBeUndefined();
+    const livenessUpdate = dbMocks.state.updateCalls.find((c) => c.table === fleetFindings);
+    expect(livenessUpdate).toBeDefined();
+    expect(livenessUpdate!.where).toEqual({ __op: 'eq', column: fleetFindings.id, value: 'finding-1' });
+    const livenessValues = livenessUpdate!.values as Record<string, unknown>;
+    expect(livenessValues.lastSeenAt).toBeInstanceOf(Date);
+    expect(livenessValues.lastReconciledAt).toBeInstanceOf(Date);
+    // The whole point of the early-return path: no revision bump (dispatched
+    // runs pin finding_revision), and no content rewrite.
+    expect(livenessValues).not.toHaveProperty('revision');
+    expect(livenessValues).not.toHaveProperty('evidence');
+    expect(livenessValues).not.toHaveProperty('deviceCount');
+    expect(livenessValues).not.toHaveProperty('status');
 
     dbMocks.state.updateCalls = [];
     dbMocks.state.deleteCalls = [];
@@ -254,6 +269,33 @@ describe('reconcileOrgFindings', () => {
       deviceCount: 2,
       evidence: { totalAffected: 2, maxScore: 4.5 },
     });
+    const changedValues = findingUpdate!.values as Record<string, unknown>;
+    expect(changedValues.lastSeenAt).toBeInstanceOf(Date);
+    expect(changedValues.lastReconciledAt).toBeInstanceOf(Date);
+  });
+
+  it('3b. keeps advancing lastSeenAt across consecutive unchanged passes (feed sort key never freezes)', async () => {
+    const existingMembers = [
+      { findingId: 'finding-1', orgId: ORG_ID, deviceId: 'device-a', sourceKind: 'metric_anomaly', sourceRowId: 'anomaly-a', memberEvidence: {}, firstSeenAt: new Date(), lastSeenAt: new Date() },
+      { findingId: 'finding-1', orgId: ORG_ID, deviceId: 'device-b', sourceKind: 'metric_anomaly', sourceRowId: 'anomaly-b', memberEvidence: {}, firstSeenAt: new Date(), lastSeenAt: new Date() },
+    ];
+    // Feed the SAME stale row back on the second pass, as a real re-read of an
+    // untouched finding would: the stamp must move again, and revision must not.
+    const staleRow = baseFindingRow({ revision: 7, lastSeenAt: new Date('2026-08-01T00:00:00Z') });
+
+    dbMocks.state.selectQueue = [[staleRow], existingMembers];
+    await reconcileOrgFindings(ORG_ID, [candidate()]);
+    const first = dbMocks.state.updateCalls.find((c) => c.table === fleetFindings)!.values as Record<string, unknown>;
+
+    dbMocks.state.updateCalls = [];
+    dbMocks.state.selectQueue = [[staleRow], existingMembers];
+    const result = await reconcileOrgFindings(ORG_ID, [candidate()]);
+
+    expect(result).toEqual({ opened: 0, updated: 0, resolved: 0 });
+    const second = dbMocks.state.updateCalls.find((c) => c.table === fleetFindings)!.values as Record<string, unknown>;
+    expect((second.lastSeenAt as Date).getTime()).toBeGreaterThanOrEqual((first.lastSeenAt as Date).getTime());
+    expect((second.lastSeenAt as Date).getTime()).toBeGreaterThan(staleRow.lastSeenAt.getTime());
+    expect(second).not.toHaveProperty('revision');
   });
 
   it('4. resolves a live episode with resolutionReason=source_cleared when its candidate disappears', async () => {
@@ -295,7 +337,10 @@ describe('reconcileOrgFindings', () => {
     expect(memberInsert!.values).toEqual([
       expect.objectContaining({ findingId: 'finding-1', deviceId: 'device-z' }),
     ]);
-    // But the finding row itself (status, revision) was never touched.
+    // But the finding row itself was never touched — not even the liveness
+    // stamps a matched OPEN episode gets (semantic #5 is absolute at the
+    // finding level; last_seen_at is the feed sort key and a suppressed episode
+    // must not float back to the top of a dismissed-inclusive view).
     expect(dbMocks.state.updateCalls.find((c) => c.table === fleetFindings)).toBeUndefined();
   });
 

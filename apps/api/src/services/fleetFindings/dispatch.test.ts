@@ -20,6 +20,7 @@ const h = vi.hoisted(() => {
   const capturedWheres: unknown[] = [];
   const capturedInserts: Array<{ table: unknown; values: unknown }> = [];
   const capturedUpdates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  const capturedExecutes: unknown[] = [];
   const selectCallMeta: Array<{ limit?: unknown; offset?: unknown }> = [];
 
   function makeSelectChain(rows: unknown[]) {
@@ -85,6 +86,7 @@ const h = vi.hoisted(() => {
     capturedWheres,
     capturedInserts,
     capturedUpdates,
+    capturedExecutes,
     selectCallMeta,
     mockSelect,
     mockInsert,
@@ -102,6 +104,12 @@ vi.mock('../../db', () => {
     select: h.mockSelect,
     insert: h.mockInsert,
     update: h.mockUpdate,
+    // Raw set-based UPDATE used by pollRunProgress. Recorded rather than
+    // executed — assertions inspect h.capturedExecutes.
+    execute: async (statement: unknown) => {
+      h.capturedExecutes.push(statement);
+      return [];
+    },
   };
   dbMock.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock);
   return { db: dbMock };
@@ -170,12 +178,26 @@ vi.mock('../../db/schema/fleetFindings', () => ({
   },
 }));
 
-vi.mock('drizzle-orm', () => ({
-  and: (...args: unknown[]) => ({ op: 'and', args }),
-  eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
-  inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
-  isNull: (column: unknown) => ({ op: 'isNull', column }),
-}));
+vi.mock('drizzle-orm', () => {
+  // `sql` is a tagged template that also carries `.join`/`.raw`. The set-based
+  // target resolution in pollRunProgress builds a VALUES list with it, so the
+  // mock has to support both call shapes; it records the interpolated values
+  // so tests can assert what would have been written without a real database.
+  const sqlTag = Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings: [...strings], values }),
+    {
+      join: (parts: unknown[], separator: unknown) => ({ op: 'sql.join', parts, separator }),
+      raw: (value: string) => ({ op: 'sql.raw', value }),
+    }
+  );
+  return {
+    and: (...args: unknown[]) => ({ op: 'and', args }),
+    eq: (column: unknown, value: unknown) => ({ op: 'eq', column, value }),
+    inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+    isNull: (column: unknown) => ({ op: 'isNull', column }),
+    sql: sqlTag,
+  };
+});
 
 const { getFleetFindingMock } = vi.hoisted(() => ({ getFleetFindingMock: vi.fn() }));
 vi.mock('./query', () => ({ getFleetFinding: getFleetFindingMock }));
@@ -274,6 +296,7 @@ beforeEach(() => {
   h.capturedWheres.length = 0;
   h.capturedInserts.length = 0;
   h.capturedUpdates.length = 0;
+  h.capturedExecutes.length = 0;
   h.selectCallMeta.length = 0;
   h.mockSelect.mockClear();
   h.mockInsert.mockClear();
@@ -671,9 +694,42 @@ describe('dispatchRunChunk', () => {
     expect(targetsCallMeta.offset).toBe(2 * REMEDIATION_CHUNK_SIZE);
   });
 
+  it('skips an offline device as unreachable rather than failing it, and never attempts the queue', async () => {
+    // An offline device is not a remediation failure — nothing was attempted.
+    // Recording it as `failed` made the headline aggregate flow report mostly
+    // failures on any real fleet and buried the genuine failures among them.
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'offline' }]); // liveness probe
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const skip = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'skipped')!;
+    expect(skip).toBeDefined();
+    expect(skip.values.skipReason).toBe('unreachable');
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).status === 'failed')).toBe(false);
+  });
+
+  it('treats a device that vanished between run creation and dispatch as unreachable', async () => {
+    // `target_device_uuid` is a snapshot with no FK, so a deleted device is
+    // expected rather than exceptional — it simply has no liveness row.
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([]); // liveness probe returns nothing
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    expect(h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'skipped')!.values.skipReason).toBe(
+      'unreachable'
+    );
+  });
+
   it('dispatches a "command" target via queueCommandForExecution with expectedOrgId, and marks it queued', async () => {
     h.selectQueue.push([runRow({ status: 'running', commandType: 'restart_service' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]); // claim succeeds
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
 
@@ -695,6 +751,7 @@ describe('dispatchRunChunk', () => {
   it('maps the "reboot" commandType to the literal reboot command type', async () => {
     h.selectQueue.push([runRow({ status: 'running', commandType: 'reboot' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
 
@@ -706,6 +763,7 @@ describe('dispatchRunChunk', () => {
   it('dispatches a "script" target with the resolved script content and marks it queued', async () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.selectQueue.push([{ orgId: ORG_1, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-2' } });
@@ -723,6 +781,7 @@ describe('dispatchRunChunk', () => {
   it('regression: fails a script target when the script was soft-deleted between run creation and dispatch', async () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.selectQueue.push([]); // script re-fetch: isNull(deletedAt) excludes it -> not found
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
 
@@ -736,6 +795,7 @@ describe('dispatchRunChunk', () => {
   it('regression: fails a script target when the script has moved to a DIFFERENT non-null org since run creation', async () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1, orgId: ORG_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.selectQueue.push([{ orgId: 'some-other-org', language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
 
@@ -749,6 +809,7 @@ describe('dispatchRunChunk', () => {
   it('dispatches a script target whose script orgId is null (system/universal script, still allowed at dispatch time)', async () => {
     h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.selectQueue.push([{ orgId: null, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-4' } });
@@ -766,6 +827,7 @@ describe('dispatchRunChunk', () => {
   it('marks a target failed when queueCommandForExecution returns an error (no throw)', async () => {
     h.selectQueue.push([runRow({ status: 'running' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]); // claim succeeds, then dispatch itself fails
     queueCommandForExecutionMock.mockResolvedValue({ error: 'Device is offline, cannot execute command' });
 
@@ -778,6 +840,7 @@ describe('dispatchRunChunk', () => {
   it('marks a target failed when queueCommandForExecution throws', async () => {
     h.selectQueue.push([runRow({ status: 'running' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockRejectedValue(new Error('boom'));
 
@@ -793,6 +856,7 @@ describe('dispatchRunChunk', () => {
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' },
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
     ]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }, { id: DEVICE_2, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }], [{ targetDeviceUuid: DEVICE_2 }]); // both claims succeed
     queueCommandForExecutionMock
       .mockResolvedValueOnce({ error: 'offline' })
@@ -815,6 +879,7 @@ describe('dispatchRunChunk', () => {
     // reconciling after the fact).
     h.selectQueue.push([runRow({ status: 'running' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     // No push to h.updateReturningQueue -> defaults to [] -> claim lost the race.
 
     await dispatchRunChunk(RUN_1, 0);
@@ -845,6 +910,7 @@ describe('dispatchRunChunk', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     h.selectQueue.push([runRow({ status: 'running', commandType: 'defragment_everything' })]);
     h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
 
     await dispatchRunChunk(RUN_1, 0);
@@ -865,6 +931,7 @@ describe('dispatchRunChunk', () => {
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_3, status: 'pending' },
     ]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }, { id: DEVICE_2, status: 'online' }, { id: DEVICE_3, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_2 }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_3 }]);
@@ -885,6 +952,7 @@ describe('dispatchRunChunk', () => {
       h.capturedUpdates.length = 0;
       h.selectQueue.push([runRow({ status: 'running', commandType })]);
       h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+      h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
       h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
       queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
 
@@ -907,6 +975,7 @@ describe('dispatchRunChunk', () => {
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-already' },
       { runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_2, status: 'pending' },
     ]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }, { id: DEVICE_2, status: 'online' }]); // liveness probe
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_2 }]); // DEVICE_2's claim succeeds
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-new' } });
 
@@ -927,6 +996,28 @@ describe('dispatchRunChunk', () => {
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Command-resolved targets are written by one set-based `UPDATE ... FROM
+ * (VALUES ...)` per chunk rather than an UPDATE per target, so they land in
+ * `capturedExecutes` instead of `capturedUpdates`. Flatten the recorded
+ * statement back into the rows it would have written. Timeout resolutions are
+ * uniform and still go through `db.update`, so they stay in `capturedUpdates`.
+ */
+function resolvedTargetWrites(): Array<{ deviceId: string; status: string; summary: string }> {
+  const rows: Array<{ deviceId: string; status: string; summary: string }> = [];
+  for (const stmt of h.capturedExecutes as Array<{ values?: unknown[] }>) {
+    for (const interpolated of stmt.values ?? []) {
+      const join = interpolated as { op?: string; parts?: Array<{ values?: unknown[] }> };
+      if (join?.op !== 'sql.join') continue;
+      for (const part of join.parts ?? []) {
+        const [deviceId, status, summary] = (part.values ?? []) as [string, string, string];
+        rows.push({ deviceId, status, summary });
+      }
+    }
+  }
+  return rows;
+}
 
 describe('pollRunProgress', () => {
   function runRow(overrides: Record<string, unknown> = {}) {
@@ -949,10 +1040,10 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const targetUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'succeeded')!;
-    expect(targetUpdate).toBeDefined();
-    const summary = (targetUpdate.values as Record<string, unknown>).resultSummary as string;
-    expect(summary.length).toBeLessThanOrEqual(2000);
+    const write = resolvedTargetWrites().find((r) => r.status === 'succeeded')!;
+    expect(write).toBeDefined();
+    expect(write.deviceId).toBe(DEVICE_1);
+    expect(write.summary.length).toBeLessThanOrEqual(2000);
   });
 
   it('marks a target failed from a failed device_commands row', async () => {
@@ -1083,14 +1174,13 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const targetUpdate = h.capturedUpdates.find(
-      (u) => (u.values as Record<string, unknown>).status === 'failed'
-    )!;
-    expect(targetUpdate).toBeDefined();
-    expect(targetUpdate.values.resultSummary).toContain('device deauthorized');
-    // Resolved by the command, NOT by the timeout path.
-    expect(targetUpdate.values.skipReason).toBeUndefined();
-    expect(targetUpdate.values.completedAt).toBeInstanceOf(Date);
+    const write = resolvedTargetWrites().find((r) => r.status === 'failed')!;
+    expect(write).toBeDefined();
+    expect(write.deviceId).toBe(DEVICE_1);
+    expect(write.summary).toContain('device deauthorized');
+    // Resolved by the command, NOT by the timeout path — the timeout branch is
+    // the only thing that writes skipReason, and it goes through db.update.
+    expect(h.capturedUpdates.some((u) => (u.values as Record<string, unknown>).skipReason === 'timeout')).toBe(false);
   });
 
   it('times out a target that was never claimed (no queuedAt, no command) using run.createdAt', async () => {
@@ -1102,6 +1192,7 @@ describe('pollRunProgress', () => {
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'pending', deviceCommandId: null, queuedAt: null },
     ]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
     // No command-id lookup happens at all — nothing to look up.
 
     await pollRunProgress(RUN_1);
@@ -1119,6 +1210,25 @@ describe('pollRunProgress', () => {
 });
 
 describe('markRunDispatchFailed', () => {
+  it('leaves the run running when targets are still in flight, instead of forcing it terminal', async () => {
+    // Partial enqueue: the scheduler and some chunks landed, so those chunks
+    // already claimed targets to `queued` and sent real commands to real
+    // devices. Terminalizing here made the poll scheduler remove itself on its
+    // next tick without ever reconciling them — the commands still ran, but
+    // their targets stayed `queued` forever and the counts never added up.
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'queued' },
+      { runId: RUN_1, targetDeviceUuid: DEVICE_2, status: 'succeeded' },
+    ]);
+
+    await markRunDispatchFailed(RUN_1);
+
+    const runUpdate = h.capturedUpdates.at(-1)!;
+    expect(runUpdate.values.status).toBe('running');
+    expect(runUpdate.values.completedAt).toBeUndefined();
+    expect(runUpdate.values).toMatchObject({ succeededCount: 1 });
+  });
+
   it('flips only still-pending targets to skipped, recomputes counts, and terminates the run', async () => {
     // The pending->skipped UPDATE is a single conditional statement, so the
     // post-update re-read is what proves the succeeded/failed rows survived.

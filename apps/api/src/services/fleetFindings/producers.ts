@@ -1,4 +1,4 @@
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, lt, ne } from 'drizzle-orm';
 import { db } from '../../db';
 import { metricAnomalies } from '../../db/schema/analytics';
 import { logCorrelationRules, logCorrelations, type LogCorrelationAffectedDevice } from '../../db/schema/eventLogs';
@@ -17,10 +17,36 @@ const RELIABILITY_ERROR_THRESHOLD = 25;
 const MAX_EVIDENCE_SAMPLES = 20;
 
 /**
+ * The devices a fleet finding is allowed to name: real, still-managed machines.
+ * `isEphemeral = false` is the codebase-standard Quick Support exclusion used
+ * throughout services/*.ts; decommissioned devices are retired hardware, not
+ * fleet hygiene offenders, and nothing can be remediated on them. Every
+ * producer applies BOTH predicates so `fleet_findings.device_count`
+ * (candidate.members.length) matches what `getFleetFinding` renders — that
+ * reader innerJoins `devices`, so an ineligible member would make the feed
+ * badge and the drawer disagree.
+ */
+async function loadEligibleDeviceIds(orgId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(
+      eq(devices.orgId, orgId),
+      eq(devices.isEphemeral, false),
+      ne(devices.status, 'decommissioned'),
+    ));
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
  * Groups open `metric_anomalies` rows by (metric_name, anomaly_type) into
  * fleet-wide candidate findings. A group only becomes a candidate once at
  * least ANOMALY_MIN_DEVICES distinct devices are affected — a single device
  * spiking isn't a fleet pattern.
+ *
+ * Ineligible devices are dropped by the `devices` innerJoin, BEFORE the
+ * ANOMALY_MIN_DEVICES test — a pattern that only holds because two Quick
+ * Support boxes spiked is not a fleet pattern at all.
  */
 export async function produceMetricAnomalyPatterns(orgId: string): Promise<CandidateFinding[]> {
   const rows = await db
@@ -34,7 +60,13 @@ export async function produceMetricAnomalyPatterns(orgId: string): Promise<Candi
       baselineValue: metricAnomalies.baselineValue,
     })
     .from(metricAnomalies)
-    .where(and(eq(metricAnomalies.orgId, orgId), eq(metricAnomalies.status, 'open')));
+    .innerJoin(devices, eq(metricAnomalies.deviceId, devices.id))
+    .where(and(
+      eq(metricAnomalies.orgId, orgId),
+      eq(metricAnomalies.status, 'open'),
+      eq(devices.isEphemeral, false),
+      ne(devices.status, 'decommissioned'),
+    ));
 
   type AnomalyRow = (typeof rows)[number];
 
@@ -95,6 +127,13 @@ export async function produceMetricAnomalyPatterns(orgId: string): Promise<Candi
  * Maps active `log_correlations` rows onto candidate findings, one per rule
  * (spec: "1:1", grouped defensively by rule id in case more than one active
  * correlation row exists concurrently for the same rule).
+ *
+ * Unlike the other two producers this one CANNOT innerJoin `devices`:
+ * `log_correlations` has no device_id column at all — its affected devices live
+ * in the `affected_devices` jsonb snapshot, written once when the correlation
+ * fired. That snapshot has no FK, so it is also the only producer input that
+ * can still name a DELETED device. Filtering the decoded members against
+ * loadEligibleDeviceIds is the set-membership equivalent of the join.
  */
 export async function produceLogCorrelationFindings(orgId: string): Promise<CandidateFinding[]> {
   const rows = await db
@@ -111,6 +150,10 @@ export async function produceLogCorrelationFindings(orgId: string): Promise<Cand
     .innerJoin(logCorrelationRules, eq(logCorrelations.ruleId, logCorrelationRules.id))
     .where(and(eq(logCorrelations.orgId, orgId), eq(logCorrelations.status, 'active')));
 
+  if (rows.length === 0) return [];
+
+  const eligibleDeviceIds = await loadEligibleDeviceIds(orgId);
+
   type CorrelationRow = (typeof rows)[number];
 
   const groups = new Map<string, CorrelationRow[]>();
@@ -126,6 +169,7 @@ export async function produceLogCorrelationFindings(orgId: string): Promise<Cand
     for (const row of groupRows) {
       const affected = (row.affectedDevices ?? []) as LogCorrelationAffectedDevice[];
       for (const device of affected) {
+        if (!eligibleDeviceIds.has(device.deviceId)) continue;
         const existing = byDevice.get(device.deviceId);
         if (existing) existing.count += device.count;
         else byDevice.set(device.deviceId, { deviceId: device.deviceId, hostname: device.hostname, count: device.count, sourceRowId: row.id });
@@ -166,10 +210,10 @@ export async function produceLogCorrelationFindings(orgId: string): Promise<Cand
 
 /**
  * A single org-wide finding for devices whose reliability score has dropped
- * below RELIABILITY_WARN_THRESHOLD. Ephemeral (Quick Support) devices are
- * excluded via the codebase-standard `isEphemeral = false` predicate used
- * throughout services/*.ts. Note this producer is STRICTER than its own data
- * source: reliabilityScoring.ts scores ephemeral devices too (it carries no
+ * below RELIABILITY_WARN_THRESHOLD. Ephemeral (Quick Support) and
+ * decommissioned devices are excluded via the same predicates every producer
+ * applies (see loadEligibleDeviceIds). Note this producer is STRICTER than its
+ * own data source: reliabilityScoring.ts scores ephemeral devices too (it carries no
  * ephemeral filter), so `device_reliability` legitimately holds rows this
  * query drops. Do not "fix" the discrepancy by removing the filter — a Quick
  * Support device that existed for ten minutes is not a fleet hygiene offender.
@@ -186,6 +230,7 @@ export async function produceReliabilityOffenders(orgId: string): Promise<Candid
       eq(deviceReliability.orgId, orgId),
       lt(deviceReliability.reliabilityScore, RELIABILITY_WARN_THRESHOLD),
       eq(devices.isEphemeral, false),
+      ne(devices.status, 'decommissioned'),
     ));
 
   if (rows.length === 0) return [];

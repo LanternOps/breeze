@@ -4,11 +4,12 @@ const drizzleSpies = vi.hoisted(() => ({
   eq: vi.fn((column: unknown, value: unknown) => ({ __op: 'eq', column, value })),
   and: vi.fn((...clauses: unknown[]) => ({ __op: 'and', clauses })),
   lt: vi.fn((column: unknown, value: unknown) => ({ __op: 'lt', column, value })),
+  ne: vi.fn((column: unknown, value: unknown) => ({ __op: 'ne', column, value })),
 }));
 
 vi.mock('drizzle-orm', async (importActual) => {
   const actual = await importActual<typeof import('drizzle-orm')>();
-  return { ...actual, eq: drizzleSpies.eq, and: drizzleSpies.and, lt: drizzleSpies.lt };
+  return { ...actual, eq: drizzleSpies.eq, and: drizzleSpies.and, lt: drizzleSpies.lt, ne: drizzleSpies.ne };
 });
 
 const dbMocks = vi.hoisted(() => {
@@ -38,12 +39,19 @@ import {
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 
+// Rows returned by the `loadEligibleDeviceIds` lookup (log-correlation producer
+// only — the other two producers filter in SQL via their `devices` innerJoin).
+function eligibleDevices(...ids: string[]) {
+  return ids.map((id) => ({ id }));
+}
+
 beforeEach(() => {
   dbMocks.state.queue = [];
   dbMocks.select.mockClear();
   drizzleSpies.eq.mockClear();
   drizzleSpies.and.mockClear();
   drizzleSpies.lt.mockClear();
+  drizzleSpies.ne.mockClear();
 });
 
 describe('produceMetricAnomalyPatterns', () => {
@@ -128,6 +136,19 @@ describe('produceMetricAnomalyPatterns', () => {
       { __op: 'eq', column: expect.anything(), value: 'open' },
     ]));
   });
+
+  it('joins devices to exclude ephemeral and decommissioned devices', async () => {
+    dbMocks.state.queue = [[]];
+    await produceMetricAnomalyPatterns(ORG_ID);
+    expect(drizzleSpies.eq).toHaveBeenCalledWith(devices.isEphemeral, false);
+    expect(drizzleSpies.ne).toHaveBeenCalledWith(devices.status, 'decommissioned');
+    // Both predicates must sit in the same where-clause as the org/status scope
+    // (i.e. the join actually filters, rather than only widening the row shape).
+    expect(drizzleSpies.and.mock.calls[0]!).toEqual(expect.arrayContaining([
+      { __op: 'eq', column: devices.isEphemeral, value: false },
+      { __op: 'ne', column: devices.status, value: 'decommissioned' },
+    ]));
+  });
 });
 
 describe('produceLogCorrelationFindings', () => {
@@ -148,7 +169,7 @@ describe('produceLogCorrelationFindings', () => {
   }
 
   it('maps 1:1 from active log_correlations rows keyed by rule id', async () => {
-    dbMocks.state.queue = [[correlationRow()]];
+    dbMocks.state.queue = [[correlationRow()], eligibleDevices('device-a', 'device-b')];
 
     const result = await produceLogCorrelationFindings(ORG_ID);
 
@@ -160,18 +181,18 @@ describe('produceLogCorrelationFindings', () => {
 
   it('maps rule severity 1:1 onto the finding severity', async () => {
     for (const sev of ['info', 'warning', 'error', 'critical'] as const) {
-      dbMocks.state.queue = [[correlationRow({ ruleSeverity: sev })]];
+      dbMocks.state.queue = [[correlationRow({ ruleSeverity: sev })], eligibleDevices('device-a', 'device-b')];
       const result = await produceLogCorrelationFindings(ORG_ID);
       expect(result[0]!.severity).toBe(sev);
     }
   });
 
   it('titles the finding from the rule name, falling back to the raw pattern', async () => {
-    dbMocks.state.queue = [[correlationRow({ ruleName: 'Disk Failure Pattern' })]];
+    dbMocks.state.queue = [[correlationRow({ ruleName: 'Disk Failure Pattern' })], eligibleDevices('device-a', 'device-b')];
     let result = await produceLogCorrelationFindings(ORG_ID);
     expect(result[0]!.title).toBe('Log pattern: Disk Failure Pattern');
 
-    dbMocks.state.queue = [[correlationRow({ ruleName: null, pattern: 'raw pattern text' })]];
+    dbMocks.state.queue = [[correlationRow({ ruleName: null, pattern: 'raw pattern text' })], eligibleDevices('device-a', 'device-b')];
     result = await produceLogCorrelationFindings(ORG_ID);
     expect(result[0]!.title).toBe('Log pattern: raw pattern text');
   });
@@ -180,7 +201,7 @@ describe('produceLogCorrelationFindings', () => {
     dbMocks.state.queue = [[
       correlationRow({ id: 'corr-1', affectedDevices: [{ deviceId: 'device-a', hostname: 'host-a', count: 3 }] }),
       correlationRow({ id: 'corr-2', affectedDevices: [{ deviceId: 'device-a', hostname: 'host-a', count: 2 }, { deviceId: 'device-c', hostname: 'host-c', count: 1 }] }),
-    ]];
+    ], eligibleDevices('device-a', 'device-c')];
 
     const result = await produceLogCorrelationFindings(ORG_ID);
 
@@ -188,6 +209,45 @@ describe('produceLogCorrelationFindings', () => {
     const deviceA = result[0]!.members.find((m) => m.deviceId === 'device-a')!;
     expect(deviceA.memberEvidence).toMatchObject({ count: 5 });
     expect(result[0]!.members.map((m) => m.deviceId).sort()).toEqual(['device-a', 'device-c']);
+  });
+
+  it('drops affected_devices entries for devices that are not eligible', async () => {
+    // `affected_devices` is a jsonb snapshot with no FK, so it can name an
+    // ephemeral, decommissioned OR already-deleted device. Only device-a comes
+    // back from the eligibility lookup.
+    dbMocks.state.queue = [[correlationRow()], eligibleDevices('device-a')];
+
+    const result = await produceLogCorrelationFindings(ORG_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.members.map((m) => m.deviceId)).toEqual(['device-a']);
+    // device_count is written from members.length, so the evidence preview and
+    // the summary must agree with the filtered set, not the raw snapshot.
+    expect(result[0]!.evidence).toMatchObject({ totalDevices: 1 });
+    expect(result[0]!.summary).toContain('1 devices');
+  });
+
+  it('produces no candidate when every affected device is ineligible', async () => {
+    dbMocks.state.queue = [[correlationRow()], eligibleDevices()];
+    const result = await produceLogCorrelationFindings(ORG_ID);
+    expect(result).toEqual([]);
+  });
+
+  it('scopes the eligibility lookup to this org, excluding ephemeral and decommissioned devices', async () => {
+    dbMocks.state.queue = [[correlationRow()], eligibleDevices('device-a', 'device-b')];
+
+    await produceLogCorrelationFindings(ORG_ID);
+
+    expect(drizzleSpies.eq).toHaveBeenCalledWith(devices.orgId, ORG_ID);
+    expect(drizzleSpies.eq).toHaveBeenCalledWith(devices.isEphemeral, false);
+    expect(drizzleSpies.ne).toHaveBeenCalledWith(devices.status, 'decommissioned');
+  });
+
+  it('skips the eligibility lookup entirely when there are no active correlations', async () => {
+    dbMocks.state.queue = [[]];
+    const result = await produceLogCorrelationFindings(ORG_ID);
+    expect(result).toEqual([]);
+    expect(dbMocks.select).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -221,10 +281,11 @@ describe('produceReliabilityOffenders', () => {
     expect(result[0]!.severity).toBe('warning');
   });
 
-  it('filters out ephemeral devices via the codebase-standard isEphemeral=false predicate', async () => {
+  it('filters out ephemeral and decommissioned devices via the join predicates', async () => {
     dbMocks.state.queue = [[reliabilityRow()]];
     await produceReliabilityOffenders(ORG_ID);
     expect(drizzleSpies.eq).toHaveBeenCalledWith(devices.isEphemeral, false);
+    expect(drizzleSpies.ne).toHaveBeenCalledWith(devices.status, 'decommissioned');
     expect(drizzleSpies.lt).toHaveBeenCalledWith(deviceReliability.reliabilityScore, 50);
   });
 });

@@ -29,7 +29,7 @@
  *     requires `scriptId`; payload built from the resolved script row,
  *     mirroring aiToolsScripts.ts's `run_script` tool.
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../../db';
 import { devices, scripts } from '../../db/schema';
@@ -71,7 +71,7 @@ export type RemediateRequest =
   | (RemediateRequestBase & { actionKind: 'script'; scriptId: string })
   | (RemediateRequestBase & { actionKind: 'command'; commandType: RemediationCommandType });
 
-export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned';
+export type RemediationSkipReason = 'site_denied' | 'not_member' | 'decommissioned' | 'unreachable';
 
 export interface RemediationSkippedTarget {
   deviceId: string;
@@ -331,6 +331,38 @@ async function validateRemediationScript(
   return {};
 }
 
+/**
+ * An offline device is not a remediation failure — nothing was attempted on
+ * it. Recording it as `failed` made the headline aggregate flow report mostly
+ * failures on any real fleet, where a large share of devices is offline at
+ * dispatch time, and buried the genuine failures among them. `skipped` with
+ * an explicit reason keeps `succeeded + failed + skipped` honest and leaves
+ * the run summary readable.
+ *
+ * These targets are terminal for THIS run; re-running the remediation from
+ * the finding is the retry path. A per-run "retry unreachable targets"
+ * affordance is deliberately out of scope here.
+ */
+async function markTargetSkipped(runId: string, deviceId: string, reason: RemediationSkipReason): Promise<void> {
+  await db
+    .update(fleetRemediationRunTargets)
+    .set({
+      status: 'skipped',
+      skipReason: reason,
+      completedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(fleetRemediationRunTargets.runId, runId),
+        eq(fleetRemediationRunTargets.targetDeviceUuid, deviceId),
+        // Same claim discipline as the dispatch path: only a still-`pending`
+        // row may be skipped, so a concurrent worker that already claimed and
+        // dispatched this target cannot have its live command overwritten.
+        eq(fleetRemediationRunTargets.status, 'pending')
+      )
+    );
+}
+
 async function markTargetFailed(runId: string, deviceId: string, message: string): Promise<void> {
   await db
     .update(fleetRemediationRunTargets)
@@ -389,6 +421,24 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   const pendingTargets = targets.filter((t) => t.status === 'pending');
   if (pendingTargets.length === 0) return;
 
+  // Resolve liveness for the whole chunk up front. `queueCommandForExecution`
+  // rejects a non-online device with a plain error string, which
+  // `markTargetFailed` then recorded as a hard failure; classifying on that
+  // string would be brittle, and attempting the enqueue at all is wasted work.
+  // One bounded query (the chunk is <= REMEDIATION_CHUNK_SIZE) instead.
+  const liveness = new Map<string, string>();
+  for (const row of await db
+    .select({ id: devices.id, status: devices.status })
+    .from(devices)
+    .where(
+      inArray(
+        devices.id,
+        pendingTargets.map((t) => t.targetDeviceUuid)
+      )
+    )) {
+    liveness.set(row.id, row.status);
+  }
+
   // An unexpected throw inside the per-target loop is the same defect
   // repeated once per target; report it to Sentry once per chunk so a
   // 500-target run cannot produce 500 identical issues.
@@ -417,6 +467,17 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   }
 
   for (const target of pendingTargets) {
+    // Classify offline before claiming, so an unreachable device is never
+    // flipped to `queued` and then walked back. A device missing from the
+    // liveness map was deleted between run creation and dispatch — also not
+    // reachable, and `fleet_remediation_run_targets.target_device_uuid` is a
+    // snapshot with no FK, so this is expected rather than exceptional.
+    const deviceStatus = liveness.get(target.targetDeviceUuid);
+    if (deviceStatus !== 'online') {
+      await markTargetSkipped(runId, target.targetDeviceUuid, 'unreachable');
+      continue;
+    }
+
     // Claim the target atomically BEFORE dispatching: a plain SELECT-then-
     // UPDATE-after gives no protection against two concurrent workers
     // processing the same chunk (BullMQ stalled-job recovery re-running a
@@ -562,6 +623,13 @@ export async function pollRunProgress(runId: string): Promise<void> {
     for (const c of commandRows) commandsById.set(c.id, { status: c.status, result: c.result });
   }
 
+  // Classify in memory first, then flush set-based. This used to issue one
+  // UPDATE per in-flight target, serially, every 30 seconds — on a
+  // multi-thousand-target run a single tick could outlast its own interval and
+  // the poll would never catch up with the fleet it is meant to be tracking.
+  const resolved: { deviceId: string; status: FleetTargetStatus; summary: string }[] = [];
+  const timedOut: string[] = [];
+
   for (const target of inFlight) {
     const command = target.deviceCommandId ? commandsById.get(target.deviceCommandId) : undefined;
 
@@ -572,33 +640,50 @@ export async function pollRunProgress(runId: string): Promise<void> {
     // command's own result text carries.
     if (command && (command.status === 'completed' || command.status === 'failed' || command.status === 'cancelled')) {
       const nextStatus: FleetTargetStatus = command.status === 'completed' ? 'succeeded' : 'failed';
-      const resultSummary = truncateSummary(JSON.stringify(command.result ?? {}));
-      await db
-        .update(fleetRemediationRunTargets)
-        .set({ status: nextStatus, resultSummary, completedAt: now })
-        .where(
-          and(
-            eq(fleetRemediationRunTargets.runId, runId),
-            eq(fleetRemediationRunTargets.targetDeviceUuid, target.targetDeviceUuid)
-          )
-        );
+      resolved.push({
+        deviceId: target.targetDeviceUuid,
+        status: nextStatus,
+        summary: truncateSummary(JSON.stringify(command.result ?? {})),
+      });
       target.status = nextStatus;
       continue;
     }
 
     const referenceTime = target.queuedAt ?? run.createdAt;
     if (now.getTime() - new Date(referenceTime).getTime() > REMEDIATION_TIMEOUT_MS) {
-      await db
-        .update(fleetRemediationRunTargets)
-        .set({ status: 'failed', skipReason: 'timeout', completedAt: now })
-        .where(
-          and(
-            eq(fleetRemediationRunTargets.runId, runId),
-            eq(fleetRemediationRunTargets.targetDeviceUuid, target.targetDeviceUuid)
-          )
-        );
+      timedOut.push(target.targetDeviceUuid);
       target.status = 'failed';
     }
+  }
+
+  // Each resolved target carries its own `resultSummary`, so they cannot
+  // collapse into one uniform SET — join against a VALUES list instead. Both
+  // `status` and `result_summary` are varchar/text (not PG enums), so no cast
+  // is needed beyond the uuid on the join key.
+  for (const chunk of chunkArray(resolved, TARGET_INSERT_CHUNK_SIZE)) {
+    const values = sql.join(
+      chunk.map((r) => sql`(${r.deviceId}, ${r.status}, ${r.summary})`),
+      sql`, `
+    );
+    await db.execute(sql`
+      UPDATE fleet_remediation_run_targets AS t
+      SET status = v.status, result_summary = v.summary, completed_at = ${now}
+      FROM (VALUES ${values}) AS v(device_id, status, summary)
+      WHERE t.run_id = ${runId} AND t.target_device_uuid = v.device_id::uuid
+    `);
+  }
+
+  // Timeouts are uniform, so one statement per chunk covers them.
+  for (const chunk of chunkArray(timedOut, TARGET_INSERT_CHUNK_SIZE)) {
+    await db
+      .update(fleetRemediationRunTargets)
+      .set({ status: 'failed', skipReason: 'timeout', completedAt: now })
+      .where(
+        and(
+          eq(fleetRemediationRunTargets.runId, runId),
+          inArray(fleetRemediationRunTargets.targetDeviceUuid, chunk)
+        )
+      );
   }
 
   const succeededCount = allTargets.filter((t) => t.status === 'succeeded').length;
@@ -665,6 +750,22 @@ export async function markRunDispatchFailed(
   const succeededCount = allTargets.filter((t) => t.status === 'succeeded').length;
   const failedCount = allTargets.filter((t) => t.status === 'failed').length;
   const skippedCount = allTargets.filter((t) => t.status === 'skipped').length;
+  const inFlightCount = allTargets.filter((t) => t.status === 'queued').length;
+
+  if (inFlightCount > 0) {
+    // Partial enqueue: `upsertJobScheduler` succeeded and `addBulk` landed some
+    // chunks, so those chunks already claimed targets to `queued` and sent real
+    // commands to real devices. Forcing the run terminal here would make the
+    // poll scheduler remove itself on its next tick without ever reconciling
+    // them — the commands still execute, but their targets stay `queued`
+    // forever and the counts never add up. Record what we know and leave the
+    // run running; the poll owns convergence and will terminalize it.
+    await db
+      .update(fleetRemediationRuns)
+      .set({ status: 'running', succeededCount, failedCount, skippedCount })
+      .where(eq(fleetRemediationRuns.id, runId));
+    return;
+  }
 
   await db
     .update(fleetRemediationRuns)

@@ -30,7 +30,8 @@ function jsonEqual(a: unknown, b: unknown): boolean {
  * (fleet_findings rows with resolved_at IS NULL). Six semantics, each with a
  * dedicated test in reconcile.test.ts: (1) a candidate with no live episode
  * opens one; (2) membership rows always track the candidate; (3) an unchanged
- * live episode is left untouched (no revision bump); (4) a changed one is
+ * live episode only has its liveness stamps (last_seen_at,
+ * last_reconciled_at) advanced — no revision bump; (4) a changed one is
  * bumped; (5) a dismissed episode is never mutated at the finding level; (6) a
  * live episode with no candidate this pass is resolved.
  *
@@ -101,6 +102,7 @@ async function insertNewFinding(orgId: string, candidate: CandidateFinding, now:
         revision: 1,
         firstSeenAt: now,
         lastSeenAt: now,
+        lastReconciledAt: now,
       })
       .returning({ id: fleetFindings.id });
 
@@ -124,7 +126,8 @@ async function insertNewFinding(orgId: string, candidate: CandidateFinding, now:
  * ReconcileResult.updated). Membership rows are always kept in sync with the
  * candidate regardless of that outcome (semantic #2), but a dismissed episode
  * is never reopened or otherwise mutated at the finding level (semantic #5),
- * and an unchanged live episode is left untouched (semantic #3).
+ * and an unchanged live episode gets its liveness stamps advanced and nothing
+ * else (semantic #3).
  *
  * Semantic #5 is scoped to THIS function — i.e. to a dismissed episode that a
  * candidate still matches. The resolve loop in `reconcileOrgFindings` is
@@ -182,12 +185,25 @@ async function reconcileExistingFinding(existing: FleetFindingRow, candidate: Ca
 
     const membershipChanged = toInsert.length > 0 || toDeleteIds.length > 0;
     const evidenceChanged = !jsonEqual(existing.evidence, candidate.evidence);
-    if (!membershipChanged && !evidenceChanged) return false;
+    if (!membershipChanged && !evidenceChanged) {
+      // Unchanged, but still DETECTED this pass — the liveness stamps have to
+      // advance or the feed's sort key (last_seen_at, query.ts) freezes on a
+      // finding the producers are re-emitting every 10 minutes, and
+      // last_reconciled_at can never distinguish "still present" from "not
+      // scanned recently". Deliberately NOT a revision bump: `revision` is
+      // pinned into fleet_remediation_runs.finding_revision at dispatch, so it
+      // must only move when the content a run was targeted against changed.
+      await tx.update(fleetFindings)
+        .set({ lastSeenAt: now, lastReconciledAt: now, updatedAt: now })
+        .where(eq(fleetFindings.id, existing.id));
+      return false;
+    }
 
     await tx.update(fleetFindings)
       .set({
         revision: existing.revision + 1,
         lastSeenAt: now,
+        lastReconciledAt: now,
         deviceCount: candidate.members.length,
         evidence: candidate.evidence,
         severity: candidate.severity,
