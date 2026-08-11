@@ -92,7 +92,20 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('../../db', () => ({ db: { select: h.mockSelect, insert: h.mockInsert, update: h.mockUpdate } }));
+// `tx` exposes the same spies as `db` so assertions written against
+// `mockInsert` keep working for the statements that moved inside the
+// run/targets transaction. The callback is invoked directly — these are unit
+// tests, so there is no real transaction to commit or roll back; rollback
+// behaviour is covered by the integration suite.
+vi.mock('../../db', () => {
+  const dbMock: Record<string, unknown> = {
+    select: h.mockSelect,
+    insert: h.mockInsert,
+    update: h.mockUpdate,
+  };
+  dbMock.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock);
+  return { db: dbMock };
+});
 
 vi.mock('../../db/schema', () => ({
   devices: {

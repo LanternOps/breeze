@@ -478,13 +478,28 @@ describe('GET /fleet/findings — resolved-history fetch is bounded', () => {
     expect(h.selectCallLimits[0]!.value).toBeUndefined();
   });
 
-  it('applies a SQL-side limit bounded by offset+limit when status includes resolved', async () => {
+  it('fetches the whole window, not just the requested page, when status includes resolved', async () => {
     h.selectQueue.push(manyRows(30));
     const res = await get(makeAuth(), '/?status=resolved&limit=10&offset=5');
     expect(res.status).toBe(200);
 
-    // offset(5) + limit(10) = 15, well under the hard cap.
-    expect(h.selectCallLimits[0]!.value).toBe(15);
+    // Deliberately NOT offset(5) + limit(10) = 15. `total` is derived from this
+    // result set, so bounding the fetch at the page boundary would report
+    // `total === limit` on every page and strand the pager on page 1.
+    expect(h.selectCallLimits[0]!.value).toBe(500);
+  });
+
+  it('reports a total spanning the whole window, not the page size', async () => {
+    h.selectQueue.push(manyRows(30));
+    const res = await get(makeAuth(), '/?status=resolved&limit=10&offset=0');
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.findings).toHaveLength(10);
+    // The regression this guards: `total` used to equal the page size, so a
+    // pager computing ceil(total/limit) saw exactly one page and the remaining
+    // 20 resolved findings were unreachable.
+    expect(body.total).toBe(30);
   });
 
   it('never asks the DB for more than the hard cap, even with a huge offset', async () => {
@@ -499,11 +514,11 @@ describe('GET /fleet/findings — resolved-history fetch is bounded', () => {
     expect(body.findings).toEqual([]);
   });
 
-  it('applies the cap when resolved is combined with other statuses', async () => {
+  it('applies the window cap when resolved is combined with other statuses', async () => {
     h.selectQueue.push(manyRows(5));
     await get(makeAuth(), '/?status=open,resolved&limit=50&offset=0');
 
-    expect(h.selectCallLimits[0]!.value).toBe(50);
+    expect(h.selectCallLimits[0]!.value).toBe(500);
   });
 });
 
@@ -673,6 +688,50 @@ describe('PATCH /fleet/findings/:id — lifecycle transitions', () => {
 
     const where = h.capturedWheres[0] as { args: unknown[] };
     expect(where.args).toContainEqual({ op: 'inArray', column: fleetFindings.orgId, values: [ORG_1, ORG_2] });
+  });
+
+  // Site-axis parity with the read paths. The org condition alone is not
+  // enough: a site-restricted tech shares an org with findings whose members
+  // all sit in sites they cannot see. GET omits those, so PATCH must 404 on
+  // them too — otherwise a finding that is invisible on read is still
+  // acknowledgeable, and the 200 body hands back its evidence.
+  it('site-restricted caller gets 404 when no member device is in an allowed site (no update issued)', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([]); // membership probe finds nothing in scope
+
+    const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+
+    expect(res.status).toBe(404);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('site-restricted caller with an in-scope member device may act', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+    h.selectQueue.push([{ deviceId: 'device-in-scope' }]);
+    h.updateQueue.push([findingRow({ status: 'acknowledged', acknowledgedAt: new Date(), acknowledgedBy: USER_ID })]);
+
+    const res = await patch(makeAuth({ allowedSiteIds: [SITE_1] }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+
+    expect(res.status).toBe(200);
+    expect(h.capturedUpdates[0]!.status).toBe('acknowledged');
+  });
+
+  it('fails closed for an empty allowedSiteIds array without issuing a membership probe', async () => {
+    h.selectQueue.push([findingRow({ status: 'open' })]);
+
+    const res = await patch(makeAuth({ allowedSiteIds: [] }), `/${FINDING_1}`, {
+      action: 'acknowledge',
+    });
+
+    expect(res.status).toBe(404);
+    expect(h.mockUpdate).not.toHaveBeenCalled();
+    // Only the finding lookup ran — an empty allowlist can never match.
+    expect(h.mockSelect).toHaveBeenCalledTimes(1);
   });
 
   it('acknowledge: open -> acknowledged stamps the actor and timestamp', async () => {

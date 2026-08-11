@@ -265,8 +265,13 @@ export async function listFleetFindings(
     .orderBy(desc(fleetFindings.lastSeenAt));
 
   const includesResolvedHistory = filters.statuses.includes('resolved');
+  // Fetch the whole window, not `offset + limit`. `total` below is derived from
+  // this result set, so capping at the page boundary would report
+  // `total === limit` on every page and make the pager conclude there is only
+  // one — the resolved history would be unreachable past page 1. The cap that
+  // matters is the 500-row window documented above; within it, `total` is exact.
   const rows = (includesResolvedHistory
-    ? await baseQuery.limit(Math.min(filters.offset + filters.limit, RESOLVED_HISTORY_FETCH_CAP))
+    ? await baseQuery.limit(RESOLVED_HISTORY_FETCH_CAP)
     : await baseQuery) as RawFindingRow[];
 
   let scoped = rows;
@@ -547,6 +552,33 @@ export async function applyFleetFindingLifecycle(
 
   if (!existing) {
     return { ok: false, status: 404, error: 'Finding not found' };
+  }
+
+  // Site-axis scoping. The org condition above is not sufficient: a
+  // site-restricted tech shares an org with findings whose members all sit in
+  // sites they cannot see. `getFleetFinding` and `listFleetFindings` both omit
+  // those, so the write path must fail closed identically — otherwise a
+  // finding that is invisible on read is still acknowledgeable, and the 200
+  // response body leaks its evidence.
+  const allowedSiteIds = auth.allowedSiteIds;
+  if (allowedSiteIds !== undefined) {
+    const [inScopeMember] = allowedSiteIds.length === 0
+      ? []
+      : await db
+          .select({ deviceId: fleetFindingDevices.deviceId })
+          .from(fleetFindingDevices)
+          .innerJoin(devices, eq(fleetFindingDevices.deviceId, devices.id))
+          .where(
+            and(
+              eq(fleetFindingDevices.findingId, id),
+              inArray(devices.siteId, allowedSiteIds)
+            )
+          )
+          .limit(1);
+
+    if (!inScopeMember) {
+      return { ok: false, status: 404, error: 'Finding not found' };
+    }
   }
 
   const allowedSources = ALLOWED_SOURCE_STATUSES[action];

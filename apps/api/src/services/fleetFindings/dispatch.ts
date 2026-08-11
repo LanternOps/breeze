@@ -95,6 +95,24 @@ export const REMEDIATION_CHUNK_SIZE = 500;
 export const REMEDIATION_TIMEOUT_MS = 30 * 60 * 1000;
 export const REMEDIATION_RESULT_SUMMARY_MAX = 2000;
 
+/**
+ * Rows per target INSERT. Drizzle emits roughly 8 bind parameters per row here
+ * (the union of keys across the valid and skipped shapes), so 500 keeps a
+ * statement near 4,000 parameters — comfortably inside Postgres's 65,535
+ * int16 ceiling, which a single un-chunked insert would breach past ~8,100
+ * targets.
+ */
+const TARGET_INSERT_CHUNK_SIZE = 500;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 export class RemediationRequestError extends Error {
   constructor(message: string, public status: 400 | 403 = 400) {
     super(message);
@@ -225,57 +243,71 @@ export async function createRemediationRun(
   const now = new Date();
   const status: FleetRunStatus = validTargets.length > 0 ? 'queued' : 'failed';
 
-  const [run] = await db
-    .insert(fleetRemediationRuns)
-    .values({
-      orgId: finding.orgId,
-      findingId,
-      findingRevision: finding.revision,
-      actionKind: req.actionKind,
-      scriptId: req.actionKind === 'script' ? req.scriptId : null,
-      commandType: req.actionKind === 'command' ? req.commandType : null,
-      parameterSnapshot: req.parameters ?? {},
-      status,
-      targetCount,
-      succeededCount: 0,
-      failedCount: 0,
-      skippedCount: skipped.length,
-      createdBy: auth.user.id,
-      completedAt: status === 'failed' ? now : null,
-    })
-    .returning();
+  // Run row and target rows must land together. Previously the run was
+  // committed on its own and the targets inserted afterwards, so any failure of
+  // the second statement stranded the run forever: `queued`, `targetCount > 0`,
+  // zero target rows, and no dispatch or poll job to ever reconcile it. The
+  // target insert was also a single un-chunked multi-row statement over a
+  // candidate set that is the finding's entire membership when `deviceIds` is
+  // omitted — past roughly 8,100 rows that exceeds Postgres's 65,535 bind
+  // parameter limit and throws, which is precisely the fleet scale this
+  // feature exists for. Chunked inside one transaction, both failure modes
+  // become an ordinary rollback.
+  const run = await db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(fleetRemediationRuns)
+      .values({
+        orgId: finding.orgId,
+        findingId,
+        findingRevision: finding.revision,
+        actionKind: req.actionKind,
+        scriptId: req.actionKind === 'script' ? req.scriptId : null,
+        commandType: req.actionKind === 'command' ? req.commandType : null,
+        parameterSnapshot: req.parameters ?? {},
+        status,
+        targetCount,
+        succeededCount: 0,
+        failedCount: 0,
+        skippedCount: skipped.length,
+        createdBy: auth.user.id,
+        completedAt: status === 'failed' ? now : null,
+      })
+      .returning();
 
-  if (!run) {
-    throw new RemediationRequestError('Failed to create remediation run', 400);
-  }
+    if (!inserted) {
+      throw new RemediationRequestError('Failed to create remediation run', 400);
+    }
 
-  const targetRows = [
-    ...validTargets.map((d) => ({
-      runId: run.id,
-      orgId: d.orgId,
-      targetDeviceUuid: d.id,
-      hostnameSnapshot: d.hostname,
-      siteIdSnapshot: d.siteId,
-      status: 'pending' as FleetTargetStatus,
-    })),
-    ...skipped.map((s) => {
-      const d = deviceById.get(s.deviceId);
-      return {
-        runId: run.id,
-        orgId: d?.orgId ?? finding.orgId,
-        targetDeviceUuid: s.deviceId,
-        hostnameSnapshot: d?.hostname ?? null,
-        siteIdSnapshot: d?.siteId ?? null,
-        status: 'skipped' as FleetTargetStatus,
-        skipReason: s.reason,
-        completedAt: now,
-      };
-    }),
-  ];
+    const targetRows = [
+      ...validTargets.map((d) => ({
+        runId: inserted.id,
+        orgId: d.orgId,
+        targetDeviceUuid: d.id,
+        hostnameSnapshot: d.hostname,
+        siteIdSnapshot: d.siteId,
+        status: 'pending' as FleetTargetStatus,
+      })),
+      ...skipped.map((s) => {
+        const d = deviceById.get(s.deviceId);
+        return {
+          runId: inserted.id,
+          orgId: d?.orgId ?? finding.orgId,
+          targetDeviceUuid: s.deviceId,
+          hostnameSnapshot: d?.hostname ?? null,
+          siteIdSnapshot: d?.siteId ?? null,
+          status: 'skipped' as FleetTargetStatus,
+          skipReason: s.reason,
+          completedAt: now,
+        };
+      }),
+    ];
 
-  if (targetRows.length > 0) {
-    await db.insert(fleetRemediationRunTargets).values(targetRows);
-  }
+    for (const chunk of chunkArray(targetRows, TARGET_INSERT_CHUNK_SIZE)) {
+      await tx.insert(fleetRemediationRunTargets).values(chunk);
+    }
+
+    return inserted;
+  });
 
   return { runId: run.id, targetCount, skipped, orgId: finding.orgId };
 }
