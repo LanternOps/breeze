@@ -1051,14 +1051,19 @@ coreRoutes.get(
  */
 async function readPreferredProviderId(auth: AuthContext): Promise<string | null> {
   if (!isInteractiveUserSession(auth)) return null;
-  const prefs = await withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ preferences: users.preferences })
-      .from(users)
-      .where(eq(users.id, auth.user.id))
-      .limit(1);
-    return row?.preferences ?? null;
-  });
+  // Deliberately the ambient request context, not a system one. `users` carries
+  // `breeze_user_isolation_select ... OR id = breeze_current_user_id()`, so a
+  // technician reading their own row is already permitted under the caller's
+  // own scope. Reading under the request context is the narrower privilege and
+  // means this can never resolve a row outside the caller's tenant, even if
+  // `auth.user.id` were ever influenced by something other than the verified
+  // token.
+  const [row] = await db
+    .select({ preferences: users.preferences })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  const prefs = row?.preferences ?? null;
   if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return null;
   const value = (prefs as { remoteAccessProviderId?: unknown }).remoteAccessProviderId;
   return typeof value === 'string' && value.length > 0 ? value : null;
