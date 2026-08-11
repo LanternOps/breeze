@@ -144,6 +144,14 @@ const TARGET_GLOBS = [
   // the partner's tenant tree from a remote list. A silent failure would leave
   // the tech believing a tenant tree was provisioned when nothing was written.
   'src/components/psa/PsaCompanyImport.tsx',
+  // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
+  // the service, and the two components must not grow their own bare mutations
+  // alongside it.
+  'src/services/fleetFindings.ts',
+  'src/components/fleet/FindingsFeed.tsx',
+  'src/components/fleet/FindingDrawer.tsx',
+  'src/components/fleet/FixPickerModal.tsx',
+  'src/components/fleet/RunProgressPanel.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -335,7 +343,7 @@ describe('migration backlog integrity', () => {
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
   it('finds files to scan', () => {
-    expect(absoluteFiles.length).toBe(86);
+    expect(absoluteFiles.length).toBe(91);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

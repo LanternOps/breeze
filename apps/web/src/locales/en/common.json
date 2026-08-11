@@ -1794,22 +1794,14 @@
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",
-          "activeCount": "{{count}} active",
           "deployments": "Deployments",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} pending",
           "failedCount": "{{count}} failed",
           "patches": "Patches",
-          "pendingInstallation": "pending installation",
           "alerts": "Alerts",
-          "alertsSubtitle": "{{critical}} critical, {{high}} high",
           "groups": "Groups",
-          "deviceGroupsSubtitle": "device groups",
           "automations": "Automations",
-          "configured": "configured",
           "maintenance": "Maintenance",
-          "activeWindows": "active windows",
-          "reports": "Reports",
-          "reportDefinitions": "report definitions"
+          "reports": "Reports"
         },
         "aiFleetActions": "AI Fleet Actions",
         "aiFleetActionsHint": "Click to ask the AI assistant",
@@ -1838,6 +1830,173 @@
           "high": "High",
           "medium": "Medium",
           "low": "Low"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Fleet Findings",
+        "description": "Cross-device patterns worth one action instead of many",
+        "filters": {
+          "orgLabel": "Filter by organization",
+          "kindLabel": "Filter by finding type",
+          "severityLabel": "Filter by severity",
+          "statusLabel": "Filter by status",
+          "allOrgs": "All organizations",
+          "allKinds": "All finding types",
+          "allSeverities": "All severities"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metric anomaly",
+          "logCorrelation": "Log correlation",
+          "reliabilityOffenders": "Reliability offenders"
+        },
+        "severities": {
+          "critical": "Critical",
+          "error": "Error",
+          "warning": "Warning",
+          "info": "Informational"
+        },
+        "statuses": {
+          "open": "Open",
+          "acknowledged": "Acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "status": {
+          "active": "Open & acknowledged",
+          "dismissed": "Dismissed",
+          "resolved": "Resolved"
+        },
+        "deviceCount": "{{count}} devices",
+        "deviceCount_one": "{{count}} device",
+        "deviceCount_other": "{{count}} devices",
+        "showing": "Showing {{shown}} of {{total}}",
+        "loadMore": "Load more",
+        "empty": {
+          "title": "Fleet is clean",
+          "noMatchesTitle": "No matching findings",
+          "body": "No findings match these filters right now."
+        },
+        "errors": {
+          "loadFailed": "Failed to load fleet findings",
+          "banner": "We couldn't load fleet findings"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Finding details",
+        "meta": {
+          "firstSeen": "First seen {{when}}",
+          "lastSeen": "Last seen {{when}}"
+        },
+        "summaryHeading": "Summary",
+        "resolvedNote": {
+          "heading": "Why this is closed",
+          "body": "This finding was resolved because its underlying signal cleared. It will reappear as a new finding if the pattern recurs.",
+          "reason": "Resolution reason: {{reason}}"
+        },
+        "dismissNotesHeading": "Dismissal note",
+        "evidenceHeading": "Evidence",
+        "membersHeading": "Affected devices",
+        "membersEmpty": "No member devices are recorded for this finding.",
+        "table": {
+          "device": "Device",
+          "source": "Source",
+          "lastSeen": "Last seen"
+        },
+        "runsHeading": "Remediation history",
+        "runsEmpty": "No remediation has been run for this finding yet.",
+        "runCounts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "runStatuses": {
+          "queued": "Queued",
+          "running": "Running",
+          "partial": "Partial",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        },
+        "dismiss": {
+          "notesLabel": "Why are you dismissing this? (required)",
+          "notesPlaceholder": "Known false positive, tracked elsewhere, accepted risk…",
+          "confirm": "Dismiss finding"
+        },
+        "actions": {
+          "remediate": "Remediate across {{count}} devices",
+          "remediate_one": "Remediate on {{count}} device",
+          "remediate_other": "Remediate across {{count}} devices",
+          "remediateDisabledReason": "No devices remain in this finding to remediate.",
+          "acknowledge": "Acknowledge",
+          "dismiss": "Dismiss",
+          "reopen": "Reopen"
+        },
+        "errors": {
+          "loadFailed": "Failed to load finding",
+          "lifecycleFailed": "Failed to update finding"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "the underlying signal cleared"
+        }
+      },
+      "FixPicker": {
+        "title": "Remediate finding",
+        "actions": {
+          "script": "Run a script",
+          "scriptHint": "Pick a script from your library and fill in its parameters.",
+          "restartService": "Restart a service",
+          "restartServiceHint": "Restarts a single named service on every selected device.",
+          "reboot": "Reboot devices",
+          "rebootHint": "Restarts the selected devices as soon as the run dispatches."
+        },
+        "chooseScript": "Choose a script…",
+        "changeScript": "Change script",
+        "selectedScript": "Script: {{name}}",
+        "serviceNameLabel": "Service name",
+        "serviceNamePlaceholder": "e.g. Spooler",
+        "rebootWarning": "The selected devices restart immediately once this run dispatches. Active sessions end and unsaved work is lost.",
+        "targetsHeading": "Devices to remediate",
+        "selectAll": "Select all",
+        "selectNone": "Clear selection",
+        "selectedCount": "{{selected}} of {{total}} devices selected",
+        "noTargets": "Select at least one device to continue.",
+        "osIncompatibleNotice": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} device can't run this script and was excluded. It only supports {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} devices can't run this script and were excluded. It only supports {{os}}.",
+        "osIncompatibleReason": "Requires {{os}}",
+        "confirmAction": "Chosen fix",
+        "confirmTargets": "Devices",
+        "confirmRestartService": "Restart the service {{name}}",
+        "confirmRebootNotice": "{{count}} devices will restart immediately.",
+        "confirmRebootNotice_one": "{{count}} device will restart immediately.",
+        "confirmRebootNotice_other": "{{count}} devices will restart immediately.",
+        "confirm": "Start remediation",
+        "dispatchedSummary": "{{count}} devices were targeted by this run.",
+        "dispatchedSummary_one": "{{count}} device was targeted by this run.",
+        "dispatchedSummary_other": "{{count}} devices were targeted by this run.",
+        "skippedHeading": "Skipped devices",
+        "skipReasons": {
+          "siteDenied": "Site not accessible to you",
+          "notMember": "No longer affected by this finding",
+          "decommissioned": "Device is decommissioned",
+          "timeout": "Timed out after 30 minutes",
+          "dispatchEnqueueFailed": "Never dispatched — queueing failed"
+        },
+        "viewProgress": "View progress",
+        "errors": {
+          "dispatchFailed": "Failed to start remediation"
+        }
+      },
+      "RunProgress": {
+        "heading": "Remediation run",
+        "counts": "{{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped of {{targets}} targeted",
+        "polling": "Refreshing while the run is active…",
+        "targetsEmpty": "No devices on this run are visible to you.",
+        "targetStatuses": {
+          "pending": "Pending",
+          "queued": "Queued",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "skipped": "Skipped"
+        },
+        "errors": {
+          "loadFailed": "Failed to load remediation run"
         }
       }
     },

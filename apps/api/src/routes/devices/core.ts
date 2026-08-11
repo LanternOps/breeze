@@ -132,6 +132,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_vulnerabilities', 'device_warranty',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
+  'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_rollups',
@@ -270,6 +271,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'provision_credential_handles',
   // OneDrive helper — persisted device state (PK = device_id; leaf table, no children)
   'onedrive_device_state',
+  // Fleet hygiene finding membership — live device_id column (no FK; the
+  // device-move trigger rewrites org_id in place), leaf table, no children.
+  'fleet_finding_devices',
 ] as const;
 
 export function getDeviceCascadeDeleteTables(): readonly string[] {

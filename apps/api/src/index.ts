@@ -87,6 +87,7 @@ import { authenticatorRoutes, approverDevicesRoutes } from './routes/authenticat
 import { lifecycleRoutes, lifecycleAdminRoutes } from './routes/lifecycle';
 import { mobileDeviceBlockedMiddleware } from './middleware/mobileDeviceBlocked';
 import { analyticsRoutes } from './routes/analytics';
+import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
@@ -205,6 +206,11 @@ import {
   shutdownMetricRollupMaintenanceWorker,
 } from './jobs/metricRollupMaintenance';
 import { initializeMetricAnomaliesWorker, shutdownMetricAnomaliesWorker } from './jobs/metricAnomalies';
+import { scheduleFleetFindingsJobs, shutdownFleetFindingsJobs } from './jobs/fleetFindings';
+import {
+  scheduleFleetRemediationDispatchJobs,
+  shutdownFleetRemediationDispatchJobs,
+} from './jobs/fleetRemediationDispatch';
 import { initializeMlOutputRetention, shutdownMlOutputRetention } from './jobs/mlOutputRetention';
 import { initializeIPHistoryRetention, shutdownIPHistoryRetention } from './jobs/ipHistoryRetention';
 import { initializeChangeLogRetention, shutdownChangeLogRetention } from './jobs/changeLogRetention';
@@ -1070,6 +1076,7 @@ api.route('/me/approver-devices', approverDevicesRoutes);
 api.route('/', lifecycleRoutes);
 api.route('/', lifecycleAdminRoutes);
 api.route('/analytics', analyticsRoutes);
+api.route('/fleet/findings', fleetFindingsRoutes);
 api.route('/discovery', discoveryRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
@@ -1400,6 +1407,8 @@ async function initializeWorkers(): Promise<void> {
     ['metricRollupsWorker', initializeMetricRollupsWorker],
     ['metricRollupMaintenance', initializeMetricRollupMaintenanceWorker],
     ['metricAnomaliesWorker', initializeMetricAnomaliesWorker],
+    ['fleetFindingsWorker', scheduleFleetFindingsJobs],
+    ['fleetRemediationDispatchWorker', scheduleFleetRemediationDispatchJobs],
     ['mlOutputRetention', initializeMlOutputRetention],
     ['offlineDetector', initializeOfflineDetector],
     ['notificationDispatcher', initializeNotificationDispatcher],
@@ -1689,6 +1698,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownNotificationDispatcher,
     shutdownOfflineDetector,
     shutdownMetricAnomaliesWorker,
+    shutdownFleetFindingsJobs,
+    shutdownFleetRemediationDispatchJobs,
     shutdownMetricRollupMaintenanceWorker,
     shutdownMetricRollupsWorker,
     shutdownAlertCorrelationWorker,
