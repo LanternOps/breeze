@@ -254,11 +254,17 @@ const LIFECYCLE_FAILURE: Record<FleetFindingLifecycleAction, string> = {
 };
 
 /**
- * `POST /fleet/findings/:id/remediate`. MFA-gated route: the global MFA
- * challenge flow owns the 401/403 handshake, so this deliberately does NOT
- * pass `treatUnauthorizedAsError` — a real session-expiry 401 still redirects,
- * and a 403 is toasted with the API's own message rather than flattened into a
- * generic failure.
+ * `POST /fleet/findings/:id/remediate`.
+ *
+ * There is no "global MFA challenge flow" that owns the 401/403 handshake — an
+ * earlier version of this comment claimed there was, and the missing
+ * `onUnauthorized` below was justified by it. runAction deliberately does not
+ * toast on 401 (it expects the caller's `onUnauthorized` to navigate), so
+ * without one an expired session made the confirm button silently re-enable
+ * with no toast and no redirect. It redirects like its `patchFinding` sibling.
+ *
+ * The route is `requireMfa()`-gated, so `MFA_REQUIRED` is an expected 403 and
+ * gets a message that says what to do rather than the API's bare "MFA required".
  *
  * Answers 202 on success (not 200) — `isApiFailure` keys off `status >= 400`,
  * so runAction treats it correctly without special-casing.
@@ -275,6 +281,13 @@ export async function remediateFinding(
         body: JSON.stringify(req),
       }),
     errorFallback: 'Failed to start remediation',
+    friendly: (code) =>
+      code === 'MFA_REQUIRED'
+        ? 'Remediation requires multi-factor authentication. Enable MFA in your profile security settings, then try again.'
+        : undefined,
+    onUnauthorized: () => {
+      window.location.href = '/login';
+    },
   });
 }
 

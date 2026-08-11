@@ -1794,22 +1794,14 @@
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",
-          "activeCount": "{{count}} active",
           "deployments": "Deployments",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} pending",
           "failedCount": "{{count}} failed",
           "patches": "Patches",
-          "pendingInstallation": "pending installation",
           "alerts": "Alerts",
-          "alertsSubtitle": "{{critical}} critical, {{high}} high",
           "groups": "Groups",
-          "deviceGroupsSubtitle": "device groups",
           "automations": "Automations",
-          "configured": "configured",
           "maintenance": "Maintenance",
-          "activeWindows": "active windows",
-          "reports": "Reports",
-          "reportDefinitions": "report definitions"
+          "reports": "Reports"
         },
         "aiFleetActions": "AI Fleet Actions",
         "aiFleetActionsHint": "Click to ask the AI assistant",

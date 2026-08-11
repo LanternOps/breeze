@@ -87,19 +87,38 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
     return { deviceIds, requiredLabel: requiredOsTypes.map(osNameLabel).join(', ') };
   }, [kind, script, finding.members]);
 
-  // Prunes newly-incompatible devices out of the current selection — e.g. the
-  // moment a script with a narrower `os_types` is chosen. Devices that later
-  // become compatible again (a different script picked) are NOT auto-added
-  // back: the operator explicitly re-selects them, same as any other manual
-  // deselection.
+  // Devices pruned by OS incompatibility rather than by the operator. Tracked
+  // separately so the pruning can be undone: previously, switching from a
+  // Windows-only script back to `reboot` cleared `osIncompatibility.deviceIds`,
+  // and the pruned devices rendered as enabled-but-unchecked with no hint they
+  // had ever been selected — so the operator dispatched to fewer devices than
+  // they thought. A system-pruned device is restored the moment it becomes
+  // compatible again; a manually deselected one is never re-added.
+  const autoPrunedIds = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    if (osIncompatibility.deviceIds.size === 0) return;
+    const incompatible = osIncompatibility.deviceIds;
+
     setSelectedIds((prev) => {
-      let changed = false;
       const next = new Set(prev);
-      for (const id of osIncompatibility.deviceIds) {
-        if (next.delete(id)) changed = true;
+      let changed = false;
+
+      for (const id of incompatible) {
+        if (next.delete(id)) {
+          autoPrunedIds.current.add(id);
+          changed = true;
+        }
       }
+
+      // Restore anything we pruned that the current fix kind can reach again.
+      for (const id of [...autoPrunedIds.current]) {
+        if (!incompatible.has(id)) {
+          autoPrunedIds.current.delete(id);
+          next.add(id);
+          changed = true;
+        }
+      }
+
       return changed ? next : prev;
     });
   }, [osIncompatibility.deviceIds]);

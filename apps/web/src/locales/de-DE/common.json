@@ -1794,22 +1794,14 @@
         "partialWarning": "Einige Daten sind möglicherweise unvollständig. Fehler beim Laden: {{endpoints}}",
         "cards": {
           "policies": "Richtlinien",
-          "activeCount": "{{count}} aktiv",
           "deployments": "Bereitstellungen",
-          "deploymentsSubtitle": "{{total}} insgesamt, {{pending}} ausstehend",
           "failedCount": "{{count}} fehlgeschlagen",
           "patches": "Patches",
-          "pendingInstallation": "bis zur Installation",
           "alerts": "Warnungen",
-          "alertsSubtitle": "{{critical}} kritisch, {{high}} hoch",
           "groups": "Gruppen",
-          "deviceGroupsSubtitle": "Gerätegruppen",
           "automations": "Automatisierungen",
-          "configured": "konfiguriert",
           "maintenance": "Wartung",
-          "activeWindows": "aktive Fenster",
-          "reports": "Berichte",
-          "reportDefinitions": "Berichtsdefinitionen"
+          "reports": "Berichte"
         },
         "aiFleetActions": "KI-Flottenaktionen",
         "aiFleetActionsHint": "Klicken Sie hier, um den KI-Assistenten zu fragen",

@@ -341,6 +341,7 @@ export default function FleetOrchestrationPage() {
         >
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.policies')}
+            testId="policies"
             icon={Shield}
             value={s.policies.total}
             accent="blue"
@@ -348,6 +349,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.deployments')}
+            testId="deployments"
             icon={Rocket}
             value={s.deployments.active}
             accent={s.deployments.failed > 0 ? 'red' : 'green'}
@@ -356,6 +358,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.patches')}
+            testId="patches"
             icon={Package}
             value={s.patches.pendingPatches}
             accent={s.patches.failedPatches > 0 ? 'red' : 'yellow'}
@@ -364,6 +367,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.alerts')}
+            testId="alerts"
             icon={Bell}
             value={s.alerts.total}
             accent={s.alerts.critical > 0 ? 'red' : s.alerts.high > 0 ? 'yellow' : 'green'}
@@ -371,6 +375,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.groups')}
+            testId="groups"
             icon={FolderTree}
             value={s.groupCount}
             accent="blue"
@@ -378,6 +383,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.automations')}
+            testId="automations"
             icon={Zap}
             value={s.automationCount}
             accent="purple"
@@ -385,6 +391,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.maintenance')}
+            testId="maintenance"
             icon={Clock}
             // "—" (unknown), never a fabricated 0 — see fetchFleetStats.
             value={s.maintenanceActive ?? '—'}
@@ -393,6 +400,7 @@ export default function FleetOrchestrationPage() {
           />
           <StatChip
             title={t('longTail.fleet.FleetOrchestrationPage.cards.reports')}
+            testId="reports"
             icon={FileText}
             value={s.reportCount}
             accent="blue"
@@ -566,9 +574,13 @@ const accentColors = {
  *  are now context for the findings feed rather than the page's headline, so
  *  each one is icon + number + label on one row instead of a 6-unit card. */
 function StatChip({
-  title, icon: Icon, value, accent, badge, onClick,
+  title, testId, icon: Icon, value, accent, badge, onClick,
 }: {
   title: string;
+  /** Stable, locale-independent slug. `title` is translated, so deriving the
+   *  test id from it yielded `fleet-stat-Richtlinien` in de-DE and broke the
+   *  repo's data-testid convention (E2E selectors must not depend on locale). */
+  testId: string;
   icon: React.ComponentType<{ className?: string }>;
   // A string value is rendered verbatim (e.g. "—" for a stat that isn't
   // available in the current scope); a number is locale-formatted.
@@ -580,7 +592,7 @@ function StatChip({
   return (
     <button
       onClick={onClick}
-      data-testid={`fleet-stat-${title}`}
+      data-testid={`fleet-stat-${testId}`}
       className="flex flex-1 min-w-[9rem] items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/50 cursor-pointer"
     >
       <Icon className={cn('h-4 w-4 shrink-0', accentColors[accent])} />

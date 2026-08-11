@@ -37,6 +37,17 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
   // Bumped by the retry button to re-arm the effect after a poll failure.
   const [retryToken, setRetryToken] = useState(0);
 
+  // This panel is the topmost layer when open, so it owns Escape. The finding
+  // drawer beneath it defers to any modal above itself; without a handler here
+  // Escape would do nothing at all while the panel is up.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;

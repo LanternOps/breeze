@@ -81,9 +81,20 @@ export default function FindingDrawer({
     return () => { cancelled = true; };
   }, [findingId, t]);
 
+  const drawerRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // This listener is on `window`, so it stays armed while the run-progress
+      // panel is layered over the drawer — Escape was closing the drawer
+      // underneath instead of the panel the operator was actually looking at.
+      // Defer to any modal dialog above us; each owns its own Escape.
+      const layeredAbove = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]')).some(
+        (el) => el !== drawerRef.current
+      );
+      if (layeredAbove) return;
+      onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -136,6 +147,7 @@ export default function FindingDrawer({
         aria-hidden="true"
       />
       <aside
+        ref={drawerRef}
         data-testid="finding-drawer"
         role="dialog"
         aria-modal="true"

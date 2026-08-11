@@ -236,6 +236,42 @@ describe('FixPickerModal — OS compatibility (scripts)', () => {
     expect(screen.getByTestId(`fix-picker-target-incompatible-${DEVICE_C}`).textContent).toContain('Windows');
   });
 
+  it('restores an OS-pruned device when the fix kind can reach it again', async () => {
+    // Picking a Windows-only script prunes the macOS device; switching back to
+    // reboot (no OS constraint) used to leave it enabled-but-unchecked with no
+    // hint it had ever been selected, so the operator dispatched to fewer
+    // devices than they believed. Only system-pruned devices come back.
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByTestId('fix-picker-back'));
+    fireEvent.click(screen.getByTestId('fix-picker-action-reboot'));
+    goToTargets();
+
+    const macTarget = screen.getByTestId(`fix-picker-target-${DEVICE_C}`) as HTMLInputElement;
+    expect(macTarget.disabled).toBe(false);
+    expect(macTarget.checked).toBe(true);
+  });
+
+  it('does not re-add a device the operator deselected by hand', async () => {
+    renderPicker({ finding: findingWithMacDevice() });
+
+    await chooseWindowsOnlyScript();
+    goToTargets();
+    // DEVICE_A is compatible — unchecking it is a manual choice, not a prune.
+    fireEvent.click(screen.getByTestId(`fix-picker-target-${DEVICE_A}`));
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_A}`) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByTestId('fix-picker-back'));
+    fireEvent.click(screen.getByTestId('fix-picker-action-reboot'));
+    goToTargets();
+
+    expect((screen.getByTestId(`fix-picker-target-${DEVICE_A}`) as HTMLInputElement).checked).toBe(false);
+  });
+
   it('does not let a click re-check the disabled incompatible device', async () => {
     renderPicker({ finding: findingWithMacDevice() });
 

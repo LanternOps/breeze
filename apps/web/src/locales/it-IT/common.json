@@ -1794,22 +1794,14 @@
         "partialWarning": "Alcuni dati potrebbero essere incompleti. Impossibile caricare: {{endpoints}}",
         "cards": {
           "policies": "Policy",
-          "activeCount": "{{count}} attivo",
           "deployments": "Distribuzioni",
-          "deploymentsSubtitle": "{{total}} totale, {{pending}} in sospeso",
           "failedCount": "{{count}} non riuscito",
           "patches": "Patch",
-          "pendingInstallation": "in attesa di installazione",
           "alerts": "Avvisi",
-          "alertsSubtitle": "{{critical}} critico, {{high}} alto",
           "groups": "Gruppi",
-          "deviceGroupsSubtitle": "gruppi di dispositivi",
           "automations": "Automazioni",
-          "configured": "configurato",
           "maintenance": "Manutenzione",
-          "activeWindows": "finestre attive",
-          "reports": "Report",
-          "reportDefinitions": "definizioni di report"
+          "reports": "Report"
         },
         "aiFleetActions": "Azioni della flotta AI",
         "aiFleetActionsHint": "Fai clic per chiedere all'assistente AI",
