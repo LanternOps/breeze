@@ -105,6 +105,18 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	workerCount := clampInt(GetPayloadInt(payload, "workers", defaultWorkers), 1, maxFSWorkers)
 
 	cleanRoot := filepath.Clean(rootPath)
+
+	// Containment (#3397): the scan root is a traversal entry point, so refuse
+	// to point the analyzer at a credential store. This is metadata-only
+	// disclosure (paths + sizes; duplicate grouping keys on size|basename, never
+	// on content), so — unlike CopyFile — entries encountered BELOW a benign
+	// root are not filtered: that would put a deny-list match on the hot path of
+	// a multi-million-entry fleet scan to suppress filenames that ListFiles on
+	// the parent directory already discloses.
+	if err := enforceReadContainment(cleanRoot); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	rootInfo, err := os.Stat(cleanRoot)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to stat path: %w", err), time.Since(start).Milliseconds())
@@ -121,10 +133,27 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	dirStack := []scanDirFrame{}
 	visitedDirs := map[string]struct{}{}
 
+	// Containment (#3397): `path` is not the only traversal entry point —
+	// `checkpoint.pendingDirs` and `targetDirectories` seed dirStack directly and
+	// would otherwise walk a credential store under cover of a benign root.
+	// Denials are surfaced as scan errors rather than dropped silently, so an
+	// operator sees why a requested directory produced no results.
+	var containmentDenials []FilesystemScanError
+	allowScanEntry := func(p string) bool {
+		if err := enforceReadContainment(p); err != nil {
+			containmentDenials = append(containmentDenials, FilesystemScanError{Path: p, Error: err.Error()})
+			return false
+		}
+		return true
+	}
+
 	checkpointFrames := readCheckpointFrames(payload["checkpoint"])
 	if len(checkpointFrames) > 0 {
-		dirStack = append(dirStack, checkpointFrames...)
 		for _, frame := range checkpointFrames {
+			if !allowScanEntry(frame.path) {
+				continue
+			}
+			dirStack = append(dirStack, frame)
 			visitedDirs[frame.path] = struct{}{}
 			if _, ok := dirStats[frame.path]; !ok {
 				dirStats[frame.path] = &fsDirAggregate{
@@ -138,6 +167,9 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 		targets := readTargetDirectories(payload["targetDirectories"])
 		if scanMode == "incremental" && len(targets) > 0 {
 			for _, target := range targets {
+				if !allowScanEntry(target) {
+					continue
+				}
 				if _, statErr := os.Stat(target); statErr != nil {
 					continue
 				}
@@ -171,6 +203,7 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	unrotatedLogs := make([]FilesystemUnrotatedLog, 0, 128)
 	trashUsage := make([]FilesystemTrashUsage, 0, 4)
 	scanErrors := make([]FilesystemScanError, 0, 32)
+	scanErrors = append(scanErrors, containmentDenials...)
 
 	var filesScanned int64
 	var dirsScanned int64
@@ -186,6 +219,17 @@ func AnalyzeFilesystem(payload map[string]any) CommandResult {
 	var queueMu sync.Mutex
 	queueCond := sync.NewCond(&queueMu)
 	var statsMu sync.Mutex
+
+	// A containment denial makes the result incomplete in exactly the sense
+	// `partial` exists to signal. Without this, an incremental scan whose every
+	// targetDirectories entry was refused returns
+	// partial:false / dirsScanned:0 / errors:[...] — indistinguishable, at the
+	// field a consumer actually branches on, from "nothing changed since the
+	// last checkpoint" rather than "we were not allowed to look".
+	if len(containmentDenials) > 0 {
+		partial = true
+		reason = "containment denied on one or more requested directories"
+	}
 
 	notePartial := func(partialReason string) {
 		queueMu.Lock()

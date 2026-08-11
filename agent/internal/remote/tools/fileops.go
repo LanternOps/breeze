@@ -186,23 +186,159 @@ func isSensitiveReadPath(p string) bool {
 	return false
 }
 
-// enforceReadContainment blocks reads/lists of obviously-sensitive credential
-// stores. Symlinks are resolved first (filepath.EvalSymlinks) so a symlink whose
-// own name is innocuous cannot be used to escape the deny-list. Both the literal
-// path and the resolved path are checked.
-func enforceReadContainment(cleanPath string) error {
+// enforcePathContainment blocks an operation against an obviously-sensitive
+// credential store. Symlinks are resolved first (filepath.EvalSymlinks) so a
+// symlink whose own name is innocuous cannot be used to escape the deny-list;
+// both the literal path and the resolved path are checked.
+//
+// verb names the operation in the error ("read", "copy", "rename", …) so the
+// denial is attributable in agent logs and command results.
+//
+// KNOWN LIMITATION: this is path-string matching, so a HARD link to a credential
+// store under an innocuous name is invisible to it — a hard link has no
+// "resolved path" for EvalSymlinks to follow, and os.Lstat reports it as an
+// ordinary regular file. Closing that would mean comparing inode/device
+// identity against the deny-list, which is a different mechanism. It is not
+// reachable through this toolset (nothing here creates links) and requires a
+// hard link already present on the target filesystem; it is called out so the
+// next reader does not mistake the symlink handling for complete link coverage.
+func EnforcePathContainment(verb, cleanPath string) error {
 	if isSensitiveReadPath(cleanPath) {
-		return fmt.Errorf("read denied on sensitive path: %s", cleanPath)
+		return fmt.Errorf("%s denied on sensitive path: %s", verb, cleanPath)
 	}
-	// EvalSymlinks requires the target to exist; if it can't be resolved the
-	// literal check above already ran, and the subsequent os.Stat/Open will
-	// surface any not-exist error.
-	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil && resolved != cleanPath {
+	if resolved, ok := resolveForContainment(cleanPath); ok && resolved != cleanPath {
 		if isSensitiveReadPath(resolved) {
-			return fmt.Errorf("read denied on sensitive path (via symlink): %s", cleanPath)
+			return fmt.Errorf("%s denied on sensitive path (via symlink): %s", verb, cleanPath)
 		}
 	}
 	return nil
+}
+
+// resolveForContainment resolves cleanPath through any symlinks, returning
+// false only when nothing along the path can be resolved at all.
+//
+// filepath.EvalSymlinks requires EVERY component including the leaf to exist,
+// which is never true for a write destination — so a naive
+// `EvalSymlinks(path); if err == nil` check silently no-ops on exactly the case
+// enforceWriteContainment cares about. That left a real bypass: with a
+// pre-existing symlinked PARENT (/tmp/innocent -> ~/.ssh),
+// WriteFile("/tmp/innocent/authorized_keys") passed both legs of the check —
+// the literal string carries no "/.ssh/" to match, and EvalSymlinks errored on
+// the missing leaf so the symlink leg never ran — and implanted the key.
+//
+// So walk up to the nearest ancestor that EXISTS and re-attach the unresolved
+// remainder. That also covers destinations several levels below a symlink,
+// which WriteFile/RenameFile/CopyFile happily MkdirAll into.
+//
+// Two properties of this loop are load-bearing, and an earlier version of this
+// fix got both wrong by capping the iteration count at a constant:
+//
+//   - NO DEPTH CAP. The caller controls the destination string, so any fixed
+//     cap is a bypass, not a safety valve: padding the path with more junk
+//     segments than the cap ("<link>/a/a/a/…/authorized_keys") exhausts the
+//     budget before the resolvable ancestor is reached, the function reports
+//     "could not resolve", and EnforcePathContainment reads that as "nothing to
+//     check" — reopening the exact hole. Termination needs no cap: each step
+//     strictly shortens the path and the loop exits at the root.
+//   - CHEAP PROBE, ONE RESOLVE. The ascent probes with os.Lstat (one syscall
+//     per level) and calls EvalSymlinks once, on the ancestor that exists.
+//     Calling EvalSymlinks on every level instead is quadratic in path depth,
+//     which hands the same attacker a CPU-exhaustion knob.
+func resolveForContainment(cleanPath string) (string, bool) {
+	current := cleanPath
+	remainder := ""
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", false
+			}
+			if remainder != "" {
+				resolved = filepath.Join(resolved, remainder)
+			}
+			return resolved, true
+		}
+		parent, base := filepath.Split(current)
+		if base == "" {
+			return "", false
+		}
+		remainder = filepath.Join(base, remainder)
+		parent = filepath.Clean(parent)
+		if parent == current {
+			return "", false
+		}
+		current = parent
+	}
+}
+
+// enforceReadContainment blocks reads/lists of obviously-sensitive credential
+// stores.
+func enforceReadContainment(cleanPath string) error {
+	return EnforcePathContainment("read", cleanPath)
+}
+
+// maxContainmentWalkEntries bounds the pre-relocation subtree scan. Far above
+// any directory an operator moves through a file browser; exceeding it fails
+// CLOSED, because an unbounded tree is precisely where an unnoticed credential
+// store hides.
+const maxContainmentWalkEntries = 500_000
+
+// enforceTreeContainment refuses to RELOCATE a directory whose subtree contains
+// a credential store, even when the directory itself is not on the deny-list.
+//
+// This exists because the deny-list is a path-string match and several of its
+// rules only fire on a path component BELOW the directory: "~/.ssh" does not
+// match (the rule keys on "/.ssh/"), while "~/.ssh/id_rsa" does. A move carries
+// the whole subtree to a new prefix in one syscall, and the relocated copy no
+// longer matches anything — DeleteFile("~/.ssh") to trash left the private key
+// readable at <trash>/<id>/content/id_rsa, and RenameFile("~/.ssh", "/tmp/x")
+// left it at /tmp/x/id_rsa. Found by the security review of #3397.
+//
+// CopyFile does not need this: copyDir walks and evaluates every entry against
+// its ORIGINAL path, which still carries the telltale component.
+//
+// Applied only to relocating operations. Permanent delete does not need it —
+// destroying a directory discloses nothing, and the top-level gate still
+// refuses a directory that is itself deny-listed.
+func enforceTreeContainment(verb, root string) error {
+	entries := 0
+	var offender string
+	err := filepath.Walk(root, func(path string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			// An unreadable subtree cannot be cleared, and a move would carry
+			// it wholesale. Fail closed.
+			return walkErr
+		}
+		entries++
+		if entries > maxContainmentWalkEntries {
+			return fmt.Errorf("directory too large to clear for %s (over %d entries)", verb, maxContainmentWalkEntries)
+		}
+		if isSensitiveReadPath(path) {
+			offender = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("%s denied: cannot verify directory contents: %w", verb, err)
+	}
+	if offender != "" {
+		return fmt.Errorf("%s denied on sensitive path: %s (inside %s)", verb, offender, root)
+	}
+	return nil
+}
+
+// enforceWriteContainment blocks an operation that would CREATE or OVERWRITE
+// content at a sensitive path. The deny-list is shared with the read side on
+// purpose: writing to /etc/shadow, /etc/sudoers.d, ~/.ssh/authorized_keys or a
+// keychain is a credential-implant / privilege-escalation primitive, and the
+// file browser has no legitimate reason to reach them (#3397).
+//
+// The destination usually does not exist yet; resolveForContainment handles
+// that by resolving the nearest existing ancestor, so a symlinked parent
+// directory cannot smuggle a write into a denied location.
+func enforceWriteContainment(cleanPath string) error {
+	return EnforcePathContainment("write", cleanPath)
 }
 
 // ListDrives enumerates available drives/mount points.
@@ -411,6 +547,14 @@ func WriteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
+	// Containment (#3397): the direct write primitive. Gating CopyFile's and
+	// RenameFile's destinations while leaving this one open would be no gate at
+	// all — WriteFile is the shortest path to implanting an SSH authorized_keys
+	// entry or a /etc/sudoers.d drop-in.
+	if err := enforceWriteContainment(cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Ensure parent directory exists
 	parentDir := filepath.Dir(cleanPath)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
@@ -469,6 +613,21 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
+	// Containment (#3397). Applied to BOTH the trash and permanent branches:
+	//   - trash is disclosing: it relocates the content to
+	//     ~/.breeze-trash/<id>/content, a path the deny-list does not recognise
+	//     and that TrashList happily enumerates, so delete-then-read is a
+	//     complete bypass;
+	//   - permanent delete is destructive-but-not-disclosing, and is gated on
+	//     purpose anyway: irrecoverably destroying a credential store (bricking
+	//     sshd via /etc/shadow, wiping a keychain) is not something the file
+	//     browser has any legitimate reason to do, and leaving the MORE
+	//     destructive branch open while blocking the recoverable one would be
+	//     an incoherent policy.
+	if err := EnforcePathContainment("delete", cleanPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Block recursive deletes on any top-level directory (e.g. /home, /var, /opt)
 	if recursive {
 		parts := strings.Split(strings.TrimPrefix(cleanPath, "/"), "/")
@@ -502,6 +661,16 @@ func DeleteFile(payload map[string]any) CommandResult {
 			"deleted":   true,
 			"permanent": true,
 		}, time.Since(start).Milliseconds())
+	}
+
+	// Moving to trash relocates the whole subtree under a prefix the deny-list
+	// no longer recognises, so a directory must be cleared entry-by-entry — the
+	// top-level gate above misses "~/.ssh" and friends. Not needed on the
+	// permanent branch above, which discloses nothing.
+	if info.IsDir() {
+		if err := enforceTreeContainment("delete", cleanPath); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
 	}
 
 	// Move to trash
@@ -560,7 +729,10 @@ func DeleteFile(payload map[string]any) CommandResult {
 	if err := os.Rename(cleanPath, contentPath); err != nil {
 		// Rename may fail across devices; fall back to copy + remove
 		if info.IsDir() {
-			if cpErr := copyDir(cleanPath, contentPath); cpErr != nil {
+			// skipSensitive=false: this is the fallback half of a MOVE — the
+			// source is removed below, so an omitted entry would be destroyed.
+			// The sensitive-source gate ran at the top of DeleteFile.
+			if cpErr := copyDir(cleanPath, contentPath, false); cpErr != nil {
 				// Clean up the trash item dir on failure
 				os.RemoveAll(trashItemDir)
 				return NewErrorResult(fmt.Errorf("failed to move directory to trash: %w", cpErr), time.Since(start).Milliseconds())
@@ -660,30 +832,44 @@ func TrashRestore(payload map[string]any) CommandResult {
 
 	contentPath := filepath.Join(trashItemDir, "content")
 
+	// Containment (#3397): restore is an arbitrary-destination WRITE, and the
+	// destination comes from metadata.json — a file on disk that a preceding
+	// WriteFile could have forged. Without this gate, restore is a
+	// credential-implant primitive (drop attacker content at
+	// ~/.ssh/authorized_keys or /etc/sudoers.d/x). DeleteFile now refuses to
+	// trash a sensitive path in the first place, so no honestly-created trash
+	// item can trip this.
+	cleanOriginal := filepath.Clean(meta.OriginalPath)
+	if err := enforceWriteContainment(cleanOriginal); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Check if something already exists at the original path to prevent silent overwrite
-	if _, existErr := os.Stat(meta.OriginalPath); existErr == nil {
-		return NewErrorResult(fmt.Errorf("cannot restore: path already exists: %s", meta.OriginalPath), time.Since(start).Milliseconds())
+	if _, existErr := os.Stat(cleanOriginal); existErr == nil {
+		return NewErrorResult(fmt.Errorf("cannot restore: path already exists: %s", cleanOriginal), time.Since(start).Milliseconds())
 	}
 
 	// Ensure the parent directory of the original path exists
-	parentDir := filepath.Dir(meta.OriginalPath)
+	parentDir := filepath.Dir(cleanOriginal)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
 		return NewErrorResult(fmt.Errorf("failed to create parent directory: %w", err), time.Since(start).Milliseconds())
 	}
 
 	// Move content back to original location
-	if err := os.Rename(contentPath, meta.OriginalPath); err != nil {
+	if err := os.Rename(contentPath, cleanOriginal); err != nil {
 		// Rename may fail across devices; fall back to copy + remove
 		info, statErr := os.Stat(contentPath)
 		if statErr != nil {
 			return NewErrorResult(fmt.Errorf("failed to stat trash content: %w", statErr), time.Since(start).Milliseconds())
 		}
 		if info.IsDir() {
-			if cpErr := copyDir(contentPath, meta.OriginalPath); cpErr != nil {
+			// skipSensitive=false: MOVE semantics, see DeleteFile above. The
+			// restore destination is gated at the top of TrashRestore.
+			if cpErr := copyDir(contentPath, cleanOriginal, false); cpErr != nil {
 				return NewErrorResult(fmt.Errorf("failed to restore directory: %w", cpErr), time.Since(start).Milliseconds())
 			}
 		} else {
-			if cpErr := copyFile(contentPath, meta.OriginalPath, info.Mode()); cpErr != nil {
+			if cpErr := copyFile(contentPath, cleanOriginal, info.Mode()); cpErr != nil {
 				return NewErrorResult(fmt.Errorf("failed to restore file: %w", cpErr), time.Since(start).Milliseconds())
 			}
 		}
@@ -696,7 +882,7 @@ func TrashRestore(payload map[string]any) CommandResult {
 
 	return NewSuccessResult(map[string]any{
 		"trashId":      trashID,
-		"restoredPath": meta.OriginalPath,
+		"restoredPath": cleanOriginal,
 		"restored":     true,
 	}, time.Since(start).Milliseconds())
 }
@@ -852,12 +1038,35 @@ func RenameFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanNewPath), time.Since(start).Milliseconds())
 	}
 
+	// Containment (#3397): rename is the cheapest laundering primitive there is
+	// — `mv /etc/shadow /tmp/x` followed by ReadFile(/tmp/x) defeats the
+	// deny-list without ever "reading" anything. Relocating content out from
+	// under the deny-list is therefore treated as disclosure, not as a merely
+	// destructive op. The destination is gated for the same implant reason as
+	// CopyFile's.
+	if err := EnforcePathContainment("rename", cleanOldPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := enforceWriteContainment(cleanNewPath); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Check if source exists
-	if _, err := os.Stat(cleanOldPath); err != nil {
+	oldInfo, err := os.Stat(cleanOldPath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return NewErrorResult(fmt.Errorf("source path does not exist: %s", cleanOldPath), time.Since(start).Milliseconds())
 		}
 		return NewErrorResult(fmt.Errorf("failed to stat source: %w", err), time.Since(start).Milliseconds())
+	}
+
+	// A directory rename relocates the entire subtree in one syscall, so clear
+	// it entry-by-entry — the top-level gate misses directories that are not
+	// themselves deny-listed but hold credential stores (e.g. "~/.ssh").
+	if oldInfo.IsDir() {
+		if err := enforceTreeContainment("rename", cleanOldPath); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
 	}
 
 	// Ensure destination parent directory exists
@@ -904,6 +1113,16 @@ func CopyFile(payload map[string]any) CommandResult {
 		return NewErrorResult(fmt.Errorf("operation denied on system path: %s", cleanDst), time.Since(start).Milliseconds())
 	}
 
+	// Containment (#3397): a copy is a content-disclosing read — copy-then-read
+	// would otherwise defeat the deny-list outright. The destination is gated
+	// too, so a copy cannot implant credential material over a secret store.
+	if err := EnforcePathContainment("copy", cleanSrc); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := enforceWriteContainment(cleanDst); err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	// Check if source exists
 	info, err := os.Stat(cleanSrc)
 	if err != nil {
@@ -918,7 +1137,7 @@ func CopyFile(payload map[string]any) CommandResult {
 		if strings.HasPrefix(cleanDst, cleanSrc+string(filepath.Separator)) || cleanDst == cleanSrc {
 			return NewErrorResult(fmt.Errorf("cannot copy directory into itself: %s -> %s", cleanSrc, cleanDst), time.Since(start).Milliseconds())
 		}
-		if err := copyDir(cleanSrc, cleanDst); err != nil {
+		if err := copyDir(cleanSrc, cleanDst, true); err != nil {
 			return NewErrorResult(fmt.Errorf("failed to copy directory: %w", err), time.Since(start).Milliseconds())
 		}
 	} else {
@@ -971,7 +1190,20 @@ func copyFile(src, dst string, mode os.FileMode) error {
 
 // copyDir recursively copies a directory tree from src to dst.
 // Symlinks are skipped to prevent security boundary escapes.
-func copyDir(src, dst string) error {
+//
+// skipSensitive controls whether entries matching the read-containment
+// deny-list are omitted from the copy. Pass true for the operator-facing
+// CopyFile: gating only the copy ROOT is not enough, because copying a parent
+// directory (`/Users/alice` → `/tmp/x`) would relocate every credential store
+// beneath it to a path the deny-list no longer recognises, and a plain ReadFile
+// of the copy would then hand it over (#3397).
+//
+// Pass false wherever copyDir is the fallback half of a MOVE (DeleteFile →
+// trash, TrashRestore): those call sites delete the source afterwards, so
+// silently omitting an entry would destroy it. Those operations gate their own
+// source path up front instead, which is the containment check that applies to
+// a move.
+func copyDir(src, dst string, skipSensitive bool) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -983,6 +1215,13 @@ func copyDir(src, dst string) error {
 			return fmt.Errorf("lstat %s: %w", path, lstatErr)
 		}
 		if realInfo.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		if skipSensitive && isSensitiveReadPath(path) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
