@@ -31,6 +31,7 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { captureException } from './sentry';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -189,9 +190,18 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Script not found or has no content' });
       }
 
-      // Under a system context (intent-release worker) RLS no longer scopes
-      // partner-wide rows — verify partner ownership explicitly against each
-      // target device's org below. Request paths already saw RLS filtering.
+      // This guard is NOT here because the intent-release worker runs under a
+      // system context — it doesn't. jobs/intentReleaseWorker.ts executes this
+      // tool inside `withAuthDbAccessContext(auth, ...)`, which is RLS-scoped
+      // to the reconstructed approver identity, same as a live request. The
+      // real reason this app-layer check is load-bearing: a membership-less
+      // user is issued a system-SCOPE token (see
+      // middleware/auth.ts — payload.scope === 'system'), under which
+      // `auth.orgCondition(...)` returns `undefined` and RLS is effectively
+      // off for that session. For that caller, this org-equality check plus
+      // the device-org→partner lookup below are the ONLY defenses stopping a
+      // partner-wide script from running on a device outside the script's
+      // partner. Do not delete this thinking RLS already covers it.
       const scriptPartnerId = script.partnerId ?? null;
 
       for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
@@ -288,8 +298,28 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             results[deviceId] = { error: dispatch.error };
             continue;
           }
-          results[deviceId] = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
+          // Project the polled row instead of returning it whole: the row
+          // carries `payload` (full script content + parameters), which must
+          // never reach the model context or persisted chat history — this
+          // repo already redacts that via sanitizeCommandPayloadForAudit /
+          // sanitizeCommandForHistory (services/commandAudit.ts) for the
+          // audit/history paths, and the AI path must not bypass that
+          // convention. Mirrors executeCommand's own return shape
+          // (services/commandQueue.ts) so callers reading top-level
+          // .stdout/.exitCode keep working, plus the new executionId.
+          const cmd = await runOutsideDbContext(() => waitForCommandResult(dispatch.commandId, 60000));
+          results[deviceId] = {
+            ...(cmd.result as unknown as Record<string, unknown> ?? { status: 'failed', error: 'Command did not complete' }),
+            commandId: cmd.id,
+            executionId: dispatch.executionId,
+          };
         } catch (err) {
+          // A thrown error here is indistinguishable from "device unsupported"
+          // once caught below unless it's surfaced — a genuine DB/infra fault
+          // during dispatch must not silently masquerade as graceful
+          // per-device degradation.
+          console.error('[aiToolsScripts] run_script dispatch failed', { deviceId, error: err });
+          captureException(err);
           results[deviceId] = { error: err instanceof Error ? err.message : 'Execution failed' };
         }
       }

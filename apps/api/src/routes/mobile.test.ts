@@ -1442,6 +1442,35 @@ describe('mobile routes', () => {
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
 
+    it('surfaces a 409 from executeScriptOnDevices (e.g. maintenance-window suppression)', async () => {
+      // Reachable from mobile now that this route delegates entirely to
+      // executeScriptOnDevices (#3409 PR0 Task 3) — the maintenance-window
+      // suppression branch (409 + maintenanceSuppressedDeviceIds) is newly
+      // exercisable from this caller and existing tests only covered 403/404.
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        error: 'All target devices are in a maintenance window with script execution suppressed',
+        maintenanceSuppressedDeviceIds: ['11111111-2222-4333-8444-555555555555'],
+      });
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'run_script', scriptId: '22222222-2222-2222-2222-222222222222' })
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe('All target devices are in a maintenance window with script execution suppressed');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
     it('should run a script action by delegating to executeScriptOnDevices', async () => {
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([

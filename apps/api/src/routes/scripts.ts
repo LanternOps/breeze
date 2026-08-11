@@ -260,7 +260,16 @@ const updateScriptSchema = z.object({
 
 export const executeScriptSchema = z
   .object({
-    deviceIds: z.array(z.string().guid()).min(1),
+    // Capped at 500: queueCommand fires an un-awaited, fire-and-forget audit
+    // transaction PER DEVICE for 'script' commands (AUDITED_COMMANDS in
+    // commandQueue.ts). The dispatch loop in scriptExecution.ts is sequential
+    // and awaited, but those audit transactions are not — an unbounded batch
+    // would launch hundreds of concurrent transactions against a pool sized
+    // for far fewer while this request also holds a connection, the same
+    // pool-starvation shape that has caused prior production incidents.
+    deviceIds: z.array(z.string().guid()).min(1).max(500, {
+      message: 'Cannot target more than 500 devices in a single script execution',
+    }),
     parameters: z.record(z.string(), z.any()).refine(
       (val) => JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }

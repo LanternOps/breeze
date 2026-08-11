@@ -21,6 +21,7 @@ import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 import {
   getEmailRecipients,
   sendEmailNotification,
@@ -930,7 +931,11 @@ export async function executeRunScriptAction(
       actionIndex,
       deviceId: context.device.id,
       commandId: dispatch.commandId,
-      details: { scriptId: script.id, executionId: dispatch.executionId },
+      // deliveryOutcome lets an operator reading the run log distinguish
+      // "queued, agent offline" (no_agent) from "we had a socket and failed
+      // to reach it" (claim_lost/decrypt_failed/send_failed) — see
+      // scriptDispatch.ts's DispatchScriptResult for the full enum.
+      details: { scriptId: script.id, executionId: dispatch.executionId, deliveryOutcome: dispatch.deliveryOutcome },
     }),
   };
 }
@@ -991,7 +996,9 @@ async function executeCommandAction(
       actionIndex,
       deviceId: context.device.id,
       commandId: dispatch.commandId,
-      details: { shell },
+      // See executeRunScriptAction above for why deliveryOutcome is worth
+      // surfacing here.
+      details: { shell, deliveryOutcome: dispatch.deliveryOutcome },
     }),
   };
 }
@@ -1827,9 +1834,16 @@ async function executeAutomationRunInner(
       // {success:false}. Treat it as a device-level failure rather than letting
       // it reject runWithConcurrency's Promise.all and abort the whole run —
       // which would strand every other device's result row (#2023).
+      //
+      // This catch logs into the run's own log entries, but that's a DB
+      // column, not Sentry — a genuine infra fault during automated dispatch
+      // (DB blip, dispatch core throw, etc.) would otherwise be invisible
+      // outside someone reading this specific run's logs. Surface it.
       deviceFailed = true;
       const message = err instanceof Error ? err.message : String(err);
       if (deviceError === null) deviceError = message;
+      console.error('[automationRuntime] action threw during device dispatch', { deviceId: device.id, error: err });
+      captureException(err);
       const errLog = logEntry(`Automation action threw: ${message}`, 'error', { deviceId: device.id });
       logs.push(errLog);
       deviceOutput.push(`[error] ${errLog.message}`);

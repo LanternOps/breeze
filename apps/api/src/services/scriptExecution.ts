@@ -191,6 +191,17 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   }
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
+  // This loop itself is sequential/awaited and therefore bounded, but
+  // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
+  // fire-and-forget audit transaction PER DEVICE for 'script' commands
+  // (AUDITED_COMMANDS in commandQueue.ts) that this loop cannot see or wait
+  // on. That's the actual unbounded fan-out risk — a large batch launches
+  // that many concurrent transactions against a pool sized for far fewer
+  // while this request also holds a connection (pool-starvation shape).
+  // The real mitigation is the `.max(500)` cap on `deviceIds` in
+  // executeScriptSchema (routes/scripts.ts) — do not raise that cap without
+  // also addressing this fan-out, and do not "fix" it by restructuring
+  // queueCommand's audit dispatch out from under this loop.
   for (const device of executableDevices) {
     const dispatch = await dispatchScriptToDevice({
       device,
@@ -225,7 +236,15 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
 
   return {
     ok: true,
-    batchId: createdBatchIds[0] ?? null,
+    // `batchId` is a legacy scalar convenience for the common single-batch
+    // case. In a multi-org run there is no single batch that represents the
+    // whole run — createdBatchIds[0] would silently pick an arbitrary org's
+    // batch, and a consumer polling just that id would track only a slice of
+    // the run. Prefer absent-and-loud over misleadingly partial: `batchId` is
+    // only populated when exactly one batch was created. `batchIds` (below)
+    // always carries the complete list and is what multi-batch callers must
+    // use.
+    batchId: createdBatchIds.length === 1 ? createdBatchIds[0]! : null,
     batchIds: createdBatchIds,
     scriptId: input.scriptId,
     script,

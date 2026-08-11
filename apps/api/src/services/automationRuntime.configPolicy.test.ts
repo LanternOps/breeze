@@ -451,6 +451,21 @@ describe('executeConfigPolicyAutomationRun', () => {
     // Verify final status was persisted to DB
     const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('completed');
+
+    // execute_command builds a 'raw' dispatch source — assert the mapping
+    // reaching dispatchScriptToDevice: shell -> language, and provenance
+    // stamped with this automation's id (used by scriptDispatch/audit to
+    // attribute ad-hoc command content back to the triggering automation).
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: {
+          kind: 'raw',
+          content: 'echo ok',
+          language: 'bash',
+          provenance: `automation:${automation.id}`,
+        },
+      }),
+    );
   });
 
   it('returns failed when device action fails and onFailure is stop', async () => {
