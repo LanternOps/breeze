@@ -146,12 +146,14 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
 
     const input = dispatchMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.device).toBe(DEVICE);
-    expect(input.source).toEqual({ kind: 'saved', script: SCRIPT });
+    // automationRunId now lives on the 'saved' source variant, not the
+    // top-level dispatch input (#3409 PR0 Wave A — makes a 'raw' source
+    // silently dropping it an unrepresentable state).
+    expect(input.source).toEqual({ kind: 'saved', script: SCRIPT, automationRunId: RUN_ID });
     expect(input.triggerType).toBe('automation');
     expect(input.triggeredBy).toBe('user-1');
     expect(input.createdBy).toBe('user-1');
     expect(input.runAs).toBe('system');
-    expect(input.automationRunId).toBe(RUN_ID);
     expect(input.requireOnline).toBe(true);
   });
 

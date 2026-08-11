@@ -886,7 +886,7 @@ export async function executeRunScriptAction(
   // row to discard on that path either.
   const dispatch = await dispatchScriptToDevice({
     device: context.device,
-    source: { kind: 'saved', script },
+    source: { kind: 'saved', script, automationRunId: context.runId },
     parameters,
     triggerType: 'automation',
     triggeredBy: context.automation.createdBy ?? null,
@@ -896,7 +896,6 @@ export async function executeRunScriptAction(
     // validation) — preserve the pre-existing runtime behavior of forwarding
     // whatever value was configured rather than adding new validation here.
     runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
-    automationRunId: context.runId,
     requireOnline: true,
   });
 

@@ -11,12 +11,14 @@ vi.mock('./sensitiveCommandPayload', () => ({
   decryptCommandForDelivery: vi.fn((c: unknown) => c),
 }));
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
 import { queueCommand } from './commandQueue';
 import { claimPendingCommandForDelivery } from './commandDispatch';
 import { decryptCommandForDelivery, encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 import { dispatchScriptToDevice } from './scriptDispatch';
 
 const savedScript = (o = {}) => ({
@@ -33,6 +35,19 @@ const insertReturning = (rows: unknown[]) => ({
   values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
 });
 
+// Mocks the cleanup delete (`db.delete(...).where(...).returning(...)`).
+// `rows` models what the delete actually removed — pass `[]` to model a
+// 0-row delete (execution wasn't pending anymore), or configure `whereImpl`
+// to reject to model a transient cleanup-DB failure.
+const mockDiscardDelete = (rows: unknown[] | (() => Promise<unknown[]>)) => {
+  const returning = typeof rows === 'function'
+    ? vi.fn(rows)
+    : vi.fn().mockResolvedValue(rows);
+  const del = { where: vi.fn().mockReturnValue({ returning }) };
+  vi.mocked(db.delete).mockReturnValue(del as any);
+  return del;
+};
+
 // Mocks the live `devices.status` re-read the requireOnline gate performs.
 // Pass `undefined` to model a device row that no longer exists.
 const mockLiveDeviceStatus = (status: string | undefined) => {
@@ -44,6 +59,30 @@ const mockLiveDeviceStatus = (status: string | undefined) => {
     }),
   } as any);
 };
+
+/** Flatten a drizzle SQL node into its literal tokens (column names + values). */
+function collectSqlTokens(node: unknown): string[] {
+  const found: string[] = [];
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown) => {
+    if (value == null) return;
+    if (typeof value === 'string') {
+      found.push(value);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    // The real (unmocked) drizzle schema objects backing these SQL nodes
+    // carry circular table<->column references — guard against them.
+    if (seen.has(value as object)) return;
+    seen.add(value as object);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(node);
+  return found;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -140,14 +179,22 @@ describe('dispatchScriptToDevice — invariants', () => {
 describe('dispatchScriptToDevice — rows and payload', () => {
   it('saved: creates an execution row with the DEVICE org and passes executionId in payload', async () => {
     const r = await dispatchScriptToDevice({
-      device: device(), source: { kind: 'saved', script: savedScript() },
-      parameters: { a: '1' }, triggeredBy: 'user-1', triggerType: 'manual', automationRunId: null,
+      device: device(), source: { kind: 'saved', script: savedScript(), automationRunId: null },
+      parameters: { a: '1' }, triggeredBy: 'user-1', triggerType: 'manual',
     });
     expect(r.ok).toBe(true);
     const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
     expect(execValues).toMatchObject({ scriptId: 'script-1', deviceId: 'device-1', orgId: 'org-a', triggeredBy: 'user-1', status: 'pending' });
     const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
     expect(payload).toMatchObject({ scriptId: 'script-1', executionId: 'exec-1', language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' });
+  });
+
+  it('saved: automationRunId lives on the source variant and is forwarded to the insert', async () => {
+    await dispatchScriptToDevice({
+      device: device(), source: { kind: 'saved', script: savedScript(), automationRunId: 'run-1' },
+    });
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues).toMatchObject({ automationRunId: 'run-1' });
   });
 
   it('raw: creates NO execution row and uses provenance as payload scriptId', async () => {
@@ -177,8 +224,7 @@ describe('dispatchScriptToDevice — rows and payload', () => {
   });
 
   it('deletes the pending execution row if queueCommand throws', async () => {
-    const del = { where: vi.fn().mockResolvedValue(undefined) };
-    vi.mocked(db.delete).mockReturnValue(del as any);
+    mockDiscardDelete([{ id: 'exec-1' }]);
     vi.mocked(queueCommand).mockRejectedValue(new Error('boom'));
     await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('boom');
     expect(db.delete).toHaveBeenCalled();
@@ -186,49 +232,143 @@ describe('dispatchScriptToDevice — rows and payload', () => {
 
   it('rethrows the ORIGINAL queueCommand error even if the cleanup delete also throws', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const del = { where: vi.fn().mockRejectedValue(new Error('cleanup-db-down')) };
-    vi.mocked(db.delete).mockReturnValue(del as any);
+    mockDiscardDelete(() => Promise.reject(new Error('cleanup-db-down')));
     vi.mocked(queueCommand).mockRejectedValue(new Error('boom'));
     await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('boom');
     expect(db.delete).toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
+  });
+
+  // A1 regression (#3162 non-throw path): queueCommand can resolve falsy
+  // WITHOUT throwing (e.g. a swallowed insert failure inside queueCommand).
+  // Before the fix, this branch returned insert_failed but never ran
+  // cleanup, orphaning the pending execution row for the reaper to later
+  // mislabel 'timeout'.
+  it('discards the pending execution row when queueCommand resolves falsy without throwing', async () => {
+    mockDiscardDelete([{ id: 'exec-1' }]);
+    vi.mocked(queueCommand).mockResolvedValue(undefined as any);
+    const r = await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('insert_failed');
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it('warns when the cleanup delete removes 0 rows (execution was no longer pending)', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockDiscardDelete([]);
+    vi.mocked(queueCommand).mockRejectedValue(new Error('boom'));
+    await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('boom');
+    expect(consoleWarnSpy).toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
+  });
+
+  it('discards the pending execution row when the payload build throws', async () => {
+    mockDiscardDelete([{ id: 'exec-1' }]);
+    vi.mocked(encryptSensitivePayloadFields).mockImplementationOnce(() => { throw new Error('payload boom'); });
+    await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('payload boom');
+    expect(db.delete).toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
   });
 });
 
 describe('dispatchScriptToDevice — delivery', () => {
   it('claims, decrypts via decryptCommandForDelivery, sends, and marks execution running (guarded)', async () => {
-    const updateWhere = vi.fn().mockResolvedValue(undefined);
-    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: updateWhere }) } as any);
-    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt: new Date('2026-08-11T00:00:00Z') } as any);
+    const setSpy = vi.fn();
+    const whereArgs: unknown[] = [];
+    vi.mocked(db.update).mockReturnValue({
+      set: (vals: Record<string, unknown>) => {
+        setSpy(vals);
+        return {
+          where: (condition: unknown) => {
+            whereArgs.push(condition);
+            return Promise.resolve(undefined);
+          },
+        };
+      },
+    } as any);
+    const executedAt = new Date('2026-08-11T00:00:00Z');
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt } as any);
     vi.mocked(sendCommandToAgent).mockReturnValue(true);
     const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
     expect(decryptCommandForDelivery).toHaveBeenCalled();
     expect(sendCommandToAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({ id: 'cmd-1', type: 'script' }));
-    if (r.ok) { expect(r.delivered).toBe(true); expect(r.executedAt).toEqual(new Date('2026-08-11T00:00:00Z')); }
+    if (r.ok) {
+      expect(r.delivered).toBe(true);
+      expect(r.deliveryOutcome).toBe('sent');
+      expect(r.executedAt).toEqual(executedAt);
+    }
+
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith({ status: 'running', startedAt: executedAt });
+    expect(whereArgs).toHaveLength(1);
+    const tokens = collectSqlTokens(whereArgs[0]);
+    expect(tokens).toContain('exec-1');
+    expect(tokens).toContain('status');
+    expect(tokens).toContain('pending');
+  });
+
+  it('reports claim_lost when claimPendingCommandForDelivery loses the race (no throw)', async () => {
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue(null);
+    const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('claim_lost');
+    }
   });
 
   it('releases the claim when decrypt returns null (does NOT send raw payload)', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt: new Date() } as any);
-    vi.mocked(decryptCommandForDelivery).mockReturnValue(null as any);
+    // Once-only override: the default mock implementation just echoes the
+    // command back, and other tests in this suite rely on that default —
+    // `mockReturnValueOnce` avoids leaking `null` into later tests (plain
+    // `mockReturnValue` is not undone by `vi.clearAllMocks()` in beforeEach).
+    vi.mocked(decryptCommandForDelivery).mockReturnValueOnce(null as any);
     const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
     const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(releaseClaimedCommandDelivery).toHaveBeenCalledWith('cmd-1', expect.any(Date));
-    if (r.ok) expect(r.delivered).toBe(false);
+    expect(db.update).not.toHaveBeenCalled();
+    if (r.ok) {
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('decrypt_failed');
+    }
+    // decrypt_failed means we had a connected agent and still failed to
+    // reach it — operationally distinct from "queued for later", so it warns.
+    expect(consoleWarnSpy).toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
   });
 
   it('releases the claim when the WS send fails', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ executedAt: new Date() } as any);
     vi.mocked(sendCommandToAgent).mockReturnValue(false);
     const { releaseClaimedCommandDelivery } = await import('./commandDispatch');
     const r = await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), source: { kind: 'saved', script: savedScript() } });
     expect(releaseClaimedCommandDelivery).toHaveBeenCalled();
-    if (r.ok) expect(r.delivered).toBe(false);
+    expect(db.update).not.toHaveBeenCalled();
+    if (r.ok) {
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('send_failed');
+    }
+    expect(consoleWarnSpy).toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
   });
 
-  it('skips delivery entirely when deliver:false or agentId null', async () => {
-    await dispatchScriptToDevice({ device: device({ agentId: 'agent-1' }), deliver: false, source: { kind: 'saved', script: savedScript() } });
-    await dispatchScriptToDevice({ device: device({ agentId: null }), source: { kind: 'saved', script: savedScript() } });
+  it('skips delivery entirely when agentId is null (normal "no agent connected" case, no warn)', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const r = await dispatchScriptToDevice({ device: device({ agentId: null }), source: { kind: 'saved', script: savedScript() } });
     expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+    if (r.ok) {
+      expect(r.delivered).toBe(false);
+      expect(r.deliveryOutcome).toBe('no_agent');
+    }
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
   });
 });
