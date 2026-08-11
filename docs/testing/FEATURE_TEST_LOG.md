@@ -4526,3 +4526,9 @@ Stack env restored (IS_HOSTED=false, BREEZE_BILLING_URL set); caddy host port re
 
 ### Out-of-scope for browser QA (recorded for release decision)
 The release range also contains changes with no browser-reachable surface, untested by this pass and by the log to date: the 10-PR BYO-signing / edition-aware pipeline epic (#3327 #3330 #3331 #3349 #3350 #3351 #3353 #3360 #3321 #3352 — needs a self-host-edition build to verify manifest rejection + re-signing abort), 7 agent-side fixes (#3422 #3393 #3371 #3367 #3398 #3395 #3384), backup VSS fixes (#3285/#3267/#3266), breeze-backup auto-update (#3293), and partner-policy agent delivery (#3390). These need an agent/VM pass (Windows test VM .55) — flagging as the largest remaining pre-release risk cluster.
+
+### [Addendum: PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST (#1322)] — PASS
+Flag enabled on the dev stack (web env + restart). Verified: Devices page grows a CLASS column and All/Agent/Network class tabs with counts; only **approved AND unlinked** discovered assets count as network devices (by design — linked assets are represented by their managed device; pending/dismissed stay in Discovery). Approving an asset in Discovery (bulk Approve selected) made it appear as a Network row (All 31 / Agent 30 / Network 1); clicking the row lands on /devices/network/:id. Off by default pending #1322 follow-ups (unified sort/pagination, inline approval).
+
+### Environment addendum
+Docker engine restarted mid-session (~21:07) and the wt-main postgres data dir is tmpfs → DB wiped, API re-bootstrapped a fresh tenant. QA seed re-applied against the new tenant (anchor UUIDs substituted; BEGIN/COMMIT stripped because the new Default Org UUID sorts below the QA orgs and the partner-export lock-order trigger rejects cross-org statements in one transaction). Current stack: http://localhost:32773 (network-list flag ON on web).
