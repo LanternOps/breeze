@@ -17,6 +17,8 @@ let warrantyWorker: Worker | null = null;
 interface SyncSingleJob {
   type: 'sync-single';
   deviceId: string;
+  /** Explicit user-requested refresh; bypasses the virtual-machine skip. */
+  force?: boolean;
 }
 
 interface SyncBatchJob {
@@ -39,7 +41,7 @@ function createWarrantyWorker(): Worker<WarrantyJobData> {
       return runWithSystemDbAccess(async () => {
         switch (job.data.type) {
           case 'sync-single':
-            await syncWarrantyForDevice(job.data.deviceId);
+            await syncWarrantyForDevice(job.data.deviceId, { force: job.data.force === true });
             return { deviceId: job.data.deviceId };
 
           case 'sync-batch': {
@@ -92,13 +94,21 @@ async function scheduleWarrantyJobs(): Promise<void> {
   console.log('[WarrantyWorker] Scheduled repeatable warranty sync jobs');
 }
 
-export async function queueWarrantySyncForDevice(deviceId: string): Promise<void> {
+export async function queueWarrantySyncForDevice(
+  deviceId: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
   const queue = getWarrantyQueue();
+  const force = options.force === true;
   await queue.add(
     'sync-single',
-    { type: 'sync-single', deviceId },
+    { type: 'sync-single', deviceId, ...(force ? { force: true } : {}) },
     {
-      jobId: `warranty-single-${deviceId}`,
+      // Forced refreshes get their OWN jobId. The id is stable so duplicate
+      // enqueues collapse, but a forced job must not collapse into a pending
+      // background one: BullMQ would drop the newer job and the user's refresh
+      // would silently never run with `force`.
+      jobId: force ? `warranty-single-${deviceId}-force` : `warranty-single-${deviceId}`,
       removeOnComplete: true,
       removeOnFail: { count: 20 },
     }

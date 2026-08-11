@@ -23,7 +23,27 @@ function computeWarrantyStatus(endDate: string | null, warnDays = 90): WarrantyS
 
 const SYNC_CADENCE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
+export interface SyncWarrantyOptions {
+  /**
+   * Explicit, user-requested refresh. Bypasses the virtual-machine skip only.
+   *
+   * The VM skip exists to stop the 7-day fleet sweep burning vendor quota on
+   * synthetic serials, which is an efficiency rule — so a human asking for one
+   * device is both negligible in cost and the escape hatch when virtualization
+   * detection misfires. `ClassifyVirtualization` matches bare substrings, so a
+   * physical machine with an unlucky SMBIOS string would otherwise lose its
+   * warranty data permanently with no way to override.
+   *
+   * Deliberately does NOT bypass the ephemeral skip: that one is an ownership
+   * rule (never ship a stranger's serial to a vendor), not an efficiency one.
+   */
+  force?: boolean;
+}
+
+export async function syncWarrantyForDevice(
+  deviceId: string,
+  options: SyncWarrantyOptions = {},
+): Promise<void> {
   // Load hardware info for this device
   const [hw] = await db
     .select({
@@ -42,7 +62,7 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
 
   // Get device org
   const [device] = await db
-    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
+    .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral, isVirtual: devices.isVirtual })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
@@ -58,6 +78,21 @@ export async function syncWarrantyForDevice(deviceId: string): Promise<void> {
   // getDevicesNeedingWarrantySync excludes them too; this is the entry-point
   // guard for any other caller.
   if (device.isEphemeral) return;
+
+  // Virtual-machine exclusion: a VMware/Hyper-V guest reports a synthetic
+  // serial and a vendor-ish manufacturer string, so it passes the serial +
+  // manufacturer filters above and gets submitted to a vendor warranty API
+  // that has never heard of it. There is no warranty to find — the result is
+  // burnt vendor quota and a row parked permanently in 'unknown'.
+  // cleanHardwareIdentityValue does not catch these the way it catches
+  // whitebox OEM placeholders, because a guest's reported values look
+  // plausible. Same entry-point-guard role as the isEphemeral check above.
+  //
+  // `force` (an explicit user-requested refresh) bypasses this one — see
+  // SyncWarrantyOptions. Without that, a manual refresh on a device flagged
+  // virtual would never advance lastSyncAt and the UI would poll a success
+  // that never arrives.
+  if (device.isVirtual && !options.force) return;
 
   const provider = getProviderForManufacturer(hw.manufacturer);
   if (!provider) {
@@ -300,6 +335,8 @@ export async function getDevicesNeedingWarrantySync(limit = 50): Promise<string[
       and(
         // Quick Support exclusion — see syncWarrantyForDevice above.
         eq(devices.isEphemeral, false),
+        // Virtual-machine exclusion — see syncWarrantyForDevice above.
+        eq(devices.isVirtual, false),
         // Has hardware with serial number
         sql`${deviceHardware.serialNumber} IS NOT NULL`,
         sql`${deviceHardware.manufacturer} IS NOT NULL`,
