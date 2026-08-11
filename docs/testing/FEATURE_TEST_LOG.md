@@ -4370,3 +4370,156 @@ Env: http://localhost:32828, main @ 3b496e989. Login admin@breeze.local. Fresh s
 1. **HIGH — Same-class stored-XSS gap left open on 2 fields after the Website fix.** `apps/api/src/routes/orgs.ts`: `eventLogs.elasticsearchUrl` and `notifications.slackWebhookUrl` are still plain `z.string()` with no scheme validation, while `contact.website` a few lines above was just hardened. `javascript:alert(1)` saves with a 200 and persists on both.
 2. **HIGH — Saved Filters creation crashes 100% of the time.** `apps/web/src/components/filters/FilterBuilder.tsx:95` — `setPreview(data)` doesn't unwrap the API's `{data: {...}}` envelope, so `FilterPreview.tsx:74` throws reading `.length` of `undefined` the moment a filter condition has a value. Blocks the entire Saved Filters feature.
 3. **HIGH — Notification Channels list crashes for any org with a webhook channel.** `apps/web/src/components/alerts/NotificationChannelList.tsx:120` — `(config.url as string)` is a compile-time-only assertion; the API now redacts `config.url`/`config.headers` values as `{redacted,hasSecret,masked}` objects in list responses, and rendering that object crashes React. The originally-reported webhook-creation 400 is fixed, but this new regression makes the list unusable once one webhook channel exists.
+
+## UI QA Sweep — 2026-08-11 (pre-release gap-closure pass, stack :32831)
+
+Scope: close the coverage gaps called out after the post-merge pass — re-verify
+paper-fixed FAILs, fix + verify the multi-org device-group bug, seed fixtures
+(devices / discovered assets / >100 orgs / fleet findings), then QA #3278,
+#3295, #3447, #3448 and the structurally-blocked list. Release-range audit:
+v0.104.0..main = 124 commits (~89 product PRs), ~50 with no prior log entry.
+Stack: breeze-wt-main (code-mounted from this worktree) at http://localhost:32831
+(caddy restart re-rolled the host port from :32828). Main at b33e8f016 (#3448
+merged) + sweep-fix branch commits.
+
+### [#3448 re-verify] Saved Filters — PASS after new fix
+- ✅ FilterPreview crash is fixed: condition `hostname contains windows` → preview renders "1 device match" (E2E Windows Test Device), no blank page.
+- ❌→✅ NEW BUG found + fixed: create with empty description 400'd (`description: expected string, received null`) — `createSavedFilterSchema` didn't accept `null` while update did (same schema-drift class as #3159). UI only said "Failed to save filter" (generic copy; real cause never shown). Fixed in `packages/shared/src/validators/filters.ts` (shared field, both verbs) — commit 8203604cb on PR #3449. Re-tested live: filter creates, appears in list.
+- ⚠️ UI/UX: create-failure toast copy is generic while the API error is precise; consider surfacing the field error.
+
+### [#3448 re-verify] Notification Channels list — PASS
+- ✅ `/alerts/channels` renders with an existing webhook channel ("QA Webhook Test", masked config) — the redacted-object list crash is fixed. "1 of 1 channels" correctly spaced.
+
+### [#3448 re-verify] Partner settings URL validation — PASS
+- ✅ Event Logs → endpoint URL `javascript:alert(1)` → PATCH 400, toast "Log endpoint URL must be a full http:// or https:// URL".
+- ✅ Notifications → Slack webhook URL `javascript:alert(1)` → 400, toast "Slack webhook URL must be a full http:// or https:// URL".
+
+### [#3437/#3424 re-verify] Count-glue strings — PASS
+- ✅ `/software-inventory` header "0 unique software"; `/configuration-policies` "0 of 0 policies"; `/settings/roles` "6 of 6 roles" — all spaced. (Footer "Showing X–Y of Z" re-check pending seeded data.)
+
+### [Device groups multi-org] — FIXED, PR #3449
+- ❌ Confirmed root cause: `POST /device-groups` read orgId only from body; `CreateGroupModal` sends none (fetchWithAuth appends `?orgId=`); partner with 2+ orgs always 400'd.
+- ✅ Fix: create handler falls back to UUID-validated `orgId` query param; `ensureOrgAccess` still gates it; body keeps precedence. 4 new unit tests (incl. cross-tenant 403). Browser verify scheduled after >100-org seed makes the partner multi-org.
+
+### [Ticketing sub-tabs] — PASS
+- ✅ All 7 sub-tabs (My tickets, Unassigned, All open, Breaching soon, Closed, Review queue, Archived) render their empty states; every API call 200; no console errors. Review-queue copy contains the word "failed" (inbound-email context) — not an error.
+
+### [#3440/#3391 Preferred remote tool] — PASS
+- ✅ Partner Settings → Remote Access: added provider "QA RustDesk" (rustdesk://{id}, field key rustdesk_id) → "Partner settings saved" toast.
+- ✅ Profile → Preferred remote tool: empty state correct before providers exist; after: options "Use organization default" + "QA RustDesk"; selecting fires PATCH /users/me {preferences:{remoteAccessProviderId}} → 200; persists across reload.
+- ✅ /remote/providers response is slim: {id,name,enabled} + defaultProviderId only — no launch template, field key, or credential material (the #3440 redaction).
+- Connect-launch path (device → Connect uses chosen provider) deferred to the seeded-devices pass.
+
+### [#3278 Fleet hygiene findings UI] — PASS after 1 fix (first-ever browser pass)
+Fixtures: 5 seeded findings (3 kinds, 2 orgs), 17 member rows, 1 historical remediation run.
+- ❌→✅ BUG found + fixed: "All organizations" in the feed silently narrowed to the switcher's active org — FindingsFeed omitted orgId and fetchWithAuth re-injected the active org; since the org dropdown builds from returned rows, other orgs could never appear either. Fix: `skipOrgIdInjection` opt-out on fetchWithAuth used by listFindings (commit on PR #3449, +2 service tests). Verified live: "Showing 5 of 5" across both orgs, dropdown offers both.
+- ✅ Feed renders all kinds/severities; filters (org/kind/severity/status) work; URL-hash deep-link per finding.
+- ✅ Drawer: summary, evidence JSON, affected-devices table (hostnames resolved), remediation history, lifecycle buttons.
+- ✅ Fix picker: 3 action kinds; script path → Select Script modal (categories, run-as) → device selection step (4 of 4, select-all/clear) → confirm → "Start remediation" dispatched (202), picker closes.
+- ✅ Run progress panel: appears immediately, polls ("Refreshing while the run is active…"), per-device rows "Skipped — unreachable" (correct for offline fixtures).
+- ✅ Lifecycle: Acknowledge → toast "Finding acknowledged", feed chip flips to Acknowledged.
+- ⏳ Run finalization (parent run counters/terminal status via 30s poll job) being verified in background.
+
+### [#3278 addendum] Remediation run finalization — PASS
+- ✅ The all-targets-skipped run finalized via the 30s poll job: status `failed`, skipped_count 4, completed_at set. UI panel stops polling once terminal.
+- ⚠️ UI/UX: for up to ~1 poll tick the summary line reads "0 succeeded, 0 failed, 0 skipped of 4 targeted" while the per-device rows already show 4 × Skipped — counters lag the row list. Cosmetic.
+
+### [#3295 discovery link/unlink + durable unlink] — PASS (first-ever browser pass)
+Fixtures: 6 assets in QA Org 001 (3 pending, 2 auto-linked, 1 seeded-suppressed), 2 in Default Org.
+- ✅ Asset list renders linked assets with "Same device as QA Device 00N"; filters/status/type counts correct.
+- ✅ Asset modal: link renders as deep-link to the managed device; network/SNMP/monitoring sections render.
+- ✅ NetworkDeviceDetailPage → Monitoring tab → Discovery: "Same device as QA Device 007 — auto-detected" + Unlink.
+- ✅ Unlink (confirm dialog) → "Not linked" + **"Auto-linking disabled — unlinked by a user"** (the durable-unlink suppression indicator — the point of the PR — renders). DB: auto_link_suppressed_at set.
+- ✅ Link manually… → site-scoped device dropdown → "Device linked" toast → "— set manually" provenance; DB confirms link_source=manual and suppression CLEARED (re-enabling auto-link on manual relink is the intended semantics).
+- ⚠️ UI/UX: the link/unlink controls live under the "Monitoring" tab of the network device page — not discoverable from the asset modal, which only shows the passive "Same device as…" link ("Manage proxy access on the network device page" hints at the page but not at linking). Consider surfacing link/unlink in the modal too.
+
+### [Org switcher >50 orgs] — FAIL → FIXED (missed reader of #3446)
+- ❌ BUG: org switcher showed "Fleet view · 50 organizations" of 126; search for "QA Org 125" returned nothing — orgStore.fetchOrganizations fetched one unpaginated page (server clamps at 50 default/100 max) and switcher search filters client-side. #3447 fixed OrganizationsPage only; the switcher was the hidden second reader.
+- ✅ Fix: fetchAllOrganizations extracted to lib/, orgStore walks all pages (commit on PR #3449; store tests updated). Verified live: "Fleet view · 126 organizations", QA Org 125 findable, switch to QA Org 001 works.
+
+### [Enrollment keys (#3034 partial)] — PASS (UI side)
+- ✅ Create Key with org/site + Max Usage 5 → one-time secret banner ("will not be shown again"), row shows usage "0 / 5", Download/Rotate/Delete present. Full per-token installer capacity chain (short-link child token → installer download decrement) still needs an install flow — BLOCKED on a real agent enrollment.
+
+### [#3447 org pagination] — PASS (post-fix)
+- ✅ Settings → Organizations with 126 orgs: search finds "QA Org 125" (past both 50- and 100-row boundaries).
+- ✅ Org switcher (after this sweep's orgStore fix): "Fleet view · 126 organizations", any org reachable via switcher search.
+
+### [#3301/#3305 scripts pagination] — PASS
+- ✅ /scripts list: 36 partner-owned scripts (23 global live in the separate Import-from-Library catalog — expected), pages 1–4 navigate, footer "Showing 31 to 36 of 36" correctly spaced.
+- ✅ Run Script picker requests limit=100 (server ceiling) and renders all 44 macOS-compatible scripts of the 59-script library — past the old 50 default cap. (>100-script tenants unverifiable with this seed; code walks pages.)
+- ⚠️ UI/UX: scripts-list pagination prev/next buttons are icon-only with no aria-label or accessible name.
+
+### [Devices workflows] — PASS (unblocked by seed)
+- ✅ List renders 30 of 30 (QA Org 001), quick filters/columns/status chips present; offline devices show "Down".
+- ✅ Device detail: header + Wake/Run Script/Connect Desktop/Remote Tools/Power; all 8 tabs (Details, Performance, Alerts, Anomalies, Tickets, Event Log, Monitoring, Compliance) render without crashes; empty states correct.
+- ✅ Run Script disabled with tooltip "Device is offline" when offline (graceful, not silent). After flipping device online: picker opens, script dispatch → 201, device_commands row `pending`. Output view BLOCKED on a live agent.
+- ⚠️ UI/UX: GET /reliability/:deviceId 404s for devices with no snapshot (UI copes with proper empty state; console noise).
+- ⚠️ UI/UX: Overview ACTIVITY section shows bare "ACTIVITY" header with no empty-state copy.
+
+### [Device groups — multi-org fix verified live] — PASS
+- ✅ As a 126-org partner (previously 100% 400): created static group "QA Multi-Org Static Group" with 3 initial devices (also #3423's membership-on-create path — count shows 3 devices), and dynamic group "QA Dynamic Linux Group" (hostname contains qa-dev) → evaluated at create, "Matches 30 devices".
+
+### [#3276 script bundle export/import] — PASS with 1 UX finding
+- ✅ Export modal lists the full partner library (36), select 2 → downloads `script-bundle-2026-08-11.json` (bundleVersion 1, full script bodies).
+- ✅ Import modal: trust warning ("can run as SYSTEM… only import from a source you trust"), parses bundle ("2 scripts in bundle"), collision-mode radio (skip/rename/new-version), partner-wide toggle; import → toast "2 imported, 0 renamed, 0 versioned, 0 skipped, 0 failed".
+- ⚠️ FINDING (filed as issue): with default availability 'org', collision detection deliberately conflicts only against org-owned rows — importing a bundle whose names match existing PARTNER-WIDE scripts shows every entry as "New" and creates same-name org-scoped duplicates in the same list view, even in "Skip it" mode. Namespace design is intentional (#3262), but the operator-visible outcome is duplicate names the "skip existing" option doesn't skip.
+
+### [#3316/#3328 org contacts compat] — PASS
+- ✅ Org Settings → Billing → billing contact save → toast "Organization billing settings saved"; DB shows a first-class `contacts` row (roles={billing}, is_primary=true) written through the compat service — the legacy jsonb writer is properly repointed.
+
+### [#3273/#3287 bulk org/site import] — PASS
+- ✅ CSV upload → column-mapping UI → Preview: bad IANA timezone rejected 400 with precise field error surfaced as toast ("rows.2.timezone: Invalid IANA timezone" — runAction path works; earlier "silent failure" suspicion was a probe-timing artifact).
+- ✅ Preview annotates "New" vs "Name match — confirm" (duplicate excluded from import until confirmed); skip/update-from-file mode selector present. Import → "1 imported." toast; org + site rows verified in DB.
+- ⚠️ UI/UX: preview error toast copy is raw field-path ("rows.2.timezone") — row number is 0-indexed relative to data rows; "Row 3" phrasing would be clearer.
+
+### [#3420 report-suspicious] — BLOCKED (no pending approvals in seed; needs an approval-generating action from a second user)
+### [#3417/#3414 policy remediation dispatch] — BLOCKED (needs a config policy with real drift against a live agent)
+
+### [#3324 migration banner] — PASS (env-gated test)
+- ✅ With BREEZE_BILLING_URL unset (self-hosted presentation) + one device flagged migration_required in the active org: banner renders on every page — "1 device(s) are running the hosted agent edition on this self-hosted server." + "How to migrate" link. Disappears when count drops to 0 / instance is hosted (gates verified: hosted stack correctly suppresses it).
+- ⚠️ UI/UX: "1 device(s)" — needs i18n pluralization.
+
+### [#3289 hosted signup gate] — PASS (env-gated test)
+- ✅ With IS_HOSTED=true: /register-partner with a gmail.com address → blocked inline: "Please sign up with your business email address… schedule a call" + working "Schedule a call" action button (the earlier actionUrl-drop gap is not present here). No partner row created (DB verified).
+
+### [#3294/#3199 proxy access] — PARTIAL
+- ✅ Open Ports chips render; web-port (443) chip opens ProxyConnectPopover: "Proxy to 10.42.3.1:443 — No online agent is available to bridge this connection." Graceful no-bridge messaging.
+- BLOCKED: actual proxied session + 5-minute session cliff need an online agent on the same site.
+
+### Environment note
+Stack env restored (IS_HOSTED=false, BREEZE_BILLING_URL set); caddy host port re-rolls on every restart — final port this session :32837. Seed data left in place for future sweeps (126 orgs, 42 devices, discovered assets, fleet findings, 59 scripts, enrollment key, QA groups/filters/channels).
+
+## Summary (pre-release gap-closure pass 2026-08-11)
+
+| Area | Result |
+|---|---|
+| #3448 Saved Filters preview crash re-verify | PASS |
+| Saved filter create (empty description) | FAIL → **FIXED** (PR #3449) |
+| #3448 channel-list crash re-verify | PASS |
+| #3448 Event Logs / Slack URL validation | PASS ×2 |
+| #3437/#3424 count-glue re-verify | PASS ×4 (incl. scripts footer) |
+| Device group create — multi-org partner | FAIL → **FIXED + verified** (PR #3449) |
+| #3423 static group with devices / dynamic eval | PASS |
+| #3278 Fleet findings UI (feed/drawer/fix picker/run panel/lifecycle) | PASS after **1 FIX** (all-orgs scoping, PR #3449) |
+| Fleet remediation run finalization | PASS (30s poll) |
+| #3295 discovery link/unlink + durable unlink | PASS |
+| Org switcher >50 orgs | FAIL → **FIXED + verified** (PR #3449) |
+| #3447 organizations page >100 orgs | PASS |
+| #3301/#3305 scripts pagination + picker | PASS |
+| Devices list/detail/tabs/actions | PASS |
+| #3440/#3391 preferred remote tool + slim providers | PASS |
+| #3276 script bundle export/import | PASS + 1 UX issue filed |
+| #3273/#3287 bulk org import | PASS |
+| #3316/#3328 org contacts compat | PASS |
+| Ticketing sub-tabs | PASS |
+| #3034 enrollment key capacity (UI) | PASS (installer chain BLOCKED) |
+| #3324 migration banner | PASS |
+| #3289 hosted signup gate | PASS |
+| #3294/#3199 proxy popover | PARTIAL (session needs live agent) |
+| #3420 report-suspicious | BLOCKED (no pending approvals) |
+| #3417 policy remediation dispatch | BLOCKED (needs drift + live agent) |
+
+## Top findings
+1. **4 user-facing bugs found & fixed** (all on PR #3449): multi-org device-group create 400; saved-filter null-description 400; fleet findings all-orgs silently org-scoped (fetchWithAuth injection); org switcher truncated at 50 orgs (missed reader of #3446). Two of the four are the SAME pattern — fetchWithAuth's orgId injection / unpaginated first page biting a second call site the original fix missed. Worth a sweep-check on any future "load all X" or "all orgs" surface.
+2. **Create/update schema drift keeps recurring** (#3159, now saved filters): any field accepted as null on update must accept null on create. Consider a lint/contract test.
+3. Remaining gaps needing a live agent: script run output, policy remediation dispatch, proxied session + 5-min cliff, installer capacity chain, report-suspicious (needs second user + approval). These are the same cluster — a lightweight fake-agent harness would close all of them.

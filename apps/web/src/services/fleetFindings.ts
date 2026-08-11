@@ -216,6 +216,8 @@ async function readJson<T>(
   fallback: string,
   init?: Parameters<typeof fetchWithAuth>[1]
 ): Promise<T> {
+  // runaction-exempt: read-only helper — callers pass no method (always GET);
+  // `init` only ever carries skipOrgIdInjection for the all-orgs feed query.
   const res = await fetchWithAuth(path, init);
   if (!res.ok) {
     let body: unknown = null;
