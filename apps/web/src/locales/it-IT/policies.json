@@ -149,7 +149,8 @@
       "page": "Pagina",
       "of2": "di",
       "itsOwningOrganization": "la sua organizzazione di appartenenza",
-      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}"
+      "organizationPolicyTitle": "Criterio dell'organizzazione — si applica solo a {{organization}}",
+      "summary": "{{filtered}} di {{total}} criteri"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossibile recuperare i criteri di configurazione",

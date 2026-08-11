@@ -149,7 +149,8 @@
       "page": "Página",
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
-      "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}"
+      "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
+      "summary": "{{filtered}} de {{total}} políticas"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",

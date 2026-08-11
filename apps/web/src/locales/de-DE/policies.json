@@ -149,7 +149,8 @@
       "page": "Seite",
       "of2": "von",
       "itsOwningOrganization": "seine Eigentümerorganisation",
-      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}"
+      "organizationPolicyTitle": "Organisationsrichtlinie – gilt nur für {{organization}}",
+      "summary": "{{filtered}} von {{total}} Richtlinien"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Konfigurationsrichtlinien konnten nicht abgerufen werden",

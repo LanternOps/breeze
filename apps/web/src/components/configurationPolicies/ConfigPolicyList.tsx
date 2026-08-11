@@ -115,11 +115,19 @@ export default function ConfigPolicyList({
               "policies:configurationPolicies.configPolicyList.configurationPolicies",
             )}
           </h2>
+          {/*
+            One interpolated string, not four adjacent JSX expressions. The
+            #2340 extraction codemod split "N of M policies" into
+            {count}{t.of}{count}{t.policies}, and JSX inserts no whitespace
+            between expression containers, so this rendered as "0of0policies".
+            Interpolating also keeps word order translatable, which glueing the
+            fragments back together with spaces would not.
+          */}
           <p className="text-sm text-muted-foreground">
-            {filteredPolicies.length}
-            {i18n.t("policies:configurationPolicies.configPolicyList.of")}
-            {policies.length}
-            {i18n.t("policies:configurationPolicies.configPolicyList.policies")}
+            {i18n.t("policies:configurationPolicies.configPolicyList.summary", {
+              filtered: filteredPolicies.length,
+              total: policies.length,
+            })}
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center flex-wrap">

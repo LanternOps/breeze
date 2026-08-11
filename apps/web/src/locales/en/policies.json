@@ -149,7 +149,8 @@
       "page": "Page",
       "of2": "of",
       "itsOwningOrganization": "its owning organization",
-      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}"
+      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}",
+      "summary": "{{filtered}} of {{total}} policies"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",

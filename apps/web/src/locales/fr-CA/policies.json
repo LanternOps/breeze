@@ -149,7 +149,8 @@
       "page": "Page",
       "of2": "de",
       "itsOwningOrganization": "son organisation propriétaire",
-      "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}"
+      "organizationPolicyTitle": "Politique organisationnelle — s’applique uniquement à {{organization}}",
+      "summary": "{{filtered}} de {{total}} politiques"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Impossible de récupérer les politiques de configuration",
