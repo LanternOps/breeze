@@ -614,6 +614,34 @@ const partnerSettingsSchema = z.object({
       password: z.string().max(2000).optional(),
       enabled: z.boolean(),
     })).max(50).optional(),
+  }).superRefine((remoteAccess, ctx) => {
+    // Provider ids are hand-typed strings referenced from defaultProviderId and
+    // from users.preferences.remoteAccessProviderId, and resolution is a
+    // first-match find over this array — so a duplicated id makes credential
+    // selection order-dependent, and a dangling default silently disables the
+    // Connect button. Reject both at save time. (Issue #3401.)
+    const seen = new Set<string>();
+    for (const [idx, provider] of (remoteAccess.providers ?? []).entries()) {
+      if (seen.has(provider.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['providers', idx, 'id'],
+          message: `Duplicate provider id "${provider.id}" — provider ids must be unique`,
+        });
+      }
+      seen.add(provider.id);
+    }
+    // Empty string means "no default" (the UI's cleared state), so only a
+    // non-empty default must name a configured provider. The settings merge
+    // replaces this sub-object wholesale, so the payload always carries the
+    // full provider list alongside the default.
+    if (remoteAccess.defaultProviderId && !seen.has(remoteAccess.defaultProviderId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['defaultProviderId'],
+        message: `defaultProviderId "${remoteAccess.defaultProviderId}" does not name a configured provider`,
+      });
+    }
   }).optional(),
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
