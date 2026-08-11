@@ -87,6 +87,14 @@ jobs:
       - name: Build API
         run: pnpm --filter=@breeze/api build
 
+      - name: Build workspace web bundle
+        # The built-in loader fails production boot hard when
+        # ee/workspace/dist/web is missing (a real from-source deploy must
+        # build it — see docker/Dockerfile.api's builder stage, which runs
+        # this same command right after the API build). This job boots with
+        # NODE_ENV=production from a plain checkout, so it must build it too.
+        run: pnpm --filter @breeze/ext-workspace build:web
+
       - name: Boot API in BINARY_SOURCE=github mode
         env:
           # Authenticate binarySync's github API call so we don't hit the
