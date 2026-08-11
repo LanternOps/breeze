@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"time"
@@ -237,6 +238,12 @@ func executeProcessKill(payload map[string]any, startTime time.Time) CommandResu
 	// Guard against killing the agent itself
 	if pid == os.Getpid() {
 		return NewErrorResult(fmt.Errorf("cannot kill PID %d: this is the agent process", pid), time.Since(startTime).Milliseconds())
+	}
+
+	// The pid narrows to int32 below; an out-of-range value would wrap and
+	// target a different process than the one named in the containment action.
+	if pid > math.MaxInt32 {
+		return NewErrorResult(fmt.Errorf("pid %d is out of range", pid), time.Since(startTime).Milliseconds())
 	}
 
 	p, err := process.NewProcess(int32(pid))

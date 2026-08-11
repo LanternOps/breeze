@@ -29,8 +29,18 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 		return NewErrorResult(fmt.Errorf("missing required field: action"), 0)
 	}
 
-	x := GetPayloadInt(payload, "x", 0)
-	y := GetPayloadInt(payload, "y", 0)
+	// Coordinates are strict-parsed: absent still means 0 (correct for
+	// non-positional actions like screenshot/key/type), but a malformed value
+	// must not silently become 0 — that would land a real click at the screen's
+	// top-left corner instead of where the caller aimed (issue #3373).
+	x, err := ParsePayloadInt(payload, "x", 0)
+	if err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	y, err := ParsePayloadInt(payload, "y", 0)
+	if err != nil {
+		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 	text := GetPayloadString(payload, "text", "")
 	key := GetPayloadString(payload, "key", "")
 	modifiers := GetPayloadStringSlice(payload, "modifiers")
@@ -38,7 +48,7 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 	monitor := GetPayloadInt(payload, "monitor", 0)
 	captureAfter := GetPayloadBool(payload, "captureAfter", true)
 	captureDelayMs := GetPayloadInt(payload, "captureDelayMs", 500)
-	text, key, modifiers, err := validateComputerActionInput(text, key, modifiers)
+	text, key, modifiers, err = validateComputerActionInput(text, key, modifiers)
 	if err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -55,11 +65,12 @@ func ComputerActionWithCapture(payload map[string]any, capFn CaptureFunc) Comman
 		if screenW > 0 && screenH > 0 && (screenW != coordW || screenH != coordH) {
 			scaleX := float64(screenW) / float64(coordW)
 			scaleY := float64(screenH) / float64(coordH)
+			origX, origY := x, y
 			x = int(float64(x) * scaleX)
 			y = int(float64(y) * scaleY)
 			slog.Debug("scaled coordinates from image to screen space",
-				"origX", GetPayloadInt(payload, "x", 0),
-				"origY", GetPayloadInt(payload, "y", 0),
+				"origX", origX,
+				"origY", origY,
 				"scaledX", x, "scaledY", y,
 				"coordSpace", fmt.Sprintf("%dx%d", coordW, coordH),
 				"screenSpace", fmt.Sprintf("%dx%d", screenW, screenH),

@@ -201,7 +201,13 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(fmt.Errorf("reboot manager not available"), time.Since(start).Milliseconds())
 	}
 
-	delayMinutes := tools.GetPayloadInt(cmd.Payload, "delayMinutes", 60)
+	// Strict parse: the 1-10080 range check below would happily pass the
+	// silent 60-minute default, so a malformed delayMinutes used to schedule a
+	// reboot an hour out instead of when the operator asked (issue #3373).
+	delayMinutes, err := tools.ParsePayloadInt(cmd.Payload, "delayMinutes", 60)
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
 	if delayMinutes < 1 || delayMinutes > 10080 { // 1 min to 7 days
 		return tools.NewErrorResult(fmt.Errorf("delayMinutes must be 1-10080, got %d", delayMinutes), time.Since(start).Milliseconds())
 	}

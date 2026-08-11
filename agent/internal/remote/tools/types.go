@@ -3,6 +3,9 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -642,18 +645,97 @@ func GetPayloadString(payload map[string]any, key string, defaultVal string) str
 	return defaultVal
 }
 
-func GetPayloadInt(payload map[string]any, key string, defaultVal int) int {
-	if v, ok := payload[key]; ok {
-		switch n := v.(type) {
-		case int:
-			return n
-		case int64:
-			return int(n)
-		case float64:
-			return int(n)
-		}
+// ParsePayloadInt reads an integer field from a command payload, distinguishing
+// an ABSENT key from a MALFORMED value — the distinction GetPayloadInt cannot
+// express, because it reports both as defaultVal.
+//
+// Absent (returns defaultVal, nil):
+//   - the key is missing, or present as JSON null
+//
+// Accepted:
+//   - int, int64, and float64 — the types encoding/json and hand-built payloads
+//     actually produce
+//   - json.Number and numeric strings ("15"), via a strict base-10 parse
+//
+// Rejected with an error:
+//   - non-integral, NaN, infinite, or out-of-int-range floats (15.5, 1e300)
+//   - booleans, objects, arrays, and unparseable or empty strings ("soon", "")
+//
+// "The caller did not specify this field" is a meaningful statement that a
+// default can stand in for. "The caller specified garbage" is not. Handlers for
+// destructive commands MUST use this rather than GetPayloadInt, so a malformed
+// reboot delay fails the command instead of collapsing onto 0 — which for
+// reboot/shutdown means "act immediately" (issue #3373).
+func ParsePayloadInt(payload map[string]any, key string, defaultVal int) (int, error) {
+	raw, ok := payload[key]
+	if !ok || raw == nil {
+		return defaultVal, nil
 	}
-	return defaultVal
+
+	switch n := raw.(type) {
+	case int:
+		return n, nil
+	case int64:
+		return intFromInt64(key, n)
+	case float64:
+		return intFromFloat64(key, n)
+	case json.Number:
+		return intFromNumericString(key, n.String())
+	case string:
+		return intFromNumericString(key, n)
+	default:
+		return 0, fmt.Errorf("%s must be a number, got %T", key, raw)
+	}
+}
+
+// GetPayloadInt reads an integer field, falling back to defaultVal when the key
+// is absent OR malformed.
+//
+// It accepts exactly what ParsePayloadInt accepts (numeric strings included);
+// the only difference is that a malformed value is swallowed instead of
+// reported. Prefer ParsePayloadInt wherever a silently wrong value has
+// consequences.
+func GetPayloadInt(payload map[string]any, key string, defaultVal int) int {
+	n, err := ParsePayloadInt(payload, key, defaultVal)
+	if err != nil {
+		return defaultVal
+	}
+	return n
+}
+
+// intFromInt64 narrows to int via a round-trip check, which is exact on both
+// 32- and 64-bit builds without needing platform-specific bounds constants.
+func intFromInt64(key string, n int64) (int, error) {
+	if int64(int(n)) != n {
+		return 0, fmt.Errorf("%s value %d is out of range", key, n)
+	}
+	return int(n), nil
+}
+
+func intFromFloat64(key string, f float64) (int, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+		return 0, fmt.Errorf("%s must be a whole number, got %v", key, f)
+	}
+	// float64 spans far beyond int on every platform; reject out-of-range
+	// values rather than letting the conversion produce an
+	// implementation-defined result. -float64(math.MinInt) is exactly 2^63
+	// (2^31 on 32-bit builds), i.e. one past the largest valid int.
+	if f < float64(math.MinInt) || f >= -float64(math.MinInt) {
+		return 0, fmt.Errorf("%s value %v is out of range", key, f)
+	}
+	return int(f), nil
+}
+
+func intFromNumericString(key, s string) (int, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return 0, fmt.Errorf("%s must be a number, got an empty string", key)
+	}
+	n, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number, got %q", key, s)
+	}
+	return n, nil
 }
 
 func GetPayloadBool(payload map[string]any, key string, defaultVal bool) bool {
