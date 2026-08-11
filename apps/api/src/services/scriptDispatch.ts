@@ -12,6 +12,7 @@ import {
   encryptSensitivePayloadFields,
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
+import { captureException } from './sentry';
 
 /**
  * Single seam through which every script reaches a device (#3409 PR 0).
@@ -118,11 +119,22 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   } catch (err) {
     // Don't leave an orphaned pending execution the reaper would later
     // mislabel 'timeout' (mirrors discardQueuelessExecution in automationRuntime).
+    // The cleanup delete is wrapped in its own try/catch: a transient DB error
+    // here must never replace the original queueCommand failure the caller is
+    // about to see (mirrors automationRuntime.ts discardQueuelessExecution).
     if (executionId) {
-      await db.delete(scriptExecutions).where(and(
-        eq(scriptExecutions.id, executionId),
-        eq(scriptExecutions.status, 'pending'),
-      ));
+      try {
+        await db.delete(scriptExecutions).where(and(
+          eq(scriptExecutions.id, executionId),
+          eq(scriptExecutions.status, 'pending'),
+        ));
+      } catch (cleanupErr) {
+        console.error(
+          `[scriptDispatch] failed to discard unqueued script execution ${executionId} (device ${device.id}):`,
+          cleanupErr,
+        );
+        captureException(cleanupErr);
+      }
     }
     throw err;
   }

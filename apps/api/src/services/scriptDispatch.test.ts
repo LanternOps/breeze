@@ -122,6 +122,16 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('boom');
     expect(db.delete).toHaveBeenCalled();
   });
+
+  it('rethrows the ORIGINAL queueCommand error even if the cleanup delete also throws', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const del = { where: vi.fn().mockRejectedValue(new Error('cleanup-db-down')) };
+    vi.mocked(db.delete).mockReturnValue(del as any);
+    vi.mocked(queueCommand).mockRejectedValue(new Error('boom'));
+    await expect(dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } })).rejects.toThrow('boom');
+    expect(db.delete).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
 });
 
 describe('dispatchScriptToDevice — delivery', () => {
