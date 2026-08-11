@@ -665,9 +665,12 @@ agentVersionRoutes.post(
         resourceType: "agent_version",
         resourceId: result.version,
         resourceName: `v${result.version}`,
-        details: { targets: result.synced },
+        details: { targets: result.synced, failed: result.failed },
       });
 
+      // Partial failures are isolated per component (#816) but must not be
+      // invisible: surface them in the response body so an operator sees a
+      // short registration instead of assuming a clean sync.
       return c.json(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

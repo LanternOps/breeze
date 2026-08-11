@@ -1,11 +1,30 @@
 /**
- * Positive platform-trust allowlist for release assets (spec 3c).
+ * Platform-trust LABEL-CONSISTENCY guard for release assets (spec 3c).
  *
  * Replaces expected-value-only checking: instead of only failing when a caller
  * happened to pass expectedPlatformTrust, every manifest-verified asset is
  * checked against what its NAME requires, unknown trust vocabulary fails
  * closed, and signing-input assets (Deliverable 1's `-unsigned` uploads with
  * intendedUse: "signing-input") are never distributable.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS DOES NOT DO. It never inspects the bytes. Nothing here (or anywhere
+ * else in the API) verifies an Authenticode signature or a notarization ticket.
+ * It compares the manifest's platformTrust LABEL against what the asset's name
+ * implies, so for any manifest produced by the reference generator in
+ * .github/workflows/release.yml it is a tautology — both sides compute the same
+ * value from the same filename by the same rules. It can only fire on a
+ * manifest whose label contradicts its own name.
+ *
+ * That is still worth having: it catches a hand-rolled or partially-implemented
+ * third-party manifest that omits or downgrades the label. But it is NOT
+ * evidence that a binary was signed. A self-hoster whose fork keeps the
+ * manifest-generation step and drops the signing step produces assets that pass
+ * this gate unsigned. The control that actually establishes signing lives in
+ * the producing workflow (the breeze-selfhost-signing template's publish job
+ * requires a per-asset signing attestation before it will emit a *-required
+ * platformTrust); this is the consuming-side sanity check on top of it.
+ * ---------------------------------------------------------------------------
  *
  * The name classifier deliberately mirrors the manifest generator in
  * .github/workflows/release.yml (platform_trust(), ~line 2088) — keep the two

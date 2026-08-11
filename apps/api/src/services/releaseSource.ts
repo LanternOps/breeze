@@ -22,6 +22,30 @@ export const OFFICIAL_RELEASE_REPOSITORY = 'lanternops/breeze';
 // reach URL construction (path traversal, query strings, schemes).
 const REPOSITORY_PATTERN = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 
+// `.` and `..` satisfy the repository character class, so the pattern alone
+// does NOT deliver the "no path traversal" promise above: `owner/..` builds
+// https://api.github.com/repos/owner/.. which normalizes to the API root. Not
+// exploitable (the owner class excludes `/`, `@`, `%` and dots, so a single
+// `..` can never reach a second repository, and every builder uses a literal
+// host) — but the guard should mean what it says, and a typo'd override should
+// fail loudly rather than 404 mysteriously.
+const DOTS_ONLY_SEGMENT = /^\.+$/;
+
+/**
+ * Single source of truth for release-source repository validation. Imported by
+ * config/validate.ts so boot-time validation and runtime resolution cannot
+ * drift — a tightening applied to only one of them would let a value pass boot
+ * and then throw mid-sync.
+ */
+export function isValidReleaseSourceRepository(value: string): boolean {
+  if (!REPOSITORY_PATTERN.test(value)) return false;
+  // The pattern guarantees exactly one slash with non-empty sides.
+  return value.split('/').every((segment) => !DOTS_ONLY_SEGMENT.test(segment));
+}
+
+export const RELEASE_SOURCE_REPOSITORY_SHAPE =
+  '"owner/repository" matching [A-Za-z0-9-]+/[A-Za-z0-9._-]+ (no "." or ".." segments)';
+
 let legacyGithubRepoWarned = false;
 
 export function getReleaseSourceRepository(): string {
@@ -44,9 +68,9 @@ export function getReleaseSourceRepository(): string {
     repository = legacy;
   }
 
-  if (!REPOSITORY_PATTERN.test(repository)) {
+  if (!isValidReleaseSourceRepository(repository)) {
     throw new Error(
-      `Invalid release source repository "${repository}": expected "owner/repository" matching [A-Za-z0-9-]+/[A-Za-z0-9._-]+`,
+      `Invalid release source repository "${repository}": expected ${RELEASE_SOURCE_REPOSITORY_SHAPE}`,
     );
   }
   return repository;

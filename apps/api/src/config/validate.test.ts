@@ -660,7 +660,27 @@ describe('validateConfig', () => {
       );
     });
 
-    it('production: override boots when the trust root is set', () => {
+    it('production: override boots when the trust root is set to the self-hoster key', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          // A key that is NOT the official one — what the signing workflow's
+          // run summary actually prints.
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'kR2Ql8tXvN4mJ7cB1aZfP0sYuE6dW3gH9iL5nO8rT2A=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+
+    // deploy/.env.example ships the official key as an ACTIVE line directly
+    // above the BINARY_GITHUB_REPOSITORY hint, so repointing while leaving it
+    // in place is the DEFAULT mistake. It used to satisfy the "trust root is
+    // set" rule (which only tested non-empty), boot clean, and then fail every
+    // sync closed — freezing the fleet behind one console.error.
+    it('production: override with ONLY the official key is rejected at boot', () => {
       withEnv(
         {
           ...prodBase,
@@ -668,9 +688,68 @@ describe('validateConfig', () => {
           RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
         },
         () => {
+          expect(() => validateConfig()).toThrow(/still \(only\) the official Breeze key/);
+        },
+      );
+    });
+
+    it('production: legacy GITHUB_REPO override with ONLY the official key is rejected too', () => {
+      withEnv(
+        {
+          ...prodBase,
+          GITHUB_REPO: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/still \(only\) the official Breeze key/);
+        },
+      );
+    });
+
+    // Keeping the official key alongside your own is legitimate: it lets an
+    // instance verify official releases during a migration.
+    it('production: override boots when the official key is present ALONGSIDE the self-hoster key', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:
+            'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=,kR2Ql8tXvN4mJ7cB1aZfP0sYuE6dW3gH9iL5nO8rT2A=',
+        },
+        () => {
           expect(() => validateConfig()).not.toThrow();
         },
       );
+    });
+
+    // The official repository is not an "override" — the official key is
+    // exactly right there, and this must keep booting.
+    it('production: official repository with the official key is unaffected', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'lanternops/breeze',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+
+    it.each([
+      ['owner/..', 'dot-dot repository segment'],
+      ['owner/.', 'single-dot repository segment'],
+    ])('rejects %s (%s) — the pattern alone allows it', (value) => {
+      withEnv({ ...prodBase, BINARY_GITHUB_REPOSITORY: value }, () => {
+        expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+      });
+    });
+
+    it('treats an empty legacy GITHUB_REPO as unset (compose always injects the key)', () => {
+      withEnv({ ...prodBase, GITHUB_REPO: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
     });
   });
 

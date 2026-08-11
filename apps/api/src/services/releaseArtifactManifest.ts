@@ -238,9 +238,25 @@ export async function verifyReleaseArtifactBuffer(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
-    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
   };
+}
+
+// `intendedUse` is the field that marks Phase 1's unsigned signing inputs, and
+// assertDistributableReleaseAsset treats ANY non-null value as non-distributable
+// precisely so unknown future values cannot slip through. Coercing a
+// present-but-non-string value to null would defeat that: `intendedUse: 1` or
+// `intendedUse: ["signing-input"]` would read as "no intendedUse" and become
+// registrable and servable. Reject the shape instead of silently discarding it.
+function readIntendedUse(entry: { intendedUse?: unknown }, assetName: string): string | null {
+  if (entry.intendedUse === undefined || entry.intendedUse === null) return null;
+  if (typeof entry.intendedUse !== 'string') {
+    throw new Error(
+      `Release artifact manifest has non-string intendedUse for ${assetName} (got ${typeof entry.intendedUse}) — refusing to treat it as absent`,
+    );
+  }
+  return entry.intendedUse;
 }
 
 function selectManifestAsset(args: {
@@ -301,7 +317,7 @@ function selectManifestAsset(args: {
   assertDistributableReleaseAsset({
     assetName: args.assetName,
     platformTrust: typeof entry.platformTrust === 'string' ? entry.platformTrust : null,
-    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
   });
   if (
@@ -345,7 +361,7 @@ export async function verifyReleaseArtifactManifestAsset(args: {
     repository: manifest.repository as string,
     platformTrust:
       typeof entry.platformTrust === "string" ? entry.platformTrust : null,
-    intendedUse: typeof entry.intendedUse === 'string' ? entry.intendedUse : null,
+    intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
   };
 }

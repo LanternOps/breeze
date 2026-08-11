@@ -341,6 +341,36 @@ describe("releaseArtifactManifest", () => {
         intendedUse: null,
       });
     });
+
+    // assertDistributableReleaseAsset rejects ANY non-null intendedUse
+    // precisely so unknown future values cannot slip through. Coercing a
+    // present-but-non-string value to null defeated that: the asset read as
+    // "no intendedUse" and became registrable and servable, with only the
+    // name regex left as a backstop.
+    it.each([
+      ["a number", 1],
+      ["an array", ["signing-input"]],
+      ["an object", { kind: "signing-input" }],
+      ["a boolean", true],
+    ])(
+      "rejects a manifest whose intendedUse is %s rather than reading it as absent",
+      async (_label, value) => {
+        const asset = Buffer.from("linux agent bytes");
+        const signed = makeSignedManifest({
+          assetName: "breeze-agent-linux-amd64",
+          assetBuffer: asset,
+          assetOverrides: { intendedUse: value as unknown as string },
+        });
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        await expect(
+          verifyReleaseArtifactManifestAsset({
+            assetName: "breeze-agent-linux-amd64",
+            manifestBytes: signed.manifest,
+            signatureBytes: signed.signature,
+          }),
+        ).rejects.toThrow(/non-string intendedUse/);
+      },
+    );
   });
 
   it("rejects intendedUse signing inputs even when sourceCommit is present", async () => {
