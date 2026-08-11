@@ -9,6 +9,11 @@ const dbMocks = vi.hoisted(() => {
   const insertValues = vi.fn(() => ({ onConflictDoUpdate }));
   const txInsert = vi.fn(() => ({ values: insertValues }));
   const tx = { update: txUpdate, insert: txInsert };
+  // Unconfigured by default (no tests exercise it unless they set
+  // BREEZE_VERSION/APP_VERSION, which is the only way ensureCurrentVersionRegistered
+  // reaches db.select — see the "ensureCurrentVersionRegistered companion
+  // check" describe block below for the tests that configure it).
+  const select = vi.fn();
   return {
     updateWhere,
     updateSet,
@@ -17,6 +22,7 @@ const dbMocks = vi.hoisted(() => {
     insertValues,
     txInsert,
     tx,
+    select,
     transaction: vi.fn(async (fn: (tx: any) => Promise<void>) => fn(tx)),
   };
 });
@@ -24,6 +30,7 @@ const dbMocks = vi.hoisted(() => {
 vi.mock("../db", () => ({
   db: {
     transaction: dbMocks.transaction,
+    select: dbMocks.select,
   },
 }));
 
@@ -859,6 +866,382 @@ describe("binarySync", () => {
     });
   });
 
+  // Mirrors the watchdog local-registration coverage above (#1802) for the
+  // breeze-backup component.
+  describe("local-binary backup registration", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+    }
+
+    it("registers a component=backup row alongside the agent when the binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-linux-amd64",
+        "breeze-backup-linux-amd64",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+
+      const backupInsert = insertCalls.find((v) => v.component === "backup");
+      expect(backupInsert).toBeDefined();
+      expect(backupInsert).toMatchObject({
+        version: "0.65.9",
+        platform: "linux",
+        architecture: "amd64",
+        component: "backup",
+        isLatest: true,
+      });
+      // Must resolve to the dedicated backup download route.
+      expect(backupInsert!.downloadUrl).toContain(
+        "/agents/download/backup/linux/amd64",
+      );
+    });
+
+    it("warns and skips backup registration when no backup binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "backup")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((a) =>
+          String(a[0] ?? "").includes("No local backup binaries found"),
+        ),
+      ).toBe(true);
+      warnSpy.mockRestore();
+    });
+  });
+
+  // ensureCurrentVersionRegistered() is the safety net that catches stale
+  // Docker volumes, missed CI syncs, and fresh deployments. Before this fix
+  // it only checked for a component="agent" row at the current version and
+  // returned early — so a server that registered agent rows before backup
+  // component support shipped would NEVER backfill the backup row for that
+  // version, permanently starving breeze-backup auto-update on that install.
+  describe("ensureCurrentVersionRegistered companion check (backup)", () => {
+    function setLocalEnvWithVersion(version: string) {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      // Matches the on-disk VERSION file so the stale-volume detection branch
+      // doesn't short-circuit before reaching ensureCurrentVersionRegistered.
+      process.env.BREEZE_VERSION = version;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      fsMocks.readFile.mockResolvedValue(version as any);
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-linux-amd64",
+        "breeze-backup-linux-amd64",
+      ] as any);
+    }
+
+    it("attempts a narrow backup-only backfill (not the full syncFromGitHub) against the pinned version tag when the agent row exists but the backup row does not", async () => {
+      setLocalEnvWithVersion("0.65.9");
+
+      // Simulates the pre-fix DB state: agent row registered, backup row
+      // missing for this same version.
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ component: "agent" }]),
+        }),
+      });
+
+      const fetchMock = vi.fn(async (_url: string) => {
+        throw new Error("simulated network failure");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      // The backfill must have been attempted against the pinned version
+      // tag — proving the existence check no longer short-circuits on the
+      // agent row alone. (fetch is stubbed to fail so the test doesn't also
+      // need a full valid GitHub release fixture; the error path itself is
+      // the proof the backfill was attempted.) A single GitHub call is
+      // expected here — the narrow backfill fetches only the one release
+      // tag, never the full syncFromGitHub fan-out across every component.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(
+        fetchMock.mock.calls.some((call) =>
+          String(call[0]).includes("releases/tags/v0.65.9"),
+        ),
+      ).toBe(true);
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes(
+            "Failed to auto-sync version 0.65.9",
+          ),
+        ),
+      ).toBe(true);
+
+      errorSpy.mockRestore();
+    });
+
+    it("refuses the backup backfill on BINARY_EDITION=hosted rather than pulling the public GitHub release", async () => {
+      setLocalEnvWithVersion("0.65.9");
+      process.env.BINARY_EDITION = "hosted";
+      // ENOENTs the official manifest pair so the unrelated hosted rule that
+      // makes an UNVERIFIABLE staged manifest fatal doesn't fire first and mask
+      // the branch under test.
+      mockReadFileVersionOnly("0.65.9");
+
+      // Agent row present, backup row missing — the branch that would
+      // otherwise reach GitHub.
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ component: "agent" }]),
+        }),
+      });
+
+      const fetchMock = vi.fn(async (_url: string) => {
+        throw new Error("network should never be reached");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      // The whole point: a hosted deployment must not register a self-host
+      // backup binary through this side door. Skipped, not thrown — this
+      // safety net must never crash boot.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes(
+            "BINARY_EDITION=hosted refuses to fall back to the public GitHub release",
+          ),
+        ),
+      ).toBe(true);
+
+      errorSpy.mockRestore();
+    });
+
+    it("does not re-sync when both the agent and backup rows already exist for the current version", async () => {
+      setLocalEnvWithVersion("0.65.9");
+
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            { component: "agent" },
+            { component: "backup" },
+          ]),
+        }),
+      });
+
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await syncBinaries();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    // The finding this backfill fixes: re-running the FULL syncFromGitHub
+    // just to backfill a possibly-nonexistent backup row has side effects —
+    // under AGENT_AUTO_PROMOTE default true it re-stamps isLatest on every
+    // component (silently reverting manual fleet promotions), and its
+    // onConflictDoUpdate overwrites locally-registered rows' downloadUrl/
+    // checksum with github.com values on BINARY_SOURCE=local deploys. The
+    // narrow backfill must touch ONLY the component=backup row, and its
+    // isLatest must mirror the sibling agent row rather than going through
+    // upsertVersion's auto-promote demote logic.
+    it("upserts only the component=backup row, mirroring the sibling agent row's isLatest, without running the full syncFromGitHub", async () => {
+      process.env.BINARY_SOURCE = "github";
+      process.env.APP_VERSION = "0.65.9";
+
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              component: "agent",
+              platform: "windows",
+              architecture: "amd64",
+              isLatest: true,
+              // NOT NULL DEFAULT 'self-host' in the schema, so a real row
+              // always carries one — and the backfill matches its sibling on
+              // edition because that column is part of the unique key.
+              edition: "self-host",
+            },
+          ]),
+        }),
+      });
+
+      const backupAsset = {
+        name: "breeze-backup-windows-amd64.exe",
+        buffer: Buffer.from("trusted windows backup bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([backupAsset], "v0.65.9");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const manifestAssetEntries = [
+        {
+          name: "release-artifact-manifest.json",
+          browser_download_url:
+            "https://github.com/LanternOps/breeze/releases/download/v0.65.9/release-artifact-manifest.json",
+          size: signed.manifest.length,
+        },
+        {
+          name: "release-artifact-manifest.json.ed25519",
+          browser_download_url:
+            "https://github.com/LanternOps/breeze/releases/download/v0.65.9/release-artifact-manifest.json.ed25519",
+          size: signed.signature.length,
+        },
+      ];
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          // The unconditional initial full sync at the top of the
+          // BINARY_SOURCE=github path. No component asset names match here,
+          // so every target loop short-circuits and nothing is upserted —
+          // keeps this call a no-op so the assertions below isolate the
+          // backup-only backfill's behavior.
+          return new Response(
+            JSON.stringify({ tag_name: "v0.65.9", assets: manifestAssetEntries }),
+          );
+        }
+        if (url.includes("/releases/tags/v0.65.9")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v0.65.9",
+              body: "release notes",
+              assets: [
+                {
+                  name: backupAsset.name,
+                  browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v0.65.9/${backupAsset.name}`,
+                  size: backupAsset.buffer.length,
+                },
+                ...manifestAssetEntries,
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await syncBinaries();
+
+      // Only the backup component was upserted — proves the full
+      // syncFromGitHub (which would also re-register agent/watchdog/helper)
+      // never ran for the pinned version tag.
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (c: any[]) => c[0] as Record<string, unknown>,
+      );
+      expect(insertCalls).toHaveLength(1);
+      expect(insertCalls[0]).toMatchObject({
+        version: "0.65.9",
+        platform: "windows",
+        architecture: "amd64",
+        component: "backup",
+        checksum: signed.checksums.get(backupAsset.name),
+        // Mirrors the sibling agent row's isLatest instead of running
+        // through upsertVersion's auto-promote demote/insert logic.
+        isLatest: true,
+      });
+
+      // No demote UPDATE ran — the backfill never touches another row's
+      // isLatest.
+      expect(dbMocks.updateWhere).not.toHaveBeenCalled();
+    });
+
+    it("logs once and upserts nothing when the pinned release predates breeze-backup (no matching assets)", async () => {
+      process.env.BINARY_SOURCE = "github";
+      process.env.APP_VERSION = "0.60.0";
+
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              component: "agent",
+              platform: "windows",
+              architecture: "amd64",
+              isLatest: true,
+              // NOT NULL DEFAULT 'self-host' in the schema, so a real row
+              // always carries one — and the backfill matches its sibling on
+              // edition because that column is part of the unique key.
+              edition: "self-host",
+            },
+          ]),
+        }),
+      });
+
+      const signed = makeSignedReleaseManifestMulti([], "v0.60.0");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const manifestAssetEntries = [
+        {
+          name: "release-artifact-manifest.json",
+          browser_download_url:
+            "https://github.com/LanternOps/breeze/releases/download/v0.60.0/release-artifact-manifest.json",
+          size: signed.manifest.length,
+        },
+        {
+          name: "release-artifact-manifest.json.ed25519",
+          browser_download_url:
+            "https://github.com/LanternOps/breeze/releases/download/v0.60.0/release-artifact-manifest.json.ed25519",
+          size: signed.signature.length,
+        },
+      ];
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest") || url.includes("/releases/tags/v0.60.0")) {
+          // Pre-breeze-backup release: no breeze-backup-* asset present.
+          return new Response(
+            JSON.stringify({
+              tag_name: "v0.60.0",
+              body: "release notes",
+              assets: manifestAssetEntries,
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      expect(
+        dbMocks.insertValues.mock.calls.some(
+          (c: any[]) => (c[0] as Record<string, unknown>).component === "backup",
+        ),
+      ).toBe(false);
+      expect(
+        logSpy.mock.calls.some((a) =>
+          String(a[0] ?? "").includes(
+            "release v0.60.0 has no breeze-backup assets; backup auto-update unavailable for this version",
+          ),
+        ),
+      ).toBe(true);
+
+      logSpy.mockRestore();
+    });
+  });
+
   it("logs at console.error (not warn) when stale-volume detection + GitHub fallback both fail (#644)", async () => {
     // Stale-volume path: BREEZE_VERSION != VERSION-file value.
     // We force the GitHub fallback to throw by making fetch reject. The
@@ -1407,6 +1790,116 @@ describe("binarySync", () => {
         (call: any[]) => (call[0] as { component: string }).component === "watchdog",
       );
       expect(watchdogInserts).toHaveLength(0);
+    });
+  });
+
+  // Mirrors the watchdog sync loop above: breeze-backup registers as its own
+  // component=backup row so install.sh (and any future self-heal fetch) can
+  // resolve and download the matching binary on the hosted (BINARY_SOURCE=
+  // github) path.
+  describe("syncFromGitHub backup loop", () => {
+    function stubGitHubReleaseFetch(
+      signed: ReturnType<typeof makeSignedReleaseManifestMulti>,
+      assetBytes: Map<string, Buffer>,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: signed.release,
+                body: "release notes",
+                assets: [
+                  ...Array.from(assetBytes.entries()).map(([name, buf]) => ({
+                    name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/${name}`,
+                    size: buf.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json`,
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/${signed.release}/release-artifact-manifest.json.ed25519`,
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("registers component=backup when the backup asset is present", async () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("trusted linux agent bytes"),
+      };
+      const backupAsset = {
+        name: "breeze-backup-linux-amd64",
+        buffer: Buffer.from("trusted linux backup bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset, backupAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([
+          [agentAsset.name, agentAsset.buffer],
+          [backupAsset.name, backupAsset.buffer],
+        ]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toEqual(
+        expect.arrayContaining(["agent:linux/amd64", "backup:linux/amd64"]),
+      );
+
+      const backupInsert = (dbMocks.insertValues.mock.calls as any[][]).find(
+        (call) => (call[0] as { component: string }).component === "backup",
+      );
+      expect(backupInsert).toBeDefined();
+      expect(backupInsert![0]).toMatchObject({
+        version: "1.2.3",
+        platform: "linux",
+        architecture: "amd64",
+        component: "backup",
+        checksum: signed.checksums.get(backupAsset.name),
+        downloadUrl: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${backupAsset.name}`,
+      });
+    });
+
+    it("succeeds without a backup row when the asset is missing (backward-compat)", async () => {
+      const agentAsset = {
+        name: "breeze-agent-linux-amd64",
+        buffer: Buffer.from("agent only bytes"),
+      };
+      const signed = makeSignedReleaseManifestMulti([agentAsset]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubGitHubReleaseFetch(
+        signed,
+        new Map([[agentAsset.name, agentAsset.buffer]]),
+      );
+
+      const result = await syncFromGitHub();
+
+      expect(result.synced).toContain("agent:linux/amd64");
+      expect(result.synced).not.toContain("backup:linux/amd64");
+      const backupInserts = dbMocks.insertValues.mock.calls.filter(
+        (call: any[]) => (call[0] as { component: string }).component === "backup",
+      );
+      expect(backupInserts).toHaveLength(0);
     });
   });
 

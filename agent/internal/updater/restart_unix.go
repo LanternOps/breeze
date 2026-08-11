@@ -50,8 +50,8 @@ func restartLaunchd() error {
 // RestartWithHelper is Windows-only; on Unix it's never called because
 // updater.go gates on runtime.GOOS == "windows". The arguments are accepted
 // to keep the signature aligned with the Windows build but are unused here
-// (issue #816).
-func RestartWithHelper(_ BinaryPair, _ *BinaryPair) error {
+// (issue #816; backup follows the same pattern).
+func RestartWithHelper(_ BinaryPair, _ *BinaryPair, _ *BinaryPair) error {
 	return fmt.Errorf("RestartWithHelper is only supported on Windows")
 }
 

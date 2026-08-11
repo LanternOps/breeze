@@ -514,6 +514,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.watchdogVersion = data.watchdogVersion;
   }
 
+  // Keep devices.backup_version fresh from the agent's heartbeat, mirroring
+  // watchdog_version above. Absent (old agent, or breeze-backup not installed)
+  // leaves the stored value untouched.
+  if (data.backupVersion) {
+    deviceUpdates.backupVersion = data.backupVersion;
+  }
+
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
   // value untouched; a malformed value is dropped, never a heartbeat failure.
   // http(s) only: this is agent-reported telemetry that gets echoed into the

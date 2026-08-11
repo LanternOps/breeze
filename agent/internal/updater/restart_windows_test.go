@@ -252,6 +252,125 @@ func TestBuildRestartScript_WithUserHelper(t *testing.T) {
 	}
 }
 
+// --- Backup companion (breeze-backup) ---
+
+// TestBuildRestartScript_NilBackupIsAbsent verifies a nil Backup omits every
+// backup-related line: no Copy-Item, no kill-list entry, no cleanup — an
+// agent-only (or agent+user-helper-only) upgrade's script is unaffected by
+// the backup delivery mechanism existing at all.
+func TestBuildRestartScript_NilBackupIsAbsent(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		Backup: nil,
+	})
+
+	if strings.Contains(got, "breeze-backup") {
+		t.Fatalf("nil Backup script must not mention breeze-backup; script was:\n%s", got)
+	}
+	if c := strings.Count(got, "Copy-Item -Path"); c != 1 {
+		t.Fatalf("expected exactly one Copy-Item line with nil Backup; got %d. Script was:\n%s", c, got)
+	}
+}
+
+// TestBuildRestartScript_WithBackup verifies a non-nil Backup adds: the
+// breeze-backup.exe name to the Stop-Process kill list (its exe lock would
+// otherwise block the Copy-Item), a Copy-Item AFTER the agent's, and a
+// cleanup Remove-Item for its temp file.
+func TestBuildRestartScript_WithBackup(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		Backup: &BinaryPair{
+			Temp:   `C:\Windows\Temp\breeze-backup-9999.exe`,
+			Target: `C:\Program Files\Breeze\breeze-backup.exe`,
+		},
+	})
+
+	if !strings.Contains(got, "'breeze-backup'") {
+		t.Fatalf("expected breeze-backup in the Stop-Process kill list; script was:\n%s", got)
+	}
+
+	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
+	backupCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-backup-9999.exe' -Destination 'C:\Program Files\Breeze\breeze-backup.exe' -Force`
+	agentIdx := strings.Index(got, agentCopy)
+	backupIdx := strings.Index(got, backupCopy)
+	if agentIdx < 0 {
+		t.Fatalf("expected agent Copy-Item line; script was:\n%s", got)
+	}
+	if backupIdx < 0 {
+		t.Fatalf("expected backup Copy-Item line; script was:\n%s", got)
+	}
+	if backupIdx <= agentIdx {
+		t.Fatalf("backup Copy-Item must come AFTER agent Copy-Item; script was:\n%s", got)
+	}
+
+	if !strings.Contains(got, `Remove-Item -Path 'C:\Windows\Temp\breeze-backup-9999.exe' -Force -ErrorAction SilentlyContinue`) {
+		t.Fatalf("expected Remove-Item cleanup for backup temp; script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_KillListOmitsBackupWhenAbsent is the flip side of
+// TestBuildRestartScript_WithBackup: an upgrade that does NOT swap
+// breeze-backup must not kill a resident backup helper — killing a process
+// this script has no intention of replacing would be a pointless (and
+// user-visible, if a backup job is mid-run) disruption.
+func TestBuildRestartScript_KillListOmitsBackupWhenAbsent(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\tmp\helper.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
+	})
+	if strings.Contains(got, "breeze-backup") {
+		t.Fatalf("kill list / script must not mention breeze-backup when Backup is nil; script was:\n%s", got)
+	}
+}
+
+// TestBuildRestartScript_UserHelperAndBackupTogether covers both companions
+// present at once: both Copy-Items after the agent's, both in the kill list,
+// both cleaned up, agent still copied first.
+func TestBuildRestartScript_UserHelperAndBackupTogether(t *testing.T) {
+	got := buildRestartScript(restartScriptOptions{
+		Agent: BinaryPair{
+			Temp:   `C:\tmp\agent.exe`,
+			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+		},
+		UserHelper: &BinaryPair{
+			Temp:   `C:\tmp\helper.exe`,
+			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		},
+		Backup: &BinaryPair{
+			Temp:   `C:\tmp\backup.exe`,
+			Target: `C:\Program Files\Breeze\breeze-backup.exe`,
+		},
+	})
+
+	agentIdx := strings.Index(got, `Copy-Item -Path 'C:\tmp\agent.exe'`)
+	helperIdx := strings.Index(got, `Copy-Item -Path 'C:\tmp\helper.exe'`)
+	backupIdx := strings.Index(got, `Copy-Item -Path 'C:\tmp\backup.exe'`)
+	if agentIdx < 0 || helperIdx < 0 || backupIdx < 0 {
+		t.Fatalf("expected all three Copy-Item lines; script was:\n%s", got)
+	}
+	if !(agentIdx < helperIdx && helperIdx < backupIdx) {
+		t.Fatalf("expected Copy-Item order agent < userHelper < backup; script was:\n%s", got)
+	}
+	if !strings.Contains(got, "'breeze-user-helper'") || !strings.Contains(got, "'breeze-backup'") {
+		t.Fatalf("expected both companions in the kill list; script was:\n%s", got)
+	}
+	if c := strings.Count(got, "Copy-Item -Path"); c != 3 {
+		t.Fatalf("expected exactly three Copy-Item lines; got %d. Script was:\n%s", c, got)
+	}
+}
+
 // TestBuildRestartScript_EscapesSingleQuotes guards the single-quote escaping
 // pattern (PowerShell-injection safety): a path containing a literal single
 // quote must be doubled inside the script so PowerShell parses it as a

@@ -1036,6 +1036,25 @@ func TestExpectedReleaseAssetNames_Watchdog(t *testing.T) {
 	}
 }
 
+// TestExpectedReleaseAssetNames_Backup covers the component=backup branch.
+// breeze-backup mirrors the watchdog's asset-name shape: per-arch on every
+// platform, .exe suffix on windows.
+func TestExpectedReleaseAssetNames_Backup(t *testing.T) {
+	u := &Updater{config: &Config{Component: "backup"}}
+	got := u.expectedReleaseAssetNames()
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	expected := "breeze-backup-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 backup asset name on %s, got %d (%v)", runtime.GOOS, len(got), got)
+	}
+	if _, ok := got[expected]; !ok {
+		t.Fatalf("expected %q in backup asset name set, got %v", expected, got)
+	}
+}
+
 // TestUpdateToWithOptions_CleansHelperTempOnFailure regression-tests the
 // fix for the orphan-temp-file bug flagged in the #845 follow-up review:
 // when UpdateTo returns an error AND the caller pre-downloaded a user-helper

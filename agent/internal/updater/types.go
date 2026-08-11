@@ -24,4 +24,16 @@ type UpdateOptions struct {
 	// on Windows. Ignored on other platforms (the agent-only path is the
 	// only path on non-Windows).
 	UserHelper *BinaryPair
+
+	// Backup, when non-nil, is also swapped alongside the main binary during
+	// this upgrade: on Windows via the restart-helper script (like UserHelper),
+	// on Linux and the macOS raw-binary fallback via an atomic same-directory
+	// rename before the agent restarts (see swapCompanionBinary). Unlike
+	// UserHelper this applies on EVERY platform — breeze-backup ships
+	// everywhere (agent/Makefile), not just Windows — with one exception: the
+	// macOS .pkg install path already bundles its own breeze-backup, so
+	// updateTo discards (rather than swaps) a staged Backup pair when the pkg
+	// path is taken. breeze-backup's version is slaved to the agent's; there
+	// is no independent backup update directive.
+	Backup *BinaryPair
 }

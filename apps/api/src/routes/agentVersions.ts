@@ -15,6 +15,7 @@ import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
 import { getBinaryEdition } from "../services/binaryEdition";
+import { getGithubReleaseVersion } from "../services/binarySource";
 import { PERMISSIONS } from "../services/permissions";
 import { verifyReleaseArtifactManifestAsset } from "../services/releaseArtifactManifest";
 import { EDITION_HOSTED, EDITION_SELF_HOST } from "../services/releaseAssetTrust";
@@ -39,12 +40,15 @@ const architectureEnum = z.enum(["amd64", "arm64"]);
 // "watchdog" lets the agent's reconcile path (and the watchdog's own failover
 // self-update) resolve and download the watchdog component. Omitting it here is
 // why watchdog auto-update 400'd server-side regardless of registration.
+// "backup" lets install.sh (and any future self-heal fetch) resolve and
+// download the breeze-backup binary the same way.
 const componentEnum = z.enum([
   "agent",
   "helper",
   "viewer",
   "user-helper",
   "watchdog",
+  "backup",
 ]);
 
 // Release edition ("self-host" | "hosted"): lets the same version/platform/
@@ -274,8 +278,8 @@ function dbPlatformToRouteOs(dbPlatform: string): string {
 }
 
 // Construct the server-relative download URL the agent should use. Applies to
-// component=agent, helper, user-helper, and watchdog: all are pulled by the
-// agent's verified downloader (updater.downloadFromURL), which enforces host
+// component=agent, helper, user-helper, watchdog, and backup: all are pulled
+// by the agent's verified downloader (updater.downloadFromURL), which enforces host
 // equality with the agent's configured ServerURL. Without this rewrite the
 // response would hand back the canonical github.com asset URL, which the agent
 // rejects — and, more importantly, the helper used to be fetched via an
@@ -299,7 +303,8 @@ function buildServerRelativeAgentDownloadUrl(
     component !== "agent" &&
     component !== "helper" &&
     component !== "user-helper" &&
-    component !== "watchdog"
+    component !== "watchdog" &&
+    component !== "backup"
   ) {
     return null;
   }
@@ -316,6 +321,9 @@ function buildServerRelativeAgentDownloadUrl(
   }
   if (component === "watchdog") {
     return `${origin}/api/v1/agents/download/watchdog/${os}/${architecture}`;
+  }
+  if (component === "backup") {
+    return `${origin}/api/v1/agents/download/backup/${os}/${architecture}`;
   }
   return `${origin}/api/v1/agents/download/${os}/${architecture}`;
 }
@@ -490,6 +498,7 @@ agentVersionRoutes.get(
         releaseManifest: agentVersions.releaseManifest,
         manifestSignature: agentVersions.manifestSignature,
         signingKeyId: agentVersions.signingKeyId,
+        isLatest: agentVersions.isLatest,
       })
       .from(agentVersions)
       .where(
@@ -535,11 +544,35 @@ agentVersionRoutes.get(
       );
     }
 
-    const serverRelativeUrl = buildServerRelativeAgentDownloadUrl(
-      versionInfo.platform,
-      versionInfo.architecture,
-      versionInfo.component,
-    );
+    // breeze-backup is version-slaved to the agent but requested by EXACT
+    // version (unlike agent/helper/watchdog, which always want "latest").
+    // The versionless /download/backup/:os/:arch route can only ever serve
+    // whatever the server currently considers latest (BINARY_VERSION /
+    // BREEZE_VERSION — see binarySource.getGithubReleaseVersion). Rewriting
+    // to that route for a NON-current backup version would hand an agent
+    // healing to an older pinned version newer bytes than it asked for; the
+    // updater verifies checksum+manifest against the pinned version and
+    // fails safe, but can never actually heal. So for component=backup only,
+    // rewrite exclusively when this row IS the exact version the versionless
+    // route would serve — it matches the server's own pinned version
+    // (getGithubReleaseVersion). isLatest is NOT sufficient: production runs
+    // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
+    // isLatest rows can still point at the still-rolling-out fleet version X.
+    // An agent pinned to X would then get rewritten to the versionless route,
+    // which serves Y's bytes — checksum verification fails fleet-wide for the
+    // entire deploy-to-promote window. Every other component keeps the
+    // unconditional rewrite.
+    const backupVersionIsServableByVersionlessRoute =
+      versionInfo.component !== "backup" ||
+      versionInfo.version === getGithubReleaseVersion();
+
+    const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
+      ? buildServerRelativeAgentDownloadUrl(
+          versionInfo.platform,
+          versionInfo.architecture,
+          versionInfo.component,
+        )
+      : null;
 
     // Return JSON with download URL, checksum, and signed release manifest.
     // url is server-relative when PUBLIC_API_URL is set so the agent's
