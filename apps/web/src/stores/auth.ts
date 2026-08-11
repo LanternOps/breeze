@@ -621,13 +621,21 @@ export interface FetchWithAuthOptions extends RequestInit {
    * handle it themselves (e.g. runAction's `treatUnauthorizedAsError`).
    */
   skipUnauthorizedRetry?: boolean;
+  /**
+   * Skip the automatic `?orgId=` injection below. Opt-in, for the rare
+   * partner-scope read that is deliberately CROSS-ORG: the API treats an absent
+   * orgId as "all accessible orgs" (e.g. `/fleet/findings`), so injecting the
+   * switcher's active org silently narrows an "All organizations" query to one
+   * org. Callers that set this own their org scoping entirely.
+   */
+  skipOrgIdInjection?: boolean;
 }
 
 export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOptions = {}): Promise<Response> {
   // Auto-inject orgId from the org store so partner/system users always scope API calls
   let url = rawUrl;
   const orgId = _getOrgId?.();
-  if (orgId && !url.includes('orgId=')) {
+  if (orgId && !options.skipOrgIdInjection && !url.includes('orgId=')) {
     const separator = url.includes('?') ? '&' : '?';
     url = `${url}${separator}orgId=${orgId}`;
   }

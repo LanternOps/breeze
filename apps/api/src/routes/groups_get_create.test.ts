@@ -369,6 +369,110 @@ describe('groups routes', () => {
       expect(res.status).toBe(403);
     });
 
+    it('creates a group for a multi-org partner using the orgId query param (fetchWithAuth path)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const valuesSpy = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeGroup({ orgId: ORG_ID_2 })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesSpy } as any);
+
+      const res = await app.request(`/groups?orgId=${ORG_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Query-scoped Group' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID_2 }));
+    });
+
+    it('rejects a multi-org partner with no orgId in body or query', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'No Org Group' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('orgId is required when partner has multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects an inaccessible org supplied via the query param', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        return next();
+      });
+
+      const res = await app.request(`/groups?orgId=${ORG_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Cross-tenant Group' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('prefers a body orgId over the query param', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const valuesSpy = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeGroup({ orgId: ORG_ID })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesSpy } as any);
+
+      const res = await app.request(`/groups?orgId=${ORG_ID_2}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Body-scoped Group', orgId: ORG_ID })
+      });
+
+      expect(res.status).toBe(201);
+      expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }));
+    });
+
     it('should require orgId for system scope', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {

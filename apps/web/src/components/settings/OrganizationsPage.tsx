@@ -41,53 +41,16 @@ const statusColors: Record<Organization['status'], string> = {
   offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
 };
 
-/**
- * Walk every page of GET /orgs/organizations (#3446).
- *
- * The endpoint paginates: `getPagination` defaults to `limit=50` and CLAMPS to
- * 100, so a single request can never return more than 100 organizations no
- * matter what limit is requested — "just raise the limit" cannot fix this. This
- * page renders the whole list and filters it client-side, so anything past the
- * first page was invisible in both the list AND the search box.
- *
- * `fetchPage` returns the parsed body, or `null` to abort (used for the 401
- * redirect); `null` propagates so the caller can bail without rendering.
- */
-export const ORGANIZATIONS_PAGE_SIZE = 100; // the server's hard ceiling — fewest round-trips
-export const ORGANIZATIONS_MAX_PAGES = 100; // 10k orgs; a stop so a bad `total` cannot spin
-
-export async function fetchAllOrganizations<T = unknown>(
-  fetchPage: (page: number, limit: number) => Promise<unknown>,
-): Promise<T[] | null> {
-  const all: T[] = [];
-
-  for (let page = 1; page <= ORGANIZATIONS_MAX_PAGES; page += 1) {
-    const data = (await fetchPage(page, ORGANIZATIONS_PAGE_SIZE)) as
-      | { data?: unknown; organizations?: unknown; pagination?: { total?: unknown } }
-      | unknown[]
-      | null;
-    if (data === null) return null;
-
-    const body = data as { data?: unknown; organizations?: unknown; pagination?: { total?: unknown } };
-    const batch: T[] = Array.isArray(body?.data)
-      ? (body.data as T[])
-      : Array.isArray(body?.organizations)
-        ? (body.organizations as T[])
-        : Array.isArray(data)
-          ? (data as T[])
-          : [];
-    all.push(...batch);
-
-    // Stop on a short page rather than trusting `total` alone: a legacy or
-    // unpaginated response is a bare array with no pagination block and must
-    // still terminate.
-    const total = typeof body?.pagination?.total === 'number' ? body.pagination.total : undefined;
-    if (batch.length < ORGANIZATIONS_PAGE_SIZE) break;
-    if (total !== undefined && all.length >= total) break;
-  }
-
-  return all;
-}
+// Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)
+// so the org-switcher store — a second reader with the same first-50 truncation
+// — can share it without importing this page component. Re-exported here to
+// keep this page the documented home of the pagination contract and its tests.
+export {
+  fetchAllOrganizations,
+  ORGANIZATIONS_PAGE_SIZE,
+  ORGANIZATIONS_MAX_PAGES,
+} from '../../lib/fetchAllOrganizations';
+import { fetchAllOrganizations } from '../../lib/fetchAllOrganizations';
 
 export default function OrganizationsPage() {
   const { t } = useTranslation('settings');

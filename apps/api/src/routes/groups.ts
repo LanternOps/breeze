@@ -16,6 +16,7 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PG_UUID_REGEX } from '../utils/uuid';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -442,7 +443,13 @@ groupRoutes.post(
     const payload = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
 
-    let orgId = payload.orgId;
+    // The dashboard never puts orgId in this body — fetchWithAuth scopes every
+    // request with an `?orgId=` query param instead. Without this fallback a
+    // partner with 2+ orgs can never create a group from the UI (400 below).
+    // Access is still enforced by ensureOrgAccess, same as a body-sourced org.
+    const queryOrgId = c.req.query('orgId');
+    let orgId = payload.orgId
+      ?? (queryOrgId && PG_UUID_REGEX.test(queryOrgId) ? queryOrgId : undefined);
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
