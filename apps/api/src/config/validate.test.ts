@@ -2529,3 +2529,51 @@ describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
     });
   });
 });
+
+// Same guard, same reasoning as AGENT_AUTO_PROMOTE: the value silently governs
+// whether signup-abuse detection runs, and an unrecognized value used to read
+// as "off" — so ABUSE_SIGNALS_ENABLED=ture switched a HOSTED deployment's
+// signup policing off with no error anywhere but one boot log line.
+describe('ABUSE_SIGNALS_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('ABUSE_SIGNALS_ENABLED');
+    expect(buildEnvParseInput({ ABUSE_SIGNALS_ENABLED: 'sentinel' }).ABUSE_SIGNALS_ENABLED).toBe(
+      'sentinel',
+    );
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+        expect(validateConfig().ABUSE_SIGNALS_ENABLED).toBe(value);
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['ABUSE_SIGNALS_ENABLED'], () => {
+        expect(validateConfig().ABUSE_SIGNALS_ENABLED).toBeUndefined();
+      });
+    });
+  });
+
+  // Both compose files map this as `${ABUSE_SIGNALS_ENABLED:-}`, so the key is
+  // ALWAYS injected — as "" for every operator who never set it. Refusing boot
+  // on "" would take down every one of those stacks.
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/ABUSE_SIGNALS_ENABLED/);
+      });
+    },
+  );
+});

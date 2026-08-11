@@ -143,6 +143,21 @@ describe('runAbuseSweep', () => {
     expect(result.notified).toBe(2);
   });
 
+  it('threads the loaded hostname indicators into computeHeuristicSignals', async () => {
+    // computeHeuristicSignals takes the indicator list as its 4th argument and
+    // it feeds the only alert-capable tier of rmm.provider_default_hostname.
+    // Nothing else in this suite would notice the sweep dropping the argument,
+    // so the curated tier could be disconnected with zero test failures.
+    const indicators = { prefixes: ['xy-'] };
+    loadHostnameIndicators.mockReturnValue(indicators);
+
+    await runAbuseSweep();
+
+    expect(loadHostnameIndicators).toHaveBeenCalledTimes(1);
+    expect(computeHeuristicSignals).toHaveBeenCalledTimes(1);
+    expect(computeHeuristicSignals.mock.calls[0]![3]).toBe(indicators);
+  });
+
   it('passes persistSignals an evaluatedPartnerIds set built from the aggregates partnerIds', async () => {
     loadPartnerAggregates.mockResolvedValue([agg({ partnerId: 'pA' }), agg({ partnerId: 'pB' })]);
 

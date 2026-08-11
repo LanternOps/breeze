@@ -36,17 +36,22 @@ export const SIGNAL_DEFAULTS = {
   //  - CURATED: the hostname starts with a prefix listed in
   //    ABUSE_HOSTNAME_INDICATORS. That list is a specific, human-reviewed
   //    attribution ("this VPS provider's default prefix has only ever appeared
-  //    on abusive fleets"), so it is alert-capable on a single device. The list
+  //    on abusive fleets"), so curated_score is set to meet severity.alert_score
+  //    exactly: at default thresholds a single matching device reaches alert.
+  //    Both numbers are independently overridable via ABUSE_SIGNAL_OVERRIDES,
+  //    so that equality is an intent, not an invariant — lowering
+  //    curated_score or raising severity.alert_score demotes the tier. The list
   //    is deliberately EMPTY in this public repo — publishing it would tell the
   //    operator exactly which string to rename. Same reasoning and same
   //    mechanism as ABUSE_SCRIPT_INDICATORS.
   //
-  //  - GENERIC: the hostname merely has the SHAPE of a provider default
-  //    (see PROVIDER_DEFAULT_HOSTNAME_PATTERNS). This needs no configuration
-  //    and so protects self-hosted installs too, but a small shop really does
-  //    sometimes name a machine `PC-0042`, so on its own it is corroboration:
-  //    it requires a meaningful share of the fleet and caps below
-  //    severity.alert_score. Same rule as session_intensity and
+  //  - GENERIC: the hostname merely has the SHAPE of a stock OS installer
+  //    default (see PROVIDER_DEFAULT_HOSTNAME_PATTERNS). It needs no
+  //    configuration, but an unconfigurable pattern list has to be narrow: a
+  //    small shop really does name machines `PC-0042`, so the built-in list is
+  //    restricted to installer-generated artifacts and, on its own, this tier
+  //    is corroboration — it requires a meaningful share of the fleet and caps
+  //    below severity.alert_score. Same rule as session_intensity and
   //    cardholder_name_mismatch — do not raise past the alert threshold
   //    without a discriminator that actually exists.
   //

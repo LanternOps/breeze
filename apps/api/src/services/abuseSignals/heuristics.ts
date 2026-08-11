@@ -19,9 +19,9 @@ export interface PartnerAggregates {
   enrollmentDenied24h: number;
   commands24h: number;
   scriptExecutions24h: number;
-  /** last_seen_ip of the partner's non-decommissioned devices (bounded per partner; nulls excluded). */
+  /** last_seen_ip of the partner's live devices (decommissioned/quarantined and nulls excluded; bounded per partner). */
   lastSeenIps: string[];
-  /** hostname of the partner's non-decommissioned devices (bounded per partner; nulls excluded). */
+  /** hostname of the partner's live devices (decommissioned/quarantined and nulls excluded; bounded per partner). */
   hostnames: string[];
 }
 
@@ -30,24 +30,31 @@ export interface PartnerAggregates {
 const CONSUMER_HOSTNAME_SQL = `d.hostname ~* '^(DESKTOP|LAPTOP)-[A-Z0-9]{7}$'`;
 
 /**
- * Shapes that a hosting provider or a stock OS installer leaves behind when
- * nobody renames the machine.
+ * Shapes a stock OS installer leaves behind when nobody renames the machine.
  *
- * Deliberately shape-based, not vendor-named: naming a specific provider here
- * would publish the exact string to avoid, and the thing actually worth
- * detecting is not "this provider" but "nobody ever gave this box a real
- * name". A curated prefix list for specific known-bad providers lives in
- * ABUSE_HOSTNAME_INDICATORS instead (see loadHostnameIndicators).
+ * Restricted to STOCK-OS-INSTALLER artifacts — strings the installer generates
+ * that no human would choose — because this list is unconfigurable and applies
+ * to every deployment. A provider serial prefix (`<tag>-<serial>`) does NOT
+ * qualify: `PC-00123`, `SRV-0001` and `NY-10045` are mainstream MSP site-code
+ * naming, and since this signal never decays, a watch row raised on one can
+ * never stale-resolve — it pins the partner into sweep scope and every weekly
+ * digest permanently. Provider prefixes belong in ABUSE_HOSTNAME_INDICATORS
+ * (see loadHostnameIndicators), where a human has attributed them and can
+ * remove them again.
  *
- * DESKTOP-/LAPTOP- are excluded here on purpose — they mean something
- * different (a consumer's own machine, i.e. a probable victim) and are already
- * scored by rmm.consumer_devices. Double-counting one hostname across both
- * signals would let a single fleet stack two independent-looking scores.
+ * Also deliberately shape-based, not vendor-named: naming a specific provider
+ * here would publish the exact string to avoid, and the thing actually worth
+ * detecting is not "this provider" but "nobody ever gave this box a real name".
+ *
+ * DESKTOP-/LAPTOP- are excluded from THESE patterns on purpose — they mean
+ * something different (a consumer's own machine, i.e. a probable victim) and
+ * are already scored by rmm.consumer_devices. Double-counting one hostname
+ * across both signals would let a single fleet stack two independent-looking
+ * scores. Note the curated tier carries no such exclusion: an operator who
+ * configures a `desktop-` prefix in ABUSE_HOSTNAME_INDICATORS gets exactly
+ * that double count, which is why the built-in list is the one kept disjoint.
  */
 const PROVIDER_DEFAULT_HOSTNAME_PATTERNS: RegExp[] = [
-  // Short alpha tag + a numeric serial, e.g. a VPS image's stock hostname.
-  // Bounded at 4 leading letters so DESKTOP-/LAPTOP- can't match here.
-  /^[a-z]{2,4}-\d{4,8}$/,
   // Windows Server's stock computer name: WIN- plus 11 random alphanumerics.
   /^win-[a-z0-9]{11}$/,
 ];
@@ -81,12 +88,31 @@ export function loadHostnameIndicators(): HostnameIndicators {
     console.warn('[AbuseSignals] ABUSE_HOSTNAME_INDICATORS must be a JSON object — using empty indicator list');
     return empty;
   }
-  const prefixes = (parsed as Record<string, unknown>).prefixes;
-  return {
-    prefixes: Array.isArray(prefixes)
-      ? prefixes.filter((x): x is string => typeof x === 'string' && x.length > 0).map((x) => x.trim().toLowerCase())
-      : [],
-  };
+  const rawPrefixes = (parsed as Record<string, unknown>).prefixes;
+  if (rawPrefixes === undefined) {
+    // A singular `prefix` key (or any other typo) would otherwise disable the
+    // only alert-capable tier of rmm.provider_default_hostname silently, and
+    // the operator's evidence for "it's configured" is the env var being set.
+    console.warn('[AbuseSignals] ABUSE_HOSTNAME_INDICATORS has no "prefixes" key — using empty indicator list');
+    return empty;
+  }
+  if (!Array.isArray(rawPrefixes)) {
+    console.warn('[AbuseSignals] ABUSE_HOSTNAME_INDICATORS "prefixes" must be an array — using empty indicator list');
+    return empty;
+  }
+  // Trim BEFORE the emptiness check, never after: a whitespace-only entry
+  // survives a length check on the raw string, then normalizes to '', and
+  // host.startsWith('') is true for every hostname — one stray space in the
+  // env var would classify an entire fleet as 'curated', which is the
+  // alert-capable tier with no ratio gate behind it.
+  const prefixes = rawPrefixes
+    .map((x) => (typeof x === 'string' ? x.trim().toLowerCase() : ''))
+    .filter((x) => x.length > 0);
+  const dropped = rawPrefixes.length - prefixes.length;
+  if (dropped > 0) {
+    console.warn(`[AbuseSignals] ABUSE_HOSTNAME_INDICATORS dropped ${dropped} empty or non-string prefix entries`);
+  }
+  return { prefixes };
 }
 
 /**
@@ -360,12 +386,20 @@ function expandIpv6(ip: string): string[] | null {
   return canonical;
 }
 
-/** Pure scoring: no I/O, unit-testable. Scores are 0-100 pre-weighting. */
+/**
+ * Pure scoring: no I/O, unit-testable. Scores are 0-100 pre-weighting.
+ *
+ * hostnameIndicators is REQUIRED and deliberately has no default: it feeds the
+ * only alert-capable tier of rmm.provider_default_hostname, and a default would
+ * let a call site that forgets it compile clean while silently disabling that
+ * tier. Same contract as computeScriptSignals' indicator argument in
+ * scriptContent.ts — pass `{ prefixes: [] }` explicitly to mean "none".
+ */
 export function computeHeuristicSignals(
   aggs: PartnerAggregates[],
   cfg: SignalConfig,
   now: Date,
-  hostnameIndicators: HostnameIndicators = { prefixes: [] },
+  hostnameIndicators: HostnameIndicators,
 ): ComputedSignal[] {
   const signals: ComputedSignal[] = [];
 
@@ -493,18 +527,35 @@ export function computeHeuristicSignals(
           matchedHostnames: curatedHosts,
           examples: curatedExamples,
         }, false);
-    } else if (a.deviceCount >= cfg['rmm.provider_default_hostname.generic_min_devices']) {
+    } else if (a.hostnames.length >= cfg['rmm.provider_default_hostname.generic_min_devices']) {
       // Ratio-gated, unlike the curated tier: one stock-named box among thirty
       // properly-named ones is an MSP that missed a rename, not a fleet of
       // disposable VMs.
-      const ratio = genericHosts / a.deviceCount;
-      if (genericHosts > 0 && ratio >= cfg['rmm.provider_default_hostname.generic_ratio']) {
-        push('rmm.provider_default_hostname', Math.min(
-          cfg['rmm.provider_default_hostname.generic_max_score'],
-          cfg['rmm.provider_default_hostname.generic_score'] * (1 + ratio),
-        ), {
+      //
+      // Both the gate and the denominator are the number of hostnames we
+      // actually saw, NOT deviceCount: the hosts CTE caps at 5000 rows per
+      // partner while deviceCount is an uncapped COUNT(*), so a large fleet
+      // would divide a bounded numerator by an unbounded denominator and read
+      // as "barely any stock names". Same reasoning — and the same fix — as
+      // devicesWithIp in rmm.device_ip_scatter above. deviceCount stays in the
+      // evidence for triage context.
+      const devicesWithHostname = a.hostnames.length;
+      const ratio = genericHosts / devicesWithHostname;
+      const gate = cfg['rmm.provider_default_hostname.generic_ratio'];
+      if (genericHosts > 0 && ratio >= gate) {
+        // Ramp over the EXCESS above the gate, so gate → generic_score and a
+        // fully stock-named fleet → generic_max_score. Scaling by (1 + ratio)
+        // instead would clamp to generic_max_score at every ratio the gate
+        // admits, collapsing the whole tier to one score.
+        const base = cfg['rmm.provider_default_hostname.generic_score'];
+        const max = cfg['rmm.provider_default_hostname.generic_max_score'];
+        // gate >= 1 leaves no excess to ramp over (and would divide by zero);
+        // only a ratio of exactly 1 can clear it, which is the top of the ramp.
+        const score = gate >= 1 ? max : base + ((ratio - gate) / (1 - gate)) * (max - base);
+        push('rmm.provider_default_hostname', score, {
           tier: 'generic',
           deviceCount: a.deviceCount,
+          devicesWithHostname,
           matchedHostnames: genericHosts,
           ratio: Number(ratio.toFixed(2)),
         }, false);

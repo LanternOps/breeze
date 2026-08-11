@@ -46,7 +46,16 @@ function consumerHostname(index: number): string {
   return `DESKTOP-AAAA${String(index).padStart(3, '0')}`;
 }
 
-async function seedDevice(opts: { orgId: string; siteId: string; hostname: string; enrollmentIp: string; lastSeenIp?: string; enrolledAt: Date }) {
+async function seedDevice(opts: {
+  orgId: string;
+  siteId: string;
+  hostname: string;
+  enrollmentIp: string;
+  lastSeenIp?: string;
+  enrolledAt: Date;
+  /** Defaults to 'offline' — a live device. Pass 'decommissioned'/'quarantined' to exercise the loader's status filter. */
+  status?: 'offline' | 'decommissioned' | 'quarantined';
+}) {
   const testDb = getTestDb();
   const [device] = await testDb
     .insert(devices)
@@ -59,7 +68,7 @@ async function seedDevice(opts: { orgId: string; siteId: string; hostname: strin
       osVersion: '11',
       architecture: 'x86_64',
       agentVersion: '0.0.0-test',
-      status: 'offline',
+      status: opts.status ?? 'offline',
       enrollmentIp: opts.enrollmentIp,
       lastSeenIp: opts.lastSeenIp,
       enrolledAt: opts.enrolledAt,
@@ -138,6 +147,53 @@ describe('loadPartnerAggregates (real DB)', () => {
     expect([...row!.lastSeenIps].sort()).toEqual(
       [1, 2, 3, 4, 5, 6].map((i) => `10.${i}.0.1`).sort(),
     );
+    // Raw hostnames surface for rmm.provider_default_hostname (classification
+    // itself is pure TS, unit-tested in heuristics.test.ts). Asserting the
+    // CONTENT is the load-bearing part: loadPartnerAggregates maps this column
+    // with `Array.isArray(r.hostnames) ? ... : []`, so a broken `hosts` CTE, a
+    // dropped `LEFT JOIN hosts`, or a COALESCE shape postgres-js hands back as
+    // a string would all collapse to `[]` for every partner — the detector
+    // would silently never fire, and every mocked unit test would stay green.
+    expect(Array.isArray(row!.hostnames)).toBe(true);
+    expect([...row!.hostnames].sort()).toEqual(
+      [1, 2, 3, 4, 5, 6].map((i) => consumerHostname(i)).sort(),
+    );
+  });
+
+  it('excludes decommissioned and quarantined devices from hostnames (and deviceCount)', async () => {
+    const partner = await createPartner({ status: 'active' });
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const now = new Date();
+
+    // Synthetic stock-Windows-Server shape (WIN- + 11 alphanumerics) — the
+    // hostname family the provider-default detector actually scores.
+    const live = 'WIN-AAAA0000001';
+    for (const [hostname, status] of [
+      [live, 'offline'],
+      ['WIN-AAAA0000002', 'decommissioned'],
+      ['WIN-AAAA0000003', 'quarantined'],
+    ] as const) {
+      await seedDevice({
+        orgId: org.id,
+        siteId: site.id,
+        hostname,
+        enrollmentIp: '10.0.1.1',
+        lastSeenIp: '10.0.1.1',
+        enrolledAt: now,
+        status,
+      });
+    }
+
+    const aggregates = await withSystemDbAccessContext(() => loadPartnerAggregates());
+    const row = aggregates.find((a) => a.partnerId === partner.id);
+
+    expect(row).toBeDefined();
+    // Retired/contained machines must not inflate a partner's abuse score:
+    // the hosts CTE carries the same `status NOT IN ('decommissioned',
+    // 'quarantined')` predicate as dev and ips.
+    expect(row!.hostnames).toEqual([live]);
+    expect(row!.deviceCount).toBe(1);
   });
 
   it("includes an old partner with no recent enrollments when it has an OPEN partner_abuse_signals row (scoped CTE's third OR arm)", async () => {
@@ -171,6 +227,11 @@ describe('loadPartnerAggregates (real DB)', () => {
 
     expect(row).toBeDefined();
     expect(row!.deviceCount).toBe(0);
+    // Device-less partners must survive the array CTEs' LEFT JOINs: an INNER
+    // JOIN (or a COALESCE that didn't cover the NULL) would drop the row
+    // entirely and the open signal above could never stale-resolve.
+    expect(row!.hostnames).toEqual([]);
+    expect(row!.lastSeenIps).toEqual([]);
   });
 
   it('excludes a PENDING partner — RMM heuristics are device/session-shaped and structurally meaningless pre-activation', async () => {
