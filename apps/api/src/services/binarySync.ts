@@ -1091,6 +1091,11 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
         platform: agentVersions.platform,
         architecture: agentVersions.architecture,
         isLatest: agentVersions.isLatest,
+        // Selected because (version, platform, architecture, component,
+        // edition) is the unique key — the same platform/arch can carry both a
+        // self-host and a hosted agent row, and the backup row must mirror the
+        // isLatest of its OWN edition's sibling, not whichever came back first.
+        edition: agentVersions.edition,
       })
       .from(agentVersions)
       .where(
@@ -1116,6 +1121,19 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
       // values on BINARY_SOURCE=local deploys. Do a narrow backup-only
       // backfill instead: one GitHub release fetch, touching only
       // component=backup rows for this version.
+      //
+      // Subject to the same hosted fail-closed rule as the !hasAgent fallback
+      // below — this branch also reaches the public GitHub release from local
+      // mode, so exempting it would let a hosted deployment register a
+      // self-host backup binary through the side door. Logged and skipped
+      // rather than thrown, matching that branch: the whole function is a
+      // best-effort safety net that must never crash boot.
+      if (getBinarySource() === "local" && getBinaryEdition() === "hosted") {
+        console.error(
+          `[binarySync] Backup rows missing for version ${currentVersion} and BINARY_EDITION=hosted refuses to fall back to the public GitHub release from local mode. Stage breeze-backup in the local binaries volume instead.`,
+        );
+        return;
+      }
       await backfillBackupRowsForVersion(currentVersion, agentRows);
       return;
     }
@@ -1166,9 +1184,18 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
  */
 async function backfillBackupRowsForVersion(
   currentVersion: string,
-  agentRows: { platform: string; architecture: string; isLatest: boolean }[],
+  agentRows: {
+    platform: string;
+    architecture: string;
+    isLatest: boolean;
+    edition: string;
+  }[],
 ): Promise<void> {
-  const ghUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${currentVersion}`;
+  // Same resolved release source as the main sync path (line ~853), not a
+  // hardcoded api.github.com/<GITHUB_REPO> — a deployment that overrides its
+  // release repository must have its backup rows backfilled from THAT repo,
+  // not from the upstream one.
+  const ghUrl = `${getReleaseSourceApiBase()}/releases/tags/v${currentVersion}`;
   const ghToken =
     process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim();
   const ghHeaders: Record<string, string> = {
@@ -1220,8 +1247,14 @@ async function backfillBackupRowsForVersion(
     // architecture) instead of running upsertVersion's auto-promote
     // demote/insert logic — this backfill must never flip another row's
     // isLatest or touch a non-backup component.
+    // Matched on edition too: a row of a different edition is a different row
+    // under the unique key, so mirroring its isLatest would promote this backup
+    // row off an unrelated sibling's state.
     const siblingAgentRow = agentRows.find(
-      (r) => r.platform === platform && r.architecture === target.goarch,
+      (r) =>
+        r.platform === platform &&
+        r.architecture === target.goarch &&
+        r.edition === metadata.edition,
     );
     const isLatest = siblingAgentRow?.isLatest ?? false;
 
@@ -1404,6 +1437,7 @@ async function upsertBackupVersionExplicit(
     releaseManifest?: string;
     manifestSignature?: string;
     signingKeyId?: string;
+    edition: string;
   },
   releaseNotes: string | null | undefined,
   isLatest: boolean,
@@ -1424,13 +1458,19 @@ async function upsertBackupVersionExplicit(
         releaseNotes: releaseNotes ?? null,
         isLatest,
         component: "backup",
+        edition: metadata.edition,
       })
       .onConflictDoUpdate({
+        // Five columns, matching `agent_versions_version_platform_arch_component_edition_unique`.
+        // A four-column target has no matching unique index, so Postgres would
+        // reject the whole statement with 42P10 at runtime — invisible to the
+        // mocked-DB unit tests around this function.
         target: [
           agentVersions.version,
           agentVersions.platform,
           agentVersions.architecture,
           agentVersions.component,
+          agentVersions.edition,
         ],
         set: {
           downloadUrl,

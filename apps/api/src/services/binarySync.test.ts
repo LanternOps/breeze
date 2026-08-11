@@ -992,6 +992,45 @@ describe("binarySync", () => {
       errorSpy.mockRestore();
     });
 
+    it("refuses the backup backfill on BINARY_EDITION=hosted rather than pulling the public GitHub release", async () => {
+      setLocalEnvWithVersion("0.65.9");
+      process.env.BINARY_EDITION = "hosted";
+      // ENOENTs the official manifest pair so the unrelated hosted rule that
+      // makes an UNVERIFIABLE staged manifest fatal doesn't fire first and mask
+      // the branch under test.
+      mockReadFileVersionOnly("0.65.9");
+
+      // Agent row present, backup row missing — the branch that would
+      // otherwise reach GitHub.
+      dbMocks.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ component: "agent" }]),
+        }),
+      });
+
+      const fetchMock = vi.fn(async (_url: string) => {
+        throw new Error("network should never be reached");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      // The whole point: a hosted deployment must not register a self-host
+      // backup binary through this side door. Skipped, not thrown — this
+      // safety net must never crash boot.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes(
+            "BINARY_EDITION=hosted refuses to fall back to the public GitHub release",
+          ),
+        ),
+      ).toBe(true);
+
+      errorSpy.mockRestore();
+    });
+
     it("does not re-sync when both the agent and backup rows already exist for the current version", async () => {
       setLocalEnvWithVersion("0.65.9");
 
@@ -1033,6 +1072,10 @@ describe("binarySync", () => {
               platform: "windows",
               architecture: "amd64",
               isLatest: true,
+              // NOT NULL DEFAULT 'self-host' in the schema, so a real row
+              // always carries one — and the backfill matches its sibling on
+              // edition because that column is part of the unique key.
+              edition: "self-host",
             },
           ]),
         }),
@@ -1132,6 +1175,10 @@ describe("binarySync", () => {
               platform: "windows",
               architecture: "amd64",
               isLatest: true,
+              // NOT NULL DEFAULT 'self-host' in the schema, so a real row
+              // always carries one — and the backfill matches its sibling on
+              // edition because that column is part of the unique key.
+              edition: "self-host",
             },
           ]),
         }),
