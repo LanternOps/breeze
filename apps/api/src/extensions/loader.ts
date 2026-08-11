@@ -31,6 +31,7 @@ import {
   legacyExtensionHelperAuthMiddleware,
 } from './gateway';
 import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
+import { builtinTenancyDeclarations } from './builtinRegistry';
 import { aiTools, hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
@@ -264,8 +265,18 @@ export async function loadSourceExtensions(
   // same sweep once per boot AFTER publishing runtime tenancy, over
   // getExtensionTenancy()'s union of source manifests and runtime
   // declarations, so deferring keeps the fail-closed contract.
+  //
+  // BUILT-INS are the third delivery path and have exactly the same problem in
+  // this branch: `loadBuiltinExtensions` runs AFTER this loader, so no built-in
+  // tenancy has been published yet, while its tables were created by an earlier
+  // boot's migrations. Reading the compiled-in manifests directly
+  // (builtinTenancyDeclarations — a pure accessor, no publication side effects)
+  // accounts for them without weakening the sweep for anything else.
   if (runtimeNames.size === 0) {
-    await assertNoUnaccountedPublicTables(discovered.map((extension) => extension.manifest.tenancy));
+    await assertNoUnaccountedPublicTables([
+      ...discovered.map((extension) => extension.manifest.tenancy),
+      ...builtinTenancyDeclarations(),
+    ]);
   }
 
   const aiToolOwners = new Map<string, string>();

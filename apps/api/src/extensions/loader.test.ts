@@ -452,6 +452,58 @@ describe('mountExtensions', () => {
       warn.mockRestore();
     });
 
+    /** One pg_class catalog row shaped as the tripwire's projection expects. */
+    function catalogRow(tableName: string) {
+      return {
+        table_name: tableName,
+        relkind: 'r',
+        rls_enabled: true,
+        rls_forced: true,
+        policy_count: 1,
+        tenant_column_count: 1,
+        tenant_fk_count: 1,
+      };
+    }
+
+    // The THIRD delivery path. Built-in extensions publish their tenancy inside
+    // loadBuiltinExtensions, which runs AFTER this loader — but their tables
+    // were created by an earlier boot's migrations and are in the catalog NOW.
+    // Unless the sweep reads the compiled-in built-in manifests directly, every
+    // boot after the first aborts here.
+    it('accounts for BUILT-IN extension tables in the repo-wide sweep', async () => {
+      scaffoldRuntimeExtension(root);
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([catalogRow('workspace_file_index')]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      await expect(loadSourceExtensions(registry, root)).resolves.toBeUndefined();
+
+      expect(registry.get('demo')).toBeDefined();
+      expect(db.execute).toHaveBeenCalledTimes(2);
+      warn.mockRestore();
+    });
+
+    it('still fails the sweep for a table no manifest — core, source, or built-in — declares', async () => {
+      scaffoldRuntimeExtension(root);
+      const { db } = await import('../db');
+      (db.execute as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([catalogRow('workspace_file_index'), catalogRow('rogue_docs')]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ExtensionContributionRegistry();
+
+      const error = await loadSourceExtensions(registry, root).catch((e) => e as Error);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/rogue_docs/);
+      // The built-in's table is accounted for; only the genuine stray is named.
+      expect((error as Error).message).not.toMatch(/workspace_file_index/);
+      warn.mockRestore();
+    });
+
     it('still runs the repo-wide sweep itself when NO runtime artifacts are declared', async () => {
       scaffoldRuntimeExtension(root);
       const { db } = await import('../db');

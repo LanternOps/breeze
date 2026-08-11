@@ -20,14 +20,13 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import type { BreezeExtensionV1, ExtensionManifestV1 } from '@breeze/extension-sdk';
 import {
-  parseExtensionManifestV1,
-  type BreezeExtensionV1,
-  type ExtensionManifestV1,
-} from '@breeze/extension-sdk';
-import workspaceExtension from '@breeze/ext-workspace';
+  BUILTINS,
+  resolveBuiltinRoot,
+  type BuiltinExtension,
+} from './builtinRegistry';
 import type {
   ExtensionContributionRegistry,
   StagedExtensionContributions,
@@ -42,45 +41,8 @@ import { declaredRuntimeExtensionNames } from './loader';
 import { listSourceExtensionCandidates, resolveExtensionsRoot } from './discovery';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 
-/** One statically-imported, first-party extension. */
-export interface BuiltinExtension {
-  /** The v1 module, imported at build time into the core bundle. */
-  module: BreezeExtensionV1;
-  /** Its parsed v1 manifest (read from the package's manifest.json). */
-  manifest: ExtensionManifestV1;
-  /** Package dir under the repo/image root, e.g. 'ee/workspace'. */
-  packageDir: string;
-  /** Package name, used only to name the build command in operator messages. */
-  packageName: string;
-  /**
-   * Opt in to core helper auth on `/helper/*` (the legacy `helperRoutes` flag
-   * the gateway reads off the STAGED manifest; see defaultStageExtension).
-   */
-  helperRoutes: boolean;
-}
-
-/**
- * Resolve `<repo or image root>/<packageDir>`. Dev walks up from this file
- * (src/extensions → apps/api → apps → repo); the CJS Docker bundle falls back to
- * cwd (`/app`), where the Dockerfile copies `ee/<name>/{migrations,dist}`. Same
- * pattern as discovery.ts's `resolveExtensionsRoot`.
- */
-export function resolveBuiltinRoot(packageDir: string): string {
-  try {
-    const thisFile = fileURLToPath(import.meta.url);
-    const fromSource = path.resolve(path.dirname(thisFile), '..', '..', '..', '..', packageDir);
-    if (existsSync(fromSource)) return fromSource;
-  } catch {
-    // CJS bundle: the import.meta shim may not resolve to a real path.
-  }
-  return path.join(process.cwd(), packageDir);
-}
-
-function loadBuiltinManifest(root: string): ExtensionManifestV1 {
-  return parseExtensionManifestV1(
-    JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8')),
-  );
-}
+export { BUILTIN_EXTENSION_NAMES, builtinTenancyDeclarations } from './builtinRegistry';
+export type { BuiltinExtension } from './builtinRegistry';
 
 /**
  * The built-in's migration files, read from the package directory. A built-in
@@ -135,27 +97,6 @@ export function readWebDist(root: string): RegisterableExtensionWebAsset {
     .digest('hex');
   return { root: distRoot, digest: `sha256:${digest}`, files };
 }
-
-/**
- * The built-in registry. Adding an entry here is the ONLY way an extension
- * becomes built-in; the collision gates below then make that name unavailable to
- * both other delivery paths.
- */
-const BUILTINS: readonly BuiltinExtension[] = [
-  {
-    module: workspaceExtension,
-    manifest: loadBuiltinManifest(resolveBuiltinRoot('ee/workspace')),
-    packageDir: 'ee/workspace',
-    packageName: '@breeze/ext-workspace',
-    // Workspace's /helper/* tree is called by the device helper, so it needs
-    // core helper auth rather than the user default-deny.
-    helperRoutes: true,
-  },
-];
-
-export const BUILTIN_EXTENSION_NAMES: ReadonlySet<string> = new Set(
-  BUILTINS.map((builtin) => builtin.manifest.name),
-);
 
 /**
  * `reconcileExtensionMigrations`'s rolling-update gate refuses to apply a
@@ -316,6 +257,24 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
  * Load every built-in extension at startup. The single entry point boot wires
  * in; resolves when all built-ins are activated, and REJECTS (aborting boot) if
  * any phase of any built-in fails.
+ *
+ * BOOT ORDER IS PART OF THE CONTRACT: call this AFTER `loadSourceExtensions`
+ * and BEFORE `reconcileExtensions`.
+ *
+ *   • BEFORE `reconcileExtensions` — mandatory. The reconciler ends with one
+ *     repo-wide `assertNoUnaccountedPublicTables(getExtensionTenancy())` sweep
+ *     whenever extensions.yaml declares at least one extension. If built-ins
+ *     load after that sweep, their tenancy has not been published yet while
+ *     their tables already exist (created by an earlier boot's migrations), so
+ *     the sweep reads every `workspace_*` table as belonging to no manifest and
+ *     aborts. The FIRST boot would survive (no tables yet) and every boot after
+ *     it would fail — the worst possible failure shape.
+ *   • AFTER `loadSourceExtensions` — the legacy loader stages and activates the
+ *     deprecated source-directory path first; running built-ins first would let
+ *     a built-in's activation be observed by that loader's own gates. Its
+ *     repo-wide sweep is made built-in-aware through
+ *     {@link builtinTenancyDeclarations} (loader.ts), so this ordering needs no
+ *     tenancy to have been published yet.
  */
 export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Promise<void> {
   const ports: BuiltinPorts = { ...buildDefaultPorts(args), ...args.ports };

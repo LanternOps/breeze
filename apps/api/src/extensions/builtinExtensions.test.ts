@@ -1,16 +1,34 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import {
   parseExtensionManifestV1,
   type BreezeExtensionV1,
   type ExtensionManifestV1,
 } from '@breeze/extension-sdk';
+
+// Hermetic: the tenant-export suite below reads getExtensionTenancy(), which
+// otherwise scans the repo's extensions/ root for source extensions. Stubbing
+// discovery keeps these assertions about the BUILT-IN declarations only. The
+// loading tests never reach these ports (the harness overrides both).
+vi.mock('./discovery', () => ({
+  discoverExtensions: () => [],
+  listSourceExtensionCandidates: () => [],
+  resolveExtensionsRoot: () => '/nonexistent/extensions',
+}));
+
 import {
   BUILTIN_EXTENSION_NAMES,
+  builtinTenancyDeclarations,
   loadBuiltinExtensions,
   type BuiltinExtension,
   type BuiltinPorts,
 } from './builtinExtensions';
+import {
+  getExtensionOrgExportColumns,
+  registerRuntimeExtensionTenancy,
+  resetExtensionTenancyCacheForTests,
+} from './tenancyRegistry';
+import { getTenantExportPolicyRegistry } from '../services/tenantExportPolicyRegistry';
 import {
   ExtensionContributionRegistry,
   type StagedExtensionContributions,
@@ -416,5 +434,68 @@ describe('loadBuiltinExtensions — helperRoutes staging', () => {
 describe('BUILTIN_EXTENSION_NAMES', () => {
   it('names the workspace extension (the first and only built-in)', () => {
     expect([...BUILTIN_EXTENSION_NAMES]).toEqual(['workspace']);
+  });
+});
+
+/**
+ * Publishing a built-in's tenancy is not free: `getExtensionOrgExportColumns()`
+ * walks EVERY published declaration's `orgCascadeDeleteTables` and THROWS on the
+ * first table with no export classification. That throw surfaces at
+ * `getTenantExportPolicyRegistry()` — i.e. on the GDPR right-of-access export
+ * path — so a built-in that declares cascade tables without `orgExportColumns`
+ *500s every org's data export from the moment it boots, with nothing in the
+ * boot logs. These tests pin the whole classification, against the REAL
+ * manifest.
+ */
+describe('built-in tenancy participates in the tenant-export contract', () => {
+  afterEach(() => {
+    resetExtensionTenancyCacheForTests();
+  });
+
+  function publishBuiltinTenancy() {
+    for (const declaration of builtinTenancyDeclarations()) {
+      registerRuntimeExtensionTenancy(declaration);
+    }
+  }
+
+  it('classifies every org-cascade table the workspace built-in declares', () => {
+    const [workspace] = builtinTenancyDeclarations();
+    expect(workspace?.orgCascadeDeleteTables.length).toBeGreaterThan(0);
+    publishBuiltinTenancy();
+
+    // Without `tenancy.orgExportColumns` in ee/workspace/manifest.json this
+    // throws `[tenantExport] extension table "..." is missing an export
+    // classification`.
+    const classified = getExtensionOrgExportColumns();
+    expect(Object.keys(classified).sort()).toEqual(
+      [...workspace!.orgCascadeDeleteTables].sort(),
+    );
+
+    // Every table classifies a non-empty column set, and include/exclude never
+    // overlap (assertUniqueExportColumns throws otherwise).
+    for (const [table, policy] of Object.entries(classified)) {
+      expect(
+        policy.include.length + policy.exclude.length,
+        `table ${table} classifies no columns`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('builds the tenant-export policy registry the export path actually calls', () => {
+    publishBuiltinTenancy();
+    const registry = getTenantExportPolicyRegistry();
+
+    for (const table of builtinTenancyDeclarations()[0]!.orgCascadeDeleteTables) {
+      expect(registry[table]?.organizationKey, `missing policy for ${table}`).toBe('org_id');
+    }
+  });
+
+  it('excludes the encrypted source credential while exporting the tenant-owned columns', () => {
+    publishBuiltinTenancy();
+    const sources = getTenantExportPolicyRegistry()['workspace_sources'];
+
+    expect(sources?.columns['credential_enc']?.decision).toBe('exclude');
+    expect(sources?.columns['root_path']?.decision).toBe('include');
+    expect(sources?.columns['display_name']?.decision).toBe('include');
   });
 });
