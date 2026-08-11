@@ -1876,7 +1876,8 @@
     "networkErrorLoadingPermissions": "Network error while loading permissions",
     "cannotDeleteAssignedRole": "Cannot delete role with assigned users",
     "inheritedFromParentRole": "Inherited from parent role",
-    "waitingForPermissionCatalog": "Waiting for permission catalog to load"
+    "waitingForPermissionCatalog": "Waiting for permission catalog to load",
+    "summary": "{{filtered}} of {{total}} roles"
   },
   "roleSelector": {
     "currentRole": "Current role",

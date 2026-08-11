@@ -65,7 +65,8 @@
       "nonCompliant": "Nicht konform",
       "check": "Überprüfen",
       "lastChecked": "Zuletzt überprüft",
-      "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung."
+      "noComplianceResultsYetAssignThisPolicy": "Noch keine Compliance-Ergebnisse. Weisen Sie diese Richtlinie Geräten zu und fügen Sie Compliance-Regeln hinzu. Der Status erscheint nach der nächsten Auswertung.",
+      "summary": "Zeigt das Erste {{shown}} von {{total}} Ergebnisse – die folgende Zusammenfassung spiegelt nur diese Seite wider."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Wählen Sie eine Organisation für diese Richtlinie aus.",
@@ -1606,7 +1607,8 @@
       "vendor2": "Anbieter",
       "deviceCount": "Geräteanzahl",
       "allowed2": "erlaubt",
-      "blocked2": "blockiert"
+      "blocked2": "blockiert",
+      "summary": "Zeigt {{range}} von {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Das Abrufen des Softwareinventars ist fehlgeschlagen",

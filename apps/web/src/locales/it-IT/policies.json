@@ -65,7 +65,8 @@
       "nonCompliant": "Non conforme",
       "check": "Controllo",
       "lastChecked": "Ultimo controllo",
-      "noComplianceResultsYetAssignThisPolicy": "Non ci sono ancora risultati di conformità. Assegna questo criterio ai dispositivi e aggiungi regole di conformità; lo stato apparirà dopo la prossima valutazione."
+      "noComplianceResultsYetAssignThisPolicy": "Non ci sono ancora risultati di conformità. Assegna questo criterio ai dispositivi e aggiungi regole di conformità; lo stato apparirà dopo la prossima valutazione.",
+      "summary": "Visualizzazione dei primi {{shown}} di {{total}} risultati: il riepilogo sotto riflette solo questa pagina."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Seleziona un'organizzazione per questo criterio.",
@@ -1606,7 +1607,8 @@
       "vendor2": "vendor",
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
-      "blocked2": "blocked"
+      "blocked2": "blocked",
+      "summary": "Visualizzazione {{range}} di {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Impossibile recuperare l'inventario software",
