@@ -132,6 +132,15 @@ export default defineConfig({
       // suite (approvals.test.ts), so this is the only coverage that exercises
       // the real modules against real Postgres.
       'src/routes/approvalsDecideSupervised.integration.test.ts',
+      // Co-located real-DB integration test for report-suspicious under a
+      // PARTNER-scoped caller (#3234): the only place that combination exists.
+      // The unit suite (approvals.test.ts) has the right auth shape but mocks
+      // `../db`, so RLS never runs; approvalsDecideSupervised hardcodes
+      // scope 'organization', so auth.orgId is never null. Proves the audit row
+      // is tenanted to the reported approval's org rather than the caller's,
+      // and that the endpoint no longer 500s (and no longer rolls the
+      // 'reported' flip back) when that org is null.
+      'src/routes/approvalsReportSuspiciousPartnerScope.integration.test.ts',
       // Co-located real-DB integration test for the create-path atomicity +
       // tenant isolation (Task 7): injects a DB-level fault into the
       // intent_created outbox insert to prove {intent insert + fan-out + outbox}
