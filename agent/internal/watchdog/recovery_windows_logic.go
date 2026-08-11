@@ -90,9 +90,13 @@ func (realRecoveryClock) Sleep(ctx context.Context, d time.Duration) error {
 }
 
 const (
-	// windowsStopTimeout exceeds the agent's ~21s maximum serial shutdown
-	// budget with margin, so a slow-but-healthy shutdown is not mistaken for a
-	// hung one and escalated to termination.
+	// windowsStopTimeout exceeds the agent's maximum serial shutdown budget
+	// with margin, so a slow-but-healthy shutdown is not mistaken for a hung
+	// one and escalated to termination. That maximum is
+	// shutdownBudget + shipperFlushBudget in internal/agentapp/shutdown_budget.go
+	// (named rather than restated here, since a hardcoded number is exactly
+	// what silently went stale in #3323); raising either of those means
+	// re-checking this value.
 	windowsStopTimeout = 35 * time.Second
 	// windowsStartTimeout, windowsObserveTimeout and windowsProcessExitTimeout
 	// share the same 35s recovery deadline.

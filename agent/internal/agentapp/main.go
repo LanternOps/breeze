@@ -468,13 +468,23 @@ type agentComponents struct {
 // shutdownAgent gracefully stops all agent components.
 //
 // Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
-// (common during OS shutdown when the network has already gone down) can't
-// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
-// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
+// (common during OS shutdown when the network has already gone down) can't pin
+// the process past the service manager's stop timeout. Stages run
+// sequentially, so their timeouts are additive — they are therefore drawn from
+// one shared shutdownBudget rather than each being independent, and the whole
+// function is bounded by that budget no matter how many stages apply. See the
+// shutdown timing contract in shutdown_budget.go for how the budget relates to
+// the unit's TimeoutStopSec (#3323).
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
 	}
+
+	clock := newShutdownClock(shutdownBudget)
+
+	// The optional, platform/config-dependent component stops share a
+	// sub-budget so they cannot starve the ungated core teardown below.
+	components := clock.sub(componentStopBudget)
 
 	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
 	// session is closed before any later teardown can time out and
@@ -482,10 +492,14 @@ func shutdownAgent(comps *agentComponents) {
 	// the kernel and the next agent restart hits the
 	// "two callers on the same machine would conflict" failure from
 	// NewETWSubscriber's doc comment.
+	//
+	// The cancels are issued unconditionally (they are non-blocking); only
+	// the wait-for-exit is budgeted. That way a component always gets told to
+	// stop even when the sub-budget has run out and we can't wait for it.
 	if comps.etwluaCancel != nil {
 		comps.etwluaCancel()
 		if comps.etwluaDone != nil {
-			runWithTimeout("etwlua stop", 2*time.Second, func() {
+			components.run("etwlua stop", componentStopStage, func() {
 				<-comps.etwluaDone
 			})
 		}
@@ -497,7 +511,7 @@ func shutdownAgent(comps *agentComponents) {
 	if comps.unifiCancel != nil {
 		comps.unifiCancel()
 		if comps.unifiDone != nil {
-			runWithTimeout("unifi collector stop", 2*time.Second, func() {
+			components.run("unifi collector stop", componentStopStage, func() {
 				<-comps.unifiDone
 			})
 		}
@@ -505,13 +519,13 @@ func shutdownAgent(comps *agentComponents) {
 
 	// Cancel workspace indexing before core network teardown. A canceled crawl
 	// attempts one terminal CompleteRun, but we do NOT wait out its 30s HTTP
-	// timeout — the whole shutdown must fit systemd's 15s TimeoutStopSec, and
-	// a missed terminal flush self-heals server-side (the stale run is marked
-	// abandoned on the next crawl start). 2s matches the sibling stages.
+	// timeout — the whole shutdown must fit the shared budget, and a missed
+	// terminal flush self-heals server-side (the stale run is marked abandoned
+	// on the next crawl start). The cap matches the sibling stages.
 	if comps.workspaceIndexCancel != nil {
 		comps.workspaceIndexCancel()
 		if comps.workspaceIndexDone != nil {
-			runWithTimeout("workspace index stop", 2*time.Second, func() {
+			components.run("workspace index stop", componentStopStage, func() {
 				<-comps.workspaceIndexDone
 			})
 		}
@@ -523,7 +537,7 @@ func shutdownAgent(comps *agentComponents) {
 	if comps.supervisorCancel != nil {
 		comps.supervisorCancel()
 		if comps.supervisorDone != nil {
-			runWithTimeout("watchdog supervisor stop", 2*time.Second, func() {
+			components.run("watchdog supervisor stop", componentStopStage, func() {
 				<-comps.supervisorDone
 			})
 		}
@@ -542,29 +556,47 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
 	if broker := comps.hb.SessionBroker(); broker != nil {
 		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-				Reason: state.ReasonUserStop,
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
 			})
 		}
 	}
 
 	comps.hb.StopAcceptingCommands()
 
-	// Inner ctx deadline is slightly longer than the outer runWithTimeout
-	// budget so ordering is deterministic: runWithTimeout fires first on
-	// a hung DrainAndWait, logs the stage, then drainCancel triggers the
-	// still-running goroutine's ctx to abort.
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 6*time.Second)
-	runWithTimeout("drain in-flight commands", 5*time.Second, func() {
-		comps.hb.DrainAndWait(drainCtx)
-	})
-	drainCancel()
+	// Drain MUST stay ahead of the two transport stops below: draining after
+	// the websocket and heartbeat are torn down would strand whatever is in
+	// flight. The inner ctx deadline is slightly longer than the stage cap so
+	// ordering is deterministic — the stage timer fires first on a hung
+	// DrainAndWait and logs the stage, then the still-running goroutine's ctx
+	// aborts.
+	clock.runCtx("drain in-flight commands", drainStageBudget, drainCtxGrace, comps.hb.DrainAndWait)
 
-	runWithTimeout("websocket stop", 3*time.Second, comps.wsClient.Stop)
-	runWithTimeout("heartbeat stop", 5*time.Second, comps.hb.Stop)
+	clock.run("websocket stop", websocketStopBudget, comps.wsClient.Stop)
+	clock.run("heartbeat stop", heartbeatStopBudget, comps.hb.Stop)
 
+	// Zeroed unconditionally, including while an abandoned teardown goroutine
+	// may still be running. That goroutine can then read an empty bearer token
+	// and log a single warning instead of authenticating. This is accepted, and
+	// predates the shared budget — runWithTimeout has always abandoned an
+	// overrunning stage and fallen through to here. Wiping the secret is a
+	// hard guarantee at a fixed point in shutdown; the call it degrades is a
+	// best-effort one on a stage we already gave up waiting for, moments
+	// before the process exits. Deferring the wipe to chase it would trade a
+	// security property for a network call that is being dropped anyway.
 	if comps.secureToken != nil {
 		comps.secureToken.Zero()
 	}
@@ -1192,7 +1224,14 @@ func runAgent() {
 		fmt.Fprintf(os.Stderr, "Failed to start agent: %v\n", err)
 		os.Exit(1)
 	}
-	defer logging.StopShipper()
+	// StopShipper waits on the shipper goroutine with no deadline of its own,
+	// and that goroutine can be parked on a 30s HTTP POST — twice the whole
+	// stop window — precisely on the hosts this matters for (network already
+	// down during OS shutdown). Unbounded it defeats shutdownAgent's budget,
+	// since it runs after shutdownAgent returns (#3323).
+	defer func() {
+		runWithTimeout("log shipper flush", shipperFlushBudget, logging.StopShipper)
+	}()
 
 	// Wait for ctx to be cancelled — SIGINT or SIGTERM via
 	// signal.NotifyContext above. Behaviour change: console-mode
