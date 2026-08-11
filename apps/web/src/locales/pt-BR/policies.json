@@ -65,7 +65,8 @@
       "nonCompliant": "Não conforme",
       "check": "Verificação",
       "lastChecked": "Última verificação",
-      "noComplianceResultsYetAssignThisPolicy": "Ainda não há resultados de conformidade. Atribua esta política a dispositivos e adicione regras de conformidade; o status aparecerá após a próxima avaliação."
+      "noComplianceResultsYetAssignThisPolicy": "Ainda não há resultados de conformidade. Atribua esta política a dispositivos e adicione regras de conformidade; o status aparecerá após a próxima avaliação.",
+      "summary": "Mostrando os primeiros {{shown}} de {{total}} resultados — o resumo abaixo reflete apenas esta página."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Selecione uma organização para esta política.",
@@ -149,7 +150,8 @@
       "page": "Página",
       "of2": "de",
       "itsOwningOrganization": "sua organização proprietária",
-      "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}"
+      "organizationPolicyTitle": "Política da organização — aplica-se somente a {{organization}}",
+      "summary": "{{filtered}} de {{total}} políticas"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Falha ao buscar as políticas de configuração",
@@ -1607,7 +1609,8 @@
       "vendor2": "vendor",
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
-      "blocked2": "blocked"
+      "blocked2": "blocked",
+      "summary": "Exibindo {{range}} de {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Falha ao buscar o inventário de software",

@@ -65,7 +65,8 @@
       "nonCompliant": "Non-compliant",
       "check": "Check",
       "lastChecked": "Last Checked",
-      "noComplianceResultsYetAssignThisPolicy": "No compliance results yet. Assign this policy to devices and add compliance rules; status appears after the next evaluation."
+      "noComplianceResultsYetAssignThisPolicy": "No compliance results yet. Assign this policy to devices and add compliance rules; status appears after the next evaluation.",
+      "summary": "Showing the first {{shown}} of {{total}} results — the summary below reflects this page only."
     },
     "configPolicyCreatePage": {
       "selectAnOrganizationForThisPolicy": "Select an organization for this policy.",
@@ -149,7 +150,8 @@
       "page": "Page",
       "of2": "of",
       "itsOwningOrganization": "its owning organization",
-      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}"
+      "organizationPolicyTitle": "Organization policy — applies only to {{organization}}",
+      "summary": "{{filtered}} of {{total}} policies"
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
@@ -1607,7 +1609,8 @@
       "vendor2": "vendor",
       "deviceCount": "deviceCount",
       "allowed2": "allowed",
-      "blocked2": "blocked"
+      "blocked2": "blocked",
+      "summary": "Showing {{range}} of {{total}}"
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Failed to fetch software inventory",
