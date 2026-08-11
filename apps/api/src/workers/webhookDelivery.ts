@@ -1,8 +1,8 @@
 import { createHmac, randomUUID } from 'crypto';
 import { getRedisConnection } from '../services/redis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
-import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
+import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
 import * as dbModule from '../db';
 
@@ -81,18 +81,14 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   const deliveryId = job.id;
   const timestamp = Date.now();
 
-  const urlErrors = await validateWebhookUrlSafetyWithDns(webhook.url);
-  if (urlErrors.length > 0) {
-    return {
-      deliveryId,
-      webhookId: webhook.id,
-      eventId: event.id,
-      eventType: event.type,
-      success: false,
-      attempts: job.attempts + 1,
-      errorMessage: `Unsafe webhook URL: ${urlErrors.join('; ')}`
-    };
-  }
+  // No pre-flight DNS re-validation here. It used to call
+  // `validateWebhookUrlSafetyWithDns`, which performs its OWN resolution
+  // separate from the one `safeFetch` pins below — two lookups that can
+  // disagree, which is precisely the TOCTOU window the pinning exists to
+  // close. `safeFetch` enforces the same rules (scheme, blocked ranges, and
+  // the cleartext-to-private rule) against the single record it then connects
+  // to, and its `SsrfBlockedError` is already mapped to the same
+  // "Unsafe webhook URL" message in the catch below.
 
   // Prepare payload
   const payload = JSON.stringify({
@@ -136,7 +132,14 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       headers,
       body: payload,
       signal: controller.signal,
-      redirect: 'error'
+      redirect: 'error',
+      // Same pair the notification-channel sender uses. Without
+      // `allowPrivateNetwork` a self-hosted install could SAVE an on-LAN
+      // webhook and then fail every delivery with "URL points to blocked
+      // address"; `requirePrivateForCleartext` keeps that allowance confined
+      // to the operator's own LAN hop rather than the open internet.
+      allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+      requirePrivateForCleartext: true
     });
 
     clearTimeout(timeoutId);
