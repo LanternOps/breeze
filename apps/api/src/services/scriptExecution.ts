@@ -38,6 +38,7 @@ type ExecuteScriptOnDevicesFailure = {
 type ExecuteScriptOnDevicesSuccess = {
   ok: true;
   batchId: string | null;
+  batchIds: string[];
   scriptId: string;
   script: typeof scripts.$inferSelect;
   devicesTargeted: number;
@@ -148,25 +149,45 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   const parameters = input.parameters ?? {};
   const runAs = input.runAs ?? script.runAs;
 
-  let batchId: string | null = null;
-  if (executableDevices.length > 1) {
-    const batchOrgId = executableDevices[0]!.orgId;
+  // A multi-org run (partner/system script fanned out across orgs) must not
+  // stamp every batch row with the first device's org — split one batch per
+  // org instead. A single-org, single-device run keeps today's no-batch
+  // behavior; a single-org multi-device run keeps today's one-batch
+  // behavior. Once more than one org is targeted, every org's group gets its
+  // own batch (even an org with just one device in that run) so no execution
+  // is misattributed to another org's batch.
+  const devicesByOrg = new Map<string, typeof executableDevices>();
+  for (const device of executableDevices) {
+    const group = devicesByOrg.get(device.orgId);
+    if (group) {
+      group.push(device);
+    } else {
+      devicesByOrg.set(device.orgId, [device]);
+    }
+  }
+  const multiOrg = devicesByOrg.size > 1;
+
+  const batchIdByOrg = new Map<string, string>();
+  const createdBatchIds: string[] = [];
+  for (const [orgId, orgDevices] of devicesByOrg) {
+    if (orgDevices.length <= 1 && !multiOrg) continue;
     const [batch] = await db
       .insert(scriptExecutionBatches)
       .values({
         scriptId: input.scriptId,
-        orgId: batchOrgId,
+        orgId,
         triggeredBy: input.auth.user.id,
         triggerType,
         parameters,
-        devicesTargeted: executableDevices.length,
+        devicesTargeted: orgDevices.length,
         status: 'pending',
       })
       .returning();
     if (!batch) {
       throw new Error('Failed to create batch');
     }
-    batchId = batch.id;
+    batchIdByOrg.set(orgId, batch.id);
+    createdBatchIds.push(batch.id);
   }
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
@@ -180,7 +201,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       createdBy: input.auth.user.id,
       runAs,
       targetSessionId: input.targetSessionId,
-      batchId,
+      batchId: batchIdByOrg.get(device.orgId) ?? null,
     });
     if (!dispatch.ok) {
       // Pre-checks above (org access, os filter, decommissioned filter) make
@@ -195,16 +216,17 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     });
   }
 
-  if (batchId) {
+  if (createdBatchIds.length > 0) {
     await db
       .update(scriptExecutionBatches)
       .set({ status: 'queued' })
-      .where(eq(scriptExecutionBatches.id, batchId));
+      .where(inArray(scriptExecutionBatches.id, createdBatchIds));
   }
 
   return {
     ok: true,
-    batchId,
+    batchId: createdBatchIds[0] ?? null,
+    batchIds: createdBatchIds,
     scriptId: input.scriptId,
     script,
     devicesTargeted: executableDevices.length,
