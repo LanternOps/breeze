@@ -1928,7 +1928,11 @@ jobs:
           BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
-          POSTGRES_IMAGE_REF=postgres:16-alpine
+          # pgvector-enabled image required: the Workspace built-in runs
+          # ee/workspace/migrations/*.sql (CREATE EXTENSION vector) on API
+          # boot. Stock postgres:16-alpine lacks the extension and the API
+          # fails to start. Matches docker-compose.test.yml's pg16 major.
+          POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
           REDIS_IMAGE_REF=redis:7-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           # Required in production by config/validate.ts (#625) — without
