@@ -419,7 +419,11 @@ jobs:
           # targets. Re-listing makes this step structurally incapable of
           # catching the failure it exists for: a component added to the
           # download/build steps but missed by a signing step.
-          $present = @(Get-ChildItem -File "dist" | ForEach-Object { $_.Name })
+          # .wixpdb is WiX's debug-symbol sidecar — build-msi.ps1 emits it next
+          # to the MSI from the edition-aware release on. It is a build
+          # intermediate, never a published artifact, so it is excluded here
+          # rather than allowlisted as something to publish.
+          $present = @(Get-ChildItem -File "dist" | Where-Object { $_.Extension -ne '.wixpdb' } | ForEach-Object { $_.Name })
           $unexpected = @($present | Where-Object { $expected -notcontains $_ })
           if ($unexpected.Count -gt 0) {
             throw "unexpected files in dist/: $($unexpected -join ', ') — every published artifact must be covered by a signing step and listed here"
