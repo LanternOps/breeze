@@ -1633,7 +1633,8 @@
       "triggerScan": "Escaneo de activación"
     },
     "messages": {
-      "triggerScanFailed": "No se pudo activar el escaneo"
+      "triggerScanFailed": "No se pudo activar el escaneo",
+      "triggerScanQueued": "Escaneo en cola para {{name}}"
     },
     "table": {
       "name": "Nombre",
@@ -1658,6 +1659,10 @@
     "status": {
       "active": "Activo",
       "inactive": "Inactivo"
+    },
+    "badges": {
+      "allOrgs": "Todas las orgs",
+      "partnerWideTitle": "Línea base en todo el socio: se aplica a los dispositivos de cada organización"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1666,7 +1671,8 @@
       "new": "Nueva línea de base"
     },
     "messages": {
-      "saveFailed": "No se pudo guardar la línea base"
+      "saveFailed": "No se pudo guardar la línea base",
+      "saveSuccess": "Línea base «{{name}}» guardada"
     },
     "fields": {
       "name": "Nombre",
@@ -1697,6 +1703,12 @@
       "cancel": "Cancelar",
       "saving": "Guardando...",
       "save": "Guardar"
+    },
+    "ownership": {
+      "scope": "Alcance",
+      "allOrganizations": "Todas las organizaciones",
+      "partnerWideBaselineParenthetical": "(línea base en todo el socio)",
+      "thisOrganizationOnly": "Solo esta organización"
     }
   },
   "cisHardeningCisRemediationsTab": {

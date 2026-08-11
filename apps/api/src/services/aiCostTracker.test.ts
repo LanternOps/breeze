@@ -75,7 +75,11 @@ function setupDbMocks(sessionModel: string | null) {
   const capture: {
     sessionSet?: Record<string, unknown>;
     aggregateValues: Array<Record<string, unknown>>;
-  } = { aggregateValues: [] };
+    // The `set` object passed to onConflictDoUpdate on each aggregate upsert —
+    // what actually gets applied when the (orgId, period, periodKey) row
+    // already exists, i.e. every call after the first for a given period.
+    aggregateConflictSets: Array<Record<string, unknown>>;
+  } = { aggregateValues: [], aggregateConflictSets: [] };
 
   mockDb.update.mockReturnValue({
     set: vi.fn((values: Record<string, unknown>) => {
@@ -87,7 +91,12 @@ function setupDbMocks(sessionModel: string | null) {
   mockDb.insert.mockReturnValue({
     values: vi.fn((values: Record<string, unknown>) => {
       capture.aggregateValues.push(values);
-      return { onConflictDoUpdate: vi.fn().mockResolvedValue(undefined) };
+      return {
+        onConflictDoUpdate: vi.fn((arg: { set: Record<string, unknown> }) => {
+          capture.aggregateConflictSets.push(arg.set);
+          return Promise.resolve(undefined);
+        }),
+      };
     }),
   });
 
@@ -114,6 +123,12 @@ function setupDbMocks(sessionModel: string | null) {
 function recordedCostCents(captured: Record<string, unknown> | undefined): number {
   const expr = captured?.totalCostCents as { values?: unknown[] } | undefined;
   // sql`${col} + ${costCents}` → values = [colRef, costCents]
+  return Number(expr?.values?.[1]);
+}
+
+/** Extract the numeric increment from a `sql\`${col} + ${n}\`` expression under `key`. */
+function recordedIncrement(captured: Record<string, unknown> | undefined, key: string): number {
+  const expr = captured?.[key] as { values?: unknown[] } | undefined;
   return Number(expr?.values?.[1]);
 }
 
@@ -300,6 +315,74 @@ describe('recordUsageFromSdkResult', () => {
     });
 
     expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// recordUsageFromSdkResult — tool_execution_count rollup
+// ============================================
+//
+// Regression: a completed tool execution (a real ai_tool_executions row) never
+// bumped ai_cost_usage.tool_execution_count on the live/SDK chat path. The
+// aggregate insert hardcoded toolExecutionCount: 0, and the onConflictDoUpdate
+// `set` didn't reference the column at all — so once the (orgId, period,
+// periodKey) row existed (the common case, since daily/monthly rows are
+// shared across many turns) the column could never move off 0 no matter how
+// many tool calls ran.
+
+describe('recordUsageFromSdkResult — tool_execution_count rollup', () => {
+  it('increments tool_execution_count on the INSERT path when a tool ran this turn', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-tool-1', 'org-1', {
+      total_cost_usd: 0.11,
+      usage: { input_tokens: 50_000, output_tokens: 300 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+      toolExecutionCount: 1,
+    });
+
+    expect(captured.aggregateValues).toHaveLength(2); // daily + monthly
+    for (const values of captured.aggregateValues) {
+      expect(values.toolExecutionCount).toBe(1);
+    }
+  });
+
+  it('increments tool_execution_count via the onConflictDoUpdate SET (the row-already-exists path)', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-tool-2', 'org-1', {
+      total_cost_usd: 0.11,
+      usage: { input_tokens: 50_000, output_tokens: 300 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+      toolExecutionCount: 1,
+    });
+
+    expect(captured.aggregateConflictSets).toHaveLength(2); // daily + monthly
+    for (const set of captured.aggregateConflictSets) {
+      // sql`${aiCostUsage.toolExecutionCount} + ${1}` — must add 1, not be absent/0.
+      expect(recordedIncrement(set, 'toolExecutionCount')).toBe(1);
+    }
+  });
+
+  it('leaves tool_execution_count untouched (adds 0) when no tool ran this turn', async () => {
+    const captured = setupDbMocks(null);
+
+    await recordUsageFromSdkResult('sess-no-tool', 'org-1', {
+      total_cost_usd: 0.05,
+      usage: { input_tokens: 1_000, output_tokens: 100 },
+      num_turns: 1,
+      model: 'claude-sonnet-4-6',
+      // toolExecutionCount omitted — must default to 0, not throw or skip the column.
+    });
+
+    for (const values of captured.aggregateValues) {
+      expect(values.toolExecutionCount).toBe(0);
+    }
+    for (const set of captured.aggregateConflictSets) {
+      expect(recordedIncrement(set, 'toolExecutionCount')).toBe(0);
+    }
   });
 });
 

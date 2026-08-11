@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import { db } from '../db';
+import { sqlTimestamp } from '../db/sqlValues';
 import { alertCorrelations, alerts } from '../db/schema';
 
 const GROUP_METADATA_VERSION = 'alert-correlation-groups-v1';
@@ -103,6 +104,13 @@ async function upsertGroup(orgId: string, component: Component): Promise<string>
   const noiseReductionPercent = memberCount > 0
     ? Math.floor(((memberCount - 1) / memberCount) * 100)
     : 0;
+  // `triggeredAt` is a live JS `Date`. It must be bound through `sqlTimestamp`
+  // rather than interpolated bare into the template below (#3369) — a raw
+  // `Date` in a `sql` template is wrapped with the noop encoder and reaches
+  // postgres.js as a JS object, whose Bind step throws ERR_INVALID_ARG_TYPE and
+  // fails the whole correlation-grouping pass. `first_seen_at`/`last_seen_at`
+  // are naive `timestamp` columns, so the uncast ISO form is the correct
+  // binding here — see the docblock on `sqlTimestamp`.
   const firstSeenAt = component.alerts[0]!.triggeredAt;
   const lastSeenAt = component.alerts[memberCount - 1]!.triggeredAt;
   const correlationTypes = [...new Set(component.correlations.map((link) => link.correlationType))];
@@ -129,8 +137,8 @@ async function upsertGroup(orgId: string, component: Component): Promise<string>
       ${score.toFixed(2)},
       ${noiseReductionPercent},
       ${memberCount},
-      ${firstSeenAt},
-      ${lastSeenAt},
+      ${sqlTimestamp(firstSeenAt)},
+      ${sqlTimestamp(lastSeenAt)},
       jsonb_build_object(
         'version', ${GROUP_METADATA_VERSION},
         'correlationTypes', ${JSON.stringify(correlationTypes)}

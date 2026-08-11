@@ -8,7 +8,7 @@ import { clientAiTenantMappings } from '../../db/schema/clientAi';
 import { organizations, partners } from '../../db/schema/orgs';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
-import { getTrustedClientIp } from '../../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { writeAuditEvent, type RequestLike } from '../../services/auditEvents';
 import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import {
@@ -107,7 +107,7 @@ clientAiAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), as
   const ip = getTrustedClientIp(c);
   const rate = await rateLimiter(
     redis,
-    `clientai-exchange-${ip}`,
+    `clientai-exchange-${rateLimitIpKey(ip)}`,
     EXCHANGE_RATE_LIMIT.limit,
     EXCHANGE_RATE_LIMIT.windowSeconds
   );

@@ -25,6 +25,44 @@ export const SIGNAL_DEFAULTS = {
   'rmm.session_intensity.max_score': 65,
   'rmm.enrollment_ip_spread.min_devices': 8,
   'rmm.enrollment_ip_spread.distinct_ratio': 0.8,
+  // Provider-default hostnames (heuristics.ts). A managed MSP endpoint gets
+  // named or domain-joined; a box still carrying the hostname its hosting
+  // provider or installer stamped on it is almost always the operator's own
+  // staging VM rather than a customer asset. Sibling to rmm.consumer_devices,
+  // which makes the same argument about DESKTOP-/LAPTOP- consumer defaults.
+  //
+  // Two tiers, because they carry very different confidence:
+  //
+  //  - CURATED: the hostname starts with a prefix listed in
+  //    ABUSE_HOSTNAME_INDICATORS. That list is a specific, human-reviewed
+  //    attribution ("this VPS provider's default prefix has only ever appeared
+  //    on abusive fleets"), so curated_score is set to meet severity.alert_score
+  //    exactly: at default thresholds a single matching device reaches alert.
+  //    Both numbers are independently overridable via ABUSE_SIGNAL_OVERRIDES,
+  //    so that equality is an intent, not an invariant — lowering
+  //    curated_score or raising severity.alert_score demotes the tier. The list
+  //    is deliberately EMPTY in this public repo — publishing it would tell the
+  //    operator exactly which string to rename. Same reasoning and same
+  //    mechanism as ABUSE_SCRIPT_INDICATORS.
+  //
+  //  - GENERIC: the hostname merely has the SHAPE of a stock OS installer
+  //    default (see PROVIDER_DEFAULT_HOSTNAME_PATTERNS). It needs no
+  //    configuration, but an unconfigurable pattern list has to be narrow: a
+  //    small shop really does name machines `PC-0042`, so the built-in list is
+  //    restricted to installer-generated artifacts and, on its own, this tier
+  //    is corroboration — it requires a meaningful share of the fleet and caps
+  //    below severity.alert_score. Same rule as session_intensity and
+  //    cardholder_name_mismatch — do not raise past the alert threshold
+  //    without a discriminator that actually exists.
+  //
+  // Neither tier is age-decayed: a fleet of unrenamed provider VMs is evidence
+  // about what the fleet IS, not about how recently the account was created.
+  'rmm.provider_default_hostname.curated_score': 70,
+  'rmm.provider_default_hostname.curated_per_extra': 10,
+  'rmm.provider_default_hostname.generic_min_devices': 3,
+  'rmm.provider_default_hostname.generic_ratio': 0.5,
+  'rmm.provider_default_hostname.generic_score': 45,
+  'rmm.provider_default_hostname.generic_max_score': 55,
   'rmm.device_ip_scatter.min_devices': 8,
   'rmm.device_ip_scatter.watch_ratio': 0.85,
   'rmm.device_ip_scatter.high_ratio': 0.95,

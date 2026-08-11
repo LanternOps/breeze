@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { ArrowLeft, Globe, ExternalLink, Wifi, WifiOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction } from '../../lib/runAction';
+import { runAction, ActionError } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { formatNumber } from '@/lib/i18n/format';
+import { asList } from '@/lib/asList';
+import { useClickOutside } from '../../hooks/useClickOutside';
+import { useEscapeClose } from '../../hooks/useEscapeClose';
+import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 import {
   mapAsset,
   typeConfig,
@@ -32,7 +36,30 @@ type AssetDetailExtras = {
   firstSeenAt?: string | null;
   snmpMonitoringEnabled?: boolean;
   networkMonitoringEnabled?: boolean;
+  // The agent device that ran this asset's last discovery scan (or null).
+  // This is the proxy bridge default — deliberately separate from
+  // `linkedDeviceId`, which is an identity link and would be a loopback if
+  // used to bridge a proxy connection to the asset it IS.
+  suggestedBridgeDeviceId?: string | null;
 };
+
+type DeviceOption = { id: string; name: string; online: boolean };
+
+// Ports/services that plausibly serve a browsable web UI. Mirrors the design
+// spec's list (Architecture D.1): common HTTP(S) ports plus anything whose
+// discovered service name looks like http/https.
+const WEB_PORTS = new Set([80, 443, 8080, 8443, 8006, 9443]);
+
+function isWebPort(port: number, service?: string): boolean {
+  if (WEB_PORTS.has(port)) return true;
+  return !!service && /https?/i.test(service);
+}
+
+function defaultSchemeForPort(port: number, service?: string): 'http' | 'https' {
+  if (port === 443 || port === 8443 || port === 9443) return 'https';
+  if (service && /https/i.test(service)) return 'https';
+  return 'http';
+}
 
 // Friendly labels for the scalar SNMP system OIDs the discovery scan collects.
 const SNMP_FIELD_LABELS: Record<string, string> = {
@@ -87,6 +114,190 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+// Per-port "Open Web UI" popover: pick a bridge agent, scheme, and optional
+// self-signed allowance, then POST /tunnels/proxy-connect and open the result
+// in a new tab. Bridge default is `suggestedBridgeDeviceId` (the discovering
+// agent) — NEVER `linkedDeviceId` (identity link), which would be a loopback.
+function ProxyConnectPopover({
+  assetId,
+  assetIp,
+  port,
+  service,
+  suggestedBridgeDeviceId,
+  devices,
+}: {
+  assetId: string;
+  assetIp: string;
+  port: number;
+  service?: string;
+  suggestedBridgeDeviceId: string | null;
+  devices: DeviceOption[];
+}) {
+  const { t } = useTranslation('devices');
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  useClickOutside(open, containerRef, () => setOpen(false));
+  useEscapeClose(open, () => setOpen(false));
+
+  const onlineDevices = useMemo(() => devices.filter((d) => d.online), [devices]);
+
+  // Prefer the discovering agent when it's online; else the first online
+  // device (same fallback the old AssetDetailModal proxy section used).
+  const defaultDeviceId = useMemo(() => {
+    if (suggestedBridgeDeviceId && onlineDevices.some((d) => d.id === suggestedBridgeDeviceId)) {
+      return suggestedBridgeDeviceId;
+    }
+    return onlineDevices[0]?.id ?? '';
+  }, [suggestedBridgeDeviceId, onlineDevices]);
+
+  const [deviceId, setDeviceId] = useState(defaultDeviceId);
+  // The device list loads async after mount, so the real default often
+  // arrives after this component's initial render — sync once it does.
+  useEffect(() => {
+    setDeviceId(defaultDeviceId);
+  }, [defaultDeviceId]);
+
+  const [scheme, setScheme] = useState<'http' | 'https'>(() => defaultSchemeForPort(port, service));
+  const [skipTlsVerify, setSkipTlsVerify] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [inlineError, setInlineError] = useState<string>();
+
+  const handleConnect = useCallback(async () => {
+    if (!deviceId) return;
+    setConnecting(true);
+    setInlineError(undefined);
+    try {
+      const data = await runAction<{ tunnel: { id: string } }>({
+        request: () =>
+          fetchWithAuth('/tunnels/proxy-connect', {
+            method: 'POST',
+            body: JSON.stringify({
+              deviceId,
+              discoveredAssetId: assetId,
+              port,
+              scheme,
+              skipTlsVerify: scheme === 'https' ? skipTlsVerify : false,
+            }),
+          }),
+        errorFallback: t('networkDeviceDetailPage.toasts.proxyConnectFailed'),
+        friendly: (code) => {
+          if (code === 'PROXY_TARGET_DISABLED') return t('networkDeviceDetailPage.proxyErrors.disabled');
+          if (code === 'MFA_REQUIRED') return t('networkDeviceDetailPage.proxyErrors.mfaRequired');
+          return undefined;
+        },
+      });
+      setOpen(false);
+      window.open(buildRemoteProxyPageUrl(data.tunnel.id, `${assetIp}:${port}`, assetId), '_blank');
+    } catch (err) {
+      // runAction already toasted a generic/friendly message; surface an
+      // inline message too for the two codes that need a clear, sticky
+      // explanation right next to the control that caused them.
+      if (err instanceof ActionError && err.code === 'PROXY_TARGET_DISABLED') {
+        setInlineError(t('networkDeviceDetailPage.proxyErrors.disabled'));
+      } else if (err instanceof ActionError && err.code === 'MFA_REQUIRED') {
+        setInlineError(t('networkDeviceDetailPage.proxyErrors.mfaRequired'));
+      }
+    } finally {
+      setConnecting(false);
+    }
+  }, [deviceId, assetId, assetIp, port, scheme, skipTlsVerify, t]);
+
+  return (
+    <div className="relative inline-block" ref={containerRef}>
+      <button
+        type="button"
+        data-testid={`network-detail-port-proxy-${port}`}
+        aria-label={t('networkDeviceDetailPage.openWebUi')}
+        title={t('networkDeviceDetailPage.openWebUi')}
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center text-muted-foreground hover:text-foreground"
+      >
+        <ExternalLink className="h-3 w-3" />
+      </button>
+
+      {open && (
+        <div
+          className="absolute left-0 top-6 z-30 w-72 rounded-md border bg-popover p-3 text-left shadow-lg"
+          role="dialog"
+          data-testid={`network-detail-proxy-popover-${port}`}
+        >
+          <div className="mb-2 text-sm font-semibold">
+            {t('discovery:proxyConnect.title', { target: `${assetIp}:${port}` })}
+          </div>
+
+          {onlineDevices.length === 0 ? (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              {t('networkDeviceDetailPage.proxyErrors.noOnlineAgent', { ip: assetIp })}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  {t('discovery:proxyConnect.throughAgent')}
+                </label>
+                <select
+                  data-testid="proxy-popover-bridge-select"
+                  value={deviceId}
+                  onChange={(e) => setDeviceId(e.target.value)}
+                  className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  {onlineDevices.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <select
+                data-testid="proxy-popover-scheme-select"
+                value={scheme}
+                onChange={(e) => {
+                  const next = e.target.value as 'http' | 'https';
+                  setScheme(next);
+                  if (next !== 'https') setSkipTlsVerify(false);
+                }}
+                className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+              >
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+              </select>
+
+              {scheme === 'https' && (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={skipTlsVerify}
+                    onChange={(e) => setSkipTlsVerify(e.target.checked)}
+                    data-testid="proxy-popover-allow-self-signed"
+                  />
+                  {t('discovery:proxyConnect.allowSelfSigned')}
+                </label>
+              )}
+
+              <button
+                type="button"
+                data-testid="proxy-popover-connect"
+                onClick={() => void handleConnect()}
+                disabled={connecting || !deviceId}
+                className="mt-1 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70"
+              >
+                {connecting ? t('networkDeviceDetailPage.connecting') : t('discovery:proxyConnect.connect')}
+              </button>
+            </div>
+          )}
+
+          {inlineError && (
+            <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+              {inlineError}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
   const { t } = useTranslation('devices');
   const [asset, setAsset] = useState<DiscoveredAsset | null>(null);
@@ -135,6 +346,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         firstSeenAt: raw.firstSeenAt ?? null,
         snmpMonitoringEnabled: raw.snmpMonitoringEnabled ?? false,
         networkMonitoringEnabled: raw.networkMonitoringEnabled ?? false,
+        suggestedBridgeDeviceId: (raw as AssetDetailExtras).suggestedBridgeDeviceId ?? null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
@@ -146,6 +358,32 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   useEffect(() => {
     void fetchAsset();
   }, [fetchAsset]);
+
+  // Device list for the proxy "through agent" picker. Same call shape as
+  // DiscoveredAssetList's equivalent fetch for AssetDetailModal's (now
+  // removed) bridge picker: unscoped `/devices`, online filtered client-side.
+  const [devices, setDevices] = useState<DeviceOption[]>([]);
+  const fetchDevices = useCallback(async () => {
+    try {
+      const response = await fetchWithAuth('/devices');
+      if (!response.ok) return;
+      const data = await response.json();
+      const raw: any[] = asList(data, 'devices');
+      setDevices(
+        raw.map((d: any) => ({
+          id: d.id,
+          name: d.displayName || d.hostname || d.id,
+          online: d.status === 'online',
+        })),
+      );
+    } catch {
+      // Best-effort — the popover's bridge picker just shows no online agent.
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchDevices();
+  }, [fetchDevices]);
 
   const handleBack = () => {
     void navigateTo('/devices');
@@ -446,9 +684,19 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                   {openPorts.map((p) => (
                     <span
                       key={p.port}
-                      className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
+                      className="inline-flex items-center gap-1 rounded-full border border-muted bg-background px-2 py-0.5 text-xs"
                     >
                       {p.port}{p.service ? ` (${p.service})` : ''}
+                      {isWebPort(p.port, p.service) && (
+                        <ProxyConnectPopover
+                          assetId={asset.id}
+                          assetIp={asset.ip}
+                          port={p.port}
+                          service={p.service}
+                          suggestedBridgeDeviceId={extras.suggestedBridgeDeviceId ?? null}
+                          devices={devices}
+                        />
+                      )}
                     </span>
                   ))}
                 </div>

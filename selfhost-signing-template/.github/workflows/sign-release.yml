@@ -1,0 +1,1235 @@
+name: Sign Breeze Release
+
+# Distilled from the signing jobs of lanternops/breeze .github/workflows/release.yml.
+# Maintenance stance: this is a COPY, not a reusable workflow — your secrets never
+# flow through LanternOps workflow definitions, and refactors of the product repo's
+# release.yml cannot break your runs. Version-sensitive build logic lives in the
+# product repo and is checked out at the manifest-verified sourceCommit.
+#
+# ONE RUN PER VERSION. A successful run publishes release vX.Y.Z and every later
+# run for that version is refused, so signing must happen once per release and
+# SmartScreen/Gatekeeper reputation accrues against a stable hash. The corollary:
+# a PARTIAL run (platforms: windows or platforms: macos) consumes the version.
+# You cannot add the other platform afterwards without deleting the release in
+# the GitHub UI first. Use platforms: all unless you specifically want a
+# single-platform release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Breeze release version to sign (X.Y.Z or X.Y.Z-suffix, no leading v)'
+        required: true
+        type: string
+      signing-mode:
+        description: 'Windows signing backend (pfx is legacy/internal-PKI only)'
+        required: true
+        default: azure-artifact-signing
+        type: choice
+        options:
+          - azure-artifact-signing
+          - pfx
+      platforms:
+        description: 'Platforms to sign (a partial run CLAIMS the version — see below)'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+      dry-run:
+        description: 'Download + verify + build with signing stubbed (no secrets needed)'
+        required: true
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      signing-mode:
+        required: false
+        default: azure-artifact-signing
+        type: string
+      platforms:
+        required: false
+        default: all
+        type: string
+      dry-run:
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: sign-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Validate version format
+        id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::version '$VERSION' is not X.Y.Z or X.Y.Z-suffix (no leading v)"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate enum inputs
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          SIGNING_MODE: ${{ inputs.signing-mode }}
+        run: |
+          set -euo pipefail
+          # The `choice` enums only constrain workflow_dispatch. On the
+          # workflow_call path both are plain strings, so an unrecognised value
+          # would make both platform `if:` conditions false and the run would
+          # report success having signed and published nothing.
+          case "$PLATFORMS" in
+            all|windows|macos) ;;
+            *) echo "::error::platforms '$PLATFORMS' is not one of: all, windows, macos"; exit 1 ;;
+          esac
+          case "$SIGNING_MODE" in
+            azure-artifact-signing|pfx) ;;
+            *) echo "::error::signing-mode '$SIGNING_MODE' is not one of: azure-artifact-signing, pfx"; exit 1 ;;
+          esac
+          echo "inputs ok: platforms=$PLATFORMS signing-mode=$SIGNING_MODE"
+
+      - name: Refuse to overwrite an existing release
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Distinguish "does not exist" (404) from a transient API failure.
+          # `gh release view >/dev/null 2>&1` treats a 5xx, a rate limit, or an
+          # auth problem as "no such release", which silently defeats the
+          # sign-once-per-release guard this step exists to enforce.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}")"
+          case "$status" in
+            404)
+              echo "no existing release v${VERSION} — ok to proceed"
+              ;;
+            200)
+              echo "::error::release v${VERSION} already exists on ${GITHUB_REPOSITORY}. Signing must happen once per release so SmartScreen/Gatekeeper reputation accrues on a stable hash — delete the release manually first if you truly need to re-sign."
+              exit 1
+              ;;
+            *)
+              echo "::error::could not determine whether release v${VERSION} exists on ${GITHUB_REPOSITORY} (HTTP ${status}). Refusing to proceed rather than risk overwriting a published release."
+              exit 1
+              ;;
+          esac
+
+  windows:
+    permissions:
+      contents: read
+      id-token: write
+    name: Sign Windows artifacts
+    needs: [validate]
+    if: inputs.platforms == 'all' || inputs.platforms == 'windows'
+    runs-on: windows-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # ---- Trust boundary: everything below `verify` may assume the official
+      # ---- release is authentic. No secrets appear above or inside it.
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Checkout Breeze source at manifest sourceCommit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lanternops/breeze
+          ref: ${{ steps.verify.outputs.source-commit }}
+          path: breeze
+          persist-credentials: false
+
+      - name: Download and verify unsigned signing inputs
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          for pair in \
+            "breeze-agent-windows-amd64-unsigned.exe:breeze-agent-windows-amd64.exe" \
+            "breeze-backup-windows-amd64-unsigned.exe:breeze-backup-windows-amd64.exe" \
+            "breeze-watchdog-windows-amd64-unsigned.exe:breeze-watchdog-windows-amd64.exe" \
+            "breeze-user-helper-windows-amd64-unsigned.exe:breeze-user-helper-windows-amd64.exe"
+          do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            # explicit `bash` prefix: the exec bit is not reliable after a
+            # Windows checkout, and git-bash is the shell here
+            bash scripts/download-verified-asset.sh "$VERSION" "$src" "dist/$dst" --expect-signing-input
+          done
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX CLI (pinned)
+        shell: pwsh
+        run: |
+          # Version-pinned, unlike the product CI which floats — a WiX minor
+          # bump must not change your MSI bytes out from under you.
+          dotnet tool install --global wix --version 7.0.0
+          if ($LASTEXITCODE -ne 0) { throw "wix install failed with exit code $LASTEXITCODE" }
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          wix eula accept wix7
+
+      - name: Validate Azure signing secrets
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERT_PROFILE: ${{ secrets.AZURE_CERT_PROFILE }}
+        run: |
+          $required = @("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SIGNING_ENDPOINT", "AZURE_SIGNING_ACCOUNT_NAME", "AZURE_CERT_PROFILE")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) {
+              throw "Missing required signing secret: $name (see README secrets table)"
+            }
+          }
+
+      - name: Validate PFX signing secrets
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          foreach ($name in @("WINDOWS_PFX_BASE64", "WINDOWS_PFX_PASSWORD")) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) {
+              throw "Missing required signing secret: $name (see README secrets table)"
+            }
+          }
+
+      - name: Azure Login (OIDC)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign agent EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-agent-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign backup EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-backup-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign watchdog EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-watchdog-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign user-helper EXE (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-user-helper-windows-amd64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign EXEs (PFX — legacy/internal PKI)
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          PFX_TIMESTAMP_URL: ${{ vars.PFX_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+          $targets = @(
+            "dist\breeze-agent-windows-amd64.exe",
+            "dist\breeze-backup-windows-amd64.exe",
+            "dist\breeze-watchdog-windows-amd64.exe",
+            "dist\breeze-user-helper-windows-amd64.exe"
+          )
+          foreach ($f in $targets) {
+            & $signtool sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /tr $env:PFX_TIMESTAMP_URL /td SHA256 $f
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $f with exit code $LASTEXITCODE" }
+          }
+
+      - name: Build MSI
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = $env:GITHUB_WORKSPACE
+          $agentExe = Join-Path $root "dist\breeze-agent-windows-amd64.exe"
+          $backupExe = Join-Path $root "dist\breeze-backup-windows-amd64.exe"
+          $watchdogExe = Join-Path $root "dist\breeze-watchdog-windows-amd64.exe"
+          $userHelperExe = Join-Path $root "dist\breeze-user-helper-windows-amd64.exe"
+          $msiPath = Join-Path $root "dist\breeze-agent.msi"
+          $buildMsiScript = Join-Path $root "breeze\agent\installer\build-msi.ps1"
+
+          # Build under the self-hosted edition identity (ProductName
+          # "Breeze Agent (Self-Hosted)", its own permanent UpgradeCode) so a
+          # self-signed MSI never collides with a hosted-distribution install
+          # and its upgrade lineage matches the public unsigned self-host MSI
+          # Breeze publishes with the release. -Edition is only present on
+          # build-msi.ps1 from the release that introduced it onward — this
+          # checkout is pinned to the manifest's verified sourceCommit, so an
+          # older release's script simply won't have the parameter. Grep
+          # rather than assume: pass -Edition SelfHost only when it exists;
+          # an older release then builds under the original ("Breeze Agent")
+          # identity, which is what that release actually shipped.
+          $editionArgs = @()
+          if (Select-String -Path $buildMsiScript -Pattern '\$Edition\b' -Quiet) {
+            $editionArgs = @("-Edition", "SelfHost")
+          }
+          else {
+            Write-Host "build-msi.ps1 at this sourceCommit has no -Edition parameter (pre-edition release) — building under the legacy 'Breeze Agent' identity"
+          }
+
+          & $buildMsiScript `
+            -Version $env:VERSION `
+            -AgentExePath $agentExe `
+            -BackupExePath $backupExe `
+            -WatchdogExePath $watchdogExe `
+            -UserHelperExePath $userHelperExe `
+            -OutputPath $msiPath `
+            @editionArgs
+          # $ErrorActionPreference does not turn a non-zero *exit* from an
+          # external script into a terminating error — only a thrown exception.
+          if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 failed with exit code $LASTEXITCODE" }
+
+      - name: Sign MSI (Azure Artifact Signing)
+        if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files: ${{ github.workspace }}\dist\breeze-agent.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSI (PFX — legacy/internal PKI)
+        if: inputs.signing-mode == 'pfx' && inputs.dry-run == false
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+          PFX_TIMESTAMP_URL: ${{ vars.PFX_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          if (-not (Test-Path $pfxPath)) {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          & $signtool sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /tr $env:PFX_TIMESTAMP_URL /td SHA256 "dist\breeze-agent.msi"
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for MSI with exit code $LASTEXITCODE" }
+
+      - name: Remove PFX from disk
+        if: always() && inputs.signing-mode == 'pfx'
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP "signing.pfx")
+
+      # Runs on dry runs too. Produces the attestation the publish job requires
+      # before it will claim `windows-authenticode-required` for these bytes —
+      # a trust claim is only ever as good as a check made where the tools to
+      # make it exist.
+      - name: Verify and attest Windows signing state
+        shell: pwsh
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dryRun = $env:DRY_RUN -eq "true"
+          $expected = @(
+            "breeze-agent-windows-amd64.exe",
+            "breeze-backup-windows-amd64.exe",
+            "breeze-watchdog-windows-amd64.exe",
+            "breeze-user-helper-windows-amd64.exe",
+            "breeze-agent.msi"
+          )
+
+          # Enumerate what is actually in dist/ instead of re-listing the signing
+          # targets. Re-listing makes this step structurally incapable of
+          # catching the failure it exists for: a component added to the
+          # download/build steps but missed by a signing step.
+          $present = @(Get-ChildItem -File "dist" | ForEach-Object { $_.Name })
+          $unexpected = @($present | Where-Object { $expected -notcontains $_ })
+          if ($unexpected.Count -gt 0) {
+            throw "unexpected files in dist/: $($unexpected -join ', ') — every published artifact must be covered by a signing step and listed here"
+          }
+
+          $lines = @()
+          foreach ($name in $expected) {
+            $path = Join-Path "dist" $name
+            if (-not (Test-Path $path) -or (Get-Item $path).Length -eq 0) {
+              throw "expected output missing or empty: $path"
+            }
+            if ($dryRun) {
+              $lines += "$name`tunsigned-dry-run"
+              Write-Host "dry-run output ok (unsigned): $name"
+              continue
+            }
+            $sig = Get-AuthenticodeSignature -FilePath $path
+            # Valid = fully trusted chain; UnknownError = signed but the Azure
+            # Artifact Signing root is not yet in the runner's local trust store
+            # (normal for new accounts). Anything else is a real failure.
+            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
+              throw "Signature validation failed for $name. Status: $($sig.Status)"
+            }
+            # UnknownError is a catch-all, so status alone does not prove a
+            # signature is present — check for the signer explicitly.
+            if (-not $sig.SignerCertificate) {
+              throw "$name carries no Authenticode signer certificate — it was never signed"
+            }
+            # Without an RFC3161 countersignature every already-deployed copy
+            # stops validating the moment the signing certificate expires.
+            if (-not $sig.TimeStamperCertificate) {
+              throw "$name is signed but not RFC3161 timestamped — refusing to ship a signature that expires with the certificate"
+            }
+            if ($sig.Status -eq "UnknownError") {
+              Write-Host "::warning::$name signed but root cert not yet trusted locally (Status: UnknownError). This is normal for new Azure Artifact Signing accounts."
+            }
+            $lines += "$name`twindows-authenticode-required"
+            Write-Host "Verified: $name - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
+          }
+
+          New-Item -ItemType Directory -Force -Path "attest" | Out-Null
+          Set-Content -Path "attest/windows.tsv" -Value $lines -Encoding utf8
+          Get-Content "attest/windows.tsv"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-windows
+          path: |
+            dist/breeze-agent-windows-amd64.exe
+            dist/breeze-backup-windows-amd64.exe
+            dist/breeze-watchdog-windows-amd64.exe
+            dist/breeze-user-helper-windows-amd64.exe
+            dist/breeze-agent.msi
+          # Default is `warn`: a path that stops matching would upload a short
+          # asset set with a green job, and publish would ship the gap.
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Windows signing attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: attestation-windows
+          path: attest/windows.tsv
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    permissions:
+      contents: read
+    name: Sign macOS artifacts
+    needs: [validate]
+    if: inputs.platforms == 'all' || inputs.platforms == 'macos'
+    runs-on: macos-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # ---- Trust boundary: everything below `verify` may assume the official
+      # ---- release is authentic. No secrets appear above or inside it.
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Checkout Breeze source at manifest sourceCommit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lanternops/breeze
+          ref: ${{ steps.verify.outputs.source-commit }}
+          path: breeze
+          persist-credentials: false
+
+      - name: Download and verify unsigned signing inputs
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          for component in agent backup desktop-helper watchdog; do
+            for arch in amd64 arm64; do
+              scripts/download-verified-asset.sh "$VERSION" \
+                "breeze-${component}-darwin-${arch}-unsigned" \
+                "staging/breeze-${component}-darwin-${arch}" \
+                --expect-signing-input
+            done
+          done
+          chmod 755 staging/breeze-*
+
+      - name: Validate macOS signing secrets
+        if: inputs.dry-run == false
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_INSTALLER_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing required signing secret: $name (see README secrets table)"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Import certificates into ephemeral keychain
+        if: inputs.dry-run == false
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+
+      - name: Sign binaries (hardened runtime + entitlements)
+        if: inputs.dry-run == false
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            codesign --force --options runtime \
+              --entitlements breeze/agent/entitlements/agent-macos.entitlements.plist \
+              --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$bin"
+            codesign --verify --verbose "$bin"
+            echo "Signed: $bin"
+          done
+
+      - name: Notarize binaries
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          chmod +x breeze/scripts/release/notarize-submit.sh
+          for bin in staging/breeze-agent-darwin-* staging/breeze-backup-darwin-* staging/breeze-desktop-helper-darwin-* staging/breeze-watchdog-darwin-*; do
+            [ -f "$bin" ] || continue
+            case "$bin" in *.pkg|*.zip) continue ;; esac
+            ZIP_PATH="${bin}.zip"
+            ditto -c -k --keepParent "$bin" "$ZIP_PATH"
+            breeze/scripts/release/notarize-submit.sh "$ZIP_PATH"
+            rm -f "$ZIP_PATH"
+          done
+
+      - name: Build macOS .pkg installers
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x breeze/agent/installer/macos/build-pkg.sh
+          for arch in amd64 arm64; do
+            breeze/agent/installer/macos/build-pkg.sh \
+              "staging/breeze-agent-darwin-${arch}" \
+              "staging/breeze-desktop-helper-darwin-${arch}" \
+              "staging/breeze-backup-darwin-${arch}" \
+              "staging/breeze-watchdog-darwin-${arch}" \
+              "$VERSION" \
+              "$arch" \
+              "staging/breeze-agent-darwin-${arch}.pkg"
+          done
+
+      - name: Sign .pkg installers
+        if: inputs.dry-run == false
+        env:
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          for pkg in staging/*.pkg; do
+            SIGNED="${pkg%.pkg}-signed.pkg"
+            productsign --sign "$APPLE_INSTALLER_IDENTITY" "$pkg" "$SIGNED"
+            mv "$SIGNED" "$pkg"
+            echo "Signed: $(basename "$pkg")"
+          done
+
+      - name: Notarize and staple .pkg installers
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for pkg in staging/*.pkg; do
+            breeze/scripts/release/notarize-submit.sh "$pkg"
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            echo "Notarized and stapled: $(basename "$pkg")"
+          done
+
+      - name: Build Breeze Installer.app from source
+        run: |
+          set -euo pipefail
+          chmod +x breeze/agent/installer/macos-app/build-app-bundle.sh
+          breeze/agent/installer/macos-app/build-app-bundle.sh \
+            --pkg-amd64 staging/breeze-agent-darwin-amd64.pkg \
+            --pkg-arm64 staging/breeze-agent-darwin-arm64.pkg \
+            --output "build/Breeze Installer.app"
+
+      - name: Sign Installer.app
+        if: inputs.dry-run == false
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          codesign --force --options runtime \
+            --entitlements breeze/agent/installer/macos-app/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" --timestamp \
+            --deep "build/Breeze Installer.app"
+          codesign --verify --verbose=2 "build/Breeze Installer.app"
+
+      - name: Notarize + staple Installer.app
+        if: inputs.dry-run == false
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
+          breeze/scripts/release/notarize-submit.sh build/installer-notarize.zip
+          xcrun stapler staple "build/Breeze Installer.app"
+          xcrun stapler validate "build/Breeze Installer.app"
+          spctl -a -t exec -vv "build/Breeze Installer.app"
+
+      - name: Package Installer.app for release
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Breeze Installer.app" \
+            "build/Breeze Installer.app.zip"
+
+      - name: Collect outputs
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for component in agent backup desktop-helper watchdog; do
+            for arch in amd64 arm64; do
+              cp "staging/breeze-${component}-darwin-${arch}" out/
+            done
+          done
+          cp staging/breeze-agent-darwin-amd64.pkg staging/breeze-agent-darwin-arm64.pkg out/
+          cp "build/Breeze Installer.app.zip" out/
+          ls -lh out/
+
+      # Runs on dry runs too. Produces the attestation the publish job requires
+      # before it will claim `macos-developer-id-notarization-required` for
+      # these bytes. Enumerates out/ rather than re-listing the sign/notarize
+      # globs, so a component that reaches the release without passing through
+      # a signing step fails here instead of being stamped as notarized.
+      - name: Verify and attest macOS signing state
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          expected=(
+            breeze-agent-darwin-amd64
+            breeze-agent-darwin-arm64
+            breeze-backup-darwin-amd64
+            breeze-backup-darwin-arm64
+            breeze-desktop-helper-darwin-amd64
+            breeze-desktop-helper-darwin-arm64
+            breeze-watchdog-darwin-amd64
+            breeze-watchdog-darwin-arm64
+            breeze-agent-darwin-amd64.pkg
+            breeze-agent-darwin-arm64.pkg
+            "Breeze Installer.app.zip"
+          )
+
+          while IFS= read -r name; do
+            found=0
+            for want in "${expected[@]}"; do
+              if [ "$want" = "$name" ]; then
+                found=1
+                break
+              fi
+            done
+            if [ "$found" -eq 0 ]; then
+              echo "::error::unexpected file in out/: $name — every published artifact must be covered by a signing step and listed here"
+              exit 1
+            fi
+          done < <(cd out && ls -1)
+
+          mkdir -p attest
+          : > attest/macos.tsv
+          for name in "${expected[@]}"; do
+            path="out/$name"
+            if [ ! -s "$path" ]; then
+              echo "::error::expected output missing or empty: $path"
+              exit 1
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              printf '%s\t%s\n' "$name" "unsigned-dry-run" >> attest/macos.tsv
+              echo "dry-run output ok (unsigned): $name"
+              continue
+            fi
+            case "$name" in
+              *.pkg)
+                pkgutil --check-signature "$path"
+                xcrun stapler validate "$path"
+                spctl -a -vv -t install "$path"
+                ;;
+              *.app.zip)
+                # Assess the bundle this zip was made from — Gatekeeper cannot
+                # assess a zip, and the bundle is still on disk.
+                codesign --verify --strict --verbose=2 "build/Breeze Installer.app"
+                xcrun stapler validate "build/Breeze Installer.app"
+                spctl -a -t exec -vv "build/Breeze Installer.app"
+                ;;
+              *)
+                # Raw Mach-O binaries: signature + hardened runtime + Developer ID.
+                # Do NOT run `spctl -a -t exec` against raw command-line binaries —
+                # Gatekeeper's exec assessment is bundle-aware and rejects raw
+                # Mach-O even when signing/notarization are correct. The
+                # user-facing assessment happens at the .pkg layer above.
+                codesign --verify --strict --verbose=2 "$path"
+                details="$(codesign -dvvv "$path" 2>&1)"
+                if ! grep -q 'flags=.*runtime' <<<"$details"; then
+                  echo "::error::$name missing hardened runtime flag"
+                  echo "$details"
+                  exit 1
+                fi
+                if ! grep -q 'Authority=Developer ID Application' <<<"$details"; then
+                  echo "::error::$name not signed by Developer ID Application"
+                  echo "$details"
+                  exit 1
+                fi
+                ;;
+            esac
+            printf '%s\t%s\n' "$name" "macos-developer-id-notarization-required" >> attest/macos.tsv
+            echo "Verified: $name"
+          done
+          cat attest/macos.tsv
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-macos
+          path: out/*
+          # Default is `warn`: a path that stops matching would upload a short
+          # asset set with a green job, and publish would ship the gap.
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload macOS signing attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: attestation-macos
+          path: attest/macos.tsv
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup keychain
+        if: always() && inputs.dry-run == false
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  publish:
+    permissions:
+      contents: write
+    name: Publish signed release
+    needs: [validate, windows, macos]
+    if: >-
+      always() && !cancelled()
+      && needs.validate.result == 'success'
+      && (needs.windows.result == 'success' || needs.windows.result == 'skipped')
+      && (needs.macos.result == 'success' || needs.macos.result == 'skipped')
+      && !(needs.windows.result == 'skipped' && needs.macos.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: signing
+    steps:
+      - name: Checkout signing repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify official release manifest
+        id: verify
+        uses: ./.github/actions/verify-official-release
+        with:
+          version: ${{ needs.validate.outputs.version }}
+
+      - name: Download signed Windows artifacts
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-windows
+          path: release-assets/
+
+      - name: Download signed macOS artifacts
+        if: needs.macos.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-macos
+          path: release-assets/
+
+      - name: Download Windows signing attestation
+        if: needs.windows.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: attestation-windows
+          path: attest/
+
+      - name: Download macOS signing attestation
+        if: needs.macos.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: attestation-macos
+          path: attest/
+
+      - name: Mirror never-signed official assets (verified)
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+        run: |
+          set -euo pipefail
+          # Contract: every canonical asset the Breeze API's URL helpers can
+          # request from a repointed repository, minus what the platform jobs
+          # produce. Sources of truth in the product repo:
+          #   apps/api/src/services/binarySync.ts   (AGENT/WATCHDOG/HELPER/USER_HELPER targets)
+          #   apps/api/src/services/binarySource.ts (VIEWER_FILENAMES, HELPER_FILENAMES,
+          #                                          getGithubBackupUrl, getGithubInstallerAppUrl)
+          MIRROR_ASSETS=(
+            breeze-agent-linux-amd64
+            breeze-agent-linux-arm64
+            breeze-backup-linux-amd64
+            breeze-backup-linux-arm64
+            breeze-watchdog-linux-amd64
+            breeze-watchdog-linux-arm64
+            breeze-viewer-windows.msi
+            breeze-viewer-macos.dmg
+            breeze-viewer-linux.AppImage
+            latest.json
+            breeze-helper-windows.msi
+            breeze-helper-macos.dmg
+            breeze-helper-linux.AppImage
+          )
+          # Record what was mirrored so the manifest generator has a single
+          # source of truth for the mirrored set rather than a second copy of
+          # this list that can drift out of step with it.
+          mkdir -p attest
+          : > attest/mirrored.txt
+          for asset in "${MIRROR_ASSETS[@]}"; do
+            scripts/download-verified-asset.sh "$VERSION" "$asset" "release-assets/$asset" --forbid-signing-input
+            printf '%s\n' "$asset" >> attest/mirrored.txt
+          done
+
+      - name: Generate release artifact manifest
+        env:
+          SIGN_VERSION: ${{ needs.validate.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.verify.outputs.source-commit }}
+          OFFICIAL_MANIFEST_PATH: ${{ steps.verify.outputs.manifest-path }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          WINDOWS_RAN: ${{ needs.windows.result == 'success' }}
+          MACOS_RAN: ${{ needs.macos.result == 'success' }}
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          release_dir = Path("release-assets")
+          attest_dir = Path("attest")
+          dry_run = os.environ["DRY_RUN"] == "true"
+          windows_ran = os.environ["WINDOWS_RAN"] == "true"
+          macos_ran = os.environ["MACOS_RAN"] == "true"
+
+          excluded = {
+              "checksums.txt",
+              "release-artifact-manifest.json",
+              "release-artifact-manifest.json.ed25519",
+              "release-artifact-manifest.json.minisig",
+          }
+
+          # ---------------------------------------------------------------
+          # platformTrust is NEVER inferred from a filename. Every asset gets
+          # its trust value from something that actually inspected the bytes:
+          #
+          #   signed here  -> the platform job's attestation (codesign /
+          #                   Get-AuthenticodeSignature ran on that runner)
+          #   mirrored     -> the official manifest, already Ed25519-verified
+          #                   and hash-matched at download time
+          #
+          # A filename classifier would let any path that skipped signing —
+          # a dry run, an unvalidated signing-mode, a component missed by a
+          # sign loop — publish a signed manifest swearing the bytes carry
+          # Authenticode/Developer ID. The Breeze API trusts this field.
+          # ---------------------------------------------------------------
+          attested = {}
+          for platform, ran in (("windows", windows_ran), ("macos", macos_ran)):
+              tsv = attest_dir / f"{platform}.tsv"
+              if not ran:
+                  continue
+              if not tsv.is_file():
+                  raise SystemExit(
+                      f"{platform} job succeeded but produced no signing attestation "
+                      f"({tsv}) — refusing to assert trust nobody verified"
+                  )
+              for line in tsv.read_text(encoding="utf8").splitlines():
+                  if not line.strip():
+                      continue
+                  name, tab, trust = line.partition("\t")
+                  if not tab or not trust:
+                      raise SystemExit(f"malformed attestation line in {tsv}: {line!r}")
+                  attested[name] = trust
+
+          if dry_run and any(t != "unsigned-dry-run" for t in attested.values()):
+              raise SystemExit(
+                  "dry run produced a signed-artifact attestation — refusing to publish"
+              )
+          if not dry_run and "unsigned-dry-run" in attested.values():
+              raise SystemExit(
+                  "real run produced an unsigned-dry-run attestation — refusing to publish"
+              )
+
+          official = json.loads(Path(os.environ["OFFICIAL_MANIFEST_PATH"]).read_text())
+          official_trust = {
+              a["name"]: a.get("platformTrust") for a in official.get("assets", [])
+          }
+          mirrored = [
+              line
+              for line in (attest_dir / "mirrored.txt").read_text(encoding="utf8").splitlines()
+              if line.strip()
+          ]
+
+          # Completeness. `actions/upload-artifact` defaults to warning rather
+          # than failing on an empty match, so without this a path that stopped
+          # matching would publish a short asset set behind a green run.
+          present = {
+              p.name for p in release_dir.iterdir() if p.is_file() and p.name not in excluded
+          }
+          expected = set(attested) | set(mirrored)
+          missing = sorted(expected - present)
+          extra = sorted(present - expected)
+          if missing:
+              raise SystemExit(f"release-assets/ is missing expected assets: {missing}")
+          if extra:
+              raise SystemExit(
+                  f"release-assets/ contains assets nothing accounted for: {extra} — "
+                  "every asset must be either platform-attested or a verified mirror"
+              )
+          if not expected:
+              raise SystemExit("nothing to publish — no attested and no mirrored assets")
+
+          assets = []
+          for name in sorted(present):
+              path = release_dir / name
+              if "-unsigned" in name:
+                  raise SystemExit(
+                      f"refusing to publish signing input {name} — "
+                      "unsigned inputs must never reach a distributable release"
+                  )
+              if name in attested:
+                  trust = attested[name]
+                  # A dry run publishes nothing, but the bundle is downloadable;
+                  # it must never describe unsigned bytes as signed.
+                  if trust == "unsigned-dry-run":
+                      trust = "none"
+              else:
+                  trust = official_trust.get(name)
+                  if trust is None:
+                      raise SystemExit(
+                          f"mirrored asset {name} has no platformTrust in the verified "
+                          "official manifest — refusing to invent one"
+                      )
+              assets.append({
+                  "name": name,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "size": path.stat().st_size,
+                  "platformTrust": trust,
+              })
+
+          manifest = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release": f"v{os.environ['SIGN_VERSION']}",
+              "sourceCommit": os.environ["SOURCE_COMMIT"],
+              "assets": assets,
+          }
+          (release_dir / "release-artifact-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          print(
+              f"manifest written with {len(assets)} assets "
+              f"({len(attested)} attested, {len(mirrored)} mirrored)"
+          )
+          for entry in assets:
+              print(f"  {entry['platformTrust']:<45} {entry['name']}")
+          PY
+
+      - name: Sign release artifact manifest (your Ed25519 key)
+        env:
+          # Deliberately empty on a dry run: the real key must never reach the
+          # runner for a run that produces unsigned binaries. See the ephemeral
+          # branch below for why.
+          RELEASE_MANIFEST_ED25519_PRIVATE_KEY: ${{ inputs.dry-run == false && secrets.RELEASE_MANIFEST_ED25519_PRIVATE_KEY || '' }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          node <<'NODE'
+          const {
+            createPrivateKey,
+            createPublicKey,
+            generateKeyPairSync,
+            sign,
+            verify,
+          } = require('node:crypto');
+          const { readFileSync, writeFileSync } = require('node:fs');
+
+          const dryRun = process.env.DRY_RUN === 'true';
+          const raw = (process.env.RELEASE_MANIFEST_ED25519_PRIVATE_KEY ?? '').trim();
+
+          let privateKey;
+          if (dryRun) {
+            // Branch on dry-run, NOT on the secret being absent. A dry run skips
+            // every signing step, so the manifest it produces describes unsigned
+            // binaries. Signing that with the real key would mint a genuine
+            // attestation over unsigned bytes and leave it in a downloadable
+            // artifact — a signing oracle. The ephemeral key makes the dry-run
+            // bundle cryptographically worthless, which is the point.
+            ({ privateKey } = generateKeyPairSync('ed25519'));
+            console.log('dry-run: signing with an ephemeral throwaway key (your real key is never used on a dry run)');
+          } else {
+            if (!raw) {
+              throw new Error(
+                'RELEASE_MANIFEST_ED25519_PRIVATE_KEY secret is not set — run scripts/generate-manifest-key.sh and add it (see README)'
+              );
+            }
+            privateKey = raw.includes('BEGIN PRIVATE KEY')
+              ? createPrivateKey(raw)
+              : createPrivateKey({ key: Buffer.from(raw, 'base64'), format: 'der', type: 'pkcs8' });
+          }
+
+          const publicKey = createPublicKey(privateKey);
+          const rawPub = publicKey
+            .export({ format: 'der', type: 'spki' })
+            .subarray(-32)
+            .toString('base64');
+
+          const manifest = readFileSync('release-assets/release-artifact-manifest.json');
+          const signature = sign(null, manifest, privateKey);
+          if (!verify(null, manifest, publicKey, signature)) {
+            throw new Error('Ed25519 manifest signature self-verification failed');
+          }
+          writeFileSync(
+            'release-assets/release-artifact-manifest.json.ed25519',
+            `${signature.toString('base64')}\n`,
+            { mode: 0o644 }
+          );
+          writeFileSync('derived-public-key.txt', `${rawPub}\n`);
+          console.log(`manifest signed; derived public key: ${rawPub}`);
+          NODE
+
+      - name: Generate and verify release checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          # Build into a scratch file and move into place: writing the same name
+          # the pipeline also filters on is a read/write-in-one-pipeline hazard.
+          find . -maxdepth 1 -type f \
+            ! -name checksums.txt \
+            ! -name 'release-artifact-manifest.json*' \
+            -printf '%P\0' | sort -z | xargs -0 sha256sum > checksums.new
+          mv checksums.new checksums.txt
+
+          # Re-hash and compare. The previous form only grepped checksums.txt
+          # for the filename — a check generated from the same bytes one step
+          # earlier, so it could not fail unless generation already had.
+          sha256sum -c --strict --quiet checksums.txt
+
+          # Cross-check the user-facing checksum file against the manifest that
+          # was actually SIGNED, so the two can never disagree.
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          signed = {
+              a["name"]: a["sha256"]
+              for a in json.loads(
+                  pathlib.Path("release-artifact-manifest.json").read_text()
+              )["assets"]
+          }
+          listed = {}
+          for line in pathlib.Path("checksums.txt").read_text().splitlines():
+              digest, _, name = line.partition("  ")
+              listed[name] = digest
+
+          if listed != signed:
+              only_listed = sorted(set(listed) - set(signed))
+              only_signed = sorted(set(signed) - set(listed))
+              mismatched = sorted(
+                  n for n in set(listed) & set(signed) if listed[n] != signed[n]
+              )
+              sys.exit(
+                  "checksums.txt disagrees with the signed manifest — "
+                  f"only in checksums.txt: {only_listed}; "
+                  f"only in manifest: {only_signed}; "
+                  f"hash mismatch: {mismatched}"
+              )
+          print(f"checksums.txt agrees with the signed manifest across {len(signed)} assets")
+          PY
+
+      - name: Upload dry-run assets as workflow artifact
+        if: inputs.dry-run == true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          # Named for what it actually is. These binaries are UNSIGNED and the
+          # manifest beside them is signed with a throwaway key.
+          name: dry-run-unsigned-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create release
+        if: inputs.dry-run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Re-check immediately before create: a concurrent run may have
+          # published between validate and now. As in validate, a non-404 error
+          # must not be read as "no such release".
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}")"
+          case "$status" in
+            404) ;;
+            200)
+              echo "::error::release v${VERSION} appeared on ${GITHUB_REPOSITORY} while this run was in flight — refusing to overwrite"
+              exit 1
+              ;;
+            *)
+              echo "::error::could not confirm release v${VERSION} is absent from ${GITHUB_REPOSITORY} (HTTP ${status}) — refusing to publish"
+              exit 1
+              ;;
+          esac
+          gh release create "v${VERSION}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Breeze ${VERSION} (self-signed)" \
+            --notes "Breeze ${VERSION} agent packages signed with this organization's certificates. Built from official unsigned artifacts of https://github.com/lanternops/breeze/releases/tag/v${VERSION}, verified against the official Ed25519 release manifest before signing."
+
+      - name: Write instance configuration summary
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          pubkey="$(cat derived-public-key.txt)"
+          {
+            echo "## Point your Breeze instance at this release"
+            echo ""
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "> **Dry run** — nothing was published. The binaries produced are **unsigned** and the key below is a throwaway generated in this run: your real manifest key was never loaded, so the \`dry-run-unsigned-assets\` artifact cannot be used as a release. Real runs print your real key here."
+              echo ""
+            fi
+            echo '```bash'
+            echo "BINARY_SOURCE=github"
+            echo "BINARY_GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+            echo "BINARY_VERSION=${VERSION}"
+            echo "RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS=${pubkey}"
+            echo "AGENT_AUTO_PROMOTE=false   # recommended: promote explicitly after verifying sync"
+            echo '```'
+            echo ""
+            echo "Map each variable in your compose file's \`api\` service \`environment:\` block — a value in \`.env\` alone never reaches the container. Full walkthrough: the \"Sign Your Own Agent Packages\" guide in the Breeze docs."
+          } >> "$GITHUB_STEP_SUMMARY"

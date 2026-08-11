@@ -42,6 +42,7 @@ vi.mock('../services/redis', () => {
   return {
     getRedis: vi.fn(() => redisClient),
     getRedisConnection: vi.fn(() => redisClient),
+    createBlockingRedisConnection: vi.fn(() => redisClient),
     getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
     isBullMQAvailable: vi.fn(() => true),
     isRedisAvailable: vi.fn(() => true)

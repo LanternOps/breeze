@@ -109,3 +109,69 @@ describe('AutomationTab — deploy_software action', () => {
     expect(action).toEqual({ type: 'deploy_software', catalogId: 'cat-1' });
   });
 });
+
+// Issue #3361: the schedule trigger shipped its own 9-entry hardcoded timezone
+// list (the same defect #2856 fixed for sites/orgs/partners), so an automation
+// could not be scheduled in e.g. Asia/Dubai. Asserted on the OUTCOME — the
+// chosen zone reaching the save payload — not on TimezoneSelect's internals.
+describe('AutomationTab — schedule timezone picker', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en');
+    vi.clearAllMocks();
+    fetchMock.mockResolvedValue(makeJsonResponse({ data: CATALOG }));
+  });
+
+  // The timezone control only exists under the (default) "schedule" trigger,
+  // and the empty-state button both creates and expands the automation.
+  const addAutomation = () => {
+    renderTab();
+    fireEvent.click(screen.getAllByRole('button', { name: /Add Automation/i })[0]);
+  };
+
+  it('offers zones that were absent from the old hardcoded list', () => {
+    addAutomation();
+    fireEvent.click(screen.getByTestId('automation-timezone-0-trigger'));
+    fireEvent.change(screen.getByTestId('automation-timezone-0-search'), {
+      target: { value: 'dubai' },
+    });
+    expect(screen.getByTestId('automation-timezone-0-option-Asia/Dubai')).toBeTruthy();
+  });
+
+  it('saves a zone picked from the full IANA list', async () => {
+    addAutomation();
+    fireEvent.click(screen.getByTestId('automation-timezone-0-trigger'));
+    fireEvent.change(screen.getByTestId('automation-timezone-0-search'), {
+      target: { value: 'sao paulo' },
+    });
+    fireEvent.click(screen.getByTestId('automation-timezone-0-option-America/Sao_Paulo'));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const payload = saveMock.mock.calls[0][1];
+    expect(payload.inlineSettings.items[0].timezone).toBe('America/Sao_Paulo');
+  });
+
+  // The picker is scoped to the schedule trigger. Pinned because it is now a
+  // mounted combobox rather than an inert <select>: leaking it into the event /
+  // manual branches would put a focusable popup in a form where the timezone is
+  // meaningless.
+  it('renders no timezone picker for non-schedule triggers', () => {
+    addAutomation();
+    expect(screen.getByTestId('automation-timezone-0-trigger')).toBeTruthy();
+
+    for (const trigger of ['event', 'manual']) {
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${trigger}$`, 'i') }));
+      expect(screen.queryByTestId('automation-timezone-0-trigger')).toBeNull();
+    }
+  });
+
+  it('defaults to UTC and leaves it intact when untouched', async () => {
+    addAutomation();
+    expect(screen.getByTestId('automation-timezone-0-trigger').textContent).toContain('UTC');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const payload = saveMock.mock.calls[0][1];
+    expect(payload.inlineSettings.items[0].timezone).toBe('UTC');
+  });
+});

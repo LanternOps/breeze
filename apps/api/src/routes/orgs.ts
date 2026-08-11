@@ -26,6 +26,7 @@ import {
 import { applyOrganizationOrder, sanitizeOrganizationOrder } from '../services/orgOrdering';
 import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
+import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
@@ -36,6 +37,8 @@ import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } from '../services/ipAllowlist';
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
+import { writeOrgImportAudits } from '../services/orgImport/audit';
+import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -611,6 +614,34 @@ const partnerSettingsSchema = z.object({
       password: z.string().max(2000).optional(),
       enabled: z.boolean(),
     })).max(50).optional(),
+  }).superRefine((remoteAccess, ctx) => {
+    // Provider ids are hand-typed strings referenced from defaultProviderId and
+    // from users.preferences.remoteAccessProviderId, and resolution is a
+    // first-match find over this array — so a duplicated id makes credential
+    // selection order-dependent, and a dangling default silently disables the
+    // Connect button. Reject both at save time. (Issue #3401.)
+    const seen = new Set<string>();
+    for (const [idx, provider] of (remoteAccess.providers ?? []).entries()) {
+      if (seen.has(provider.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['providers', idx, 'id'],
+          message: `Duplicate provider id "${provider.id}" — provider ids must be unique`,
+        });
+      }
+      seen.add(provider.id);
+    }
+    // Empty string means "no default" (the UI's cleared state), so only a
+    // non-empty default must name a configured provider. The settings merge
+    // replaces this sub-object wholesale, so the payload always carries the
+    // full provider list alongside the default.
+    if (remoteAccess.defaultProviderId && !seen.has(remoteAccess.defaultProviderId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['defaultProviderId'],
+        message: `defaultProviderId "${remoteAccess.defaultProviderId}" does not name a configured provider`,
+      });
+    }
   }).optional(),
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object
@@ -1320,9 +1351,19 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   // system-scoped tx for just this insert. Atomicity with the rest of the
   // handler isn't a concern — the only follow-up here is an audit write.
   const [organization] = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () =>
-      db.insert(organizations).values(insertValues).returning()
-    )
+    withSystemDbAccessContext(async () => {
+      const created = await db.insert(organizations).values(insertValues).returning();
+      // The `contacts` mirror is written inside this SAME system-scoped context,
+      // for the same reason the insert above needs one: the new org's id is not
+      // in the caller's accessible_org_ids yet, so breeze_has_org_access(org_id)
+      // would reject the contacts INSERT exactly as it rejects the organizations
+      // one. The blob itself is already persisted by the insert, so this only
+      // mirrors the row.
+      if (created[0] && data.billingContact) {
+        await syncBillingContactRow(db, created[0].id, data.billingContact, auth.user?.id ?? null);
+      }
+      return created;
+    })
   );
 
   writeRouteAudit(c, {
@@ -1344,24 +1385,8 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
 // directly. Gating matches the single-record write routes this composes
 // (POST /organizations, POST /sites): partner/system scope + orgs:write + MFA.
 
-const importRowContactSchema = z
-  .object({
-    name: z.string().max(255).optional(),
-    email: z.union([z.string().email(), z.literal('')]).optional(),
-    phone: z.string().max(64).optional(),
-  })
-  .passthrough();
-
-const importRowSchema = z.object({
-  organization: z.string().min(1).max(255),
-  site: z.string().max(255).optional(),
-  externalId: z.string().min(1).max(255).optional(),
-  externalSystem: z.string().min(1).max(64).optional(),
-  timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').optional(),
-  address: z.any().optional(),
-  contact: importRowContactSchema.optional(),
-});
-
+// Row shape lives in services/orgImport/schemas.ts so the PSA company-import
+// route (#3246) accepts the byte-identical row contract.
 const previewOrgImportSchema = z.object({
   // System scope only — partner scope always imports into its own partner.
   partnerId: z.string().guid().optional(),
@@ -1370,20 +1395,7 @@ const previewOrgImportSchema = z.object({
 
 const commitOrgImportSchema = z.object({
   partnerId: z.string().guid().optional(),
-  rows: z
-    .array(importRowSchema.extend({
-      // The annotation the client saw at preview. Commit re-derives and
-      // rejects rows whose annotation changed — and a name-match is never
-      // applied without this explicit acknowledgement.
-      expectedAnnotation: z.enum(['create', 'link-match', 'name-match', 'matched-soft-deleted']).optional(),
-      // The organizationId the row matched at preview; commit rejects the row
-      // if the re-derived match resolves to a different organization.
-      expectedOrganizationId: z.string().guid().optional(),
-      // Explicit opt-in to reactivate a soft-deleted matched org.
-      reactivate: z.boolean().optional(),
-    }))
-    .min(1)
-    .max(MAX_IMPORT_ROWS),
+  rows: z.array(commitImportRowSchema).min(1).max(MAX_IMPORT_ROWS),
   mode: z.enum(['skip', 'update']).default('skip'),
 });
 
@@ -1435,81 +1447,14 @@ orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, re
   const summary = await commitOrgImport(rows, resolved.partnerId, { userId: auth.user?.id ?? null }, mode);
 
   // Audit every org, site, and link created (and every reactivation/update).
-  for (const entry of summary.imported) {
-    const sourceRow = rows[entry.index];
-    if (entry.createdOrganization) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.create',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { partnerId: resolved.partnerId, source: 'org_import', slug: entry.slug },
-      });
-    }
-    if (entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.external_link.create',
-        resourceType: 'organization_external_link',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { system: sourceRow?.externalSystem ?? 'csv', externalId: sourceRow?.externalId, source: 'org_import' },
-      });
-    }
-    if (entry.siteId) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'site.create',
-        resourceType: 'site',
-        resourceId: entry.siteId,
-        resourceName: entry.siteName ?? entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-  }
-  for (const entry of summary.updated) {
-    const sourceRow = rows[entry.index];
-    if (entry.reactivated) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.reactivate',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-    if (entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.external_link.create',
-        resourceType: 'organization_external_link',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { system: sourceRow?.externalSystem ?? 'csv', externalId: sourceRow?.externalId, source: 'org_import' },
-      });
-    }
-    if (entry.siteId && entry.createdSite) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'site.create',
-        resourceType: 'site',
-        resourceId: entry.siteId,
-        resourceName: entry.siteName ?? entry.organization,
-        details: { source: 'org_import' },
-      });
-    } else if (!entry.reactivated && !entry.createdLink) {
-      writeRouteAudit(c, {
-        orgId: entry.organizationId,
-        action: 'organization.update',
-        resourceType: 'organization',
-        resourceId: entry.organizationId,
-        resourceName: entry.organization,
-        details: { source: 'org_import' },
-      });
-    }
-  }
+  // Extracted to a shared helper (#3246) so the PSA company-import route emits
+  // the identical trail — commitOrgImport writes no audit events of its own.
+  writeOrgImportAudits(c, {
+    summary,
+    rows,
+    partnerId: resolved.partnerId,
+    source: 'org_import',
+  });
 
   return c.json(summary);
 });
@@ -1746,6 +1691,14 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // before writing organizations.settings. See encryptedColumnRegistry.
     updates.settings = encryptColumnValueForWrite('organizations', 'settings', data.settings);
   }
+  // The blob write stays in THIS update rather than going through
+  // replaceBillingContact: the #2879 override path below re-asserts
+  // partner-ownership and suspended-status in the UPDATE's own WHERE, and the
+  // compat writer targets a bare eq(id, orgId), which would let a billing
+  // contact land on an org that stopped qualifying between check and write.
+  // The `contacts` row is mirrored by syncBillingContactRow once the guarded
+  // update has succeeded — exactly the "caller already wrote the blob" case
+  // that entry point exists for.
   if (data.billingContact !== undefined) updates.billingContact = data.billingContact;
   if (data.contractStart !== undefined) {
     updates.contractStart = data.contractStart ? new Date(data.contractStart) : null;
@@ -1770,11 +1723,21 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       )
     : and(eq(organizations.id, id), isNull(organizations.deletedAt));
 
-  const runUpdate = () => db
-    .update(organizations)
-    .set(updates)
-    .where(conditions)
-    .returning();
+  const runUpdate = async () => {
+    const rows = await db
+      .update(organizations)
+      .set(updates)
+      .where(conditions)
+      .returning();
+    // Mirrored inside the SAME context as the update above. On the override
+    // path that context is system-scoped because the request's partner context
+    // cannot see a suspended org — and `contacts` is policed by
+    // breeze_has_org_access(org_id), so it could not see the row either.
+    if (rows[0] && data.billingContact !== undefined) {
+      await syncBillingContactRow(db, rows[0].id, data.billingContact, auth.user?.id ?? null);
+    }
+    return rows;
+  };
 
   const [organization] = suspendedLifecycleOverride
     ? await runOutsideDbContext(() => withSystemDbAccessContext(runUpdate))
@@ -2051,6 +2014,13 @@ orgRoutes.post('/sites', requireScope('organization', 'partner', 'system'), requ
     })
     .returning();
 
+  // The insert above already persisted the blob, so this only mirrors it into
+  // `contacts`. Same request transaction, so the two representations commit
+  // together or not at all.
+  if (site && data.contact) {
+    await syncSiteContactRow(db, site.orgId, site.id, data.contact, auth.user?.id ?? null);
+  }
+
   writeRouteAudit(c, {
     orgId: site?.orgId,
     action: 'site.create',
@@ -2136,6 +2106,14 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   // it instead of returning 200 + null, which reads to the client as a success.
   if (!updated) {
     return c.json({ error: 'Failed to update site' }, 500);
+  }
+
+  // `contact` reaches the UPDATE above through the `{ ...data }` spread, with
+  // no literal `contact:` token at the write site — which is why this mirror
+  // has to be wired deliberately rather than found by grep. Runs only after
+  // the 0-row RLS check, so a rejected write never mirrors.
+  if (data.contact !== undefined) {
+    await syncSiteContactRow(db, site.orgId, site.id, data.contact, auth.user?.id ?? null);
   }
 
   writeRouteAudit(c, {

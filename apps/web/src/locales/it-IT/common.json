@@ -704,6 +704,10 @@
       "retry": "Riprova"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo/i utilizzano l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
+    "cta": "Come eseguire la migrazione"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -930,6 +934,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importa aziende",
+        "subtitle": "Crea organizzazioni dalle aziende presenti in {{name}}.",
+        "intro": "Le aziende vengono prima confrontate con le organizzazioni esistenti. Non viene creato nulla finché non controlli l'elenco qui sotto e confermi.",
+        "capHint": "Per ogni importazione vengono recuperate fino a {{cap}} aziende.",
+        "empty": "Questa connessione non ha restituito alcuna azienda.",
+        "alreadyLinked_one": "{{count}} azienda è stata ignorata perché è già stata importata da questa connessione.",
+        "alreadyLinked_other": "{{count}} aziende sono state ignorate perché sono già state importate da questa connessione.",
+        "malformed_one": "{{count}} record non è stato letto (nessun ID o nome utilizzabile) ed è stato ignorato.",
+        "malformed_other": "{{count}} record non sono stati letti (nessun ID o nome utilizzabile) e sono stati ignorati.",
+        "actions": {
+          "fetch": "Recupera aziende",
+          "fetching": "Recupero aziende…",
+          "import": "Importa {{count}} selezionate",
+          "importing": "Importazione…"
+        },
+        "truncated": {
+          "title": "Elenco aziende parziale",
+          "body": "L'elenco delle aziende è stato interrotto dopo {{fetched}} aziende su un massimo di {{cap}}, quindi questa importazione sarà incompleta. Le aziende mai lette non verranno collegate.",
+          "cap": "Il limite di {{cap}} aziende per importazione è stato raggiunto dopo averne recuperate {{fetched}}, quindi questa importazione sarà incompleta. Le aziende oltre tale limite non sono mai state lette e non verranno collegate.",
+          "timeBudget": "Questa connessione ha risposto troppo lentamente, quindi l'elenco delle aziende è stato interrotto dopo {{fetched}} aziende. Questa importazione sarà incompleta: le aziende mai lette non verranno collegate.",
+          "pageGuard": "L'elenco delle aziende occupava troppe pagine ed è stato interrotto dopo {{fetched}} aziende. Questa importazione sarà incompleta: le aziende mai lette non verranno collegate."
+        },
+        "errors": {
+          "previewFailed": "Impossibile caricare le aziende di questa connessione.",
+          "importFailed": "Impossibile importare le aziende."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Testare la connessione",
@@ -1021,13 +1053,21 @@
         "validation": {
           "nameRequired": "Il nome della connessione è obbligatorio",
           "validUrl": "Deve essere un URL valido"
+        },
+        "ownerScope": {
+          "legend": "Proprietà",
+          "allOrganizations": "Tutte le organizzazioni",
+          "partnerWideHint": "(a livello di partner — il PSA del tuo MSP)",
+          "thisOrganizationOnly": "Solo questa organizzazione",
+          "organization": "Organizzazione"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Pausa",
           "resume": "Riprendi",
-          "syncNow": "Sincronizza ora"
+          "syncNow": "Sincronizza ora",
+          "importCompanies": "Importa aziende"
         },
         "connectionCount": "{{filtered}} di {{total}} connessioni",
         "empty": {
@@ -1049,7 +1089,10 @@
           "paused": "In pausa",
           "syncing": "Sincronizzazione"
         },
-        "title": "Connessioni PSA"
+        "title": "Connessioni PSA",
+        "allOrgs": "Tutte le org",
+        "partnerWideTitle": "Connessione a livello di partner — condivisa da tutte le organizzazioni",
+        "partnerWideLocked": "Connessione a livello di partner — la modifica richiede accesso completo alle organizzazioni del partner"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -2322,5 +2365,12 @@
         "send": "Invia"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Novità nella versione {{version}}",
+    "gotIt": "Ho capito",
+    "later": "Mostra più tardi",
+    "learnMore": "Scopri di più",
+    "link": "Novità"
   }
 }

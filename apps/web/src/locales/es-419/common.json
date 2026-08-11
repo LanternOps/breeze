@@ -704,6 +704,10 @@
       "retry": "Reintentar"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo(s) usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "cta": "Cómo migrar"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -930,6 +934,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importar empresas",
+        "subtitle": "Crea organizaciones a partir de las empresas de {{name}}.",
+        "intro": "Las empresas se comparan primero con tus organizaciones existentes. No se crea nada hasta que revises la lista de abajo y confirmes.",
+        "capHint": "Se obtienen hasta {{cap}} empresas por importación.",
+        "empty": "Esta conexión no devolvió ninguna empresa.",
+        "alreadyLinked_one": "Se omitió {{count}} empresa porque ya se importó desde esta conexión.",
+        "alreadyLinked_other": "Se omitieron {{count}} empresas porque ya se importaron desde esta conexión.",
+        "malformed_one": "No se pudo leer {{count}} registro (sin ID ni nombre utilizables) y se omitió.",
+        "malformed_other": "No se pudieron leer {{count}} registros (sin ID ni nombre utilizables) y se omitieron.",
+        "actions": {
+          "fetch": "Obtener empresas",
+          "fetching": "Obteniendo empresas…",
+          "import": "Importar {{count}} seleccionadas",
+          "importing": "Importando…"
+        },
+        "truncated": {
+          "title": "Lista de empresas parcial",
+          "body": "El listado de empresas se interrumpió después de {{fetched}} de hasta {{cap}} empresas, por lo que esta importación quedará incompleta. Las empresas que nunca se leyeron no se vincularán.",
+          "cap": "Se alcanzó el límite de {{cap}} empresas por importación después de obtener {{fetched}}, por lo que esta importación quedará incompleta. Las empresas que superan ese límite nunca se leyeron y no se vincularán.",
+          "timeBudget": "Esta conexión respondió demasiado lento, así que el listado de empresas se interrumpió después de {{fetched}} empresas. Esta importación quedará incompleta: las empresas que nunca se leyeron no se vincularán.",
+          "pageGuard": "El listado de empresas abarcó demasiadas páginas y se detuvo después de {{fetched}} empresas. Esta importación quedará incompleta: las empresas que nunca se leyeron no se vincularán."
+        },
+        "errors": {
+          "previewFailed": "No se pudieron cargar las empresas de esta conexión.",
+          "importFailed": "No se pudieron importar las empresas."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Conexión de prueba",
@@ -1021,13 +1053,21 @@
         "validation": {
           "nameRequired": "El nombre de la conexión es obligatorio.",
           "validUrl": "Debe ser un URL válido."
+        },
+        "ownerScope": {
+          "legend": "Propiedad",
+          "allOrganizations": "Todas las organizaciones",
+          "partnerWideHint": "(a nivel de socio — el PSA propio de su MSP)",
+          "thisOrganizationOnly": "Solo esta organización",
+          "organization": "Organización"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Pausa",
           "resume": "Reanudar",
-          "syncNow": "Sincronizar ahora"
+          "syncNow": "Sincronizar ahora",
+          "importCompanies": "Importar empresas"
         },
         "connectionCount": "{{filtered}} de conexiones {{total}}",
         "empty": {
@@ -1049,7 +1089,10 @@
           "paused": "En pausa",
           "syncing": "Sincronizando"
         },
-        "title": "Conexiones PSA"
+        "title": "Conexiones PSA",
+        "allOrgs": "Todas las orgs",
+        "partnerWideTitle": "Conexión a nivel de socio — compartida por todas las organizaciones",
+        "partnerWideLocked": "Conexión a nivel de socio — modificarla requiere acceso completo a las organizaciones del socio"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -1421,7 +1464,7 @@
         "switchToManual": "Cambiar a entrada manual de credenciales",
         "switchToGrantAccess": "Cambiar a otorgar acceso con un solo clic (recomendado)",
         "enterCredentials": "Ingrese las credenciales de su aplicación {{provider}}.",
-        "tenantId": "Inquilino ID",
+        "tenantId": "ID del inquilino",
         "clientId": "Cliente ID",
         "clientIdPlaceholder": "Aplicación (cliente) ID",
         "clientSecret": "Secreto del cliente",
@@ -1433,7 +1476,7 @@
           "displayName": "Nombre para mostrar:",
           "scopes": "Alcances:",
           "auth": "Autenticación:",
-          "tenantId": "Inquilino ID:"
+          "tenantId": "ID del inquilino:"
         },
         "platformAppConsent": "Aplicación de plataforma (consentimiento con un clic)",
         "redirectingToMicrosoft": "Redirigiendo a Microsoft...",
@@ -1571,7 +1614,7 @@
         "placeholders": {
           "name": "Núcleo de Cisco",
           "vendor": "Cisco",
-          "deviceType": "Interruptor central",
+          "deviceType": "Conmutador central",
           "description": "Conmutadores de alto rendimiento con múltiples enlaces ascendentes",
           "oidName": "Tiempo de actividad del sistema",
           "oidDescription": "Lo que mide este OID"
@@ -2146,7 +2189,7 @@
             "description": "¿Administra varios clientes? Cambie de organización aquí."
           },
           "aiHelp": {
-            "title": "AI-ayuda impulsada",
+            "title": "Ayuda basada en IA",
             "description": "Haga preguntas sobre su flota, solucione problemas o genere informes. Presione Cmd+Shift+A en cualquier momento."
           }
         },
@@ -2322,5 +2365,12 @@
         "send": "Enviar"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Novedades en {{version}}",
+    "gotIt": "Entendido",
+    "later": "Mostrar más tarde",
+    "learnMore": "Más información",
+    "link": "Novedades"
   }
 }

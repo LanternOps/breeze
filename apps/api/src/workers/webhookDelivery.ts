@@ -1,8 +1,9 @@
 import { createHmac, randomUUID } from 'crypto';
-import { getRedisConnection } from '../services/redis';
+import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
+import type Redis from 'ioredis';
 import { getEventBus, type BreezeEvent } from '../services/eventBus';
-import { validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
+import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { sanitizeOutboundHeaders } from '../services/outboundHeaders';
 import * as dbModule from '../db';
 
@@ -81,18 +82,14 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   const deliveryId = job.id;
   const timestamp = Date.now();
 
-  const urlErrors = await validateWebhookUrlSafetyWithDns(webhook.url);
-  if (urlErrors.length > 0) {
-    return {
-      deliveryId,
-      webhookId: webhook.id,
-      eventId: event.id,
-      eventType: event.type,
-      success: false,
-      attempts: job.attempts + 1,
-      errorMessage: `Unsafe webhook URL: ${urlErrors.join('; ')}`
-    };
-  }
+  // No pre-flight DNS re-validation here. It used to call
+  // `validateWebhookUrlSafetyWithDns`, which performs its OWN resolution
+  // separate from the one `safeFetch` pins below — two lookups that can
+  // disagree, which is precisely the TOCTOU window the pinning exists to
+  // close. `safeFetch` enforces the same rules (scheme, blocked ranges, and
+  // the cleartext-to-private rule) against the single record it then connects
+  // to, and its `SsrfBlockedError` is already mapped to the same
+  // "Unsafe webhook URL" message in the catch below.
 
   // Prepare payload
   const payload = JSON.stringify({
@@ -136,7 +133,14 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       headers,
       body: payload,
       signal: controller.signal,
-      redirect: 'error'
+      redirect: 'error',
+      // Same pair the notification-channel sender uses. Without
+      // `allowPrivateNetwork` a self-hosted install could SAVE an on-LAN
+      // webhook and then fail every delivery with "URL points to blocked
+      // address"; `requirePrivateForCleartext` keeps that allowance confined
+      // to the operator's own LAN hop rather than the open internet.
+      allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+      requirePrivateForCleartext: true
     });
 
     clearTimeout(timeoutId);
@@ -212,6 +216,20 @@ function calculateRetryDelay(
 class WebhookDeliveryWorker {
   private isRunning = false;
   private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
+  /**
+   * Dedicated connection for the `BRPOP` in `processNextJob` — see
+   * `createBlockingRedisConnection`. Lazily created (never at import time) and
+   * cached for the worker's lifetime; a new connection per loop iteration
+   * would churn a TCP connect + AUTH every 5 seconds forever.
+   */
+  private blockingRedis: Redis | null = null;
+
+  private getBlockingRedis(): Redis {
+    if (!this.blockingRedis || this.blockingRedis.status === 'end') {
+      this.blockingRedis = createBlockingRedisConnection('breeze:webhook-delivery:brpop');
+    }
+    return this.blockingRedis;
+  }
 
   /**
    * Set callback for delivery completion (for updating database)
@@ -273,8 +291,13 @@ class WebhookDeliveryWorker {
     const redis = getRedisConnection();
 
     try {
-      // Blocking pop with 5 second timeout
-      const result = await redis.brpop(WEBHOOK_QUEUE, 5);
+      // Blocking pop with 5 second timeout. This MUST run on its own
+      // connection: Redis serves one command at a time per connection, so a
+      // BRPOP here on the shared connection stalls every other command on it
+      // — including the BullMQ `Queue` writes that HTTP handlers await — by
+      // up to the full 5s block. Non-blocking commands below stay on the
+      // shared connection.
+      const result = await this.getBlockingRedis().brpop(WEBHOOK_QUEUE, 5);
 
       if (!result) return; // Timeout, no jobs
 

@@ -8,15 +8,51 @@ import (
 	"time"
 )
 
+// maxShutdownDelayMinutes bounds the `delay` payload shared by the reboot,
+// shutdown, and safe-mode-reboot commands. The wire contract is minutes on
+// every platform (see docs/agents/commands.mdx), so this is 24 hours.
+const maxShutdownDelayMinutes = 1440
+
+// clampShutdownDelayMinutes constrains a caller-supplied delay to [0, 1440]
+// minutes. Applied both when reporting the delay back to the server and inside
+// shutdownArgs, so the emitted argv can never carry an out-of-range value.
+func clampShutdownDelayMinutes(delayMinutes int) int {
+	if delayMinutes < 0 {
+		return 0
+	}
+	if delayMinutes > maxShutdownDelayMinutes {
+		return maxShutdownDelayMinutes
+	}
+	return delayMinutes
+}
+
+// ShutdownDelayMinutes parses and clamps the `delay` field shared by the
+// reboot, shutdown, and safe-mode-reboot commands. It is the single source of
+// truth for that field, so the value a handler announces to logged-in users can
+// never drift from the value the command is actually scheduled with.
+//
+// A malformed delay is an error rather than a 0. `delay: 0` legitimately means
+// "immediately", so silently collapsing an unparseable value onto it would turn
+// a requested grace period into an instant forced reboot — the exact failure in
+// issue #3373, where a JSON-string "15" became an immediate reboot.
+//
+// An out-of-range delay is still clamped rather than rejected, matching the
+// long-standing behaviour of these commands; only the type is now strict.
+func ShutdownDelayMinutes(payload map[string]any) (int, error) {
+	delay, err := ParsePayloadInt(payload, "delay", 0)
+	if err != nil {
+		return 0, err
+	}
+	return clampShutdownDelayMinutes(delay), nil
+}
+
 // Reboot schedules a system reboot after the requested delay.
-// Maximum delay is 1440 minutes (24 hours).
+// The `delay` payload is in MINUTES on every platform; maximum 1440 (24 hours).
 func Reboot(payload map[string]any) CommandResult {
 	startTime := time.Now()
-	delay := GetPayloadInt(payload, "delay", 0)
-	if delay < 0 {
-		delay = 0
-	} else if delay > 1440 {
-		delay = 1440
+	delay, err := ShutdownDelayMinutes(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	cmd, err := buildShutdownCommand(true, delay)
@@ -37,14 +73,12 @@ func Reboot(payload map[string]any) CommandResult {
 }
 
 // Shutdown schedules a system shutdown after the requested delay.
-// Maximum delay is 1440 minutes (24 hours).
+// The `delay` payload is in MINUTES on every platform; maximum 1440 (24 hours).
 func Shutdown(payload map[string]any) CommandResult {
 	startTime := time.Now()
-	delay := GetPayloadInt(payload, "delay", 0)
-	if delay < 0 {
-		delay = 0
-	} else if delay > 1440 {
-		delay = 1440
+	delay, err := ShutdownDelayMinutes(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
 
 	cmd, err := buildShutdownCommand(false, delay)
@@ -91,23 +125,47 @@ func Lock(payload map[string]any) CommandResult {
 	return NewSuccessResult(result, time.Since(startTime).Milliseconds())
 }
 
-func buildShutdownCommand(isReboot bool, delay int) (*exec.Cmd, error) {
-	switch runtime.GOOS {
+// shutdownArgs returns the argv for the platform's shutdown binary.
+//
+// delayMinutes is the wire contract shared by every platform (MINUTES). The
+// per-OS unit differs and must be converted here:
+//
+//   - Windows `shutdown /t <n>` takes SECONDS, so the value is scaled by 60.
+//   - Linux/macOS `shutdown -r +<n>` already takes minutes, so it is passed through.
+//
+// Before this conversion existed, `delay: 15` meant 15 minutes on Linux/macOS
+// and 15 seconds on Windows — a 60x skew (issue #3252). `RebootToSafeMode` in
+// system_safemode_windows.go performs the same minutes→seconds scaling.
+//
+// goos is a parameter rather than a direct runtime.GOOS read so the mapping is
+// table-testable from any host platform.
+func shutdownArgs(goos string, isReboot bool, delayMinutes int) (string, []string, error) {
+	delayMinutes = clampShutdownDelayMinutes(delayMinutes)
+
+	switch goos {
 	case "windows":
 		action := "/s"
 		if isReboot {
 			action = "/r"
 		}
-		return exec.Command("shutdown", action, "/t", strconv.Itoa(delay)), nil
+		return "shutdown", []string{action, "/t", strconv.Itoa(delayMinutes * 60)}, nil
 	case "linux", "darwin":
 		action := "-h"
 		if isReboot {
 			action = "-r"
 		}
-		return exec.Command("shutdown", action, "+"+strconv.Itoa(delay)), nil
+		return "shutdown", []string{action, "+" + strconv.Itoa(delayMinutes)}, nil
 	default:
-		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return "", nil, fmt.Errorf("unsupported OS: %s", goos)
 	}
+}
+
+func buildShutdownCommand(isReboot bool, delayMinutes int) (*exec.Cmd, error) {
+	name, args, err := shutdownArgs(runtime.GOOS, isReboot, delayMinutes)
+	if err != nil {
+		return nil, err
+	}
+	return exec.Command(name, args...), nil
 }
 
 func lockLinuxSession() error {

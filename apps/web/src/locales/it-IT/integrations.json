@@ -751,7 +751,7 @@
     "thisOrganizationIsntMappedToASentinelOneSite": "Questa organizzazione non è ancora mappata a un sito SentinelOne. Chiedi al tuo amministratore MSP di mapparla.",
     "partnerConnection": "Connessione partner",
     "oneManagementURLAndAPITokenCoversEvery": "Un Management URL e un API token coprono ogni sito SentinelOne sotto questo account partner. ",
-    "myS1Tenant": "My S1 Tenant",
+    "myS1Tenant": "Il mio tenant S1",
     "managementURL": "URL di gestione",
     "apiToken": "API Token ",
     "leaveBlankToKeepExisting": "(lascia vuoto per mantenere l'esistente)",

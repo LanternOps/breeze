@@ -91,8 +91,17 @@ export interface TaskHistoryEntry {
 export interface FileEntryInfo {
   name: string;
   path: string;
+  /**
+   * For a resolved macOS Finder alias this is the *target's* kind, so clients
+   * navigate into a folder alias and download through a file alias without
+   * needing alias-specific handling.
+   */
   type: 'file' | 'directory';
   size?: number;
   modified?: string;
   permissions?: string;
+  /** Set when the agent resolved this entry as a macOS Finder alias. */
+  isAlias?: boolean;
+  /** Absolute path the alias resolved to; `path` still names the alias file. */
+  aliasTarget?: string;
 }

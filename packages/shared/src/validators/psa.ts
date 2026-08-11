@@ -27,3 +27,48 @@ export const PSA_PROVIDERS = [
 export const psaProviderIdSchema = z.enum(PSA_PROVIDERS);
 
 export type PsaProviderId = (typeof PSA_PROVIDERS)[number];
+
+/**
+ * Providers whose adapter can enumerate companies for organization import
+ * (#3246).
+ *
+ * Lives here rather than in the API service layer because BOTH sides need it:
+ * the API gates `POST /psa/connections/:id/import*` on it, and the web UI must
+ * only offer the import action for a connection the route would accept — a
+ * second hand-maintained copy in `apps/web` is exactly the drift this package
+ * exists to prevent.
+ *
+ * Derived from `PSA_PROVIDERS` via `satisfies`, so a typo or a value that is
+ * not a real provider fails to compile. Jira is the one exclusion: it is an
+ * issue tracker with no company/account object to map onto an organization.
+ * `apps/api/src/services/psa/companyImport.test.ts` asserts this list plus
+ * `'jira'` covers `PSA_PROVIDERS` exactly, so ADDING a provider forces an
+ * explicit capable/not-capable decision instead of silently defaulting to
+ * incapable.
+ */
+export const ORG_IMPORT_CAPABLE_PSA_PROVIDERS = [
+  'connectwise',
+  'autotask',
+  'freshservice',
+  'servicenow',
+  'zendesk'
+] as const satisfies readonly PsaProviderId[];
+
+export type OrgImportCapablePsaProvider = (typeof ORG_IMPORT_CAPABLE_PSA_PROVIDERS)[number];
+
+export function isOrgImportCapableProvider(
+  provider: string
+): provider is OrgImportCapablePsaProvider {
+  return (ORG_IMPORT_CAPABLE_PSA_PROVIDERS as readonly string[]).includes(provider);
+}
+
+/**
+ * Default ceiling on companies pulled from one PSA in one import (#3246).
+ *
+ * Lives here rather than in the API because the WEB UI quotes it in the
+ * truncation warning — the number a tech reads has to be the number the server
+ * actually enforced. Aligned with the org-import seam's `MAX_IMPORT_ROWS`
+ * (1000): a preview returning more rows than the commit route accepts would be
+ * a dead end.
+ */
+export const PSA_COMPANY_LIST_CAP = 1000;

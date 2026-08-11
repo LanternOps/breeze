@@ -79,4 +79,29 @@ describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
     await submitValidForm();
     expect(await screen.findByTestId('register-check-email')).toBeInTheDocument();
   });
+
+  it('renders the recovery link when a rejection carries one (BUSINESS_EMAIL_REQUIRED)', async () => {
+    // The copy tells the user to schedule a call, so the link has to be
+    // clickable — a rejection that only prints the sentence is a dead end.
+    mockApiRegisterPartner.mockResolvedValue({
+      success: false,
+      error: 'Please sign up with your business email address.',
+      action: { url: 'https://breezermm.com/contact', label: 'Schedule a call' },
+    });
+    render(<PartnerRegisterPage />);
+    await submitValidForm();
+
+    const link = await screen.findByTestId('register-error-action');
+    expect(link).toHaveAttribute('href', 'https://breezermm.com/contact');
+    expect(link).toHaveTextContent('Schedule a call');
+  });
+
+  it('renders a plain rejection with no link when the server offers no next step', async () => {
+    mockApiRegisterPartner.mockResolvedValue({ success: false, error: 'Registration failed' });
+    render(<PartnerRegisterPage />);
+    await submitValidForm();
+
+    expect(await screen.findByText('Registration failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('register-error-action')).toBeNull();
+  });
 });

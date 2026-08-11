@@ -1595,7 +1595,7 @@
     "failingDevices": "Dispositifs défaillants",
     "activeBaselines": "Lignes de base actives",
     "pendingRemediations": "En attente de remédiations",
-    "pendingRemediationsTooltip": "Des correctifs automatisés en attente d’approbation. Faites la relecture avant de postuler — certains changements peuvent affecter le comportement du système."
+    "pendingRemediationsTooltip": "Des corrections automatisées sont en attente d’approbation. Vérifiez-les avant de les appliquer : certaines modifications peuvent affecter le comportement du système."
   },
   "cisHardeningCisComplianceTab": {
     "searchPlaceholder": "Rechercher un nom d’hôte ou une référence CIS...",
@@ -1633,7 +1633,8 @@
       "triggerScan": "Balayage de déclenchement"
     },
     "messages": {
-      "triggerScanFailed": "Impossible de déclencher le scan"
+      "triggerScanFailed": "Impossible de déclencher le scan",
+      "triggerScanQueued": "Scan mis en file d’attente pour {{name}}"
     },
     "table": {
       "name": "Nom",
@@ -1658,6 +1659,10 @@
     "status": {
       "active": "Active",
       "inactive": "Inactive"
+    },
+    "badges": {
+      "allOrgs": "Toutes les orgs",
+      "partnerWideTitle": "Base de référence à l’échelle du partenaire — s’applique aux appareils de chaque organisation"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1666,7 +1671,8 @@
       "new": "Nouvelle base"
     },
     "messages": {
-      "saveFailed": "Impossible d’enregistrer la ligne de base"
+      "saveFailed": "Impossible d’enregistrer la ligne de base",
+      "saveSuccess": "Base « {{name}} » enregistrée"
     },
     "fields": {
       "name": "Nom",
@@ -1697,6 +1703,12 @@
       "cancel": "Annuler",
       "saving": "Enregistrement...",
       "save": "Enregistrer"
+    },
+    "ownership": {
+      "scope": "Portée",
+      "allOrganizations": "Toutes les organisations",
+      "partnerWideBaselineParenthetical": "(base de référence à l’échelle du partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
     }
   },
   "cisHardeningCisRemediationsTab": {

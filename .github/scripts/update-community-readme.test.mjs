@@ -582,10 +582,8 @@ test('repository workflows gate and safely update the community README', async (
     'node --test .github/scripts/update-community-readme.test.mjs',
   );
   assert.match(ciWorkflow, /run: pnpm test:community-readme/);
-  assert.match(workflow, /^\s*schedule:\s*$/m);
-  assert.match(workflow, /^\s*- cron: ['"]17 5 \* \* \*['"]\s*$/m);
   assert.match(workflow, /^\s*workflow_dispatch:\s*$/m);
-  assert.match(workflow, /^permissions:\n  contents: write$/m);
+  assert.match(workflow, /^permissions:\n  contents: read$/m);
   assert.match(workflow, /^concurrency:\n  group: update-community-readme\n  cancel-in-progress: false$/m);
   assert.match(workflow, /^    timeout-minutes: 10$/m);
   const testCommand = 'node --test .github/scripts/update-community-readme.test.mjs';
@@ -594,8 +592,18 @@ test('repository workflows gate and safely update the community README', async (
   assert.ok(workflow.indexOf(testCommand) < workflow.indexOf(updateCommand));
   assert.doesNotMatch(workflow, /^\s*pull_request:\s*$/m);
   assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
+
+  // Issue #3173: the schedule fired daily into a main-branch ruleset that
+  // rejects direct pushes, so every run failed and hung a red check run on
+  // whatever commit was at the head of main. The job is dispatch-only now.
+  assert.doesNotMatch(workflow, /^\s*schedule:\s*$/m);
+  assert.doesNotMatch(workflow, /^\s*- cron:/m);
+
+  // The run reports drift instead of writing to the repository.
   assert.match(workflow, /git diff --quiet -- README\.md/);
-  assert.match(workflow, /git add README\.md/);
-  assert.match(workflow, /git commit --only .* -- README\.md/);
-  assert.doesNotMatch(workflow, /git add (?:--all|-A|\.)/);
+  assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+  assert.match(workflow, /uses: actions\/upload-artifact@[0-9a-f]{40} #/);
+  assert.doesNotMatch(workflow, /git commit/);
+  assert.doesNotMatch(workflow, /git push|push origin/);
+  assert.doesNotMatch(workflow, /git add/);
 });

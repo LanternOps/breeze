@@ -48,6 +48,15 @@ Add a `POST /purge-expired` route to `enrollmentKeysRoutes`:
   > `reportsInstallerCapacity`). The purge condition is now the parent-expiry
   > **conjunct** plus `hasNoLiveUnexhaustedBootstrapToken()` (#2832), applied to every
   > key with no short-code gate. Both live in `services/enrollmentKeyPurgeGuards.ts`.
+
+  > **Superseded again (#3034, 2026-08):** the `short_code IS NULL` gate above is gone.
+  > Which tokens count is now decided per TOKEN, on
+  > `installer_bootstrap_tokens.usage_kind`, because `short_code` was wrong in both
+  > directions (an authenticated build off a short-link child mints real capacity; the
+  > `/s/:code` download key carries no short_code at all). The list filter uses the
+  > capacity-scoped guards `hasLiveUnexhaustedCapacityToken()` /
+  > `hasNoLiveUnexhaustedCapacityToken()`; the purge keeps the all-kind
+  > `hasNoLiveUnexhaustedBootstrapToken()`.
 - Implementation: single `db.delete(enrollmentKeys).where(and(scopeCondition, expiredCondition)).returning({ id: enrollmentKeys.id })`.
 - Response: `200 { success: true, deletedCount: n }`.
 - Audit: if `DELETE /:id` writes an audit log entry, write one equivalent entry for the bulk

@@ -79,6 +79,38 @@ describe('filterValueSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  // #3369. `z.coerce.date()` treats a plain number as epoch-milliseconds, so
+  // before `numberRangeValueSchema` was placed ahead of the date range a
+  // perfectly ordinary "metrics.cpuPercent between 10 and 90" parsed as the
+  // date range 1970-01-01T00:00:00.010Z .. .090Z and was then compared against
+  // a numeric column. The web UI hides numeric `between`, but the REST API, dynamic
+  // groups and the AI fleet tool all accept it.
+  it('keeps a numeric between range numeric instead of coercing it to epoch dates', () => {
+    const result = filterValueSchema.safeParse({ from: 10, to: 90 });
+
+    expect(result.success).toBe(true);
+    // `toEqual` distinguishes 10 from `new Date(10)`, which is the whole regression.
+    expect(result.data).toEqual({ from: 10, to: 90 });
+  });
+
+  it('still coerces a date range to real Date instances', () => {
+    // The narrower numeric branch must not shadow the date branch.
+    const result = filterValueSchema.safeParse({ from: '2026-01-01', to: '2026-12-31' });
+
+    expect(result.success).toBe(true);
+    const range = result.data as { from: Date; to: Date };
+    expect(range.from).toBeInstanceOf(Date);
+    expect(range.to).toBeInstanceOf(Date);
+    expect(range.from.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('does not mistake a relative-time value for a range', () => {
+    const result = filterValueSchema.safeParse({ amount: 7, unit: 'days' });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ amount: 7, unit: 'days' });
+  });
+
   it('should accept relative time values', () => {
     const units = ['minutes', 'hours', 'days', 'weeks', 'months'] as const;
     for (const unit of units) {

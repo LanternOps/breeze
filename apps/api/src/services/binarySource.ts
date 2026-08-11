@@ -1,7 +1,7 @@
-export type BinarySource = 'local' | 'github';
+import { getReleaseSourceReleaseBase, getReleaseSourceRepository } from './releaseSource';
+import { isSigningInputAssetName } from './releaseAssetTrust';
 
-const GITHUB_RELEASE_BASE = 'https://github.com/lanternops/breeze/releases';
-const GITHUB_REPOSITORY = 'lanternops/breeze';
+export type BinarySource = 'local' | 'github';
 
 let binarySourceWarned = false;
 
@@ -37,21 +37,35 @@ export function getGithubReleaseVersion(): string {
 export function getGithubReleasePageUrl(): string {
   const version = getGithubReleaseVersion();
   if (version === 'latest') {
-    return `${GITHUB_RELEASE_BASE}/latest`;
+    return `${getReleaseSourceReleaseBase()}/latest`;
   }
-  return `${GITHUB_RELEASE_BASE}/tag/v${version}`;
+  return `${getReleaseSourceReleaseBase()}/tag/v${version}`;
 }
 
 function githubDownloadBase(): string {
   const version = getGithubReleaseVersion();
   if (version === 'latest') {
-    return `${GITHUB_RELEASE_BASE}/latest/download`;
+    return `${getReleaseSourceReleaseBase()}/latest/download`;
   }
-  return `${GITHUB_RELEASE_BASE}/download/v${version}`;
+  return `${getReleaseSourceReleaseBase()}/download/v${version}`;
+}
+
+// Spec 3c serving-surface guard: routes/agents/download.ts redirects and
+// routes/supportPublic.ts proxies whatever URL these builders produce, without
+// ever seeing a manifest. All canonical asset filenames are static strings
+// today, so this is a tripwire against a future builder (or refactor) leaking
+// a signing-input asset onto a public surface.
+function githubAssetDownloadUrl(filename: string): string {
+  if (isSigningInputAssetName(filename)) {
+    throw new Error(
+      `Refusing to build a download URL for signing-input asset "${filename}"`,
+    );
+  }
+  return `${githubDownloadBase()}/${filename}`;
 }
 
 export function getGithubReleaseRepository(): string {
-  return process.env.BINARY_GITHUB_REPOSITORY?.trim() || GITHUB_REPOSITORY;
+  return getReleaseSourceRepository();
 }
 
 export function getGithubExpectedReleaseTag(): string | null {
@@ -71,24 +85,24 @@ export function getGithubReleaseArtifactManifestSignatureUrl(): string {
 export function getGithubAgentUrl(os: string, arch: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-agent-${os}-${arch}${extension}`;
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 export function getGithubBackupUrl(os: string, arch: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-backup-${os}-${arch}${extension}`;
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 export function getGithubAgentPkgUrl(os: string, arch: string): string {
   const filename = `breeze-agent-${os}-${arch}.pkg`;
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 export function getGithubWatchdogUrl(os: string, arch: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-watchdog-${os}-${arch}${extension}`;
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 // breeze-user-helper is the GUI-subsystem sibling of breeze-agent. The agent
@@ -99,11 +113,11 @@ export function getGithubWatchdogUrl(os: string, arch: string): string {
 export function getGithubUserHelperUrl(os: string, arch: string): string {
   const extension = os === 'windows' ? '.exe' : '';
   const filename = `breeze-user-helper-${os}-${arch}${extension}`;
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 export function getGithubRegularMsiUrl(): string {
-  return `${githubDownloadBase()}/breeze-agent.msi`;
+  return githubAssetDownloadUrl('breeze-agent.msi');
 }
 
 export const VIEWER_FILENAMES: Record<string, string> = {
@@ -115,7 +129,7 @@ export const VIEWER_FILENAMES: Record<string, string> = {
 export function getGithubViewerUrl(platform: string): string {
   const filename = VIEWER_FILENAMES[platform];
   if (!filename) throw new Error(`Unknown viewer platform: ${platform}`);
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 export const HELPER_FILENAMES: Record<string, string> = {
@@ -127,7 +141,7 @@ export const HELPER_FILENAMES: Record<string, string> = {
 export function getGithubHelperUrl(os: string): string {
   const filename = HELPER_FILENAMES[os];
   if (!filename) throw new Error(`Unknown helper OS: ${os}`);
-  return `${githubDownloadBase()}/${filename}`;
+  return githubAssetDownloadUrl(filename);
 }
 
 /**
@@ -137,5 +151,5 @@ export function getGithubHelperUrl(os: string): string {
 export function getGithubInstallerAppUrl(): string {
   // GitHub Releases auto-rewrites spaces in attached asset filenames to dots,
   // so the on-disk artifact "Breeze Installer.app.zip" is served at this URL.
-  return `${githubDownloadBase()}/Breeze.Installer.app.zip`;
+  return githubAssetDownloadUrl('Breeze.Installer.app.zip');
 }

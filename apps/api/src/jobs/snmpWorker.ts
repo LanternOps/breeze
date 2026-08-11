@@ -75,6 +75,17 @@ export function getSnmpQueue(): Queue {
 interface PollDeviceJobData {
   type: 'poll-device';
   deviceId: string;
+  /**
+   * The device's org as it stood WHEN THE JOB WAS ENQUEUED — advisory only
+   * (issue #3226).
+   *
+   * Nothing in the dispatch path may use this to select data or a delivery
+   * target. It exists purely as a staleness tripwire: `loadPollDispatchInputs`
+   * compares it against the live `snmp_devices` row and refuses the dispatch if
+   * they disagree. See the org-authority note on `loadPollDispatchInputs` for
+   * why a stale value here is a credential-disclosure hazard rather than a
+   * cosmetic inconsistency.
+   */
   orgId: string;
 }
 
@@ -205,8 +216,9 @@ async function markPollDispatched(deviceId: string): Promise<void> {
  */
 type PollDispatchInputs =
   | { status: 'device-missing' }
+  | { status: 'org-mismatch'; payloadOrgId: string; deviceOrgId: string }
   | { status: 'no-oids' }
-  | { status: 'no-agent' }
+  | { status: 'no-agent'; orgId: string }
   | {
       status: 'ok';
       device: typeof snmpDevices.$inferSelect;
@@ -218,9 +230,28 @@ type PollDispatchInputs =
  * Phase 1 of a poll-device job: read every row the dispatch needs inside ONE
  * short-lived system DB context. Nothing here talks to Redis or the agent
  * WebSocket, so the pooled connection is released before dispatch (#1105).
+ *
+ * ORG AUTHORITY (issue #3226) — the live `snmp_devices` row is the ONLY source
+ * of the org for this dispatch. Both the template scope and the online-agent
+ * pick read `device.orgId`; neither may read `data.orgId`.
+ *
+ * This used to be split: the template was scoped on the row while the agent was
+ * picked on the job payload. The payload is captured at enqueue time and, because
+ * `enqueueSnmpPoll` reuses a job with the stable id `snmp-poll-<deviceId>` while
+ * it sits in a reusable state, a payload built before an org change SURVIVES
+ * later enqueues rather than being superseded. The command this function feeds
+ * carries decrypted SNMP credentials (v1/v2c community, v3 auth/priv passwords),
+ * so picking the agent off the stale value handed a now-org-B device's secrets
+ * to an online agent in org A — a durable cross-tenant disclosure, not a race.
+ *
+ * Do NOT "harden" the device load above by adding `eq(snmpDevices.orgId,
+ * data.orgId)`. That re-introduces payload trust through the back door: a moved
+ * device would report as `device-missing`, hiding the very divergence the
+ * mismatch guard exists to surface. Load by primary key, then reconcile.
  */
 async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDispatchInputs> {
-  // Load the device config
+  // Load the device config. Keyed on the primary key alone — see the org
+  // authority note above for why no org predicate belongs here.
   const [device] = await db
     .select()
     .from(snmpDevices)
@@ -229,6 +260,13 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
   if (!device) {
     return { status: 'device-missing' };
+  }
+
+  // Reconcile the advisory payload org against the authoritative row BEFORE any
+  // further read, so a stale job does no work and — critically — never reaches
+  // the credential decrypt in `buildSnmpPollCommand`.
+  if (device.orgId !== data.orgId) {
+    return { status: 'org-mismatch', payloadOrgId: data.orgId, deviceOrgId: device.orgId };
   }
 
   // Load template OIDs if device has a template
@@ -252,7 +290,8 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     return { status: 'no-oids' };
   }
 
-  // Find an online agent for this org.
+  // Find an online agent for this org — `device.orgId`, the live row, never the
+  // job payload (#3226).
   //
   // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
   // the hidden per-partner 'quick_support' org and are a stranger's personal
@@ -264,7 +303,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     .from(devices)
     .where(
       and(
-        eq(devices.orgId, data.orgId),
+        eq(devices.orgId, device.orgId),
         eq(devices.isEphemeral, false),
         eq(devices.status, 'online')
       )
@@ -273,7 +312,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
   const agentId = onlineAgent?.agentId ?? null;
   if (!agentId) {
-    return { status: 'no-agent' };
+    return { status: 'no-agent', orgId: device.orgId };
   }
 
   return { status: 'ok', device, oids, agentId };
@@ -309,18 +348,51 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     case 'device-missing':
       console.error(`[SnmpWorker] Device ${data.deviceId} not found`);
       return { dispatched: false, agentId: null };
+    case 'org-mismatch': {
+      // Fail the job LOUDLY rather than returning a quiet `dispatched: false`
+      // (issue #3226). This is a tenant-isolation anomaly, so it must reach
+      // `attachWorkerObservability` and the worker's 'failed' handler instead of
+      // scrolling past as one more console line among the routine no-agent
+      // warnings.
+      //
+      // Throwing here — after phase 1 has COMMITTED — is deliberate. The same
+      // throw raised inside the phase-1 callback would roll that transaction
+      // back and take `markPollAttempted`'s stamp with it, leaving
+      // `lastPollAttemptedAt` NULL so the scheduler re-selects this device on
+      // every 60s tick: exactly the hot loop #3217 fixed.
+      //
+      // The failure is self-healing, on the device's own polling cadence rather
+      // than the scheduler's. Nothing retries this payload (no `attempts` option
+      // is set), so the job settles in 'failed'. The attempt stamp above is what
+      // keeps this device off the next few 60s ticks, so recovery lands the next
+      // time it is genuinely DUE — one `pollingInterval` later (300s by default;
+      // `consecutiveFailures` is untouched here, so no backoff multiplier
+      // applies). At that point `enqueueSnmpPoll` sees the non-reusable 'failed'
+      // state, removes it, and enqueues a fresh job carrying the current org.
+      //
+      // In practice this branch is the backstop, not the usual route: the
+      // enqueue-side check in `enqueueSnmpPoll` normally replaces a drifted
+      // payload before a worker ever picks it up. Reaching here means the job
+      // was already 'active' when the org changed, or that replacement failed.
+      const message =
+        `[SnmpWorker] Refusing SNMP poll for device ${data.deviceId}: stale job payload org `
+        + `${inputs.payloadOrgId} does not match live device org ${inputs.deviceOrgId}. `
+        + 'No credentials were decrypted or dispatched.';
+      console.error(message);
+      throw new Error(message);
+    }
     case 'no-oids':
       console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
       return { dispatched: false, agentId: null };
     case 'no-agent':
-      console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
+      console.warn(`[SnmpWorker] No online agent for org ${inputs.orgId}`);
       return { dispatched: false, agentId: null };
   }
 
   const { device, oids, agentId } = inputs;
 
   if (!isAgentConnected(agentId)) {
-    console.warn(`[SnmpWorker] No online agent for org ${data.orgId}`);
+    console.warn(`[SnmpWorker] No online agent for org ${device.orgId}`);
     return { dispatched: false, agentId: null };
   }
 
@@ -471,9 +543,55 @@ export async function enqueueSnmpPoll(
   if (existing) {
     const state = await existing.getState();
     if (isReusableState(state)) {
-      return existing.id as string;
-    }
-    if (state === 'completed' || state === 'failed') {
+      // Reuse only while the queued payload still describes the device's CURRENT
+      // org (issue #3226). Callers pass the org they just read from the live row,
+      // so a disagreement means the device changed org while this job sat
+      // queued. Left alone, the stable jobId would keep that stale payload alive
+      // across every subsequent enqueue — the reuse branch returns before `add`
+      // is ever reached, so a fresh org can never overwrite it.
+      //
+      // 'active' is reusable but NOT removable: the worker holds a lock on it and
+      // BullMQ rejects the removal. That job is already in flight, and
+      // `loadPollDispatchInputs` will refuse it on the same mismatch, so leave it
+      // to the worker-side guard rather than racing the lock.
+      //
+      // A payload with no `orgId` at all counts as drifted, not as a match. It
+      // cannot be reconciled against the live row, so the worker would refuse it
+      // anyway; replacing it here turns a guaranteed job failure into a correct
+      // poll.
+      const existingOrgId = (existing.data as Partial<PollDeviceJobData> | undefined)?.orgId;
+      const orgDrifted = existingOrgId !== orgId;
+      if (!orgDrifted || state === 'active') {
+        return existing.id as string;
+      }
+      console.warn(
+        `[SnmpWorker] Replacing queued poll for device ${deviceId}: payload org ${existingOrgId} `
+        + `is stale (device is now in org ${orgId}).`
+      );
+      try {
+        await existing.remove();
+      } catch (err) {
+        // The `state === 'active'` check above is a snapshot: with concurrency 10
+        // a 'waiting' job can be picked up and locked between `getState()` and
+        // here, and BullMQ then rejects the removal ("locked by another worker").
+        // Terminal-state removals below cannot hit this — only this new
+        // drifted-reuse path exposes `remove()` to a lockable job.
+        //
+        // Handled, not swallowed: the race collapses into the case the branch
+        // above already delegates. The job is now in flight with a payload we
+        // know to be stale, and `loadPollDispatchInputs` refuses exactly that on
+        // the same mismatch, so no credentials go out either way. Falling through
+        // to `add()` would be pointless — BullMQ returns the existing job for a
+        // duplicate jobId rather than replacing it — so report the job that is
+        // actually queued and let the worker-side fence finish the job.
+        console.warn(
+          `[SnmpWorker] Could not replace the stale-org poll for device ${deviceId} `
+          + '(it became active mid-replacement); the worker-side org guard will refuse it:',
+          err
+        );
+        return existing.id as string;
+      }
+    } else if (state === 'completed' || state === 'failed') {
       await existing.remove();
     }
   }

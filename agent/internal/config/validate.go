@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
@@ -88,11 +89,44 @@ func (c *Config) ValidateTiered() ValidationResult {
 			result.Fatals = append(result.Fatals, fmt.Errorf("server_url %q is not a valid URL: %w", c.ServerURL, err))
 		} else if u.Scheme != "http" && u.Scheme != "https" {
 			result.Fatals = append(result.Fatals, fmt.Errorf("server_url scheme must be http or https, got %q", u.Scheme))
+		} else if hostpolicy.Strict() {
+			// GAP-MODEL: only the strict build hard-fails a non-allowlisted
+			// primary server_url on this existing-fleet runtime path. A gap
+			// build (allowlist set, strict off) must not degrade a
+			// self-hosted fleet's persisted config — the migration is
+			// signaled elsewhere, not enforced here.
+			if err := hostpolicy.AllowedURL(c.ServerURL); err != nil {
+				result.Fatals = append(result.Fatals, err)
+			}
 		}
 	}
 
 	if err := ValidateBackupServerURL(c.BackupServerURL); err != nil {
-		result.Fatals = append(result.Fatals, err)
+		// LOAD-path degrade: a strict build with a non-allowlisted PERSISTED
+		// backup must not fatal startup over an existing-fleet backup that
+		// predates a hosted flip — degrade to warn + clear, mirroring the
+		// backup==primary self-heal immediately below, rather than letting
+		// this reach config load's fatal-Aborts-startup path. Only this
+		// LOAD-path evaluation degrades: ingestion paths (heartbeat
+		// configUpdate push, enroll-response adoption, bootstrap redeem
+		// response) call ValidateBackupServerURL directly and must keep
+		// erroring on a NEW non-allowlisted backup — see that function's own
+		// doc comment, which is intentionally unchanged here.
+		//
+		// ValidateBackupServerURL doesn't expose which check failed, so
+		// distinguishing "the backup is well-formed but not allowlisted"
+		// from any other validation failure (malformed URL, disallowed
+		// scheme — which stay fatal) means re-checking hostpolicy directly.
+		// Gap builds never reach this branch: ValidateBackupServerURL only
+		// hostpolicy-checks under Strict(), so under gap err is nil here
+		// whenever the only problem would have been the allowlist.
+		if hostpolicy.Strict() && hostpolicy.AllowedURL(c.BackupServerURL) != nil {
+			result.Warnings = append(result.Warnings, fmt.Errorf(
+				"persisted backup_server_url is not an allowed control-plane host for this build; clearing it: %w", err))
+			c.BackupServerURL = ""
+		} else {
+			result.Fatals = append(result.Fatals, err)
+		}
 	}
 	// Self-heal a backup equal to the primary (a torn promote persist could
 	// leave this on disk, #2288): it is useless as a failover target and the
@@ -256,6 +290,15 @@ func ValidateBackupServerURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("backup_server_url %q is not a valid URL", raw)
+	}
+	if hostpolicy.Strict() {
+		// GAP-MODEL: only the strict build refuses a non-allowlisted backup
+		// host on this existing-fleet runtime path (enroll-response backup,
+		// heartbeat configUpdate push, self-heal). A gap build accepts it —
+		// the migration is signaled elsewhere, not enforced here.
+		if err := hostpolicy.AllowedURL(raw); err != nil {
+			return err
+		}
 	}
 	switch u.Scheme {
 	case "https":

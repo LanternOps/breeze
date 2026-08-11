@@ -72,7 +72,11 @@ export default function BaselineList() {
         profile: baseline.profile,
         isActive: !baseline.isActive,
       };
-      if (currentOrgId) body.orgId = currentOrgId;
+      // Toggling always takes the update path (`id` is set), and that path
+      // matches on (id, orgId) — so send the baseline's own org, not whatever
+      // the header currently has selected.
+      const targetOrgId = baseline.orgId ?? currentOrgId;
+      if (targetOrgId) body.orgId = targetOrgId;
 
       const response = await fetchWithAuth('/audit-baselines', {
         method: 'POST',

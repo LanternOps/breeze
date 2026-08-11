@@ -583,7 +583,7 @@
     "org": {
       "allOrganizations": "Toutes les organisations",
       "selectTitle": "Organisation sélectionnée (Cmd+O)",
-      "switching": "Échanger...",
+      "switching": "Changement en cours…",
       "organizations": "Organisations",
       "noneAvailable": "Aucune organisation disponible",
       "status": {
@@ -704,6 +704,10 @@
       "retry": "Réessayer"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} appareil(s) utilisent l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
+    "cta": "Comment migrer"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -750,9 +754,9 @@
           "removedLabel": "Supprimé :",
           "title": "Réviser le texte soigné",
           "warningDescription": "Notre vérification automatique pense qu’un numéro, une mesure ou un code a pu changer. Comparez attentivement l’avant/après — l’IA peut reformuler des textes, mais elle ne doit pas modifier une spécification, un prix ou un modèle.",
-          "warningTitle": "⚠️ Vérifiez bien les détails avant de postuler."
+          "warningTitle": "⚠️ Vérifiez attentivement les détails avant d’appliquer les modifications."
         },
-        "title": "Corrigez la formulation avec l’IA — vos chiffres et spécifications restent ; Consultez la prévisualisation avant de postuler"
+        "title": "Améliorez la formulation avec l’IA sans modifier vos chiffres ni vos spécifications ; consultez l’aperçu avant d’appliquer les modifications"
       }
     },
     "monitors": {
@@ -930,6 +934,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importer les entreprises",
+        "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
+        "intro": "Les entreprises sont d'abord comparées à vos organisations existantes. Rien n'est créé avant que vous ayez vérifié la liste ci-dessous et confirmé.",
+        "capHint": "Jusqu'à {{cap}} entreprises sont récupérées par importation.",
+        "empty": "Cette connexion n'a retourné aucune entreprise.",
+        "alreadyLinked_one": "{{count}} entreprise a été ignorée parce qu'elle a déjà été importée depuis cette connexion.",
+        "alreadyLinked_other": "{{count}} entreprises ont été ignorées parce qu'elles ont déjà été importées depuis cette connexion.",
+        "malformed_one": "{{count}} enregistrement n'a pas pu être lu (aucun identifiant ni nom exploitable) et a été ignoré.",
+        "malformed_other": "{{count}} enregistrements n'ont pas pu être lus (aucun identifiant ni nom exploitable) et ont été ignorés.",
+        "actions": {
+          "fetch": "Récupérer les entreprises",
+          "fetching": "Récupération des entreprises…",
+          "import": "Importer {{count}} sélectionnées",
+          "importing": "Importation…"
+        },
+        "truncated": {
+          "title": "Liste d'entreprises partielle",
+          "body": "La liste des entreprises a été interrompue après {{fetched}} entreprises sur un maximum de {{cap}}; cette importation sera donc incomplète. Les entreprises jamais lues ne seront pas liées.",
+          "cap": "La limite de {{cap}} entreprises par importation a été atteinte après {{fetched}} entreprises récupérées; cette importation sera donc incomplète. Les entreprises au-delà de cette limite n'ont jamais été lues et ne seront pas liées.",
+          "timeBudget": "Cette connexion a répondu trop lentement; la liste des entreprises a donc été interrompue après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées.",
+          "pageGuard": "La liste des entreprises comptait trop de pages et a été arrêtée après {{fetched}} entreprises. Cette importation sera incomplète — les entreprises jamais lues ne seront pas liées."
+        },
+        "errors": {
+          "previewFailed": "Impossible de charger les entreprises de cette connexion.",
+          "importFailed": "Impossible d'importer les entreprises."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Tester la connexion",
@@ -1021,13 +1053,21 @@
         "validation": {
           "nameRequired": "Le nom de connexion est requis",
           "validUrl": "Doit être un URL valide"
+        },
+        "ownerScope": {
+          "legend": "Propriété",
+          "allOrganizations": "Toutes les organisations",
+          "partnerWideHint": "(à l'échelle du partenaire — le PSA de votre MSP)",
+          "thisOrganizationOnly": "Cette organisation seulement",
+          "organization": "Organisation"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Mettre en pause",
           "resume": "Reprendre",
-          "syncNow": "Synchronisez maintenant"
+          "syncNow": "Synchronisez maintenant",
+          "importCompanies": "Importer les entreprises"
         },
         "connectionCount": "{{filtered}} de {{total}} connexions",
         "empty": {
@@ -1049,7 +1089,10 @@
           "paused": "En pause",
           "syncing": "Synchronisation"
         },
-        "title": "Connexions PSA"
+        "title": "Connexions PSA",
+        "allOrgs": "Toutes les orgs",
+        "partnerWideTitle": "Connexion à l'échelle du partenaire — partagée par toutes les organisations",
+        "partnerWideLocked": "Connexion à l'échelle du partenaire — la modification requiert un accès complet aux organisations du partenaire"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -2142,7 +2185,7 @@
             "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes, utilisateurs ou paramètres."
           },
           "switchOrgs": {
-            "title": "Organisations de changement",
+            "title": "Changer d’organisation",
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {
@@ -2322,5 +2365,12 @@
         "send": "Envoyer"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Nouveautés de la version {{version}}",
+    "gotIt": "Compris",
+    "later": "Afficher plus tard",
+    "learnMore": "En savoir plus",
+    "link": "Nouveautés"
   }
 }

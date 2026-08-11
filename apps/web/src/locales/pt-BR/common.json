@@ -704,6 +704,10 @@
       "retry": "Tentar novamente"
     }
   },
+  "migrationBanner": {
+    "message": "{{count}} dispositivo(s) estão usando a edição hospedada do agente neste servidor auto-hospedado. Migre para a edição do agente auto-hospedado.",
+    "cta": "Como migrar"
+  },
   "longTail": {
     "catalog": {
       "CatalogEnrichButton": {
@@ -930,6 +934,34 @@
       }
     },
     "psa": {
+      "PsaCompanyImport": {
+        "title": "Importar empresas",
+        "subtitle": "Crie organizações a partir das empresas em {{name}}.",
+        "intro": "As empresas são comparadas primeiro com suas organizações existentes. Nada é criado até você revisar a lista abaixo e confirmar.",
+        "capHint": "Até {{cap}} empresas são obtidas por importação.",
+        "empty": "Esta conexão não retornou nenhuma empresa.",
+        "alreadyLinked_one": "{{count}} empresa foi ignorada porque já foi importada desta conexão.",
+        "alreadyLinked_other": "{{count}} empresas foram ignoradas porque já foram importadas desta conexão.",
+        "malformed_one": "{{count}} registro não pôde ser lido (sem ID ou nome utilizável) e foi ignorado.",
+        "malformed_other": "{{count}} registros não puderam ser lidos (sem ID ou nome utilizável) e foram ignorados.",
+        "actions": {
+          "fetch": "Buscar empresas",
+          "fetching": "Buscando empresas…",
+          "import": "Importar {{count}} selecionadas",
+          "importing": "Importando…"
+        },
+        "truncated": {
+          "title": "Lista de empresas parcial",
+          "body": "A listagem de empresas foi interrompida após {{fetched}} de até {{cap}} empresas, portanto esta importação ficará incompleta. As empresas que nunca foram lidas não serão vinculadas.",
+          "cap": "O limite de {{cap}} empresas por importação foi atingido após {{fetched}} empresas obtidas, portanto esta importação ficará incompleta. As empresas acima desse limite nunca foram lidas e não serão vinculadas.",
+          "timeBudget": "Esta conexão respondeu lentamente demais, então a listagem de empresas foi interrompida após {{fetched}} empresas. Esta importação ficará incompleta — as empresas que nunca foram lidas não serão vinculadas.",
+          "pageGuard": "A listagem de empresas abrangeu páginas demais e foi interrompida após {{fetched}} empresas. Esta importação ficará incompleta — as empresas que nunca foram lidas não serão vinculadas."
+        },
+        "errors": {
+          "previewFailed": "Falha ao carregar as empresas desta conexão.",
+          "importFailed": "Falha ao importar as empresas."
+        }
+      },
       "PsaConnectionForm": {
         "actions": {
           "testConnection": "Testar conexão",
@@ -1021,13 +1053,21 @@
         "validation": {
           "nameRequired": "Nome da conexão é obrigatório",
           "validUrl": "Deve ser uma URL válida"
+        },
+        "ownerScope": {
+          "legend": "Propriedade",
+          "allOrganizations": "Todas as organizações",
+          "partnerWideHint": "(nível de parceiro — o PSA do seu MSP)",
+          "thisOrganizationOnly": "Somente esta organização",
+          "organization": "Organização"
         }
       },
       "PsaConnectionList": {
         "actions": {
           "pause": "Pausar",
           "resume": "Retomar",
-          "syncNow": "Sincronizar agora"
+          "syncNow": "Sincronizar agora",
+          "importCompanies": "Importar empresas"
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
@@ -1049,7 +1089,10 @@
           "paused": "Pausada",
           "syncing": "Sincronizando"
         },
-        "title": "Conexões PSA"
+        "title": "Conexões PSA",
+        "allOrgs": "Todas as orgs",
+        "partnerWideTitle": "Conexão de nível de parceiro — compartilhada por todas as organizações",
+        "partnerWideLocked": "Conexão de nível de parceiro — alterá-la requer acesso completo às organizações do parceiro"
       },
       "PsaConnectionsPage": {
         "actions": {
@@ -2322,5 +2365,12 @@
         "send": "Enviar"
       }
     }
+  },
+  "whatsNew": {
+    "title": "Novidades na versão {{version}}",
+    "gotIt": "Entendi",
+    "later": "Mostrar mais tarde",
+    "learnMore": "Saiba mais",
+    "link": "Novidades"
   }
 }

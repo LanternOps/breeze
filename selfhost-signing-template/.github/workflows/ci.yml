@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint workflows and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go (for actionlint)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.24'
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" -color
+
+      - name: Shell and Node syntax checks
+        run: |
+          set -euo pipefail
+          bash -n scripts/generate-manifest-key.sh
+          bash -n scripts/download-verified-asset.sh
+          node --check scripts/verify-manifest.mjs
+
+      - name: Verifier self-test
+        run: node scripts/verify-manifest.test.mjs
+
+      - name: Committed official key sanity check
+        run: |
+          set -euo pipefail
+          raw="$(openssl pkey -pubin -in official-release-key.pub -outform DER | tail -c 32 | base64 -w0)"
+          if [ ${#raw} -ne 44 ]; then
+            echo "::error::official-release-key.pub does not decode to a 32-byte Ed25519 key"
+            exit 1
+          fi
+          echo "official key ok: $raw"
+
+  # Full end-to-end dry run against a real official release (no secrets).
+  # Gated on the DRY_RUN_VERSION repository variable: it can only pass against
+  # an official Breeze release that publishes the unsigned signing-input asset
+  # set. Set the variable (Settings -> Secrets and variables -> Actions ->
+  # Variables) to e.g. 0.106.0 to enable.
+  dry-run:
+    name: Dry-run sign workflow
+    needs: [lint]
+    if: vars.DRY_RUN_VERSION != ''
+    # A called workflow's jobs cannot hold more permission than the calling job
+    # grants. sign-release.yml declares `contents: write` (publish) and
+    # `id-token: write` (Azure OIDC); without them here the call is rejected
+    # against this workflow's top-level `contents: read`. A dry run exercises
+    # neither — it publishes nothing and skips every Azure step.
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/sign-release.yml
+    with:
+      version: ${{ vars.DRY_RUN_VERSION }}
+      signing-mode: azure-artifact-signing
+      platforms: all
+      dry-run: true

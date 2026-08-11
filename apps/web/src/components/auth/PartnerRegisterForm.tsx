@@ -18,12 +18,17 @@ type PartnerRegisterFormValues = {
 type PartnerRegisterFormProps = {
   onSubmit?: (values: PartnerRegisterFormValues) => void | Promise<void>;
   errorMessage?: string;
+  // A recoverable rejection (e.g. a consumer email address at hosted signup)
+  // ships the way out with the message. The caller has already validated the
+  // scheme; this component only renders it.
+  errorAction?: { url: string; label: string };
   loading?: boolean;
 };
 
 export default function PartnerRegisterForm({
   onSubmit,
   errorMessage,
+  errorAction,
   loading
 }: PartnerRegisterFormProps) {
   const { t } = useTranslation('auth');
@@ -226,8 +231,19 @@ export default function PartnerRegisterForm({
       )}
 
       {errorMessage && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {errorMessage}
+        <div className="space-y-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <p>{errorMessage}</p>
+          {errorAction && (
+            <a
+              href={errorAction.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="register-error-action"
+              className="inline-block font-medium underline underline-offset-2"
+            >
+              {errorAction.label}
+            </a>
+          )}
         </div>
       )}
 

@@ -2,20 +2,48 @@ import { z } from 'zod';
 
 // Quick Support one-time codes — shared between the API (generation, hashing),
 // the web landing page (client-side normalization before the check call) and
-// the Go agent's filename parsing (which mirrors SUPPORT_CODE_PATTERN).
+// the Go agent's filename parsing.
 //
-// The alphabet deliberately omits I, L, O, 0 and 1: the code is read aloud
-// over the phone as often as it is copy-pasted, and those five are where
-// transcription goes wrong. 30 symbols x 9 characters is ~44 bits, which
-// together with the 15-minute TTL and per-IP rate limiting on /support/check
-// and /support/redeem is what makes guessing impractical.
-export const SUPPORT_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+// GENERATION alphabet: digits 2-9 only.
+//
+// The code is read aloud down a phone line far more often than it is
+// copy-pasted, and a mixed letters+digits code is the hard case for that: the
+// caller has to disambiguate letter-vs-digit for every character ("B as in
+// bravo", "is that a five or an S?"). Digits alone read like a phone number,
+// which every end user already knows how to transcribe. Dropping 0 and 1 on
+// top of that removes the last ambiguous pairs (O/0, I/l/1).
+//
+// MUST stay a subset of [a-z2-9]. Already-released agent binaries parse the
+// code out of the download filename with `[a-z0-9]{9}` (case-insensitive; see
+// agent/internal/agentapp/support.go) — anything outside that set would
+// silently strand every client already in the wild. Digits 2-9 qualify.
+//
+// Entropy tradeoff: log2(8^9) ~= 27 bits (~134M codes), down from the ~44 bits
+// of the previous 30-symbol letters+digits alphabet. That is deliberate and
+// acceptable here because a code lives 15 minutes, only its SHA-256 hash is
+// stored, and the public /support/check and /support/redeem endpoints are
+// per-IP rate limited (30/min and 10/min) — so an online search is bounded at
+// a few thousand guesses per code lifetime against a 134M space. Per-IP limits
+// alone would not stop a DISTRIBUTED guesser, so the API additionally enforces
+// a deployment-wide failed-lookup budget across check/download/redeem
+// (apps/api/src/services/supportCodeMissBudget.ts) — that is the control that
+// makes the 27 bits defensible, and it is a precondition of this alphabet, not
+// an optional extra. It is also in line with the industry norm for spoken
+// support codes (ScreenConnect uses 7 digits). If any of those four controls
+// is ever relaxed, revisit the length before revisiting the alphabet.
+export const SUPPORT_CODE_ALPHABET = '23456789';
 export const SUPPORT_CODE_LENGTH = 9;
-export const SUPPORT_CODE_PATTERN = /^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{9}$/;
+
+// VALIDATION is deliberately wider than generation: it must keep accepting the
+// legacy letters+digits alphabet so codes minted before a rolling deploy still
+// check and redeem against a newer API. Syntax validation is only a cheap
+// pre-filter — whether a code is real is decided by the hash lookup — so being
+// permissive here costs nothing and being strict would break in-flight codes.
+export const SUPPORT_CODE_PATTERN = /^[A-Z2-9]{9}$/;
 
 /**
- * Canonicalize user-entered input ("ktm-4h7 p2x", "KTM 4H7 P2X") to the stored
- * form ("KTM4H7P2X"), or null when it could never be a valid code.
+ * Canonicalize user-entered input ("234-567 892", "234 567 892") to the stored
+ * form ("234567892"), or null when it could never be a valid code.
  *
  * Returning null rather than throwing lets callers treat malformed input as a
  * miss without a DB round-trip.
@@ -25,7 +53,7 @@ export function normalizeSupportCode(raw: string): string | null {
   return SUPPORT_CODE_PATTERN.test(cleaned) ? cleaned : null;
 }
 
-/** Display form: KTM4H7P2X -> KTM-4H7-P2X. */
+/** Display form: 234567892 -> 234-567-892. */
 export function formatSupportCode(code: string): string {
   return `${code.slice(0, 3)}-${code.slice(3, 6)}-${code.slice(6, 9)}`;
 }

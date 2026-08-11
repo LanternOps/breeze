@@ -1,11 +1,11 @@
 # Windows MSI Build
 
-This folder contains the WiX v4 installer definition and custom action scripts for packaging `breeze-agent.exe` as an MSI.
+This folder contains the WiX installer definition (v4 authoring schema) and custom action scripts for packaging `breeze-agent.exe` as an MSI.
 
 ## Prerequisites
 
 - Windows host (or Windows CI runner)
-- WiX v4 CLI (`wix`)
+- WiX CLI (`wix`; CI uses v7 — the CLI version is independent of the v4 authoring schema)
 - PowerShell
 - Built `breeze-agent-windows-amd64.exe`
 

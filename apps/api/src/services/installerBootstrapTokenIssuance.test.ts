@@ -75,6 +75,7 @@ describe('issueBootstrapTokenForKey', () => {
     const result = await issueBootstrapTokenForKey({
       parentEnrollmentKeyId: 'parent-1',
       createdByUserId: 'user-1',
+      usageKind: "capacity",
       maxUsage: 5,
       ttlMinutes: 10080, // 7 days
     });
@@ -90,6 +91,7 @@ describe('issueBootstrapTokenForKey', () => {
     const result = await issueBootstrapTokenForKey({
       parentEnrollmentKeyId: 'parent-1',
       createdByUserId: 'user-1',
+      usageKind: "capacity",
     });
 
     const ttlMs = result.expiresAt.getTime() - Date.now();
@@ -121,6 +123,7 @@ describe('issueBootstrapTokenForKey', () => {
       const result = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: 'parent-1',
         createdByUserId: 'user-1',
+        usageKind: "capacity",
         ttlMinutes: 1440,
       });
 
@@ -152,6 +155,7 @@ describe('issueBootstrapTokenForKey', () => {
       const result = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: 'parent-1',
         createdByUserId: 'user-1',
+        usageKind: "capacity",
         ttlMinutes: 1440,
       });
 
@@ -181,6 +185,7 @@ describe('issueBootstrapTokenForKey', () => {
     const result = await issueBootstrapTokenForKey({
       parentEnrollmentKeyId: 'parent-1',
       createdByUserId: 'user-1',
+      usageKind: "capacity",
     });
 
     const ttlMs = result.expiresAt.getTime() - Date.now();
@@ -199,6 +204,7 @@ describe('issueBootstrapTokenForKey', () => {
     const result = await issueBootstrapTokenForKey({
       parentEnrollmentKeyId: 'parent-1',
       createdByUserId: 'user-1',
+      usageKind: "capacity",
       ttlMinutes: 43200, // 30 days requested
     });
 
@@ -218,6 +224,7 @@ describe('issueBootstrapTokenForKey', () => {
     const result = await issueBootstrapTokenForKey({
       parentEnrollmentKeyId: 'parent-1',
       createdByUserId: 'user-1',
+      usageKind: "capacity",
       ttlMinutes: 10080, // 7 days
     });
 

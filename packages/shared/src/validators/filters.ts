@@ -40,6 +40,19 @@ export const filterOperatorSchema = z.enum([
 // Filter Value Schemas
 // ============================================
 
+// `between` on a number field. MUST be tried before `dateRangeValueSchema`:
+// `z.coerce.date()` accepts a plain number as epoch-milliseconds, so
+// `{ from: 10, to: 90 }` — a perfectly ordinary "metrics.cpuPercent between
+// 10 and 90" — used to parse as the date range 1970-01-01T00:00:00.010Z ..
+// .090Z and was then compared against a numeric column. Discovered while
+// fixing #3369. The web UI hides numeric `between`
+// (apps/web/src/components/filters/filterFields.ts), which is why it went
+// unnoticed, but the REST API, dynamic groups and the AI fleet tool accept it.
+const numberRangeValueSchema = z.object({
+  from: z.number(),
+  to: z.number()
+});
+
 const dateRangeValueSchema = z.object({
   from: z.coerce.date(),
   to: z.coerce.date()
@@ -50,6 +63,11 @@ const relativeTimeValueSchema = z.object({
   unit: z.enum(['minutes', 'hours', 'days', 'weeks', 'months'])
 });
 
+// Union order is significant throughout: Zod returns the FIRST branch that
+// parses, so a broader branch placed earlier shadows a narrower one. `z.string()`
+// leading means an ISO date string stays a string (harmless — Postgres coerces
+// it against the column), while `z.coerce.date()` only ever fires for a real
+// `Date` instance or inside the range schemas.
 export const filterValueSchema = z.union([
   z.string(),
   z.number(),
@@ -57,6 +75,7 @@ export const filterValueSchema = z.union([
   z.coerce.date(),
   z.array(z.string()),
   z.array(z.number()),
+  numberRangeValueSchema,
   dateRangeValueSchema,
   relativeTimeValueSchema
 ]);

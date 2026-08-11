@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NetworkDeviceDetailPage from './NetworkDeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -15,7 +16,14 @@ vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
 
+// runAction surfaces outcome through showToast; mock it so the popover's
+// Connect assertions don't depend on the real toast DOM/timers.
+vi.mock('../shared/Toast', () => ({
+  showToast: vi.fn(),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -24,6 +32,9 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     statusText: ok ? 'OK' : 'ERROR',
     json: vi.fn().mockResolvedValue(payload),
   }) as unknown as Response;
+
+const devicesResponse = (devices: Array<{ id: string; displayName?: string; hostname?: string; status: string }>) =>
+  makeJsonResponse({ data: devices });
 
 const ASSET_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -368,6 +379,9 @@ describe('NetworkDeviceDetailPage', () => {
     fetchWithAuthMock
       // initial load
       .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
+      // mount's device-list fetch (proxy bridge picker) — fires alongside the
+      // asset load and would otherwise consume the PATCH mock's slot below.
+      .mockResolvedValueOnce(devicesResponse([]))
       // PATCH — stays pending until we resolve it
       .mockReturnValueOnce(patchPromise as unknown as Promise<Response>)
       // reload after the change
@@ -396,5 +410,150 @@ describe('NetworkDeviceDetailPage', () => {
 
     const link = screen.getByTestId('network-detail-manage-discovery');
     expect(link.getAttribute('href')).toBe(`/discovery?asset=${ASSET_ID}#assets`);
+  });
+
+  describe('proxy connect popover', () => {
+    it('renders the "Open Web UI" trigger only for web-ish ports', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }))
+        .mockResolvedValueOnce(devicesResponse([]));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      // baseAsset.openPorts = [{port: 22, service: 'ssh'}, {port: 443, service: 'https'}]
+      expect(screen.getByTestId('network-detail-port-proxy-443')).toBeTruthy();
+      expect(screen.queryByTestId('network-detail-port-proxy-22')).toBeNull();
+    });
+
+    it('defaults the bridge device to suggestedBridgeDeviceId — never linkedDeviceId — when both are online', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({
+            data: {
+              ...baseAsset,
+              linkedDeviceId: 'dev-9',
+              linkedDeviceName: 'agent-host',
+              suggestedBridgeDeviceId: 'dev-42',
+            },
+          }),
+        )
+        .mockResolvedValueOnce(
+          devicesResponse([
+            { id: 'dev-9', displayName: 'Linked Agent', status: 'online' },
+            { id: 'dev-42', displayName: 'Discovering Agent', status: 'online' },
+          ]),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+      // The regression this default fixes: the old modal defaulted to the
+      // identity-linked device, which is a loopback (proxying to the asset
+      // through the device it IS). It must never win when the two differ.
+      expect(select.value).not.toBe('dev-9');
+    });
+
+    it('falls back to the first online device when suggestedBridgeDeviceId is absent', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: null } }))
+        .mockResolvedValueOnce(
+          devicesResponse([
+            { id: 'dev-offline', displayName: 'Offline Agent', status: 'offline' },
+            { id: 'dev-online', displayName: 'Online Agent', status: 'online' },
+          ]),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-online'));
+    });
+
+    it('Connect POSTs /tunnels/proxy-connect with the selected device and opens the proxy tab with the asset param', async () => {
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+      fetchWithAuthMock
+        .mockResolvedValueOnce(
+          makeJsonResponse({
+            data: { ...baseAsset, linkedDeviceId: 'dev-9', suggestedBridgeDeviceId: 'dev-42' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          devicesResponse([
+            { id: 'dev-9', displayName: 'Linked Agent', status: 'online' },
+            { id: 'dev-42', displayName: 'Discovering Agent', status: 'online' },
+          ]),
+        )
+        .mockResolvedValueOnce(makeJsonResponse({ tunnel: { id: 'tunnel-1' } }, true, 201));
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      const select = (await screen.findByTestId('proxy-popover-bridge-select')) as HTMLSelectElement;
+      await waitFor(() => expect(select.value).toBe('dev-42'));
+
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() =>
+        expect(fetchWithAuthMock).toHaveBeenCalledWith(
+          '/tunnels/proxy-connect',
+          expect.objectContaining({ method: 'POST' }),
+        ),
+      );
+
+      const call = fetchWithAuthMock.mock.calls.find(([url]) => url === '/tunnels/proxy-connect');
+      const body = JSON.parse((call![1] as RequestInit).body as string);
+      expect(body).toEqual({
+        deviceId: 'dev-42',
+        discoveredAssetId: ASSET_ID,
+        port: 443,
+        scheme: 'https',
+        skipTlsVerify: false,
+      });
+
+      await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+      const [url] = openSpy.mock.calls[0] as [string, string?];
+      expect(url).toContain('/remote/proxy/tunnel-1');
+      expect(url).toContain(`asset=${ASSET_ID}`);
+      expect(url).toContain(`target=${encodeURIComponent('10.0.0.2:443')}`);
+
+      openSpy.mockRestore();
+    });
+
+    it('shows an inline message and does not open a tab when the target is disabled for proxy access', async () => {
+      const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, suggestedBridgeDeviceId: 'dev-42' } }))
+        .mockResolvedValueOnce(devicesResponse([{ id: 'dev-42', displayName: 'Agent', status: 'online' }]))
+        .mockResolvedValueOnce(
+          makeJsonResponse({ error: 'This target has been disabled by an administrator', code: 'PROXY_TARGET_DISABLED' }, false, 403),
+        );
+
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      await screen.findByTestId('network-device-detail');
+
+      fireEvent.click(screen.getByTestId('network-detail-port-proxy-443'));
+      await screen.findByTestId('proxy-popover-bridge-select');
+
+      fireEvent.click(screen.getByTestId('proxy-popover-connect'));
+
+      await waitFor(() =>
+        expect(screen.getByText('This target has been disabled for proxy access. An administrator must re-enable it in Settings before you can connect.')).toBeTruthy(),
+      );
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+
+      openSpy.mockRestore();
+    });
   });
 });

@@ -3,6 +3,7 @@ import Layout from './Layout.astro';
 import Sidebar from '../components/layout/Sidebar';
 import Header from '../components/layout/Header';
 import ContextScopeLine from '../components/layout/ContextScopeLine';
+import MigrationRequiredBanner from '../components/devices/MigrationRequiredBanner';
 import AuthOverlay from '../components/auth/AuthOverlay';
 import AdminSessionManager from '../components/auth/AdminSessionManager';
 import AccountInactiveGuard from '../components/auth/AccountInactiveGuard';
@@ -10,6 +11,7 @@ import AiChatSidebar from '../components/ai/AiChatSidebar';
 import HelpPanel from '../components/help/HelpPanel';
 import OnboardingTour from '../components/onboarding/OnboardingTour';
 import ToastContainer from '../components/shared/Toast';
+import WhatsNewSplash from '../components/whatsNew/WhatsNewSplash';
 
 interface Props {
   title: string;
@@ -48,6 +50,9 @@ const accentClass = getAccentClass(currentPath);
         {/* Registry-driven page-scope statement — mounted here so every page
             gets it and none can forget it (see routeScope.ts). */}
         <ContextScopeLine client:load />
+        {/* Persistent self-host agent-migration notice — mounted here so it
+            shows on every authenticated page (see MigrationRequiredBanner). */}
+        <MigrationRequiredBanner client:load />
         <slot />
       </main>
     </div>
@@ -55,5 +60,6 @@ const accentClass = getAccentClass(currentPath);
   <AiChatSidebar client:load transition:persist />
   <HelpPanel client:load transition:persist />
   <ToastContainer client:load transition:persist />
+  <WhatsNewSplash client:load transition:persist />
   <OnboardingTour client:idle />
 </Layout>

@@ -99,6 +99,43 @@ func TestResolveSupportInput(t *testing.T) {
 			codeFlag: "ktm-4h7-p2x",
 			wantCode: "KTM4H7P2X",
 		},
+		// The current mint alphabet is digits 2-9 only, so the all-digit code
+		// is the ordinary case, not an edge case: it must parse out of the
+		// filename and off the flag exactly like the legacy letter codes.
+		{
+			name:       "digits-only code parsed from the filename",
+			argv0:      `C:\Users\me\Downloads\breeze-support-234567892-us.2breeze.app.exe`,
+			wantCode:   "234567892",
+			wantServer: "https://us.2breeze.app",
+		},
+		{
+			name:       "digits-only code with a duplicate-download marker",
+			argv0:      "breeze-support-234567892-us.2breeze.app (1).exe",
+			wantCode:   "234567892",
+			wantServer: "https://us.2breeze.app",
+		},
+		{
+			name:       "digits-only code with an underscore port suffix",
+			argv0:      "breeze-support-987654323-localhost_3000.exe",
+			wantCode:   "987654323",
+			wantServer: "https://localhost:3000",
+		},
+		{
+			name:     "dashed digits-only display code from the flag",
+			argv0:    "breeze-agent",
+			codeFlag: "234-567-892",
+			wantCode: "234567892",
+		},
+		// The filename regex is deliberately wider than the code alphabet
+		// ([a-z0-9]{9}) so released binaries survive a future alphabet change.
+		// A filename code outside the alphabet therefore reaches supportCodeRe
+		// and is rejected THERE — still an error, just a described one rather
+		// than a silent "no code embedded".
+		{
+			name:    "filename code with an out-of-alphabet digit is rejected, not silently ignored",
+			argv0:   "breeze-support-234567890-us.2breeze.app.exe",
+			wantErr: true,
+		},
 		{
 			name:       "server flag alone still takes the code from the filename",
 			argv0:      "breeze-support-KTM4H7P2X-us.2breeze.app.exe",

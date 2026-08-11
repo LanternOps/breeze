@@ -123,6 +123,19 @@ verification.
 
 Allow third parties to deploy this project with their own trust identity, without inheriting or affecting official Breeze signing reputation.
 
+### Preferred path: the signing template
+
+For self-hosters who want their own signing identity on **unmodified**
+official builds, the supported path is the `breeze-selfhost-signing`
+template repository (docs: "Sign Your Own Agent Packages" deploy page). It
+verifies the official release manifest + `sourceCommit` before signing and
+publishes a manifest-signed release the API consumes via
+`BINARY_GITHUB_REPOSITORY`. The template's source of truth lives in this
+monorepo at `selfhost-signing-template/` — **whenever the signing steps in
+`.github/workflows/release.yml` change, diff the template against them and
+push an update** (release-checklist item). The fork checklist below remains
+the path for full rebrands.
+
 ### Rules
 
 1. **Never use official Breeze signing credentials** in forks.

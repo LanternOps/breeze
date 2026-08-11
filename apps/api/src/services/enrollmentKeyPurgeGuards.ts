@@ -29,12 +29,35 @@
 import { and, eq, exists, gt, lt, notExists, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
+import { CAPACITY_USAGE_KIND } from '../db/schema/installerBootstrapTokens';
 
 /**
- * Single definition of the correlated subquery both exported guards wrap: the
+ * Single definition of the correlated subquery every exported guard wraps: the
  * `installer_bootstrap_tokens` rows pointing at the outer `enrollmentKeys` row
  * that are still redeemable — `expires_at` in the future AND
  * `consumed_count < max_usage`.
+ *
+ * `capacityOnly` additionally restricts to `usage_kind = 'capacity'` (#3034).
+ * The two scopes are NOT interchangeable, and which one a caller wants follows
+ * from what it does with the answer:
+ *
+ *   - DELETE paths (the nightly sweep and `purge-expired`) pass `false` and
+ *     consider tokens of EVERY kind, including `per_download` and
+ *     `legacy_unknown`. Deleting a key destroys every outstanding token under it
+ *     via ON DELETE CASCADE, which is irreversible, so this side stays maximally
+ *     conservative — a per-download token is still a working installer somebody
+ *     downloaded, and a `legacy_unknown` token is one whose provenance we simply
+ *     never recorded. Neither is a licence to delete it.
+ *   - The `?expired=` LIST FILTER passes `true`, because its job is to agree
+ *     with the row's status badge, and the badge is derived from
+ *     `installerTokens` — which `fetchInstallerTokenUsage` computes over
+ *     capacity tokens alone. A filter reading a wider set than the badge is
+ *     exactly the #3191 contradiction ("Hide expired" hiding a row it renders
+ *     "Active"), just in the opposite direction.
+ *
+ * The residual disagreement is therefore always in the SAFE direction: the list
+ * may call a per-download-only key dead while the purge still spares it. Never
+ * the reverse.
  *
  * Built fresh per call, never hoisted to a module constant, for TWO reasons —
  * the first is a correctness one:
@@ -49,7 +72,7 @@ import { enrollmentKeys, installerBootstrapTokens } from '../db/schema';
  * Anyone making this lazy behind a `db` getter satisfies (2) and reintroduces
  * (1). Keep both.
  */
-const liveUnexhaustedBootstrapTokenSubquery = () =>
+const liveUnexhaustedBootstrapTokenSubquery = (capacityOnly: boolean) =>
   dbModule.db
     .select({ one: sql`1` })
     .from(installerBootstrapTokens)
@@ -58,6 +81,9 @@ const liveUnexhaustedBootstrapTokenSubquery = () =>
         eq(installerBootstrapTokens.parentEnrollmentKeyId, enrollmentKeys.id),
         gt(installerBootstrapTokens.expiresAt, new Date()),
         lt(installerBootstrapTokens.consumedCount, installerBootstrapTokens.maxUsage),
+        ...(capacityOnly
+          ? [eq(installerBootstrapTokens.usageKind, CAPACITY_USAGE_KIND)]
+          : []),
       ),
     );
 
@@ -92,30 +118,41 @@ const liveUnexhaustedBootstrapTokenSubquery = () =>
  * correlated-subquery idiom in `services/vulnerabilityCorrelation.ts`.
  */
 export const hasNoLiveUnexhaustedBootstrapToken = () =>
-  notExists(liveUnexhaustedBootstrapTokenSubquery());
+  notExists(liveUnexhaustedBootstrapTokenSubquery(false));
 
 /**
- * The same correlated subquery in its POSITIVE form: true when the outer
- * `enrollmentKeys` row IS still backed by a live, unexhausted installer token.
+ * CAPACITY-SCOPED pair, used by the `GET /enrollment-keys?expired=` filter
+ * (#3191, rescoped by #3034). True when the outer `enrollmentKeys` row is still
+ * backed by a live, unexhausted token whose `max_usage` is a real device-slot
+ * budget.
  *
- * Used by the `GET /enrollment-keys?expired=false` filter (#3191) to keep such
- * a key VISIBLE past its parent's expiry, which is the same fact the purge
- * guard uses to keep it ALIVE past its parent's expiry. Derived from the one
- * subquery builder rather than restated so the two can never drift into
- * disagreeing about which keys are still backed by an installer — "Hide
- * expired" hiding a row that "Delete expired" deliberately refuses to delete is
- * exactly the contradiction #3191 reported.
+ * `hasLiveUnexhaustedCapacityToken` keeps such a key VISIBLE past its parent's
+ * expiry; `hasNoLiveUnexhaustedCapacityToken` is its De Morgan complement for
+ * the `?expired=true` branch. Both come from the ONE subquery builder above, so
+ * the two branches of the filter cannot drift into overlapping or leaving a gap:
+ *
+ *   expired=true   →  parentExpired    AND NOT EXISTS(live capacity token)
+ *   expired=false  →  parentNotExpired  OR     EXISTS(live capacity token)
+ *
+ * These replace the previous arrangement, where the filter used the all-token
+ * guard and bolted an `isNull/isNotNull(short_code)` gate beside it to mirror
+ * the read route's per-key suppression. That mirror is gone because the
+ * suppression is gone: the discriminator now lives on the token, so the filter
+ * can ask the same question the badge asks, directly.
  *
  * Agrees with the UI badge's `liveConsumed < liveMax` test (see
  * `InstallerTokenUsage` in `routes/enrollmentKeys.ts`) because per-token
  * `consumed_count` never exceeds `max_usage`, so a positive sum difference and
- * a per-row EXISTS pick out the same keys. That premise has NO DB CHECK behind
- * it — it is upheld by the conditional `consumed_count < max_usage` UPDATE in
+ * a per-row EXISTS pick out the same keys — and both are now computed over the
+ * same capacity-only token set. That premise has NO DB CHECK behind it — it is
+ * upheld by the conditional `consumed_count < max_usage` UPDATE in
  * `routes/installer.ts`; a second write path to that column would have to
  * preserve it. Two lesser seams, both benign on a read filter: the sums use
  * Postgres `now()` while this binds the API process clock, and the badge
- * additionally requires `max > 0` (a sum over ALL tokens) before it consults
- * the live pair at all.
+ * additionally requires `max > 0` before it consults the live pair at all.
  */
-export const hasLiveUnexhaustedBootstrapToken = () =>
-  exists(liveUnexhaustedBootstrapTokenSubquery());
+export const hasLiveUnexhaustedCapacityToken = () =>
+  exists(liveUnexhaustedBootstrapTokenSubquery(true));
+
+export const hasNoLiveUnexhaustedCapacityToken = () =>
+  notExists(liveUnexhaustedBootstrapTokenSubquery(true));

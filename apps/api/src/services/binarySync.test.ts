@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => {
@@ -65,14 +65,46 @@ const manifestSigningMocks = vi.hoisted(() => ({
     keyId: "deploy-test-aaaaaaaa",
     publicKeyB64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   })),
-  signManifest: vi.fn(async () => "test-signature-base64"),
+  signManifest: vi.fn(async (_manifestJson: string) => "test-signature-base64"),
 }));
 
 vi.mock("./manifestSigning", () => manifestSigningMocks);
 
 import { syncBinaries, syncFromGitHub } from "./binarySync";
+import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
-function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
+function fixturePlatformTrust(name: string): string {
+  return requiredPlatformTrustFor(name) ?? "release-workflow-produced";
+}
+
+// fsMocks.readFile now also backs loadOfficialLocalManifestPair's read of
+// release-artifact-manifest.json[.ed25519] at the binaries volume root — a
+// blanket `.mockResolvedValue(versionFileContent)` would make THAT read
+// resolve with the version-file string too, which then fails manifest
+// verification (bad JSON) and (for BINARY_EDITION=hosted tests) becomes
+// fatal. Path-aware: only the BINARY_VERSION_FILE read resolves; the
+// official-manifest pair ENOENTs by default (self-host local-mode unchanged
+// unless a test explicitly stages it — see "official manifest" describe
+// block below).
+function mockReadFileVersionOnly(versionFileContent: string) {
+  fsMocks.readFile.mockImplementation((path: unknown) => {
+    if (
+      typeof path === "string" &&
+      (path.endsWith("release-artifact-manifest.json") ||
+        path.endsWith("release-artifact-manifest.json.ed25519"))
+    ) {
+      const err = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return Promise.reject(err);
+    }
+    return Promise.resolve(versionFileContent);
+  });
+}
+
+function makeSignedReleaseManifest(
+  assetName: string,
+  assetBuffer: Buffer,
+  repository = "LanternOps/breeze",
+) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
   const rawPublicKey = publicDer
@@ -82,14 +114,14 @@ function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
   const manifest = Buffer.from(
     JSON.stringify({
       schemaVersion: 1,
-      repository: "LanternOps/breeze",
+      repository,
       release: "v1.2.3",
       assets: [
         {
           name: assetName,
           sha256: checksum,
           size: assetBuffer.length,
-          platformTrust: "release-workflow-produced",
+          platformTrust: fixturePlatformTrust(assetName),
         },
       ],
     }),
@@ -108,6 +140,7 @@ function makeSignedReleaseManifest(assetName: string, assetBuffer: Buffer) {
 function makeSignedReleaseManifestMulti(
   assets: { name: string; buffer: Buffer }[],
   release = "v1.2.3",
+  repository = "LanternOps/breeze",
 ) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -121,13 +154,13 @@ function makeSignedReleaseManifestMulti(
   const manifest = Buffer.from(
     JSON.stringify({
       schemaVersion: 1,
-      repository: "LanternOps/breeze",
+      repository,
       release,
       assets: assets.map((a) => ({
         name: a.name,
         sha256: checksums.get(a.name)!,
         size: a.buffer.length,
-        platformTrust: "release-workflow-produced",
+        platformTrust: fixturePlatformTrust(a.name),
       })),
     }),
   );
@@ -140,17 +173,392 @@ function makeSignedReleaseManifestMulti(
   };
 }
 
+// Sign an arbitrary manifest object with a fresh key. Lets a test mutate a
+// manifest (e.g. downgrade one asset's platformTrust) and still present a
+// VALID signature, so the assertion under test is the trust check rather than
+// the signature check.
+function makeSignedReleaseManifestMultiFrom(manifestObject: unknown) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  const manifest = Buffer.from(JSON.stringify(manifestObject));
+  return {
+    manifest,
+    signature: Buffer.from(sign(null, manifest, privateKey).toString("base64")),
+    publicKey: publicDer.subarray(publicDer.length - 32).toString("base64"),
+  };
+}
+
 describe("binarySync", () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    delete process.env.BINARY_GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
   });
 
   afterEach(() => {
     process.env = originalEnv;
     vi.unstubAllGlobals();
+  });
+
+  describe("release-source unification (spec 3a)", () => {
+    function stubOverriddenRepoFetch(
+      repo: string,
+      assetName: string,
+      asset: Buffer,
+      signed: ReturnType<typeof makeSignedReleaseManifest>,
+    ) {
+      const fetchSpy = vi.fn(async (url: string) => {
+        if (url === `https://api.github.com/repos/${repo}/releases/latest`) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "release notes",
+              assets: [
+                {
+                  name: assetName,
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json`,
+                  size: signed.manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json.ed25519`,
+                  size: signed.signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/release-artifact-manifest.json"))
+          return new Response(signed.manifest);
+        if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+          return new Response(signed.signature);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+      return fetchSpy;
+    }
+
+    it("queries the GitHub API for the overridden repository and accepts its manifest", async () => {
+      const repo = "acme/breeze-selfhost-signing";
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("self-hosted agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const fetchSpy = stubOverriddenRepoFetch(repo, assetName, asset, signed);
+
+      const result = await syncFromGitHub();
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        expect.anything(),
+      );
+      expect(result.synced).toContain("agent:linux/amd64");
+    });
+
+    it("rejects a manifest whose repository does not match the overridden source", async () => {
+      const repo = "acme/breeze-selfhost-signing";
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("self-hosted agent bytes");
+      // Manifest still claims the OFFICIAL repository — must not register.
+      const signed = makeSignedReleaseManifest(assetName, asset, "LanternOps/breeze");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      stubOverriddenRepoFetch(repo, assetName, asset, signed);
+
+      await expect(syncFromGitHub()).rejects.toThrow(/repository mismatch/);
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("honors the legacy GITHUB_REPO alias", async () => {
+      const repo = "legacyorg/breeze-mirror";
+      process.env.GITHUB_REPO = repo;
+      const assetName = "breeze-agent-linux-amd64";
+      const asset = Buffer.from("legacy alias bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      const fetchSpy = stubOverriddenRepoFetch(repo, assetName, asset, signed);
+      await syncFromGitHub();
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("deployment re-signing on overridden repos (spec 3b)", () => {
+    const repo = "acme/breeze-selfhost-signing";
+    const assetName = "breeze-agent-linux-amd64";
+
+    function stubRepoFetch(
+      asset: Buffer,
+      signed: ReturnType<typeof makeSignedReleaseManifest>,
+    ) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  {
+                    name: assetName,
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+                    size: asset.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json`,
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: `https://github.com/${repo}/releases/download/v1.2.3/release-artifact-manifest.json.ed25519`,
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+    }
+
+    it("stamps the deploy-* key ID and a normalized manifest that verifies against the deployment key", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      // Real deployment key: signManifest signs with it so the test can
+      // assert the stored signature verifies against the deployment pubkey.
+      const { publicKey: deployPub, privateKey: deployPriv } =
+        generateKeyPairSync("ed25519");
+      manifestSigningMocks.signManifest.mockImplementation(
+        async (json: string) =>
+          sign(null, Buffer.from(json, "utf8"), deployPriv).toString("base64"),
+      );
+
+      try {
+        stubRepoFetch(asset, signed);
+        const result = await syncFromGitHub();
+        expect(result.synced).toContain("agent:linux/amd64");
+
+        expect(manifestSigningMocks.ensureActiveSigningKey).toHaveBeenCalled();
+        const insert = (dbMocks.insertValues.mock.calls[0] as any[])[0] as Record<string, unknown>;
+        expect(insert.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        // NOT the raw release manifest: a normalized per-asset update manifest.
+        expect(JSON.parse(insert.releaseManifest as string)).toEqual({
+          version: "1.2.3",
+          component: "agent",
+          platform: "linux",
+          arch: "amd64",
+          url: `https://github.com/${repo}/releases/download/v1.2.3/${assetName}`,
+          checksum: signed.checksum,
+          size: asset.length,
+        });
+        expect(
+          verify(
+            null,
+            Buffer.from(insert.releaseManifest as string, "utf8"),
+            deployPub,
+            Buffer.from(insert.manifestSignature as string, "base64"),
+          ),
+        ).toBe(true);
+
+        // Conflict-update path carries the same re-signed fields.
+        const set = (dbMocks.onConflictDoUpdate.mock.calls[0]![0] as any).set;
+        expect(set.signingKeyId).toBe("deploy-test-aaaaaaaa");
+        expect(set.releaseManifest).toBe(insert.releaseManifest);
+      } finally {
+        // vi.clearAllMocks() clears CALLS, not implementations — restore the
+        // hoisted default so later tests keep the canned signature.
+        manifestSigningMocks.signManifest.mockImplementation(
+          async () => "test-signature-base64",
+        );
+      }
+    });
+
+    it("official-repo path is untouched: raw manifest, official key ID, no deployment key provisioning", async () => {
+      // No override env set.
+      const asset = Buffer.from("official agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: null,
+                assets: [
+                  {
+                    name: assetName,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${assetName}`,
+                    size: asset.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url: "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: signed.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url: "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: signed.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(signed.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(signed.signature);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+
+      await syncFromGitHub();
+
+      expect(manifestSigningMocks.ensureActiveSigningKey).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+      const insert = (dbMocks.insertValues.mock.calls[0] as any[])[0] as Record<string, unknown>;
+      expect(insert.signingKeyId).toBe("release-artifact-manifest-ed25519");
+      expect(insert.releaseManifest).toBe(signed.manifest.toString("utf8"));
+    });
+
+    // A re-signing failure is a deployment-wide fault (rotated
+    // APP_ENCRYPTION_KEY, undecryptable signing key — the #625 class). It used
+    // to be swallowed by the per-target log-and-continue catch around
+    // upsertVersion, so sync returned { synced: [] } and the route answered 200
+    // while the fleet silently stayed on the old version.
+    it("aborts the whole sync when deployment re-signing fails, writing nothing", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRepoFetch(asset, signed);
+
+      manifestSigningMocks.signManifest.mockRejectedValueOnce(
+        new Error("decryptSecret returned null for active signing key"),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(
+        /decryptSecret returned null/,
+      );
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("aborts before any write when ensureActiveSigningKey fails", async () => {
+      process.env.BINARY_GITHUB_REPOSITORY = repo;
+      const asset = Buffer.from("self-hoster signed agent bytes");
+      const signed = makeSignedReleaseManifest(assetName, asset, repo);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+      stubRepoFetch(asset, signed);
+
+      manifestSigningMocks.ensureActiveSigningKey.mockRejectedValueOnce(
+        new Error("encryptSecret returned null for Ed25519 seed"),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(/encryptSecret returned null/);
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+  });
+
+  // AGENT_TARGETS ends with windows/amd64, so a Windows trust failure used to
+  // land after the four linux/darwin agents had already been committed AND
+  // promoted, and it escaped syncFromGitHub before the helper, user-helper and
+  // watchdog loops ran at all — upgraded agents, frozen watchdogs (#1802's
+  // failure mode). All verification now happens before any write.
+  describe("trust failures leave no partial state", () => {
+    it("writes nothing when a late-ordered asset fails the trust check", async () => {
+      const linuxAgent = Buffer.from("linux agent bytes");
+      const windowsAgent = Buffer.from("windows agent bytes");
+      const watchdog = Buffer.from("linux watchdog bytes");
+      const assets = [
+        { name: "breeze-agent-linux-amd64", buffer: linuxAgent },
+        { name: "breeze-agent-windows-amd64.exe", buffer: windowsAgent },
+        { name: "breeze-watchdog-linux-amd64", buffer: watchdog },
+      ];
+      const signed = makeSignedReleaseManifestMulti(assets);
+
+      // Downgrade ONLY the Windows agent's label: a self-hoster whose fork
+      // generates manifests but skips Authenticode signing produces exactly
+      // this. It is the last agent target and the trust assert rejects it.
+      const parsed = JSON.parse(signed.manifest.toString("utf8"));
+      const win = parsed.assets.find(
+        (a: { name: string }) => a.name === "breeze-agent-windows-amd64.exe",
+      );
+      win.platformTrust = "release-workflow-produced";
+      const tampered = makeSignedReleaseManifestMultiFrom(parsed);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = tampered.publicKey;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => {
+          if (url.includes("/releases/latest")) {
+            return new Response(
+              JSON.stringify({
+                tag_name: "v1.2.3",
+                body: "release notes",
+                assets: [
+                  ...assets.map((a) => ({
+                    name: a.name,
+                    browser_download_url: `https://github.com/LanternOps/breeze/releases/download/v1.2.3/${a.name}`,
+                    size: a.buffer.length,
+                  })),
+                  {
+                    name: "release-artifact-manifest.json",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json",
+                    size: tampered.manifest.length,
+                  },
+                  {
+                    name: "release-artifact-manifest.json.ed25519",
+                    browser_download_url:
+                      "https://github.com/LanternOps/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519",
+                    size: tampered.signature.length,
+                  },
+                ],
+              }),
+            );
+          }
+          if (url.endsWith("/release-artifact-manifest.json"))
+            return new Response(tampered.manifest);
+          if (url.endsWith("/release-artifact-manifest.json.ed25519"))
+            return new Response(tampered.signature);
+          const hit = assets.find((a) => url.endsWith(a.name));
+          if (hit) return new Response(hit.buffer);
+          return new Response("not found", { status: 404 });
+        }),
+      );
+
+      await expect(syncFromGitHub()).rejects.toThrow(/platform trust|platformTrust/i);
+      // The point of the fix: the four earlier targets are NOT committed, and
+      // the watchdog loop is not silently skipped.
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
   });
 
   it("syncs GitHub agent versions from the signed release artifact manifest", async () => {
@@ -199,7 +607,7 @@ describe("binarySync", () => {
 
     const result = await syncFromGitHub();
 
-    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"] });
+    expect(result).toEqual({ version: "1.2.3", synced: ["agent:linux/amd64"], failed: [] });
     expect(dbMocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         version: "1.2.3",
@@ -236,7 +644,7 @@ describe("binarySync", () => {
 
     fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
     fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
-    fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+    mockReadFileVersionOnly("0.65.9");
 
     await syncBinaries();
 
@@ -274,6 +682,73 @@ describe("binarySync", () => {
     }
   });
 
+  describe("BINARY_EDITION=hosted fail-closed (local-mode GitHub fallbacks)", () => {
+    it("throws instead of falling back to GitHub on a stale binaries volume", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      process.env.BREEZE_VERSION = "0.65.9";
+
+      mockReadFileVersionOnly("0.65.8"); // stale: != BREEZE_VERSION
+
+      await expect(syncBinaries()).rejects.toThrow(
+        /BINARY_EDITION=hosted refuses to fall back to the public GitHub release/,
+      );
+      expect(fsMocks.readdir).not.toHaveBeenCalled();
+    });
+
+    it("throws instead of falling back to GitHub when no local agent binaries are found", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      mockReadFileVersionOnly("0.65.9");
+      fsMocks.readdir.mockResolvedValue([] as any); // empty dir -> no binaries found
+
+      await expect(syncBinaries()).rejects.toThrow(
+        /BINARY_EDITION=hosted refuses to fall back to the public GitHub release/,
+      );
+    });
+
+    it("still falls back to GitHub normally when BINARY_EDITION is self-host (default)", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "self-host";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      mockReadFileVersionOnly("0.65.9");
+      fsMocks.readdir.mockResolvedValue([] as any);
+
+      const fetchSpy = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "checksums.txt",
+                  browser_download_url: "https://example.com/checksums.txt",
+                  size: 0,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/checksums.txt")) return new Response("");
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+  });
+
   // #1802: the local-binary path historically registered ONLY the agent
   // component, so self-hosters on BINARY_SOURCE=local never got watchdog
   // auto-update. It now also scans + registers breeze-watchdog-* siblings.
@@ -284,7 +759,7 @@ describe("binarySync", () => {
       process.env.BINARY_VERSION_FILE = "/fake/version";
       delete process.env.BREEZE_VERSION;
       fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
-      fsMocks.readFile.mockResolvedValue("0.65.9" as any);
+      mockReadFileVersionOnly("0.65.9");
     }
 
     it("registers a component=watchdog row alongside the agent when the binary is present", async () => {
@@ -394,7 +869,7 @@ describe("binarySync", () => {
     process.env.BINARY_VERSION_FILE = "/fake/version";
     process.env.BREEZE_VERSION = "0.99.0"; // expected != on-disk
 
-    fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+    mockReadFileVersionOnly("0.65.7");
 
     // GitHub fallback path will call fetch; make it reject so syncFromGitHub
     // throws and the compound-failure catch fires.
@@ -429,6 +904,195 @@ describe("binarySync", () => {
 
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  // BYO signing edition follow-up: if release-artifact-manifest.json +
+  // .ed25519 are staged at the binaries volume root (dirname(AGENT_BINARY_DIR),
+  // e.g. /data/binaries next to /data/binaries/agent), local-mode registration
+  // verifies and registers covered assets FROM that manifest — raw bytes +
+  // "release-artifact-manifest-ed25519" key ID — instead of re-signing with
+  // the per-deployment key.
+  describe("official manifest from local dir (BYO signing edition follow-up)", () => {
+    function localAssetChecksum(): string {
+      return createHash("sha256").update("local agent bytes").digest("hex");
+    }
+
+    function makeOfficialLocalManifest(
+      assets: { name: string; sha256: string; size: number; edition?: string }[],
+    ) {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: assets.map((a) => ({
+            name: a.name,
+            sha256: a.sha256,
+            size: a.size,
+            platformTrust: fixturePlatformTrust(a.name),
+            ...(a.edition ? { edition: a.edition } : {}),
+          })),
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+      return { manifest, signature, publicKey: rawPublicKey };
+    }
+
+    function mockReadFileWithOfficialManifest(
+      versionFileContent: string,
+      manifest: Buffer,
+      signature: Buffer,
+    ) {
+      fsMocks.readFile.mockImplementation((path: unknown) => {
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json.ed25519")) {
+          return Promise.resolve(signature);
+        }
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json")) {
+          return Promise.resolve(manifest);
+        }
+        return Promise.resolve(versionFileContent);
+      });
+    }
+
+    function setLocalScanEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+    }
+
+    it("registers a covered asset from the official manifest, not the per-deployment re-sign", async () => {
+      setLocalScanEnv();
+      const checksum = localAssetChecksum();
+      const official = makeOfficialLocalManifest([
+        {
+          name: "breeze-agent-linux-amd64",
+          sha256: checksum,
+          size: 18, // Buffer.byteLength("local agent bytes")
+          edition: "self-host",
+        },
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signingKeyId: "release-artifact-manifest-ed25519",
+          releaseManifest: official.manifest.toString("utf8"),
+          edition: "self-host",
+          checksum,
+        }),
+      );
+      // The per-deployment key was never needed for this (fully-covered) asset.
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+    });
+
+    it("falls back to per-deployment re-signing for an asset the official manifest doesn't cover", async () => {
+      setLocalScanEnv();
+      const official = makeOfficialLocalManifest([
+        {
+          name: "breeze-agent-windows-amd64.exe", // does not match the scanned linux binary
+          sha256: "a".repeat(64),
+          size: 999,
+        },
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+      expect(manifestSigningMocks.signManifest).toHaveBeenCalled();
+    });
+
+    it("falls back to per-deployment re-signing when the local checksum disagrees with the manifest", async () => {
+      setLocalScanEnv();
+      const official = makeOfficialLocalManifest([
+        {
+          name: "breeze-agent-linux-amd64",
+          sha256: "b".repeat(64), // deliberately wrong
+          size: 18,
+        },
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes("Checksum mismatch"),
+        ),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    });
+
+    it("self-host: falls back to re-signing and logs an error when the manifest fails signature verification", async () => {
+      setLocalScanEnv();
+      const official = makeOfficialLocalManifest([
+        { name: "breeze-agent-linux-amd64", sha256: localAssetChecksum(), size: 18 },
+      ]);
+      const tamperedManifest = Buffer.from(
+        official.manifest.toString("utf8").replace("v1.2.3", "v9.9.9"),
+      );
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithOfficialManifest("0.65.9", tamperedManifest, official.signature);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await expect(syncBinaries()).resolves.toBeUndefined();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes("Official release manifest found but failed verification"),
+        ),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    });
+
+    it("hosted: a manifest that fails verification is fatal, not a silent fallback", async () => {
+      setLocalScanEnv();
+      process.env.BINARY_EDITION = "hosted";
+      const official = makeOfficialLocalManifest([
+        { name: "breeze-agent-linux-amd64", sha256: localAssetChecksum(), size: 18 },
+      ]);
+      const tamperedManifest = Buffer.from(
+        official.manifest.toString("utf8").replace("v1.2.3", "v9.9.9"),
+      );
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithOfficialManifest("0.65.9", tamperedManifest, official.signature);
+
+      await expect(syncBinaries()).rejects.toThrow(
+        /BINARY_EDITION=hosted requires a valid manifest/,
+      );
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
+
+    it("unchanged self-host local mode when no official manifest is staged", async () => {
+      setLocalScanEnv();
+      mockReadFileVersionOnly("0.65.9"); // ENOENTs the manifest pair by design
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+    });
   });
 
   // Issue #816 / PR #845: syncFromGitHub gained a USER_HELPER_TARGETS loop
@@ -760,7 +1424,7 @@ describe("binarySync", () => {
 
       fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
       fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
-      fsMocks.readFile.mockResolvedValue("0.70.0" as any);
+      mockReadFileVersionOnly("0.70.0");
 
       await syncBinaries();
 
@@ -798,7 +1462,7 @@ describe("binarySync", () => {
 
       fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
       fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
-      fsMocks.readFile.mockResolvedValue("0.70.0" as any);
+      mockReadFileVersionOnly("0.70.0");
 
       await syncBinaries();
 
@@ -886,13 +1550,15 @@ describe("binarySync", () => {
     });
   });
 
-  it("upserts local agent binaries with the full 4-column conflict target (regression: #617)", async () => {
+  it("upserts local agent binaries with the full 5-column conflict target (regression: #617; extended with edition)", async () => {
     // The agent_versions table has a UNIQUE constraint on
-    // (version, platform, architecture, component). The local-binary path used
-    // to omit `component`, so Postgres rejected the upsert with
+    // (version, platform, architecture, component, edition). The local-binary
+    // path used to omit `component`, so Postgres rejected the upsert with
     // "no unique or exclusion constraint matching the ON CONFLICT
     // specification" and the wrapping transaction rolled back, leaving
-    // agent_versions empty after every API restart.
+    // agent_versions empty after every API restart. `edition` was added
+    // later (BYO signing follow-up) to let two editions of the same version
+    // coexist — the conflict target must include it too.
     process.env.BINARY_SOURCE = "local";
     process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
     process.env.BINARY_VERSION_FILE = "/fake/version";
@@ -900,7 +1566,7 @@ describe("binarySync", () => {
 
     fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
     fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
-    fsMocks.readFile.mockResolvedValue("0.65.7" as any);
+    mockReadFileVersionOnly("0.65.7");
 
     await syncBinaries();
 
@@ -909,7 +1575,181 @@ describe("binarySync", () => {
     );
     expect(targets.length).toBeGreaterThan(0);
     for (const target of targets) {
-      expect(target).toHaveLength(4);
+      expect(target).toHaveLength(5);
     }
+  });
+
+  describe("edition stamping (BYO signing follow-up)", () => {
+    it("stamps local-scan registrations with this server's own BINARY_EDITION", async () => {
+      process.env.BINARY_SOURCE = "local";
+      process.env.BINARY_EDITION = "hosted";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+      mockReadFileVersionOnly("0.65.7");
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "hosted" }),
+      );
+    });
+
+    it("defaults local-scan registrations to self-host when BINARY_EDITION is unset", async () => {
+      process.env.BINARY_SOURCE = "local";
+      delete process.env.BINARY_EDITION;
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+      mockReadFileVersionOnly("0.65.7");
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("stamps a GitHub-sync registration with the manifest asset's edition claim", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: [
+            {
+              name: "breeze-agent-linux-amd64",
+              sha256: createHash("sha256").update(asset).digest("hex"),
+              size: asset.length,
+              platformTrust: "release-workflow-produced",
+              edition: "self-host",
+            },
+          ],
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+
+      process.env.BINARY_SOURCE = "github";
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "breeze-agent-linux-amd64",
+                  browser_download_url: "https://example.com/breeze-agent-linux-amd64",
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json",
+                  size: manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json.ed25519",
+                  size: signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("release-artifact-manifest.json")) return new Response(manifest);
+        if (url.endsWith("release-artifact-manifest.json.ed25519")) return new Response(signature);
+        if (url.endsWith("breeze-agent-linux-amd64")) return new Response(asset);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      await syncFromGitHub();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ edition: "self-host" }),
+      );
+    });
+
+    it("refuses to register a GitHub-sourced asset labeled edition hosted", async () => {
+      const asset = Buffer.from("linux agent bytes");
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: [
+            {
+              name: "breeze-agent-linux-amd64",
+              sha256: createHash("sha256").update(asset).digest("hex"),
+              size: asset.length,
+              platformTrust: "release-workflow-produced",
+              edition: "hosted",
+            },
+          ],
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+
+      process.env.BINARY_SOURCE = "github";
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes("/releases/latest")) {
+          return new Response(
+            JSON.stringify({
+              tag_name: "v1.2.3",
+              body: "",
+              assets: [
+                {
+                  name: "breeze-agent-linux-amd64",
+                  browser_download_url: "https://example.com/breeze-agent-linux-amd64",
+                  size: asset.length,
+                },
+                {
+                  name: "release-artifact-manifest.json",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json",
+                  size: manifest.length,
+                },
+                {
+                  name: "release-artifact-manifest.json.ed25519",
+                  browser_download_url: "https://example.com/release-artifact-manifest.json.ed25519",
+                  size: signature.length,
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("release-artifact-manifest.json")) return new Response(manifest);
+        if (url.endsWith("release-artifact-manifest.json.ed25519")) return new Response(signature);
+        if (url.endsWith("breeze-agent-linux-amd64")) return new Response(asset);
+        return new Response("not found", { status: 404 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // getReleaseAssetMetadata's edition check runs OUTSIDE the per-asset
+      // try/catch that wraps upsertVersion, so this fails the whole sync call
+      // rather than silently skipping just this asset — a hosted-labeled
+      // asset showing up in a public release manifest is a defense-in-depth
+      // tripwire, not a routine skip.
+      await expect(syncFromGitHub()).rejects.toThrow(
+        /must never be fetched from a public GitHub release/,
+      );
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+    });
   });
 });

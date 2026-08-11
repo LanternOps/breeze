@@ -144,7 +144,9 @@ describe('POST /support-sessions', () => {
 
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.code).toMatch(/^[A-Z2-9]{3}-[A-Z2-9]{3}-[A-Z2-9]{3}$/);
+    // Digits 2-9 in 3-3-3 groups (234-567-892): the technician reads this down
+    // a phone line, so no letters and no 0/1.
+    expect(body.code).toMatch(/^[2-9]{3}-[2-9]{3}-[2-9]{3}$/);
 
     // The stored hash must be the sha256 of the RAW code we handed the tech.
     const raw = body.code.replace(/-/g, '');

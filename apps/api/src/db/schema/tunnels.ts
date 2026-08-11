@@ -30,6 +30,11 @@ export const tunnelSessions = pgTable('tunnel_sessions', {
   durationSeconds: integer('duration_seconds'),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Bumped by tunnelHttp on every authenticated proxied response (throttled
+  // >30s). Nullable: pre-existing rows and never-exchanged pending rows have
+  // no activity yet. Drives the server-computed idleSeconds the client polls
+  // instead of comparing a server timestamp against the browser clock.
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
 });
 
 export const tunnelAllowlistSourceEnum = pgEnum('tunnel_allowlist_source', ['manual', 'discovery', 'policy']);

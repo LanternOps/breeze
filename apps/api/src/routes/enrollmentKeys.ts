@@ -7,7 +7,10 @@ import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
 import { sites } from "../db/schema/orgs";
-import { installerBootstrapTokens } from "../db/schema/installerBootstrapTokens";
+import {
+  installerBootstrapTokens,
+  CAPACITY_USAGE_KIND,
+} from "../db/schema/installerBootstrapTokens";
 import {
   authMiddleware,
   requireMfa,
@@ -24,6 +27,7 @@ import { hashEnrollmentKey, hashEnrollmentKeyCandidates } from "../services/enro
 import {
   getTrustedClientIp,
   getTrustedClientIpOrUndefined,
+  rateLimitIpKey,
 } from "../services/clientIp";
 import {
   buildMacosInstallerZip,
@@ -44,7 +48,8 @@ import {
 } from "../services/installerBootstrapTokenIssuance";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
 import {
-  hasLiveUnexhaustedBootstrapToken,
+  hasLiveUnexhaustedCapacityToken,
+  hasNoLiveUnexhaustedCapacityToken,
   hasNoLiveUnexhaustedBootstrapToken,
 } from "../services/enrollmentKeyPurgeGuards";
 import { captureException } from "../services/sentry";
@@ -596,8 +601,10 @@ function sanitizeEnrollmentKey(
  * Counts DEVICE SLOTS, not installers: a key that produced two 5-device
  * downloads reports max 10, not 2.
  *
- * NOT reported for every key — see `reportsInstallerCapacity`, which is the
- * gate both read routes run before asking for this at all.
+ * NOT reported for every key. `fetchInstallerTokenUsage` counts only tokens
+ * stamped `usage_kind = 'capacity'` (#3034), so a key backed solely by
+ * per-download or legacy-unknown tokens aggregates to nothing and both read
+ * routes render `installerTokens: null`.
  */
 export interface InstallerTokenUsage {
   /** Σ consumed_count — devices that have actually redeemed an installer. */
@@ -631,61 +638,54 @@ export interface InstallerTokenUsage {
 }
 
 /**
- * Whether a key's installer figure is a DEVICE-SLOT CAPACITY at all, and so
- * may be surfaced as `installerTokens` (#2992 review round 2).
+ * Batched lookup of installer capacity for the keys on one list page.
  *
- * Two flows parent `installer_bootstrap_tokens`, and they mean different
- * things:
+ * WHAT IS COUNTED (#2992 review round 2, corrected by #3034): only tokens
+ * stamped `usage_kind = 'capacity'`. Two flows parent
+ * `installer_bootstrap_tokens` and their `max_usage` means different things:
  *
- *   (a) Add Device / guided setup — mints ONE token off a fresh parent key
- *       whose `max_usage` IS the device count the operator picked. Σ max_usage
- *       is a real budget; this is the case the whole feature exists for.
- *   (b) Short-link / installer-link — POST /:id/installer-link creates a CHILD
- *       key carrying the device count in its OWN `max_usage` plus a
- *       `short_code`, and then EVERY public download (`/s/:code`, and the
- *       handle-based `public-download` route that shares serveInstaller) mints
- *       a hardcoded `maxUsage: 1` token against that child. Σ max_usage there
- *       is "downloads so far", not capacity: a 7-device link clicked 3 times
- *       renders `3 / 7` from the key row and `Installer devices 0 / 3`
- *       underneath it — a second, smaller-looking N/M that grows on every
- *       click and never reaches 7. Worse, the `3` in each line means something
- *       different (claims vs downloads).
+ *   (a) The AUTHENTICATED paths — `GET /:id/installer/:platform` (both
+ *       platforms) and `POST /:id/bootstrap-token` — mint ONE token whose
+ *       `max_usage` IS the device count the operator picked. Σ max_usage is a
+ *       real budget; this is the case the whole feature exists for.
+ *   (b) The PUBLIC download paths — `/s/:code` and the handle-based
+ *       `public-download` route, both via `serveInstaller` — mint a hardcoded
+ *       `maxUsage: 1` token per click. Σ max_usage there is "downloads so far",
+ *       not capacity: a 7-device link clicked 3 times would render `3 / 7` from
+ *       the key row and `Installer devices 0 / 3` underneath it — a second,
+ *       smaller-looking N/M that grows on every click and never reaches 7, with
+ *       the `3` in each line meaning something different (claims vs downloads).
  *
- * So: suppress (b). A `short_code` is the discriminator because it is written
- * ONLY by the three child-minting paths — POST /:id/installer-link, the legacy
- * macOS installer download, and mintChildEnrollmentKey (MCP invites) — and
- * never by POST /enrollment-keys or by the Add-Device parent. Nothing is lost
- * on the short-link row: `usage_count` is atomically claimed against the child
- * on that same `/s/:code` path, so the key's own first line already tells the
- * true story and the installer line was pure redundancy.
+ * WHY THE DISCRIMINATOR IS PER-TOKEN. This gate used to live on the KEY, as
+ * `reportsInstallerCapacity(key) === !key.shortCode`, suppressing the figure for
+ * any short_code-bearing row. That proxy was wrong in BOTH directions (#3034):
+ *
+ *   - false suppression — the authenticated routes above accept ANY key id the
+ *     caller can reach, including an installer-link child (a visible row on the
+ *     Enrollment Keys page). Building an installer FROM that child produced a
+ *     genuine `max_usage > 1` capacity token that the gate then hid;
+ *   - false reporting — `/s/:code` mints a FRESH download key that carries NO
+ *     short_code and then serves a per-download token against it, so those rows
+ *     were never suppressed at all.
+ *
+ * No property of the parent key separates the two flows, so the meaning is
+ * recorded on the token at mint time instead (see `usageKind` in
+ * `db/schema/installerBootstrapTokens.ts`) and enforced here, in the WHERE
+ * clause. That also removes the old two-gate arrangement: there is no longer an
+ * app-layer restatement that could drift from the query, because the query IS
+ * the discriminator and it cannot be bypassed by widening the id set.
+ *
+ * `legacy_unknown` rows (pre-#3034 single-slot tokens, and the column DEFAULT)
+ * are excluded alongside `per_download`: unknown provenance must degrade to
+ * showing nothing rather than to a possibly-click-counting number.
  *
  * Suppressed API-side, not in the UI, deliberately: the wire field should only
  * ever be populated when it genuinely denotes device-slot capacity, so a second
- * consumer (portal, AI tool, export) can't rediscover the same confusion. Both
- * read routes gate on this helper for the same reason — a UI-only fix would
- * have to be re-derived per consumer, and the list and detail routes would be
- * free to disagree.
+ * consumer (portal, AI tool, export) can't rediscover the same confusion.
  *
- * KNOWN EDGE CASE, accepted: the authenticated `/:id/installer/:platform` and
- * `/:id/bootstrap-token` routes take ANY key id the caller can reach, including
- * an installer-link child (it's a visible row on the Enrollment Keys page). An
- * operator who builds an installer FROM a short-link child therefore gets a
- * `max_usage > 1` token under a short_code-bearing key, and this suppresses a
- * figure that was real. Not worth contorting the design for: it needs a
- * deliberate second download off a child row, the alternative (SUM over a mix
- * of one N-device token and K download tokens) is a number with no meaning at
- * all, and an absent line beats a confidently wrong denominator.
- */
-export function reportsInstallerCapacity(key: { shortCode?: string | null }): boolean {
-  return !key.shortCode;
-}
-
-/**
- * Batched lookup of installer capacity for the keys on one list page.
- *
- * Callers MUST pre-filter with `reportsInstallerCapacity` — this function
- * aggregates whatever ids it is handed and cannot tell a capacity token from a
- * per-download one.
+ * A key with no capacity tokens simply aggregates to zero rows and gets no map
+ * entry, which the callers render as `installerTokens: null` — the same shape as
+ * a key that never built an installer at all.
  *
  * Deliberately a SECOND query rather than a leftJoin onto the list select:
  * `installer_bootstrap_tokens` is 1:N per parent key (nothing constrains it to
@@ -754,7 +754,15 @@ export async function fetchInstallerTokenUsage(
           liveMax: sql<number>`coalesce(sum(${installerBootstrapTokens.maxUsage}) filter (where ${installerBootstrapTokens.expiresAt} > now()), 0)`,
         })
         .from(installerBootstrapTokens)
-        .where(inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds))
+        .where(
+          and(
+            inArray(installerBootstrapTokens.parentEnrollmentKeyId, keyIds),
+            // The whole discriminator (#3034) — see the docblock. Anything not
+            // provably a device-slot budget is excluded, so a group that has
+            // only per-download / legacy-unknown tokens yields no row at all.
+            eq(installerBootstrapTokens.usageKind, CAPACITY_USAGE_KIND),
+          ),
+        )
         .groupBy(installerBootstrapTokens.parentEnrollmentKeyId),
     );
 
@@ -836,10 +844,12 @@ enrollmentKeyRoutes.get(
     // tested `expires_at` alone, so "Hide expired" hid rows the same page was
     // calling Active: both Active and invisible.
     //
-    // The carve-out is `hasLiveUnexhaustedBootstrapToken()`, the positive form
-    // of the guard that already spares such a key from `purge-expired`. Sharing
-    // one predicate (services/enrollmentKeyPurgeGuards.ts) is what stops the
-    // page claiming a key is expired while the delete path insists it is not.
+    // The carve-out is `hasLiveUnexhaustedCapacityToken()`, the positive form
+    // of the capacity-scoped guard. It shares ONE subquery builder with the
+    // all-kind guard that spares a key from `purge-expired`
+    // (services/enrollmentKeyPurgeGuards.ts), differing only in the
+    // `usage_kind` predicate — which is what stops the page claiming a key is
+    // expired while the delete path insists it is not.
     // It is the SQL counterpart of the badge's `liveConsumed < liveMax` — the
     // test that makes the badge say "Active" — modulo two documented seams:
     // the guard binds the API process clock while the live* sums use Postgres
@@ -857,20 +867,17 @@ enrollmentKeyRoutes.get(
     // (Not "iff" — the converse fails for the cases in the next paragraph,
     // where the badge falls back to parent expiry despite a live token.)
     //
-    // Gated on `short_code IS NULL` to mirror `reportsInstallerCapacity`: for a
-    // short-link child the API deliberately reports no `installerTokens` at all
-    // (#2992 / PR #2993 — see that helper's docblock), so the badge falls back
-    // to parent expiry and the filter has to as well; reading token liveness
-    // here would re-introduce the same disagreement in the opposite direction.
-    // COUPLING: this gate is only correct while `reportsInstallerCapacity` is
-    // `!shortCode`. #3034 argues that suppression is wrong; if it is ever
-    // relaxed, this gate MUST move with it or #3191 returns for exactly the
-    // rows it stops carving out. The purge guard applies NO such gate, and
-    // should not: suppressing a confusing capacity NUMBER is cosmetic, whereas
-    // deleting a key out from under a live token is irreversible, so the delete
-    // path stays maximally conservative. The residual disagreement is therefore
-    // always in the safe direction — the list may call a short-link child dead
-    // while the purge spares it, never the reverse.
+    // Scoped to CAPACITY tokens (#3034). This used to be the all-token guard
+    // plus an `isNull(short_code)` gate bolted on to mirror the read route's
+    // per-key suppression; both the suppression and its mirror are gone, and the
+    // guard now asks the same question the badge asks — is a live, unexhausted
+    // DEVICE-SLOT token attached? — so the two cannot disagree by construction.
+    // The purge guard still spans EVERY token kind, and should: suppressing a
+    // confusing capacity NUMBER is cosmetic, whereas deleting a key out from
+    // under a live installer is irreversible, so the delete path stays maximally
+    // conservative. The residual disagreement is therefore always in the safe
+    // direction — the list may call a per-download-only key dead while the purge
+    // spares it, never the reverse.
     //
     // Caveat on the invariant: it holds whenever the `installerTokens`
     // enrichment succeeds. `fetchInstallerTokenUsage` deliberately degrades to
@@ -898,10 +905,7 @@ enrollmentKeyRoutes.get(
           // De Morgan of the carve-out below, expressed with the guard's
           // already-existing negative form rather than a `not()` wrapper, so
           // both branches read as the same shared predicate.
-          or(
-            isNotNull(enrollmentKeys.shortCode),
-            hasNoLiveUnexhaustedBootstrapToken(),
-          ),
+          hasNoLiveUnexhaustedCapacityToken(),
         ) as ReturnType<typeof eq>,
       );
     } else if (query.expired === "false") {
@@ -909,10 +913,7 @@ enrollmentKeyRoutes.get(
         or(
           isNull(enrollmentKeys.expiresAt),
           sql`${enrollmentKeys.expiresAt} >= NOW()`,
-          and(
-            isNull(enrollmentKeys.shortCode),
-            hasLiveUnexhaustedBootstrapToken(),
-          ),
+          hasLiveUnexhaustedCapacityToken(),
         ) as ReturnType<typeof eq>,
       );
     }
@@ -936,34 +937,26 @@ enrollmentKeyRoutes.get(
 
     // Installer capacity for this page only (#2992) — see
     // fetchInstallerTokenUsage for why this is a second keyed query and not a
-    // join. `null` for a key that never minted an installer, so the UI can fall
-    // back to the key's own counters (correct for CLI / plain keys, where
-    // usage_count is what actually gets claimed).
+    // join. `null` for a key that never minted a capacity installer, so the UI
+    // can fall back to the key's own counters (correct for CLI / plain keys,
+    // where usage_count is what actually gets claimed).
     //
-    // Short-link children are gated TWICE against reportsInstallerCapacity,
-    // and both gates earn their place:
-    //
-    //   - on the ID LIST, so a page of nothing but short-link rows never issues
-    //     the query at all (it hits the keyIds.length === 0 early-return);
-    //   - on the READ below, because the id list only narrows a WHERE clause.
-    //     Suppression that lives solely in the predicate is suppression the
-    //     response layer is trusting the database to have performed — one
-    //     `inArray` typo, or any future caller that widens the id set, and the
-    //     `.get()` silently reattaches the figure. The response must not be
-    //     able to state something the gate forbids, whatever the query did.
+    // Every key on the page is passed in (#3034). There is no longer a per-key
+    // pre-filter to apply: which tokens count is decided per TOKEN inside the
+    // query, and no property of the key predicts it — the authenticated build
+    // routes accept a short-link child id, and /s/:code mints a short_code-LESS
+    // download key. Widening the id set is harmless precisely because the
+    // discriminator is in the WHERE clause rather than restated out here, so a
+    // key with nothing but per-download tokens simply gets no group back.
     const installerUsage = await fetchInstallerTokenUsage(
-      keyList
-        .filter((keyRecord) => reportsInstallerCapacity(keyRecord))
-        .map((keyRecord) => keyRecord.id),
+      keyList.map((keyRecord) => keyRecord.id),
       c,
     );
 
     return c.json({
       data: keyList.map((keyRecord) => ({
         ...sanitizeEnrollmentKey(keyRecord),
-        installerTokens: reportsInstallerCapacity(keyRecord)
-          ? (installerUsage.get(keyRecord.id) ?? null)
-          : null,
+        installerTokens: installerUsage.get(keyRecord.id) ?? null,
       })),
       pagination: { page, limit, total },
     });
@@ -1164,13 +1157,16 @@ enrollmentKeyRoutes.post(
     // keys are never touched. The list route pairs it with the same live-token
     // exemption used below, so "Hide expired" and "Delete expired" now agree
     // about which keys are dead (#3191) — with one deliberate asymmetry,
-    // documented at that filter: the list route skips the exemption for
-    // short-link children (their token counts are suppressed on the wire, so
-    // their badge is parent-only), while this delete path applies it to every
-    // key. That leaves the residual disagreement pinned in the SAFE direction —
-    // the list may call a short-link child dead while this route spares it
-    // (visible symptom: "Delete expired" reporting a lower deletedCount than
-    // the operator expected), never the reverse, which would be data loss.
+    // documented at that filter: the list route's exemption counts only
+    // CAPACITY tokens, because it must match the badge, which is derived from
+    // the same capacity-only aggregate. This delete path counts tokens of every
+    // kind — a per-download token is still a working installer somebody
+    // downloaded, and a legacy-unknown one is merely a token whose provenance
+    // was never recorded (#3034). That leaves the residual disagreement pinned
+    // in the SAFE direction — the list may call a per-download-only key dead
+    // while this route spares it (visible symptom: "Delete expired" reporting a
+    // lower deletedCount than the operator expected), never the reverse, which
+    // would be data loss.
     conditions.push(
       lt(enrollmentKeys.expiresAt, new Date()) as ReturnType<typeof eq>,
     );
@@ -1237,22 +1233,15 @@ enrollmentKeyRoutes.get(
     }
 
     // Same shape as the list route so a caller doesn't have to special-case
-    // which endpoint it read the key from (#2992) — including the short-link
-    // suppression, gated on both the id list and the read for the same reasons
-    // spelled out there. Passing [] rather than branching around the call keeps
-    // the two routes on one code path: the empty-ids early-return does the
-    // skipping, exactly as it does for an empty page.
-    const reportsCapacity = reportsInstallerCapacity(enrollmentKey);
-    const installerUsage = await fetchInstallerTokenUsage(
-      reportsCapacity ? [enrollmentKey.id] : [],
-      c,
-    );
+    // which endpoint it read the key from (#2992). Both routes now hand the key
+    // id straight to the aggregate and let the per-token `usage_kind` filter
+    // decide (#3034) — there is no per-key branch left for the two to disagree
+    // about.
+    const installerUsage = await fetchInstallerTokenUsage([enrollmentKey.id], c);
 
     return c.json({
       ...sanitizeEnrollmentKey(enrollmentKey),
-      installerTokens: reportsCapacity
-        ? (installerUsage.get(enrollmentKey.id) ?? null)
-        : null,
+      installerTokens: installerUsage.get(enrollmentKey.id) ?? null,
     });
   },
 );
@@ -1537,6 +1526,11 @@ enrollmentKeyRoutes.get(
           issued = await issueBootstrapTokenForKey({
             parentEnrollmentKeyId: parentKey.id,
             createdByUserId: auth.user.id,
+            // Authenticated build: childMaxUsage is the operator's device count,
+            // so this token's max_usage is a real device-slot budget (#3034).
+            // True regardless of whether parentKey happens to be a short-link
+            // child — that is precisely the case the old per-key gate hid.
+            usageKind: "capacity",
             maxUsage: childMaxUsage,
             ttlMinutes: childTtlMinutes,
           });
@@ -1654,6 +1648,8 @@ enrollmentKeyRoutes.get(
         issued = await issueBootstrapTokenForKey({
           parentEnrollmentKeyId: parentKey.id,
           createdByUserId: auth.user.id,
+          // Authenticated build — see the macOS branch above (#3034).
+          usageKind: "capacity",
           maxUsage: childMaxUsage,
           ttlMinutes: childTtlMinutes,
           installerPlatform: "windows",
@@ -1944,6 +1940,9 @@ enrollmentKeyRoutes.post(
       } = await issueBootstrapTokenForKey({
         parentEnrollmentKeyId: parent.id,
         createdByUserId: auth.user.id,
+        // Authenticated issuance: the caller states the device count in the
+        // request body, so max_usage is a device-slot budget (#3034).
+        usageKind: "capacity",
         maxUsage,
         ttlMinutes,
       });
@@ -2291,7 +2290,7 @@ async function serveInstaller(
     }
     const rateResult = await rateLimiter(
       redis,
-      `public-installer:${ip}`,
+      `public-installer:${rateLimitIpKey(ip)}`,
       10,
       60,
     );
@@ -2374,6 +2373,14 @@ async function serveInstaller(
         // path has no creator. Pass null — `?? ""` made Postgres reject the
         // insert with `invalid input syntax for type uuid: ""` (500 on /s/:code).
         createdByUserId: keyRow.createdBy ?? null,
+        // The ONLY per-download mint site (#3034). Both public flows reach it —
+        // /s/:code (whose keyRow is a freshly-minted, short_code-LESS download
+        // key) and the download-handle route (whose keyRow IS the short-link
+        // child). maxUsage is a hardcoded 1 per click, so summing these counts
+        // downloads, not device slots, and they must never reach the capacity
+        // figure. Note neither flow is identifiable from the parent key alone —
+        // which is why the discriminator is recorded here rather than inferred.
+        usageKind: "per_download",
         maxUsage: 1,
         // The token inherits the installer link's remaining lifetime (#3038).
         // This path has no per-request TTL picker — the admin already chose

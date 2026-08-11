@@ -11,7 +11,15 @@ import { ConnectWiseProvider } from './connectwise';
 import { FreshserviceProvider } from './freshservice';
 import { ServiceNowProvider } from './servicenow';
 import { ZendeskProvider } from './zendesk';
-import { PSAProvider, PSAProviderType, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompanyList,
+  PSAProvider,
+  PSAProviderType,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PsaCapabilityError
+} from './types';
 import { validateProviderCredentials } from './credentials';
 
 export * from './types';
@@ -33,8 +41,18 @@ class JiraProvider implements PSAProvider {
     return this.client.testConnection();
   }
 
-  async getCompanies() {
-    return [];
+  /**
+   * Jira is an issue tracker: it has no company/account object to map onto a
+   * Breeze organization, so it is absent from
+   * `ORG_IMPORT_CAPABLE_PSA_PROVIDERS`.
+   *
+   * This used to `return []`, which made "Jira cannot do this" indistinguishable
+   * from "this PSA has no companies" — an org-import preview would have rendered
+   * as a successful read of an empty PSA. Throwing keeps the two apart; the
+   * import routes map `PsaCapabilityError` to 400.
+   */
+  async getCompanies(): Promise<PSACompanyList> {
+    throw new PsaCapabilityError('jira', 'company listing');
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

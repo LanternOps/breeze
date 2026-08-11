@@ -20,7 +20,11 @@ function realEnrollmentKey(): string {
   return randomBytes(32).toString('hex');
 }
 
-function signedReleaseManifest(assetName: string, assetBuffer: Buffer) {
+function signedReleaseManifest(
+  assetName: string,
+  assetBuffer: Buffer,
+  assetOverrides: Record<string, unknown> = {},
+) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicDer = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
   const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString('base64');
@@ -34,6 +38,7 @@ function signedReleaseManifest(assetName: string, assetBuffer: Buffer) {
         sha256: createHash('sha256').update(assetBuffer).digest('hex'),
         size: assetBuffer.length,
         platformTrust: 'windows-authenticode-required',
+        ...assetOverrides,
       },
     ],
   }));
@@ -77,6 +82,91 @@ describe('fetchRegularMsi', () => {
       'https://github.com/lanternops/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519',
       { redirect: 'follow' },
     );
+  });
+
+  it('accepts an unsigned MSI labeled edition self-host', async () => {
+    const asset = Buffer.from('unsigned-self-host-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset, {
+      platformTrust: 'none',
+      edition: 'self-host',
+    });
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRegularMsi()).resolves.toEqual(asset);
+  });
+
+  it('rejects an unsigned MSI with no edition claim (today\'s behavior unchanged)', async () => {
+    const asset = Buffer.from('unsigned-no-edition-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset, {
+      platformTrust: 'none',
+    });
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/windows-authenticode-required/);
+  });
+
+  it('refuses an MSI labeled edition hosted, even if properly signed', async () => {
+    const asset = Buffer.from('hosted-signed-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset, {
+      platformTrust: 'windows-authenticode-required',
+      edition: 'hosted',
+    });
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchRegularMsi()).rejects.toThrow(/must never be fetched from a public GitHub release/);
+  });
+
+  it('rejects an unsigned MSI labeled edition hosted', async () => {
+    const asset = Buffer.from('unsigned-hosted-msi');
+    const signed = signedReleaseManifest('breeze-agent.msi', asset, {
+      platformTrust: 'none',
+      edition: 'hosted',
+    });
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/breeze-agent.msi')) return new Response(asset);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Both violations apply (unsigned + hosted); the baseline trust check
+    // fires first.
+    await expect(fetchRegularMsi()).rejects.toThrow(/windows-authenticode-required/);
   });
 });
 

@@ -1,8 +1,19 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// `validateWebhookUrlSafetyWithDns` resolves the hostname via a dynamic
+// `import('dns/promises')`, which `__setLookupForTests` (a urlSafety/safeFetch
+// hook) does NOT intercept. Without this mock the lookup simply fails and the
+// "rejects" assertions pass for the wrong reason.
+const { dnsLookupMock } = vi.hoisted(() => ({ dnsLookupMock: vi.fn() }));
+vi.mock('dns/promises', () => ({
+  lookup: dnsLookupMock,
+  default: { lookup: dnsLookupMock },
+}));
 import {
   sendWebhookNotification,
   validateWebhookConfig,
   validateWebhookUrlSafety,
+  validateWebhookUrlSafetyWithDns,
   redactUrlForLogs
 } from './webhookSender';
 import { __setLookupForTests } from '../urlSafety';
@@ -102,5 +113,140 @@ describe('redactUrlForLogs', () => {
   it('strips hash fragments', () => {
     expect(redactUrlForLogs('https://example.com/hook#section'))
       .toBe('https://example.com/hook');
+  });
+});
+
+/**
+ * Self-hosted private-network opt-in (#2293 gate, reused).
+ *
+ * A self-hosted operator's webhook receiver — SIEM, log collector, ticketing —
+ * normally lives on their own LAN and often speaks plain http. Hosted SaaS must
+ * never dial those, so the gate is `selfHostAllowsPrivateNetwork()` from
+ * config/env: it opens ONLY on an affirmative IS_HOSTED self-host declaration.
+ *
+ * The security-relevant half of this block is the "still rejected" cases: the
+ * opt-in must widen the target space to RFC1918/ULA only, and must NOT become a
+ * general SSRF escape hatch. Loopback, link-local, cloud metadata and CGNAT stay
+ * blocked in both modes.
+ */
+describe('webhook URL safety — self-hosted private-network opt-in', () => {
+  afterEach(() => {
+    delete process.env.IS_HOSTED;
+    dnsLookupMock.mockReset();
+    __setLookupForTests(null);
+  });
+
+  describe('hosted / undeclared (default) stays strict', () => {
+    it('rejects plain http even to an RFC1918 address', () => {
+      delete process.env.IS_HOSTED;
+      expect(validateWebhookUrlSafety('http://10.1.2.3/collector').join(' ')).toContain('HTTPS');
+    });
+
+    it('rejects an RFC1918 target over https', () => {
+      delete process.env.IS_HOSTED;
+      expect(validateWebhookUrlSafety('https://10.1.2.3/hook').length).toBeGreaterThan(0);
+    });
+
+    it.each(['true', '1', 'yes', 'on', '', 'garbage'])(
+      'stays strict when IS_HOSTED=%j (fail-closed)',
+      (value) => {
+        process.env.IS_HOSTED = value;
+        expect(validateWebhookUrlSafety('https://10.1.2.3/hook').length).toBeGreaterThan(0);
+      }
+    );
+  });
+
+  describe('affirmatively self-hosted opens RFC1918/ULA + http', () => {
+    it.each(['false', '0', 'no', 'off', 'FALSE', ' off '])(
+      'accepts an on-LAN http receiver when IS_HOSTED=%j',
+      (value) => {
+        process.env.IS_HOSTED = value;
+        expect(validateWebhookUrlSafety('http://10.1.2.3/collector')).toEqual([]);
+      }
+    );
+
+    it('accepts the other RFC1918 ranges and ULA over https', () => {
+      process.env.IS_HOSTED = 'false';
+      expect(validateWebhookUrlSafety('https://192.168.1.10/hook')).toEqual([]);
+      expect(validateWebhookUrlSafety('https://172.16.4.4/hook')).toEqual([]);
+      expect(validateWebhookUrlSafety('https://[fd00::1]/hook')).toEqual([]);
+    });
+  });
+
+  describe('the opt-in is NOT an SSRF escape hatch', () => {
+    it.each([
+      ['loopback v4', 'https://127.0.0.1/hook'],
+      ['loopback v6', 'https://[::1]/hook'],
+      ['link-local', 'https://169.254.1.1/hook'],
+      ['cloud metadata', 'https://169.254.169.254/latest/meta-data/'],
+      ['alibaba metadata', 'https://100.100.100.200/hook'],
+      ['CGNAT / tailnet', 'https://100.64.5.5/hook'],
+      ['localhost name', 'https://localhost/hook'],
+    ])('still rejects %s when self-hosted', (_label, url) => {
+      process.env.IS_HOSTED = 'false';
+      expect(validateWebhookUrlSafety(url).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('cleartext http is confined to the private hop', () => {
+    it('rejects plain http to a PUBLIC literal even when self-hosted', () => {
+      process.env.IS_HOSTED = 'false';
+      // Not vacuous: the same env accepts http://10.1.2.3/collector above.
+      const errors = validateWebhookUrlSafety('http://93.184.216.34/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+
+    it('still accepts https to that same public literal', () => {
+      process.env.IS_HOSTED = 'false';
+      expect(validateWebhookUrlSafety('https://93.184.216.34/hook')).toEqual([]);
+    });
+
+    it('rejects plain http to a hostname that resolves public', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+      const errors = await validateWebhookUrlSafetyWithDns('http://collector.example/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+
+    it('accepts plain http to a hostname that resolves RFC1918', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      await expect(validateWebhookUrlSafetyWithDns('http://collector.lan/hook')).resolves.toEqual([]);
+    });
+
+    it('rejects plain http when the answers MIX private and public', async () => {
+      process.env.IS_HOSTED = 'false';
+      // safeFetch pins one record; a mixed rotation could otherwise send a later
+      // delivery to the public address in the clear.
+      dnsLookupMock.mockResolvedValue([
+        { address: '10.0.0.5', family: 4 },
+        { address: '93.184.216.34', family: 4 }
+      ]);
+      const errors = await validateWebhookUrlSafetyWithDns('http://collector.lan/hook');
+      expect(errors.join(' ')).toContain('only use plain http for private');
+    });
+  });
+
+  describe('DNS-resolved targets honour the same policy', () => {
+    it('accepts a hostname resolving to RFC1918 when self-hosted', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '10.1.2.3', family: 4 }]);
+      await expect(validateWebhookUrlSafetyWithDns('https://logs.internal.example/hook')).resolves.toEqual([]);
+    });
+
+    it('still refuses a hostname resolving to cloud metadata when self-hosted', async () => {
+      process.env.IS_HOSTED = 'false';
+      dnsLookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
+      const errors = await validateWebhookUrlSafetyWithDns('https://sneaky.example/hook');
+      // Not vacuous: the same stub returning 10.1.2.3 above yields [].
+      expect(errors.join(' ')).toContain('blocked address space');
+    });
+
+    it('refuses a hostname resolving to RFC1918 when NOT self-hosted', async () => {
+      delete process.env.IS_HOSTED;
+      dnsLookupMock.mockResolvedValue([{ address: '10.1.2.3', family: 4 }]);
+      const errors = await validateWebhookUrlSafetyWithDns('https://logs.internal.example/hook');
+      expect(errors.join(' ')).toContain('blocked address space');
+    });
   });
 });

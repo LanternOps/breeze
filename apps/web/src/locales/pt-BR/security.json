@@ -1633,7 +1633,8 @@
       "triggerScan": "Acionar verificação"
     },
     "messages": {
-      "triggerScanFailed": "Falha ao acionar verificação"
+      "triggerScanFailed": "Falha ao acionar verificação",
+      "triggerScanQueued": "Verificação na fila para {{name}}"
     },
     "table": {
       "name": "Nome",
@@ -1658,6 +1659,10 @@
     "status": {
       "active": "Ativa",
       "inactive": "Inativa"
+    },
+    "badges": {
+      "allOrgs": "Todas as orgs",
+      "partnerWideTitle": "Linha de base para todo o parceiro — aplica-se a dispositivos em todas as organizações"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1666,7 +1671,8 @@
       "new": "Nova linha de base"
     },
     "messages": {
-      "saveFailed": "Falha ao salvar linha de base"
+      "saveFailed": "Falha ao salvar linha de base",
+      "saveSuccess": "Linha de base “{{name}}” salva"
     },
     "fields": {
       "name": "Nome",
@@ -1697,6 +1703,12 @@
       "cancel": "Cancelar",
       "saving": "Salvando...",
       "save": "Salvar"
+    },
+    "ownership": {
+      "scope": "Escopo",
+      "allOrganizations": "Todas as organizações",
+      "partnerWideBaselineParenthetical": "(linha de base para todo o parceiro)",
+      "thisOrganizationOnly": "Somente esta organização"
     }
   },
   "cisHardeningCisRemediationsTab": {

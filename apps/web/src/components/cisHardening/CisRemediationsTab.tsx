@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Loader2 } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import HelpTooltip from '../shared/HelpTooltip';
 
 type Remediation = {
@@ -41,6 +42,7 @@ interface CisRemediationsTabProps {
 
 export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabProps) {
   const { t } = useTranslation('security');
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [remediations, setRemediations] = useState<Remediation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -58,6 +60,7 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
     try {
       const params = new URLSearchParams({ limit: '200' });
       if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (currentOrgId) params.set('orgId', currentOrgId);
 
       const response = await fetchWithAuth(`/cis/remediations?${params.toString()}`, {
         signal: controller.signal,
@@ -70,9 +73,11 @@ export default function CisRemediationsTab({ refreshKey }: CisRemediationsTabPro
       if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(friendlyFetchError(err));
     } finally {
-      setLoading(false);
+      // An aborted request still runs its `finally`; clearing the flag there
+      // would show the empty state while its replacement is still loading.
+      if (abortRef.current === controller) setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, currentOrgId]);
 
   useEffect(() => {
     fetchData();

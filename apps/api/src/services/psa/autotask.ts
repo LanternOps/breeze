@@ -1,5 +1,16 @@
-import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompany,
+  PSACompanyList,
+  PSACompanyListOptions,
+  PSAConnectionTest,
+  PSAProvider,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PSA_COMPANY_LIST_CAP
+} from './types';
 import { psaFetch } from './http';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, pinCursorToBase, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface AutotaskCredentials {
   baseUrl: string;
@@ -17,6 +28,11 @@ type AutotaskCompany = {
   companyName?: string;
   name?: string;
 };
+
+/** `nextPageUrl` is upstream-supplied and MUST go through `pinCursorToBase`. */
+type AutotaskCompanyResponse =
+  | AutotaskCompany[]
+  | { items?: AutotaskCompany[]; pageDetails?: { nextPageUrl?: string | null } };
 
 type AutotaskTicket = {
   id: number;
@@ -51,7 +67,17 @@ export class AutotaskProvider implements PSAProvider {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await psaFetch(`${this.baseUrl}${path}`, {
+    return this.requestUrl<T>(method, `${this.baseUrl}${path}`, body);
+  }
+
+  /**
+   * Absolute-URL variant, used only for following an origin-pinned pagination
+   * cursor. Callers MUST pass a URL that has already been through
+   * `pinCursorToBase` — this method attaches the connection's credentials, so a
+   * raw upstream-supplied URL here would leak them off-origin.
+   */
+  private async requestUrl<T>(method: string, url: string, body?: unknown): Promise<T> {
+    const response = await psaFetch(url, {
       method,
       headers: {
         ...this.getHeaders(),
@@ -108,17 +134,50 @@ export class AutotaskProvider implements PSAProvider {
     }
   }
 
-  async getCompanies(): Promise<PSACompany[]> {
-    const response = await this.request<AutotaskCompany[] | { items: AutotaskCompany[] }>(
-      'GET',
-      '/v1.0/Companies?$select=id,companyName'
-    );
+  /**
+   * Autotask REST returns `pageDetails.nextPageUrl` — an ABSOLUTE URL taken
+   * straight from the PSA's response body. It is never dialed as-is: every
+   * cursor goes through `pinCursorToBase`, which refuses any origin other than
+   * the connection's stored baseUrl and rebuilds the URL on that origin. Without
+   * that, a compromised or malicious Autotask instance could redirect the walk
+   * to an arbitrary host — and `requestUrl` would attach the integration code,
+   * username, and secret to the request.
+   */
+  async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
+    const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    return this.extractItems(response).map((company) => ({
-      id: company.id.toString(),
-      name: company.companyName || company.name || '',
-      externalId: company.id.toString()
-    }));
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
+      const response = cursor
+        ? await this.requestUrl<AutotaskCompanyResponse>('GET', cursor)
+        : await this.request<AutotaskCompanyResponse>(
+            'GET',
+            // `$filter=isActive eq true` drops archived customers server-side —
+            // otherwise an MSP's dead accounts arrive pre-selected and get
+            // provisioned as live organizations with sites and link rows.
+            // `$top`, matching testConnection on this same endpoint. (`MaxRecords`
+            // is a field of Autotask's /query search JSON, not a URL parameter —
+            // it would be ignored here, making the page-size constant a lie.)
+            `/v1.0/Companies?$select=id,companyName&$filter=${encodeURIComponent('isActive eq true')}` +
+            `&$top=${PSA_COMPANY_PAGE_SIZE}`
+          );
+
+      const nextPageUrl = Array.isArray(response)
+        ? null
+        : response.pageDetails?.nextPageUrl ?? null;
+
+      return companyPage(
+        this.extractItems(response).map((company) => ({
+          id: company?.id,
+          name: company?.companyName ?? company?.name
+        })),
+        // Throws PsaCursorOriginError on an off-origin cursor — a hard refusal,
+        // never a silent stop, so a redirected page can't masquerade as "done".
+        nextPageUrl ? pinCursorToBase(nextPageUrl, this.baseUrl, 'Autotask') : null,
+        options.skipExternalIds
+      );
+    });
+
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

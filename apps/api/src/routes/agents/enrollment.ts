@@ -16,7 +16,7 @@ import {
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
-import { getTrustedClientIp } from '../../services/clientIp';
+import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
@@ -86,7 +86,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   const enrollmentIp = clientIp === 'unknown' ? null : clientIp;
   const rateCheck = await rateLimiter(
     getRedis(),
-    `agent-enroll:${clientIp}`,
+    `agent-enroll:${rateLimitIpKey(clientIp)}`,
     ENROLLMENT_RATE_LIMIT,
     ENROLLMENT_RATE_WINDOW_SECONDS
   );

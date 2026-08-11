@@ -313,11 +313,12 @@ const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 //                #1107) — the winning sibling already rotated the SHARED refresh
 //                cookie and the server deliberately did NOT clear it or kill the
 //                session family, so an immediate retry picks up the fresh cookie.
-//   - transient: a gateway/network blip (5xx, offline, timeout) — no verdict was
-//                reached on the refresh cookie, so the session is very likely
-//                still valid and this should be retried with backoff rather than
-//                evicting the user (QA 2026-07-08: a single 502 on /auth/refresh
-//                hard-logged-out the SPA mid-session).
+//   - transient: a gateway/network blip or a rate-limit rejection (5xx, 429,
+//                offline, timeout) — no verdict was reached on the refresh
+//                cookie, so the session is very likely still valid and this
+//                should be retried with backoff rather than evicting the user
+//                (QA 2026-07-08: a single 502 on /auth/refresh hard-logged-out
+//                the SPA mid-session; issue #3041: so did a single 429).
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
 async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boolean; transient: boolean }> {
@@ -357,6 +358,16 @@ async function refreshFetchOnce(): Promise<{ tokens: Tokens | null; raced: boole
     if (body?.reason === 'refresh_raced') {
       return { tokens: null, raced: true, transient: false };
     }
+  }
+
+  // 429 means the rate limiter rejected the request before it was ever
+  // evaluated, so — exactly like a 5xx — no verdict was reached on the refresh
+  // cookie and the session is very likely still valid. Classifying it as a hard
+  // failure evicted people whose session was fine, which is how a runaway
+  // remote-desktop viewer poll (issue #3041) could exhaust the shared per-IP
+  // budget and dump the operator on the login screen.
+  if (refreshResponse.status === 429) {
+    return { tokens: null, raced: false, transient: true };
   }
 
   // 5xx (typically a 502/503/504 from the gateway) means the request never
@@ -924,6 +935,26 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
   }
 }
 
+// An error body may offer a recoverable next step as `{ actionUrl, actionLabel }`.
+// Only absolute http(s) URLs are accepted: the value is rendered as an href, so a
+// `javascript:`/`data:` scheme must never survive even though the only producer
+// today is our own API reading an operator-set env var.
+function errorAction(data: unknown): { url: string; label: string } | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const { actionUrl, actionLabel } = data as { actionUrl?: unknown; actionLabel?: unknown };
+  if (typeof actionUrl !== 'string' || typeof actionLabel !== 'string' || !actionLabel.trim()) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(actionUrl);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
+  return { url: parsed.href, label: actionLabel };
+}
+
 // SR2-21: register-partner is now email-first. The endpoint creates NOTHING and
 // returns a uniform `{ success: true, message }` whether or not the address
 // already has an account (anti-enumeration). No `user`/`partner`/`tokens`/
@@ -936,7 +967,7 @@ export async function apiRegisterPartner(
   name: string
 ): Promise<
   | { success: true; message: string }
-  | { success: false; error: string }
+  | { success: false; error: string; action?: { url: string; label: string } }
 > {
   try {
     const response = await fetch(buildApiUrl('/auth/register-partner'), {
@@ -949,7 +980,12 @@ export async function apiRegisterPartner(
     const data = await response.json();
 
     if (!response.ok) {
-      return { success: false, error: extractApiError(data, 'Registration failed') };
+      // A rejection may carry a recoverable next step (BUSINESS_EMAIL_REQUIRED
+      // returns a scheduling link). Dropping it would leave the copy telling
+      // the user to "schedule a call" with nothing to click. This is a failure
+      // shape only — it never runs on the success path, so it cannot
+      // reintroduce the enumeration branch SR2-21 removed.
+      return { success: false, error: extractApiError(data, 'Registration failed'), action: errorAction(data) };
     }
 
     return { success: true, message: data.message };

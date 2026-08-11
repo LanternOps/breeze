@@ -21,6 +21,12 @@ vi.mock('../db', () => {
     return chain;
   };
   const db = makeChain();
+  // updateOrgBillingSettings wraps the contact merge and the column update in
+  // one transaction; the callback gets the same chain so queued results behave
+  // identically inside it.
+  (db as { transaction?: unknown }).transaction = vi.fn(
+    async (fn: (tx: unknown) => unknown) => fn(db)
+  );
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -28,14 +34,22 @@ vi.mock('../db', () => {
   };
 });
 
+// The compat service owns the jsonb merge now; its own suite proves the SQL
+// shape. Here it is stubbed so these tests assert delegation, not re-assert it.
+vi.mock('./contacts/compat', () => ({
+  mergeBillingContact: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('./catalogService', () => ({ resolvePrice: vi.fn(), computeBundleEconomics: vi.fn() }));
 vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { SQL } from 'drizzle-orm';
+import type { Mock } from 'vitest';
 import * as svc from './invoiceService';
 import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice } from './catalogService';
+import { mergeBillingContact } from './contacts/compat';
 
 describe('invoiceService guards', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
@@ -224,15 +238,49 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
     ]);
     expect(result.lines[0]).toEqual({
+      // Legacy line (source row carries no `name`): description stays the title.
+      name: null,
       description: 'Customer-facing work',
       quantity: '2.00',
       unitPrice: '75.00',
       taxable: true,
       lineTotal: '150.00',
     });
+  });
+
+  // #3319: the portal DTO used to collapse the pair as `description ?? name`,
+  // the INVERSE of the fallback the PDF and the MSP web views use, so a line
+  // with both fields set showed the customer the blurb and never the title.
+  it('getCustomerInvoice surfaces name and description as separate fields', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{
+      id: 'internal-line-id',
+      invoiceId: 'i1',
+      orgId: 'org1',
+      sourceType: 'manual',
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+      quantity: '1.00',
+      unitPrice: '1500.00',
+      taxable: true,
+      lineTotal: '1500.00',
+      customerVisible: true,
+      sortOrder: 0,
+    }]);
+
+    const result = await svc.getCustomerInvoice('i1', 'org1');
+
+    expect(result.lines[0]).toMatchObject({
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+    });
+    // Still no internal columns leaked alongside the new field.
+    expect(Object.keys(result.lines[0]!).sort()).toEqual([
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+    ]);
   });
 
   it('markViewed returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {
@@ -314,22 +362,41 @@ describe('invoiceService guards', () => {
     expect(row.billingAddressCountry).toBe('GB');
   });
 
-  it('updateOrgBillingSettings merges billingContact via an atomic jsonb `||` expression, with no pre-read', async () => {
-    // The merge now happens in one UPDATE (COALESCE(billing_contact,'{}') || patch)
-    // — race-free and no read-modify-write round-trip. The unit layer asserts the
-    // SHAPE of the write (a SQL expression, no pre-read select); the actual
-    // key-preservation + null-clear semantics are proven against real Postgres in
-    // orgBillingSettings.integration.test.ts.
-    queueResult([{ id: 'org1', billingContact: { email: 'new@x.example', name: 'AP Dept' } }]); // returning row only
+  it('updateOrgBillingSettings delegates the billingContact merge to the contacts compat service', async () => {
+    // The jsonb write moved to services/contacts/compat (#3258) so the blob and
+    // the `contacts` row are written together. The atomic `COALESCE(...) || patch`
+    // SHAPE — a SQL expression rather than a read-modify-write — is asserted at
+    // services/contacts/compat.test.ts:94, and the key-preservation + null-clear
+    // semantics against real Postgres in orgBillingSettings.integration.test.ts.
+    // What this test owns is the delegation: that this service no longer writes
+    // the column itself, and hands the merge the exact patch it was given.
+    queueResult([{ id: 'org1' }]); // existence probe
+    queueResult([{ id: 'org1', billingContact: { email: 'new@x.example', name: 'AP Dept' } }]); // projection read-back
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
-    await svc.updateOrgBillingSettings('org1', { billingContactEmail: 'new@x.example', billingContactName: 'AP Dept' }, actor);
+    const row = await svc.updateOrgBillingSettings('org1', { billingContactEmail: 'new@x.example', billingContactName: 'AP Dept' }, actor);
 
-    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
-    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
-    expect(setArg.billingContact).toBeInstanceOf(SQL); // a merge expression, not a plain object
-    // No pre-read: the merge is done entirely in the UPDATE.
-    expect((db.select as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(0);
+    expect(mergeBillingContact).toHaveBeenCalledTimes(1);
+    const [, orgIdArg, patchArg, actorArg] = (mergeBillingContact as unknown as Mock).mock.calls[0]!;
+    expect(orgIdArg).toBe('org1');
+    expect(patchArg).toEqual({ email: 'new@x.example', name: 'AP Dept' });
+    expect(actorArg).toBe('u1');
+    // A contact-only patch leaves nothing for this service to set, so it must
+    // not issue a column UPDATE of its own.
+    expect(db.update).not.toHaveBeenCalled();
+    expect(row.billingContact).toEqual({ email: 'new@x.example', name: 'AP Dept' });
+  });
+
+  it('updateOrgBillingSettings 404s on an unknown org instead of tripping the contacts FK', async () => {
+    // The merge inserts a contacts row, so an unknown orgId would raise a
+    // foreign-key violation if the existence probe were removed.
+    queueResult([]); // existence probe finds nothing
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+    await expect(
+      svc.updateOrgBillingSettings('org1', { billingContactEmail: 'new@x.example' }, actor)
+    ).rejects.toMatchObject({ code: 'INVOICE_NOT_FOUND', status: 404 });
+    expect(mergeBillingContact).not.toHaveBeenCalled();
   });
 
   it('updateOrgBillingSettings does NOT touch billingContact (nor select) when no contact field is in the patch', async () => {

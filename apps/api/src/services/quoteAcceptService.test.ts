@@ -96,7 +96,10 @@ const baseParams = {
  *  10. update quotes .set(converted)         -> [] (unused)
  *  11. select quotes (final re-select)       -> [updated quote]
  */
-function queueAcceptHappyPath(quoteOverrides: Record<string, unknown> = {}) {
+function queueAcceptHappyPath(
+  quoteOverrides: Record<string, unknown> = {},
+  lineOverrides: Record<string, unknown> = {},
+) {
   const quote = {
     id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
     expiryDate: null, quoteNumber: 'Q-2026-0001', taxRate: null,
@@ -110,6 +113,7 @@ function queueAcceptHappyPath(quoteOverrides: Record<string, unknown> = {}) {
     id: 'l1', quoteId: 'q1', recurrence: 'one_time', customerVisible: true,
     taxable: true, quantity: '1', unitPrice: '1000.00', catalogItemId: null,
     description: 'Widget', name: 'Widget', termMonths: null, sortOrder: 0,
+    ...lineOverrides,
   };
 
   queueResult([quote]);                              // 1
@@ -277,6 +281,124 @@ describe('acceptQuote deposit snapshot', () => {
       actorUserId: null,
     });
     expect(result.pax8OrderId).toBe('pax8-order-1');
+  });
+});
+
+// #3319: quote_lines and invoice_lines BOTH carry a `name` (title) alongside
+// `description` (sub-line blurb) since migration 2026-07-03-quote-invoice-line-name;
+// renderers treat the title as `name ?? description`. The conversion mapping
+// dropped `name`, so every converted invoice rendered as a legacy line and the
+// customer-facing item title vanished from the invoice detail and the PDF.
+describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+    createContractMock.mockResolvedValue({ contract: { id: 'contractA' }, lines: [] });
+    createExecutedDocumentsMock.mockResolvedValue([]);
+  });
+
+  // .values call order (see queueAcceptHappyPath): [0] quote_acceptances,
+  // [1] invoices, [2] invoice_lines.
+  const invoiceLineValues = () =>
+    (db as unknown as Chain).values.mock.calls[2]![0] as Record<string, unknown>;
+
+  it('carries the quote line name onto the invoice line, distinct from the description', async () => {
+    queueAcceptHappyPath({}, {
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+    });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toMatchObject({
+      name: 'Onboarding & network setup',
+      description: 'Network audit, agent deployment, endpoint enrollment',
+    });
+  });
+
+  it('writes name: null for a legacy quote line that has no name, leaving description as the title', async () => {
+    // Legacy pre-2026-07-03 line: description holds the title, name is NULL.
+    // The invoice line must mirror that shape (NOT fabricate a name) so the
+    // renderer's `name ?? description` fallback keeps showing the title once.
+    queueAcceptHappyPath({}, { name: null, description: 'Legacy widget' });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toMatchObject({ name: null, description: 'Legacy widget' });
+  });
+
+  it('carries a name-only line (no description) without inventing a blurb', async () => {
+    // The most common catalog shape: a title and no separate blurb.
+    queueAcceptHappyPath({}, { name: 'Firewall replacement', description: null });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toMatchObject({ name: 'Firewall replacement', description: null });
+  });
+
+  it.each([['', 'empty'], ['   ', 'whitespace-only']])(
+    'normalizes a %s name to null so the renderer cannot lose BOTH labels',
+    async (blankName) => {
+      // The renderers derive blurb from `name` being truthy, so a '' name would
+      // render the title as '—' and suppress the description entirely.
+      queueAcceptHappyPath({}, { name: blankName, description: 'Real description survives' });
+
+      await acceptQuote(baseParams);
+
+      expect(invoiceLineValues()).toMatchObject({
+        name: null,
+        description: 'Real description survives',
+      });
+    },
+  );
+
+  it('normalizes an undefined name to null rather than omitting the column', async () => {
+    const { line } = queueAcceptHappyPath();
+    delete (line as Record<string, unknown>).name;
+
+    await acceptQuote(baseParams);
+
+    const values = invoiceLineValues();
+    expect(values).toHaveProperty('name', null);
+  });
+
+  it('preserves the name on the Phase 4 contract line by composing it into the single label', async () => {
+    // The sibling mapping, asserted here so the two conversion paths stay
+    // honest together. Contract lines deliberately carry ONE label
+    // (NewContractLineSpec has no `name`), so quoteToContract composes
+    // "name — description"; invoice lines have a real `name` column and must
+    // keep the two fields separate instead. Both must preserve the title. A
+    // monthly-only
+    // quote has no one-time lines, so the invoice is never issued — the call
+    // sequence skips the invoice_lines insert, the partners select and the
+    // counter upsert:
+    //   1 quote FOR UPDATE, 2 blocks, 3 lines, 4 acceptances insert,
+    //   5 invoices insert, 6 invoices update, 7 quotes update, 8 re-select.
+    const quote = {
+      id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
+      expiryDate: null, quoteNumber: 'Q-2026-0003', taxRate: null,
+      currencyCode: 'USD', siteId: null, terms: null,
+      depositType: 'none', depositPercent: null, depositAmount: null,
+    };
+    queueResult([quote]);
+    queueResult([]);
+    queueResult([{
+      id: 'l1', quoteId: 'q1', recurrence: 'monthly', customerVisible: true,
+      taxable: false, quantity: '1', unitPrice: '99.00', catalogItemId: null,
+      name: 'Managed EDR', description: '24/7 monitoring', termMonths: null, sortOrder: 0,
+    }]);
+    queueResult([{ id: 'acc1' }]);
+    queueResult([{ id: 'inv1' }]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([{ ...quote, status: 'converted' }]);
+
+    await acceptQuote(baseParams);
+
+    expect(createContractMock).toHaveBeenCalledTimes(1);
+    const spec = createContractMock.mock.calls[0]![0] as { lines: Array<Record<string, unknown>> };
+    expect(spec.lines[0]).toMatchObject({ description: 'Managed EDR — 24/7 monitoring' });
   });
 });
 

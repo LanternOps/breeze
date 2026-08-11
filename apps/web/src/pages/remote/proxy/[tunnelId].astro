@@ -4,6 +4,7 @@ import ProxyTunnelPage from '../../../components/remote/ProxyTunnelPage';
 
 const { tunnelId } = Astro.params;
 const target = Astro.url.searchParams.get('target') || '';
+const asset = Astro.url.searchParams.get('asset') || undefined;
 
 if (!tunnelId) {
   return Astro.redirect('/remote');
@@ -15,6 +16,7 @@ if (!tunnelId) {
     <ProxyTunnelPage
       tunnelId={tunnelId}
       target={target}
+      assetId={asset}
       client:only="react"
     />
   </div>

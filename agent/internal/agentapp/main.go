@@ -26,6 +26,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
@@ -467,13 +468,23 @@ type agentComponents struct {
 // shutdownAgent gracefully stops all agent components.
 //
 // Every blocking stage is wrapped with a deadline so that a stuck HTTP flush
-// (common during OS shutdown when the network has already gone down) can't
-// pin the process past systemd's TimeoutStopSec. Total worst case is bounded
-// by the sum of per-stage timeouts; the unit file caps the outer wait at 15s.
+// (common during OS shutdown when the network has already gone down) can't pin
+// the process past the service manager's stop timeout. Stages run
+// sequentially, so their timeouts are additive — they are therefore drawn from
+// one shared shutdownBudget rather than each being independent, and the whole
+// function is bounded by that budget no matter how many stages apply. See the
+// shutdown timing contract in shutdown_budget.go for how the budget relates to
+// the unit's TimeoutStopSec (#3323).
 func shutdownAgent(comps *agentComponents) {
 	if comps == nil {
 		return
 	}
+
+	clock := newShutdownClock(shutdownBudget)
+
+	// The optional, platform/config-dependent component stops share a
+	// sub-budget so they cannot starve the ungated core teardown below.
+	components := clock.sub(componentStopBudget)
 
 	// Cancel the ETW LUA subscriber FIRST so the kernel-side ETW
 	// session is closed before any later teardown can time out and
@@ -481,10 +492,14 @@ func shutdownAgent(comps *agentComponents) {
 	// the kernel and the next agent restart hits the
 	// "two callers on the same machine would conflict" failure from
 	// NewETWSubscriber's doc comment.
+	//
+	// The cancels are issued unconditionally (they are non-blocking); only
+	// the wait-for-exit is budgeted. That way a component always gets told to
+	// stop even when the sub-budget has run out and we can't wait for it.
 	if comps.etwluaCancel != nil {
 		comps.etwluaCancel()
 		if comps.etwluaDone != nil {
-			runWithTimeout("etwlua stop", 2*time.Second, func() {
+			components.run("etwlua stop", componentStopStage, func() {
 				<-comps.etwluaDone
 			})
 		}
@@ -496,7 +511,7 @@ func shutdownAgent(comps *agentComponents) {
 	if comps.unifiCancel != nil {
 		comps.unifiCancel()
 		if comps.unifiDone != nil {
-			runWithTimeout("unifi collector stop", 2*time.Second, func() {
+			components.run("unifi collector stop", componentStopStage, func() {
 				<-comps.unifiDone
 			})
 		}
@@ -504,13 +519,13 @@ func shutdownAgent(comps *agentComponents) {
 
 	// Cancel workspace indexing before core network teardown. A canceled crawl
 	// attempts one terminal CompleteRun, but we do NOT wait out its 30s HTTP
-	// timeout — the whole shutdown must fit systemd's 15s TimeoutStopSec, and
-	// a missed terminal flush self-heals server-side (the stale run is marked
-	// abandoned on the next crawl start). 2s matches the sibling stages.
+	// timeout — the whole shutdown must fit the shared budget, and a missed
+	// terminal flush self-heals server-side (the stale run is marked abandoned
+	// on the next crawl start). The cap matches the sibling stages.
 	if comps.workspaceIndexCancel != nil {
 		comps.workspaceIndexCancel()
 		if comps.workspaceIndexDone != nil {
-			runWithTimeout("workspace index stop", 2*time.Second, func() {
+			components.run("workspace index stop", componentStopStage, func() {
 				<-comps.workspaceIndexDone
 			})
 		}
@@ -522,7 +537,7 @@ func shutdownAgent(comps *agentComponents) {
 	if comps.supervisorCancel != nil {
 		comps.supervisorCancel()
 		if comps.supervisorDone != nil {
-			runWithTimeout("watchdog supervisor stop", 2*time.Second, func() {
+			components.run("watchdog supervisor stop", componentStopStage, func() {
 				<-comps.supervisorDone
 			})
 		}
@@ -541,29 +556,47 @@ func shutdownAgent(comps *agentComponents) {
 	}
 
 	// Notify the watchdog of intentional shutdown so it doesn't restart us.
+	//
+	// Budgeted, because this is a blocking socket write: ipc.Conn.Send arms a
+	// 30s write deadline (internal/ipc/protocol.go), so a watchdog that has
+	// stopped reading its end can park this call for longer than the entire
+	// stop window on its own — the same class of unbounded step as the log
+	// shipper, and enough to exhaust the whole budget before a single core
+	// teardown stage starts. Abandoning it is safe: the stopping-state file
+	// written just above is the durable signal the watchdog reconciles
+	// against, and this notify is only the fast path.
 	if broker := comps.hb.SessionBroker(); broker != nil {
 		if sess := broker.PreferredSessionWithScope("watchdog"); sess != nil {
-			_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
-				Reason: state.ReasonUserStop,
+			clock.run("watchdog shutdown notify", watchdogNotifyBudget, func() {
+				_ = sess.SendNotify("", ipc.TypeShutdownIntent, ipc.ShutdownIntent{
+					Reason: state.ReasonUserStop,
+				})
 			})
 		}
 	}
 
 	comps.hb.StopAcceptingCommands()
 
-	// Inner ctx deadline is slightly longer than the outer runWithTimeout
-	// budget so ordering is deterministic: runWithTimeout fires first on
-	// a hung DrainAndWait, logs the stage, then drainCancel triggers the
-	// still-running goroutine's ctx to abort.
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), 6*time.Second)
-	runWithTimeout("drain in-flight commands", 5*time.Second, func() {
-		comps.hb.DrainAndWait(drainCtx)
-	})
-	drainCancel()
+	// Drain MUST stay ahead of the two transport stops below: draining after
+	// the websocket and heartbeat are torn down would strand whatever is in
+	// flight. The inner ctx deadline is slightly longer than the stage cap so
+	// ordering is deterministic — the stage timer fires first on a hung
+	// DrainAndWait and logs the stage, then the still-running goroutine's ctx
+	// aborts.
+	clock.runCtx("drain in-flight commands", drainStageBudget, drainCtxGrace, comps.hb.DrainAndWait)
 
-	runWithTimeout("websocket stop", 3*time.Second, comps.wsClient.Stop)
-	runWithTimeout("heartbeat stop", 5*time.Second, comps.hb.Stop)
+	clock.run("websocket stop", websocketStopBudget, comps.wsClient.Stop)
+	clock.run("heartbeat stop", heartbeatStopBudget, comps.hb.Stop)
 
+	// Zeroed unconditionally, including while an abandoned teardown goroutine
+	// may still be running. That goroutine can then read an empty bearer token
+	// and log a single warning instead of authenticating. This is accepted, and
+	// predates the shared budget — runWithTimeout has always abandoned an
+	// overrunning stage and fallen through to here. Wiping the secret is a
+	// hard guarantee at a fixed point in shutdown; the call it degrades is a
+	// best-effort one on a stage we already gave up waiting for, moments
+	// before the process exits. Deferring the wipe to chase it would trade a
+	// security property for a network call that is being dropped anyway.
 	if comps.secureToken != nil {
 		comps.secureToken.Zero()
 	}
@@ -586,6 +619,47 @@ func runWithTimeout(name string, d time.Duration, fn func()) {
 	}
 }
 
+// enforceBuildModeGate is startAgent's build-mode self-check, extracted as a
+// named helper (mirroring checkPersistedServerAllowed/gateEnrollPrimary
+// above) so the gap/strict decision is directly testable without invoking
+// startAgent's full initialization (mTLS load, heartbeat bring-up, hardware
+// collection). Logs the resolved build mode, then on a persisted-server
+// violation either hard-refuses to start (strict — logs, prints an operator
+// message, calls osExit(1), and returns the violation error as a
+// belt-and-braces measure for a stubbed-osExit test) or warns and returns nil
+// (gap — the migration-needed heartbeat signal covers this case; see
+// migrationSignal). Self-host and an unenrolled/empty ServerURL always
+// return nil (checkPersistedServerAllowed's contract).
+func enforceBuildModeGate(cfg *config.Config) error {
+	buildModeLogArgs := []any{"mode", hostpolicy.Mode()}
+	if hostpolicy.Enforced() {
+		buildModeLogArgs = append(buildModeLogArgs, "allowedHosts", hostpolicy.Hosts())
+	}
+	log.Info("control-plane build mode", buildModeLogArgs...)
+	if err := checkPersistedServerAllowed(cfg); err != nil {
+		if hostpolicy.Strict() {
+			// Belt-and-braces: config.Load -> ValidateTiered already fatals
+			// on a persisted out-of-allowlist ServerURL before any caller
+			// reaches startAgent, but keeping an explicit refusal here makes
+			// the invariant local to the function that actually starts
+			// components, instead of depending on every caller having gone
+			// through config.Load first.
+			log.Error("hosted build refuses to run against this server", "error", err.Error())
+			fmt.Fprintf(os.Stderr,
+				"This is a Breeze hosted-edition build and cannot manage a self-hosted server.\n"+
+					"Use the self-host build instead. Details: %v\n", err)
+			osExit(1)
+			return err
+		}
+		// Gap build: warn and keep running. The migration-needed signal
+		// (Task 8) surfaces this on the self-hosted dashboard so the admin
+		// can migrate before the strict build ships. Do NOT exit.
+		log.Warn("hosted-edition agent is managing a self-hosted server; migrate to the self-host build before the enforced release",
+			"error", err.Error())
+	}
+	return nil
+}
+
 // startAgent performs all agent initialisation assuming cfg is already
 // enrolled. Returns the running components or an error if any
 // initialization step fails (mTLS load, log shipper init, heartbeat
@@ -596,6 +670,17 @@ func runWithTimeout(name string, d time.Duration, fn func()) {
 func startAgent(cfg *config.Config) (*agentComponents, error) {
 	if !config.IsEnrolled(cfg) {
 		return nil, fmt.Errorf("startAgent called with unenrolled config — caller must waitForEnrollment first")
+	}
+
+	// Build-mode self-check. Lives here — not in runAgent — because this is
+	// the single choke point every entry point reaches: console/Unix via
+	// runAgent's startAgentFn call, the Windows SCM service and the Unix
+	// runAsService loop (both call startAgentFn directly), and the Quick
+	// Support session in support.go. runAgent alone would miss the two
+	// primary service deployment modes, which return into runAsService
+	// before ever reaching runAgent's own body.
+	if err := enforceBuildModeGate(cfg); err != nil {
+		return nil, err
 	}
 
 	// Quick Support clients are throwaway, unelevated, and live entirely in a
@@ -1139,7 +1224,14 @@ func runAgent() {
 		fmt.Fprintf(os.Stderr, "Failed to start agent: %v\n", err)
 		os.Exit(1)
 	}
-	defer logging.StopShipper()
+	// StopShipper waits on the shipper goroutine with no deadline of its own,
+	// and that goroutine can be parked on a 30s HTTP POST — twice the whole
+	// stop window — precisely on the hosts this matters for (network already
+	// down during OS shutdown). Unbounded it defeats shutdownAgent's budget,
+	// since it runs after shutdownAgent returns (#3323).
+	defer func() {
+		runWithTimeout("log shipper flush", shipperFlushBudget, logging.StopShipper)
+	}()
 
 	// Wait for ctx to be cancelled — SIGINT or SIGTERM via
 	// signal.NotifyContext above. Behaviour change: console-mode
@@ -1190,6 +1282,26 @@ func resolveBackupServerURL(enrollSeed, bootstrapSeed, primaryServerURL string) 
 	return seed, nil
 }
 
+// gateEnrollResponseBackup refuses, in a hosted build, an enroll response
+// backup control-plane URL outside the compiled allowlist. It runs on the
+// RAW response field, BEFORE resolveBackupServerURL's precedence/validation
+// logic — exactly where gateRedeemResponse checks res.BackupServerURL in
+// bootstrap.go — and is gated at Enforced() tier (gap AND strict), not
+// ValidateBackupServerURL's Strict()-only gate on the EXISTING-fleet paths it
+// guards (heartbeat configUpdate push, self-heal). Running before
+// resolveBackupServerURL matters: that function's own ValidateBackupServerURL
+// call already soft-drops (warn + skip) a non-allowlisted backup under
+// Strict(), which would otherwise swallow this gate's hard refusal in a
+// strict build. Fresh enrollment is a fresh-install path, matching
+// gateBootstrapServer/gateRedeemResponse/gateEnrollPrimary. No-op in
+// self-host and when the response carries no backup.
+func gateEnrollResponseBackup(backup string) error {
+	if backup == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(backup)
+}
+
 // applyEnrollResponseIdentity copies the identity/credential fields an
 // EnrollResponse carries into cfg: AgentID, AuthToken, WatchdogAuthToken,
 // HelperAuthToken, OrgID, SiteID, and DeviceID.
@@ -1229,6 +1341,31 @@ func assertHostnameNonEmpty(info *collectors.SystemInfo) error {
 	return nil
 }
 
+// checkPersistedServerAllowed is a pure predicate: it reports the violation
+// when a hosted build (Enforced) has a persisted primary cfg.ServerURL
+// outside the compiled allowlist. It does NOT decide warn-vs-hard-fail —
+// that split is made by the caller in startAgent, gated on hostpolicy.Strict().
+// Empty server (unenrolled) and self-host builds always return nil.
+func checkPersistedServerAllowed(cfg *config.Config) error {
+	if cfg == nil || cfg.ServerURL == "" {
+		return nil
+	}
+	return hostpolicy.AllowedURL(cfg.ServerURL)
+}
+
+// gateEnrollPrimary refuses, in a hosted build, a primary control-plane
+// server URL outside the compiled allowlist. serverURL is the one package
+// global fed by all three primary-server entry points — filename,
+// MSI property, and --server — so this single gate at the point it is
+// applied to cfg covers all of them. (The enroll *response* carries no
+// primary ServerURL — api.EnrollResponse has only BackupServerURL — so
+// there is no second gate needed on the response side, unlike bootstrap's
+// gateRedeemResponse.) No-op in self-host builds. Mirrors
+// gateBootstrapServer/gateRedeemResponse in bootstrap.go.
+func gateEnrollPrimary(server string) error {
+	return hostpolicy.AllowedURL(server)
+}
+
 func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
@@ -1240,6 +1377,19 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	if serverURL != "" {
+		// Gated here, before cfg.ServerURL is ever set: at this point in
+		// enrollDevice, logging has not been initialised yet (initEnrollLogging
+		// / the scoped enrollLog are set up a few lines below), so this uses
+		// enrollError — the function's existing four-sink failure reporter,
+		// which logs through the package-level `log` var rather than the
+		// not-yet-initialised enrollLog — exactly as the "server URL required"
+		// pre-flight check below does. catConfig is correct here: like that
+		// check, this fires before any HTTP call is made, so isRefundable4xx
+		// correctly treats it as non-refundable.
+		if err := gateEnrollPrimary(serverURL); err != nil {
+			enrollError(catConfig, "control-plane host not allowed", err)
+			return // enrollError does not return in production; belt-and-braces.
+		}
 		cfg.ServerURL = serverURL
 	}
 
@@ -1481,6 +1631,16 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 	}
 
 	applyEnrollResponseIdentity(cfg, enrollResp)
+
+	// Refused, in a hosted build, BEFORE resolveBackupServerURL's own
+	// Strict()-only validation gets a chance to soft-drop it — see
+	// gateEnrollResponseBackup's doc comment. bootstrapServerURL (the
+	// fallback seed below) needs no separate gate here: it only ever arrives
+	// via the bootstrap flow, which already hard-refused it through
+	// gateRedeemResponse before enrollDevice ever ran.
+	if err := gateEnrollResponseBackup(enrollResp.BackupServerURL); err != nil {
+		return &enrollFailure{cat: catConfig, friendly: "enrollment refused: backup control-plane host not allowed", detail: err}
+	}
 
 	// Backup control-plane URL (#2288): enroll response wins; bootstrap value
 	// is the fallback. Validated before persisting — a bad value must not

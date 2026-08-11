@@ -256,6 +256,11 @@ export const heartbeatSchema = z.object({
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
+  // Migration-banner Task 2 — self-reported install edition + whether the
+  // agent believes it needs to migrate hosted↔self-host. Informational: a bad
+  // value drops (.catch) rather than 400-ing the heartbeat.
+  agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
+  migrationRequired: z.boolean().optional().catch(undefined),
 });
 
 // ============================================

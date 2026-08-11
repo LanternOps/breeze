@@ -2796,7 +2796,8 @@
       "externalId": "Externe ID",
       "status": "Status",
       "matches": "entspricht „{{name}}“",
-      "reactivateHint": "Auswahl reaktiviert die gelöschte Organisation"
+      "reactivateHint": "Auswahl reaktiviert die gelöschte Organisation",
+      "matchAlreadyLinked": "„{{name}}“ ist bereits unter einer anderen ID mit diesem System verknüpft – diese Übereinstimmung zu bestätigen würde zwei Datensätze zu einer Organisation zusammenführen."
     },
     "badges": {
       "create": "Neu",

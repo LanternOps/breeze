@@ -606,6 +606,233 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('BINARY_GITHUB_REPOSITORY (BYO signing, spec 3a)', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    it('refuses to boot on a malformed repository in any environment', () => {
+      withEnv({ ...validEnv, BINARY_GITHUB_REPOSITORY: 'not-a-repo' }, () => {
+        expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+      });
+    });
+
+    it('refuses to boot on a malformed legacy GITHUB_REPO alias in any environment', () => {
+      withEnv({ ...validEnv, GITHUB_REPO: 'not-a-repo' }, () => {
+        expect(() => validateConfig()).toThrow(/GITHUB_REPO/);
+      });
+    });
+
+    it('treats an empty string (compose ${VAR:-} interpolation) as unset', () => {
+      withEnv({ ...validEnv, BINARY_GITHUB_REPOSITORY: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('production: overriding the release source requires the manifest trust root', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+        },
+      );
+    });
+
+    it('production: overriding via legacy GITHUB_REPO requires the manifest trust root', () => {
+      withEnv(
+        {
+          ...prodBase,
+          GITHUB_REPO: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/overrides the release source/);
+        },
+      );
+    });
+
+    it('production: override boots when the trust root is set to the self-hoster key', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          // A key that is NOT the official one — what the signing workflow's
+          // run summary actually prints.
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'kR2Ql8tXvN4mJ7cB1aZfP0sYuE6dW3gH9iL5nO8rT2A=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+
+    // deploy/.env.example ships the official key as an ACTIVE line directly
+    // above the BINARY_GITHUB_REPOSITORY hint, so repointing while leaving it
+    // in place is the DEFAULT mistake. It used to satisfy the "trust root is
+    // set" rule (which only tested non-empty), boot clean, and then fail every
+    // sync closed — freezing the fleet behind one console.error.
+    it('production: override with ONLY the official key is rejected at boot', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/still \(only\) the official Breeze key/);
+        },
+      );
+    });
+
+    it('production: legacy GITHUB_REPO override with ONLY the official key is rejected too', () => {
+      withEnv(
+        {
+          ...prodBase,
+          GITHUB_REPO: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/still \(only\) the official Breeze key/);
+        },
+      );
+    });
+
+    // Keeping the official key alongside your own is legitimate: it lets an
+    // instance verify official releases during a migration.
+    it('production: override boots when the official key is present ALONGSIDE the self-hoster key', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'acme/breeze-selfhost-signing',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:
+            'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=,kR2Ql8tXvN4mJ7cB1aZfP0sYuE6dW3gH9iL5nO8rT2A=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+
+    // The official repository is not an "override" — the official key is
+    // exactly right there, and this must keep booting.
+    it('production: official repository with the official key is unaffected', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_GITHUB_REPOSITORY: 'lanternops/breeze',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+
+    it.each([
+      ['owner/..', 'dot-dot repository segment'],
+      ['owner/.', 'single-dot repository segment'],
+    ])('rejects %s (%s) — the pattern alone allows it', (value) => {
+      withEnv({ ...prodBase, BINARY_GITHUB_REPOSITORY: value }, () => {
+        expect(() => validateConfig()).toThrow(/BINARY_GITHUB_REPOSITORY/);
+      });
+    });
+
+    it('treats an empty legacy GITHUB_REPO as unset (compose always injects the key)', () => {
+      withEnv({ ...prodBase, GITHUB_REPO: '' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+  });
+
+  describe('BINARY_EDITION (hosted fail-closed)', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+
+    it('default (unset) boots unchanged in development', () => {
+      withEnv(validEnv, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('default (unset) boots unchanged in production', () => {
+      withEnv(prodBase, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('BINARY_EDITION=self-host boots unchanged in production', () => {
+      withEnv({ ...prodBase, BINARY_EDITION: 'self-host' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('BINARY_EDITION=hosted has no effect in development (production-only rule)', () => {
+      withEnv({ ...validEnv, BINARY_EDITION: 'hosted', BINARY_SOURCE: 'github' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=github refuses to boot', () => {
+      withEnv(
+        { ...prodBase, BINARY_EDITION: 'hosted', BINARY_SOURCE: 'github' },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires BINARY_SOURCE=local/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE unset (defaults to github) refuses to boot', () => {
+      withEnv(
+        { ...prodBase, BINARY_EDITION: 'hosted' },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires BINARY_SOURCE=local/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=local but no manifest trust root refuses to boot', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_EDITION: 'hosted',
+          BINARY_SOURCE: 'local',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+          BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '',
+        },
+        () => {
+          expect(() => validateConfig()).toThrow(/BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS/);
+        },
+      );
+    });
+
+    it('production: BINARY_EDITION=hosted with BINARY_SOURCE=local and a trust root boots cleanly', () => {
+      withEnv(
+        {
+          ...prodBase,
+          BINARY_EDITION: 'hosted',
+          BINARY_SOURCE: 'local',
+          RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+        },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+  });
+
   describe('AGENT_BACKUP_SERVER_URL', () => {
     it('accepts a valid https URL', () => {
       withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'https://new.example.com' }, () => {
@@ -1623,7 +1850,6 @@ describe('validateConfig', () => {
   //   - Email (Resend):                                  EMAIL_PROVIDER=resend
   //                                                       OR (auto + RESEND_API_KEY)
   //   - Cloudflare mTLS:                                 CLOUDFLARE_API_TOKEN set
-  //   - MSI signing:                                     MSI_SIGNING_URL set
   //
   // Stripe is NOT present in apps/api (it lives in the separate breeze-billing
   // service). The audit plan listed STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET
@@ -1824,22 +2050,10 @@ describe('validateConfig', () => {
       });
     });
 
-    // --- MSI signing (MSI_SIGNING_URL set) ----------------------------------
-    it('refuses to boot when MSI_SIGNING_URL is set but MSI_SIGNING_CF_ACCESS_SECRET is missing', () => {
+    it('MSI_SIGNING_URL is inert: production boots without MSI_SIGNING_CF_ACCESS_SECRET', () => {
       withEnv({
         ...prodBase,
-        MSI_SIGNING_URL: 'https://sign.2breeze.app/sign-breeze-agent',
-        MSI_SIGNING_CF_ACCESS_ID: 'cf-access-id',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
-      }, () => {
-        expect(() => validateConfig()).toThrow(/MSI_SIGNING_CF_ACCESS_SECRET/);
-      });
-    });
-
-    it('does not require MSI signing secrets when URL is unset', () => {
-      withEnv({
-        ...prodBase,
-        MSI_SIGNING_URL: '',
+        MSI_SIGNING_URL: 'https://sign.example.com/sign-breeze-agent',
         MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
@@ -1887,8 +2101,6 @@ describe('validateConfig', () => {
         RESEND_API_KEY: '',
         CLOUDFLARE_API_TOKEN: 'cf',
         CLOUDFLARE_ZONE_ID: '',
-        MSI_SIGNING_URL: 'https://sign',
-        MSI_SIGNING_CF_ACCESS_SECRET: '',
       }, () => {
         expect(() => validateConfig()).not.toThrow();
       });
@@ -2316,4 +2528,52 @@ describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
       expect(() => validateConfig()).toThrow(/AGENT_AUTO_PROMOTE/);
     });
   });
+});
+
+// Same guard, same reasoning as AGENT_AUTO_PROMOTE: the value silently governs
+// whether signup-abuse detection runs, and an unrecognized value used to read
+// as "off" — so ABUSE_SIGNALS_ENABLED=ture switched a HOSTED deployment's
+// signup policing off with no error anywhere but one boot log line.
+describe('ABUSE_SIGNALS_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('ABUSE_SIGNALS_ENABLED');
+    expect(buildEnvParseInput({ ABUSE_SIGNALS_ENABLED: 'sentinel' }).ABUSE_SIGNALS_ENABLED).toBe(
+      'sentinel',
+    );
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+        expect(validateConfig().ABUSE_SIGNALS_ENABLED).toBe(value);
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['ABUSE_SIGNALS_ENABLED'], () => {
+        expect(validateConfig().ABUSE_SIGNALS_ENABLED).toBeUndefined();
+      });
+    });
+  });
+
+  // Both compose files map this as `${ABUSE_SIGNALS_ENABLED:-}`, so the key is
+  // ALWAYS injected — as "" for every operator who never set it. Refusing boot
+  // on "" would take down every one of those stacks.
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, ABUSE_SIGNALS_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/ABUSE_SIGNALS_ENABLED/);
+      });
+    },
+  );
 });

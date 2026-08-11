@@ -73,10 +73,6 @@ vi.mock("../services/enrollmentKeySecurity", () => ({
   hashEnrollmentKeyCandidates: vi.fn((raw: string) => [`hashed:${raw}`]),
 }));
 
-vi.mock("../services/msiSigning", () => ({
-  MsiSigningService: { fromEnv: vi.fn(() => null) },
-}));
-
 vi.mock("../services/installerBuilder", () => ({
   buildWindowsInstallerZip: vi.fn(async () => Buffer.from("windows-zip")),
   buildMacosInstallerZip: vi.fn(async () => Buffer.from("macos-zip")),
@@ -153,7 +149,6 @@ import {
 } from "./enrollmentKeys";
 import { db, withSystemDbAccessContext } from "../db";
 import { createAuditLogAsync } from "../services/auditService";
-import { MsiSigningService } from "../services/msiSigning";
 import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
@@ -247,7 +242,6 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
     app.route("/enrollment-keys", enrollmentKeyRoutes);
@@ -606,7 +600,6 @@ describe("GET /s/:code", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
     app.route("/s", publicShortLinkRoutes);
@@ -749,10 +742,6 @@ describe("GET /s/:code", () => {
         }),
       }),
     } as any);
-    // macOS path with signing disabled falls through to the legacy zip
-    // builder — irrelevant here, only the child-key insert's expiresAt matters.
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-
     const before = Date.now();
     const res = await app.request("/s/cappedlink");
     const after = Date.now();
@@ -791,8 +780,6 @@ describe("GET /s/:code", () => {
         }),
       }),
     } as any);
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
-
     const before = Date.now();
     const res = await app.request("/s/generouscap");
     const after = Date.now();
@@ -1294,7 +1281,6 @@ describe("GET /public-download/:platform", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     issueDownloadHandleMock.mockResolvedValue(`dlh_${"1".repeat(32)}`);
     consumeDownloadHandleMock.mockResolvedValue("a".repeat(64));
     process.env.PUBLIC_API_URL = "https://api.example.com";
@@ -1608,7 +1594,6 @@ describe("H6: public-installer rate limit hardening", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     consumeDownloadHandleMock.mockResolvedValue("a".repeat(64));
     process.env.PUBLIC_API_URL = "https://api.example.com";
     // Ensure getTrustedClientIp is in production-strict mode by default in
@@ -2072,7 +2057,6 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(MsiSigningService.fromEnv).mockReturnValue(null);
     process.env.PUBLIC_API_URL = "https://api.example.com";
     app = new Hono();
     app.route("/enrollment-keys", enrollmentKeyRoutes);

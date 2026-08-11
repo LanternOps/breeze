@@ -112,7 +112,20 @@ async function seedKey(opts: {
   siteId: string;
   unique: string;
   expiredMinutesAgo?: number;
-  token?: { expiresAt: Date; createdAt?: Date; maxUsage: number; consumedCount: number };
+  token?: {
+    expiresAt: Date;
+    createdAt?: Date;
+    maxUsage: number;
+    consumedCount: number;
+    /**
+     * Optional here, unlike the expired-filter suite: this delete path counts
+     * tokens of EVERY `usage_kind` (#3034), so a case that does not name one is
+     * still meaningful — it lands on the column DEFAULT `legacy_unknown`, which
+     * the purge guard must treat as live exactly like any other kind. Case (g)
+     * names `per_download` explicitly to pin the realistic short-link shape.
+     */
+    usageKind?: 'capacity' | 'per_download';
+  };
 }): Promise<{ keyId: string; tokenId: string | null }> {
   const expiredMinutesAgo = opts.expiredMinutesAgo ?? 60;
   return withSystemDbAccessContext(async () => {
@@ -137,6 +150,7 @@ async function seedKey(opts: {
         siteId: opts.siteId,
         maxUsage: opts.token.maxUsage,
         consumedCount: opts.token.consumedCount,
+        ...(opts.token.usageKind ? { usageKind: opts.token.usageKind } : {}),
         ...(opts.token.createdAt ? { createdAt: opts.token.createdAt } : {}),
         expiresAt: opts.token.expiresAt,
       })
@@ -287,6 +301,56 @@ describe('POST /enrollment-keys/purge-expired — live bootstrap token exemption
 
     expect(res.status).toBe(200);
     expect(await keyRowExists(keyId)).toBe(false);
+  });
+
+  // #3034 — the safety invariant the capacity/all-kind guard split turns on.
+  //
+  // The LIST filter deliberately ignores per_download tokens: they are clicks,
+  // not device slots, so a key backed only by them badges off its parent expiry
+  // and "Hide expired" hides it. This DELETE path must NOT copy that narrowing.
+  // A per_download token is a working installer somebody actually downloaded,
+  // and `parent_enrollment_key_id` is ON DELETE CASCADE, so purging its parent
+  // destroys it irreversibly.
+  //
+  // Case (a) above happens to cover the same wiring via the column DEFAULT
+  // (`legacy_unknown`), but only by accident of the default. This names the
+  // realistic short-link shape outright, so narrowing the delete guard to
+  // capacity-only — the single most damaging way to get #3034 wrong — fails
+  // HERE rather than silently shipping.
+  runDb('(g) an expired key whose only live token is per_download SURVIVES the purge (#3034)', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const token = await mfaSatisfiedToken(env);
+
+    const { keyId, tokenId } = await seedKey({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      unique,
+      // Exactly what serveInstaller mints on a public download: one slot, unused.
+      token: {
+        expiresAt: TOKEN_LIVE_UNTIL(),
+        maxUsage: 1,
+        consumedCount: 0,
+        usageKind: 'per_download',
+      },
+    });
+    // Same canary rationale as case (a): without a row that MUST die, the
+    // survive-assertion passes just as well when the DELETE matched nothing.
+    const { keyId: canaryId } = await seedKey({
+      orgId: env.organization.id,
+      siteId: env.site.id,
+      unique: `${unique}-canary`,
+    });
+
+    const res = await purgeExpired(makeApp(), token);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; deletedCount: number };
+    expect(body.deletedCount).toBe(1);
+
+    expect(await keyRowExists(canaryId)).toBe(false); // the purge really ran
+    expect(await keyRowExists(keyId)).toBe(true);
+    expect(await tokenRowExists(tokenId!)).toBe(true);
   });
 
   runDb('(f) stays inside the caller\'s tenant — another org\'s expired key is untouched', async () => {

@@ -4,6 +4,19 @@ import { safeFetch, SsrfBlockedError, type SafeFetchInit } from '../urlSafety';
 
 const DEFAULT_PSA_TIMEOUT_MS = 20_000;
 
+/**
+ * Ceiling on a single PSA response body.
+ *
+ * `safeFetch` treats an unset `maxBytes` as unbounded, which was survivable when
+ * every PSA call was a one-shot request. Company import walks up to
+ * MAX_PSA_PAGES responses per preview against a TENANT-CONTROLLED `baseUrl`, so
+ * an operator pointing a connection at their own server could otherwise make the
+ * API buffer that many arbitrarily-large bodies in memory. 8 MiB is far above any
+ * real page of companies or tickets (100 companies is a few KB) while keeping a
+ * hostile endpoint bounded.
+ */
+const MAX_PSA_RESPONSE_BYTES = 8 * 1024 * 1024;
+
 // On-prem PSAs (ConnectWise / Autotask / ServiceNow / Jira Data Center, etc.)
 // legitimately live on the customer LAN, so on SELF-HOSTED deployments their
 // base URL may be plain http:// and/or an RFC1918/ULA address. Hosted SaaS stays
@@ -41,6 +54,7 @@ export async function psaFetch(input: string | URL, init: SafeFetchInit = {}): P
 
   return safeFetch(rawUrl, {
     timeoutMs: DEFAULT_PSA_TIMEOUT_MS,
+    maxBytes: MAX_PSA_RESPONSE_BYTES,
     // Self-hosters may legitimately reach RFC1918/ULA PSAs; metadata/loopback/
     // link-local/CGNAT stay blocked even when this is true. Hosted SaaS: strict.
     allowPrivateNetwork: psaAllowsPrivateNetwork(),

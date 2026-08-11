@@ -15,7 +15,13 @@ const { verifyStripeEvent, handleStripeEvent, rateLimiter, captureException } = 
 vi.mock('../../services/stripeWebhook', () => ({ verifyStripeEvent, handleStripeEvent }));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter }));
 vi.mock('../../services/redis', () => ({ getRedis: () => ({}) }));
-vi.mock('../../services/clientIp', () => ({ getTrustedClientIp: () => '1.2.3.4' }));
+// Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64
+// bucket folding used to build limiter keys) is kept REAL so the test exercises
+// the same key the production path produces.
+vi.mock('../../services/clientIp', async (importOriginal) => ({
+  rateLimitIpKey: (await importOriginal<typeof import('../../services/clientIp')>()).rateLimitIpKey,
+  getTrustedClientIp: () => '1.2.3.4',
+}));
 vi.mock('../../services/sentry', () => ({ captureException }));
 
 import { stripeWebhookRoutes } from './stripe';

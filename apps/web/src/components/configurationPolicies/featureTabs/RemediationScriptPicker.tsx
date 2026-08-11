@@ -1,10 +1,9 @@
 import { useState, useMemo, useEffect } from "react";
 import { X, Search, FileCode, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { asList } from '@/lib/asList';
+import { fetchAllScripts } from '@/lib/scriptsFetch';
 export type ScriptLanguage = "powershell" | "bash" | "python" | "cmd";
 export type OSType = "windows" | "macos" | "linux";
 export type SelectedScript = {
@@ -70,16 +69,9 @@ export default function RemediationScriptPicker({
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth("/scripts");
-      if (!response.ok) {
-        throw new Error(
-          i18n.t(
-            "policies:configurationPolicies.featureTabs.remediationScriptPicker.failedToFetchScripts",
-          ),
-        );
-      }
-      const data = await response.json();
-      const scriptList = asList(data, 'scripts');
+      // #3301 — walk every page; a remediation script past the first 50 could
+      // not be selected at all.
+      const { data: scriptList } = await fetchAllScripts();
       const transformedScripts: ScriptRow[] = scriptList.map(
         (s: Record<string, unknown>) => ({
           id: s.id as string,
@@ -92,6 +84,15 @@ export default function RemediationScriptPicker({
       );
       setScripts(transformedScripts);
     } catch (err) {
+      // fetchAllScripts throws the failed Response, not an Error.
+      if (err instanceof Response) {
+        setError(
+          i18n.t(
+            "policies:configurationPolicies.featureTabs.remediationScriptPicker.failedToFetchScripts",
+          ),
+        );
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to load scripts");
     } finally {
       setLoading(false);

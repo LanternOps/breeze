@@ -176,6 +176,14 @@ export async function closeRedis(): Promise<void> {
     }
     bullmqConnection = null;
   }
+  const blocking = blockingConnections.splice(0, blockingConnections.length);
+  for (const conn of blocking) {
+    try {
+      await conn.quit();
+    } catch (err) {
+      console.warn('[redis] closeRedis: blocking connection quit() failed (connection already closed?):', err);
+    }
+  }
 }
 
 let bullmqConnection: Redis | null = null;
@@ -219,6 +227,38 @@ export function getRedisConnection(): Redis {
   }
 
   return bullmqConnection;
+}
+
+const blockingConnections: Redis[] = [];
+
+/**
+ * Create a DEDICATED connection for a long-blocking read loop
+ * (`BRPOP`/`BLPOP`/`XREAD BLOCK`/`BZPOPMIN`).
+ *
+ * Redis serves one command per connection at a time, and ioredis queues
+ * everything else behind the in-flight command. So a single consumer sitting
+ * in `brpop(queue, 5)` on the connection returned by `getRedisConnection()`
+ * does not just slow itself down — it adds up to a FULL BLOCK TIMEOUT of
+ * latency to every other command on that connection, including every BullMQ
+ * `Queue` write issued from an HTTP request path. That is not theoretical:
+ * `POST /fleet/findings/:id/remediate` measured 8-27s end-to-end (a bare
+ * `PING` on the shared connection took 4.6-5.2s) purely because the webhook
+ * delivery worker's 5-second `BRPOP` owned the socket, while Redis's own
+ * SLOWLOG stayed empty and event-loop lag stayed under 50ms.
+ *
+ * Each caller gets its OWN connection — deliberately not a shared "blocking
+ * singleton", which would just recreate the same head-of-line blocking
+ * between two blocking consumers. Callers should create one at startup and
+ * cache it, never per iteration. Duplicated off the BullMQ connection so it
+ * inherits `maxRetriesPerRequest: null`, which blocking commands require.
+ */
+export function createBlockingRedisConnection(connectionName: string): Redis {
+  const conn = getRedisConnection().duplicate({ connectionName });
+  conn.on('error', (err: Error) => {
+    console.error(`[Redis] Blocking connection '${connectionName}' error:`, err.message);
+  });
+  blockingConnections.push(conn);
+  return conn;
 }
 
 /**

@@ -2849,7 +2849,8 @@
       "externalId": "External ID",
       "status": "Status",
       "matches": "matches “{{name}}”",
-      "reactivateHint": "Selecting will reactivate the deleted organization"
+      "reactivateHint": "Selecting will reactivate the deleted organization",
+      "matchAlreadyLinked": "“{{name}}” is already linked to this system under a different ID — confirming this match would merge two records into one organization."
     },
     "badges": {
       "create": "New",

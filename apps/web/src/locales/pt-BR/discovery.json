@@ -62,15 +62,7 @@
       "tags": "Ex.: crítico, andar-2, rede"
     },
     "proxy": {
-      "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)",
-      "description": "Acesse a interface web deste dispositivo no navegador por meio de um túnel através de um agente online na rede. A ativação adiciona o IP do dispositivo à lista de permissões para que um agente possa atuar como proxy.",
-      "enable": "Ativar acesso por proxy",
-      "enabled": "Proxy ativado",
-      "noOnlineAgent": "Nenhum agente online está disponível para atuar como proxy deste dispositivo. Um agente deve estar online e na mesma rede que {{ip}} para intermediar a conexão.",
-      "port": "Porta {{port}}",
-      "portWithService": "Porta {{port}} ({{service}})",
-      "throughAgent": "Proxy por meio do agente",
-      "throughAgentHelp": "Escolha um agente online que consiga acessar {{ip}} na rede (geralmente o agente que o descobriu). Isso é separado do vínculo de identidade acima.",
+      "manageOnDevicePage": "Gerenciar o acesso por proxy na página do dispositivo de rede",
       "title": "Acesso por proxy"
     },
     "snmpDataTitle": "Dados SNMP",
@@ -694,6 +686,12 @@
     "tryAgain": "Tentar novamente",
     "vlan": "VLAN {{vlan}}",
     "escToCancel": "· Esc para cancelar"
+  },
+  "proxyConnect": {
+    "title": "Proxy para {{target}}",
+    "throughAgent": "Por meio do agente",
+    "connect": "Conectar",
+    "allowSelfSigned": "Permitir certificado autoassinado (comum em impressoras, iLO/IPMI e switches)"
   },
   "assetTypes": {
     "workstation": "Estação de trabalho",

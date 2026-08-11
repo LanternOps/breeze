@@ -8,6 +8,7 @@ export interface DeviceStats {
   online: number;
   offline: number;
   byStatus: Record<string, number>;
+  migrationRequiredCount: number;
 }
 
 /** GET /alerts/summary — apps/api/src/routes/alerts/alerts.ts */

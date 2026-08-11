@@ -365,9 +365,28 @@ function renderSql(value: any): string {
 // src/__tests__/integration/unifiAssetTypeSource.integration.test.ts — the guard
 // is evaluated by Postgres, so a mock can only verify we built the right
 // statement. These tests pin the statement; that one pins the behaviour.
+//
+// Second axis (#3187): the stored-rank CASE (vendor_oui/agent_scan/unifi_controller
+// -> 10/20/30, else 0 for NULL) compared with `<=` against the writing classifier's
+// own rank. The sync always writes as 'unifi_controller' (rank 30), so the bound
+// params are vendor_oui/10, agent_scan/20, unifi_controller/30, 30.
+const RANK_GUARD_SQL =
+  `case "discovered_assets"."detected_type_source" when $1 then $2 when $3 then $4 when $5 then $6 else 0 end <= $7`;
+
+// asset_type yields to BOTH axes: a manual pin always wins (first `when`), and
+// among classifiers only an equal-or-stronger source may overwrite (second `when`).
 const MANUAL_GUARD_SQL =
   `case when "discovered_assets"."type_source" = 'manual' ` +
-  `then "discovered_assets"."asset_type" else `;
+  `then "discovered_assets"."asset_type" when ${RANK_GUARD_SQL} then `;
+
+// detected_asset_type ignores the manual axis but still respects precedence.
+const DETECTED_ASSET_TYPE_GUARD_SQL = `case when ${RANK_GUARD_SQL} then `;
+
+// detected_type_source itself: the proposed source is always a bound literal
+// (never `excluded.*`), so this string is identical on the update and
+// insert-conflict paths.
+const DETECTED_TYPE_SOURCE_SQL =
+  `case when ${RANK_GUARD_SQL} then $8::discovered_asset_detection_source else "discovered_assets"."detected_type_source" end`;
 
 // UniFi Protect camera — assetType() has no mapping for it and returns 'unknown'.
 const CAMERA_DEVICE = {
@@ -390,12 +409,20 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     const set = await syncAgainstAsset({ id: 'asset-1' });
 
     expect(set).toBeDefined();
-    // The row's type_source can change between our SELECT and this UPDATE, so
-    // the precedence must be decided by Postgres at write time.
-    expect(renderSql(set!.assetType)).toBe(`${MANUAL_GUARD_SQL}$1 end`);
+    // The row's type_source AND detected_type_source can change between our
+    // SELECT and this UPDATE, so both axes of precedence must be decided by
+    // Postgres at write time — not baked into a JS-side decision.
+    expect(renderSql(set!.assetType)).toBe(
+      `${MANUAL_GUARD_SQL}$8 else "discovered_assets"."asset_type" end`,
+    );
     // The sync still records what it would have picked, so "reset to auto" has
-    // a value to restore.
-    expect(set!.detectedAssetType).toBe('access_point');
+    // a value to restore — guarded by rank only (no manual arm on this column).
+    expect(renderSql(set!.detectedAssetType)).toBe(
+      `${DETECTED_ASSET_TYPE_GUARD_SQL}$8 else "discovered_assets"."detected_asset_type" end`,
+    );
+    // detected_type_source itself is written as 'unifi_controller', guarded by
+    // the same rank check, falling back to the existing stored source.
+    expect(renderSql(set!.detectedTypeSource)).toBe(DETECTED_TYPE_SOURCE_SQL);
     // Non-type enrichment still lands.
     expect(set!.manufacturer).toBe('Ubiquiti');
     expect(set!.hostname).toBe('AP-1');
@@ -418,7 +445,9 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
 
     expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
     const set = writes.updates.find((w) => w.table === discoveredAssets)!.values;
-    expect(renderSql(set.assetType)).toBe(`${MANUAL_GUARD_SQL}$1 end`);
+    expect(renderSql(set.assetType)).toBe(
+      `${MANUAL_GUARD_SQL}$8 else "discovered_assets"."asset_type" end`,
+    );
   });
 
   it('leaves both type columns alone when the sync cannot classify the device', async () => {
@@ -429,6 +458,9 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(set).toBeDefined();
     expect(set).not.toHaveProperty('assetType');
     expect(set).not.toHaveProperty('detectedAssetType');
+    // #3187: no opinion means no write on the second provenance axis either —
+    // otherwise a "no opinion" sync would still overwrite detected_type_source.
+    expect(set).not.toHaveProperty('detectedTypeSource');
     // The device is still enriched and kept alive.
     expect(set!.manufacturer).toBe('Ubiquiti');
     expect(set!.lastSeenAt).toBeInstanceOf(Date);
@@ -442,6 +474,9 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(insert.values.assetType).toBe('access_point');
     expect(insert.values.detectedAssetType).toBe('access_point');
     expect(insert.values.typeSource).toBe('auto');
+    // #3187: a plain INSERT (no prior row, nothing to guard against) stamps the
+    // classifier identity directly rather than through a CASE guard.
+    expect(insert.values.detectedTypeSource).toBe('unifi_controller');
   });
 
   it('guards the insert-conflict branch in SQL and never resets type_source there', async () => {
@@ -454,8 +489,16 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     expect(conflictSet).toBeDefined();
     // We never read the colliding row, so the guard must be SQL and must take
     // the proposed value from `excluded`.
-    expect(renderSql(conflictSet.assetType)).toBe(`${MANUAL_GUARD_SQL}excluded.asset_type end`);
-    expect(conflictSet.detectedAssetType).toBe('access_point');
+    expect(renderSql(conflictSet.assetType)).toBe(
+      `${MANUAL_GUARD_SQL}excluded.asset_type else "discovered_assets"."asset_type" end`,
+    );
+    expect(renderSql(conflictSet.detectedAssetType)).toBe(
+      `${DETECTED_ASSET_TYPE_GUARD_SQL}excluded.detected_asset_type else "discovered_assets"."detected_asset_type" end`,
+    );
+    // detected_type_source's proposed value is always a bound literal (never
+    // `excluded.*` — there is no such column to race on), so it renders
+    // identically to the update-path guard.
+    expect(renderSql(conflictSet.detectedTypeSource)).toBe(DETECTED_TYPE_SOURCE_SQL);
     expect(conflictSet).not.toHaveProperty('typeSource');
     // The arbiter must be the (org_id, ip_address) unique index the racing
     // agent-discovery insert also targets.
@@ -469,8 +512,10 @@ describe('unifiSyncService — discovered_asset type_source precedence (#3011)',
     const insert = writes.inserts.find((w) => w.table === discoveredAssets)!;
     expect(insert.values).not.toHaveProperty('assetType');
     expect(insert.values).not.toHaveProperty('detectedAssetType');
+    expect(insert.values).not.toHaveProperty('detectedTypeSource');
     expect(insert.values.typeSource).toBe('auto');
     expect(insert.conflictSet).not.toHaveProperty('assetType');
     expect(insert.conflictSet).not.toHaveProperty('detectedAssetType');
+    expect(insert.conflictSet).not.toHaveProperty('detectedTypeSource');
   });
 });

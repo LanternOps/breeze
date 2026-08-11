@@ -1002,7 +1002,7 @@ jobs:
         run: go mod download
 
       - name: Build Agent
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -1010,9 +1010,9 @@ jobs:
           BUILD_VERSION: ${{ github.sha }}
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION}" \
-            -o "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-agent
+          agent/scripts/build-edition.sh --edition self-host --component agent \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" \
+            --out "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       # Windows-only: build the GUI-subsystem user-helper so the scheduled task
       # that launches it at logon does not allocate a visible console window.
@@ -1024,16 +1024,16 @@ jobs:
       # embedded here — the manifest regression guard lives in release.yml.
       - name: Build user-helper (Windows only)
         if: matrix.goos == 'windows'
-        working-directory: agent
+        shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           BUILD_VERSION: ${{ github.sha }}
         run: |
-          go build -ldflags="-s -w -X main.version=${BUILD_VERSION} -H windowsgui" \
-            -o "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
-            ./cmd/breeze-user-helper
+          agent/scripts/build-edition.sh --edition self-host --component user-helper \
+            --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" --windowsgui \
+            --out "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       # Regression guard (#2797): built agent binaries must not contain
       # plaintext threat-signature strings — AV engines flag them as malware
@@ -1125,6 +1125,9 @@ jobs:
       - name: Run Go tests
         working-directory: agent
         run: CGO_ENABLED=0 go test -v -coverprofile=coverage.out ./...
+
+      - name: Test build-edition.sh (edition fail-closed matrix + real build)
+        run: agent/scripts/build-edition_test.sh
 
       - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1389,13 +1392,18 @@ jobs:
 
       - name: Build Windows agent
         working-directory: agent
+        shell: bash
         env:
           CGO_ENABLED: '0'
           BUILD_VERSION: ${{ github.sha }}
         run: |
-          go build -ldflags="-s -w -X main.version=$env:BUILD_VERSION" `
-            -o breeze-agent.exe ./cmd/breeze-agent
-          if (-not (Test-Path breeze-agent.exe)) { throw "breeze-agent.exe was not produced" }
+          scripts/build-edition.sh --edition self-host --component agent \
+            --goos windows --goarch amd64 --version "$BUILD_VERSION" \
+            --out breeze-agent.exe
+          if [ ! -f breeze-agent.exe ]; then
+            echo "::error::breeze-agent.exe was not produced" >&2
+            exit 1
+          fi
 
       - name: Boot agent and assert it stays up
         working-directory: agent

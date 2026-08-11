@@ -208,6 +208,21 @@ describe('aiToolErrors', () => {
       expect(sanitizeThrownToolError('get_cis_compliance', new Error(msg))).toBe(msg);
     });
 
+    it('preserves the cursor-rejection messages so a paging client can recover (#3329)', () => {
+      expect(sanitizeThrownToolError('search_logs', new Error('Invalid cursor format.')))
+        .toBe('Invalid cursor format.');
+      expect(sanitizeThrownToolError('search_logs', new Error('Invalid cursor payload.')))
+        .toBe('Invalid cursor payload.');
+    });
+
+    it('does not let the cursor allowlist smuggle driver detail through', () => {
+      // Anchored pattern: anything appended to the literal falls back to generic.
+      expect(sanitizeThrownToolError(
+        'search_logs',
+        new Error('Invalid cursor payload. relation "device_event_logs" does not exist'),
+      )).toBe(GENERIC_TOOL_ERROR_MESSAGE);
+    });
+
     it('handles non-Error throws', () => {
       expect(sanitizeThrownToolError('t', 'a bare string')).toBe(GENERIC_TOOL_ERROR_MESSAGE);
       expect(sanitizeThrownToolError('t', undefined)).toBe(GENERIC_TOOL_ERROR_MESSAGE);

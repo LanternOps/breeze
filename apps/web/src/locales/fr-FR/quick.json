@@ -3,13 +3,31 @@
     "title": "Démarrer une session d’assistance",
     "intro": "Une personne qui vous aide sur cet ordinateur vous a demandé d’ouvrir cette page. Rien ne se passe tant que vous n’avez pas téléchargé et lancé le programme vous-même."
   },
+  "branding": {
+    "title": "Assistance rapide {{partner}}",
+    "subtitle": "{{partner}} vous aide. Rien ne se passe tant que vous n’avez pas téléchargé et lancé le programme vous-même."
+  },
+  "steps": {
+    "one": {
+      "title": "Saisissez le code que votre technicien vous a communiqué",
+      "body": "Le code comporte 9 chiffres et ne reste valable que quelques minutes."
+    },
+    "two": {
+      "title": "Téléchargez le programme d’assistance",
+      "body": "Le bouton ci-dessous enregistre un petit programme qui connaît déjà votre code."
+    },
+    "three": {
+      "title": "Lancez-le et acceptez la demande de Windows",
+      "body": "Ouvrez le fichier que vous venez d’enregistrer, puis autorisez son exécution. Vous n’avez rien d’autre à faire."
+    }
+  },
   "code": {
     "heading": "Saisissez le code qui vous a été communiqué",
-    "help": "La personne qui vous aide va vous dicter un code de 9 lettres et chiffres, par exemple KTM-4H7-P2X. Les majuscules et les tirets n’ont pas d’importance.",
+    "help": "La personne qui vous aide va vous dicter un code de 9 chiffres, par exemple 234-567-892. Les tirets n’ont pas d’importance.",
     "label": "Code d’assistance",
-    "placeholder": "XXX-XXX-XXX",
+    "placeholder": "234-567-892",
     "submit": "Continuer",
-    "formatError": "Ce code n’est pas encore complet. Un code comporte 9 lettres et chiffres, par exemple KTM-4H7-P2X."
+    "formatError": "Ce code n’est pas encore complet. Un code comporte 9 caractères, par exemple 234-567-892."
   },
   "checking": "Vérification du code…",
   "invalid": {
@@ -21,16 +39,32 @@
     "body": "La connexion à Internet a peut-être été interrompue. Vérifiez votre connexion, puis réessayez avec le code.",
     "retry": "Réessayer"
   },
+  "rateLimited": {
+    "title": "Trop de tentatives",
+    "body": "Vous avez essayé un code trop de fois. Patientez un instant, puis réessayez.",
+    "retry": "Réessayer"
+  },
   "ready": {
     "title": "Votre code est valide",
     "codeIntro": "Votre code est {{code}}."
   },
+  "mobile": {
+    "title": "Ouvrez cette page sur l’ordinateur Windows qui a besoin d’aide",
+    "body": "Ce téléphone ou cette tablette ne peut pas être partagé avec la personne qui vous aide. Rendez-vous sur l’ordinateur Windows concerné et ouvrez cette page dessus.",
+    "downloadHidden": "Il n’y a rien à télécharger sur cet appareil."
+  },
   "download": {
     "windows": "Télécharger pour Windows",
     "manualFallback": "Si le téléchargement demande un code, saisissez : {{code}}",
+    "hintEdge": "Microsoft Edge peut indiquer que ce fichier est rarement téléchargé. Choisissez Conserver, puis Conserver quand même, pour terminer l’enregistrement.",
+    "hintChrome": "Google Chrome peut afficher un avertissement sur le fichier en bas de la fenêtre. Choisissez Conserver pour terminer l’enregistrement.",
+    "hintGeneric": "Si votre navigateur demande s’il faut conserver le fichier, choisissez de le conserver.",
+    "windowsOnly": "Le programme d’assistance n’existe aujourd’hui que pour les ordinateurs Windows.",
     "macosLabel": "macOS (ordinateurs Mac)",
     "macosBadge": "Bientôt disponible",
-    "macosBody": "Le programme n’est pas encore prêt pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder à la place."
+    "macosBody": "Le programme n’est pas encore prêt pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder à la place.",
+    "macosPrimaryTitle": "Le programme d’assistance n’est pas encore prêt pour les ordinateurs Mac",
+    "macosPrimaryBody": "Demandez à la personne qui vous aide comment procéder à la place, ou ouvrez cette page sur un ordinateur Windows qui a besoin d’aide."
   },
   "windowsPrompt": {
     "title": "Windows vous demandera confirmation",

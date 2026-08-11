@@ -266,3 +266,72 @@ describe('buildRemoteAccessLaunchUrl', () => {
     ).toBeNull();
   });
 });
+
+describe('resolveRemoteAccessLaunch — per-technician provider preference', () => {
+  const mesh = {
+    id: 'mesh',
+    name: 'Mesh',
+    urlTemplate: 'https://mesh.example.test/#device={id}',
+    customFieldKey: 'mesh_node_id',
+    enabled: true,
+  } as const;
+
+  // Two providers enabled at once; the tenant default is rustdesk.
+  const twoProviders: InheritableRemoteAccessSettings = {
+    defaultProviderId: 'rustdesk',
+    providers: [baseProvider, { ...mesh }],
+  };
+  const device = { customFields: { rustdesk_id: '294064193', mesh_node_id: 'abc123' } };
+
+  it('uses the tenant default when the technician has no preference', () => {
+    const r = resolveRemoteAccessLaunch(device, twoProviders);
+    expect(r.providerId).toBe('rustdesk');
+    expect(r.launchUrl).toBe('rustdesk://294064193?password=plain');
+  });
+
+  it('honours a preference for the OTHER enabled provider', () => {
+    const r = resolveRemoteAccessLaunch(device, twoProviders, 'mesh');
+    expect(r.providerId).toBe('mesh');
+    expect(r.launchUrl).toBe('https://mesh.example.test/#device=abc123');
+  });
+
+  it('falls back to the default when the preference names an unknown provider', () => {
+    // The security property: a preference SELECTS from the tenant's list, so an
+    // id the tenant does not have cannot introduce a destination.
+    const r = resolveRemoteAccessLaunch(device, twoProviders, 'not-a-real-provider');
+    expect(r.providerId).toBe('rustdesk');
+    expect(r.skipReason).toBeNull();
+  });
+
+  it('falls back to the default when the preferred provider is disabled', () => {
+    const settings: InheritableRemoteAccessSettings = {
+      defaultProviderId: 'rustdesk',
+      providers: [baseProvider, { ...mesh, enabled: false }],
+    };
+    const r = resolveRemoteAccessLaunch(device, settings, 'mesh');
+    // Degrades quietly rather than returning provider_disabled and stranding the tech.
+    expect(r.providerId).toBe('rustdesk');
+    expect(r.skipReason).toBeNull();
+  });
+
+  it('lets a valid preference stand in when the tenant has set no default', () => {
+    const noDefault: InheritableRemoteAccessSettings = { providers: [baseProvider, { ...mesh }] };
+    expect(resolveRemoteAccessLaunch(device, noDefault).skipReason).toBe('no_provider_configured');
+    const r = resolveRemoteAccessLaunch(device, noDefault, 'mesh');
+    expect(r.providerId).toBe('mesh');
+    expect(r.launchUrl).toBe('https://mesh.example.test/#device=abc123');
+  });
+
+  it('still refuses a scheme that only resolves after substitution, even when preferred', () => {
+    const sneaky: InheritableRemoteAccessSettings = {
+      defaultProviderId: 'rustdesk',
+      providers: [
+        baseProvider,
+        { id: 'sneaky', name: 'Sneaky', urlTemplate: 'j{id}cript:alert(1)', customFieldKey: 'k', enabled: true },
+      ],
+    };
+    const r = resolveRemoteAccessLaunch({ customFields: { k: 'avas' } }, sneaky, 'sneaky');
+    expect(r.launchUrl).toBeNull();
+    expect(r.skipReason).toBe('scheme_not_allowed');
+  });
+});

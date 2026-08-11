@@ -183,7 +183,7 @@
   },
   "reports": {
     "dashboardWidgets": {
-      "accessDenied": "Voce não tem permissao para ver estes dados do painel.",
+      "accessDenied": "Você não tem permissão para ver estes dados do painel.",
       "activeAlerts": "Alertas Ativos",
       "averages": "Medias",
       "complianceScore": "Pontuacao de Conformidade",
@@ -260,7 +260,7 @@
       "generating": "Gerando pre-visualização do relatório...",
       "noDataMatches": "Nenhum dado corresponde aos filtros atuais.",
       "pagination": {
-        "page": "Pagina {{current}} de {{total}}",
+        "page": "Página {{current}} de {{total}}",
         "showing": "Mostrando {{start}} a {{end}} de {{total}} registros"
       },
       "refresh": "Atualizar",
@@ -672,7 +672,7 @@
         "value": "Valor"
       },
       "livePreview": {
-        "description": "Atualiza conforme voce configura o relatório.",
+        "description": "Atualiza conforme você configura o relatório.",
         "loading": "Carregando pre-visualização ao vivo...",
         "noData": "Sem dados de pre-visualização para a configuração atual.",
         "previewRows": "Linhas da pre-visualização",
@@ -765,7 +765,7 @@
           "title": "Detalhes do relatório"
         },
         "reportType": {
-          "description": "Escolha o tipo de relatório que voce esta criando.",
+          "description": "Escolha o tipo de relatório que você está criando.",
           "title": "Tipo de relatório"
         }
       },

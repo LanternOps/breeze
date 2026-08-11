@@ -1,5 +1,16 @@
-import { PSACompany, PSAConnectionTest, PSAProvider, PSATicket, PSATicketCreate, PSATicketUpdate } from './types';
+import {
+  PSACompany,
+  PSACompanyList,
+  PSACompanyListOptions,
+  PSAConnectionTest,
+  PSAProvider,
+  PSATicket,
+  PSATicketCreate,
+  PSATicketUpdate,
+  PSA_COMPANY_LIST_CAP
+} from './types';
 import { psaFetch } from './http';
+import { PSA_COMPANY_PAGE_SIZE, collectPaginated, companyPage, pinCursorToBase, toCompanyList, type RawCompanyRecord } from './pagination';
 
 export interface ZendeskCredentials {
   baseUrl: string;
@@ -12,6 +23,12 @@ export interface ZendeskSettings {
 }
 
 type ZendeskOrganization = { id: number; name: string };
+
+/** `next_page` is upstream-supplied and MUST go through `pinCursorToBase`. */
+type ZendeskOrganizationPage = {
+  organizations?: ZendeskOrganization[];
+  next_page?: string | null;
+};
 
 type ZendeskTicket = {
   id: number;
@@ -46,7 +63,17 @@ export class ZendeskProvider implements PSAProvider {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await psaFetch(`${this.baseUrl}${path}`, {
+    return this.requestUrl<T>(method, `${this.baseUrl}${path}`, body);
+  }
+
+  /**
+   * Absolute-URL variant, used only for following an origin-pinned pagination
+   * cursor. Callers MUST pass a URL that has already been through
+   * `pinCursorToBase` — this method attaches the connection's credentials, so a
+   * raw upstream-supplied URL here would leak them off-origin.
+   */
+  private async requestUrl<T>(method: string, url: string, body?: unknown): Promise<T> {
+    const response = await psaFetch(url, {
       method,
       headers: {
         'Authorization': this.getAuthHeader(),
@@ -97,17 +124,41 @@ export class ZendeskProvider implements PSAProvider {
     }
   }
 
-  async getCompanies(): Promise<PSACompany[]> {
-    const response = await this.request<{ organizations: ZendeskOrganization[] }>(
-      'GET',
-      '/api/v2/organizations.json'
-    );
+  /**
+   * Zendesk offset pagination returns `next_page` — an ABSOLUTE URL from the
+   * PSA's own response body, previously ignored entirely (so this capped out at
+   * the 30-per-page default). It is never dialed as-is: `pinCursorToBase`
+   * refuses any origin other than the connection's stored baseUrl and rebuilds
+   * the URL on that origin, so a hostile `next_page` cannot walk `requestUrl`
+   * — and the Basic auth header it attaches — onto another host.
+   */
+  async getCompanies(options: PSACompanyListOptions = {}): Promise<PSACompanyList> {
+    const limit = options.limit ?? PSA_COMPANY_LIST_CAP;
 
-    return (response.organizations || []).map((org) => ({
-      id: org.id.toString(),
-      name: org.name,
-      externalId: org.id.toString()
-    }));
+    // Zendesk organizations have no active/archived/deleted flag — deletion is
+    // immediate, so there is nothing to filter out here (unlike ConnectWise's
+    // deletedFlag or Autotask's isActive). Ordering is Zendesk's own and stable
+    // across the cursor walk, so no sort parameter is needed either.
+    const result = await collectPaginated<RawCompanyRecord>(limit, async (cursor) => {
+      const response = cursor
+        ? await this.requestUrl<ZendeskOrganizationPage>('GET', cursor)
+        : await this.request<ZendeskOrganizationPage>(
+            'GET',
+            `/api/v2/organizations.json?per_page=${PSA_COMPANY_PAGE_SIZE}`
+          );
+
+      const nextPage = response?.next_page ?? null;
+
+      return companyPage(
+        (response?.organizations || []).map((org) => ({ id: org?.id, name: org?.name })),
+        // Throws PsaCursorOriginError on an off-origin cursor — a hard refusal,
+        // never a silent stop, so a redirected page can't masquerade as "done".
+        nextPage ? pinCursorToBase(nextPage, this.baseUrl, 'Zendesk') : null,
+        options.skipExternalIds
+      );
+    });
+
+    return toCompanyList(result);
   }
 
   async createTicket(input: PSATicketCreate): Promise<PSATicket> {

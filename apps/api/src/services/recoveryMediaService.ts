@@ -21,8 +21,16 @@ import {
   resolveServerUrl,
   resolveSnapshotProviderConfig,
 } from './recoveryBootstrap';
-import { verifyBinaryChecksum } from './binaryManifest';
-import { getBinarySource, getGithubBackupUrl, getGithubReleaseVersion } from './binarySource';
+import { verifyBinaryChecksum, type VerifiedRecoveryBinary } from './binaryManifest';
+import {
+  getBinarySource,
+  getGithubBackupUrl,
+  getGithubReleaseArtifactManifestSignatureUrl,
+  getGithubReleaseArtifactManifestUrl,
+  getGithubReleaseVersion,
+} from './binarySource';
+import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
 
 const execFileAsync = promisify(execFile);
@@ -78,35 +86,73 @@ async function downloadFile(url: string, destinationPath: string): Promise<void>
   await writeFile(destinationPath, Buffer.from(arrayBuffer));
 }
 
-async function resolveBackupBinary(platform: string, architecture: string, workingDir: string): Promise<{
+export async function resolveBackupBinary(
+  platform: string,
+  architecture: string,
+  workingDir: string,
+): Promise<{
   fileName: string;
   filePath: string;
-  verified: Awaited<ReturnType<typeof verifyBinaryChecksum>>;
+  verified: VerifiedRecoveryBinary;
 }> {
   const fileName = getBinaryFileName(platform, architecture);
   const destinationPath = join(workingDir, fileName);
   const sourceType = getBinarySource();
-  let sourceRef: string;
-  let version: string;
 
   if (sourceType === 'github') {
-    version = getGithubReleaseVersion();
+    // Spec 3d: expected hashes come from the deployment-verified release
+    // manifest, not a static table — a BYO-signed backup binary has a
+    // different hash per self-hoster, which no shipped table can know.
+    const version = getGithubReleaseVersion();
     if (version === 'latest') {
-      throw new Error('Recovery helper builds require a pinned GitHub release version, not "latest"');
+      throw new Error(
+        'Recovery helper builds require a pinned GitHub release version, not "latest"',
+      );
     }
-    sourceRef = `github-release:v${version}`;
+    const sourceRef = `github-release:v${version}`;
     await downloadFile(getGithubBackupUrl(platform, architecture), destinationPath);
-  } else {
-    const candidatePath = resolve(
-      process.env.BACKUP_BINARY_DIR ||
-        process.env.AGENT_BINARY_DIR ||
-        './agent/bin',
-      fileName
-    );
-    sourceRef = candidatePath;
-    version = process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'workspace-local';
-    await copyFile(candidatePath, destinationPath);
+
+    const verifiedAsset = await verifyGithubReleaseArtifactBuffer({
+      assetName: fileName,
+      assetBuffer: await readFile(destinationPath),
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getReleaseSourceRepository(),
+      expectedRelease: `v${version}`,
+    });
+    if (!verifiedAsset) {
+      // Only reachable outside production with no trust root configured.
+      // Recovery media is a restore path — never ship an unverified helper.
+      throw new Error(
+        'Recovery helper builds require RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS so the backup binary can be verified against the signed release manifest',
+      );
+    }
+    return {
+      fileName,
+      filePath: destinationPath,
+      verified: {
+        platform,
+        architecture,
+        sourceType: 'github',
+        sourceRef,
+        version,
+        sha256: verifiedAsset.sha256,
+        manifestVersion: verifiedAsset.release,
+      },
+    };
   }
+
+  // Local mode: unchanged — verify against the pinned checksum table
+  // (BINARY_CHECKSUM_MANIFEST overrides the shipped recovery-binary-manifest.json).
+  const candidatePath = resolve(
+    process.env.BACKUP_BINARY_DIR ||
+      process.env.AGENT_BINARY_DIR ||
+      './agent/bin',
+    fileName
+  );
+  const sourceRef = candidatePath;
+  const version = process.env.BINARY_VERSION || process.env.BREEZE_VERSION || 'workspace-local';
+  await copyFile(candidatePath, destinationPath);
 
   const verified = await verifyBinaryChecksum({
     filePath: destinationPath,

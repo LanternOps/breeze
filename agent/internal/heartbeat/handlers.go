@@ -285,17 +285,38 @@ func handleRefreshInventory(h *Heartbeat, _ Command) tools.CommandResult {
 }
 
 func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+
+	// Resolve the delay up front, through the same helper RebootToSafeMode
+	// uses, for two reasons (issue #3373):
+	//   1. The notification below must announce the delay the reboot is
+	//      actually scheduled with. Reading the raw payload separately let the
+	//      toast and the scheduled reboot disagree once either side clamped.
+	//   2. A malformed delay must fail the command here, before anything is
+	//      broadcast — otherwise users are warned of, and then subjected to, an
+	//      immediate forced reboot they never asked for.
+	delay, err := tools.ShutdownDelayMinutes(cmd.Payload)
+	if err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
 	if h.sessionBroker != nil {
-		delay := tools.GetPayloadInt(cmd.Payload, "delay", 0)
-		var msg string
-		if delay > 0 {
-			msg = fmt.Sprintf("System will reboot into Safe Mode with Networking in %d minutes. Please save all work.", delay)
-		} else {
-			msg = "System is rebooting into Safe Mode with Networking. Please save all work."
-		}
-		h.sessionBroker.BroadcastNotification("Safe Mode Reboot", msg, "critical")
+		h.sessionBroker.BroadcastNotification("Safe Mode Reboot", safeModeRebootNotice(delay), "critical")
 	}
 	return tools.RebootToSafeMode(cmd.Payload)
+}
+
+// safeModeRebootNotice renders the user-facing Safe Mode warning for a delay
+// that has already been parsed and clamped by tools.ShutdownDelayMinutes.
+func safeModeRebootNotice(delayMinutes int) string {
+	if delayMinutes <= 0 {
+		return "System is rebooting into Safe Mode with Networking. Please save all work."
+	}
+	unit := "minutes"
+	if delayMinutes == 1 {
+		unit = "minute"
+	}
+	return fmt.Sprintf("System will reboot into Safe Mode with Networking in %d %s. Please save all work.", delayMinutes, unit)
 }
 
 func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {

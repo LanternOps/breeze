@@ -2434,7 +2434,7 @@
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
     "noOrganization": {
       "title": "Aucune organisation sélectionnée",
-      "description": "Veuillez sélectionner une organisation depuis le commutateur dans l’en-tête pour voir les paramètres."
+      "description": "Veuillez sélectionner une organisation dans le sélecteur de l’en-tête pour afficher les paramètres."
     },
     "actions": {
       "save": "Enregistrer",
@@ -2796,7 +2796,8 @@
       "externalId": "ID externe",
       "status": "Statut",
       "matches": "correspond à « {{name}} »",
-      "reactivateHint": "La sélection réactivera l’organisation supprimée"
+      "reactivateHint": "La sélection réactivera l’organisation supprimée",
+      "matchAlreadyLinked": "« {{name}} » est déjà liée à ce système sous un autre ID — confirmer cette correspondance fusionnerait deux enregistrements en une seule organisation."
     },
     "badges": {
       "create": "Nouvelle",

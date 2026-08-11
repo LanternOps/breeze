@@ -4,6 +4,11 @@ import { validateM365CustomerGraphReadRuntimeConfigAtBoot } from '../services/m3
 import { validateM365CustomerGraphActionsRuntimeConfigAtBoot } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import { validateM365CommunicationsRuntimeConfigAtBoot } from '../services/m365ControlPlane/commsRuntimeConfig';
 import {
+  OFFICIAL_RELEASE_REPOSITORY,
+  RELEASE_SOURCE_REPOSITORY_SHAPE,
+  isValidReleaseSourceRepository,
+} from '../services/releaseSource';
+import {
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
   parseEventPermissionEpochMode,
@@ -198,6 +203,34 @@ function hasReleaseArtifactManifestPublicKey(data: {
   return Boolean(
     data.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?.trim()
     || data.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?.trim()
+  );
+}
+
+// The public trust anchor for OFFICIAL Breeze releases. Also embedded in the
+// agent (agent/internal/updater/updater.go) and shipped uncommented in
+// deploy/.env.example — which is exactly why it needs its own check below.
+const OFFICIAL_RELEASE_MANIFEST_PUBLIC_KEY =
+  'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=';
+
+// True when every configured manifest key is the official one. A self-hoster
+// pointing BINARY_GITHUB_REPOSITORY at their own signing repo while leaving the
+// shipped official key in place would boot cleanly and then fail EVERY sync
+// closed (their manifest cannot verify under the official key), freezing the
+// fleet behind a single console.error. Catch it at boot instead.
+function hasOnlyOfficialReleaseManifestPublicKey(data: {
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?: string;
+  BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS?: string;
+}): boolean {
+  const configured = [
+    data.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
+    data.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS,
+  ]
+    .flatMap((value) => (value ?? '').split(','))
+    .map((key) => key.trim())
+    .filter(Boolean);
+  return (
+    configured.length > 0
+    && configured.every((key) => key === OFFICIAL_RELEASE_MANIFEST_PUBLIC_KEY)
   );
 }
 
@@ -499,6 +532,40 @@ const envObjectSchema = z
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_NAME: z.string().optional(),
     BINARY_SOURCE: z.string().optional(),
+    // "self-host" (default, today's behavior) | "hosted". A hosted deployment
+    // must fail closed onto local binaries rather than ever falling back to
+    // the public GitHub release — see the production validation block below
+    // and services/binaryEdition.ts / services/binarySync.ts.
+    BINARY_EDITION: z.string().optional(),
+    // BYO signing (spec 3a): the release-source repository override consumed by
+    // services/releaseSource.ts. Empty string means "unset" — both compose
+    // files map it as `${BINARY_GITHUB_REPOSITORY:-}`, which always injects the
+    // key. Shape is validated in EVERY environment so a typo'd override
+    // boot-refuses instead of silently building garbage GitHub URLs.
+    BINARY_GITHUB_REPOSITORY: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        // Shared with the runtime resolver so boot validation and
+        // getReleaseSourceRepository() can never drift apart.
+        .refine(
+          isValidReleaseSourceRepository,
+          `BINARY_GITHUB_REPOSITORY must be ${RELEASE_SOURCE_REPOSITORY_SHAPE}`,
+        )
+        .optional(),
+    ),
+    GITHUB_REPO: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        // Shared with the runtime resolver so boot validation and
+        // getReleaseSourceRepository() can never drift apart.
+        .refine(
+          isValidReleaseSourceRepository,
+          `GITHUB_REPO must be ${RELEASE_SOURCE_REPOSITORY_SHAPE}`,
+        )
+        .optional(),
+    ),
     RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: z.string().optional(),
     IS_HOSTED: z.string().optional(),
@@ -512,6 +579,13 @@ const envObjectSchema = z
     // getAgentAutoPromote(); validated here only for boolean format so a typo
     // is caught at boot instead of silently parsing to a surprising default.
     AGENT_AUTO_PROMOTE: z.string().optional(),
+
+    // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
+    // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
+    // env.ts. Validated here for boolean format only, for the same reason as
+    // AGENT_AUTO_PROMOTE above — see the superRefine rule for why a typo here
+    // is worse than a typo on most flags.
+    ABUSE_SIGNALS_ENABLED: z.string().optional(),
 
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
@@ -590,12 +664,6 @@ const envObjectSchema = z
     // Cloudflare mTLS — when CLOUDFLARE_API_TOKEN is set, zone id is required.
     CLOUDFLARE_API_TOKEN: z.string().optional(),
     CLOUDFLARE_ZONE_ID: z.string().optional(),
-
-    // MSI signing — when MSI_SIGNING_URL is set, CF Access secret is required
-    // (the signing tunnel rejects unauthenticated requests; without it every
-    // first installer-link request 5xxs).
-    MSI_SIGNING_URL: z.string().optional(),
-    MSI_SIGNING_CF_ACCESS_SECRET: z.string().optional(),
 
     // Delegant M365 helpdesk — DELEGANT_BASE_URL is the soft-enable indicator.
     // When set, the service token + principal signing material are required;
@@ -1115,6 +1183,80 @@ const envSchema = envObjectSchema
         });
       }
 
+      // BYO signing (spec 3a): pointing the deployment at a NON-official
+      // release repository only makes sense with a manifest trust root that is
+      // the OVERRIDING repository's release key — without one, github-mode
+      // sync would either fail closed on every release or (if the blanket
+      // production key rule above were ever relaxed) accept unverified
+      // third-party binaries. Kept as its own rule with its own message even
+      // though the blanket rule currently subsumes the "unset" case.
+      const releaseRepositoryOverrideKey = data.BINARY_GITHUB_REPOSITORY
+        ? 'BINARY_GITHUB_REPOSITORY'
+        : 'GITHUB_REPO';
+      const releaseRepositoryOverride = (
+        data.BINARY_GITHUB_REPOSITORY ?? data.GITHUB_REPO
+      )?.trim().toLowerCase();
+      if (
+        releaseRepositoryOverride &&
+        releaseRepositoryOverride !== OFFICIAL_RELEASE_REPOSITORY &&
+        !hasReleaseArtifactManifestPublicKey(data)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [releaseRepositoryOverrideKey],
+          message:
+            `${releaseRepositoryOverrideKey} overrides the release source; production requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set to the overriding repository's release manifest public key (NOT the official Breeze key).`,
+        });
+      }
+
+      // BYO signing edition follow-up: a "hosted" deployment must never serve
+      // binaries pulled from the public GitHub release (that release now
+      // carries the self-host edition, unsigned by default). In production
+      // that only holds if binaries come exclusively from the local volume
+      // (BINARY_SOURCE=local — binarySync.ts's GitHub fallbacks are disabled
+      // for edition=hosted, but the primary BINARY_SOURCE=github sync path
+      // is not, so this is the boot-time backstop) AND a manifest trust root
+      // is configured, so whatever manifest IS found in the local volume can
+      // be verified rather than trusted blindly.
+      const binaryEdition = (data.BINARY_EDITION || 'self-host').trim().toLowerCase();
+      if (binaryEdition === 'hosted') {
+        const binarySourceForEdition = (data.BINARY_SOURCE || 'github').trim().toLowerCase();
+        if (binarySourceForEdition !== 'local') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['BINARY_SOURCE'],
+            message:
+              'BINARY_EDITION=hosted requires BINARY_SOURCE=local in production — a hosted deployment must never serve binaries fetched from the public GitHub release.',
+          });
+        }
+        if (!hasReleaseArtifactManifestPublicKey(data)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
+            message:
+              'BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set in production, so any release manifest found in the local binaries volume can be verified before being trusted.',
+          });
+        }
+      }
+
+      // "NOT the official Breeze key" above has to be enforced, not just
+      // stated. deploy/.env.example ships the official key as an ACTIVE line
+      // directly above the BINARY_GITHUB_REPOSITORY hint, so leaving it in
+      // place while repointing is the default mistake, not an exotic one — and
+      // it fails closed silently at sync time rather than loudly at boot.
+      if (
+        releaseRepositoryOverride &&
+        releaseRepositoryOverride !== OFFICIAL_RELEASE_REPOSITORY &&
+        hasOnlyOfficialReleaseManifestPublicKey(data)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
+          message:
+            `${releaseRepositoryOverrideKey} points at a non-official release repository, but RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS is still (only) the official Breeze key. Manifests from that repository are signed by YOUR release key and can never verify under the official one, so every sync would fail closed and the fleet would silently stay on its current version. Set it to your own manifest public key — the signing workflow's run summary prints it.`,
+        });
+      }
+
       rejectSecretReuse(
         [
           { key: 'JWT_SECRET', value: data.JWT_SECRET },
@@ -1253,7 +1395,7 @@ const envSchema = envObjectSchema
       // Indicator semantics:
       //   - boolean flags  → MCP_OAUTH_ENABLED
       //   - "URL is set"   → BREEZE_BILLING_URL, BILLING_SERVICE_URL,
-      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN, MSI_SIGNING_URL
+      //                      S3_BUCKET, CLOUDFLARE_API_TOKEN
       //   - explicit value → EMAIL_PROVIDER=resend|smtp|mailgun
       const truthyFlag = (raw: string | undefined): boolean =>
         ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
@@ -1355,20 +1497,6 @@ const envSchema = envObjectSchema
         ctx,
       );
 
-      // MSI signing (MSI_SIGNING_URL as indicator).
-      // The Cloudflare-fronted signing tunnel rejects unauthenticated requests.
-      // The signing service also accepts a per-account X-API-Key, but the
-      // CF Access service-token pair is mandatory in the current deploy —
-      // without it every /installer/link request 5xxs.
-      const msiSigningEnabled = Boolean(data.MSI_SIGNING_URL?.trim());
-      requireIf(
-        msiSigningEnabled,
-        'MSI_SIGNING_CF_ACCESS_SECRET',
-        data.MSI_SIGNING_CF_ACCESS_SECRET,
-        'MSI_SIGNING_URL is set (Cloudflare Access service-token auth to the signing tunnel)',
-        ctx,
-      );
-
       // Delegant M365 helpdesk (DELEGANT_BASE_URL as indicator). When the
       // feature is soft-enabled, all transport + principal-signing material is
       // required; a partial config mints an empty/invalid principal JWT and
@@ -1463,6 +1591,28 @@ const envSchema = envObjectSchema
         path: ['AGENT_AUTO_PROMOTE'],
         message:
           'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
+      });
+    }
+
+    // ABUSE_SIGNALS_ENABLED (signup-abuse detection). Same treatment and same
+    // reasoning as AGENT_AUTO_PROMOTE above: independent of NODE_ENV, because
+    // the value silently governs whether the subsystem runs at all. A typo
+    // (ABUSE_SIGNALS_ENABLED=ture / =enabled) used to read as "off" on the
+    // envFlag path, so an operator who believed they had detection ENABLED got
+    // a hosted deployment quietly not policing its signups — and the only
+    // artifact was one `[AbuseSignals] Disabled` line at boot. abuseSignalsEnabled()
+    // now falls back to the IS_HOSTED default on such a value, but the boot
+    // refusal here is what actually surfaces the typo to the operator.
+    // Empty/unset is allowed: both compose files inject
+    // `${ABUSE_SIGNALS_ENABLED:-}`, so "" is the common case and means unset
+    // (defaults to IS_HOSTED). Mirrors abuseSignalsEnabled() in env.ts.
+    const abuseSignalsRaw = (data.ABUSE_SIGNALS_ENABLED ?? '').trim().toLowerCase();
+    if (abuseSignalsRaw && !boolValues.has(abuseSignalsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ABUSE_SIGNALS_ENABLED'],
+        message:
+          'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
       });
     }
 

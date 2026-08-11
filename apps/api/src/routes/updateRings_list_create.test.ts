@@ -44,7 +44,6 @@ vi.mock('../db/schema', () => ({
     gracePeriodHours: 'gracePeriodHours',
     categories: 'categories',
     excludeCategories: 'excludeCategories',
-    sources: 'sources',
     autoApprove: 'autoApprove',
     categoryRules: 'categoryRules',
     targets: 'targets',
@@ -127,7 +126,6 @@ function makeRing(overrides: Record<string, unknown> = {}) {
     gracePeriodHours: 4,
     categories: [],
     excludeCategories: [],
-    sources: null,
     autoApprove: {},
     categoryRules: [],
     targets: {},
@@ -242,10 +240,9 @@ describe('updateRings routes', () => {
     });
 
     it('no longer returns sources in ring list responses', async () => {
-      // The list select no longer requests `sources`, so a real DB response
+      // The sources column was dropped (#3151), so a real DB response
       // (and thus this mock) has no `sources` key at all.
-      const { sources: _sources, ...ringWithoutSources } = makeRing({ name: 'Default', ringOrder: 0 });
-      const rings = [ringWithoutSources];
+      const rings = [makeRing({ name: 'Default', ringOrder: 0 })];
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({

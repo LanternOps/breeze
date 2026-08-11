@@ -20,6 +20,9 @@ let joinRow:
         targetPort: number;
         scheme: string | null;
         skipTlsVerify: boolean;
+        createdAt: Date;
+        startedAt: Date | null;
+        lastActivityAt: Date | null;
       };
       device: { id: string; status: string; agentId: string | null };
     }
@@ -30,7 +33,17 @@ function setJoinRow(row: typeof joinRow) {
 }
 
 function defaultJoinRow(
-  over: Partial<{ port: number; deviceStatus: string; ownerId: string; status: string; scheme: string | null; skipTlsVerify: boolean }> = {},
+  over: Partial<{
+    port: number;
+    deviceStatus: string;
+    ownerId: string;
+    status: string;
+    scheme: string | null;
+    skipTlsVerify: boolean;
+    createdAt: Date;
+    startedAt: Date | null;
+    lastActivityAt: Date | null;
+  }> = {},
 ) {
   return {
     session: {
@@ -42,13 +55,18 @@ function defaultJoinRow(
       targetPort: over.port ?? 80,
       scheme: 'scheme' in over ? (over.scheme ?? null) : null,
       skipTlsVerify: over.skipTlsVerify ?? false,
+      createdAt: over.createdAt ?? new Date(),
+      startedAt: 'startedAt' in over ? (over.startedAt ?? null) : null,
+      lastActivityAt: 'lastActivityAt' in over ? (over.lastActivityAt ?? null) : null,
     },
     device: { id: DEVICE_ID, status: over.deviceStatus ?? 'online', agentId: AGENT_ID },
   };
 }
 
-// Captures the values passed to db.update(...).set(values) for assertion.
+// Captures the values passed to db.update(...).set(values) for assertion —
+// last call (back-compat) and the full call list (for count/throttle tests).
 let capturedSessionUpdate: Record<string, unknown> | null = null;
+let capturedSessionUpdates: Record<string, unknown>[] = [];
 
 vi.mock('../db', () => ({
   db: {
@@ -64,6 +82,7 @@ vi.mock('../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         capturedSessionUpdate = values;
+        capturedSessionUpdates.push(values);
         return { where: vi.fn(async () => {}) };
       }),
     })),
@@ -108,7 +127,7 @@ vi.mock('../services/tunnelAllowlist', () => ({
   getActiveAllowlistPatterns: vi.fn(async () => ['192.168.1.0/24']),
 }));
 
-import { tunnelHttpRoutes } from './tunnelHttp';
+import { tunnelHttpRoutes, HTTP_TUNNEL_COOKIE_TTL_SECONDS, HTTP_TUNNEL_MAX_SESSION_HOURS } from './tunnelHttp';
 
 function makeApp() {
   const app = new Hono();
@@ -133,6 +152,7 @@ function okAgentResult(over: Partial<{ status: number; headers: Record<string, s
 beforeEach(() => {
   vi.clearAllMocks();
   capturedSessionUpdate = null;
+  capturedSessionUpdates = [];
   setJoinRow(defaultJoinRow());
   isAgentConnectedMock.mockReturnValue(true);
   checkRemoteAccessMock.mockResolvedValue({ allowed: true });
@@ -439,5 +459,114 @@ describe('tunnelHttp TLS + skipTlsVerify (#1916)', () => {
     await app.request(`${BASE}/`, { headers: { cookie } });
     const [, command] = sendCommandMock.mock.calls.at(-1)!;
     expect(command.payload.scheme).toBe('https');
+  });
+});
+
+describe('tunnelHttp session lifetime (#3199 Task 2)', () => {
+  it('includes a refreshed cookie with fresh Max-Age on a successful authenticated proxied response', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    const setCookieHeader = res.headers.get('set-cookie') ?? '';
+    expect(setCookieHeader).toContain(`bz_tunnel_${TUNNEL_ID}=`);
+    expect(setCookieHeader).toContain(`Max-Age=${HTTP_TUNNEL_COOKIE_TTL_SECONDS}`);
+    expect(setCookieHeader.toLowerCase()).toContain('httponly');
+    expect(setCookieHeader).toContain(`Path=/api/v1/tunnel-http/${TUNNEL_ID}/`);
+  });
+
+  it('401s when the cookie has expired (regression)', async () => {
+    vi.useFakeTimers();
+    try {
+      const app = makeApp();
+      const cookie = await mintCookie(app);
+      vi.setSystemTime(Date.now() + (HTTP_TUNNEL_COOKIE_TTL_SECONDS + 5) * 1000);
+      const res = await app.request(`${BASE}/`, { headers: { cookie } });
+      expect(res.status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks a past-cap tunnel row terminal and returns 410 before contacting the agent', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    capturedSessionUpdates = []; // drop the mint's own status:'active' write
+    const pastCapCreatedAt = new Date(Date.now() - (HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000 + 60_000));
+    setJoinRow(defaultJoinRow({ createdAt: pastCapCreatedAt }));
+
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+
+    expect(res.status).toBe(410);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(capturedSessionUpdate).toMatchObject({
+      status: 'disconnected',
+      errorMessage: 'session_expired',
+    });
+    expect(capturedSessionUpdate?.endedAt).toBeInstanceOf(Date);
+  });
+
+  it('sets status active with startedAt at ticket exchange, and does not reset startedAt on re-mint', async () => {
+    const app = makeApp();
+
+    consumeWsTicketMock.mockResolvedValueOnce({
+      ok: true,
+      sessionId: TUNNEL_ID,
+      sessionType: 'tunnel-http',
+      userId: USER_ID,
+      expiresAt: Date.now() + 60_000,
+    });
+    const res1 = await app.request(`${BASE}/?__bzt=goodticket1`);
+    expect(res1.status).toBe(302);
+    expect(capturedSessionUpdate).toMatchObject({ status: 'active' });
+    expect(capturedSessionUpdate?.startedAt).toBeInstanceOf(Date);
+    const firstStartedAt = capturedSessionUpdate!.startedAt as Date;
+
+    // Simulate the DB now reflecting the persisted startedAt (idle-resume re-mint).
+    setJoinRow(defaultJoinRow({ startedAt: firstStartedAt }));
+    consumeWsTicketMock.mockResolvedValueOnce({
+      ok: true,
+      sessionId: TUNNEL_ID,
+      sessionType: 'tunnel-http',
+      userId: USER_ID,
+      expiresAt: Date.now() + 60_000,
+    });
+    const res2 = await app.request(`${BASE}/?__bzt=goodticket2`);
+    expect(res2.status).toBe(302);
+    expect(capturedSessionUpdate).toMatchObject({ status: 'active' });
+    expect(capturedSessionUpdate).not.toHaveProperty('startedAt');
+  });
+
+  it('throttles the lastActivityAt bump — two requests within 30s write once', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    capturedSessionUpdates = []; // drop the mint's own status:'active' write
+    setJoinRow(defaultJoinRow({ lastActivityAt: null }));
+
+    const res1 = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res1.status).toBe(200);
+    const bumpsAfterFirst = capturedSessionUpdates.filter((u) => 'lastActivityAt' in u);
+    expect(bumpsAfterFirst).toHaveLength(1);
+    const bumpedAt = bumpsAfterFirst[0]!.lastActivityAt as Date;
+
+    // Simulate the DB now reflecting the just-persisted lastActivityAt (<30s old).
+    setJoinRow(defaultJoinRow({ lastActivityAt: bumpedAt }));
+    const res2 = await app.request(`${BASE}/`, { headers: { cookie } });
+    expect(res2.status).toBe(200);
+    const bumpsAfterSecond = capturedSessionUpdates.filter((u) => 'lastActivityAt' in u);
+    expect(bumpsAfterSecond).toHaveLength(1); // still just the one from before
+  });
+
+  it('does not bump lastActivityAt or refresh the cookie when a gate rejects the request', async () => {
+    const app = makeApp();
+    const cookie = await mintCookie(app);
+    capturedSessionUpdates = []; // drop the mint's own status:'active' write
+    setJoinRow(defaultJoinRow({ deviceStatus: 'offline', lastActivityAt: null }));
+
+    const res = await app.request(`${BASE}/`, { headers: { cookie } });
+
+    expect(res.status).toBe(502);
+    expect(capturedSessionUpdates).toHaveLength(0);
+    expect(res.headers.get('set-cookie')).toBeFalsy();
   });
 });

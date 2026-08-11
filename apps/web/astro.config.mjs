@@ -59,6 +59,9 @@ export default defineConfig({
         "object-src 'none'",
         frameSrcDirective,
         "worker-src 'self' blob:",
+        // Keep the bare `https:` — the public /quick page loads partner-supplied
+        // logo URLs. See the matching comment in src/middleware.ts for the
+        // privacy-beacon risk that is knowingly accepted here.
         "img-src 'self' data: blob: https:",
         "font-src 'self' data:",
         "connect-src 'self' https: ws: wss:"

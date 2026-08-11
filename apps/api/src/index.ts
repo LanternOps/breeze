@@ -2031,11 +2031,23 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
   }
 
-  // Boot-time self-test for self-host BINARY_SOURCE=local: round-trip a
-  // synthetic manifest through sign + validate. If this fails, agent updates
-  // would silently 409 at runtime (#625). Fail fast so operators see the
-  // problem during `docker compose up` rather than after agents are stuck.
-  if ((process.env.BINARY_SOURCE || 'github').trim().toLowerCase() === 'local') {
+  // Boot-time self-test for every deployment that signs its own update
+  // manifests: round-trip a synthetic manifest through sign + validate. If this
+  // fails, agent updates would silently 409 at runtime (#625). Fail fast so
+  // operators see the problem during `docker compose up` rather than after
+  // agents are stuck.
+  //
+  // BINARY_SOURCE=local has always signed locally. BYO signing added a second
+  // such path: github mode against an OVERRIDDEN repository re-signs each
+  // update manifest with the per-deployment key, so it depends on exactly this
+  // machinery too. Without covering it, a BYO deployment with a rotated
+  // APP_ENCRYPTION_KEY boots clean, reports healthy, and only fails later when
+  // every re-sign throws mid-sync.
+  const { isOfficialReleaseSource } = await import('./services/releaseSource');
+  const signsOwnManifests =
+    (process.env.BINARY_SOURCE || 'github').trim().toLowerCase() === 'local'
+    || !isOfficialReleaseSource();
+  if (signsOwnManifests) {
     try {
       const { runManifestSelfTest } = await import('./services/binarySync.selftest');
       await runWithSystemDbAccess(async () => {

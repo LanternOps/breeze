@@ -793,6 +793,7 @@ describe('discovery routes', () => {
         profileId: null,
         profileName: null,
         profileSubnets: null,
+        suggestedBridgeDeviceId: null as string | null,
       };
     };
     const mockSingleAsset = (rows: unknown[]) => {
@@ -801,7 +802,9 @@ describe('discovery routes', () => {
           leftJoin: () => ({
             leftJoin: () => ({
               leftJoin: () => ({
-                where: () => ({ limit: () => Promise.resolve(rows) }),
+                leftJoin: () => ({
+                  where: () => ({ limit: () => Promise.resolve(rows) }),
+                }),
               }),
             }),
           }),
@@ -865,6 +868,37 @@ describe('discovery routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // suggestedBridgeDeviceId (#3199, spec D.1): the agent device that ran the
+    // asset's most recent discovery scan — derived via
+    // discoveredAssets.lastJobId -> discoveryJobs.agentId -> devices.agentId.
+    // Deliberately NOT linkedDeviceId (a same-device identity link, the wrong
+    // default for a proxy bridge).
+    it('returns suggestedBridgeDeviceId when the asset has a resolvable discovering agent', async () => {
+      const row = buildRow();
+      row.suggestedBridgeDeviceId = '00000000-0000-0000-0000-0000000000a1';
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.suggestedBridgeDeviceId).toBe('00000000-0000-0000-0000-0000000000a1');
+    });
+
+    it('returns null suggestedBridgeDeviceId when the discovering agent cannot be resolved to a device', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.suggestedBridgeDeviceId).toBeNull();
     });
   });
 
@@ -2186,44 +2220,47 @@ describe('discovery routes', () => {
           leftJoin: () => ({
             leftJoin: () => ({
               leftJoin: () => ({
-                where: () => ({ limit: () => Promise.resolve([{
-                  asset: {
-                    id: ASSET_ID,
-                    orgId: ORG,
-                    siteId: '00000000-0000-0000-0000-000000000001',
-                    assetType: 'router',
-                    approvalStatus: 'approved',
-                    isOnline: true,
-                    hostname: null,
-                    label: null,
-                    ipAddress: '10.0.0.1',
-                    macAddress: null,
-                    manufacturer: null,
-                    model: null,
-                    openPorts: [],
-                    osFingerprint: null,
-                    snmpData: null,
-                    responseTimeMs: null,
-                    linkedDeviceId: null,
-                    linkSource: null,
-                    typeSource: 'manual',
-                    detectedAssetType: 'workstation',
-                    discoveryMethods: [],
-                    notes: null,
-                    tags: [],
-                    firstSeenAt: now,
-                    lastSeenAt: now,
-                    createdAt: now,
-                    updatedAt: now,
-                  },
-                  snmpMonitoringEnabled: false,
-                  networkMonitoringEnabled: false,
-                  linkedDeviceHostname: null,
-                  linkedDeviceDisplayName: null,
-                  profileId: null,
-                  profileName: null,
-                  profileSubnets: null,
-                }]) }),
+                leftJoin: () => ({
+                  where: () => ({ limit: () => Promise.resolve([{
+                    asset: {
+                      id: ASSET_ID,
+                      orgId: ORG,
+                      siteId: '00000000-0000-0000-0000-000000000001',
+                      assetType: 'router',
+                      approvalStatus: 'approved',
+                      isOnline: true,
+                      hostname: null,
+                      label: null,
+                      ipAddress: '10.0.0.1',
+                      macAddress: null,
+                      manufacturer: null,
+                      model: null,
+                      openPorts: [],
+                      osFingerprint: null,
+                      snmpData: null,
+                      responseTimeMs: null,
+                      linkedDeviceId: null,
+                      linkSource: null,
+                      typeSource: 'manual',
+                      detectedAssetType: 'workstation',
+                      discoveryMethods: [],
+                      notes: null,
+                      tags: [],
+                      firstSeenAt: now,
+                      lastSeenAt: now,
+                      createdAt: now,
+                      updatedAt: now,
+                    },
+                    snmpMonitoringEnabled: false,
+                    networkMonitoringEnabled: false,
+                    linkedDeviceHostname: null,
+                    linkedDeviceDisplayName: null,
+                    profileId: null,
+                    profileName: null,
+                    profileSubnets: null,
+                    suggestedBridgeDeviceId: null,
+                  }]) }),
+                }),
               }),
             }),
           }),

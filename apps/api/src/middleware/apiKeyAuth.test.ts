@@ -45,7 +45,12 @@ vi.mock('../services/apiKeyAuthorization', () => ({
   authorizeServicePrincipalKey: vi.fn()
 }));
 
-vi.mock('drizzle-orm', () => ({
+// Spread the real module rather than replacing it: schema modules evaluate
+// other drizzle-orm exports (notably `sql`, for partial-index predicates and
+// CHECK constraints) at import time, so a wholesale replacement breaks as soon
+// as one of them is pulled in transitively.
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn()
 }));
@@ -886,5 +891,9 @@ describe('API key auth + requireMfa interaction (intentional break)', () => {
       status: 401,
     });
     expect(next).not.toHaveBeenCalled();
-  });
+    // Explicit timeout: the drizzle-orm mock above spreads the real module (so
+    // schema modules can evaluate `sql` at import time), which makes this
+    // test's dynamic import('./auth') pull a heavier graph than the 5s default
+    // allows. The assertion is unchanged.
+  }, 20000);
 });

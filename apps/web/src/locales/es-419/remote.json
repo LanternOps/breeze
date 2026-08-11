@@ -314,15 +314,21 @@
   },
   "proxyTunnelPage": {
     "errors": {
-      "invalidTicket": "No se pudo obtener el ticket no válido",
+      "invalidTicket": "Este enlace no es válido o ha vencido.",
       "obtainTicket": "No se pudo obtener el ticket",
       "prepareConnection": "No se pudo preparar la conexión",
-      "tlsUntrusted": "Este dispositivo presentó un certificado autofirmado o que no es de confianza. Vuelva a crear la sesión de proxy con \"Permitir certificado autofirmado\" habilitado para continuar.",
-      "tunnelFailed": "No se pudo realizar el túnel"
+      "tlsUntrusted": "Este dispositivo presentó un certificado autofirmado o que no es de confianza.",
+      "tunnelFailed": "El túnel no se pudo abrir"
     },
     "openInNewTab": "Abrir en nueva pestaña",
     "preparingConnection": "Preparando conexión proxy…",
     "proxiedService": "Servicio proxy",
+    "reconnectSelfSigned": "Reconectar permitiendo un certificado autofirmado",
+    "sessionExpired": {
+      "title": "Sesión expirada",
+      "body": "Su sesión de proxy ha expirado.",
+      "reconnect": "Reconectar"
+    },
     "status": {
       "connected": "Conectado",
       "connecting": "Conectando...",
@@ -791,6 +797,12 @@
       "copiedLink": "Enlace de descarga copiado al portapapeles",
       "copyFailed": "No se pudo copiar al portapapeles"
     },
+    "detail": {
+      "heading": "Detalle de la sesión",
+      "noCode": "El código de un solo uso se mostró únicamente al crear esta sesión y no se puede recuperar. Inicie una sesión nueva si la persona necesita otro código.",
+      "attribution": "Referencia",
+      "close": "Cerrar el detalle de la sesión"
+    },
     "status": {
       "heading": "Avance de la sesión",
       "pending": "Esperando a que el usuario ejecute el cliente…",
@@ -811,14 +823,16 @@
     },
     "errors": {
       "create": "No se pudo crear la sesión de soporte",
-      "list": "No se pudieron cargar las sesiones de soporte recientes"
+      "list": "No se pudieron cargar las sesiones de soporte recientes",
+      "notFound": "Esa sesión de soporte ya no está disponible."
     },
     "list": {
       "heading": "Sesiones de soporte recientes",
       "empty": "Todavía no hay sesiones de soporte.",
       "columnCreated": "Inicio",
       "columnEnded": "Fin",
-      "unlabeled": "Sesión sin etiqueta"
+      "unlabeled": "Sesión sin etiqueta",
+      "openSession": "Abrir el detalle de la sesión"
     }
   }
 }

@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Loader2, Search } from 'lucide-react';
 import { friendlyFetchError } from '@/lib/utils';
 import { fetchWithAuth } from '@/stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import CisComplianceRow from './CisComplianceRow';
 import type { ComplianceEntry } from './types';
 
@@ -13,6 +14,7 @@ interface CisComplianceTabProps {
 
 export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) {
   const { t } = useTranslation('security');
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const [entries, setEntries] = useState<ComplianceEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -31,6 +33,7 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
     try {
       const params = new URLSearchParams({ limit: '200' });
       if (osFilter !== 'all') params.set('osType', osFilter);
+      if (currentOrgId) params.set('orgId', currentOrgId);
 
       const response = await fetchWithAuth(`/cis/compliance?${params.toString()}`, {
         signal: controller.signal,
@@ -45,9 +48,11 @@ export default function CisComplianceTab({ refreshKey }: CisComplianceTabProps) 
       if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(friendlyFetchError(err));
     } finally {
-      setLoading(false);
+      // An aborted request still runs its `finally`; clearing the flag there
+      // would show the empty state while its replacement is still loading.
+      if (abortRef.current === controller) setLoading(false);
     }
-  }, [osFilter]);
+  }, [osFilter, currentOrgId]);
 
   useEffect(() => {
     fetchData();

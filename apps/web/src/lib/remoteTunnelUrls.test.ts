@@ -18,4 +18,21 @@ describe('remote tunnel page URLs', () => {
     expect(url).not.toContain('ticket=');
     expect(url).not.toContain('ticket%3D');
   });
+
+  it('appends the asset id when provided, for the network-device Back link', () => {
+    const url = buildRemoteProxyPageUrl(
+      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      '10.0.0.5:443',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
+
+    expect(url).toBe(
+      '/remote/proxy/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee?target=10.0.0.5%3A443&asset=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    );
+  });
+
+  it('omits the asset param entirely when not provided', () => {
+    const url = buildRemoteProxyPageUrl('id-1', 'host:80');
+    expect(url).not.toContain('asset=');
+  });
 });

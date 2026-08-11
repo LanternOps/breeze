@@ -381,13 +381,12 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(insertMock).not.toHaveBeenCalled();
   });
 
-  it('manage_update_rings get strips the deprecated sources column from the response', async () => {
+  it('manage_update_rings get returns ring rows without a sources key (column dropped, #3151)', async () => {
     mockSelectReturns({
       id: RING_ID,
       partnerId: PARTNER_ID,
       name: 'Ring A',
       kind: 'ring',
-      sources: ['microsoft'],
     });
     const tool = getTool();
     const output = await tool.handler({ action: 'get', ringId: RING_ID }, makeAuth());

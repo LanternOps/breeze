@@ -31,6 +31,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -130,6 +131,38 @@ type HeartbeatPayload struct {
 	// — which this build never does, but the server must not assume "object
 	// present" implies "version 1" either. See SecurityCapabilities below.
 	SecurityCapabilities SecurityCapabilities `json:"securityCapabilities"`
+	// AgentEdition + MigrationRequired are the hosted/self-host build-edition
+	// telemetry signal (Phase 1 gap model, Task 8). Sent every heartbeat and
+	// written unconditionally server-side (the outboundNetworkPolicyVersion
+	// self-healing pattern, NOT the sticky isVirtual pattern) so a resolved
+	// condition clears a dashboard migration banner on the next beat.
+	// omitempty on both: a self-host build (the only build in this repo
+	// today) reports "" / false — both omitempty fields drop out — so the
+	// wire payload is byte-identical to pre-Task-8 agents.
+	AgentEdition      string `json:"agentEdition,omitempty"`
+	MigrationRequired bool   `json:"migrationRequired,omitempty"`
+}
+
+// migrationSignal reports the agent's build edition and whether it is a
+// hosted build currently talking to a non-allowlisted primary OR persisted
+// backup server (migration needed). backup is checked only when non-empty —
+// nothing is persisted to violate the allowlist when there is no backup.
+// Pure; independent of hostpolicy.Strict() — reporting is telemetry, not
+// enforcement, so it fires the same in gap and strict hosted builds.
+// Self-host returns ("", false) — NOT "self-host" — because the
+// AgentEdition field is omitempty: only the empty string drops out of the
+// wire payload, preserving byte-identity with pre-Task-8 agents.
+func migrationSignal(server, backup string) (edition string, migrationRequired bool) {
+	if !hostpolicy.Enforced() {
+		return "", false
+	}
+	if hostpolicy.AllowedURL(server) != nil {
+		return "hosted", true
+	}
+	if backup != "" && hostpolicy.AllowedURL(backup) != nil {
+		return "hosted", true
+	}
+	return "hosted", false
 }
 
 // SecurityCapabilities is the agent's outbound-network-policy capability
@@ -3499,6 +3532,18 @@ func (h *Heartbeat) promoteBackupServerURL(probedURL string) {
 		log.Error("refusing to promote empty backup server URL")
 		return
 	}
+	// Defense-in-depth: Task 4 already gated ingestion of backup_server_url,
+	// so probedURL should only ever be a previously-allowlisted value. This
+	// guards against a torn-persist or a backup that predates the hosted
+	// flip. Gated on Strict() (not Enforced()) so an existing-fleet gap
+	// build keeps promoting normally — only a strict build refuses.
+	if hostpolicy.Strict() {
+		if err := hostpolicy.AllowedURL(probedURL); err != nil {
+			log.Warn("refusing failover promotion to non-allowlisted host",
+				"host", probedURL, "error", err.Error())
+			return
+		}
+	}
 	h.mu.Lock()
 	oldPrimary := h.config.ServerURL
 	newPrimary := probedURL
@@ -3655,6 +3700,12 @@ func (h *Heartbeat) sendHeartbeat() {
 		// toggle.
 		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
 	}
+	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
+	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
+	// Checks the persisted backup as well as the primary so a hosted-gap
+	// build with an allowlisted primary but a non-allowlisted backup still
+	// surfaces the dashboard migration banner.
+	payload.AgentEdition, payload.MigrationRequired = migrationSignal(h.ServerURL(), h.BackupServerURL())
 
 	h.mu.Lock()
 	if h.helperLifecycle != nil {

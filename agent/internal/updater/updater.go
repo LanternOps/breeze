@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -105,6 +106,42 @@ func New(cfg *Config) *Updater {
 	}
 }
 
+// filterControlPlaneOrigins drops any control-plane origin outside the
+// compiled allowlist from the ControlPlaneOrigins list passed to netpolicy.
+// Identity (no filtering) in self-host AND in a gap build (allowlist
+// compiled in, strict mode off) — existing-fleet agents on a gap build must
+// keep functioning unchanged; only a strict build filters.
+//
+// What dropping an origin actually gates: ControlPlaneOrigins membership
+// grants exactly two things at that origin — reachability to a private
+// address, and (for ControlPlaneDownload) permission to use plain HTTP (see
+// netpolicy.Policy.ControlPlaneOrigins). It does NOT, by itself, block an
+// HTTPS request to a public host at that origin — netpolicy permits that
+// regardless of ControlPlaneOrigins membership. So filtering a
+// non-allowlisted control-plane origin here is not a guarantee that a
+// strict build refuses to talk to it; it only withdraws the private-address
+// and cleartext-HTTP grants for that origin.
+//
+// It filters ONLY the control-plane origin set passed to netpolicy, never
+// the signed download target, which may legitimately be a cross-origin CDN
+// URL (checksum + Ed25519 manifest-signature bound) — see updaterPolicy's
+// doc comment below.
+func filterControlPlaneOrigins(origins []string) []string {
+	if !hostpolicy.Strict() {
+		return origins
+	}
+	out := make([]string, 0, len(origins))
+	for _, o := range origins {
+		if o == "" {
+			continue
+		}
+		if hostpolicy.AllowedURL(o) == nil {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // updaterPolicy builds the netpolicy.Policy that governs every network
 // destination this Updater talks to. ControlPlaneOrigins carries BOTH the
 // primary (cfg.ServerURL()) and the configured backup server URL, snapshotted
@@ -114,7 +151,8 @@ func New(cfg *Config) *Updater {
 // what grants cleartext HTTP and private-address reachability for the
 // ControlPlaneDownload purpose; omitting either origin silently makes that
 // control plane's downloads fail with cleartext_not_allowed or
-// private_address_not_allowed.
+// private_address_not_allowed. Origins are then passed through
+// filterControlPlaneOrigins, which is a no-op outside a strict hosted build.
 func updaterPolicy(cfg *Config) netpolicy.Policy {
 	var origins []string
 	if cfg != nil {
@@ -123,6 +161,7 @@ func updaterPolicy(cfg *Config) netpolicy.Policy {
 		}
 		origins = append(origins, cfg.BackupServerURL)
 	}
+	origins = filterControlPlaneOrigins(origins)
 	return netpolicy.Policy{
 		Purpose:             netpolicy.ControlPlaneDownload,
 		ControlPlaneOrigins: origins,
@@ -366,6 +405,11 @@ type releaseArtifactAsset struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// Edition is optional and additive: "self-host" | "hosted" | "" (absent).
+	// Absent means the manifest predates edition-stamping (or the running
+	// agent is old enough not to look at this field at all) — either way it
+	// is accepted unconditionally. See editionAllowed.
+	Edition string `json:"edition,omitempty"`
 }
 
 func (u *Updater) component() string {
@@ -494,6 +538,9 @@ func pkgAssetChecksum(verifiedManifest []byte, version string) (string, error) {
 	for i := range manifest.Assets {
 		if manifest.Assets[i].Name != name {
 			continue
+		}
+		if !editionAllowed(manifest.Assets[i].Edition) {
+			return "", fmt.Errorf("update rejected: artifact edition %q does not match this build", manifest.Assets[i].Edition)
 		}
 		sha := manifest.Assets[i].SHA256
 		if len(sha) != 64 {
@@ -1020,6 +1067,9 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 	}
 	if selected == nil {
 		return updateManifest{}, fmt.Errorf("release artifact manifest does not include %s", assetName)
+	}
+	if !editionAllowed(selected.Edition) {
+		return updateManifest{}, fmt.Errorf("update rejected: artifact edition %q does not match this build", selected.Edition)
 	}
 	if len(selected.SHA256) != 64 {
 		return updateManifest{}, fmt.Errorf("release artifact manifest checksum must be SHA-256 hex")

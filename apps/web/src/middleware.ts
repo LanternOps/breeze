@@ -24,6 +24,15 @@ export function buildFallbackCspDirectives(options: {
       ? "style-src 'self' 'unsafe-inline'"
       : "style-src 'self'",
     "worker-src 'self' blob:",
+    // The bare `https:` scheme-source is load-bearing, not laziness: the public
+    // /quick landing page renders the minting MSP's logo from a partner-supplied
+    // https URL (partner_login_branding.logo_url), so narrowing this to
+    // 'self' data: blob: would break partner branding on that page.
+    // ACCEPTED RISK: a partner-controlled logo host is a privacy beacon — it
+    // sees the IP, UA and Referer of every end user who loads the page. The MSP
+    // already knows the end user (it is their customer being supported), the
+    // API only ever emits an https: URL, and the page carries no session
+    // cookie, so the exposure is bounded to a third party the MSP chose.
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
     resolveFrameSrcDirective({}),

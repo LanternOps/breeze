@@ -1,0 +1,8 @@
+*.key
+*.pfx
+*.p12
+release-assets/
+dist/
+staging/
+out/
+node_modules/

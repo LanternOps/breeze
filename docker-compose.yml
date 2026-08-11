@@ -189,6 +189,8 @@ services:
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
       ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
+      ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
+      ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
       # Native APNs push for the iOS app (all optional; unset = push disabled).
       # All-or-none: setting ANY of these makes the four credentials required,
       # so a half-configured relay fails at boot instead of silently at first
@@ -271,6 +273,14 @@ services:
       BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
       RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-}
+      # BYO signing: override the GitHub repository that releases are pulled
+      # from (default lanternops/breeze). Pair with
+      # RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS set to YOUR release manifest key.
+      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+      # Binary edition served by this deployment: self-host (default,
+      # unchanged behavior) or hosted (production requires
+      # BINARY_SOURCE=local + a manifest trust root — see .env.example).
+      BINARY_EDITION: ${BINARY_EDITION:-self-host}
       # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
       # without touching their .env. Hosted operators must set IS_HOSTED=true
       # in .env so this interpolates to true. The API config validator (#570)
@@ -293,11 +303,6 @@ services:
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
       E2E_MODE: ${E2E_MODE:-}
-      # MSI Signing (optional — remote Windows signing service via Cloudflare Access)
-      MSI_SIGNING_URL: ${MSI_SIGNING_URL:-}
-      MSI_SIGNING_CF_ACCESS_ID: ${MSI_SIGNING_CF_ACCESS_ID:-}
-      MSI_SIGNING_CF_ACCESS_SECRET: ${MSI_SIGNING_CF_ACCESS_SECRET:-}
-      MSI_SIGNING_API_KEY: ${MSI_SIGNING_API_KEY:-}
       # MCP OAuth (off by default, opt-in via env)
       MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
       OAUTH_ISSUER: ${OAUTH_ISSUER:-}
@@ -372,6 +377,48 @@ services:
       METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
       # Hosted billing redirect
       BILLING_URL: ${BILLING_URL:-}
+      # --- Optional knobs documented as COMMENTED-OUT defaults ---------------
+      # Everything below is documented in .env.example the way this repo
+      # documents an optional tuning knob: commented out, showing its default.
+      # The parity guard used to read only UNCOMMENTED assignments, so this
+      # entire class was exempt from it and quietly never reached a container
+      # (#3239; #3236 was one instance of the same shape). All are `${VAR:-}`
+      # for the reason spelled out above — '' reads as absent to envStr /
+      # envFlag / envInt, so an unset knob still gets its in-code default.
+      # Auth cookie + CORS hardening. AUTH_/PORTAL_-prefixed names override the
+      # generic COOKIE_* pair; that precedence is resolved with envStr (NOT `??`)
+      # precisely because '' must fall through rather than shadow — see
+      # resolveAuthCookieSameSite() in routes/auth/helpers.ts.
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-}
+      COOKIE_FORCE_SECURE: ${COOKIE_FORCE_SECURE:-}
+      AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-}
+      AUTH_COOKIE_FORCE_SECURE: ${AUTH_COOKIE_FORCE_SECURE:-}
+      PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-}
+      PORTAL_COOKIE_FORCE_SECURE: ${PORTAL_COOKIE_FORCE_SECURE:-}
+      CORS_INCLUDE_DEFAULT_ORIGINS: ${CORS_INCLUDE_DEFAULT_ORIGINS:-}
+      REFRESH_ROTATION_GRACE_SECONDS: ${REFRESH_ROTATION_GRACE_SECONDS:-}
+      # Customer-portal session store
+      PORTAL_STATE_BACKEND: ${PORTAL_STATE_BACKEND:-}
+      # MCP server rate limits + execute-tool gating
+      MCP_REQUIRE_EXECUTE_ADMIN: ${MCP_REQUIRE_EXECUTE_ADMIN:-}
+      MCP_EXECUTE_TOOL_ALLOWLIST: ${MCP_EXECUTE_TOOL_ALLOWLIST:-}
+      MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
+      MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
+      MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}
+      # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      # External billing service (hosted only; empty on self-host)
+      BREEZE_BILLING_URL: ${BREEZE_BILLING_URL:-}
+      BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
+      BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
+      BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+      # Startup + agent-fleet behaviour
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+      AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+      ENABLE_API_DOCS_UI: ${ENABLE_API_DOCS_UI:-}
+      PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

@@ -184,7 +184,7 @@
       "title": "Configura AI per Office — {{orgName}}",
       "mapDescription": "Mappa questa organizzazione al suo tenant Microsoft Entra (Directory ID). La mappatura è il perno dell'isolamento tenant — ogni accesso a Excel da questo tenant arriva in questa organizzazione.",
       "prefilled": " Precompilato dalla connessione Microsoft 365 esistente dell'organizzazione.",
-      "entraTenantId": "Entra tenant ID",
+      "entraTenantId": "ID tenant Entra",
       "guidError": "Deve essere un GUID (Entra admin center → Overview → Tenant ID).",
       "saveContinue": "Salva e continua",
       "consentDescription": "Un amministratore Microsoft 365 del tenant cliente deve concedere il consenso amministratore all'app Breeze AI for Office. Invia questo link al cliente (oppure aprilo tu se hai Global Admin nel tenant cliente):",

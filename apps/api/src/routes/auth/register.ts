@@ -15,6 +15,11 @@ import { ANONYMOUS_ACTOR_ID } from '../../services/auditEvents';
 import { createAuditLog } from '../../services/auditService';
 import { captureException } from '../../services/sentry';
 import { createPendingRegistration } from '../../services/pendingRegistration';
+import {
+  businessEmailContactUrl,
+  businessEmailRequired,
+  isConsumerEmailDomain,
+} from '../../services/consumerEmailDomains';
 import { enqueueRegistrationVerification } from '../../services/authEmailQueue';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import {
@@ -175,6 +180,29 @@ registerRoutes.post('/register-partner', zValidator('json', registerPartnerSchem
   if (!passwordCheck.valid) {
     await floorPromise;
     return c.json({ error: passwordCheck.errors[0] }, 400);
+  }
+
+  // Hosted signup requires a business email. Like the password check above this
+  // is input-dependent, not account-dependent — the verdict is a pure function
+  // of the submitted address, so a 400 here discloses nothing about whether that
+  // address already has an account and does not reintroduce an existence-
+  // dependent branch (SR2-21). Placed before the argon2 hash so a rejected
+  // signup does not pay that cost.
+  //
+  // Recoverable by design: consumer-mailbox providers are used by real MSPs, so
+  // the response carries a scheduling link rather than a flat refusal.
+  if (businessEmailRequired(isHosted()) && isConsumerEmailDomain(email)) {
+    await floorPromise;
+    return c.json(
+      {
+        error:
+          'Please sign up with your business email address. If you do not have one, schedule a call and we will get you set up.',
+        code: 'BUSINESS_EMAIL_REQUIRED',
+        actionUrl: businessEmailContactUrl(),
+        actionLabel: 'Schedule a call',
+      },
+      400
+    );
   }
 
   // Hash BEFORE parking — a plaintext password is NEVER stored in the pending

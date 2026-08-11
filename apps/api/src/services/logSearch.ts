@@ -3,10 +3,13 @@ import {
   asc,
   desc,
   eq,
+  gt,
   gte,
   ilike,
   inArray,
+  lt,
   lte,
+  or,
   sql,
   type SQL
 } from 'drizzle-orm';
@@ -142,14 +145,19 @@ function parseTimeRange(input?: { start?: string; end?: string }): { start: Date
   return { start, end };
 }
 
-function encodeSearchCursor(cursor: { timestamp: Date; id: string }): string {
+export interface LogSearchCursor {
+  timestamp: Date;
+  id: string;
+}
+
+export function encodeSearchCursor(cursor: LogSearchCursor): string {
   return Buffer.from(JSON.stringify({
     timestamp: cursor.timestamp.toISOString(),
     id: cursor.id,
   })).toString('base64url');
 }
 
-function decodeSearchCursor(raw: string): { timestamp: Date; id: string } {
+export function decodeSearchCursor(raw: string): LogSearchCursor {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
@@ -171,6 +179,51 @@ function decodeSearchCursor(raw: string): { timestamp: Date; id: string } {
   }
 
   return { timestamp, id };
+}
+
+/**
+ * Keyset (`WHERE (ts, id) < (cursor.ts, cursor.id)`) predicate for cursor
+ * pagination, in whichever direction the caller sorted.
+ *
+ * Built from Drizzle's typed comparison helpers on purpose (#3329). The
+ * previous hand-written `sql` template interpolated the cursor's `Date`
+ * directly, and a bare value inside a `sql` template is wrapped in a `Param`
+ * with the *noop* encoder — so the `Date` object reached postgres.js
+ * unserialized and its Bind step threw
+ * `ERR_INVALID_ARG_TYPE: The "string" argument must be ... Received an
+ * instance of Date`. Because every request runs inside `withDbAccessContext`
+ * (a postgres.js `begin()` transaction, which re-throws any query error at
+ * commit even after the caller handled it), that surfaced as an HTTP 500 for
+ * the whole MCP/REST call rather than a tool-level error — i.e. the advertised
+ * `nextCursor` could never be used. `lt`/`gt`/`eq` route the value through the
+ * column's own encoder, which is what serializes the `Date` for the driver.
+ *
+ * Cursor timestamps are millisecond-precision, which is lossless here:
+ * `device_event_logs.timestamp` is agent-supplied and normalized through
+ * `new Date(...)` on ingest (`routes/agents/helpers.ts` `sanitizeTimestamp`),
+ * so the column never holds sub-millisecond values.
+ */
+export function buildLogSearchKeysetCondition(
+  cursor: LogSearchCursor,
+  sortOrder: 'asc' | 'desc',
+): SQL {
+  const condition = sortOrder === 'asc'
+    ? or(
+        gt(deviceEventLogs.timestamp, cursor.timestamp),
+        and(eq(deviceEventLogs.timestamp, cursor.timestamp), gt(deviceEventLogs.id, cursor.id)),
+      )
+    : or(
+        lt(deviceEventLogs.timestamp, cursor.timestamp),
+        and(eq(deviceEventLogs.timestamp, cursor.timestamp), lt(deviceEventLogs.id, cursor.id)),
+      );
+
+  // `or()` is only `undefined` when given no defined operands; both are always
+  // defined above. Assert rather than silently dropping the page boundary,
+  // which would re-serve page 1 forever.
+  if (!condition) {
+    throw new Error('Failed to build log search keyset condition.');
+  }
+  return condition;
 }
 
 export function mergeSavedLogSearchFilters(
@@ -332,18 +385,9 @@ async function runFleetSearch(
   const pageConditions = [...baseConditions];
 
   if (filters.cursor) {
-    const cursor = decodeSearchCursor(filters.cursor);
-    if (sortOrder === 'asc') {
-      pageConditions.push(sql`(
-        ${deviceEventLogs.timestamp} > ${cursor.timestamp}
-        OR (${deviceEventLogs.timestamp} = ${cursor.timestamp} AND ${deviceEventLogs.id} > cast(${cursor.id} as uuid))
-      )`);
-    } else {
-      pageConditions.push(sql`(
-        ${deviceEventLogs.timestamp} < ${cursor.timestamp}
-        OR (${deviceEventLogs.timestamp} = ${cursor.timestamp} AND ${deviceEventLogs.id} < cast(${cursor.id} as uuid))
-      )`);
-    }
+    pageConditions.push(
+      buildLogSearchKeysetCondition(decodeSearchCursor(filters.cursor), sortOrder),
+    );
   }
 
   const whereCondition = and(...pageConditions);

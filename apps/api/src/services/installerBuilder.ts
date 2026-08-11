@@ -13,6 +13,7 @@ import {
   getGithubReleaseRepository,
 } from './binarySource';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
+import { assertGithubFetchableEdition } from './releaseAssetTrust';
 import {
   InstallerFilenameHostError,
   isEncodedWindowsFilenameApiHost,
@@ -29,7 +30,7 @@ function assertValidEnrollmentKey(key: string): void {
   }
 }
 
-// --- Windows zip bundle builder (fallback when remote signing service is not configured) ---
+// --- Windows zip bundle builder ---
 
 function generateWindowsInstallScript(enrollmentKey: string): string {
   return `@echo off
@@ -278,15 +279,23 @@ export async function fetchRegularMsi(): Promise<Buffer> {
     const resp = await fetch(url, { redirect: 'follow' });
     if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
-    await verifyGithubReleaseArtifactBuffer({
+    // No expectedPlatformTrust here: the public self-host release ships this
+    // MSI unsigned (platformTrust "none") by default, while a BYO-re-signed
+    // repo still ships it Authenticode-signed. Both are legitimate for
+    // edition "self-host" — the edition-aware accept/reject decision lives in
+    // assertDistributableReleaseAsset (releaseAssetTrust.ts), which
+    // verifyGithubReleaseArtifactBuffer runs on every manifest-verified asset.
+    const verified = await verifyGithubReleaseArtifactBuffer({
       assetName: 'breeze-agent.msi',
       assetBuffer: buffer,
       manifestUrl: getGithubReleaseArtifactManifestUrl(),
       signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
       expectedRepository: getGithubReleaseRepository(),
       expectedRelease: getGithubExpectedReleaseTag(),
-      expectedPlatformTrust: 'windows-authenticode-required',
     });
+    if (verified) {
+      assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: verified.edition });
+    }
     return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
@@ -336,7 +345,7 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
     if (resp.status === 404) return null;
     if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
-    await verifyGithubReleaseArtifactBuffer({
+    const verified = await verifyGithubReleaseArtifactBuffer({
       assetName: 'Breeze Installer.app.zip',
       assetBuffer: buffer,
       manifestUrl: getGithubReleaseArtifactManifestUrl(),
@@ -345,6 +354,12 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
       expectedRelease: getGithubExpectedReleaseTag(),
       expectedPlatformTrust: 'macos-developer-id-notarization-required',
     });
+    if (verified) {
+      assertGithubFetchableEdition({
+        assetName: 'Breeze Installer.app.zip',
+        edition: verified.edition,
+      });
+    }
     return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');

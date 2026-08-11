@@ -8,6 +8,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
 import { asList } from '@/lib/asList';
+import { buildRemoteProxyPageUrl } from '@/lib/remoteTunnelUrls';
 
 type AllowlistRule = {
   id: string; siteId: string; pattern: string; description: string;
@@ -390,7 +391,19 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
                                         {t(/* i18n-dynamic */ `orgRemoteAccessSettings.tunnels.types.${tunnel.type}`)}
                                       </span>
                                     </td>
-                                    <td className="py-2 pr-3"><code className="font-mono text-xs">{tunnel.target}</code></td>
+                                    <td className="py-2 pr-3">
+                                      {tunnel.type === 'proxy' ? (
+                                        <a
+                                          href={buildRemoteProxyPageUrl(tunnel.id, tunnel.target)}
+                                          data-testid={`remote-access-tunnel-link-${tunnel.id}`}
+                                          className="font-mono text-xs text-primary hover:underline"
+                                        >
+                                          {tunnel.target}
+                                        </a>
+                                      ) : (
+                                        <code className="font-mono text-xs">{tunnel.target}</code>
+                                      )}
+                                    </td>
                                     <td className="py-2 pr-3 text-xs">{tunnel.agentName}</td>
                                     <td className="py-2 pr-3 text-xs tabular-nums">
                                       {(() => {
