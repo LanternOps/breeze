@@ -555,7 +555,9 @@
     "lastSeen": "Visto por último",
     "loggedInUser": "Usuário conectado",
     "rail": "rail",
-    "strip": "strip"
+    "strip": "strip",
+    "networkAsset": "Ativo de rede",
+    "networkAssets": "Ativos de rede"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",
@@ -2125,11 +2127,27 @@
       "typeUpdateFailed": "Falha ao atualizar o tipo",
       "typeUpdated": "Tipo atualizado",
       "unlinkFailed": "Falha ao desvincular",
-      "unlinked": "Desvinculado"
+      "unlinked": "Desvinculado",
+      "linked": "Dispositivo vinculado",
+      "linkFailed": "Falha ao vincular dispositivo"
     },
     "unlink": "Desvincular",
     "unlinking": "Desvinculando…",
-    "viewManagedDevice": "Ver dispositivo gerenciado"
+    "viewManagedDevice": "Ver dispositivo gerenciado",
+    "autoLinkSuppressed": "Vinculação automática desativada — desvinculado por um usuário",
+    "linkManually": "Vincular manualmente…",
+    "linkManuallySelectDevice": "Selecionar um dispositivo",
+    "linkManuallyLinking": "Vinculando…",
+    "linkManuallyErrors": {
+      "loadDevices": "Falha ao carregar dispositivos",
+      "noDevices": "Nenhum dispositivo gerenciado neste site.",
+      "noSite": "Não foi possível determinar o site deste ativo."
+    },
+    "provenance": {
+      "auto": "— detectado automaticamente",
+      "manual": "— definido manualmente"
+    },
+    "sameDeviceAs": "Mesmo dispositivo que {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

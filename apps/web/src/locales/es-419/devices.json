@@ -555,7 +555,9 @@
     "lastSeen": "Visto por última vez",
     "loggedInUser": "Usuario registrado",
     "rail": "carril",
-    "strip": "banda"
+    "strip": "banda",
+    "networkAsset": "Activo de red",
+    "networkAssets": "Activos de red"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -2125,11 +2127,27 @@
       "typeUpdateFailed": "Error en la actualización de tipo",
       "typeUpdated": "Tipo Actualizado",
       "unlinkFailed": "Error al desvincular",
-      "unlinked": "Desvinculado"
+      "unlinked": "Desvinculado",
+      "linked": "Dispositivo vinculado",
+      "linkFailed": "Error al vincular el dispositivo"
     },
     "unlink": "Desconectar",
     "unlinking": "Desvinculando…",
-    "viewManagedDevice": "Ver dispositivo administrado"
+    "viewManagedDevice": "Ver dispositivo administrado",
+    "autoLinkSuppressed": "Vinculación automática deshabilitada: un usuario la desvinculó",
+    "linkManually": "Vincular manualmente…",
+    "linkManuallySelectDevice": "Seleccionar un dispositivo",
+    "linkManuallyLinking": "Vinculando…",
+    "linkManuallyErrors": {
+      "loadDevices": "Error al cargar los dispositivos",
+      "noDevices": "No hay dispositivos administrados en este sitio.",
+      "noSite": "No se pudo determinar el sitio de este activo."
+    },
+    "provenance": {
+      "auto": "— detectado automáticamente",
+      "manual": "— configurado manualmente"
+    },
+    "sameDeviceAs": "Mismo dispositivo que {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

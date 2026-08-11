@@ -39,10 +39,7 @@
       "ping": "Ping",
       "tags": "Étiquettes (séparées par des virgules)"
     },
-    "identityOnlyBefore": "Identité et suivi de l’actif uniquement — cela ne permet",
     "lastSeen": "Dernière détection {{time}}",
-    "linkManagedDeviceDescription": "Associez cet actif découvert à un appareil existant géré par un agent afin que Breeze les traite comme une même machine. Cette action n’installe aucun agent et ne crée aucun appareil. L’actif sera marqué comme approuvé.",
-    "linkManagedDeviceTitle": "Associer à un appareil géré",
     "loadingDetails": "Chargement des détails de l’appareil…",
     "messages": {
       "linked": "Actif lié. Il est désormais marqué comme approuvé.",
@@ -66,12 +63,11 @@
       "title": "Accès par procuration"
     },
     "snmpDataTitle": "Données SNMP",
-    "notText": "pas de",
-    "identityOnlyAfter": "contrôler l’accès proxy ni de choisir l’agent proxy (configurez ces options sous Accès proxy ci-dessous).",
     "snmpFields": {
       "systemName": "Nom du système",
       "objectId": "ID d’objet"
-    }
+    },
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "assetMonitoringSection": {
     "actions": {
@@ -146,7 +142,8 @@
     "loading": "Chargement des ressources découvertes...",
     "monitored": "Surveillé",
     "title": "Actifs découverts",
-    "tryAgain": "Réessayer"
+    "tryAgain": "Réessayer",
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "discoveryJobList": {
     "actions": {

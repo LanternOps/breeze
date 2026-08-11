@@ -555,7 +555,9 @@
     "lastSeen": "Zuletzt gesehen",
     "loggedInUser": "Angemeldeter Benutzer",
     "rail": "Schiene",
-    "strip": "Streifen"
+    "strip": "Streifen",
+    "networkAsset": "Netzwerk-Asset",
+    "networkAssets": "Netzwerk-Assets"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -2125,11 +2127,27 @@
       "typeUpdateFailed": "Typaktualisierung fehlgeschlagen",
       "typeUpdated": "Typ aktualisiert",
       "unlinkFailed": "Verknüpfung aufheben fehlgeschlagen",
-      "unlinked": "Nicht verknüpft"
+      "unlinked": "Nicht verknüpft",
+      "linked": "Gerät verknüpft",
+      "linkFailed": "Verknüpfen des Geräts fehlgeschlagen"
     },
     "unlink": "Verknüpfung aufheben",
     "unlinking": "Verknüpfung wird aufgehoben…",
-    "viewManagedDevice": "Verwaltetes Gerät anzeigen"
+    "viewManagedDevice": "Verwaltetes Gerät anzeigen",
+    "autoLinkSuppressed": "Automatische Verknüpfung deaktiviert — von einem Benutzer getrennt",
+    "linkManually": "Manuell verknüpfen…",
+    "linkManuallySelectDevice": "Gerät auswählen",
+    "linkManuallyLinking": "Wird verknüpft…",
+    "linkManuallyErrors": {
+      "loadDevices": "Geräte konnten nicht geladen werden",
+      "noDevices": "Keine verwalteten Geräte an diesem Standort.",
+      "noSite": "Der Standort dieses Assets konnte nicht ermittelt werden."
+    },
+    "provenance": {
+      "auto": "— automatisch erkannt",
+      "manual": "— manuell festgelegt"
+    },
+    "sameDeviceAs": "Dasselbe Gerät wie {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

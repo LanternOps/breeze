@@ -555,7 +555,9 @@
     "lastSeen": "Dernière apparition",
     "loggedInUser": "Utilisateur connecté",
     "rail": "Chemin de fer",
-    "strip": "Strip"
+    "strip": "Strip",
+    "networkAsset": "Actif réseau",
+    "networkAssets": "Actifs réseau"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -2125,11 +2127,27 @@
       "typeUpdateFailed": "Mise à jour du type échouée",
       "typeUpdated": "Type mis à jour",
       "unlinkFailed": "Échouement du déliement",
-      "unlinked": "Non lié"
+      "unlinked": "Non lié",
+      "linked": "Appareil lié",
+      "linkFailed": "Échec de la liaison de l'appareil"
     },
     "unlink": "Délier",
     "unlinking": "Déconnexion...",
-    "viewManagedDevice": "Voir le dispositif géré"
+    "viewManagedDevice": "Voir le dispositif géré",
+    "autoLinkSuppressed": "Liaison automatique désactivée — dissociée par un utilisateur",
+    "linkManually": "Lier manuellement…",
+    "linkManuallySelectDevice": "Sélectionner un appareil",
+    "linkManuallyLinking": "Liaison en cours…",
+    "linkManuallyErrors": {
+      "loadDevices": "Échec du chargement des appareils",
+      "noDevices": "Aucun appareil géré à ce site.",
+      "noSite": "Impossible de déterminer le site de cet actif."
+    },
+    "provenance": {
+      "auto": "— détecté automatiquement",
+      "manual": "— défini manuellement"
+    },
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

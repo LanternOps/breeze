@@ -555,7 +555,9 @@
     "lastSeen": "Ultima visualizzazione",
     "loggedInUser": "Utente connesso",
     "rail": "rail",
-    "strip": "striscia"
+    "strip": "striscia",
+    "networkAsset": "Asset di rete",
+    "networkAssets": "Asset di rete (elenco)"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -2125,11 +2127,27 @@
       "typeUpdateFailed": "Aggiornamento del tipo non riuscito",
       "typeUpdated": "Tipo aggiornato",
       "unlinkFailed": "Scollegamento non riuscito",
-      "unlinked": "Scollegato"
+      "unlinked": "Scollegato",
+      "linked": "Dispositivo collegato",
+      "linkFailed": "Impossibile collegare il dispositivo"
     },
     "unlink": "Scollega",
     "unlinking": "Scollegamento...",
-    "viewManagedDevice": "Visualizza dispositivo gestito"
+    "viewManagedDevice": "Visualizza dispositivo gestito",
+    "autoLinkSuppressed": "Collegamento automatico disabilitato: scollegato da un utente",
+    "linkManually": "Collega manualmente…",
+    "linkManuallySelectDevice": "Seleziona un dispositivo",
+    "linkManuallyLinking": "Collegamento in corso…",
+    "linkManuallyErrors": {
+      "loadDevices": "Impossibile caricare i dispositivi",
+      "noDevices": "Nessun dispositivo gestito in questo sito.",
+      "noSite": "Impossibile determinare il sito di questa risorsa."
+    },
+    "provenance": {
+      "auto": "— rilevato automaticamente",
+      "manual": "— impostato manualmente"
+    },
+    "sameDeviceAs": "Stesso dispositivo di {{name}}"
   },
   "osIcons": {
     "linux": "Linux",
