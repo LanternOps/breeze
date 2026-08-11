@@ -43,7 +43,6 @@ vi.mock('../db/schema', () => ({
     gracePeriodHours: 'gracePeriodHours',
     categories: 'categories',
     excludeCategories: 'excludeCategories',
-    sources: 'sources',
     autoApprove: 'autoApprove',
     categoryRules: 'categoryRules',
     targets: 'targets',
@@ -126,7 +125,6 @@ function makeRing(overrides: Record<string, unknown> = {}) {
     gracePeriodHours: 4,
     categories: [],
     excludeCategories: [],
-    sources: null,
     autoApprove: {},
     categoryRules: [],
     targets: {},
@@ -251,12 +249,12 @@ describe('updateRings routes', () => {
 
     it('no longer returns sources in ring detail responses', async () => {
       vi.mocked(db.select)
-        // ring lookup — sources is deprecated but the row still carries it
-        // until the column is dropped; the route must strip it regardless.
+        // ring lookup — the sources column was dropped (#3151), so a real
+        // full-row select never returns it and neither must the response.
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([makeRing({ sources: ['microsoft'] })])
+              limit: vi.fn().mockResolvedValue([makeRing()])
             })
           })
         } as any)
