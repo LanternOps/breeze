@@ -57,6 +57,13 @@ export type FileEntry = {
   size?: number;
   modified?: string;
   permissions?: string;
+  /**
+   * macOS Finder alias that the agent resolved. `type` reflects the target's
+   * kind (so a folder alias navigates and a file alias downloads), while
+   * `path`/`size`/`modified` still describe the alias file itself.
+   */
+  isAlias?: boolean;
+  aliasTarget?: string;
 };
 
 export type TransferItem = {
@@ -343,7 +350,10 @@ export default function FileManager({
       const json = await response.json();
       const entriesData = Array.isArray(json.data) ? json.data : [];
       setEntries(entriesData);
-      setCurrentPath(path);
+      // Prefer the path the agent actually listed: navigating into a macOS
+      // Finder alias lands on the alias's target, and uploads/breadcrumbs must
+      // follow it there rather than stay on the alias file.
+      setCurrentPath(typeof json.path === 'string' && json.path ? json.path : path);
       setError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('fileManager.errors.loadDirectory');

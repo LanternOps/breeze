@@ -57,7 +57,9 @@ export default function FolderPickerDialog({
           .filter((e) => e.type === 'directory')
           .sort((a, b) => a.name.localeCompare(b.name))
       );
-      setCurrentPath(path);
+      // The agent resolves a macOS Finder alias before listing, so the chosen
+      // destination must be the path it actually listed, not the alias file.
+      setCurrentPath(typeof json.path === 'string' && json.path ? json.path : path);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('folderPickerDialog.errors.loadDirectory');
       setError(message);

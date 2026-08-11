@@ -212,6 +212,18 @@ func ListFiles(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
+	// A macOS Finder alias to a folder is a regular file, so navigating into one
+	// would otherwise fail with "not a directory". Resolve it and list the
+	// target, re-running containment against the target — alias resolution
+	// deliberately leaves the listed directory, so the deny-list has to be
+	// applied again on the far side (issue #3344).
+	if target, ok := resolveMacAliasPath(cleanPath); ok {
+		if err := enforceReadContainment(target); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+		cleanPath = target
+	}
+
 	limit := GetPayloadInt(payload, "limit", defaultFileListLimit)
 	if limit < 1 {
 		limit = 1
@@ -249,13 +261,38 @@ func ListFiles(payload map[string]any) CommandResult {
 			entryType = "directory"
 		}
 
+		entryPath := filepath.Join(cleanPath, entry.Name())
+
+		// macOS Finder aliases are regular files holding a bookmark blob, so
+		// without this they list as ordinary ~1KB files and the UI offers the
+		// blob itself for download (issue #3344). Only Type is taken from the
+		// target, because Type is what drives the client's navigate-vs-download
+		// affordance. Path, Size, Modified and Permissions keep describing the
+		// alias file itself: those are what the mutating operations act on, and
+		// a delete confirmation that quoted the target's size while removing
+		// only a 1KB alias would be actively misleading.
+		aliasTarget := ""
+		if target, targetInfo, ok := resolveMacAliasTarget(entryPath, info); ok {
+			// Never surface an alias that leads into a credential store: leaving
+			// it unresolved keeps both the target path and its contents hidden.
+			if err := enforceReadContainment(target); err == nil {
+				aliasTarget = target
+				entryType = "file"
+				if targetInfo.IsDir() {
+					entryType = "directory"
+				}
+			}
+		}
+
 		fileEntries = append(fileEntries, FileEntry{
 			Name:        entry.Name(),
-			Path:        filepath.Join(cleanPath, entry.Name()),
+			Path:        entryPath,
 			Type:        entryType,
 			Size:        info.Size(),
 			Modified:    info.ModTime().Format(time.RFC3339),
 			Permissions: info.Mode().String(),
+			IsAlias:     aliasTarget != "",
+			AliasTarget: aliasTarget,
 		})
 	}
 
@@ -286,6 +323,17 @@ func ReadFile(payload map[string]any) CommandResult {
 	// Defense-in-depth: never read a credential store, even symlinked (SR5-01).
 	if err := enforceReadContainment(cleanPath); err != nil {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	// Downloading a macOS Finder alias should deliver the file it points at, not
+	// the bookmark blob (issue #3344). Containment is re-checked against the
+	// target because an alias can point anywhere, including at a credential
+	// store that filepath.EvalSymlinks would never have surfaced.
+	if target, ok := resolveMacAliasPath(cleanPath); ok {
+		if err := enforceReadContainment(target); err != nil {
+			return NewErrorResult(err, time.Since(start).Milliseconds())
+		}
+		cleanPath = target
 	}
 
 	// Check file info first
