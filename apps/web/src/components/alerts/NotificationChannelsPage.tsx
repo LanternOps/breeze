@@ -260,7 +260,14 @@ export default function NotificationChannelsPage() {
         config = {
           url: values.webhookUrl,
           method: values.webhookMethod,
-          headers: values.webhookHeaders?.filter(h => h.key) ?? [],
+          // The form models headers as a repeatable [{key,value}] list, but the
+          // API requires a Record<string,string> and rejects anything else with
+          // "Headers must be an object" — so every webhook channel save 400'd.
+          // Convert at the boundary rather than reshaping the field array,
+          // which is the right UI model for add/remove rows.
+          headers: Object.fromEntries(
+            (values.webhookHeaders ?? []).filter(h => h.key).map(h => [h.key, h.value])
+          ),
           authType: values.webhookAuthType,
           authUsername: values.webhookAuthUsername,
           authPassword: values.webhookAuthPassword,
@@ -347,9 +354,17 @@ export default function NotificationChannelsPage() {
       case 'webhook':
         base.webhookUrl = config.url as string;
         base.webhookMethod = config.method as 'POST' | 'PUT' | 'PATCH';
+        // Mirror of the outbound conversion. The array branch is kept because
+        // any channel saved before the fix — or hand-written via the API —
+        // may still carry the old shape.
         base.webhookHeaders = Array.isArray(config.headers)
           ? (config.headers as { key: string; value: string }[])
-          : [];
+          : config.headers && typeof config.headers === 'object'
+            ? Object.entries(config.headers as Record<string, string>).map(([key, value]) => ({
+                key,
+                value: String(value),
+              }))
+            : [];
         base.webhookAuthType = config.authType as 'none' | 'basic' | 'bearer';
         base.webhookAuthUsername = config.authUsername as string;
         base.webhookAuthPassword = config.authPassword as string;

@@ -79,6 +79,22 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
     return auth.orgCondition(column);
   };
 
+  // Scripts are dual-axis (org_id XOR partner_id), so a strict org condition
+  // hides every partner-wide script from global search — a tech could see a
+  // script on /scripts and get zero results for its exact name in Cmd+K.
+  //
+  // Gated on `scope === 'partner'` deliberately: an org-scoped token carries a
+  // partnerId but never passes `breeze_has_partner_access`, so widening the
+  // app-layer condition for it would ask for rows RLS refuses to return —
+  // RLS is stricter than the app layer here, and the two must not disagree.
+  const scriptsOrgCondition = (() => {
+    const orgOwned = orgConditionFor(scripts.orgId);
+    // No org condition at all means a system-scoped caller: already unfiltered.
+    if (!orgOwned) return undefined;
+    if (auth?.scope !== 'partner' || !auth.partnerId) return orgOwned;
+    return or(orgOwned, and(isNull(scripts.orgId), eq(scripts.partnerId, auth.partnerId)));
+  })();
+
   // Site-axis narrowing (app-layer only; RLS does NOT enforce site isolation).
   // mirrors core.ts:~424-435 / reports/data.ts:~67-72.
   const allowedSiteIds = (userPerms as UserPermissions | null)?.allowedSiteIds;
@@ -138,7 +154,7 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
             description: scripts.description
           })
           .from(scripts)
-          .where(orgConditionFor(scripts.orgId) ? and(orgConditionFor(scripts.orgId) as never, scriptQuery as never) : scriptQuery)
+          .where(scriptsOrgCondition ? and(scriptsOrgCondition as never, scriptQuery as never) : scriptQuery)
           .limit(perCategoryLimit)
       : Promise.resolve([]),
     canReadAlerts
