@@ -26,7 +26,7 @@ import { captureException } from './sentry';
  * RLS; system-context callers must validate ownership before calling.
  */
 export type ScriptDispatchSource =
-  | { kind: 'saved'; script: typeof scripts.$inferSelect }
+  | { kind: 'saved'; script: typeof scripts.$inferSelect; automationRunId?: string | null }
   | { kind: 'raw'; content: string; language: string; provenance: string };
 
 export type DispatchScriptInput = {
@@ -40,13 +40,22 @@ export type DispatchScriptInput = {
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
-  automationRunId?: string | null;
   requireOnline?: boolean;
-  deliver?: boolean;
 };
 
 export type DispatchScriptResult =
-  | { ok: true; commandId: string; executionId: string | null; delivered: boolean; executedAt: Date | null }
+  | {
+      ok: true;
+      commandId: string;
+      executionId: string | null;
+      delivered: boolean;
+      // Distinguishes WHY `delivered` is false. 'no_agent' is the normal
+      // "queued for later" case; 'claim_lost', 'decrypt_failed', and
+      // 'send_failed' all mean we had a connected agent and still failed to
+      // reach it — operationally different, and worth a log line (see below).
+      deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent';
+      executedAt: Date | null;
+    }
   | { ok: false; code: 'device_decommissioned' | 'device_offline' | 'os_mismatch' | 'org_mismatch' | 'insert_failed'; error: string };
 
 export async function dispatchScriptToDevice(input: DispatchScriptInput): Promise<DispatchScriptResult> {
@@ -115,7 +124,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         orgId: device.orgId,
         triggeredBy: input.triggeredBy ?? null,
         triggerType: input.triggerType ?? 'manual',
-        ...(input.automationRunId ? { automationRunId: input.automationRunId } : {}),
+        ...(source.automationRunId ? { automationRunId: source.automationRunId } : {}),
         parameters,
         status: 'pending',
       })
@@ -126,50 +135,74 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     executionId = execution.id;
   }
 
-  const payload = encryptSensitivePayloadFields('script', {
-    scriptId: payloadScriptId,
-    ...(executionId ? { executionId } : {}),
-    ...(input.batchId ? { batchId: input.batchId } : {}),
-    language,
-    content,
-    parameters,
-    timeoutSeconds,
-    runAs,
-    ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
-  });
+  // Discards a pending execution row that would otherwise be orphaned —
+  // stuck 'pending' with no command for the reaper to later mislabel
+  // 'timeout' (the #3162 failure mode, mirrors the old
+  // discardQueuelessExecution in automationRuntime). Used on BOTH the
+  // queueCommand-throws path and the queueCommand-resolves-falsy path: only
+  // one of those raises, so a catch block alone used to miss the other.
+  // `.returning` + a 0-row warning restores the diagnostic the old
+  // discardQueuelessExecution had: a 0-row delete here means the row wasn't
+  // 'pending' anymore for some other reason, which is worth knowing about.
+  // The delete itself is wrapped in its own try/catch: a transient DB error
+  // here must never replace or mask the ORIGINAL failure the caller is about
+  // to see/return.
+  const discardPendingExecution = async (reason: string) => {
+    if (!executionId) return;
+    try {
+      const deleted = await db
+        .delete(scriptExecutions)
+        .where(and(eq(scriptExecutions.id, executionId), eq(scriptExecutions.status, 'pending')))
+        .returning({ id: scriptExecutions.id });
+      if (deleted.length === 0) {
+        console.warn(
+          '[scriptDispatch] execution row was not pending at discard time; leaving it alone',
+          { executionId, deviceId: device.id, reason },
+        );
+      }
+    } catch (cleanupErr) {
+      console.error(
+        '[scriptDispatch] failed to discard pending execution row',
+        { executionId, deviceId: device.id, reason, error: cleanupErr },
+      );
+      captureException(cleanupErr);
+    }
+  };
 
+  let payload: Record<string, unknown>;
   let command: Awaited<ReturnType<typeof queueCommand>>;
+  let stage: 'payload build' | 'queueCommand' = 'payload build';
   try {
+    // Payload build lives inside this guarded region (not after it) so a
+    // throw here — no-op today (no 'script' entry in
+    // SENSITIVE_PAYLOAD_FIELDS), but PR4 of #3409 adds one — also discards
+    // the pending execution row instead of orphaning it.
+    payload = encryptSensitivePayloadFields('script', {
+      scriptId: payloadScriptId,
+      ...(executionId ? { executionId } : {}),
+      ...(input.batchId ? { batchId: input.batchId } : {}),
+      language,
+      content,
+      parameters,
+      timeoutSeconds,
+      runAs,
+      ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
+    });
+    stage = 'queueCommand';
     command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined);
   } catch (err) {
-    // Don't leave an orphaned pending execution the reaper would later
-    // mislabel 'timeout' (mirrors discardQueuelessExecution in automationRuntime).
-    // The cleanup delete is wrapped in its own try/catch: a transient DB error
-    // here must never replace the original queueCommand failure the caller is
-    // about to see (mirrors automationRuntime.ts discardQueuelessExecution).
-    if (executionId) {
-      try {
-        await db.delete(scriptExecutions).where(and(
-          eq(scriptExecutions.id, executionId),
-          eq(scriptExecutions.status, 'pending'),
-        ));
-      } catch (cleanupErr) {
-        console.error(
-          `[scriptDispatch] failed to discard unqueued script execution ${executionId} (device ${device.id}):`,
-          cleanupErr,
-        );
-        captureException(cleanupErr);
-      }
-    }
+    await discardPendingExecution(`${stage} threw`);
     throw err;
   }
   if (!command) {
+    await discardPendingExecution('queueCommand returned no row');
     return { ok: false, code: 'insert_failed', error: 'Failed to create command' };
   }
 
   let delivered = false;
   let executedAt: Date | null = null;
-  if (device.agentId && input.deliver !== false) {
+  let deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent' = 'no_agent';
+  if (device.agentId) {
     const claimed = await claimPendingCommandForDelivery(command.id);
     if (claimed) {
       const deliverable = decryptCommandForDelivery({ id: command.id, type: 'script', payload });
@@ -178,20 +211,32 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         : false;
       if (sent) {
         delivered = true;
+        deliveryOutcome = 'sent';
         executedAt = claimed.executedAt;
         if (executionId) {
           // Guarded on pending: a fast agent can already have driven the row
-          // terminal via handleScriptResult (see automationRuntime.ts:996).
+          // terminal (see handleScriptResult in services/commandResultHandlers.ts).
           await db
             .update(scriptExecutions)
             .set({ status: 'running', startedAt: claimed.executedAt })
             .where(and(eq(scriptExecutions.id, executionId), eq(scriptExecutions.status, 'pending')));
         }
       } else {
+        // We had a claimed command and a connected agent and still failed to
+        // reach it — operationally different from the normal "no agent
+        // connected, queued for later" case, so this is worth a log line.
+        deliveryOutcome = deliverable ? 'send_failed' : 'decrypt_failed';
+        console.warn('[scriptDispatch] failed to deliver claimed command to connected agent', {
+          commandId: command.id,
+          deviceId: device.id,
+          deliveryOutcome,
+        });
         await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
       }
+    } else {
+      deliveryOutcome = 'claim_lost';
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, executedAt };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt };
 }

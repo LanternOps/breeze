@@ -48,7 +48,17 @@ const mocks = vi.hoisted(() => {
   return {
     contextFlags,
     dispatchScriptToDevice,
-    waitForCommandResult: vi.fn().mockResolvedValue({ id: 'cmd-1', status: 'completed' }),
+    // Modeled on a real device_commands row: carries `payload` (full script
+    // content + parameters) alongside `result`. B1 (#3409 PR0 Wave B): the
+    // handler must project only `result` (+ commandId/executionId) and never
+    // let `payload` — which is what leaked script content into the model
+    // context and persisted chat history — reach the tool's returned JSON.
+    waitForCommandResult: vi.fn().mockResolvedValue({
+      id: 'cmd-1',
+      status: 'completed',
+      payload: { scriptId: 'script-x', content: 'SECRET SCRIPT CONTENT', parameters: { foo: 'bar' } },
+      result: { status: 'completed', exitCode: 0, stdout: 'hi' },
+    }),
   };
 });
 const { dispatchScriptToDevice, waitForCommandResult, contextFlags } = mocks;
@@ -178,7 +188,20 @@ describe('run_script enforces script-device org equality', () => {
 
     // Result comes from waitForCommandResult, not the dispatch return value.
     expect(waitForCommandResult).toHaveBeenCalledWith('cmd-1', 60000);
-    expect(out.results[DEVICE_B]).toEqual({ id: 'cmd-1', status: 'completed' });
+    // B1 (#3409 PR0 Wave B): the handler projects the polled command's
+    // `.result` (+ commandId/executionId) rather than returning the row
+    // whole — `payload` (script content + parameters) must never reach the
+    // model context or persisted chat history.
+    expect(out.results[DEVICE_B]).toEqual({
+      status: 'completed',
+      exitCode: 0,
+      stdout: 'hi',
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+    });
+    expect(out.results[DEVICE_B]).not.toHaveProperty('payload');
+    expect(out.results[DEVICE_B]).not.toHaveProperty('content');
+    expect(JSON.stringify(out)).not.toContain('SECRET SCRIPT CONTENT');
   });
 
   it('executes a system (null-org) script on any accessible device', async () => {
@@ -206,7 +229,13 @@ describe('run_script partner-wide script visibility (#3409 PR0)', () => {
     );
 
     expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
-    expect(out.results[DEVICE_B]).toEqual({ id: 'cmd-1', status: 'completed' });
+    expect(out.results[DEVICE_B]).toEqual({
+      status: 'completed',
+      exitCode: 0,
+      stdout: 'hi',
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+    });
   });
 
   it('rejects a partner-wide script when the device org belongs to a different partner', async () => {
@@ -286,5 +315,37 @@ describe('run_script surfaces dispatch failures without calling waitForCommandRe
 
     expect(out.results[DEVICE_B].error).toBe('Device is offline, cannot execute command');
     expect(waitForCommandResult).not.toHaveBeenCalled();
+  });
+});
+
+describe('run_script keeps per-device failures isolated in the shared results accumulator', () => {
+  it('does not let one device throwing during dispatch corrupt another device\'s successful result', async () => {
+    const DEVICE_C = '33333333-3333-3333-3333-333333333333';
+    mockDb(
+      { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' },
+      // The mocked devices select ignores the WHERE clause and always
+      // returns this one row, but the tool keys `results` by the actual
+      // deviceId from the input array, which is what this test asserts on.
+      { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' },
+    );
+
+    // First device's dispatch throws (e.g. a genuine DB/infra fault);
+    // second device's dispatch uses the default (successful) mock.
+    dispatchScriptToDevice.mockImplementationOnce(async () => {
+      throw new Error('boom');
+    });
+
+    const out = JSON.parse(
+      await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B, DEVICE_C] }, makeAuth()),
+    );
+
+    expect(out.results[DEVICE_B].error).toBe('boom');
+    expect(out.results[DEVICE_C]).toEqual({
+      status: 'completed',
+      exitCode: 0,
+      stdout: 'hi',
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+    });
   });
 });

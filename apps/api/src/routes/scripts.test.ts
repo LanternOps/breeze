@@ -753,6 +753,21 @@ describe('scripts routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects more than 500 device ids on execute (#3409 PR0 Wave B — audit fan-out cap)', async () => {
+    const deviceIds = Array.from({ length: 501 }, (_, i) => {
+      const hex = i.toString(16).padStart(12, '0');
+      return `11111111-1111-4111-8111-${hex}`;
+    });
+
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ deviceIds })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it('should reject unsupported runAs override on execute', async () => {
     const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',
