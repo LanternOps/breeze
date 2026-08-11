@@ -124,15 +124,23 @@ export const filterRootSchema = z.union([
 // Saved Filter Schemas
 // ============================================
 
+// ONE definition of `description`, shared by create and update. The dashboard
+// sends an explicit `null` for a blank description on BOTH verbs; when only
+// update accepted null, every create without a description 400'd with
+// "expected string, received null" — the same create/update drift that broke
+// static group creation in #3159. Accepted forms, identical on both verbs:
+// omitted, a string, or `null` meaning "no description".
+const savedFilterDescriptionField = z.string().max(1000).nullable().optional();
+
 export const createSavedFilterSchema = z.object({
   name: z.string().min(1).max(200),
-  description: z.string().max(1000).optional(),
+  description: savedFilterDescriptionField,
   conditions: filterConditionGroupSchema
 });
 
 export const updateSavedFilterSchema = z.object({
   name: z.string().min(1).max(200).optional(),
-  description: z.string().max(1000).nullable().optional(),
+  description: savedFilterDescriptionField,
   conditions: filterConditionGroupSchema.optional()
 });
 
