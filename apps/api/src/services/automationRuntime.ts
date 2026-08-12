@@ -20,6 +20,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
@@ -893,6 +894,11 @@ export async function executeRunScriptAction(
 
   const parameters = action.parameters ?? {};
 
+  // Preload ONCE for this single-device dispatch (#3409 PR2 Task 4). Only
+  // run_script needs a scope — execute_command below dispatches a
+  // {kind:'raw'} source, which scriptDispatch deliberately never substitutes.
+  const variableScope = await loadTenantVariableScope([context.device.orgId]);
+
   // #3409 PR0: dispatchScriptToDevice owns the script_executions insert (#3162
   // — a REAL uuid row so handleScriptResult can correlate the agent's result),
   // payload build, sensitive-field encryption, queueCommand, and claim/decrypt/
@@ -914,6 +920,7 @@ export async function executeRunScriptAction(
     // whatever value was configured rather than adding new validation here.
     runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
     requireOnline: true,
+    variableScope,
   });
 
   if (!dispatch.ok) {

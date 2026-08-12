@@ -21,6 +21,7 @@ import { decryptCommandForDelivery, encryptSensitivePayloadFields } from './sens
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import type { ResolvedVariable, TenantVariableScope } from './tenantVariableResolution';
 
 const savedScript = (o = {}) => ({
   id: 'script-1', orgId: 'org-a', partnerId: null, isSystem: false,
@@ -31,6 +32,24 @@ const savedScript = (o = {}) => ({
 const device = (o = {}) => ({
   id: 'device-1', orgId: 'org-a', osType: 'linux', status: 'online', agentId: null, ...o,
 }) as any;
+
+// #3409 PR2 Task 4: builds a TenantVariableScope directly, bypassing
+// loadTenantVariableScope (which needs a real DB query chain and is covered
+// on its own in tenantVariableResolution.test.ts). `resolveForOrg` and
+// `substituteTenantVariables` are used UNMOCKED here — this exercises the
+// real substitution/secret-redaction logic at the dispatch boundary, not a
+// hand-tuned mock of it. The shape below mirrors
+// tenantVariableResolution.ts's private `InternalTenantVariableScope`
+// exactly (orgIds + byOrg); TenantVariableScope itself only declares
+// `orgIds`, so this is cast through `unknown`.
+const resolvedVar = (key: string, value: string, isSecret = false): ResolvedVariable => ({
+  key, value, isSecret, variableId: `var-${key}`, version: 1,
+});
+
+const buildScope = (orgId: string, vars: ResolvedVariable[] = []): TenantVariableScope => ({
+  orgIds: new Set([orgId]),
+  byOrg: new Map([[orgId, new Map(vars.map((v) => [v.key, v]))]]),
+} as unknown as TenantVariableScope);
 
 const insertReturning = (rows: unknown[]) => ({
   values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
@@ -424,5 +443,98 @@ describe('dispatchScriptToDevice — delivery', () => {
     }
     expect(consoleWarnSpy).not.toHaveBeenCalled();
     consoleWarnSpy.mockRestore();
+  });
+});
+
+// #3409 PR2 Task 4: wiring tenant variable resolution into dispatch.
+describe('dispatchScriptToDevice — {{var.*}} resolution', () => {
+  it('substitutes a non-secret variable into the content that reaches the payload', async () => {
+    const scope = buildScope('org-a', [resolvedVar('repo_url', 'https://example.com/pkg')]);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ content: 'curl {{var.repo_url}}' }) },
+      variableScope: scope,
+    });
+    expect(r.ok).toBe(true);
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect((payload as Record<string, unknown>).content).toBe('curl https://example.com/pkg');
+    expect(JSON.stringify(payload)).not.toContain('{{var.repo_url}}');
+  });
+
+  it('fails the device with unresolved_variables when a token has no value', async () => {
+    const scope = buildScope('org-a', []); // no variables in the snapshot
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ content: 'curl {{var.repo_url}}' }) },
+      variableScope: scope,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('unresolved_variables');
+    expect(queueCommand).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled(); // no orphan pending execution row
+  });
+
+  it('fails the device when the content references a SECRET variable', async () => {
+    const scope = buildScope('org-a', [resolvedVar('s1_token', 'shh', true)]);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ content: 'curl -H "Authorization: {{var.s1_token}}"' }) },
+      variableScope: scope,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('unresolved_variables');
+      expect(r.error).toMatch(/secret/i);
+    }
+  });
+
+  it('never puts a secret value anywhere in the built payload', async () => {
+    const SECRET_VALUE = 'top-secret-value-xyz';
+    const scope = buildScope('org-a', [resolvedVar('s1_token', SECRET_VALUE, true)]);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ content: 'curl -H "Authorization: {{var.s1_token}}"' }) },
+      variableScope: scope,
+    });
+    // A secret reference fails the device before any payload is ever built —
+    // queueCommand's captured call args ARE what would have reached the
+    // agent, so asserting the call never happened, and that whatever WAS
+    // captured never contains the plaintext, covers both "no payload built"
+    // and "even if one were, it's clean".
+    expect(queueCommand).not.toHaveBeenCalled();
+    const payload = vi.mocked(queueCommand).mock.calls[0]?.[2] ?? null;
+    expect(JSON.stringify(payload)).not.toContain(SECRET_VALUE);
+  });
+
+  it('resolves nothing and requires no scope when the content has no {{var.}} token', async () => {
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript({ content: 'echo hi, no tokens here' }) },
+      // deliberately no variableScope — must not throw
+    });
+    expect(r.ok).toBe(true);
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect((payload as Record<string, unknown>).content).toBe('echo hi, no tokens here');
+  });
+
+  it('throws if the supplied scope was not built for this device org', async () => {
+    const scope = buildScope('org-other', [resolvedVar('repo_url', 'x')]);
+    await expect(dispatchScriptToDevice({
+      device: device({ orgId: 'org-a' }),
+      source: { kind: 'saved', script: savedScript({ orgId: 'org-a', content: '{{var.repo_url}}' }) },
+      variableScope: scope,
+    })).rejects.toThrow(/not in this snapshot/i);
+  });
+
+  it('does not substitute into a raw execute_command source ({{var.*}} passes through untouched)', async () => {
+    const scope = buildScope('org-a', [resolvedVar('repo_url', 'https://example.com')]);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'raw', content: 'curl {{var.repo_url}}', language: 'bash', provenance: 'automation:auto-1' },
+      variableScope: scope,
+    });
+    expect(r.ok).toBe(true);
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect((payload as Record<string, unknown>).content).toBe('curl {{var.repo_url}}');
   });
 });

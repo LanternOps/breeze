@@ -10,6 +10,7 @@ import {
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -155,6 +156,10 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   const parameters = input.parameters ?? {};
   const runAs = input.runAs ?? script.runAs;
 
+  // Preload ONCE per fan-out (#3409 PR2 Task 4), never per device — one
+  // snapshot covers every org in this batch's executable device set.
+  const variableScope = await loadTenantVariableScope([...new Set(executableDevices.map((d) => d.orgId))]);
+
   // A multi-org run (partner/system script fanned out across orgs) must not
   // stamp every batch row with the first device's org — split one batch per
   // org instead. A single-org, single-device run keeps today's no-batch
@@ -220,6 +225,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       runAs,
       targetSessionId: input.targetSessionId,
       batchId: batchIdByOrg.get(device.orgId) ?? null,
+      variableScope,
     });
     if (!dispatch.ok) {
       // 'insert_failed' means queueCommand/the execution insert itself broke

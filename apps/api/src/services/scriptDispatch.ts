@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { canonicalizeScriptParameters } from '@breeze/shared';
+import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
 import { db } from '../db';
 import { devices, scriptExecutions, scripts } from '../db/schema';
@@ -14,6 +14,12 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import {
+  describeVariableFailure,
+  resolveForOrg,
+  substituteTenantVariables,
+  type TenantVariableScope,
+} from './tenantVariableResolution';
 
 /**
  * Single seam through which every script reaches a device (#3409 PR 0).
@@ -42,6 +48,11 @@ export type DispatchScriptInput = {
   targetSessionId?: number;
   batchId?: string | null;
   requireOnline?: boolean;
+  // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
+  // see tenantVariableResolution.ts. Required only when `source.kind ===
+  // 'saved'` and the script content actually contains a {{var.*}} token; the
+  // common token-free path never needs one.
+  variableScope?: TenantVariableScope;
 };
 
 export type DispatchScriptResult =
@@ -123,10 +134,32 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
 
   const parameters = input.parameters ?? {};
   const language = source.kind === 'saved' ? source.script.language : source.language;
-  const content = source.kind === 'saved' ? source.script.content : source.content;
+  let content = source.kind === 'saved' ? source.script.content : source.content;
   const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
   const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
   const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+
+  // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
+  // anything else happens with `content`. `hasVariableTokens` comes first so
+  // the common token-free path does no work at all — no scope lookup, no
+  // substitution pass. `{kind:'raw'}` is deliberately skipped: an ad-hoc
+  // execute_command has no declaring script, so nothing could have been
+  // validated at save time (routes/scripts.ts's secret-token rejection only
+  // runs against a saved script's content) — its tokens pass through
+  // verbatim. This sits BEFORE the script_executions insert below so a
+  // failed device leaves no orphan 'pending' row for the caller's per-device
+  // failure channel (scriptExecution.ts) to clean up.
+  if (source.kind === 'saved' && hasVariableTokens(content)) {
+    if (!input.variableScope) {
+      throw new Error('variableScope is required to dispatch a script containing {{var.*}} tokens');
+    }
+    const outcome = substituteTenantVariables(content, resolveForOrg(input.variableScope, device.orgId));
+    const failure = describeVariableFailure(outcome);
+    if (failure) {
+      return { ok: false, code: 'unresolved_variables', error: failure };
+    }
+    content = outcome.content;
+  }
 
   let executionId: string | null = null;
   if (source.kind === 'saved') {
