@@ -235,6 +235,10 @@ function createHarness(overrides: {
   const migrationSqlOpens = { count: 0 };
   const rateLimitPrefixes: string[] = [];
   const registeredWebAssets: Array<{ name: string; asset: RegisterableExtensionWebAsset }> = [];
+  /** Every manifest handed to publishTenancy — the declaration that goes LIVE. */
+  const publishedTenancy: ExtensionManifestV1[] = [];
+  /** Every (name, declaration) pair the RLS tripwire port was asked to verify. */
+  const validatedTenancy: Array<{ name: string; tenancy: ExtensionManifestV1['tenancy'] }> = [];
 
   const activate = registry.activate.bind(registry);
   vi.spyOn(registry, 'activate').mockImplementation((staged) => {
@@ -247,23 +251,38 @@ function createHarness(overrides: {
     declaredRuntimeNames: () => new Set<string>(),
     sourceCandidates: () => [],
     createMigrationSql: () => { migrationSqlOpens.count += 1; return null; },
-    runMigrations: async () => { calls.push('migration'); },
-    publishTenancy: () => { calls.push('tenancy'); },
-    anyDeclaredTableExists: async () => { calls.push('probe'); return false; },
+    runMigrations: async () => {},
+    publishTenancy: (manifest) => { calls.push('tenancy'); publishedTenancy.push(manifest); },
+    existingDeclaredTables: async () => { calls.push('probe'); return []; },
     ...(overrides.realStage ? {} : {
       stageExtension: async (_module: BreezeExtensionV1, manifest: ExtensionManifestV1) => {
         calls.push('stage');
         return fakeStaged(manifest);
       },
     }),
-    validateTenancy: async () => { calls.push('validate'); },
+    validateTenancyDeclaration: async (name, tenancy) => {
+      calls.push('validate');
+      validatedTenancy.push({ name, tenancy });
+    },
     registerRateLimitSkip: (prefix) => { rateLimitPrefixes.push(prefix); },
+    webDistExists: () => true,
     readWebDist: () => FIXTURE_WEB_ASSET,
     registerWebAsset: (name, asset) => {
       calls.push('web');
       registeredWebAssets.push({ name, asset });
     },
     ...overrides.ports,
+  };
+
+  // The migration phase records itself OUTSIDE the stub, wrapping whatever
+  // implementation survived the override merge. Tests that make migrations FAIL
+  // replace `runMigrations` wholesale, and with the recording living inside the
+  // default stub those tests could not tell "stopped AT the migration phase"
+  // from "never got there".
+  const runMigrations = ports.runMigrations!;
+  ports.runMigrations = async (builtin, sql, stateStore) => {
+    calls.push('migration');
+    await runMigrations(builtin, sql, stateStore);
   };
 
   return {
@@ -273,6 +292,8 @@ function createHarness(overrides: {
     migrationSqlOpens,
     rateLimitPrefixes,
     registeredWebAssets,
+    publishedTenancy,
+    validatedTenancy,
     load: () => loadBuiltinExtensions({ registry, stateStore, ports }),
   };
 }
@@ -373,19 +394,25 @@ describe('loadBuiltinExtensions', () => {
   });
 
   it('production boot fails when the web dist is missing; dev warns and skips web asset', async () => {
-    const missing = () => { throw enoent('missing /app/ee/demo-builtin/dist/web'); };
+    // The ABSENT-DIRECTORY condition is now decided by an explicit existence
+    // check, not by catching ENOENT around the whole operation — so this is
+    // what a missing bundle looks like, and `readWebDist` is never reached.
+    const noWebDir = { webDistExists: () => false, readWebDist: () => { throw new Error('must not be called'); } };
 
     vi.stubEnv('NODE_ENV', 'production');
     try {
-      const prod = createHarness({ ports: { readWebDist: missing } });
-      await expect(prod.load()).rejects.toThrow(/missing \/app\/ee\/demo-builtin\/dist\/web/);
+      const prod = createHarness({ ports: noWebDir });
+      const error = await prod.load().then(() => null, (e: unknown) => e as Error);
+      expect(error?.message).toContain('misbuilt');
+      expect(error?.message).toMatch(/dist[/\\]web/);
+      expect(error?.message).toContain('build:web');
     } finally {
       vi.unstubAllEnvs();
     }
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const dev = createHarness({ ports: { readWebDist: missing } });
+      const dev = createHarness({ ports: noWebDir });
       await expect(dev.load()).resolves.toBeUndefined();
 
       // Server routes still activate — API-only development needs no web build.
@@ -401,17 +428,28 @@ describe('loadBuiltinExtensions', () => {
     }
   });
 
-  // A non-ENOENT failure is a real fault (permissions, corrupt tree) and must
-  // never be downgraded to a dev warning.
-  it('propagates a non-ENOENT web-dist failure even outside production', async () => {
+  // A failure from a PRESENT web dist is a real fault (permissions, a file
+  // vanishing mid-walk, a corrupt tree) and must never be downgraded to a dev
+  // warning — including when it happens to carry `code: 'ENOENT'`, which the
+  // previous catch-based shape swallowed outside production.
+  it.each([
+    ['a permissions failure', Object.assign(new Error('permission denied'), { code: 'EACCES' })],
+    ['an ENOENT mid-walk (a file vanished under the walker)', enoent('ENOENT: no such file, open .../dist/web/chunk.js')],
+  ])('propagates %s from a PRESENT web dist even outside production', async (_label, boom) => {
+    const h = createHarness({
+      ports: { webDistExists: () => true, readWebDist: () => { throw boom; } },
+    });
+    await expect(h.load()).rejects.toBe(boom);
+  });
+
+  // The registration itself is not inside a lenient branch either.
+  it('propagates a web-asset registration failure', async () => {
     const h = createHarness({
       ports: {
-        readWebDist: () => {
-          throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
-        },
+        registerWebAsset: () => { throw enoent('registry write failed'); },
       },
     });
-    await expect(h.load()).rejects.toThrow(/permission denied/);
+    await expect(h.load()).rejects.toThrow(/registry write failed/);
   });
 
   /**
@@ -435,6 +473,15 @@ describe('loadBuiltinExtensions', () => {
     // The original text survives, and so does the original error as `cause`.
     expect(error?.message).toContain('extension "vector" is not available');
     expect((error?.cause as Error)?.message).toBe('extension "vector" is not available');
+
+    // A failed migration aborts the pipeline AT the migration phase: nothing
+    // downstream ran, so no tenancy was published for tables that do not exist,
+    // nothing is live, and no `installed_extensions` row was seeded claiming an
+    // active version. (This is the state the DISABLED path then has to survive
+    // on the next boot — see the partial-schema test below.)
+    expect(h.calls).toEqual(['migration']);
+    expect(h.registry.get(NAME)).toBeUndefined();
+    expect(await h.stateStore.get(NAME)).toBeNull();
   });
 
   it('rethrows an unrelated migration failure untouched', async () => {
@@ -442,6 +489,10 @@ describe('loadBuiltinExtensions', () => {
     const h = createHarness({ ports: { runMigrations: async () => { throw boom; } } });
 
     await expect(h.load()).rejects.toBe(boom);
+
+    expect(h.calls).toEqual(['migration']);
+    expect(h.registry.get(NAME)).toBeUndefined();
+    expect(await h.stateStore.get(NAME)).toBeNull();
   });
 });
 
@@ -498,6 +549,10 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
       expect(line).toContain('builtin_extension_disabled');
       expect(line).toContain(`"extension":"${NAME}"`);
       expect(line).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+      // UNSET is reported as an explicit null, not an empty string, so it reads
+      // differently from a flag that was set to something wrong.
+      expect(line).toContain('"observedValue":null');
+      expect(line).toContain('opt-in per deployment');
     } finally {
       warn.mockRestore();
     }
@@ -519,31 +574,63 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
     },
   );
 
+  /**
+   * `BREEZE_WORKSPACE_ENABLED=1` looks enabled to a human reading the compose
+   * file, and the old skip line said only "this one is not enabled" — which
+   * reads as a lie to the operator who just set it. The value-strictness has to
+   * be in the log, along with what was actually observed.
+   */
+  it.each(['1', 'TRUE', 'yes', 'false', ''])(
+    'reports the observed value and a value-strict reason when the flag is set to %o',
+    async (value) => {
+      process.env[ENABLE_ENV_VAR] = value;
+      const warn = captureWarnings();
+      try {
+        await createHarness().load();
+
+        const line = warn.mock.calls[0]!.join(' ');
+        expect(line).toContain(`"observedValue":${JSON.stringify(value)}`);
+        expect(line).toContain('is SET but is not the exact string');
+        expect(line).toContain('value-strict');
+        // ...and NOT the never-configured wording.
+        expect(line).not.toContain('opt-in per deployment');
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   // A previously-enabled deployment left `demo_*` on the database. Without the
   // declaration, the loader's and the reconciler's unaccounted-public-tables
   // sweeps abort boot on those tables, and org-deletion cascades skip them.
-  it('publishes tenancy — and ONLY tenancy — when the built-in left tables behind', async () => {
+  it('publishes tenancy — and ONLY tenancy (plus its RLS check) — when the built-in left tables behind', async () => {
     const warn = captureWarnings();
     try {
       const probed: Array<readonly string[]> = [];
       const h = createHarness({
         builtins: [tenantedBuiltin()],
         ports: {
-          anyDeclaredTableExists: async (tables) => {
+          existingDeclaredTables: async (tables) => {
             probed.push(tables);
-            return true;
+            return [...tables];
           },
         },
       });
       await h.load();
 
-      expect(h.calls).toEqual(['tenancy']);
+      expect(h.calls).toEqual(['tenancy', 'validate']);
       expect(h.migrationSqlOpens.count).toBe(0);
       expect(h.registry.get(NAME)).toBeUndefined();
       expect(await h.stateStore.get(NAME)).toBeNull();
 
       // The probe sees the deduped, sorted union of all four tenancy lists.
       expect(probed).toEqual([TENANT_TABLES]);
+
+      // Everything present: the declaration goes out WHOLE, and no
+      // partial-schema warning is emitted.
+      expect(h.publishedTenancy[0]?.tenancy).toEqual(tenantedBuiltin().manifest.tenancy);
+      const warnings = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(warnings).not.toContain('builtin_extension_partial_schema');
     } finally {
       warn.mockRestore();
     }
@@ -556,12 +643,118 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
     try {
       const h = createHarness({
         builtins: [tenantedBuiltin()],
-        ports: { anyDeclaredTableExists: async () => false },
+        ports: { existingDeclaredTables: async () => [] },
       });
       await h.load();
 
       expect(h.calls).toEqual([]);
       expect(h.migrationSqlOpens.count).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * THE PARTIAL-SCHEMA CASE — the state a failed enabled boot actually leaves
+   * behind, and the one the old boolean probe could not represent.
+   *
+   * Enabling the built-in on a database that cannot satisfy its migrations
+   * aborts boot part-way through the file sequence, so the files that committed
+   * leave their tables and the rest never run. (Workspace on stock Postgres:
+   * three files apply, the fourth dies on `CREATE EXTENSION vector`.) Unsetting
+   * the flag then reaches this path with SOME tables present — and a yes/no
+   * probe answered "yes", which published the WHOLE manifest declaration and
+   * pointed org-cascade and tenant-export SQL at relations that were never
+   * created. Only the present subset may be declared.
+   */
+  it('publishes a FILTERED declaration — and warns — when only SOME of the tables exist', async () => {
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [tenantedBuiltin()],
+        // `demo_projects`' migration never committed; `demo_files`' did.
+        ports: { existingDeclaredTables: async () => ['demo_files'] },
+      });
+      await h.load();
+
+      expect(h.calls).toEqual(['tenancy', 'validate']);
+
+      // Every one of the four lists is narrowed to the tables that EXIST —
+      // `demo_projects` appears in none of them.
+      const published = h.publishedTenancy[0]?.tenancy;
+      expect(published).toEqual({
+        orgCascadeDeleteTables: ['demo_files'],
+        deviceCascadeDeleteTables: ['demo_files'],
+        deviceOrgDenormalizedTables: [],
+        deviceOrgMoveDeleteTables: ['demo_files'],
+      });
+      expect(JSON.stringify(published)).not.toContain('demo_projects');
+
+      // The RLS tripwire runs over the SAME filtered declaration — asserting the
+      // manifest's whole tenancy here would fail on the table that isn't there,
+      // and skipping the assertion would leave an orphaned table holding tenant
+      // rows with no boot-time RLS check at all.
+      expect(h.validatedTenancy).toEqual([{ name: NAME, tenancy: published }]);
+
+      // ...and the half-migrated state is an operator problem, not a silent one.
+      const warnings = warn.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(warnings).toContain('builtin_extension_partial_schema');
+      expect(warnings).toContain('"presentTables":["demo_files"]');
+      expect(warnings).toContain('"missingTables":["demo_projects"]');
+      expect(warnings).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+      expect(warnings).toContain('org-cascade and tenant-export will NOT cover');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The published declaration is the object the tripwire sees, and the
+  // manifest's own tenancy must not be mutated on the way there — a later
+  // reader (builtinTenancyDeclarations, the export registry) would inherit the
+  // narrowing and forget tables that merely need their migration re-run.
+  it('leaves the built-in\'s own manifest tenancy untouched while filtering', async () => {
+    const warn = captureWarnings();
+    try {
+      const builtin = tenantedBuiltin();
+      const before = structuredClone(builtin.manifest.tenancy);
+      const h = createHarness({
+        builtins: [builtin],
+        ports: { existingDeclaredTables: async () => ['demo_files'] },
+      });
+      await h.load();
+
+      expect(builtin.manifest.tenancy).toEqual(before);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * A probe failure on the DISABLED path is the confusing one: nothing about
+   * this built-in was asked for, so a bare postgres error reads as an
+   * unexplained boot abort. The wrap has to say which built-in, that it is
+   * switched OFF, and why a switched-off built-in queries the database at all.
+   */
+  it('wraps a probe failure with the disabled-path context, preserving the cause', async () => {
+    const warn = captureWarnings();
+    try {
+      const boom = new Error('connection refused');
+      const h = createHarness({
+        builtins: [tenantedBuiltin()],
+        ports: { existingDeclaredTables: async () => { throw boom; } },
+      });
+
+      const error = await h.load().then(() => null, (e: unknown) => e as Error);
+      expect(error?.message).toContain(NAME);
+      expect(error?.message).toContain('DISABLED');
+      expect(error?.message).toContain(ENABLE_ENV_VAR);
+      expect(error?.message).toContain('EARLIER enabled boot');
+      // Names the tables it was asking about, so the operator can check by hand.
+      expect(error?.message).toContain('demo_files');
+      expect(error?.cause).toBe(boom);
+
+      // Nothing was published on a probe we could not trust.
+      expect(h.calls).toEqual([]);
     } finally {
       warn.mockRestore();
     }

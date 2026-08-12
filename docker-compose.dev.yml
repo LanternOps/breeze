@@ -86,8 +86,11 @@ services:
       BINARY_SOURCE: ${BINARY_SOURCE:-github}
       BREEZE_VERSION: ${BREEZE_VERSION:-latest}
       # Built-in extensions are off by default per deployment; dev is where
-      # Workspace is developed, and this stack's postgres is already pgvector.
-      BREEZE_WORKSPACE_ENABLED: "true"
+      # Workspace is developed, and this stack's postgres is already pgvector —
+      # hence the default of "true" here. Still interpolated (not hardcoded), so
+      # a developer can switch it off in .env to reproduce the default-off boot
+      # path without editing this file. Matches docker-compose.yml's convention.
+      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-true}
     ports:
       - "3001:3001"
     volumes:
@@ -97,6 +100,10 @@ services:
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
+      # The manifest is BAKED into the image, so without this mount a local edit
+      # to its tenancy / orgExportColumns is invisible to the running container
+      # while the migrations beside it are live — the two would silently drift.
+      - ./ee/workspace/manifest.json:/app/ee/workspace/manifest.json:ro
       # Mount config files
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro

@@ -33,6 +33,10 @@ services:
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
+      # The manifest is BAKED into the image, so without this mount a local edit
+      # to its tenancy / orgExportColumns is invisible to the running container
+      # while the migrations beside it are live — the two would silently drift.
+      - ./ee/workspace/manifest.json:/app/ee/workspace/manifest.json:ro
       # Mount config files
       - ./apps/api/package.json:/app/apps/api/package.json:ro
       - ./apps/api/tsconfig.json:/app/apps/api/tsconfig.json:ro

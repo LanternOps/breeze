@@ -127,14 +127,34 @@ function missingBuiltinManifestMessage(packageDir: string): string {
  */
 export function loadBuiltinManifest(packageDir: string): ExtensionManifestV1 {
   const root = resolveBuiltinRoot(packageDir);
+  const manifestPath = path.join(root, 'manifest.json');
   let raw: string;
   try {
-    raw = readFileSync(path.join(root, 'manifest.json'), 'utf8');
+    raw = readFileSync(manifestPath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
     throw new Error(missingBuiltinManifestMessage(packageDir));
   }
-  return parseExtensionManifestV1(JSON.parse(raw));
+  // A FOUND-but-unreadable manifest is a different failure from a missing one,
+  // and its raw form says nothing about where it came from: `JSON.parse` throws
+  // "Unexpected end of JSON input" and the zod parse throws a path-less list of
+  // field issues. Neither names the file. This module runs at IMPORT time (see
+  // BUILTINS below), so that bare error is the entire diagnostic an operator
+  // gets for a boot that died before the first log line — hence the path, the
+  // byte length (a truncated COPY's tell) and the likely cause.
+  try {
+    return parseExtensionManifestV1(JSON.parse(raw));
+  } catch (error) {
+    throw new Error(
+      `[extensions] built-in "${packageDir}" has an unreadable manifest at ${manifestPath} ` +
+        `(${raw.length} bytes). It exists but could not be parsed as a valid v1 manifest, which ` +
+        'means a misbuilt image or a truncated/partial COPY of the package directory rather than ' +
+        `a configuration mistake. Original error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      { cause: error },
+    );
+  }
 }
 
 /**

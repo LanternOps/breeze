@@ -133,6 +133,11 @@ export default defineConfig({
       // pool) and forks real child processes against `:5433`. Belongs to
       // vitest.integration.config.ts (already in its include).
       'src/extensions/twoReplicaReconcile.integration.test.ts',
+      // Disabled built-in extension's table-existence probe against a real
+      // server: imports `__tests__/integration/setup` (real postgres pool) and
+      // provisions its own throwaway database. Belongs to
+      // vitest.integration.config.ts (already in its include).
+      'src/extensions/builtinTableProbe.integration.test.ts',
       // Reset-password reveal secret lifecycle (CAS burn + expiry-reaper
       // sweep): imports `__tests__/integration/setup` (real postgres pool
       // + autoMigrate) and lives in src/services/actionIntents/ outside the

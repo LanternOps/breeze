@@ -5,8 +5,9 @@
 // Compiled in ≠ loaded. Each built-in carries a deployment enable flag
 // (BuiltinExtension.enableEnvVar) and is OFF by default; only an explicitly
 // enabled built-in runs the pipeline below. See skipDisabledBuiltin for what a
-// switched-off built-in still does (one log line, plus its tenancy declaration
-// if and only if its tables are already on the database).
+// switched-off built-in still does (one log line, plus a tenancy declaration
+// narrowed to whichever of its tables are actually on the database — none, some
+// or all — and the RLS tripwire over that declaration).
 //
 // It mirrors the reconciler's phase order for everything that still applies —
 // migration → tenancy → stage → validate → activate → web asset — and drops the
@@ -28,6 +29,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import postgres from 'postgres';
 import type { BreezeExtensionV1, ExtensionManifestV1 } from '@breeze/extension-sdk';
+import type { ExtensionTenancyDeclaration } from '@breeze/extension-api';
 import {
   BUILTINS,
   resolveBuiltinRoot,
@@ -135,22 +137,76 @@ export function isBuiltinEnabled(builtin: BuiltinExtension): boolean {
 /**
  * Every distinct table the manifest's tenancy declaration names, sorted — the
  * exact set that publishing the declaration would hand to core's cascade,
- * device-move and tenant-export code.
+ * device-move and tenant-export code, plus the `nonTenantTables` opt-out list.
+ *
+ * `nonTenantTables` is included deliberately even though core's cascade/export
+ * code never touches it: the RLS tripwire {@link assertExtensionTenancyRls}
+ * VERIFIES the opt-out against the live catalog and reports a declared-but-
+ * absent entry as a boot-failing problem. Since the disabled path now publishes
+ * a declaration filtered to the tables that actually exist (and asserts RLS over
+ * it), the opt-out list has to be probed and filtered alongside the four tenant
+ * lists or a partially-migrated database would abort boot on it.
  */
 function declaredTenancyTables(manifest: ExtensionManifestV1): string[] {
   const { tenancy } = manifest;
-  // `deviceOrgMoveDeleteTables` is optional in the v1 schema; the rest are not.
+  // `deviceOrgMoveDeleteTables` and `nonTenantTables` are optional in the v1
+  // schema; the other three are not.
   return [
     ...new Set([
       ...tenancy.orgCascadeDeleteTables,
       ...tenancy.deviceCascadeDeleteTables,
       ...tenancy.deviceOrgDenormalizedTables,
       ...(tenancy.deviceOrgMoveDeleteTables ?? []),
+      ...(tenancy.nonTenantTables ?? []),
     ]),
   ].sort();
 }
 
-/** The pgvector-unavailable fragment Postgres puts in `CREATE EXTENSION vector`'s error. */
+/**
+ * A copy of `tenancy` with every table LIST narrowed to the tables in `present`.
+ *
+ * Pure — no I/O, no mutation of the input — because it is the load-bearing half
+ * of the disabled path's partial-schema handling (see
+ * {@link skipDisabledBuiltin}) and has to be assertable on its own.
+ *
+ * `orgExportColumns` is deliberately left WHOLE. The export registry
+ * (`getExtensionOrgExportColumns`) iterates `orgCascadeDeleteTables` and looks
+ * each entry UP in `orgExportColumns`; a classification for a table that is no
+ * longer declared is never read, so it is inert. Dropping entries would only
+ * risk desynchronising the two halves for no benefit.
+ */
+export function filterTenancyDeclaration(
+  tenancy: ExtensionTenancyDeclaration,
+  present: ReadonlySet<string>,
+): ExtensionTenancyDeclaration {
+  const keep = (tables: readonly string[]): string[] =>
+    tables.filter((table) => present.has(table));
+  return {
+    ...tenancy,
+    orgCascadeDeleteTables: keep(tenancy.orgCascadeDeleteTables),
+    deviceCascadeDeleteTables: keep(tenancy.deviceCascadeDeleteTables),
+    deviceOrgDenormalizedTables: keep(tenancy.deviceOrgDenormalizedTables),
+    // Preserve "absent" vs "present but empty" for the two optional lists: the
+    // v1 schema distinguishes them, and manufacturing an empty array where the
+    // manifest had none would change what a downstream `?? []` observes.
+    ...(tenancy.deviceOrgMoveDeleteTables === undefined
+      ? {}
+      : { deviceOrgMoveDeleteTables: keep(tenancy.deviceOrgMoveDeleteTables) }),
+    ...(tenancy.nonTenantTables === undefined
+      ? {}
+      : { nonTenantTables: keep(tenancy.nonTenantTables) }),
+  };
+}
+
+/**
+ * The pgvector-unavailable fragment Postgres puts in `CREATE EXTENSION vector`'s
+ * error. It matches the ENGLISH server message; a server running under another
+ * `lc_messages` locale simply falls through and the operator sees the raw
+ * Postgres error, which is the safe direction. Do NOT loosen this to something
+ * locale-independent-looking (e.g. just `vector`) — a broad match would
+ * reinterpret unrelated failures as a pgvector problem and send operators after
+ * the wrong remedy.
+ */
 const PGVECTOR_UNAVAILABLE_FRAGMENT = '"vector" is not available';
 
 /**
@@ -210,25 +266,89 @@ export interface BuiltinPorts {
   ): Promise<void>;
   publishTenancy(manifest: ExtensionManifestV1): void;
   /**
-   * Do ANY of these public tables already exist? Used ONLY on the disabled
-   * path, to decide whether a switched-off built-in's tenancy declaration still
-   * has to be published (see {@link skipDisabledBuiltin}). Opens and closes its
-   * own short-lived connection — the disabled path never opens the privileged
-   * migration connection, and must not leave one behind either.
+   * WHICH of these public tables already exist — the present SUBSET, not a
+   * yes/no. Used ONLY on the disabled path, where it decides both whether a
+   * switched-off built-in's tenancy declaration still has to be published AND
+   * which tables that declaration may name (see {@link skipDisabledBuiltin}: a
+   * PARTIAL schema must publish a partial declaration, never the whole
+   * manifest's). Opens and closes its own short-lived connection — the disabled
+   * path never opens the privileged migration connection, and must not leave one
+   * behind either.
    */
-  anyDeclaredTableExists(tables: readonly string[]): Promise<boolean>;
+  existingDeclaredTables(tables: readonly string[]): Promise<string[]>;
   stageExtension(
     module: BreezeExtensionV1,
     manifest: ExtensionManifestV1,
     opts: { helperRoutes: boolean },
   ): Promise<StagedExtensionContributions>;
-  validateTenancy(
-    staged: StagedExtensionContributions,
-    manifest: ExtensionManifestV1,
+  /**
+   * The boot-time RLS tripwire over ONE tenancy declaration. Takes the
+   * declaration rather than the manifest because the disabled path asserts over
+   * a FILTERED copy (only the tables that exist), which is the declaration that
+   * actually gets published — asserting the manifest's whole tenancy there would
+   * fail on every table whose migration never ran.
+   */
+  validateTenancyDeclaration(
+    extensionName: string,
+    tenancy: ExtensionTenancyDeclaration,
   ): Promise<void>;
   registerRateLimitSkip(prefix: string): void;
+  /** Is `<root>/dist/web` present? An I/O seam, hence a port (see registerBuiltinWebAsset). */
+  webDistExists(root: string): boolean;
   readWebDist(root: string): RegisterableExtensionWebAsset;
   registerWebAsset(name: string, asset: RegisterableExtensionWebAsset): void;
+}
+
+/**
+ * The production {@link BuiltinPorts.existingDeclaredTables}: which of `tables`
+ * exist as ordinary/partitioned tables in `public`, on a short-lived connection
+ * of its own.
+ *
+ * Exported so `builtinTableProbe.integration.test.ts` can drive this exact SQL
+ * against a real server. It is the one query on the disabled path that the unit
+ * tests cannot cover — they stub the port — and the previous binding shape in
+ * this function was broken against a live Postgres while passing every unit
+ * test.
+ */
+export async function defaultExistingDeclaredTables(
+  tables: readonly string[],
+): Promise<string[]> {
+  if (tables.length === 0) return [];
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required to check whether a disabled built-in extension left tables behind',
+    );
+  }
+  // ONE round trip, one connection, always closed. The names are bound as a
+  // plain scalar IN-list via postgres.js's documented `sql([...])` list helper —
+  // deliberately NO array parameter: binding a `text[]` (via sql.array or a
+  // ::json cast) mis-serialized against a real server ("malformed array
+  // literal"; caught by the live default-off boot check).
+  //
+  // `pg_class`, not `information_schema.tables`: the information_schema views
+  // are filtered by the CURRENT ROLE'S PRIVILEGES, so a table the connecting
+  // role holds no privilege on reads as ABSENT — which on this path would
+  // silently drop it from the published declaration and reintroduce exactly the
+  // unaccounted-table boot abort the declaration exists to prevent. pg_class is
+  // privilege-independent, and `relkind IN ('r','p')` says "ordinary or
+  // partitioned TABLE" precisely, with no views/matviews/indexes slipping in.
+  const sql = postgres(databaseUrl, { max: 1 });
+  try {
+    const rows = await sql<{ name: string }[]>`
+      SELECT c.relname AS name
+      FROM pg_class c
+      JOIN pg_namespace ns ON ns.oid = c.relnamespace
+      WHERE ns.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND c.relname IN ${sql([...tables])}
+    `;
+    return rows.map((row) => row.name);
+  } finally {
+    // A close failure must never REPLACE the probe's own result or error: an
+    // exception thrown from a `finally` discards the in-flight one.
+    await sql.end().catch(() => {});
+  }
 }
 
 export interface LoadBuiltinExtensionsArgs {
@@ -269,38 +389,13 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
       );
     },
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
-    anyDeclaredTableExists: async (tables) => {
-      if (tables.length === 0) return false;
-      const databaseUrl = process.env.DATABASE_URL;
-      if (!databaseUrl) {
-        throw new Error(
-          'DATABASE_URL is required to check whether a disabled built-in extension left tables behind',
-        );
-      }
-      // ONE round trip, one connection, always closed. The names are bound as
-      // a plain scalar IN-list via postgres.js's documented `sql([...])` list
-      // helper — deliberately NO array parameter: binding a `text[]` (via
-      // sql.array or a ::json cast) mis-serialized against a real server
-      // ("malformed array literal"; caught by the live default-off boot check —
-      // the unit tests stub this port, so only a real boot exercises this SQL).
-      const sql = postgres(databaseUrl, { max: 1 });
-      try {
-        const rows = await sql<{ present: boolean }[]>`
-          SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name IN ${sql([...tables])}
-          ) AS present
-        `;
-        return rows[0]?.present === true;
-      } finally {
-        await sql.end();
-      }
-    },
+    existingDeclaredTables: defaultExistingDeclaredTables,
     stageExtension: (module, manifest, opts) =>
       defaultStageExtension(module, manifest, args.registry, undefined, opts),
-    validateTenancy: (_staged, manifest) =>
-      assertExtensionTenancyRls(manifest.name, manifest.tenancy),
+    validateTenancyDeclaration: (extensionName, tenancy) =>
+      assertExtensionTenancyRls(extensionName, tenancy),
     registerRateLimitSkip: registerGlobalRateLimitSkipPrefix,
+    webDistExists: (root) => existsSync(path.join(root, 'dist', 'web')),
     readWebDist,
     registerWebAsset: registerExtensionWebAsset,
   };
@@ -342,27 +437,42 @@ function assertNoDeliveryPathCollision(ports: BuiltinPorts): void {
  * In PRODUCTION a missing `dist/web` means a misbuilt image and fails boot: the
  * extension's pages would 404 at runtime with nothing in the logs tying it back
  * to the build. In development it is the ordinary API-only case, so one
- * structured warning is emitted and the server routes activate regardless. Any
- * NON-ENOENT failure (permissions, an unreadable tree) always propagates — it is
- * a real fault, not an absent optional build.
+ * structured warning is emitted and the server routes activate regardless.
+ *
+ * The absent-bundle case is decided by an EXPLICIT existence check, not by
+ * catching `ENOENT` around the whole operation. Catching was too wide: a walk
+ * error inside `readWebDist` (a file vanishing mid-walk, a dangling symlink) or
+ * an ENOENT thrown by `registerWebAsset` itself would have been swallowed as
+ * "not built" in every non-production environment. Now only the one condition
+ * this policy is about — the directory is not there — takes the lenient branch;
+ * every other failure, in every environment, propagates and aborts boot.
  */
 function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts): void {
   const name = builtin.manifest.name;
-  try {
-    ports.registerWebAsset(name, ports.readWebDist(resolveBuiltinRoot(builtin.packageDir)));
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException)?.code;
-    if (code !== 'ENOENT' || process.env.NODE_ENV === 'production') throw error;
+  const root = resolveBuiltinRoot(builtin.packageDir);
+  if (!ports.webDistExists(root)) {
+    const webDir = path.join(root, 'dist', 'web');
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        `[extensions] built-in "${name}" has no web bundle at ${webDir} — this image is misbuilt. ` +
+          `The release build runs "pnpm --filter ${builtin.packageName} build:web" and COPYs ` +
+          `"${builtin.packageDir}/dist" into the image; without it the extension's pages 404 at ` +
+          'runtime with nothing in the logs pointing back at the build.',
+      );
+    }
     console.warn(
       `[extensions] ${JSON.stringify({
         event: 'builtin_web_dist_missing',
         extension: name,
         packageDir: builtin.packageDir,
+        webDir,
         message: 'built-in web bundle is not built; server routes are active but its pages will not load',
         remedy: `pnpm --filter ${builtin.packageName} build:web`,
       })}`,
     );
+    return;
   }
+  ports.registerWebAsset(name, ports.readWebDist(root));
 }
 
 /**
@@ -386,27 +496,93 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
  *     issues SQL against each one, which would now name relations that were
  *     never created.
  *
- * Hence the existence probe — one query over the whole declared list, on its
- * own connection, closed before returning.
+ * And the two cases are not exhaustive: a PARTIAL schema is a real, reachable
+ * state. Enabling the built-in on a database that cannot satisfy its migrations
+ * aborts boot mid-sequence, leaving the tables from the files that DID commit
+ * and none from the files that did not. (Concretely: workspace on a stock
+ * `postgres:16-alpine` gets three of its migration files applied and dies on the
+ * fourth's `CREATE EXTENSION vector`.) Unsetting the flag then reaches this
+ * function with SOME tables present. Publishing the manifest's WHOLE declaration
+ * there would point org-cascade and tenant-export SQL at the relations that were
+ * never created — the exact harm the second bullet describes, just triggered by
+ * a half-finished migration run instead of a never-started one.
+ *
+ * So the probe returns the present SUBSET and what gets published is a
+ * declaration FILTERED to it. That is safe in both directions: the two
+ * unaccounted-table sweeps only examine tables that EXIST, so a filtered
+ * declaration still accounts for every one of them, while cascade/export/
+ * device-move never name a missing relation. A partial set also earns a
+ * structured warning — a half-migrated built-in is an operator problem, not a
+ * steady state.
+ *
+ * Finally, the published declaration gets the SAME boot-time RLS tripwire the
+ * enabled path applies. Orphaned tables still hold tenant rows; whether the
+ * feature is switched on has no bearing on whether those rows are protected.
  */
 async function skipDisabledBuiltin(
   builtin: BuiltinExtension,
   ports: BuiltinPorts,
 ): Promise<void> {
   const { manifest } = builtin;
+  const raw = process.env[builtin.enableEnvVar];
   console.warn(
     `[extensions] ${JSON.stringify({
       event: 'builtin_extension_disabled',
       extension: manifest.name,
-      reason: 'built-in extensions are opt-in per deployment and this one is not enabled',
+      reason:
+        raw === undefined
+          ? 'built-in extensions are opt-in per deployment and this one is not enabled'
+          : `${builtin.enableEnvVar} is SET but is not the exact string "true"; the flag is ` +
+            'value-strict (no "1"/"TRUE"/"yes"), so this built-in stays OFF',
       enableFlag: builtin.enableEnvVar,
+      // Distinguishes "never configured" from "configured wrong" in the log
+      // itself, so a typo'd flag does not read identically to an absent one.
+      observedValue: raw === undefined ? null : raw,
     })}`,
   );
 
   const tables = declaredTenancyTables(manifest);
   if (tables.length === 0) return;
-  if (!(await ports.anyDeclaredTableExists(tables))) return;
-  ports.publishTenancy(manifest);
+
+  let present: readonly string[];
+  try {
+    present = await ports.existingDeclaredTables(tables);
+  } catch (error) {
+    throw new Error(
+      `[extensions] could not determine which of built-in "${manifest.name}"'s declared tables ` +
+        `exist on this database. This built-in is DISABLED (${builtin.enableEnvVar} is not "true"), ` +
+        'and the probe still runs because tables created by an EARLIER enabled boot must keep ' +
+        'their tenancy declared — otherwise the boot-time unaccounted-public-tables sweeps read ' +
+        'them as belonging to no manifest and abort, and org-deletion cascades silently skip their ' +
+        `rows. Declared tables: ${tables.join(', ')}.`,
+      { cause: error },
+    );
+  }
+  if (present.length === 0) return;
+
+  const presentSet = new Set(present);
+  const missing = tables.filter((table) => !presentSet.has(table));
+  if (missing.length > 0) {
+    console.warn(
+      `[extensions] ${JSON.stringify({
+        event: 'builtin_extension_partial_schema',
+        extension: manifest.name,
+        enableFlag: builtin.enableEnvVar,
+        presentTables: [...presentSet].sort(),
+        missingTables: missing,
+        impact:
+          'publishing only the tables that exist; org-cascade and tenant-export will NOT cover ' +
+          'the missing ones',
+        remedy:
+          `enable this built-in (${builtin.enableEnvVar}=true) on a database that satisfies its ` +
+          'requirements so its migrations finish, or drop the orphaned tables',
+      })}`,
+    );
+  }
+
+  const filteredTenancy = filterTenancyDeclaration(manifest.tenancy, presentSet);
+  ports.publishTenancy({ ...manifest, tenancy: filteredTenancy });
+  await ports.validateTenancyDeclaration(manifest.name, filteredTenancy);
 }
 
 /**
@@ -474,7 +650,7 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       const staged = await ports.stageExtension(builtin.module, manifest, {
         helperRoutes: builtin.helperRoutes,
       });
-      await ports.validateTenancy(staged, manifest);
+      await ports.validateTenancyDeclaration(name, manifest.tenancy);
 
       // Seed the persisted row from the manifest's facts. A built-in has no
       // artifact digest or publisher: it is delivered by the core image itself.
@@ -510,6 +686,19 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       console.log(`[extensions] loaded built-in "${name}" ${manifest.version}`);
     }
   } finally {
-    if (sql) await sql.end();
+    // Closing the privileged pool must never REPLACE the error that got us
+    // here: an exception out of a `finally` discards the in-flight one, so a
+    // failed close would erase (say) the pgvector diagnosis and leave the
+    // operator with a connection-teardown message instead. Still warn, so a
+    // close failure stays visible rather than vanishing.
+    if (sql) {
+      await sql.end().catch((error: unknown) => {
+        console.warn(
+          `[extensions] failed to close the built-in migration connection: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
   }
 }
