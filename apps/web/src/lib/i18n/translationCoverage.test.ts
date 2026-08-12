@@ -83,7 +83,9 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 84,
+    // +1: longTail.fleet.FindingsFeed.severities.error — "Error" is the correct
+    // es-419 severity label and spells identically to English.
+    'common.json': 85,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,

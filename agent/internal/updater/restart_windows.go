@@ -94,6 +94,14 @@ type restartScriptOptions struct {
 	// omits the helper Copy-Item entirely (backward-compat with releases that
 	// lack the user-helper artifact). Issue #816.
 	UserHelper *BinaryPair
+	// Backup, when non-nil, is the freshly-downloaded breeze-backup.exe temp
+	// file plus its final install location. nil means "no backup helper to
+	// swap" — the generated script omits the backup Copy-Item AND the
+	// breeze-backup.exe entry in the Stop-Process kill list entirely.
+	// breeze-backup's version is slaved to the agent's (no independent
+	// directive), and doUpgrade only prefetches it when a matching artifact
+	// downloaded successfully.
+	Backup *BinaryPair
 }
 
 // buildRestartScript renders the PowerShell helper script. Extracted from
@@ -134,6 +142,27 @@ func buildRestartScript(opts restartScriptOptions) string {
 		safeHelperTarget = strings.ReplaceAll(opts.UserHelper.Target, "'", "''")
 	}
 
+	hasBackup := opts.Backup != nil
+	var safeBackup, safeBackupTarget string
+	if hasBackup {
+		safeBackup = strings.ReplaceAll(opts.Backup.Temp, "'", "''")
+		safeBackupTarget = strings.ReplaceAll(opts.Backup.Target, "'", "''")
+	}
+
+	// The exe lock on a running breeze-backup.exe would otherwise block its
+	// Copy-Item, same as breeze-agent.exe/breeze-user-helper.exe — only add it
+	// to the kill list when there's actually a backup swap to perform, so an
+	// agent-only upgrade's script is unchanged (and doesn't kill an in-flight
+	// backup helper for no reason).
+	processNames := []string{"breeze-helper", "breeze-agent", "breeze-user-helper", "breeze-viewer"}
+	if hasBackup {
+		processNames = append(processNames, "breeze-backup")
+	}
+	quotedProcessNames := make([]string, len(processNames))
+	for i, name := range processNames {
+		quotedProcessNames[i] = "'" + name + "'"
+	}
+
 	lines := []string{
 		// Make all errors in the swap block terminating so try/catch can
 		// actually catch a failed Copy-Item. Without this, Copy-Item is
@@ -146,20 +175,27 @@ func buildRestartScript(opts restartScriptOptions) string {
 		// because the service may not exist on some test paths and that
 		// shouldn't fail the script.
 		"  Stop-Service -Name '" + serviceName + "' -Force -ErrorAction SilentlyContinue",
-		// Kill any lingering breeze processes (helper, viewer, user helpers)
-		// that might hold file locks on the binary or shared directory.
-		"  Get-Process -Name 'breeze-helper','breeze-agent','breeze-user-helper','breeze-viewer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+		// Kill any lingering breeze processes (helper, viewer, user helpers,
+		// and — when this upgrade also swaps it — the backup helper) that
+		// might hold file locks on the binary or shared directory.
+		"  Get-Process -Name " + strings.Join(quotedProcessNames, ",") + " -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"  Start-Sleep -Seconds 2",
 		fmt.Sprintf("  Copy-Item -Path '%s' -Destination '%s' -Force", safeAgent, safeAgentTarget),
 	}
 
-	// Ordering: the agent Copy MUST come before the helper Copy. A partial
-	// failure that stops between the two leaves a working (if pre-#816)
-	// install rather than the helper-installed-but-agent-stale state #816
-	// was filed against. (See restart_windows_test.go's ordering test.)
+	// Ordering: the agent Copy MUST come before any companion Copy. A partial
+	// failure that stops between them leaves a working (if pre-#816) install
+	// rather than a companion-installed-but-agent-stale state. (See
+	// restart_windows_test.go's ordering test.) UserHelper before Backup is
+	// an arbitrary but fixed order between the two companions themselves.
 	if hasHelper {
 		lines = append(lines,
 			fmt.Sprintf("  Copy-Item -Path '%s' -Destination '%s' -Force", safeHelper, safeHelperTarget),
+		)
+	}
+	if hasBackup {
+		lines = append(lines,
+			fmt.Sprintf("  Copy-Item -Path '%s' -Destination '%s' -Force", safeBackup, safeBackupTarget),
 		)
 	}
 
@@ -195,6 +231,11 @@ func buildRestartScript(opts restartScriptOptions) string {
 			fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeHelper),
 		)
 	}
+	if hasBackup {
+		lines = append(lines,
+			fmt.Sprintf("Remove-Item -Path '%s' -Force -ErrorAction SilentlyContinue", safeBackup),
+		)
+	}
 	lines = append(lines, "Remove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue")
 
 	return strings.Join(lines, "\r\n")
@@ -203,23 +244,26 @@ func buildRestartScript(opts restartScriptOptions) string {
 // RestartWithHelper spawns a detached PowerShell script that:
 //  1. Waits for the current process to exit
 //  2. Stops the service
-//  3. Copies the new agent binary (and, optionally, the new user-helper)
-//     over the old one
+//  3. Copies the new agent binary (and, optionally, the new user-helper
+//     and/or breeze-backup) over the old one(s)
 //  4. Starts the service
 //  5. Cleans up temp files
 //
 // This avoids the race where the agent tries to SCM-stop itself
 // (killing the goroutine before it can call Start).
 //
-// userHelper is optional. Pass nil to perform an agent-only upgrade (the
-// pre-#816 behavior). When non-nil, the generated script also copies the
-// user-helper into place so the post-upgrade HelperLifecycleManager finds
-// it on disk and does not fall back to spawning breeze-agent.exe in a loop
-// (issue #816).
-func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair) error {
+// userHelper and backup are each optional. Pass nil for either to skip that
+// companion swap (the pre-#816 behavior, when both are nil, is an agent-only
+// upgrade). When non-nil, the generated script also copies that companion
+// into place: for userHelper, so the post-upgrade HelperLifecycleManager
+// finds it on disk and does not fall back to spawning breeze-agent.exe in a
+// loop (issue #816); for backup, so breeze-backup stays in lockstep with the
+// agent version it's slaved to.
+func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryPair) error {
 	script := buildRestartScript(restartScriptOptions{
 		Agent:      agent,
 		UserHelper: userHelper,
+		Backup:     backup,
 	})
 
 	scriptFile, err := os.CreateTemp("", "breeze-update-*.ps1")
@@ -239,12 +283,20 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair) error {
 		userHelperTemp = userHelper.Temp
 		userHelperTarget = userHelper.Target
 	}
+	backupTemp := ""
+	backupTarget := ""
+	if backup != nil {
+		backupTemp = backup.Temp
+		backupTarget = backup.Target
+	}
 	log.Info("spawning update helper script",
 		"script", scriptFile.Name(),
 		"newBinary", agent.Temp,
 		"target", agent.Target,
 		"userHelperTemp", userHelperTemp,
 		"userHelperTarget", userHelperTarget,
+		"backupTemp", backupTemp,
+		"backupTarget", backupTarget,
 	)
 
 	cmd := exec.Command("powershell.exe",

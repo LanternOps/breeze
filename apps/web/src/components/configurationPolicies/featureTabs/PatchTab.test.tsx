@@ -222,6 +222,57 @@ describe('PatchTab', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
 
+  // #3197: operator-configurable warning window before a patch-triggered reboot.
+  it('renders the reboot delay input with the default value when reboot policy is not "never"', async () => {
+    render(<PatchTab {...baseProps} />);
+    const input = await screen.findByTestId('patch-reboot-delay-minutes');
+    expect(input).toHaveValue(15);
+  });
+
+  it('hides the reboot delay input when reboot policy is "never"', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], rebootPolicy: 'never' },
+        }}
+      />
+    );
+    await screen.findByText('Reboot Policy');
+    expect(screen.queryByTestId('patch-reboot-delay-minutes')).toBeNull();
+  });
+
+  it('persists rebootDelayMinutes in the save payload when changed', async () => {
+    render(<PatchTab {...baseProps} />);
+    fireEvent.change(await screen.findByTestId('patch-reboot-delay-minutes'), {
+      target: { value: '30' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const [, payload] = saveMock.mock.calls[0];
+    expect(payload.inlineSettings.rebootDelayMinutes).toBe(30);
+  });
+
+  it('hydrates the reboot delay input from a stored rebootDelayMinutes value', async () => {
+    render(
+      <PatchTab
+        {...baseProps}
+        existingLink={{
+          id: 'link-1',
+          featureType: 'patch',
+          featurePolicyId: null,
+          inlineSettings: { sources: ['os'], rebootDelayMinutes: 45 },
+        }}
+      />
+    );
+    const input = await screen.findByTestId('patch-reboot-delay-minutes');
+    expect(input).toHaveValue(45);
+  });
+
   describe('inline ring editor', () => {
     it('creates a ring inline, refetches, and auto-selects it', async () => {
       fetchMock.mockImplementation((_url: any, opts: any) => {

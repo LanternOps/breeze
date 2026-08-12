@@ -242,6 +242,12 @@ services:
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
       TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
+      # Built-in extensions ship inside the API image but load only when the
+      # deployment switches them on (default off, and value-strict: only the
+      # exact string "true"). Workspace additionally requires pgvector to be
+      # available on the managed Postgres in DATABASE_URL — see the note beside
+      # this variable in deploy/.env.example.
+      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
       TRUST_PROXY_HEADERS: "true"
       TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-172.30.0.11/32}"
       # This reference stack is fronted by Cloudflare (cloudflared → Caddy), so
@@ -281,6 +287,8 @@ services:
       OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
       ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
       ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
+      ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
+      ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
       # Native APNs push for the iOS app (all optional; unset = push disabled).
       # All-or-none: setting ANY of these makes the four credentials required,
       # so a half-configured relay fails at boot instead of silently at first

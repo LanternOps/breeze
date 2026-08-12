@@ -3,6 +3,8 @@ package sessionbroker
 import (
 	"encoding/json"
 	"net"
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -159,6 +161,89 @@ func TestBackupBinaryName(t *testing.T) {
 			t.Errorf("backupBinaryName(%q) = %q, want %q", tt.goos, got, tt.want)
 		}
 	}
+}
+
+// TestStopBackupHelperIfIdle_NilBroker: nothing spawned yet — nothing blocks
+// a swap, so it must report idle (true) rather than panic or false-positive
+// "busy".
+func TestStopBackupHelperIfIdle_NilBroker(t *testing.T) {
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+	}
+	if !b.StopBackupHelperIfIdle() {
+		t.Fatal("expected idle=true when no backup helper has ever been spawned")
+	}
+}
+
+// TestStopBackupHelperIfIdle_ActiveRunBlocks: a tracked in-flight run (any
+// state — pending-ack, executing, or the doomed tombstone) must defer the
+// swap rather than kill a helper mid-job.
+func TestStopBackupHelperIfIdle_ActiveRunBlocks(t *testing.T) {
+	for _, state := range []backupRunState{backupRunPendingAck, backupRunExecuting, backupRunDoomed} {
+		b := &Broker{
+			sessions:   make(map[string]*Session),
+			byIdentity: make(map[string][]*Session),
+			backup: &backupHelper{
+				activeRuns: map[string]backupRunState{"cmd-1": state},
+			},
+		}
+		if b.StopBackupHelperIfIdle() {
+			t.Fatalf("expected idle=false with an active run in state %v", state)
+		}
+		// The tracked run must be left untouched — deferring must not itself
+		// mutate broker state.
+		if len(b.backup.activeRuns) != 1 {
+			t.Fatalf("expected activeRuns to be untouched by a deferred check, got %v", b.backup.activeRuns)
+		}
+	}
+}
+
+// TestStopBackupHelperIfIdle_IdleStopsProcessAndClearsSession verifies the
+// success path: no active runs, so the resident process is killed, process
+// and session are cleared, and the call reports idle=true.
+func TestStopBackupHelperIfIdle_IdleStopsProcessAndClearsSession(t *testing.T) {
+	// Re-exec this test binary as a long-lived helper process (the standard
+	// os/exec self-exec pattern) rather than shelling out to `sleep`, which
+	// doesn't exist on Windows — this package's tests run in the Windows CI
+	// job (see ci.yml test-agent-windows). See TestHelperProcess below.
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess")
+	cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test helper process: %v", err)
+	}
+	defer func() { _, _ = cmd.Process.Wait() }()
+
+	b := &Broker{
+		sessions:   make(map[string]*Session),
+		byIdentity: make(map[string][]*Session),
+		backup: &backupHelper{
+			process: cmd.Process,
+			session: &Session{SessionID: "backup-idle-test"},
+		},
+	}
+
+	if !b.StopBackupHelperIfIdle() {
+		t.Fatal("expected idle=true with no active runs")
+	}
+	if b.backup.process != nil {
+		t.Fatalf("expected process to be cleared, got %+v", b.backup.process)
+	}
+	if b.backup.session != nil {
+		t.Fatalf("expected session to be cleared, got %+v", b.backup.session)
+	}
+}
+
+// TestHelperProcess is not a real test — it's the re-exec target for
+// TestStopBackupHelperIfIdle_IdleStopsProcessAndClearsSession's cross-platform
+// long-lived-process stand-in. It no-ops unless GO_WANT_HELPER_PROCESS=1 is
+// set, so a normal `go test` run treats it as a (trivially passing) test.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	time.Sleep(30 * time.Second)
+	os.Exit(0)
 }
 
 func TestGetOrSpawnBackupHelper_ExistingSession(t *testing.T) {

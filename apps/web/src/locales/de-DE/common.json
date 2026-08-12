@@ -1794,22 +1794,14 @@
         "partialWarning": "Einige Daten sind möglicherweise unvollständig. Fehler beim Laden: {{endpoints}}",
         "cards": {
           "policies": "Richtlinien",
-          "activeCount": "{{count}} aktiv",
           "deployments": "Bereitstellungen",
-          "deploymentsSubtitle": "{{total}} insgesamt, {{pending}} ausstehend",
           "failedCount": "{{count}} fehlgeschlagen",
           "patches": "Patches",
-          "pendingInstallation": "bis zur Installation",
           "alerts": "Warnungen",
-          "alertsSubtitle": "{{critical}} kritisch, {{high}} hoch",
           "groups": "Gruppen",
-          "deviceGroupsSubtitle": "Gerätegruppen",
           "automations": "Automatisierungen",
-          "configured": "konfiguriert",
           "maintenance": "Wartung",
-          "activeWindows": "aktive Fenster",
-          "reports": "Berichte",
-          "reportDefinitions": "Berichtsdefinitionen"
+          "reports": "Berichte"
         },
         "aiFleetActions": "KI-Flottenaktionen",
         "aiFleetActionsHint": "Klicken Sie hier, um den KI-Assistenten zu fragen",
@@ -1838,6 +1830,173 @@
           "high": "Hoch",
           "medium": "Mittel",
           "low": "Niedrig"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Flotten-Befunde",
+        "description": "Geräteübergreifende Muster, die eine einzige Maßnahme statt vieler verdienen",
+        "filters": {
+          "orgLabel": "Nach Organisation filtern",
+          "kindLabel": "Nach Befundtyp filtern",
+          "severityLabel": "Nach Schweregrad filtern",
+          "statusLabel": "Nach Status filtern",
+          "allOrgs": "Alle Organisationen",
+          "allKinds": "Alle Befundtypen",
+          "allSeverities": "Alle Schweregrade"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metrik-Anomalie",
+          "logCorrelation": "Log-Korrelation",
+          "reliabilityOffenders": "Zuverlässigkeits-Wiederholungstäter"
+        },
+        "severities": {
+          "critical": "Kritisch",
+          "error": "Fehler",
+          "warning": "Warnung",
+          "info": "Informativ"
+        },
+        "statuses": {
+          "open": "Offen",
+          "acknowledged": "Bestätigt",
+          "dismissed": "Verworfen",
+          "resolved": "Behoben"
+        },
+        "status": {
+          "active": "Offen und bestätigt",
+          "dismissed": "Verworfen",
+          "resolved": "Behoben"
+        },
+        "deviceCount": "{{count}} Geräte",
+        "deviceCount_one": "{{count}} Gerät",
+        "deviceCount_other": "{{count}} Geräte",
+        "showing": "{{shown}} von {{total}} werden angezeigt",
+        "loadMore": "Weitere laden",
+        "empty": {
+          "title": "Die Flotte ist sauber",
+          "noMatchesTitle": "Keine passenden Befunde",
+          "body": "Derzeit passt kein Befund zu diesen Filtern."
+        },
+        "errors": {
+          "loadFailed": "Flotten-Befunde konnten nicht geladen werden",
+          "banner": "Die Flotten-Befunde konnten nicht geladen werden"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Befunddetails",
+        "meta": {
+          "firstSeen": "Erstmals gesehen {{when}}",
+          "lastSeen": "Zuletzt gesehen {{when}}"
+        },
+        "summaryHeading": "Zusammenfassung",
+        "resolvedNote": {
+          "heading": "Warum dies geschlossen ist",
+          "body": "Dieser Befund wurde behoben, weil das zugrunde liegende Signal nicht mehr vorliegt. Er wird als neuer Befund erneut angezeigt, falls das Muster wieder auftritt.",
+          "reason": "Grund der Behebung: {{reason}}"
+        },
+        "dismissNotesHeading": "Verwerfungsnotiz",
+        "evidenceHeading": "Nachweise",
+        "membersHeading": "Betroffene Geräte",
+        "membersEmpty": "Für diesen Befund sind keine Geräte erfasst.",
+        "table": {
+          "device": "Gerät",
+          "source": "Quelle",
+          "lastSeen": "Zuletzt gesehen"
+        },
+        "runsHeading": "Behebungsverlauf",
+        "runsEmpty": "Für diesen Befund wurde noch keine Behebung ausgeführt.",
+        "runCounts": "{{succeeded}} erfolgreich, {{failed}} fehlgeschlagen, {{skipped}} übersprungen von {{targets}} Zielen",
+        "runStatuses": {
+          "queued": "In Warteschlange",
+          "running": "Läuft",
+          "partial": "Teilweise",
+          "succeeded": "Erfolgreich",
+          "failed": "Fehlgeschlagen",
+          "cancelled": "Abgebrochen"
+        },
+        "dismiss": {
+          "notesLabel": "Warum verwerfen Sie diesen Befund? (erforderlich)",
+          "notesPlaceholder": "Bekannter Fehlalarm, anderswo verfolgt, Risiko akzeptiert…",
+          "confirm": "Befund verwerfen"
+        },
+        "actions": {
+          "remediate": "Auf {{count}} Geräten beheben",
+          "remediate_one": "Auf {{count}} Gerät beheben",
+          "remediate_other": "Auf {{count}} Geräten beheben",
+          "remediateDisabledReason": "Für diesen Befund sind keine Geräte mehr zu beheben.",
+          "acknowledge": "Bestätigen",
+          "dismiss": "Verwerfen",
+          "reopen": "Wieder öffnen"
+        },
+        "errors": {
+          "loadFailed": "Befund konnte nicht geladen werden",
+          "lifecycleFailed": "Befund konnte nicht aktualisiert werden"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "das zugrunde liegende Signal ist verschwunden"
+        }
+      },
+      "FixPicker": {
+        "title": "Befund beheben",
+        "actions": {
+          "script": "Skript ausführen",
+          "scriptHint": "Wählen Sie ein Skript aus Ihrer Bibliothek und füllen Sie dessen Parameter aus.",
+          "restartService": "Dienst neu starten",
+          "restartServiceHint": "Startet einen einzelnen benannten Dienst auf jedem ausgewählten Gerät neu.",
+          "reboot": "Geräte neu starten",
+          "rebootHint": "Startet die ausgewählten Geräte neu, sobald der Lauf versendet wird."
+        },
+        "chooseScript": "Skript auswählen…",
+        "changeScript": "Skript wechseln",
+        "selectedScript": "Skript: {{name}}",
+        "serviceNameLabel": "Dienstname",
+        "serviceNamePlaceholder": "z. B. Spooler",
+        "rebootWarning": "Die ausgewählten Geräte starten sofort neu, sobald dieser Lauf versendet wird. Aktive Sitzungen enden und nicht gespeicherte Arbeit geht verloren.",
+        "targetsHeading": "Zu behebende Geräte",
+        "selectAll": "Alle auswählen",
+        "selectNone": "Auswahl aufheben",
+        "selectedCount": "{{selected}} von {{total}} Geräten ausgewählt",
+        "noTargets": "Wählen Sie mindestens ein Gerät aus, um fortzufahren.",
+        "osIncompatibleNotice": "{{count}} Geräte können dieses Skript nicht ausführen und wurden ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} Gerät kann dieses Skript nicht ausführen und wurde ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} Geräte können dieses Skript nicht ausführen und wurden ausgeschlossen. Es unterstützt nur {{os}}.",
+        "osIncompatibleReason": "Erfordert {{os}}",
+        "confirmAction": "Gewählte Maßnahme",
+        "confirmTargets": "Geräte",
+        "confirmRestartService": "Dienst {{name}} neu starten",
+        "confirmRebootNotice": "{{count}} Geräte starten sofort neu.",
+        "confirmRebootNotice_one": "{{count}} Gerät startet sofort neu.",
+        "confirmRebootNotice_other": "{{count}} Geräte starten sofort neu.",
+        "confirm": "Behebung starten",
+        "dispatchedSummary": "{{count}} Geräte wurden von diesem Lauf angesteuert.",
+        "dispatchedSummary_one": "{{count}} Gerät wurde von diesem Lauf angesteuert.",
+        "dispatchedSummary_other": "{{count}} Geräte wurden von diesem Lauf angesteuert.",
+        "skippedHeading": "Übersprungene Geräte",
+        "skipReasons": {
+          "siteDenied": "Standort für Sie nicht zugänglich",
+          "notMember": "Von diesem Befund nicht mehr betroffen",
+          "decommissioned": "Gerät ist außer Betrieb genommen",
+          "timeout": "Nach 30 Minuten abgelaufen",
+          "dispatchEnqueueFailed": "Nie gesendet – Einreihen in die Warteschlange fehlgeschlagen"
+        },
+        "viewProgress": "Fortschritt anzeigen",
+        "errors": {
+          "dispatchFailed": "Behebung konnte nicht gestartet werden"
+        }
+      },
+      "RunProgress": {
+        "heading": "Behebungslauf",
+        "counts": "{{succeeded}} erfolgreich, {{failed}} fehlgeschlagen, {{skipped}} übersprungen von {{targets}} Zielen",
+        "polling": "Wird aktualisiert, solange der Lauf aktiv ist…",
+        "targetsEmpty": "Kein Gerät dieses Laufs ist für Sie sichtbar.",
+        "targetStatuses": {
+          "pending": "Ausstehend",
+          "queued": "In Warteschlange",
+          "succeeded": "Erfolgreich",
+          "failed": "Fehlgeschlagen",
+          "skipped": "Übersprungen"
+        },
+        "errors": {
+          "loadFailed": "Behebungslauf konnte nicht geladen werden"
         }
       }
     },

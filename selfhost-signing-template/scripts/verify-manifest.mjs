@@ -95,7 +95,11 @@ if (cmd === 'verify') {
   if (manifest.schemaVersion !== 1) {
     die(`unsupported manifest schemaVersion: ${manifest.schemaVersion} (this verifier understands 1)`);
   }
-  if (manifest.repository !== repository) {
+  // GitHub owner/repo slugs are case-insensitive; the official manifest
+  // records the canonical casing (LanternOps/breeze) while callers pass the
+  // lowercase slug, so a case-sensitive equality here rejects every real
+  // release manifest.
+  if (String(manifest.repository).toLowerCase() !== String(repository).toLowerCase()) {
     die(`manifest repository mismatch: expected ${repository}, got ${manifest.repository}`);
   }
   if (manifest.release !== release) {

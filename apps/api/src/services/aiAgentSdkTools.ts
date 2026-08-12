@@ -132,6 +132,9 @@ export const TOOL_TIERS = {
   get_cis_device_report: 1,
   apply_cis_remediation: 3,
   get_fleet_health: 1,
+  // Fleet hygiene (Task 8) — read-only fleet-wide aggregation.
+  get_fleet_findings: 1,
+  analyze_fleet_metrics: 1,
   get_fleet_status: 1,
   delete_tenant: 3,
   get_backup_health: 1,
@@ -1229,6 +1232,36 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('get_fleet_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Zod shapes below mirror `toolInputSchemas.get_fleet_findings` /
+    // `.analyze_fleet_metrics` (aiToolSchemas.ts) key-for-key — the gate
+    // strips unknown keys silently, so a shape that drifts from the enforced
+    // schema makes the model's argument vanish and the tool answer with
+    // defaults.
+    tool(
+      'get_fleet_findings',
+      'List fleet hygiene findings: deduplicated, aggregate issues detected across the fleet (metric anomaly patterns, log correlations, reliability offenders). Read-only — use manage_deployments/manage_patches/run_script etc. to act on a finding\'s remediation.',
+      {
+        kind: z.enum(['metric_anomaly_pattern', 'log_correlation', 'reliability_offenders']).optional(),
+        severity: z.enum(['info', 'warning', 'error', 'critical']).optional(),
+        status: z.string().max(200).optional(),
+        orgId: uuid.optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+      makeHandler('get_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'analyze_fleet_metrics',
+      'Aggregate a metric (CPU/RAM/disk percent) across the fleet from pre-computed rollups: per-device avg / peak-p95 / max over a time window, ranked by peak p95 descending, plus a fleet-wide summary. The fleet summary\'s p95 (p95ApproxAvgOfDevicePeaks) is an approximation — the average of each device\'s peak per-bucket p95, not a true recomputed fleet-wide percentile. Read-only.',
+      {
+        metricName: z.enum(['cpu_percent', 'ram_percent', 'disk_percent']),
+        windowHours: z.number().int().min(1).max(168).optional(),
+        topN: z.number().int().min(1).max(50).optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('analyze_fleet_metrics', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

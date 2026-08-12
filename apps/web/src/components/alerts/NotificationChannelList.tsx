@@ -99,6 +99,32 @@ function formatLastTested(dateString: string | undefined, t: AlertsT): string {
   return date.toLocaleDateString();
 }
 
+/**
+ * Secret config values do NOT come back as strings. The API replaces each one
+ * with a redaction marker object — `{redacted, hasSecret, masked}` — see
+ * `secretKeysForType` in `services/notificationChannelSecrets.ts`. Which keys
+ * are secret varies by channel type: `url` for webhook, `user`/`token` for
+ * pushover, `webhookUrl` for slack/teams.
+ *
+ * The old code cast these straight to `string`. An object is truthy, so it
+ * sailed past the `||` fallback and got returned from a `: string` function
+ * (the cast silenced the type error), then rendered — crashing the entire
+ * channel list with "Objects are not valid as a React child" for any webhook
+ * channel. Anything read out of `config` for display has to go through here.
+ */
+function plainString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/** True when a value is a redaction marker standing in for a configured secret. */
+function isConfiguredSecret(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { hasSecret?: unknown }).hasSecret === true
+  );
+}
+
 function getChannelDescription(channel: NotificationChannel, t: AlertsT): string {
   const { type, config } = channel;
   switch (type) {
@@ -111,17 +137,21 @@ function getChannelDescription(channel: NotificationChannel, t: AlertsT): string
       }
       return t('notificationChannelList.emailNotification');
     case 'slack':
-      return (config.channel as string) || t('notificationChannelList.slackNotification');
+      return plainString(config.channel) ?? t('notificationChannelList.slackNotification');
     case 'teams':
       return t('notificationChannelList.teamsNotification');
     case 'pagerduty':
       return t('notificationChannelList.pagerDutyIntegration');
     case 'webhook':
-      return (config.url as string) || t('notificationChannelList.customWebhook');
-    case 'pushover':
-      return typeof config.user === 'string' && config.user.length > 0
-        ? t('notificationChannelList.pushoverKey', { key: config.user.slice(0, 6) })
-        : t('notificationChannelList.pushoverInherited');
+      return plainString(config.url) ?? t('notificationChannelList.customWebhook');
+    case 'pushover': {
+      const user = plainString(config.user);
+      if (user) return t('notificationChannelList.pushoverKey', { key: user.slice(0, 6) });
+      // Redacted but present: saying "inherited" here would claim no user key
+      // is set when one is. The key itself is a secret we cannot show.
+      if (isConfiguredSecret(config.user)) return t('notificationChannelList.pushoverKey', { key: '••••••' });
+      return t('notificationChannelList.pushoverInherited');
+    }
     case 'sms': {
       const phoneNumbers = Array.isArray(config.phoneNumbers)
         ? (config.phoneNumbers as string[]).filter((value) => typeof value === 'string' && value.trim().length > 0)

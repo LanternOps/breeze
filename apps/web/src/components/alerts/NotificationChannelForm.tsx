@@ -30,19 +30,6 @@ const pagerdutyConfigSchema = z.object({
   severity: z.enum(['critical', 'error', 'warning', 'info']).optional()
 });
 
-const webhookConfigSchema = z.object({
-  url: z.string().url('Invalid URL').min(1, 'URL is required'),
-  method: z.enum(['POST', 'PUT', 'PATCH']).optional(),
-  headers: z.array(z.object({
-    key: z.string().min(1, 'Header key is required'),
-    value: z.string()
-  })).optional(),
-  authType: z.enum(['none', 'basic', 'bearer']).optional(),
-  authUsername: z.string().optional(),
-  authPassword: z.string().optional(),
-  authToken: z.string().optional()
-});
-
 const smsConfigSchema = z.object({
   phoneNumbers: z.array(z.string().min(1, 'Phone number is required')).min(1, 'At least one phone number is required')
 });

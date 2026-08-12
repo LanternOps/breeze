@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fetchWithAuth, registerOrgIdProvider } from './auth';
 import { isGlobalScopeRoute } from '../lib/routeScope';
+import { fetchAllOrganizations } from '../lib/fetchAllOrganizations';
 
 export interface Partner {
   id: string;
@@ -217,19 +218,24 @@ export const useOrgStore = create<OrgState>()(
 
         set({ isLoading: true, error: null });
         try {
-          const params = currentPartnerId ? `?partnerId=${currentPartnerId}` : '';
-          const response = await fetchWithAuth(`/orgs/organizations${params}`);
-          if (!response.ok) {
-            throw new Error('Failed to fetch organizations');
+          // Walk every page (#3446): the server clamps limit to 100, so a
+          // single request truncates past-100 tenants. This store feeds the
+          // org switcher — a truncated list makes orgs past the first page
+          // unswitchable-to, and its search only filters what was loaded.
+          const organizations = await fetchAllOrganizations<Organization>(async (page, limit) => {
+            const partnerParam = currentPartnerId ? `&partnerId=${currentPartnerId}` : '';
+            const response = await fetchWithAuth(
+              `/orgs/organizations?page=${page}&limit=${limit}${partnerParam}`
+            );
+            if (!response.ok) {
+              throw new Error('Failed to fetch organizations');
+            }
+            return response.json();
+          });
+          if (organizations === null) {
+            set({ isLoading: false });
+            return;
           }
-          const data = await response.json();
-          const organizations = Array.isArray(data?.data)
-            ? data.data
-            : Array.isArray(data?.organizations)
-              ? data.organizations
-              : Array.isArray(data)
-                ? data
-                : [];
           set({
             organizations,
             isLoading: false,

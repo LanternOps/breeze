@@ -210,9 +210,14 @@ func (b *Broker) maybeStartKeepalive(session *Session, role ipc.HelperRole) {
 // Role-based scopes: SYSTEM helpers own desktop capture and secure-desktop PAM
 // dialogs; user-token helpers own script execution.
 var (
-	systemHelperScopes   = []string{"notify", "tray", "clipboard", "desktop", ipc.ScopePam}
-	userHelperScopes     = []string{"notify", "clipboard", "run_as_user"}
-	watchdogHelperScopes = []string{"watchdog"}
+	systemHelperScopes = []string{"notify", "tray", "clipboard", "desktop", ipc.ScopePam}
+	userHelperScopes   = []string{"notify", "clipboard", "run_as_user"}
+	// macDesktopHelperScopes is the narrowed grant for the macOS desktop
+	// helper: it is not the full user helper, but it does need "notify" so the
+	// cross-platform reboot warning ladder can reach a logged-in macOS user
+	// (#3197). Named rather than inlined so a test can pin the grant.
+	macDesktopHelperScopes = []string{"desktop", "notify"}
+	watchdogHelperScopes   = []string{"watchdog"}
 	// assistHelperScopes is least-privilege: the Breeze Assist helper receives
 	// only the helper token and must NOT get desktop/clipboard/run_as_user/notify/tray.
 	// consent_ui is a narrow UI-only scope that lets the assist helper receive
@@ -1286,16 +1291,16 @@ func (b *Broker) TCCStatus() *ipc.TCCStatus {
 // trip and — worse — would inflate any delivery accounting built on this
 // broadcast into claiming reach it does not have.
 //
-// Known asymmetry: holding "notify" is sufficient to render a toast but is
-// not, today, strictly necessary. The macOS desktop helper runs the shared
-// internal/userhelper client (which dispatches TypeNotify unconditionally)
-// yet scopesForRole deliberately grants it "desktop" only, so it is filtered
-// out here. That costs nothing at present because neither caller reaches
-// macOS: NewRebootManager discards its NotifyFunc on non-Windows
-// (patching/reboot_other.go) and handleRebootSafeMode precedes a
-// RebootToSafeMode that is Windows-only. If a cross-platform notification
-// caller is ever added, grant the macOS desktop helper "notify" in
-// scopesForRole rather than weakening this filter.
+// The asymmetry this used to document is resolved. The macOS desktop helper
+// runs the shared internal/userhelper client, which dispatches TypeNotify
+// unconditionally, but scopesForRole granted it "desktop" only — so it was
+// filtered out here. That cost nothing while no caller reached macOS. #3197
+// made RebootManager cross-platform (patching/reboot_manager.go replaced the
+// non-Windows no-op stub), so the reboot warning ladder is now exactly the
+// cross-platform caller that was anticipated. Per the instruction left here,
+// the fix was to grant the macOS desktop helper "notify" in scopesForRole —
+// NOT to weaken this filter, which still has to keep the assist helper and
+// watchdog out of any delivery accounting built on this broadcast.
 func (b *Broker) BroadcastNotification(title, body, urgency string) {
 	b.mu.RLock()
 	sessions := make([]*Session, 0, len(b.sessions))
@@ -2556,7 +2561,12 @@ func (b *Broker) scopesForRole(role ipc.HelperRole, binaryKind, goos, peerPath s
 		if goos == "darwin" &&
 			binaryKind == ipc.HelperBinaryDesktopHelper &&
 			b.isDesktopHelperPeerPath(peerPath) {
-			return []string{"desktop"}
+			// "notify" is granted deliberately (#3197): this helper is the only
+			// thing that can render a toast for a logged-in macOS user, and the
+			// cross-platform reboot warning ladder now dispatches through
+			// BroadcastNotification. Without it a macOS patch reboot would warn
+			// nobody — the exact defect #3197 fixes on Windows.
+			return macDesktopHelperScopes
 		}
 		return userHelperScopes
 	case backupipc.HelperRoleBackup:

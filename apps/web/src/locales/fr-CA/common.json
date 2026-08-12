@@ -1794,22 +1794,14 @@
         "partialWarning": "Certaines données peuvent être incomplètes. Échec du chargement : {{endpoints}}",
         "cards": {
           "policies": "Politiques",
-          "activeCount": "{{count}} actif",
           "deployments": "Déploiements",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} en attente",
           "failedCount": "{{count}} échoué",
           "patches": "Correctifs",
-          "pendingInstallation": "Installation en attente",
           "alerts": "Alertes",
-          "alertsSubtitle": "{{critical}} critique, {{high}} élevé",
           "groups": "Groupes",
-          "deviceGroupsSubtitle": "Groupes de périphériques",
           "automations": "Automatisations",
-          "configured": "configuré",
           "maintenance": "Maintenance",
-          "activeWindows": "Fenêtres actives",
-          "reports": "Rapports",
-          "reportDefinitions": "Définitions du rapport"
+          "reports": "Rapports"
         },
         "aiFleetActions": "Actions de flotte IA",
         "aiFleetActionsHint": "Cliquez pour demander à l’assistant IA",
@@ -1838,6 +1830,173 @@
           "high": "Élevée",
           "medium": "Moyenne",
           "low": "Faible"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Constats du parc",
+        "description": "Des tendances communes à plusieurs appareils qui méritent une seule action",
+        "filters": {
+          "orgLabel": "Filtrer par organisation",
+          "kindLabel": "Filtrer par type de constat",
+          "severityLabel": "Filtrer par gravité",
+          "statusLabel": "Filtrer par statut",
+          "allOrgs": "Toutes les organisations",
+          "allKinds": "Tous les types de constat",
+          "allSeverities": "Toutes les gravités"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalie de métrique",
+          "logCorrelation": "Corrélation de journaux",
+          "reliabilityOffenders": "Récidivistes de fiabilité"
+        },
+        "severities": {
+          "critical": "Critique",
+          "error": "Erreur",
+          "warning": "Avertissement",
+          "info": "Informatif"
+        },
+        "statuses": {
+          "open": "Ouvert",
+          "acknowledged": "Pris en charge",
+          "dismissed": "Rejeté",
+          "resolved": "Résolu"
+        },
+        "status": {
+          "active": "Ouverts et pris en charge",
+          "dismissed": "Rejetés",
+          "resolved": "Résolus"
+        },
+        "deviceCount": "{{count}} appareils",
+        "deviceCount_one": "{{count}} appareil",
+        "deviceCount_other": "{{count}} appareils",
+        "showing": "Affichage de {{shown}} sur {{total}}",
+        "loadMore": "Charger plus",
+        "empty": {
+          "title": "Le parc est sain",
+          "noMatchesTitle": "Aucun constat correspondant",
+          "body": "Aucun constat ne correspond à ces filtres pour l'instant."
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement des constats du parc",
+          "banner": "Nous n'avons pas pu charger les constats du parc"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Détails du constat",
+        "meta": {
+          "firstSeen": "Première détection {{when}}",
+          "lastSeen": "Dernière détection {{when}}"
+        },
+        "summaryHeading": "Sommaire",
+        "resolvedNote": {
+          "heading": "Pourquoi ce constat est fermé",
+          "body": "Ce constat a été résolu parce que le signal sous-jacent a disparu. Il réapparaîtra comme un nouveau constat si le problème se reproduit.",
+          "reason": "Motif de résolution : {{reason}}"
+        },
+        "dismissNotesHeading": "Note de rejet",
+        "evidenceHeading": "Éléments probants",
+        "membersHeading": "Appareils touchés",
+        "membersEmpty": "Aucun appareil n'est enregistré pour ce constat.",
+        "table": {
+          "device": "Appareil",
+          "source": "Provenance",
+          "lastSeen": "Dernière détection"
+        },
+        "runsHeading": "Historique des correctifs",
+        "runsEmpty": "Aucun correctif n'a encore été exécuté pour ce constat.",
+        "runCounts": "{{succeeded}} réussis, {{failed}} en échec, {{skipped}} ignorés sur {{targets}} visés",
+        "runStatuses": {
+          "queued": "En attente",
+          "running": "En cours",
+          "partial": "Partiel",
+          "succeeded": "Réussi",
+          "failed": "Échoué",
+          "cancelled": "Annulé"
+        },
+        "dismiss": {
+          "notesLabel": "Pourquoi rejetez-vous ce constat ? (obligatoire)",
+          "notesPlaceholder": "Faux positif connu, suivi ailleurs, risque accepté…",
+          "confirm": "Rejeter le constat"
+        },
+        "actions": {
+          "remediate": "Corriger sur {{count}} appareils",
+          "remediate_one": "Corriger sur {{count}} appareil",
+          "remediate_other": "Corriger sur {{count}} appareils",
+          "remediateDisabledReason": "Il ne reste aucun appareil à corriger dans ce constat.",
+          "acknowledge": "Prendre en charge",
+          "dismiss": "Rejeter",
+          "reopen": "Rouvrir"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement du constat",
+          "lifecycleFailed": "Échec de la mise à jour du constat"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "le signal sous-jacent a disparu"
+        }
+      },
+      "FixPicker": {
+        "title": "Corriger le constat",
+        "actions": {
+          "script": "Lancer un script",
+          "scriptHint": "Sélectionnez un script de votre bibliothèque et remplissez ses paramètres.",
+          "restartService": "Redémarrer un service",
+          "restartServiceHint": "Redémarre un seul service nommé sur chacun des appareils sélectionnés.",
+          "reboot": "Redémarrer les appareils",
+          "rebootHint": "Redémarre les appareils sélectionnés dès que l'exécution est transmise."
+        },
+        "chooseScript": "Sélectionner un script…",
+        "changeScript": "Changer de script",
+        "selectedScript": "Script : {{name}}",
+        "serviceNameLabel": "Nom du service",
+        "serviceNamePlaceholder": "p. ex. Spooler",
+        "rebootWarning": "Les appareils sélectionnés redémarrent immédiatement dès que cette exécution est transmise. Les sessions actives prennent fin et le travail non enregistré est perdu.",
+        "targetsHeading": "Appareils à corriger",
+        "selectAll": "Tout sélectionner",
+        "selectNone": "Vider la sélection",
+        "selectedCount": "{{selected}} appareils sélectionnés sur {{total}}",
+        "noTargets": "Sélectionnez au moins un appareil pour poursuivre.",
+        "osIncompatibleNotice": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} appareil ne peut pas exécuter ce script et a été exclu. Il ne prend en charge que {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} appareils ne peuvent pas exécuter ce script et ont été exclus. Il ne prend en charge que {{os}}.",
+        "osIncompatibleReason": "Nécessite {{os}}",
+        "confirmAction": "Correctif retenu",
+        "confirmTargets": "Appareils",
+        "confirmRestartService": "Redémarrer le service {{name}}",
+        "confirmRebootNotice": "{{count}} appareils redémarreront immédiatement.",
+        "confirmRebootNotice_one": "{{count}} appareil redémarrera immédiatement.",
+        "confirmRebootNotice_other": "{{count}} appareils redémarreront immédiatement.",
+        "confirm": "Démarrer la correction",
+        "dispatchedSummary": "{{count}} appareils ont été visés par cette exécution.",
+        "dispatchedSummary_one": "{{count}} appareil a été visé par cette exécution.",
+        "dispatchedSummary_other": "{{count}} appareils ont été visés par cette exécution.",
+        "skippedHeading": "Appareils ignorés",
+        "skipReasons": {
+          "siteDenied": "Site auquel vous n'avez pas accès",
+          "notMember": "N'est plus visé par ce constat",
+          "decommissioned": "Appareil mis hors service",
+          "timeout": "Expiré après 30 minutes",
+          "dispatchEnqueueFailed": "Jamais envoyé — la mise en file d'attente a échoué"
+        },
+        "viewProgress": "Voir l'avancement",
+        "errors": {
+          "dispatchFailed": "Échec du démarrage de la correction"
+        }
+      },
+      "RunProgress": {
+        "heading": "Exécution de correction",
+        "counts": "{{succeeded}} réussis, {{failed}} en échec, {{skipped}} ignorés sur {{targets}} visés",
+        "polling": "Actualisation en cours tant que l'exécution est active…",
+        "targetsEmpty": "Aucun appareil de cette exécution ne vous est visible.",
+        "targetStatuses": {
+          "pending": "En attente",
+          "queued": "En file",
+          "succeeded": "Réussi",
+          "failed": "Échec",
+          "skipped": "Ignoré"
+        },
+        "errors": {
+          "loadFailed": "Échec du chargement de l'exécution de correction"
         }
       }
     },

@@ -559,7 +559,9 @@
     "lastSeen": "Visto por último",
     "loggedInUser": "Usuário conectado",
     "rail": "rail",
-    "strip": "strip"
+    "strip": "strip",
+    "networkAsset": "Ativo de rede",
+    "networkAssets": "Ativos de rede"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",
@@ -713,7 +715,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Falha ao buscar grupos de dispositivos",
     "windows": "windows",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Falha ao salvar o grupo de dispositivos",
@@ -2032,18 +2033,18 @@
     "value": "Valor"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "A Gravação de Tela e a Acessibilidade estão sendo configuradas automaticamente. Se isso persistir, verifique os logs do agente ou reinicie-o.",
+    "configuringDescription": "O macOS solicitará as permissões de Gravação de Tela e Acessibilidade neste dispositivo. Se as solicitações foram dispensadas, conceda-as em Ajustes do Sistema > Privacidade e Segurança.",
     "fullDiskAccess": "Acesso Total ao Disco",
-    "fullDiskAccessDescription": "O Acesso Total ao Disco é obrigatório. Conceda-o em Ajustes do Sistema > Privacidade e Segurança > Acesso Total ao Disco. A Gravação de Tela e a Acessibilidade serão configuradas automaticamente.",
+    "fullDiskAccessDescription": "O Acesso Total ao Disco deve ser concedido em Ajustes do Sistema > Privacidade e Segurança > Acesso Total ao Disco. Administradores de frota podem conceder o Acesso Total ao Disco e a Acessibilidade automaticamente por meio de um perfil PPPC de MDM — consulte a página de permissões do macOS na documentação.",
     "fullDiskAccessRequired": "Acesso Total ao Disco obrigatório",
-    "permissionsConfiguring": "Configurando permissões",
+    "permissionsConfiguring": "Permissões aguardando aprovação",
     "remoteDesktop": "Gerenciamento Remoto",
     "remoteDesktopDescription": "A permissão de Gerenciamento Remoto do macOS está ausente. O acesso à área de trabalho na janela de início de sessão permanecerá indisponível até que ela seja concedida.",
     "remoteDesktopRequired": "Permissão de Gerenciamento Remoto obrigatória"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "A Gravação de Tela e a Acessibilidade estão sendo configuradas automaticamente. Se isso persistir, verifique os logs do agente ou reinicie-o.",
-    "fullDiskAccessWarning": "O Acesso Total ao Disco deve ser concedido em Ajustes do Sistema > Privacidade e Segurança. A Gravação de Tela e a Acessibilidade serão configuradas automaticamente.",
+    "configuringWarning": "O macOS solicitará as permissões de Gravação de Tela e Acessibilidade neste dispositivo. Se as solicitações foram dispensadas, conceda-as em Ajustes do Sistema > Privacidade e Segurança.",
+    "fullDiskAccessWarning": "O Acesso Total ao Disco deve ser concedido em Ajustes do Sistema > Privacidade e Segurança > Acesso Total ao Disco, ou automaticamente por meio de um perfil PPPC de MDM. O macOS solicita Gravação de Tela e Acessibilidade separadamente.",
     "lastChecked": "Última verificação: {{date}}",
     "permissions": {
       "accessibility": "Acessibilidade",
@@ -2053,7 +2054,7 @@
     },
     "remoteDesktopWarning": "A permissão de Gerenciamento Remoto é obrigatória para acesso não assistido à janela de início de sessão no macOS 14+.",
     "states": {
-      "autoManaged": "Gerenciada automaticamente",
+      "autoManaged": "Pendente",
       "granted": "Concedida",
       "missing": "Ausente",
       "unknown": "Desconhecida"
@@ -2130,11 +2131,27 @@
       "typeUpdateFailed": "Falha ao atualizar o tipo",
       "typeUpdated": "Tipo atualizado",
       "unlinkFailed": "Falha ao desvincular",
-      "unlinked": "Desvinculado"
+      "unlinked": "Desvinculado",
+      "linked": "Dispositivo vinculado",
+      "linkFailed": "Falha ao vincular dispositivo"
     },
     "unlink": "Desvincular",
     "unlinking": "Desvinculando…",
-    "viewManagedDevice": "Ver dispositivo gerenciado"
+    "viewManagedDevice": "Ver dispositivo gerenciado",
+    "autoLinkSuppressed": "Vinculação automática desativada — desvinculado por um usuário",
+    "linkManually": "Vincular manualmente…",
+    "linkManuallySelectDevice": "Selecionar um dispositivo",
+    "linkManuallyLinking": "Vinculando…",
+    "linkManuallyErrors": {
+      "loadDevices": "Falha ao carregar dispositivos",
+      "noDevices": "Nenhum dispositivo gerenciado neste site.",
+      "noSite": "Não foi possível determinar o site deste ativo."
+    },
+    "provenance": {
+      "auto": "— detectado automaticamente",
+      "manual": "— definido manualmente"
+    },
+    "sameDeviceAs": "Mesmo dispositivo que {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

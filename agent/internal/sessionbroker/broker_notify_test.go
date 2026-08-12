@@ -103,12 +103,21 @@ func TestBroadcastNotificationFiltersOnNotifyScope(t *testing.T) {
 			want:   false,
 		},
 		{
-			// The macOS desktop helper: scopesForRole grants it "desktop"
-			// only, even though it runs the shared internal/userhelper client
-			// that would dispatch TypeNotify. Filtered out, and that is
-			// deliberate — see the BroadcastNotification doc comment. This
-			// case is pinned so the asymmetry cannot change unnoticed.
+			// The macOS desktop helper: scopesForRole has granted it "desktop"
+			// plus "notify" since #3197, because the cross-platform reboot
+			// warning ladder broadcasts through here and this helper is the
+			// only thing that can render a toast for a logged-in macOS user.
+			// TestMacDesktopHelperScopesGrantNotify pins the grant itself;
+			// this case pins that the filter honours it.
 			name:   "macos desktop helper scopes",
+			scopes: macDesktopHelperScopes,
+			want:   true,
+		},
+		{
+			// The pre-#3197 macOS grant, kept as a regression case: a helper
+			// holding "desktop" alone is still filtered out, so the fix was a
+			// widened grant and not a weakened filter.
+			name:   "desktop without notify is still filtered",
 			scopes: []string{"desktop"},
 			want:   false,
 		},
@@ -230,6 +239,37 @@ func TestBroadcastNotificationSkipsSessionsWithoutNotifyScopeEntirely(t *testing
 		}
 		if p.gotNotification(t) {
 			t.Errorf("%s (scopes %v) received a notification it cannot render", p.name, p.session.AllowedScopes)
+		}
+	}
+}
+
+// TestMacDesktopHelperScopesGrantNotify pins the #3197 grant itself. The macOS
+// desktop helper is the only process that can render a toast for a logged-in
+// macOS user, and RebootManager is cross-platform now, so losing "notify" here
+// would silently reproduce the original defect on macOS. scopesForRole's darwin
+// branch cannot be called directly in a unit test (it verifies the peer's
+// resolved binary path against the running executable's trusted set), so the
+// grant is pinned through the named slice it returns.
+func TestMacDesktopHelperScopesGrantNotify(t *testing.T) {
+	var hasNotify, hasDesktop bool
+	for _, s := range macDesktopHelperScopes {
+		switch s {
+		case "notify":
+			hasNotify = true
+		case "desktop":
+			hasDesktop = true
+		}
+	}
+	if !hasNotify {
+		t.Error("macDesktopHelperScopes is missing \"notify\" — a macOS reboot warning would reach nobody (#3197)")
+	}
+	if !hasDesktop {
+		t.Error("macDesktopHelperScopes is missing \"desktop\"")
+	}
+	// Still narrower than the full user helper: no run_as_user, no clipboard.
+	for _, s := range macDesktopHelperScopes {
+		if s == "run_as_user" || s == "clipboard" {
+			t.Errorf("macDesktopHelperScopes unexpectedly widened to include %q", s)
 		}
 	}
 }

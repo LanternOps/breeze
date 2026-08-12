@@ -216,7 +216,7 @@ export default function RoleManager({
         <div>
           <h2 className="text-lg font-semibold">{t('roleManager.roles')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredRoles.length} {t('roleManager.of')}{roles.length} {t('roleManager.roles2')}</p>
+            {t('roleManager.summary', { filtered: filteredRoles.length, total: roles.length })}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input

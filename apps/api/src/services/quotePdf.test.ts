@@ -2,13 +2,43 @@ import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
 import { PDFDocument } from 'pdf-lib';
-import { renderQuotePdf, contractUploadedMarker, columnsFor } from './quotePdf';
+import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
-// A minimal valid 1x1 transparent PNG (the smallest real PNG pdfkit will accept).
-const ONE_BY_ONE_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-  'base64',
-);
+// Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
+// previous hand-pasted base64 fixture was NOT decodable by pdfkit ("Incomplete
+// or corrupt PNG file") — every doc.image() draw of it silently hit the
+// catch-and-continue branch, which let the image-cursor overlap bug ship with
+// green tests.
+function crc32(buf: Buffer): number {
+  let crc = ~0;
+  for (const byte of buf) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return ~crc >>> 0;
+}
+function pngChunk(type: string, data: Buffer): Buffer {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+function makePng(width: number, height: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // grayscale
+  const scanlines = Buffer.alloc(height * (width + 1), 0x80); // filter byte + pixels
+  for (let r = 0; r < height; r++) scanlines[r * (width + 1)] = 0; // filter: none
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(scanlines)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+const ONE_BY_ONE_PNG = makePng(1, 1);
 
 // pdfkit flate-compresses its content streams, so the drawn text isn't greppable
 // in the raw bytes. Inflate every stream, then decode the show-text operands.
@@ -720,5 +750,108 @@ describe('renderQuotePdf', () => {
       );
       expect(buf.subarray(0, 4).toString()).toBe('%PDF');
     });
+  });
+
+  describe('image block flow (regression: doc.image never advances pdfkit cursor)', () => {
+    // The 1x1 PNG in a 200x400 fit box draws at 200x200 (pdfkit fit upscales
+    // proportionally: scale = min(200/1, 400/1) = 200).
+    const imageBlock = (id: string, sortOrder: number) =>
+      ({ id, blockType: 'image', sortOrder, content: { imageId: `img-${id}`, width: 200 } });
+
+    it('text after an image block starts below the image, not on top of it', async () => {
+      const buf = await renderQuotePdf(
+        { id: 'q1', quoteNumber: 'Q-9', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' },
+        [
+          { id: 'b1', blockType: 'rich_text', sortOrder: 0, content: { html: '<p>MARKERBEFORE</p>' } },
+          imageBlock('b2', 1),
+          { id: 'b3', blockType: 'rich_text', sortOrder: 2, content: { html: '<p>MARKERAFTER</p>' } },
+        ],
+        [],
+        async () => ({ data: ONE_BY_ONE_PNG }),
+        {},
+      );
+      const positioned = extractPositionedPdfText(buf);
+      const before = positioned.find((f) => f.text.includes('MARKERBEFORE'))!;
+      const after = positioned.find((f) => f.text.includes('MARKERAFTER'))!;
+      expect(before).toBeDefined();
+      expect(after).toBeDefined();
+      // The 200pt-tall image sits between them; the shipped overlap bug put
+      // MARKERAFTER ~20pt below MARKERBEFORE, straight across the image.
+      expect(after.y - before.y).toBeGreaterThanOrEqual(200);
+    });
+
+    it('a run of tall images paginates instead of overflowing the bottom margin', async () => {
+      const buf = await renderQuotePdf(
+        { id: 'q1', quoteNumber: 'Q-10', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' },
+        [1, 2, 3, 4].map((n) => imageBlock(`b${n}`, n)),
+        [],
+        async () => ({ data: ONE_BY_ONE_PNG }),
+        {},
+      );
+      // 4 x ~206pt of image cannot fit one A4 content column (~742pt).
+      const pages = (await PDFDocument.load(buf)).getPageCount();
+      expect(pages).toBeGreaterThanOrEqual(2);
+    });
+
+    it('cover page: with a cover image the title moves into the bottom legibility band; without one it stays at the top', async () => {
+      const base = {
+        id: 'q1', quoteNumber: 'Q-12', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+      };
+      const withImage = await renderQuotePdf(
+        { ...base, coverPage: { enabled: true, title: 'FULLBLEEDTITLE', coverImageId: 'img-cover' } } as never,
+        [], [], async () => ({ data: ONE_BY_ONE_PNG }), {},
+      );
+      const withoutImage = await renderQuotePdf(
+        { ...base, coverPage: { enabled: true, title: 'FULLBLEEDTITLE' } } as never,
+        [], [], async () => null, {},
+      );
+      const titleY = (buf: Buffer) => extractPositionedPdfText(buf).find((f) => f.text.includes('FULLBLEEDTITLE'))!.y;
+      // Full-bleed background → title sits inside the bottom band (>= 62% of
+      // the A4 page height); classic no-image cover keeps it under the top margin.
+      expect(titleY(withImage)).toBeGreaterThanOrEqual(841.89 * 0.62);
+      expect(titleY(withoutImage)).toBeLessThan(200);
+    });
+
+    it('cover page: a wrapping preparedForName pushes the address down instead of overlapping it', async () => {
+      const buf = await renderQuotePdf(
+        {
+          id: 'q1', quoteNumber: 'Q-11', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+          coverPage: { enabled: true, title: 'Proposal', preparedForName: 'Cassidy Lowrey — Animal Health at Home Veterinary Practice LLC' },
+          billToAddress: { line1: '406 10th Street', city: 'Berthoud', region: 'CO', postalCode: '80513' },
+        } as never,
+        [], [], async () => null, {},
+      );
+      const positioned = extractPositionedPdfText(buf);
+      const nameBottom = Math.max(...positioned.filter((f) => f.text.includes('Animal Health')).map((f) => f.y));
+      const address = positioned.find((f) => f.text.includes('406 10th Street'))!;
+      expect(address).toBeDefined();
+      expect(Number.isFinite(nameBottom)).toBe(true);
+      // Address must start below the wrapped name's LAST line (12pt font ≈
+      // 14pt line height); the shipped bug drew it at a fixed one-line offset.
+      expect(address.y).toBeGreaterThan(nameBottom + 10);
+    });
+  });
+});
+
+describe('imageIntrinsicSize', () => {
+  it('parses PNG IHDR dimensions', () => {
+    expect(imageIntrinsicSize(ONE_BY_ONE_PNG)).toEqual({ width: 1, height: 1 });
+  });
+
+  it('parses JPEG SOF dimensions (skipping APP segments)', () => {
+    // SOI, APP0 (JFIF stub), SOF0 with height 30 / width 20.
+    const jpeg = Buffer.concat([
+      Buffer.from([0xff, 0xd8]),
+      Buffer.from([0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(14), // APP0, len 16
+      Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x1e, 0x00, 0x14]), Buffer.alloc(10), // SOF0: h=30 w=20
+    ]);
+    expect(imageIntrinsicSize(jpeg)).toEqual({ width: 20, height: 30 });
+  });
+
+  it('returns null for unparseable buffers', () => {
+    expect(imageIntrinsicSize(Buffer.from('not an image at all'))).toBeNull();
+    expect(imageIntrinsicSize(Buffer.alloc(0))).toBeNull();
+    // WebP (RIFF) — pdfkit can't embed it and the probe doesn't parse it.
+    expect(imageIntrinsicSize(Buffer.from('RIFF0000WEBPVP8 '))).toBeNull();
   });
 });

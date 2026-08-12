@@ -18,10 +18,10 @@ import {
   scripts,
 } from '../db/schema';
 import { resolveDeploymentTargets } from './deploymentEngine';
-import { captureException } from './sentry';
 import { canAccessSite, type UserPermissions } from './permissions';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 import {
   getEmailRecipients,
   sendEmailNotification,
@@ -825,7 +825,10 @@ type ActionExecutionContext = {
     hostname: string;
     displayName: string | null;
     osType: 'windows' | 'macos' | 'linux';
-    status: string;
+    status: (typeof devices.$inferSelect)['status'];
+    // Needed by dispatchScriptToDevice (#3409 PR0) for WS delivery — carried
+    // through the device snapshot rather than re-queried per action.
+    agentId: string;
   };
   scriptsById: Map<string, typeof scripts.$inferSelect>;
   channelsById: Map<string, typeof notificationChannels.$inferSelect>;
@@ -835,41 +838,6 @@ type ActionExecutionResult = {
   success: boolean;
   log: AutomationLogEntry;
 };
-
-/**
- * Remove a `script_executions` row that was minted for a `run_script` action
- * whose command never made it onto the queue (#3162).
- *
- * Guarded on `pending` purely as a safety interlock: if the command was never
- * queued no agent can have reported against the row, so a 0-row result means
- * something unexpected happened (row already gone, wrong id, wrong DB context)
- * and is worth surfacing rather than swallowing — this whole issue existed
- * because a script-result DB write failed silently.
- */
-async function discardQueuelessExecution(executionId: string, deviceId: string): Promise<void> {
-  try {
-    const deleted = await db
-      .delete(scriptExecutions)
-      .where(and(
-        eq(scriptExecutions.id, executionId),
-        eq(scriptExecutions.status, 'pending'),
-      ))
-      .returning({ id: scriptExecutions.id });
-
-    if (deleted.length === 0) {
-      console.warn(
-        `[AutomationRuntime] script execution ${executionId} (device ${deviceId}) was not pending at discard time; leaving it alone`,
-      );
-    }
-  } catch (err) {
-    // Never let cleanup mask the original queue failure the caller is reporting.
-    console.error(
-      `[AutomationRuntime] failed to discard unqueued script execution ${executionId}:`,
-      err,
-    );
-    captureException(err);
-  }
-}
 
 // Exported for direct unit coverage of the script_executions correlation
 // (#3162); the run loop still reaches it through executeAction below.
@@ -909,113 +877,52 @@ export async function executeRunScriptAction(
 
   const parameters = action.parameters ?? {};
 
-  // #3162: mint a REAL script_executions row and use its uuid as the payload's
-  // executionId. The previous synthetic `${runId}:${deviceId}:${actionIndex}`
-  // string could never match `script_executions.id` (a uuid column), so
-  // handleScriptResult's UPDATE threw, got swallowed by its catch, and the
-  // agent's stdout was discarded. With a real row the existing result handler
-  // persists stdout/stderr/exitCode, and the run is visible in the device's
-  // script history alongside manual runs.
-  //
-  // org_id is the DEVICE's org — a partner-wide automation (automations.org_id
-  // NULL, #2133) owns no org of its own, so worker-created child rows always
-  // take the device's (playbook rule 5).
-  const [execution] = await db
-    .insert(scriptExecutions)
-    .values({
-      scriptId: script.id,
-      deviceId: context.device.id,
-      orgId: context.device.orgId,
-      triggeredBy: context.automation.createdBy ?? null,
-      triggerType: 'automation',
-      automationRunId: context.runId,
-      parameters,
-      status: 'pending',
-    })
-    .returning({ id: scriptExecutions.id });
+  // #3409 PR0: dispatchScriptToDevice owns the script_executions insert (#3162
+  // — a REAL uuid row so handleScriptResult can correlate the agent's result),
+  // payload build, sensitive-field encryption, queueCommand, and claim/decrypt/
+  // WS-send. On a queueCommand throw it deletes its own pending execution row
+  // before rethrowing (the old discardQueuelessExecution catch, now inside the
+  // core). requireOnline:true reproduces queueCommandForExecution's online gate
+  // — offline devices short-circuit before any insert, so there is no orphan
+  // row to discard on that path either.
+  const dispatch = await dispatchScriptToDevice({
+    device: context.device,
+    source: { kind: 'saved', script, automationRunId: context.runId },
+    parameters,
+    triggerType: 'automation',
+    triggeredBy: context.automation.createdBy ?? null,
+    createdBy: context.automation.createdBy ?? null,
+    // action.runAs is unchecked user input (RunScriptAction widens the literal
+    // union to `string`, since normalizeAutomationActions has no enum
+    // validation) — preserve the pre-existing runtime behavior of forwarding
+    // whatever value was configured rather than adding new validation here.
+    runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
+    requireOnline: true,
+  });
 
-  if (!execution) {
-    return {
-      success: false,
-      log: logEntry('Failed to create script execution for run_script action', 'error', {
-        actionType: action.type,
-        actionIndex,
-        deviceId: context.device.id,
-        details: { scriptId: script.id },
-      }),
-    };
-  }
-
-  let queueResult: Awaited<ReturnType<typeof queueCommandForExecution>>;
-  try {
-    queueResult = await queueCommandForExecution(
-      context.device.id,
-      CommandTypes.SCRIPT,
-      {
-        scriptId: script.id,
-        executionId: execution.id,
-        language: script.language,
-        content: script.content,
-        parameters,
-        timeoutSeconds: script.timeoutSeconds,
-        runAs: action.runAs ?? script.runAs,
-      },
-      {
-        userId: context.automation.createdBy ?? undefined,
-      },
-    );
-  } catch (err) {
-    // queueCommandForExecution does several DB round-trips plus a JIT decrypt,
-    // any of which can THROW rather than return `{ error }`. Without this the
-    // row would sit at `pending` until the reaper relabelled it `timeout` —
-    // "no response from agent", which is a lie: no command ever reached one.
-    await discardQueuelessExecution(execution.id, context.device.id);
-    throw err;
-  }
-
-  if (!queueResult.command) {
-    // Nothing was queued, so no execution happened — drop the row rather than
-    // leaving a `failed` one behind. Pre-#3162 this produced no row at all, and
-    // the failure is already recorded in the automation run's own log below.
-    // Keeping it would add one row per offline device per run (a daily
-    // automation over a fleet of asleep laptops), drowning the device's script
-    // history and skewing per-script success stats.
-    await discardQueuelessExecution(execution.id, context.device.id);
-
+  if (!dispatch.ok) {
     return {
       success: false,
       log: logEntry('Failed to queue run_script action command', 'error', {
         actionType: action.type,
         actionIndex,
         deviceId: context.device.id,
-        details: { error: queueResult.error ?? 'Unknown queue error', scriptId: script.id },
+        details: { error: dispatch.error, scriptId: script.id },
       }),
     };
   }
 
-  // Guarded on the row still being `pending`: queueCommandForExecution hands the
-  // command to `ws.send` synchronously, so a fast agent can already have driven
-  // the row terminal through handleScriptResult by the time we get here. An
-  // unguarded write would flip a `completed` row (with its stdout) back to
-  // `running`, and the stale-command reaper — which scans script_executions
-  // directly for pending/queued/running past its cutoff — would later relabel it
-  // `timeout`. A 0-row result here is expected and deliberately not reported.
-  //
-  // The delivered branch matches the manual path (services/scriptExecution.ts):
-  // once the command is on the wire the execution is `running` with a start
-  // time, which is what the UI derives a duration from. The undelivered branch
-  // sets `queued`; the manual path leaves such a row at its `pending` insert
-  // default, which the reaper treats identically.
-  const delivered = queueResult.command.status === 'sent';
-  await db
-    .update(scriptExecutions)
-    .set(delivered
-      ? { status: 'running', startedAt: queueResult.command.executedAt ?? new Date() }
-      : { status: 'queued' })
-    .where(and(
-      eq(scriptExecutions.id, execution.id),
-      eq(scriptExecutions.status, 'pending'),
-    ));
+  if (!dispatch.delivered && dispatch.executionId) {
+    // Undelivered-but-queued: matches the old 'queued' status write; the core
+    // only writes 'running' on actual delivery.
+    await db
+      .update(scriptExecutions)
+      .set({ status: 'queued' })
+      .where(and(
+        eq(scriptExecutions.id, dispatch.executionId),
+        eq(scriptExecutions.status, 'pending'),
+      ));
+  }
 
   return {
     success: true,
@@ -1023,8 +930,12 @@ export async function executeRunScriptAction(
       actionType: action.type,
       actionIndex,
       deviceId: context.device.id,
-      commandId: queueResult.command.id,
-      details: { scriptId: script.id, executionId: execution.id },
+      commandId: dispatch.commandId,
+      // deliveryOutcome lets an operator reading the run log distinguish
+      // "queued, agent offline" (no_agent) from "we had a socket and failed
+      // to reach it" (claim_lost/decrypt_failed/send_failed) — see
+      // scriptDispatch.ts's DispatchScriptResult for the full enum.
+      details: { scriptId: script.id, executionId: dispatch.executionId, deliveryOutcome: dispatch.deliveryOutcome },
     }),
   };
 }
@@ -1046,40 +957,34 @@ async function executeCommandAction(
 ): Promise<ActionExecutionResult> {
   const shell = chooseShellForDevice(context.device.osType, action.shell);
 
-  const queueResult = await queueCommandForExecution(
-    context.device.id,
-    CommandTypes.SCRIPT,
-    {
-      scriptId: `automation:${context.automation.id}`,
-      // No executionId: execute_command runs ad-hoc content with no `scripts`
-      // row, and `script_executions.script_id` is NOT NULL, so it can never
-      // have an execution row to correlate against. It used to send a synthetic
-      // `${runId}:${deviceId}:${actionIndex}` string, which handleScriptResult
-      // then fed to a uuid column — the #3162 crash. The agent doesn't need it
-      // (agent/internal/heartbeat/handlers_script.go keys the execution on the
-      // command id); only the separate `script_cancel` command type reads an
-      // executionId payload field.
-      language: shell === 'cmd' ? 'cmd' : shell,
+  // No executionId / execution row: execute_command runs ad-hoc content with
+  // no `scripts` row, and `script_executions.script_id` is NOT NULL, so it can
+  // never have an execution row to correlate against (the raw source kind
+  // creates none — #3162). The agent doesn't need one (the command id keys the
+  // execution); only the separate `script_cancel` command type reads an
+  // executionId payload field.
+  const dispatch = await dispatchScriptToDevice({
+    device: context.device,
+    source: {
+      kind: 'raw',
       content: action.command,
-      timeoutSeconds: 300,
-      runAs: 'system',
+      language: shell === 'cmd' ? 'cmd' : shell,
+      provenance: `automation:${context.automation.id}`,
     },
-    {
-      userId: context.automation.createdBy ?? undefined,
-    },
-  );
+    timeoutSeconds: 300,
+    runAs: 'system',
+    createdBy: context.automation.createdBy ?? null,
+    requireOnline: true,
+  });
 
-  if (!queueResult.command) {
+  if (!dispatch.ok) {
     return {
       success: false,
       log: logEntry('Failed to queue execute_command action', 'error', {
         actionType: action.type,
         actionIndex,
         deviceId: context.device.id,
-        details: {
-          error: queueResult.error ?? 'Unknown queue error',
-          shell,
-        },
+        details: { error: dispatch.error, shell },
       }),
     };
   }
@@ -1090,8 +995,10 @@ async function executeCommandAction(
       actionType: action.type,
       actionIndex,
       deviceId: context.device.id,
-      commandId: queueResult.command.id,
-      details: { shell },
+      commandId: dispatch.commandId,
+      // See executeRunScriptAction above for why deliveryOutcome is worth
+      // surfacing here.
+      details: { shell, deliveryOutcome: dispatch.deliveryOutcome },
     }),
   };
 }
@@ -1815,6 +1722,7 @@ async function executeAutomationRunInner(
         displayName: devices.displayName,
         osType: devices.osType,
         status: devices.status,
+        agentId: devices.agentId,
       })
       .from(devices)
       .where(inArray(devices.id, targetDeviceIds))
@@ -1926,9 +1834,16 @@ async function executeAutomationRunInner(
       // {success:false}. Treat it as a device-level failure rather than letting
       // it reject runWithConcurrency's Promise.all and abort the whole run —
       // which would strand every other device's result row (#2023).
+      //
+      // This catch logs into the run's own log entries, but that's a DB
+      // column, not Sentry — a genuine infra fault during automated dispatch
+      // (DB blip, dispatch core throw, etc.) would otherwise be invisible
+      // outside someone reading this specific run's logs. Surface it.
       deviceFailed = true;
       const message = err instanceof Error ? err.message : String(err);
       if (deviceError === null) deviceError = message;
+      console.error('[automationRuntime] action threw during device dispatch', { deviceId: device.id, error: err });
+      captureException(err);
       const errLog = logEntry(`Automation action threw: ${message}`, 'error', { deviceId: device.id });
       logs.push(errLog);
       deviceOutput.push(`[error] ${errLog.message}`);
@@ -2371,6 +2286,7 @@ export async function executeConfigPolicyAutomationRun(
         displayName: devices.displayName,
         osType: devices.osType,
         status: devices.status,
+        agentId: devices.agentId,
       })
       .from(devices)
       .where(inArray(devices.id, targetDeviceIds))

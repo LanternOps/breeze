@@ -464,6 +464,48 @@ const dayScheduleSchema = z.object({
 
 const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
 
+/**
+ * A partner-settings URL restricted to http/https.
+ *
+ * These fields split into two risk classes and both land here:
+ *  - values rendered as links (contact.website → branded PDFs, invoices, email
+ *    footers), where `javascript:`/`data:text/html,…` is stored XSS against the
+ *    partner's own customers;
+ *  - values the SERVER dials outbound (Slack webhook, extra webhooks, the
+ *    Elasticsearch endpoint), where `file://` and friends are an SSRF/scheme-
+ *    confusion problem rather than an XSS one.
+ *
+ * All four were plain `z.string()` and persisted whatever was sent on a 200.
+ * None has a legitimate custom-scheme use — unlike the remote-access launcher
+ * template further down this file, which deliberately allows `rustdesk:` and
+ * similar and therefore keeps its own wider allowlist.
+ *
+ * Empty string is accepted so a field can be cleared.
+ */
+function httpUrlValue(label: string) {
+  return z
+    .string()
+    .max(2000)
+    .refine(
+      (v) => {
+        if (v === '') return true;
+        let parsed: URL;
+        try {
+          parsed = new URL(v);
+        } catch {
+          return false;
+        }
+        return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+      },
+      `${label} must be a full http:// or https:// URL`,
+    );
+}
+
+/** Optional/clearable form of {@link httpUrlValue}, for standalone fields. */
+function httpUrlField(label: string) {
+  return httpUrlValue(label).optional().or(z.literal(''));
+}
+
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),
   // so police it as a real IANA zone on write (was previously unvalidated).
@@ -479,7 +521,10 @@ const partnerSettingsSchema = z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
     phone: z.string().optional(),
-    website: z.string().optional()
+    // Rendered as a link in branded PDFs, invoices and email footers, so an
+    // unvalidated scheme here is stored XSS against the partner's own
+    // customers.
+    website: httpUrlField('Website'),
   }).optional(),
   address: z.object({
     street1: z.string().max(255).optional(),
@@ -517,9 +562,10 @@ const partnerSettingsSchema = z.object({
     smtpPort: z.number().int().optional(),
     smtpUsername: z.string().optional(),
     smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
-    slackWebhookUrl: z.string().optional(),
+    // Server dials this outbound; `file://`/internal targets are SSRF.
+    slackWebhookUrl: httpUrlField('Slack webhook URL'),
     slackChannel: z.string().optional(),
-    webhooks: z.array(z.string()).optional(),
+    webhooks: z.array(httpUrlValue('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),
     pushoverDefaultUser: z.string().max(30).optional(),
@@ -528,7 +574,8 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   eventLogs: z.object({
     enabled: z.boolean().optional(),
-    elasticsearchUrl: z.string().optional(),
+    // Server dials this outbound too — same SSRF reasoning as the Slack hook.
+    elasticsearchUrl: httpUrlField('Log endpoint URL'),
     elasticsearchApiKey: z.string().optional(),
     elasticsearchUsername: z.string().optional(),
     elasticsearchPassword: z.string().optional(),
@@ -614,6 +661,34 @@ const partnerSettingsSchema = z.object({
       password: z.string().max(2000).optional(),
       enabled: z.boolean(),
     })).max(50).optional(),
+  }).superRefine((remoteAccess, ctx) => {
+    // Provider ids are hand-typed strings referenced from defaultProviderId and
+    // from users.preferences.remoteAccessProviderId, and resolution is a
+    // first-match find over this array — so a duplicated id makes credential
+    // selection order-dependent, and a dangling default silently disables the
+    // Connect button. Reject both at save time. (Issue #3401.)
+    const seen = new Set<string>();
+    for (const [idx, provider] of (remoteAccess.providers ?? []).entries()) {
+      if (seen.has(provider.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['providers', idx, 'id'],
+          message: `Duplicate provider id "${provider.id}" — provider ids must be unique`,
+        });
+      }
+      seen.add(provider.id);
+    }
+    // Empty string means "no default" (the UI's cleared state), so only a
+    // non-empty default must name a configured provider. The settings merge
+    // replaces this sub-object wholesale, so the payload always carries the
+    // full provider list alongside the default.
+    if (remoteAccess.defaultProviderId && !seen.has(remoteAccess.defaultProviderId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['defaultProviderId'],
+        message: `defaultProviderId "${remoteAccess.defaultProviderId}" does not name a configured provider`,
+      });
+    }
   }).optional(),
   // PATCH /partners/me deep-merges `ticketing` one level (see the handler), so a
   // future sibling like `ticketing.outbound` survives — but the `inbound` sub-object

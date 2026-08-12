@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { isManualLink } from '../discovery/networkTypes';
+import { extractApiError } from '../../lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -41,6 +42,10 @@ type AssetDetailExtras = {
   // `linkedDeviceId`, which is an identity link and would be a loopback if
   // used to bridge a proxy connection to the asset it IS.
   suggestedBridgeDeviceId?: string | null;
+  // Set by a manual unlink (#3261 Task 2); cleared by any manual link. Only
+  // meaningful while unlinked — explains why auto-linking hasn't re-found
+  // this asset instead of leaving "Not linked" unexplained.
+  autoLinkSuppressedAt?: string | null;
 };
 
 type DeviceOption = { id: string; name: string; online: boolean };
@@ -298,6 +303,148 @@ function ProxyConnectPopover({
   );
 }
 
+// The one manual-override control this surface adds beyond Unlink: for the
+// case auto-link can't handle (cross-subnet discovery — no MAC visible, IPs
+// don't match), let a human assert the identity link directly. Site-scoped
+// on purpose: the link route requires same-org AND same-site
+// (discovery.ts:1458-1464), so an unscoped device list would offer choices
+// guaranteed to 403.
+function LinkManuallyControl({
+  assetId,
+  siteId,
+  onLinked,
+}: {
+  assetId: string;
+  siteId: string | null;
+  onLinked: () => void | Promise<void>;
+}) {
+  const { t } = useTranslation('devices');
+  const [open, setOpen] = useState(false);
+  const [devices, setDevices] = useState<DeviceOption[]>([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [deviceId, setDeviceId] = useState('');
+  const [linking, setLinking] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const openPicker = useCallback(async () => {
+    setOpen(true);
+    setError(undefined);
+    if (!siteId) {
+      setError(t('networkDeviceDetailPage.linkManuallyErrors.noSite'));
+      return;
+    }
+    setLoadingDevices(true);
+    try {
+      const response = await fetchWithAuth(`/devices?siteId=${encodeURIComponent(siteId)}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setError(extractApiError(body, t('networkDeviceDetailPage.linkManuallyErrors.loadDevices')));
+        return;
+      }
+      const data = await response.json();
+      const raw: any[] = asList(data, 'devices');
+      setDevices(
+        raw.map((d: any) => ({
+          id: d.id,
+          name: d.displayName || d.hostname || d.id,
+          online: d.status === 'online',
+        })),
+      );
+    } catch {
+      setError(t('networkDeviceDetailPage.linkManuallyErrors.loadDevices'));
+    } finally {
+      setLoadingDevices(false);
+    }
+  }, [siteId, t]);
+
+  const handleLink = useCallback(async () => {
+    if (!deviceId) return;
+    setLinking(true);
+    setError(undefined);
+    try {
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/discovery/assets/${assetId}/link`, {
+            method: 'POST',
+            body: JSON.stringify({ deviceId }),
+          }),
+        successMessage: t('networkDeviceDetailPage.toasts.linked'),
+        errorFallback: t('networkDeviceDetailPage.toasts.linkFailed'),
+      });
+      setOpen(false);
+      setDeviceId('');
+      await onLinked();
+    } catch (err) {
+      // runAction's message is already extractApiError's output — reuse it
+      // for the inline error instead of a second, possibly different string.
+      setError(err instanceof ActionError ? err.message : t('networkDeviceDetailPage.toasts.linkFailed'));
+    } finally {
+      setLinking(false);
+    }
+  }, [deviceId, assetId, onLinked, t]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        data-testid="network-detail-link-manually"
+        onClick={() => void openPicker()}
+        className="text-xs text-primary hover:underline"
+      >
+        {t('networkDeviceDetailPage.linkManually')}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1 space-y-2 rounded-md border bg-background p-3" data-testid="network-detail-link-manually-picker">
+      {loadingDevices ? (
+        <p className="text-xs text-muted-foreground">{t('common:states.loading')}</p>
+      ) : devices.length === 0 && !error ? (
+        <p className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.linkManuallyErrors.noDevices')}</p>
+      ) : (
+        <select
+          data-testid="network-detail-link-manually-select"
+          value={deviceId}
+          onChange={(e) => setDeviceId(e.target.value)}
+          className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+        >
+          <option value="">{t('networkDeviceDetailPage.linkManuallySelectDevice')}</option>
+          {devices.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          data-testid="network-detail-link-manually-submit"
+          onClick={() => void handleLink()}
+          disabled={linking || !deviceId}
+          className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {linking ? t('networkDeviceDetailPage.linkManuallyLinking') : t('common:actions.save')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setError(undefined); }}
+          disabled={linking}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          {t('common:actions.cancel')}
+        </button>
+      </div>
+      {error && (
+        <p className="text-xs text-destructive" data-testid="network-detail-link-manually-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
   const { t } = useTranslation('devices');
   const [asset, setAsset] = useState<DiscoveredAsset | null>(null);
@@ -347,6 +494,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         snmpMonitoringEnabled: raw.snmpMonitoringEnabled ?? false,
         networkMonitoringEnabled: raw.networkMonitoringEnabled ?? false,
         suggestedBridgeDeviceId: (raw as AssetDetailExtras).suggestedBridgeDeviceId ?? null,
+        autoLinkSuppressedAt: (raw as AssetDetailExtras).autoLinkSuppressedAt ?? null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
@@ -392,9 +540,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const [unlinking, setUnlinking] = useState(false);
   const [typeSaving, setTypeSaving] = useState(false);
 
-  // The Unlink button only renders for manual links (see render guard below) and
-  // the server independently rejects non-manual unlinks; this handler guards only
-  // that a link exists. runAction surfaces success/failure via toast.
+  // Unlink now works for both auto and manual links (#3261 Task 2 reverses the
+  // old manual-only rule — the server sets auto_link_suppressed_at so a
+  // subsequent rescan doesn't just re-create the link). This handler only
+  // guards that a link exists; runAction surfaces success/failure via toast.
   const handleUnlink = useCallback(async () => {
     if (!asset?.linkedDeviceId) return;
     if (typeof window !== 'undefined' && !window.confirm(t('networkDeviceDetailPage.confirmUnlink'))) return;
@@ -734,28 +883,45 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 label={t('networkDeviceDetailPage.fields.linkedDevice')}
                 value={
                   asset.linkedDeviceId ? (
-                    <span className="inline-flex items-center gap-3">
+                    <span className="flex flex-wrap items-center gap-3">
                       <a
                         href={`/devices/${asset.linkedDeviceId}`}
                         data-testid="network-detail-linked-device"
                         className="text-primary hover:underline"
                       >
-                        {asset.linkedDeviceName || t('networkDeviceDetailPage.viewManagedDevice')}
+                        {t('networkDeviceDetailPage.sameDeviceAs', {
+                          name: asset.linkedDeviceName || t('common:states.unknown'),
+                        })}
                       </a>
-                      {isManualLink(asset.linkSource) && (
-                        <button
-                          type="button"
-                          data-testid="network-detail-unlink"
-                          onClick={handleUnlink}
-                          disabled={unlinking}
-                          className="text-xs text-destructive hover:underline disabled:opacity-50"
-                        >
-                          {unlinking ? t('networkDeviceDetailPage.unlinking') : t('networkDeviceDetailPage.unlink')}
-                        </button>
-                      )}
+                      <span className="text-xs text-muted-foreground" data-testid="network-detail-link-provenance">
+                        {isManualLink(asset.linkSource)
+                          ? t('networkDeviceDetailPage.provenance.manual')
+                          : t('networkDeviceDetailPage.provenance.auto')}
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="network-detail-unlink"
+                        onClick={handleUnlink}
+                        disabled={unlinking}
+                        className="text-xs text-destructive hover:underline disabled:opacity-50"
+                      >
+                        {unlinking ? t('networkDeviceDetailPage.unlinking') : t('networkDeviceDetailPage.unlink')}
+                      </button>
                     </span>
                   ) : (
-                    t('networkDeviceDetailPage.notLinked')
+                    <div className="space-y-1.5">
+                      <p>{t('networkDeviceDetailPage.notLinked')}</p>
+                      {extras.autoLinkSuppressedAt && (
+                        <p className="text-xs text-muted-foreground" data-testid="network-detail-suppressed">
+                          {t('networkDeviceDetailPage.autoLinkSuppressed')}
+                        </p>
+                      )}
+                      <LinkManuallyControl
+                        assetId={asset.id}
+                        siteId={extras.siteId ?? null}
+                        onLinked={fetchAsset}
+                      />
+                    </div>
                   )
                 }
               />

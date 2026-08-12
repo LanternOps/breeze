@@ -38,6 +38,10 @@ vi.mock('../../middleware/auth', () => ({
       orgId: 'org-123',
       partnerId: null,
       accessibleOrgIds: ['org-123'],
+      // This route is reached by a person clicking Connect, so the mocked
+      // context carries the same discriminator the real one would. The
+      // per-technician provider preference is gated on it.
+      principal: { kind: 'user_session' },
       canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
     return next();
@@ -45,6 +49,9 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // Mirrors the real allowlist-of-one rather than stubbing a constant, so this
+  // suite still exercises the gate it depends on.
+  isInteractiveUserSession: vi.fn((a: any) => a?.principal?.kind === 'user_session'),
 }));
 
 vi.mock('./helpers', () => ({

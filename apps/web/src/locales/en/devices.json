@@ -559,7 +559,9 @@
     "lastSeen": "Last Seen",
     "loggedInUser": "Logged-in User",
     "rail": "rail",
-    "strip": "strip"
+    "strip": "strip",
+    "networkAsset": "Network asset",
+    "networkAssets": "Network assets"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -713,7 +715,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Failed to fetch device groups",
     "windows": "windows",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Failed to save device group",
@@ -2032,18 +2033,18 @@
     "value": "Value"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.",
+    "configuringDescription": "macOS will prompt for Screen Recording and Accessibility on this device. If the prompts were dismissed, grant them in System Settings > Privacy & Security.",
     "fullDiskAccess": "Full Disk Access",
-    "fullDiskAccessDescription": "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.",
+    "fullDiskAccessDescription": "Full Disk Access must be granted in System Settings > Privacy & Security > Full Disk Access. Fleet admins can grant Full Disk Access and Accessibility automatically via an MDM PPPC profile — see the macOS Permissions page in the docs.",
     "fullDiskAccessRequired": "Full Disk Access Required",
-    "permissionsConfiguring": "Permissions Configuring",
+    "permissionsConfiguring": "Permissions Awaiting Approval",
     "remoteDesktop": "Remote Desktop",
     "remoteDesktopDescription": "macOS Remote Desktop permission is missing. The login-window desktop path will stay unavailable until it is granted.",
     "remoteDesktopRequired": "Remote Desktop Permission Required"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.",
-    "fullDiskAccessWarning": "Full Disk Access must be granted in System Settings > Privacy & Security. Screen Recording and Accessibility will be configured automatically.",
+    "configuringWarning": "macOS will prompt for Screen Recording and Accessibility on this device. If the prompts were dismissed, grant them in System Settings > Privacy & Security.",
+    "fullDiskAccessWarning": "Full Disk Access must be granted in System Settings > Privacy & Security > Full Disk Access, or automatically via an MDM PPPC profile. macOS prompts for Screen Recording and Accessibility separately.",
     "lastChecked": "Last checked: {{date}}",
     "permissions": {
       "accessibility": "Accessibility",
@@ -2053,7 +2054,7 @@
     },
     "remoteDesktopWarning": "Remote Desktop permission is required for unattended login-window access on macOS 14+.",
     "states": {
-      "autoManaged": "Auto Managed",
+      "autoManaged": "Pending",
       "granted": "Granted",
       "missing": "Missing",
       "unknown": "Unknown"
@@ -2130,11 +2131,27 @@
       "typeUpdateFailed": "Type Update Failed",
       "typeUpdated": "Type Updated",
       "unlinkFailed": "Unlink Failed",
-      "unlinked": "Unlinked"
+      "unlinked": "Unlinked",
+      "linked": "Device linked",
+      "linkFailed": "Failed to link device"
     },
     "unlink": "Unlink",
     "unlinking": "Unlinking…",
-    "viewManagedDevice": "View managed device"
+    "viewManagedDevice": "View managed device",
+    "autoLinkSuppressed": "Auto-linking disabled — unlinked by a user",
+    "linkManually": "Link manually…",
+    "linkManuallySelectDevice": "Select a device",
+    "linkManuallyLinking": "Linking…",
+    "linkManuallyErrors": {
+      "loadDevices": "Failed to load devices",
+      "noDevices": "No managed devices at this site.",
+      "noSite": "Unable to determine this asset's site."
+    },
+    "provenance": {
+      "auto": "— auto-detected",
+      "manual": "— set manually"
+    },
+    "sameDeviceAs": "Same device as {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

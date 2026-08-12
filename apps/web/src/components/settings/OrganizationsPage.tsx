@@ -41,6 +41,17 @@ const statusColors: Record<Organization['status'], string> = {
   offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
 };
 
+// Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)
+// so the org-switcher store — a second reader with the same first-50 truncation
+// — can share it without importing this page component. Re-exported here to
+// keep this page the documented home of the pagination contract and its tests.
+export {
+  fetchAllOrganizations,
+  ORGANIZATIONS_PAGE_SIZE,
+  ORGANIZATIONS_MAX_PAGES,
+} from '../../lib/fetchAllOrganizations';
+import { fetchAllOrganizations } from '../../lib/fetchAllOrganizations';
+
 export default function OrganizationsPage() {
   const { t } = useTranslation('settings');
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -84,22 +95,18 @@ export default function OrganizationsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/orgs/organizations');
-      if (!response.ok) {
-        if (response.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
+      const organizations = await fetchAllOrganizations<Organization>(async (page, limit) => {
+        const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}`);
+        if (!response.ok) {
+          if (response.status === 401) {
+            void navigateTo('/login', { replace: true });
+            return null;
+          }
+          throw new Error(t('organizationsPage.errors.fetchOrganizations'));
         }
-        throw new Error(t('organizationsPage.errors.fetchOrganizations'));
-      }
-      const data = await response.json();
-      const organizations = Array.isArray(data?.data)
-        ? data.data
-        : Array.isArray(data?.organizations)
-          ? data.organizations
-          : Array.isArray(data)
-            ? data
-            : [];
+        return response.json();
+      });
+      if (organizations === null) return;
       setOrganizations(organizations);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));

@@ -1,0 +1,188 @@
+---
+title: macOS Permissions
+description: Grant Full Disk Access, Accessibility, and Screen Recording to the Breeze agent using MDM PPPC profiles or System Settings.
+sidebar:
+  order: 2.5
+  label: macOS Permissions
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+macOS gates access to the screen, input events, and protected files behind per-app privacy permissions (TCC). The Breeze agent and its desktop helper need three of these permissions for full functionality. Apple does not allow applications to grant these permissions to themselves -- the supported paths are an MDM-delivered PPPC (Privacy Preferences Policy Control) configuration profile for zero-touch deployment, or a manual grant in System Settings.
+
+## Permissions Overview
+
+| Permission | Binary | Used For | How to Grant |
+|---|---|---|---|
+| **Full Disk Access** | `/usr/local/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | System data collection, backup features | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Accessibility** | `/usr/local/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | Remote input (mouse and keyboard) during remote desktop sessions | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Screen Recording** | `/usr/local/bin/breeze-desktop-helper` | Remote desktop screen capture | **User approval only.** MDM cannot pre-grant it -- a PPPC profile can only allow standard (non-admin) users to approve it themselves, via the `ScreenCapture` service's `AllowStandardUserToSetSystemService` authorization (macOS 11+) |
+
+<Aside type="note">
+  Apple does not permit MDM to silently grant Screen Recording. The best available automation is the `AllowStandardUserToSetSystemService` key, which lets a logged-in standard user click **Allow** without needing admin credentials. The end user still has to approve the prompt once.
+</Aside>
+
+## Zero-Touch Grants with a PPPC Profile
+
+If the Mac is enrolled in an MDM (Jamf, Mosyle, Kandji, Intune, etc.), deploy a PPPC configuration profile that grants Full Disk Access and Accessibility to both Breeze binaries. This is the recommended path for fleet deployments -- no on-device interaction is required for those two permissions.
+
+The profile identifies each binary by its installed path plus a code-signing requirement, so the grant only applies to a genuine, Developer ID-signed Breeze binary at that path.
+
+<Aside type="caution">
+  PPPC payloads are only honored when delivered through a user-approved or supervised MDM enrollment. Installing the same `.mobileconfig` by double-clicking it does not apply the privacy grants.
+</Aside>
+
+The following profile is ready to import into your MDM (most consoles accept a raw `.mobileconfig` upload):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key>
+      <string>com.apple.TCC.configuration-profile-policy</string>
+      <key>PayloadIdentifier</key>
+      <string>com.breezermm.pppc.privacy</string>
+      <key>PayloadUUID</key>
+      <string>7D3F2A91-5B4C-4E8D-9A16-C2E7F0B83D54</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadDisplayName</key>
+      <string>Breeze Agent Privacy Preferences</string>
+      <key>Services</key>
+      <dict>
+        <key>SystemPolicyAllFiles</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-agent</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
+        </array>
+        <key>Accessibility</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-agent</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Allowed</key>
+            <true/>
+          </dict>
+        </array>
+        <key>ScreenCapture</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <key>IdentifierType</key>
+            <string>path</string>
+            <key>CodeRequirement</key>
+            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <key>Authorization</key>
+            <string>AllowStandardUserToSetSystemService</string>
+          </dict>
+        </array>
+      </dict>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>Grants Full Disk Access and Accessibility to the Breeze agent and desktop helper, and allows standard users to approve Screen Recording.</string>
+  <key>PayloadDisplayName</key>
+  <string>Breeze RMM - macOS Privacy Permissions</string>
+  <key>PayloadIdentifier</key>
+  <string>com.breezermm.pppc</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>E19C6B0F-8A72-4D35-B6E4-1F5A9D27C803</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>
+```
+
+The code requirements match both the Apple Silicon (`-darwin-arm64`) and Intel (`-darwin-amd64`) builds, so a single profile covers a mixed fleet. You can verify the signing identity of an installed binary at any time:
+
+```bash
+codesign -dvvv /usr/local/bin/breeze-agent 2>&1 | grep -E '^Identifier|TeamIdentifier'
+# Identifier=breeze-agent-darwin-arm64
+# TeamIdentifier=D8W6N2JYMA
+```
+
+<Aside type="tip">
+  If your MDM builds PPPC payloads from its own UI (for example Jamf's PPPC editor), enter the binary path with identifier type **path**, paste the matching code requirement string, and enable **App or Service: SystemPolicyAllFiles, Accessibility** for both binaries plus **ScreenCapture → Allow Standard Users to Allow Access** for the desktop helper.
+</Aside>
+
+<Aside type="note" title="Forward compatibility">
+  Starting with macOS Tahoe 26.2, privacy permissions configured via device management are visible in **System Settings > Privacy & Security**. At WWDC 2026 Apple introduced a new declarative privacy framework to replace PPPC, and the `com.apple.TCC.configuration-profile-policy` payload keys are deprecated -- but not removed -- in macOS 27. Existing PPPC profiles like the one above continue to work through the macOS 27 cycle. Expect to migrate to the declarative mechanism in a future release; watch Apple's device management documentation for the timeline.
+</Aside>
+
+## Manual Grants in System Settings
+
+Without an MDM, grant the permissions on the device under **System Settings > Privacy & Security**:
+
+<Steps>
+
+1. **Full Disk Access** -- open **Privacy & Security > Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> in the file picker, and add `/usr/local/bin/breeze-agent` and `/usr/local/bin/breeze-desktop-helper`.
+
+2. **Accessibility** -- open **Privacy & Security > Accessibility** and add the same two binaries.
+
+3. **Screen Recording** -- open **Privacy & Security > Screen & System Audio Recording** (labeled **Screen Recording** on macOS 12-14) and enable `breeze-desktop-helper`. If the helper has already attempted a capture, it appears in the list automatically; otherwise the first remote desktop connection triggers the standard macOS approval prompt.
+
+</Steps>
+
+Changes to Full Disk Access take effect after the agent service restarts:
+
+```bash
+sudo launchctl kickstart -k system/com.breeze.agent
+```
+
+## Troubleshooting
+
+**A permission "disappears" after an agent update.**
+TCC grants are keyed to the binary's code-signing identity, not just its path. Official Breeze binaries are Developer ID signed with a stable identity, so grants survive updates. If a grant stops applying after an update, check that the binary is still properly signed:
+
+```bash
+codesign -dvvv /usr/local/bin/breeze-agent
+```
+
+Expect `Authority=Developer ID Application: LanternOps LLC (D8W6N2JYMA)` and `TeamIdentifier=D8W6N2JYMA`. An ad-hoc or unsigned binary -- typical of a manual or development build -- gets a new identity on every build, so macOS treats each update as a brand-new app and drops the grant. Reinstall an official signed release, or re-grant after each build for development installs.
+
+**The PPPC profile is installed but permissions are not granted.**
+Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary: `codesign -d -r- /usr/local/bin/breeze-agent` prints the designated requirement to compare against.
+
+**Remote desktop connects but shows a black screen.**
+Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.

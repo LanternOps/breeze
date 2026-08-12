@@ -4,7 +4,7 @@
 **Status:** Approved (owner, 2026-08-08) — includes the owner-directed
 hidden-and-automatic reframe; revisits one decision from the 2026-06-27 unlink
 design (flagged in §A4).
-**Plan:** `docs/superpowers/plans/open/2026-08-08-asset-link-lifecycle.md`
+**Plan:** `docs/superpowers/plans/monitoring/2026-08-08-asset-link-lifecycle.md`
 **Issues addressed:** #3261 (companion to #3199)
 **Branch:** —
 

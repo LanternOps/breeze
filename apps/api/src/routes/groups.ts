@@ -7,13 +7,16 @@ import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, site
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { evaluateFilterWithPreview, extractFieldsFromFilter, validateFilter } from '../services/filterEngine';
 import {
+  addManualGroupMemberships,
   evaluateGroupMembership,
   pinDeviceToGroup,
   pruneGroupMembershipsOutsideSite,
+  validateManualMembershipDevices,
 } from '../services/groupMembership';
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { PG_UUID_REGEX } from '../utils/uuid';
 
 export const groupRoutes = new Hono();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -90,13 +93,38 @@ const listGroupsQuerySchema = z.object({
   includeMemberships: z.enum(['true', 'false']).optional()
 });
 
+/**
+ * ONE definition of the `filterConditions` field, shared by create and update.
+ *
+ * #3159: create declared this `.optional()` while update declared it
+ * `.nullable().optional()`, so the very same dashboard payload could edit a
+ * group but never create one — every static-group creation 400'd on
+ * `expected object, received null`. Three accepted forms, identical on both
+ * verbs: omitted, a filter object, or an explicit `null` meaning "no filter".
+ *
+ * `null` is not merely tolerated, it is load-bearing on update: the PATCH route
+ * distinguishes `undefined` ("leave the filter alone") from `null` ("clear it"),
+ * which is how a dynamic group is converted to static. Keep this as one
+ * constant — the two schemas drifting apart is the defect itself, not the
+ * symptom.
+ */
+const groupFilterConditionsField = filterConditionGroupSchema.nullable().optional();
+
 const createGroupSchema = z.object({
   orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
   type: z.enum(['static', 'dynamic']).default('static'),
   rules: z.any().optional(),
-  filterConditions: filterConditionGroupSchema.optional(),
+  filterConditions: groupFilterConditionsField,
+  /**
+   * Initial membership for a STATIC group. The dashboard has always sent this
+   * on create; the schema used to omit the key entirely, so Zod stripped it and
+   * the group was created empty with a 201 — a silent failure that outlived the
+   * 400 above (#3159). Validated against the group's own org and site before
+   * the group row is written.
+   */
+  deviceIds: z.array(z.string().guid()).optional(),
   parentId: z.string().guid().optional()
 });
 
@@ -105,7 +133,7 @@ const updateGroupSchema = z.object({
   siteId: z.string().guid().nullable().optional(),
   type: z.enum(['static', 'dynamic']).optional(),
   rules: z.any().optional(),
-  filterConditions: filterConditionGroupSchema.nullable().optional(),
+  filterConditions: groupFilterConditionsField,
   parentId: z.string().guid().nullable().optional()
 });
 
@@ -415,7 +443,13 @@ groupRoutes.post(
     const payload = c.req.valid('json');
     const perms = c.get('permissions') as UserPermissions | undefined;
 
-    let orgId = payload.orgId;
+    // The dashboard never puts orgId in this body — fetchWithAuth scopes every
+    // request with an `?orgId=` query param instead. Without this fallback a
+    // partner with 2+ orgs can never create a group from the UI (400 below).
+    // Access is still enforced by ensureOrgAccess, same as a body-sourced org.
+    const queryOrgId = c.req.query('orgId');
+    let orgId = payload.orgId
+      ?? (queryOrgId && PG_UUID_REGEX.test(queryOrgId) ? queryOrgId : undefined);
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
         return c.json({ error: 'Organization context required' }, 403);
@@ -473,6 +507,39 @@ groupRoutes.post(
       filterFieldsUsed = extractFieldsFromFilter(payload.filterConditions);
     }
 
+    // Initial static membership, validated BEFORE the group row is inserted.
+    //
+    // Order matters: a `return c.json(..., 400)` is a normal response, not an
+    // exception, so the request transaction still commits. Validating after the
+    // insert would leave a stranded empty group behind on every rejected batch
+    // and invite a duplicate on retry. An empty array is not an error — it is
+    // what the dashboard sends for a group with no devices selected.
+    const requestedDeviceIds = payload.deviceIds ?? [];
+    if (requestedDeviceIds.length > 0) {
+      if (payload.type === 'dynamic') {
+        return c.json(
+          {
+            error:
+              'Cannot assign devices to a dynamic group; its membership is computed from filterConditions'
+          },
+          400
+        );
+      }
+
+      const deviceValidation = await validateManualMembershipDevices({
+        deviceIds: requestedDeviceIds,
+        orgId: orgId!,
+        siteId: payload.siteId ?? null
+      });
+
+      if (!deviceValidation.ok) {
+        const body = deviceValidation.invalidDevices
+          ? { error: deviceValidation.error, invalidDevices: deviceValidation.invalidDevices }
+          : { error: deviceValidation.error };
+        return c.json(body, deviceValidation.status);
+      }
+    }
+
     const [group] = await db
       .insert(deviceGroups)
       .values({
@@ -505,7 +572,38 @@ groupRoutes.post(
       }
     });
 
-    // If dynamic group with filter, materialize membership before responding.
+    // Membership is materialized before responding, so the 201 carries a device
+    // count the caller can trust for either group type.
+    let deviceCount = 0;
+
+    // Static groups: materialize the devices the caller selected, in the same
+    // request (and therefore the same transaction) as the group itself. Shares
+    // the exact validation + insert path as `POST /:id/devices`, so there is one
+    // implementation of the cross-tenant guard, not two.
+    if (group.type === 'static' && requestedDeviceIds.length > 0) {
+      const { added } = await addManualGroupMemberships({
+        groupId: group.id,
+        orgId: group.orgId,
+        deviceIds: requestedDeviceIds
+      });
+      deviceCount = added.length;
+
+      writeRouteAudit(c, {
+        orgId: group.orgId,
+        action: 'device_group.device.add',
+        resourceType: 'device_group',
+        resourceId: group.id,
+        resourceName: group.name,
+        details: {
+          addedCount: added.length,
+          skippedCount: 0,
+          deviceIds: added,
+          viaGroupCreate: true
+        }
+      });
+    }
+
+    // Dynamic groups: evaluate the filter before responding.
     //
     // This used to be fire-and-forget (`evaluateGroupMembership(id).catch(...)`),
     // which never worked: the detached promise resumed AFTER the request's
@@ -517,7 +615,6 @@ groupRoutes.post(
     // context — the correct tenant, enforced by Postgres — and lets the response
     // carry the real device count. The evaluation is a handful of statements
     // (bounded filter query + bulk insert), not a per-device loop.
-    let deviceCount = 0;
     if (group.type === 'dynamic' && group.filterConditions) {
       try {
         await evaluateGroupMembership(group.id);
@@ -814,56 +911,27 @@ groupRoutes.post(
       return c.json({ error: 'Cannot manually add devices to a dynamic group' }, 400);
     }
 
-    // Verify all devices exist and belong to the same org
-    const deviceRows = await db
-      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
-      .from(devices)
-      .where(inArray(devices.id, payload.deviceIds));
-
-    const deviceMap = new Map(deviceRows.map((d) => [d.id, d]));
-    const invalidDevices = payload.deviceIds.filter((deviceId) => {
-      const device = deviceMap.get(deviceId);
-      return !device || device.orgId !== group.orgId;
+    // Verify every device exists, belongs to this org, and respects a
+    // site-bound group's boundary. Shared with the create route so the
+    // cross-tenant guard has exactly one implementation (#3159).
+    const deviceValidation = await validateManualMembershipDevices({
+      deviceIds: payload.deviceIds,
+      orgId: group.orgId,
+      siteId: group.siteId
     });
 
-    if (invalidDevices.length > 0) {
-      return c.json({
-        error: 'Some devices are invalid or belong to a different organization',
-        invalidDevices
-      }, 400);
+    if (!deviceValidation.ok) {
+      const body = deviceValidation.invalidDevices
+        ? { error: deviceValidation.error, invalidDevices: deviceValidation.invalidDevices }
+        : { error: deviceValidation.error };
+      return c.json(body, deviceValidation.status);
     }
 
-    // A site-bound group is itself the membership boundary, even when the
-    // caller can access multiple sites. Reject the complete batch before any
-    // write if one device falls outside that persisted site.
-    if (group.siteId !== null && deviceRows.some((device) => device.siteId !== group.siteId)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
-    // Get existing memberships to avoid duplicates
-    const existingMemberships = await db
-      .select({ deviceId: deviceGroupMemberships.deviceId })
-      .from(deviceGroupMemberships)
-      .where(
-        and(
-          eq(deviceGroupMemberships.groupId, id),
-          inArray(deviceGroupMemberships.deviceId, payload.deviceIds)
-        )
-      );
-
-    const existingSet = new Set(existingMemberships.map((m) => m.deviceId));
-    const newDeviceIds = payload.deviceIds.filter((deviceId) => !existingSet.has(deviceId));
-
-    if (newDeviceIds.length > 0) {
-      await db.insert(deviceGroupMemberships).values(
-        newDeviceIds.map((deviceId) => ({
-          deviceId,
-          groupId: id,
-          orgId: group.orgId,
-          addedBy: 'manual' as const
-        }))
-      );
-    }
+    const { added: newDeviceIds, skipped } = await addManualGroupMemberships({
+      groupId: id,
+      orgId: group.orgId,
+      deviceIds: payload.deviceIds
+    });
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -873,7 +941,7 @@ groupRoutes.post(
       resourceName: group.name,
       details: {
         addedCount: newDeviceIds.length,
-        skippedCount: existingMemberships.length,
+        skippedCount: skipped,
         deviceIds: newDeviceIds
       }
     });
@@ -883,7 +951,7 @@ groupRoutes.post(
     return c.json({
       data: {
         added: newDeviceIds.length,
-        skipped: existingMemberships.length,
+        skipped,
         total: deviceCount
       }
     }, 201);

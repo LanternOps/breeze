@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gte, ilike, inArray, isNull, like, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
 import {
@@ -12,8 +12,6 @@ import {
   deviceCommands,
   devices,
   mobileDevices,
-  scriptExecutions,
-  scripts,
   sites
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -24,6 +22,7 @@ import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { dispatchWake } from '../services/wakeOnLan';
+import { executeScriptOnDevices } from '../services/scriptExecution';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { emitAlertStateFeedback } from '../services/mlFeedbackEmitters';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
@@ -1197,77 +1196,20 @@ mobileRoutes.post(
     }
 
     if (data.action === 'run_script') {
-      const [script] = await db
-        .select()
-        .from(scripts)
-        .where(and(eq(scripts.id, data.scriptId as string), isNull(scripts.deletedAt)))
-        .limit(1);
+      const result = await executeScriptOnDevices({
+        scriptId: data.scriptId as string,
+        deviceIds: [device.id],
+        parameters: data.parameters as Record<string, unknown> | undefined,
+        triggerType: 'manual',
+        auth,
+        permissions,
+      });
 
-      if (!script) {
-        return c.json({ error: 'Script not found' }, 404);
+      if (!result.ok) {
+        return c.json({ error: result.error }, result.status);
       }
 
-      if (script.orgId) {
-        const hasAccess = await ensureOrgAccess(script.orgId, auth);
-        if (!hasAccess) {
-          return c.json({ error: 'Access to this script denied' }, 403);
-        }
-      }
-
-      // Org-equality invariant (mirrors playbooks.ts): a system/org-less script
-      // is universally runnable, but a non-null script org must match the
-      // target device's org. Otherwise a multi-org caller could run one org's
-      // script content on another org's device with both access checks passing.
-      if (script.orgId && script.orgId !== device.orgId) {
-        return c.json({ error: 'Script and device must belong to the same organization' }, 403);
-      }
-
-      if (!script.osTypes.includes(device.osType)) {
-        return c.json({ error: 'Script is not compatible with device OS' }, 400);
-      }
-
-      const executionResult = await db
-        .insert(scriptExecutions)
-        .values({
-          scriptId: script.id,
-          deviceId: device.id,
-          orgId: device.orgId,
-          triggeredBy: auth.user.id,
-          triggerType: 'manual',
-          parameters: data.parameters,
-          status: 'pending'
-        })
-        .returning();
-      const execution = executionResult[0];
-
-      if (!execution) {
-        return c.json({ error: 'Failed to create execution' }, 500);
-      }
-
-      const commandResult = await db
-        .insert(deviceCommands)
-        .values({
-          deviceId: device.id,
-          type: 'script',
-          payload: {
-            scriptId: script.id,
-            executionId: execution.id,
-            language: script.language,
-            content: script.content,
-            parameters: data.parameters,
-            timeoutSeconds: script.timeoutSeconds,
-            runAs: script.runAs
-          },
-          status: 'pending',
-          createdBy: auth.user.id
-        })
-        .returning();
-      const command = commandResult[0];
-
-      if (!command) {
-        return c.json({ error: 'Failed to create command' }, 500);
-      }
-
+      const execution = result.executions[0]!;
       writeRouteAudit(c, {
         orgId: device.orgId,
         action: 'mobile.device.action',
@@ -1276,16 +1218,16 @@ mobileRoutes.post(
         resourceName: device.hostname,
         details: {
           action: data.action,
-          scriptId: script.id,
-          executionId: execution.id,
-          commandId: command.id
-        }
+          scriptId: result.scriptId,
+          executionId: execution.executionId,
+          commandId: execution.commandId,
+        },
       });
 
       return c.json({
         action: data.action,
-        executionId: execution.id,
-        commandId: command.id
+        executionId: execution.executionId,
+        commandId: execution.commandId,
       }, 201);
     }
 

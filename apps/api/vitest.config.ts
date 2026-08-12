@@ -104,6 +104,12 @@ export default defineConfig({
       // fail it on connect. Belongs to vitest.integration.config.ts
       // (registered in its include list).
       'src/routes/approvalsDecideSupervised.integration.test.ts',
+      // Partner-scoped report-suspicious real-DB test (#3234): imports
+      // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
+      // lives in src/routes/ outside the `src/__tests__/integration/**` glob,
+      // so the no-DB unit runner would fail it on connect. Belongs to
+      // vitest.integration.config.ts (registered in its include list).
+      'src/routes/approvalsReportSuspiciousPartnerScope.integration.test.ts',
       // Create-path atomicity + tenant-isolation real-DB test (Task 7): imports
       // `__tests__/integration/setup` (real postgres pool + autoMigrate) and
       // lives in src/services/actionIntents/ outside the
@@ -127,6 +133,11 @@ export default defineConfig({
       // pool) and forks real child processes against `:5433`. Belongs to
       // vitest.integration.config.ts (already in its include).
       'src/extensions/twoReplicaReconcile.integration.test.ts',
+      // Disabled built-in extension's table-existence probe against a real
+      // server: imports `__tests__/integration/setup` (real postgres pool) and
+      // provisions its own throwaway database. Belongs to
+      // vitest.integration.config.ts (already in its include).
+      'src/extensions/builtinTableProbe.integration.test.ts',
       // Reset-password reveal secret lifecycle (CAS burn + expiry-reaper
       // sweep): imports `__tests__/integration/setup` (real postgres pool
       // + autoMigrate) and lives in src/services/actionIntents/ outside the

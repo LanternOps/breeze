@@ -1168,31 +1168,20 @@ async function triggerRemediationAutomation(
     })
     .where(eq(automations.id, automation.id));
 
-  // Keep behavior consistent with manual trigger route while avoiding model coupling.
-  setTimeout(async () => {
-    try {
-      await db
-        .update(automationRuns)
-        .set({
-          status: 'completed',
-          devicesSucceeded: 1,
-          completedAt: new Date(),
-          logs: [
-            ...(Array.isArray(run.logs) ? run.logs : []),
-            {
-              timestamp: new Date().toISOString(),
-              level: 'info',
-              message: 'Policy remediation automation completed',
-              policyId: policy.id,
-              deviceId: device.id,
-            },
-          ],
-        })
-        .where(eq(automationRuns.id, run.id));
-    } catch (err) {
-      console.error(`[PolicyEvaluation] Failed to update remediation run ${run.id}:`, err);
-    }
-  }, 1000);
+  // Dispatch through the real automation runtime, the same shape
+  // `automationWorker` uses after inserting a run (:448, :490).
+  // `executeAutomationRun` READS this row rather than creating one, so the
+  // insert above is exactly what it wants and no row shape changes.
+  //
+  // Queued rather than awaited: policy evaluation runs inside a fleet sweep,
+  // and blocking it on script execution would make the sweep's duration a
+  // function of remediation work. `enqueueAutomationRun` falls back to inline
+  // execution when Redis is absent, and its stable `automation-run-<id>` job
+  // id stops a re-entrant sweep double-dispatching the same run.
+  // Dynamically imported so this service does not pull the BullMQ worker graph
+  // in at module load — same pattern as drExecutionService.ts:300.
+  const { enqueueAutomationRun } = await import('../jobs/automationWorker');
+  await enqueueAutomationRun(run.id, [device.id]);
 
   return run.id;
 }
@@ -1894,31 +1883,13 @@ async function triggerConfigPolicyRemediation(
     })
     .where(eq(automations.id, automation.id));
 
-  // Simulate completion (same pattern as standalone policy remediation)
-  setTimeout(async () => {
-    try {
-      await db
-        .update(automationRuns)
-        .set({
-          status: 'completed',
-          devicesSucceeded: 1,
-          completedAt: new Date(),
-          logs: [
-            ...(Array.isArray(run.logs) ? run.logs : []),
-            {
-              timestamp: new Date().toISOString(),
-              level: 'info',
-              message: 'Config policy compliance remediation completed',
-              complianceRuleId: complianceRule.id,
-              deviceId: device.id,
-            },
-          ],
-        })
-        .where(eq(automationRuns.id, run.id));
-    } catch (err) {
-      console.error(`[PolicyEvaluation] Failed to update config policy remediation run ${run.id}:`, err);
-    }
-  }, 1000);
+  // Dispatch for real — see the note in triggerRemediationAutomation. The
+  // returned boolean means DISPATCHED, not finished; the run row carries the
+  // outcome once the runtime has executed it.
+  // Dynamically imported so this service does not pull the BullMQ worker graph
+  // in at module load — same pattern as drExecutionService.ts:300.
+  const { enqueueAutomationRun } = await import('../jobs/automationWorker');
+  await enqueueAutomationRun(run.id, [device.id]);
 
   return true;
 }
@@ -2061,3 +2032,9 @@ export async function scanAndEvaluateConfigPolicyCompliance(): Promise<{
     results: allResults,
   };
 }
+
+// Test-only aliases for the remediation dispatch paths (#3413). Exported
+// rather than renamed so the internal call sites stay untouched; same
+// convention as __evaluateRulesForDevice above.
+export const __triggerRemediationAutomation = triggerRemediationAutomation;
+export const __triggerConfigPolicyRemediation = triggerConfigPolicyRemediation;

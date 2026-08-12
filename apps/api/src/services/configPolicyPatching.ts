@@ -330,6 +330,7 @@ export async function loadPolicyLocalPatchConfig(
         scheduleDayOfWeek: row.patchSettings.scheduleDayOfWeek ?? undefined,
         scheduleDayOfMonth: row.patchSettings.scheduleDayOfMonth ?? undefined,
         rebootPolicy: row.patchSettings.rebootPolicy,
+        rebootDelayMinutes: row.patchSettings.rebootDelayMinutes,
         exclusiveWindowsUpdate: row.patchSettings.exclusiveWindowsUpdate,
       })
     : storedInline;
@@ -396,6 +397,7 @@ export async function backfillMissingPatchSettings(): Promise<{
       scheduleDayOfWeek: normalized.settings.scheduleDayOfWeek,
       scheduleDayOfMonth: normalized.settings.scheduleDayOfMonth,
       rebootPolicy: normalized.settings.rebootPolicy,
+      rebootDelayMinutes: normalized.settings.rebootDelayMinutes,
       exclusiveWindowsUpdate: normalized.settings.exclusiveWindowsUpdate,
     });
     repaired += 1;

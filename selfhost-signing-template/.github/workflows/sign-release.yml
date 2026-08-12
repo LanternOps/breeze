@@ -337,9 +337,13 @@ jobs:
           # rather than assume: pass -Edition SelfHost only when it exists;
           # an older release then builds under the original ("Breeze Agent")
           # identity, which is what that release actually shipped.
-          $editionArgs = @()
+          # Hashtable splatting, not array splatting: array elements splat to a
+          # .ps1 POSITIONALLY, so @("-Edition","SelfHost") binds the literal
+          # string "-Edition" to the Edition parameter and ValidateSet rejects
+          # it. A hashtable binds by name. (Caught by the first live dry-run.)
+          $editionArgs = @{}
           if (Select-String -Path $buildMsiScript -Pattern '\$Edition\b' -Quiet) {
-            $editionArgs = @("-Edition", "SelfHost")
+            $editionArgs = @{ Edition = "SelfHost" }
           }
           else {
             Write-Host "build-msi.ps1 at this sourceCommit has no -Edition parameter (pre-edition release) — building under the legacy 'Breeze Agent' identity"
@@ -415,7 +419,11 @@ jobs:
           # targets. Re-listing makes this step structurally incapable of
           # catching the failure it exists for: a component added to the
           # download/build steps but missed by a signing step.
-          $present = @(Get-ChildItem -File "dist" | ForEach-Object { $_.Name })
+          # .wixpdb is WiX's debug-symbol sidecar — build-msi.ps1 emits it next
+          # to the MSI from the edition-aware release on. It is a build
+          # intermediate, never a published artifact, so it is excluded here
+          # rather than allowlisted as something to publish.
+          $present = @(Get-ChildItem -File "dist" | Where-Object { $_.Extension -ne '.wixpdb' } | ForEach-Object { $_.Name })
           $unexpected = @($present | Where-Object { $expected -notcontains $_ })
           if ($unexpected.Count -gt 0) {
             throw "unexpected files in dist/: $($unexpected -join ', ') — every published artifact must be covered by a signing step and listed here"
@@ -1121,13 +1129,16 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          # Build into a scratch file and move into place: writing the same name
-          # the pipeline also filters on is a read/write-in-one-pipeline hazard.
+          # Build into a scratch file OUTSIDE this directory and move into
+          # place: a scratch file inside it races the very find that feeds the
+          # pipeline (find can enumerate checksums.new mid-write, hash it into
+          # the list, and the post-rename `sha256sum -c` then fails on a file
+          # that no longer exists — caught by the live dry-run).
           find . -maxdepth 1 -type f \
             ! -name checksums.txt \
             ! -name 'release-artifact-manifest.json*' \
-            -printf '%P\0' | sort -z | xargs -0 sha256sum > checksums.new
-          mv checksums.new checksums.txt
+            -printf '%P\0' | sort -z | xargs -0 sha256sum > ../checksums.new
+          mv ../checksums.new checksums.txt
 
           # Re-hash and compare. The previous form only grepped checksums.txt
           # for the filename — a check generated from the same bytes one step

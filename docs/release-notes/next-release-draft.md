@@ -8,6 +8,6 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.104.0** (2026-08-08).
+Last release: **v0.105.0** (2026-08-11).
 
 ---

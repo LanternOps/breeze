@@ -95,8 +95,6 @@ export type ApiDiscoveryAsset = {
   updatedAt?: string;
 };
 
-type DeviceOption = { id: string; name: string; online?: boolean };
-
 export const typeConfig: Record<DiscoveredAssetType, { labelKey: string; color: string }> = {
   workstation: { labelKey: 'discovery:assetTypes.workstation', color: 'bg-indigo-500/20 text-indigo-700 border-indigo-500/40' },
   server: { labelKey: 'discovery:assetTypes.server', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
@@ -256,7 +254,6 @@ interface DiscoveredAssetListProps {
 export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListProps) {
   const { t } = useTranslation('discovery');
   const [assets, setAssets] = useState<DiscoveredAsset[]>([]);
-  const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [selectedAsset, setSelectedAsset] = useState<AssetDetail | null>(null);
@@ -334,25 +331,9 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     return counts;
   }, [assets, profileFilter]);
 
-  const fetchDevices = useCallback(async () => {
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (!response.ok) {
-        console.warn('[DiscoveredAssetList] Failed to fetch devices:', response.status);
-        return;
-      }
-      const data = await response.json();
-      const raw: any[] = asList(data, 'devices');
-      setDevices(raw.map((d: any) => ({ id: d.id, name: d.displayName || d.hostname || d.id, online: d.status === 'online' })));
-    } catch (err) {
-      console.warn('[DiscoveredAssetList] Failed to fetch devices:', err);
-    }
-  }, []);
-
   useEffect(() => {
     fetchAssets();
-    fetchDevices();
-  }, [fetchAssets, fetchDevices]);
+  }, [fetchAssets]);
 
   const handleApprove = async (asset: DiscoveredAsset) => {
     try {
@@ -505,11 +486,18 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
               {t('discoveredAssetList.monitored')}
             </span>
           )}
-          {asset.linkedDeviceName && (
-            <span className="inline-flex items-center gap-0.5 text-green-700">
+          {asset.linkedDeviceId && (
+            <a
+              href={`/devices/${asset.linkedDeviceId}`}
+              onClick={event => event.stopPropagation()}
+              data-testid="discovered-asset-same-device-badge"
+              className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary hover:underline"
+            >
               <CheckCircle2 className="h-3 w-3" />
-              {asset.linkedDeviceName}
-            </span>
+              {t('discoveredAssetList.sameDeviceAs', {
+                name: asset.linkedDeviceName || t('common:states.unknown')
+              })}
+            </a>
           )}
         </div>
       </div>
@@ -803,23 +791,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       <AssetDetailModal
         open={selectedAsset !== null}
         asset={selectedAsset}
-        devices={devices}
         onClose={() => setSelectedAsset(null)}
-        onLinked={async (_assetId, deviceId) => {
-          // Keep the modal open — linking is usually a prerequisite for the
-          // next action in this same modal (e.g. Proxy Access). Reflect the new
-          // link in place so the Proxy section unlocks without a reopen.
-          setSelectedAsset(prev => (prev ? { ...prev, linkedDeviceId: deviceId } : prev));
-          await fetchAssets();
-        }}
-        onUnlinked={async (assetId) => {
-          // Reflect the cleared link in place (keep the modal open, mirroring
-          // onLinked) so the panel updates without a reopen, then refresh.
-          setSelectedAsset(prev =>
-            prev && prev.id === assetId ? { ...prev, linkedDeviceId: null, linkSource: null } : prev
-          );
-          await fetchAssets();
-        }}
         onDeleted={async () => {
           setSelectedAsset(null);
           await fetchAssets();

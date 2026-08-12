@@ -172,6 +172,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     aggregation: z.enum(['raw', 'hourly', 'daily']).optional(),
   }),
 
+  // Fleet hygiene findings (Task 8) — read-only fleet-wide aggregation tools.
+  analyze_fleet_metrics: z.object({
+    metricName: z.enum(['cpu_percent', 'ram_percent', 'disk_percent']),
+    windowHours: z.number().int().min(1).max(168).optional(),
+    topN: z.number().int().min(1).max(50).optional(),
+    orgId: uuid.optional(),
+  }),
+
   get_active_users: z.object({
     deviceId: uuid.optional(),
     limit: z.number().int().min(1).max(200).optional(),
@@ -754,6 +762,19 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
     issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  // Fleet hygiene findings (Task 8) — deduplicated fleet-wide findings feed.
+  // `status` stays a free-form string (not a CSV-of-enum type) because the
+  // handler itself validates the comma-separated list via
+  // parseFleetFindingStatusCsv and returns a structured error on an invalid
+  // value — see aiToolsFleet.ts.
+  get_fleet_findings: z.object({
+    kind: z.enum(['metric_anomaly_pattern', 'log_correlation', 'reliability_offenders']).optional(),
+    severity: z.enum(['info', 'warning', 'error', 'critical']).optional(),
+    status: z.string().max(200).optional(),
+    orgId: uuid.optional(),
+    limit: z.number().int().min(1).max(50).optional(),
   }),
 
   get_user_risk_scores: z.object({

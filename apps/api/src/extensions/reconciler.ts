@@ -450,14 +450,27 @@ export async function loadServerEntry(
  * the session's declared-vs-registered checks bind to what the manifest
  * actually declares. The returned contributions are NOT live: only
  * `registry.activate` exposes them.
+ *
+ * `opts.helperRoutes` stages the legacy `helperRoutes` flag ON TOP of the
+ * manifest, exactly as loader.ts does for source extensions: the gateway reads
+ * the flag off the STAGED manifest to apply core helper auth to `/helper/*`
+ * (gateway.ts), but the flag is not part of the strict v1 wire schema, so the
+ * CLEAN manifest — never the augmented one — is what `parseExtensionManifestV1`
+ * validates below. Only the built-in loading path (builtinExtensions.ts) passes
+ * it today; signed bundles cannot opt in until the flag lands in the v1 schema
+ * as capability 'server.helper-routes.v1'.
  */
 export async function defaultStageExtension(
   module: BreezeExtensionV1,
   manifest: ExtensionManifestV1,
   registry: ExtensionContributionRegistry,
   orgInstalls: Pick<ExtensionOrgInstallStore, 'installedOrgs'> = createExtensionOrgInstallStore(),
+  opts: { helperRoutes?: boolean } = {},
 ): Promise<StagedExtensionContributions> {
-  const session = registry.begin(manifest);
+  const stagedManifest: ExtensionManifestV1 = opts.helperRoutes
+    ? ({ ...manifest, helperRoutes: true } as ExtensionManifestV1 & { helperRoutes: true })
+    : manifest;
+  const session = registry.begin(stagedManifest);
 
   // The session registrar already IS the v1 ExtensionRegistrar; wrap only the
   // aiTool channel so a signed bundle can never shadow a core tool name.

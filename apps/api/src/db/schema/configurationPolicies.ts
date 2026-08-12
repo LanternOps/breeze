@@ -199,6 +199,10 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   scheduleDayOfWeek: varchar('schedule_day_of_week', { length: 10 }).default('sun'),
   scheduleDayOfMonth: integer('schedule_day_of_month').default(1),
   rebootPolicy: varchar('reboot_policy', { length: 20 }).notNull().default('if_required'),
+  // #3197: how long the logged-in user is warned before a patch-triggered
+  // reboot fires. Replaces the hardcoded 5-minute delay that raced the
+  // agent's own warning ladder and could reboot with zero notice.
+  rebootDelayMinutes: integer('reboot_delay_minutes').notNull().default(15),
   // #1872: when true, the Windows agent suppresses the native Windows Update
   // automatic-install channel (NoAutoUpdate=1) so patches flow only through
   // Breeze. Breeze's own WUA-driven installs are unaffected.

@@ -506,21 +506,37 @@ export default function DeviceGroupsPage() {
       // server evaluated the real filter. The server evaluates only
       // `filterConditions` (routes/groups.ts, services/groupMembership.ts);
       // `rules` is inert storage kept for pre-FilterBuilder rows.
-      const payload = {
+      const isEdit = modalMode === "edit" && Boolean(selectedGroup);
+      const isDynamic = groupForm.type === "dynamic";
+
+      const payload: Record<string, unknown> = {
         name: trimmedName,
         description: groupForm.description.trim(),
         type: groupForm.type,
-        filterConditions:
-          groupForm.type === "dynamic" ? groupForm.filterConditions : null,
-        deviceIds: groupForm.type === "static" ? groupForm.deviceIds : [],
         policyId: groupForm.policyId || null,
       };
 
-      const url =
-        modalMode === "edit" && selectedGroup
-          ? `/device-groups/${selectedGroup.id}`
-          : t("deviceGroupsPage.deviceGroups");
-      const method = modalMode === "edit" ? "PUT" : "POST";
+      if (isDynamic) {
+        payload.filterConditions = groupForm.filterConditions;
+      } else {
+        // A static group carries no filter, and the two verbs want that said
+        // differently (#3159). CREATE omits the key — the documented create
+        // payload, and what CreateGroupModal already sends. EDIT must send an
+        // explicit `null`, because the update route reads `undefined` as "leave
+        // the filter alone"; omitting it would strand a stale filter on a group
+        // converted from dynamic to static.
+        if (isEdit) {
+          payload.filterConditions = null;
+        }
+        // Devices are only meaningful for a static group. The create route
+        // rejects a non-empty list on a dynamic one rather than ignoring it.
+        payload.deviceIds = groupForm.deviceIds;
+      }
+
+      const url = isEdit
+        ? `/device-groups/${selectedGroup!.id}`
+        : "/device-groups";
+      const method = isEdit ? "PUT" : "POST";
 
       const response = await fetchWithAuth(url, {
         method,
@@ -528,7 +544,15 @@ export default function DeviceGroupsPage() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save device group");
+        // Surface the server's own message. The reporter of #3159 had to open
+        // devtools to discover their create was failing validation, because
+        // this branch threw a fixed string and dropped the response body.
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          body?.error ?? t("deviceGroupsPage.failedToSaveDeviceGroup"),
+        );
       }
 
       await fetchGroups();

@@ -4,12 +4,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // script_executions row so handleScriptResult can persist the agent's stdout.
 // The old synthetic `${runId}:${deviceId}:${actionIndex}` executionId could
 // never match `script_executions.id` (a uuid column).
+//
+// #3409 PR0: the execution insert / queueCommand / claim-deliver / discard
+// mechanics now live in services/scriptDispatch.ts (dispatchScriptToDevice),
+// covered by its own test suite (scriptDispatch.test.ts). This file only
+// covers what automationRuntime.ts itself still owns: the script-load / OS
+// pre-check, mapping dispatch results onto action logs, and the caller-side
+// 'queued' status write for the undelivered-but-queued case.
 
-const { insertMock, updateMock, deleteMock, queueMock } = vi.hoisted(() => ({
-  insertMock: vi.fn(),
+const { updateMock, dispatchMock } = vi.hoisted(() => ({
   updateMock: vi.fn(),
-  deleteMock: vi.fn(),
-  queueMock: vi.fn(),
+  dispatchMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -18,9 +23,9 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
-    insert: insertMock,
+    insert: vi.fn(),
     update: updateMock,
-    delete: deleteMock,
+    delete: vi.fn(),
   },
 }));
 
@@ -31,7 +36,7 @@ vi.mock('../db/schema', () => ({
   automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
   configurationPolicies: { id: 'id', orgId: 'orgId' },
-  devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status', displayName: 'displayName' },
+  devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status', displayName: 'displayName', agentId: 'agentId' },
   organizations: { id: 'id', partnerId: 'partnerId' },
   scripts: { id: 'id', deletedAt: 'deletedAt' },
   scriptExecutions: { id: 'id', deviceId: 'deviceId', automationRunId: 'automationRunId', status: 'status' },
@@ -45,10 +50,7 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./deploymentEngine', () => ({ resolveDeploymentTargets: vi.fn().mockResolvedValue([]) }));
-vi.mock('./commandQueue', () => ({
-  CommandTypes: { SCRIPT: 'script' },
-  queueCommandForExecution: queueMock,
-}));
+vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: dispatchMock }));
 vi.mock('./notificationSenders', () => ({
   getEmailRecipients: vi.fn().mockReturnValue([]),
   sendEmailNotification: vi.fn().mockResolvedValue({ success: false }),
@@ -77,16 +79,11 @@ const DEVICE = {
   displayName: null,
   osType: 'windows' as const,
   status: 'online',
+  agentId: 'agent-1',
 };
 
-/** Captured `db.insert(...).values(x)` payloads. */
-let insertedValues: Array<Record<string, unknown>>;
 /** Captured `db.update(...).set(x)` payloads. */
 let updatedValues: Array<Record<string, unknown>>;
-/** Number of `db.delete(...)` calls (the unqueued-execution discard). */
-let deleteCount: number;
-/** Rows the mocked DELETE reports as removed. */
-let deleteReturns: Array<{ id: string }>;
 
 function buildContext() {
   return {
@@ -99,22 +96,7 @@ function buildContext() {
 }
 
 beforeEach(() => {
-  insertedValues = [];
   updatedValues = [];
-  deleteCount = 0;
-  deleteReturns = [{ id: EXECUTION_ID }];
-
-  deleteMock.mockReset().mockImplementation(() => {
-    deleteCount += 1;
-    return { where: () => ({ returning: async () => deleteReturns }) };
-  });
-
-  insertMock.mockReset().mockImplementation(() => ({
-    values: (vals: Record<string, unknown>) => {
-      insertedValues.push(vals);
-      return { returning: async () => [{ id: EXECUTION_ID }] };
-    },
-  }));
 
   updateMock.mockReset().mockImplementation(() => ({
     set: (vals: Record<string, unknown>) => {
@@ -123,7 +105,13 @@ beforeEach(() => {
     },
   }));
 
-  queueMock.mockReset().mockResolvedValue({ command: { id: 'cmd-1' } });
+  dispatchMock.mockReset().mockResolvedValue({
+    ok: true,
+    commandId: 'cmd-1',
+    executionId: EXECUTION_ID,
+    delivered: true,
+    executedAt: new Date('2026-08-14T00:00:00.000Z'),
+  });
 });
 
 /** Flatten a drizzle SQL node into its literal tokens (column names + values). */
@@ -145,8 +133,8 @@ function collectSqlTokens(node: unknown): string[] {
   return found;
 }
 
-describe('executeRunScriptAction — script_executions correlation (#3162)', () => {
-  it('queues the command with the minted script_executions uuid, not a synthetic id', async () => {
+describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0)', () => {
+  it('dispatches the saved script through the core with automation trigger metadata', async () => {
     const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
@@ -154,35 +142,45 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(result.success).toBe(true);
-    expect(queueMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
 
-    const payload = queueMock.mock.calls[0]![2] as Record<string, unknown>;
-    expect(payload.executionId).toBe(EXECUTION_ID);
-    // The pre-#3162 shape — must never come back.
-    expect(payload.executionId).not.toContain(':');
+    const input = dispatchMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.device).toBe(DEVICE);
+    // automationRunId now lives on the 'saved' source variant, not the
+    // top-level dispatch input (#3409 PR0 Wave A — makes a 'raw' source
+    // silently dropping it an unrepresentable state).
+    expect(input.source).toEqual({ kind: 'saved', script: SCRIPT, automationRunId: RUN_ID });
+    expect(input.triggerType).toBe('automation');
+    expect(input.triggeredBy).toBe('user-1');
+    expect(input.createdBy).toBe('user-1');
+    expect(input.runAs).toBe('system');
+    expect(input.requireOnline).toBe(true);
   });
 
-  it('records the execution against the device org and the automation run', async () => {
-    await executeRunScriptAction(
+  it('logs success with the core-assigned commandId and executionId once delivered', async () => {
+    const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
       buildContext(),
     );
 
-    expect(insertedValues).toHaveLength(1);
-    expect(insertedValues[0]).toMatchObject({
-      scriptId: 'script-1',
-      deviceId: 'device-1',
-      // DEVICE's org, never the automation's — a partner-wide automation has none.
-      orgId: 'org-1',
-      triggeredBy: 'user-1',
-      triggerType: 'automation',
-      automationRunId: RUN_ID,
-      status: 'pending',
-    });
+    expect(result.success).toBe(true);
+    expect(result.log.commandId).toBe('cmd-1');
+    expect(result.log.details).toMatchObject({ scriptId: 'script-1', executionId: EXECUTION_ID });
+    // Delivered: the core already wrote 'running' itself, so the caller must
+    // not also write 'queued'.
+    expect(updatedValues).toEqual([]);
   });
 
-  it('advances the execution to queued when the command was only enqueued', async () => {
+  it('advances the execution to queued when the core reports undelivered-but-queued', async () => {
+    dispatchMock.mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: EXECUTION_ID,
+      delivered: false,
+      executedAt: null,
+    });
+
     await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
@@ -192,25 +190,15 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     expect(updatedValues).toEqual([{ status: 'queued' }]);
   });
 
-  it('advances the execution to running with a start time once the command is on the wire', async () => {
-    const executedAt = new Date('2026-08-14T00:00:00.000Z');
-    queueMock.mockResolvedValue({ command: { id: 'cmd-1', status: 'sent', executedAt } });
+  it('guards the queued write on the execution id and pending status', async () => {
+    dispatchMock.mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: EXECUTION_ID,
+      delivered: false,
+      executedAt: null,
+    });
 
-    await executeRunScriptAction(
-      { type: 'run_script', scriptId: 'script-1' },
-      0,
-      buildContext(),
-    );
-
-    // Mirrors the manual path — the UI derives a duration from startedAt.
-    expect(updatedValues).toEqual([{ status: 'running', startedAt: executedAt }]);
-  });
-
-  it('guards every post-queue transition on the row still being pending', async () => {
-    // queueCommandForExecution delivers over the WebSocket synchronously, so a
-    // fast agent can drive the row terminal (with its stdout) before we get
-    // here. An unguarded write would flip it back to queued and the reaper
-    // would later mark it timeout.
     const whereArgs: unknown[] = [];
     updateMock.mockImplementation(() => ({
       set: (vals: Record<string, unknown>) => {
@@ -230,33 +218,36 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(whereArgs).toHaveLength(1);
-    // `and(eq(id, …), eq(status, 'pending'))` — two conjuncts, not a bare id.
-    // Assert on the bound parameter values so removing the status conjunct
-    // fails here rather than passing on an incidental substring match.
     const tokens = collectSqlTokens(whereArgs[0]);
     expect(tokens).toContain(EXECUTION_ID);
     expect(tokens).toContain('status');
     expect(tokens).toContain('pending');
   });
 
-  it('leaves the online/offline decision to queueCommandForExecution', async () => {
-    // The run's device snapshot is taken once at the top of a fleet run and can
-    // be minutes stale, so this must NOT pre-filter on it — queueCommandForExecution
-    // re-reads devices.status live, and execute_command relies on that same check.
-    const context = buildContext() as unknown as { device: { status: string } };
-    context.device = { ...DEVICE, status: 'offline' };
+  it('does not write a status update when the core reports no executionId', async () => {
+    dispatchMock.mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: null,
+      delivered: false,
+      executedAt: null,
+    });
 
     await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
-      context as never,
+      buildContext(),
     );
 
-    expect(queueMock).toHaveBeenCalledTimes(1);
+    expect(updatedValues).toEqual([]);
   });
 
-  it('discards the execution row instead of stranding it when queueing fails', async () => {
-    queueMock.mockResolvedValue({ command: null, error: 'Device is offline, cannot execute command' });
+  it('logs failure with the core error when the device is offline (requireOnline gate)', async () => {
+    dispatchMock.mockResolvedValue({
+      ok: false,
+      code: 'device_offline',
+      error: 'Device is offline, cannot execute command',
+    });
 
     const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
@@ -265,17 +256,18 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(result.success).toBe(false);
-    // No command was queued, so no execution happened — the row is removed
-    // rather than left `failed`, which would add one row per offline device
-    // per run and let the reaper misreport it as an agent timeout.
-    expect(deleteCount).toBe(1);
+    expect(result.log.details).toMatchObject({
+      error: 'Device is offline, cannot execute command',
+      scriptId: 'script-1',
+    });
+    // No status write to make — the core never inserted an execution row for
+    // an offline device (requireOnline is checked before any insert).
     expect(updatedValues).toEqual([]);
-    expect(result.log.details).toMatchObject({ error: 'Device is offline, cannot execute command' });
   });
 
-  it('discards the execution row and rethrows when queueing throws', async () => {
+  it('propagates a dispatch throw (the core discards its own pending execution row)', async () => {
     const boom = new Error('connection terminated');
-    queueMock.mockRejectedValue(boom);
+    dispatchMock.mockRejectedValue(boom);
 
     await expect(executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
@@ -283,28 +275,12 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
       buildContext(),
     )).rejects.toThrow('connection terminated');
 
-    expect(deleteCount).toBe(1);
+    // No orphan-row discard logic lives here anymore (#3409 PR0) — it's inside
+    // dispatchScriptToDevice and asserted by scriptDispatch.test.ts.
+    expect(updatedValues).toEqual([]);
   });
 
-  it('warns rather than silently continuing when the discard removes nothing', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      queueMock.mockResolvedValue({ command: null, error: 'Device not found' });
-      deleteReturns = [];
-
-      await executeRunScriptAction(
-        { type: 'run_script', scriptId: 'script-1' },
-        0,
-        buildContext(),
-      );
-
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('was not pending at discard time'));
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('does not create an execution row when the script is missing', async () => {
+  it('does not dispatch when the script is missing', async () => {
     const context = buildContext() as unknown as { scriptsById: Map<string, unknown> };
     context.scriptsById = new Map();
 
@@ -315,11 +291,10 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(result.success).toBe(false);
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(queueMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 
-  it('does not create an execution row when the script OS does not match the device', async () => {
+  it('does not dispatch when the script OS does not match the device', async () => {
     const context = buildContext() as unknown as {
       scriptsById: Map<string, unknown>;
     };
@@ -332,7 +307,6 @@ describe('executeRunScriptAction — script_executions correlation (#3162)', () 
     );
 
     expect(result.success).toBe(false);
-    expect(insertMock).not.toHaveBeenCalled();
-    expect(queueMock).not.toHaveBeenCalled();
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 });

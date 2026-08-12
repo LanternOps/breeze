@@ -34,10 +34,21 @@ vi.mock('../services/filterEngine', () => ({
   validateFilter: vi.fn().mockReturnValue({ valid: true, errors: [] })
 }));
 
-vi.mock('../services/groupMembership', () => ({
-  evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
-  pinDeviceToGroup: vi.fn().mockResolvedValue(undefined)
-}));
+vi.mock('../services/groupMembership', async () => {
+  const actual = await vi.importActual<typeof import('../services/groupMembership')>(
+    '../services/groupMembership'
+  );
+  return {
+    evaluateGroupMembership: vi.fn().mockResolvedValue(undefined),
+    pinDeviceToGroup: vi.fn().mockResolvedValue(undefined),
+    pruneGroupMembershipsOutsideSite: vi.fn().mockResolvedValue(undefined),
+    // Real: the extracted tenancy guard + membership insert that POST
+    // /:id/devices used to carry inline. These tests are that logic's
+    // coverage, exercised against the already-mocked `../db` / `../db/schema`.
+    validateManualMembershipDevices: actual.validateManualMembershipDevices,
+    addManualGroupMemberships: actual.addManualGroupMemberships
+  };
+});
 
 vi.mock('../db', () => ({
   db: {

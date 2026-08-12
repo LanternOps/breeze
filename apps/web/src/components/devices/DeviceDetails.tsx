@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
+import { fetchWithAuth } from "../../stores/auth";
+import { asList } from "@/lib/asList";
 import {
   Monitor,
   Cpu,
@@ -224,6 +226,82 @@ export function tabFromHash(hash: string): Tab | undefined {
 function anomalyIdFromHash(hash: string): string | undefined {
   const [tab, anomalyId] = hash.split("/");
   return tab === "anomalies" && anomalyId ? anomalyId : undefined;
+}
+
+type LinkedNetworkAsset = { id: string; label: string };
+
+// Back-link to any discovered assets identity-linked to this device (#3261
+// Task 4). Renders nothing while loading or when there are zero matches —
+// most devices were never seen by network discovery, and a permanent empty
+// row would just be noise.
+function NetworkAssetRow({ deviceId }: { deviceId: string }) {
+  const { t } = useTranslation("devices");
+  const [assets, setAssets] = useState<LinkedNetworkAsset[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAssets(null);
+    fetchWithAuth(`/discovery/assets?linkedDeviceId=${deviceId}`)
+      .then(async (res) => {
+        if (!res.ok) return [];
+        const data = await res.json();
+        const raw: any[] = asList(data, "assets");
+        return raw.map((a) => ({
+          id: a.id,
+          label: a.label || a.hostname || a.ipAddress || a.id,
+        }));
+      })
+      .catch(() => [])
+      .then((mapped) => {
+        if (!cancelled) setAssets(mapped);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceId]);
+
+  if (!assets || assets.length === 0) return null;
+
+  if (assets.length === 1) {
+    const asset = assets[0]!;
+    return (
+      <div className="flex items-center justify-between gap-4 rounded-lg border bg-card px-5 py-3 text-sm">
+        <span className="text-muted-foreground">
+          {t("deviceDetails.networkAsset")}
+        </span>
+        <a
+          href={`/devices/network/${asset.id}`}
+          data-testid="device-network-asset-link"
+          className="font-medium text-primary hover:underline"
+        >
+          {asset.label}
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-lg border bg-card px-5 py-3 text-sm"
+      data-testid="device-network-asset-list"
+    >
+      <p className="text-muted-foreground">
+        {t("deviceDetails.networkAssets")}
+      </p>
+      <ul className="mt-1 space-y-1">
+        {assets.map((asset) => (
+          <li key={asset.id}>
+            <a
+              href={`/devices/network/${asset.id}`}
+              className="font-medium text-primary hover:underline"
+            >
+              {asset.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export default function DeviceDetails({
@@ -626,6 +704,8 @@ export default function DeviceDetails({
                 </div>
               </div>
             </div>
+
+            <NetworkAssetRow deviceId={device.id} />
 
             <DeviceReliabilityPanel deviceId={device.id} />
 

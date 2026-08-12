@@ -3,116 +3,174 @@ import { statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
-import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
 
 export const downloadRoutes = new Hono();
+
+// ============================================
+// Shared component-binary download handler
+// ============================================
+// The agent/helper/watchdog/backup/user-helper routes below are five
+// near-verbatim copies of the same ~90-line shape: validate os/arch → GitHub
+// redirect (BINARY_SOURCE=github) → S3 presign (404-falls-to-disk,
+// non-404→500) → disk stream. registerComponentDownloadRoute hoists that
+// shape into one place so a future fix (e.g. stream backpressure) lands
+// once. The .pkg and install.sh/uninstall.sh routes have real behavioral
+// differences (macOS-only, different validation/response shape) and are
+// deliberately NOT folded in here.
+interface ComponentDownloadConfig {
+  /** Route path registered on downloadRoutes, e.g. '/download/watchdog/:os/:arch'. */
+  path: string;
+  /** Log-line prefix, e.g. 'watchdog-download' → '[watchdog-download] ...'. */
+  logTag: string;
+  /** S3 key prefix, e.g. 'watchdog' → 'watchdog/breeze-watchdog-linux-amd64'. */
+  s3Prefix: string;
+  /** Human label used in the 404 body, e.g. 'Watchdog binary "..." is not available.' */
+  entityLabel: string;
+  /** Resolves the on-disk filename for a validated (os, arch) pair. */
+  filenameFor: (os: string, arch: string) => string | undefined;
+  /** 400 message when filenameFor returns undefined (helper's per-OS lookup table). */
+  invalidOsMessage?: (os: string) => string;
+  /** Canonical GitHub release asset URL for BINARY_SOURCE=github. */
+  githubUrlFor: (os: string, arch: string) => string;
+  /** Local binary directory to serve from in non-github mode. */
+  binaryDir: () => string;
+}
+
+// breeze-{component}-{os}-{arch}[.exe] — the shape shared by agent, watchdog,
+// backup, and user-helper (helper uses its own HELPER_FILENAMES lookup instead).
+function perArchFilename(component: string) {
+  return (os: string, arch: string) =>
+    `breeze-${component}-${os}-${arch}${os === 'windows' ? '.exe' : ''}`;
+}
+
+function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
+  downloadRoutes.get(config.path, async (c) => {
+    // config.path is a runtime string (not a literal), so Hono can't narrow
+    // the param keys at the type level the way it does for the inline
+    // `.get('/download/:os/:arch', ...)` routes this replaced — every
+    // registered path always includes :os/:arch, so this is safe at runtime.
+    const os = c.req.param('os') as string;
+    const arch = c.req.param('arch') as string;
+
+    if (!VALID_OS.has(os)) {
+      return c.json(
+        {
+          error: 'Invalid OS',
+          message: `Supported values: linux, darwin, windows. Got: ${os}`,
+        },
+        400
+      );
+    }
+
+    if (!VALID_ARCH.has(arch)) {
+      return c.json(
+        {
+          error: 'Invalid architecture',
+          message: `Supported values: amd64, arm64. Got: ${arch}`,
+        },
+        400
+      );
+    }
+
+    const filename = config.filenameFor(os, arch);
+    if (!filename) {
+      return c.json(
+        { error: 'Invalid OS', message: config.invalidOsMessage!(os) },
+        400
+      );
+    }
+
+    // GitHub redirect mode — no local binaries needed
+    if (getBinarySource() === 'github') {
+      return c.redirect(config.githubUrlFor(os, arch), 302);
+    }
+
+    // Local mode: try S3 presigned redirect first (bandwidth offload)
+    if (isS3Configured()) {
+      try {
+        const s3Key = `${config.s3Prefix}/${filename}`;
+        const url = await getPresignedUrl(s3Key);
+        return c.redirect(url, 302);
+      } catch (err) {
+        if (!isS3NotFound(err)) {
+          // Real S3 transport/auth fault — surface it instead of masking it as a
+          // disk-fallback 404. The binary may well exist in S3; we just couldn't reach it.
+          console.error(`[${config.logTag}] S3 presign failed for ${filename}:`, err);
+          return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
+        }
+        console.warn(`[${config.logTag}] S3 object missing for ${filename}, falling back to disk:`, err);
+      }
+    }
+
+    // Local mode: serve from disk
+    const binaryDir = config.binaryDir();
+    const filePath = join(binaryDir, filename);
+
+    let fileStat: ReturnType<typeof statSync>;
+    let stream: ReturnType<typeof createReadStream>;
+    try {
+      fileStat = statSync(filePath);
+      stream = createReadStream(filePath);
+    } catch (err) {
+      const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+      if (!isNotFound) {
+        console.error(`[${config.logTag}] Failed to read binary ${filename}:`, err);
+        return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
+      }
+      console.warn(`[${config.logTag}] Local binary missing`, { filename });
+      return c.json(
+        {
+          error: 'Binary not found',
+          message: `${config.entityLabel} "${filename}" is not available.`,
+        },
+        404
+      );
+    }
+
+    const webStream = new ReadableStream({
+      start(controller) {
+        stream.on('data', (chunk: string | Buffer) => {
+          const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+          controller.enqueue(new Uint8Array(bytes));
+        });
+        stream.on('end', () => {
+          controller.close();
+        });
+        stream.on('error', (err) => {
+          console.error(`[${config.logTag}] Stream error while serving ${filename}:`, err);
+          controller.error(err);
+        });
+      },
+      cancel() {
+        stream.destroy();
+      },
+    });
+
+    return new Response(webStream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': String(fileStat.size),
+        'Cache-Control': 'no-cache',
+      },
+    });
+  });
+}
 
 // ============================================
 // Agent Binary Download (public, no auth)
 // ============================================
 
-downloadRoutes.get('/download/:os/:arch', async (c) => {
-  const os = c.req.param('os');
-  const arch = c.req.param('arch');
-
-  if (!VALID_OS.has(os)) {
-    return c.json(
-      {
-        error: 'Invalid OS',
-        message: `Supported values: linux, darwin, windows. Got: ${os}`,
-      },
-      400
-    );
-  }
-
-  if (!VALID_ARCH.has(arch)) {
-    return c.json(
-      {
-        error: 'Invalid architecture',
-        message: `Supported values: amd64, arm64. Got: ${arch}`,
-      },
-      400
-    );
-  }
-
-  const extension = os === 'windows' ? '.exe' : '';
-  const filename = `breeze-agent-${os}-${arch}${extension}`;
-
-  // GitHub redirect mode — no local binaries needed
-  if (getBinarySource() === 'github') {
-    return c.redirect(getGithubAgentUrl(os, arch), 302);
-  }
-
-  // Local mode: try S3 presigned redirect first (bandwidth offload)
-  if (isS3Configured()) {
-    try {
-      const s3Key = `agent/${filename}`;
-      const url = await getPresignedUrl(s3Key);
-      return c.redirect(url, 302);
-    } catch (err) {
-      if (!isS3NotFound(err)) {
-        // Real S3 transport/auth fault — surface it instead of masking it as a
-        // disk-fallback 404. The binary may well exist in S3; we just couldn't reach it.
-        console.error(`[agent-download] S3 presign failed for ${filename}:`, err);
-        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
-      }
-      console.warn(`[agent-download] S3 object missing for ${filename}, falling back to disk:`, err);
-    }
-  }
-
-  // Local mode: serve from disk
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  const filePath = join(binaryDir, filename);
-
-  let fileStat: ReturnType<typeof statSync>;
-  let stream: ReturnType<typeof createReadStream>;
-  try {
-    fileStat = statSync(filePath);
-    stream = createReadStream(filePath);
-  } catch (err) {
-    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
-    if (!isNotFound) {
-      console.error(`[agent-download] Failed to read binary ${filename}:`, err);
-      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
-    }
-    console.warn('[agent-download] Local binary missing', { filename });
-    return c.json(
-      {
-        error: 'Binary not found',
-        message: `Agent binary "${filename}" is not available.`,
-      },
-      404
-    );
-  }
-
-  const webStream = new ReadableStream({
-    start(controller) {
-      stream.on('data', (chunk: string | Buffer) => {
-        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        controller.enqueue(new Uint8Array(bytes));
-      });
-      stream.on('end', () => {
-        controller.close();
-      });
-      stream.on('error', (err) => {
-        console.error(`[agent-download] Stream error while serving ${filename}:`, err);
-        controller.error(err);
-      });
-    },
-    cancel() {
-      stream.destroy();
-    },
-  });
-
-  return new Response(webStream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(fileStat.size),
-      'Cache-Control': 'no-cache',
-    },
-  });
+registerComponentDownloadRoute({
+  path: '/download/:os/:arch',
+  logTag: 'agent-download',
+  s3Prefix: 'agent',
+  entityLabel: 'Agent binary',
+  filenameFor: perArchFilename('agent'),
+  githubUrlFor: getGithubAgentUrl,
+  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
 });
 
 // ============================================
@@ -207,86 +265,15 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
 // Helper Binary Download (public, no auth)
 // ============================================
 
-downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
-  const os = c.req.param('os');
-  const arch = c.req.param('arch');
-
-  if (!VALID_OS.has(os)) {
-    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
-  }
-
-  if (!VALID_ARCH.has(arch)) {
-    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
-  }
-
-  const filename = HELPER_FILENAMES[os];
-  if (!filename) {
-    return c.json({ error: 'Invalid OS', message: `No helper binary available for OS: ${os}` }, 400);
-  }
-
-  if (getBinarySource() === 'github') {
-    return c.redirect(getGithubHelperUrl(os), 302);
-  }
-
-  if (isS3Configured()) {
-    try {
-      const s3Key = `helper/${filename}`;
-      const url = await getPresignedUrl(s3Key);
-      return c.redirect(url, 302);
-    } catch (err) {
-      if (!isS3NotFound(err)) {
-        console.error(`[helper-download] S3 presign failed for ${filename}:`, err);
-        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
-      }
-      console.warn(`[helper-download] S3 object missing for ${filename}, falling back to disk:`, err);
-    }
-  }
-
-  const binaryDir = resolve(process.env.HELPER_BINARY_DIR || './agent/bin');
-  const filePath = join(binaryDir, filename);
-
-  let fileStat: ReturnType<typeof statSync>;
-  let stream: ReturnType<typeof createReadStream>;
-  try {
-    fileStat = statSync(filePath);
-    stream = createReadStream(filePath);
-  } catch (err) {
-    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
-    if (!isNotFound) {
-      console.error(`[helper-download] Failed to read binary ${filename}:`, err);
-      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
-    }
-    console.warn('[helper-download] Local binary missing', { filename });
-    return c.json({
-      error: 'Binary not found',
-      message: `Helper binary "${filename}" is not available.`,
-    }, 404);
-  }
-
-  const webStream = new ReadableStream({
-    start(controller) {
-      stream.on('data', (chunk: string | Buffer) => {
-        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        controller.enqueue(new Uint8Array(bytes));
-      });
-      stream.on('end', () => { controller.close(); });
-      stream.on('error', (err) => {
-        console.error(`[helper-download] Stream error while serving ${filename}:`, err);
-        controller.error(err);
-      });
-    },
-    cancel() { stream.destroy(); },
-  });
-
-  return new Response(webStream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(fileStat.size),
-      'Cache-Control': 'no-cache',
-    },
-  });
+registerComponentDownloadRoute({
+  path: '/download/helper/:os/:arch',
+  logTag: 'helper-download',
+  s3Prefix: 'helper',
+  entityLabel: 'Helper binary',
+  filenameFor: (os) => HELPER_FILENAMES[os],
+  invalidOsMessage: (os) => `No helper binary available for OS: ${os}`,
+  githubUrlFor: (os) => getGithubHelperUrl(os),
+  binaryDir: () => resolve(process.env.HELPER_BINARY_DIR || './agent/bin'),
 });
 
 // ============================================
@@ -297,84 +284,32 @@ downloadRoutes.get('/download/helper/:os/:arch', async (c) => {
 // /agent-versions/:version/download?component=watchdog, which hands back this
 // same-origin URL so the downloader's host-match guard passes (see
 // buildServerRelativeAgentDownloadUrl + issue #646).
-downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
-  const os = c.req.param('os');
-  const arch = c.req.param('arch');
+registerComponentDownloadRoute({
+  path: '/download/watchdog/:os/:arch',
+  logTag: 'watchdog-download',
+  s3Prefix: 'watchdog',
+  entityLabel: 'Watchdog binary',
+  filenameFor: perArchFilename('watchdog'),
+  githubUrlFor: getGithubWatchdogUrl,
+  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
+});
 
-  if (!VALID_OS.has(os)) {
-    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
-  }
-
-  if (!VALID_ARCH.has(arch)) {
-    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
-  }
-
-  const extension = os === 'windows' ? '.exe' : '';
-  const filename = `breeze-watchdog-${os}-${arch}${extension}`;
-
-  if (getBinarySource() === 'github') {
-    return c.redirect(getGithubWatchdogUrl(os, arch), 302);
-  }
-
-  if (isS3Configured()) {
-    try {
-      const s3Key = `watchdog/${filename}`;
-      const url = await getPresignedUrl(s3Key);
-      return c.redirect(url, 302);
-    } catch (err) {
-      if (!isS3NotFound(err)) {
-        console.error(`[watchdog-download] S3 presign failed for ${filename}:`, err);
-        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
-      }
-      console.warn(`[watchdog-download] S3 object missing for ${filename}, falling back to disk:`, err);
-    }
-  }
-
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  const filePath = join(binaryDir, filename);
-
-  let fileStat: ReturnType<typeof statSync>;
-  let stream: ReturnType<typeof createReadStream>;
-  try {
-    fileStat = statSync(filePath);
-    stream = createReadStream(filePath);
-  } catch (err) {
-    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
-    if (!isNotFound) {
-      console.error(`[watchdog-download] Failed to read binary ${filename}:`, err);
-      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
-    }
-    console.warn('[watchdog-download] Local binary missing', { filename });
-    return c.json({
-      error: 'Binary not found',
-      message: `Watchdog binary "${filename}" is not available.`,
-    }, 404);
-  }
-
-  const webStream = new ReadableStream({
-    start(controller) {
-      stream.on('data', (chunk: string | Buffer) => {
-        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        controller.enqueue(new Uint8Array(bytes));
-      });
-      stream.on('end', () => { controller.close(); });
-      stream.on('error', (err) => {
-        console.error(`[watchdog-download] Stream error while serving ${filename}:`, err);
-        controller.error(err);
-      });
-    },
-    cancel() { stream.destroy(); },
-  });
-
-  return new Response(webStream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(fileStat.size),
-      'Cache-Control': 'no-cache',
-    },
-  });
+// ============================================
+// Backup Binary Download (public, no auth)
+// ============================================
+// Per-arch like the agent (breeze-backup-{os}-{arch}[.exe]). install.sh fetches
+// this as a non-fatal post-install step, and /agent-versions/:version/download
+// hands back this same-origin URL for component=backup so any future verified
+// self-heal fetch passes the downloader's host-match guard (see
+// buildServerRelativeAgentDownloadUrl). Mirrors the watchdog route exactly.
+registerComponentDownloadRoute({
+  path: '/download/backup/:os/:arch',
+  logTag: 'backup-download',
+  s3Prefix: 'backup',
+  entityLabel: 'Backup binary',
+  filenameFor: perArchFilename('backup'),
+  githubUrlFor: getGithubBackupUrl,
+  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
 });
 
 // breeze-user-helper: the GUI-subsystem sibling of breeze-agent (Windows in
@@ -385,84 +320,14 @@ downloadRoutes.get('/download/watchdog/:os/:arch', async (c) => {
 // server-relative route the agent-versions response handed back the canonical
 // github.com asset URL, which the updater's host-equality check rejects (#1878).
 // Mirrors the watchdog route: github redirect / S3 presign / local disk.
-downloadRoutes.get('/download/user-helper/:os/:arch', async (c) => {
-  const os = c.req.param('os');
-  const arch = c.req.param('arch');
-
-  if (!VALID_OS.has(os)) {
-    return c.json({ error: 'Invalid OS', message: `Supported values: linux, darwin, windows. Got: ${os}` }, 400);
-  }
-
-  if (!VALID_ARCH.has(arch)) {
-    return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
-  }
-
-  const extension = os === 'windows' ? '.exe' : '';
-  const filename = `breeze-user-helper-${os}-${arch}${extension}`;
-
-  if (getBinarySource() === 'github') {
-    return c.redirect(getGithubUserHelperUrl(os, arch), 302);
-  }
-
-  if (isS3Configured()) {
-    try {
-      const s3Key = `user-helper/${filename}`;
-      const url = await getPresignedUrl(s3Key);
-      return c.redirect(url, 302);
-    } catch (err) {
-      if (!isS3NotFound(err)) {
-        console.error(`[user-helper-download] S3 presign failed for ${filename}:`, err);
-        return c.json({ error: 'Internal server error', message: 'Failed to retrieve binary file' }, 500);
-      }
-      console.warn(`[user-helper-download] S3 object missing for ${filename}, falling back to disk:`, err);
-    }
-  }
-
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  const filePath = join(binaryDir, filename);
-
-  let fileStat: ReturnType<typeof statSync>;
-  let stream: ReturnType<typeof createReadStream>;
-  try {
-    fileStat = statSync(filePath);
-    stream = createReadStream(filePath);
-  } catch (err) {
-    const isNotFound = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
-    if (!isNotFound) {
-      console.error(`[user-helper-download] Failed to read binary ${filename}:`, err);
-      return c.json({ error: 'Internal server error', message: 'Failed to read binary file' }, 500);
-    }
-    console.warn('[user-helper-download] Local binary missing', { filename });
-    return c.json({
-      error: 'Binary not found',
-      message: `User-helper binary "${filename}" is not available.`,
-    }, 404);
-  }
-
-  const webStream = new ReadableStream({
-    start(controller) {
-      stream.on('data', (chunk: string | Buffer) => {
-        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-        controller.enqueue(new Uint8Array(bytes));
-      });
-      stream.on('end', () => { controller.close(); });
-      stream.on('error', (err) => {
-        console.error(`[user-helper-download] Stream error while serving ${filename}:`, err);
-        controller.error(err);
-      });
-    },
-    cancel() { stream.destroy(); },
-  });
-
-  return new Response(webStream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(fileStat.size),
-      'Cache-Control': 'no-cache',
-    },
-  });
+registerComponentDownloadRoute({
+  path: '/download/user-helper/:os/:arch',
+  logTag: 'user-helper-download',
+  s3Prefix: 'user-helper',
+  entityLabel: 'User-helper binary',
+  filenameFor: perArchFilename('user-helper'),
+  githubUrlFor: getGithubUserHelperUrl,
+  binaryDir: () => resolve(process.env.AGENT_BINARY_DIR || './agent/bin'),
 });
 
 // ============================================
@@ -519,6 +384,7 @@ set -euo pipefail
 
 AGENT_BINARY="/usr/local/bin/breeze-agent"
 WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
+BACKUP_BINARY="/usr/local/bin/breeze-backup"
 
 fatal() {
   echo "Error: $*" >&2
@@ -555,6 +421,7 @@ uninstall_macos() {
   rm -f "$user_plist"
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
+  rm -f "$BACKUP_BINARY"
 
   echo "Breeze Agent uninstalled."
   echo "Config at /Library/Application Support/Breeze/ was preserved."
@@ -595,6 +462,7 @@ uninstall_linux() {
   rm -f "$xdg_autostart"
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
+  rm -f "$BACKUP_BINARY"
   rmdir "$ipc_dir" 2>/dev/null || true
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -733,6 +601,8 @@ BINARY_NAME="breeze-agent"
 DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}"
 PKG_URL="\${BREEZE_SERVER}/api/v1/agents/download/\${OS}/\${ARCH}/pkg"
 VERSION_METADATA_URL="\${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=\${OS}&arch=\${ARCH}&component=agent"
+BACKUP_DOWNLOAD_URL="\${BREEZE_SERVER}/api/v1/agents/download/backup/\${OS}/\${ARCH}"
+BACKUP_VERSION_METADATA_URL="\${BREEZE_SERVER}/api/v1/agent-versions/latest?platform=\${OS}&arch=\${ARCH}&component=backup"
 
 info "Breeze RMM Agent Installer"
 info "  Server:       \$BREEZE_SERVER"
@@ -983,6 +853,61 @@ if command -v restorecon &>/dev/null; then
 fi
 trap - EXIT
 success "Installed \$INSTALL_DIR/\$BINARY_NAME"
+
+# ----- Install breeze-backup (non-fatal) -----
+# breeze-backup runs scheduled backup jobs; it is a separate release asset from
+# the agent and its absence does not block enrollment or monitoring. The whole
+# step runs in a subshell so \`fatal\` (which calls exit) only aborts backup
+# installation, not the rest of this script — reuses the same
+# fetch/extract_checksum/verify_sha256 helpers as the agent binary above.
+info "Fetching breeze-backup..."
+if (
+  BACKUP_METADATA_FILE="$(mktemp)"
+  trap 'rm -f "\$BACKUP_METADATA_FILE"' EXIT
+
+  BACKUP_METADATA_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$BACKUP_METADATA_FILE" "\$BACKUP_VERSION_METADATA_URL" 2>/dev/null)" || true
+  if [[ "\$BACKUP_METADATA_HTTP_CODE" != "200" ]]; then
+    fatal "Failed to fetch breeze-backup release metadata (HTTP \$BACKUP_METADATA_HTTP_CODE)."
+  fi
+
+  BACKUP_EXPECTED_SHA256="$(extract_checksum "\$BACKUP_METADATA_FILE")"
+  if [[ -z "\$BACKUP_EXPECTED_SHA256" ]]; then
+    fatal "breeze-backup release metadata did not include a valid checksum."
+  fi
+
+  BACKUP_TMPFILE="$(mktemp)"
+  trap 'rm -f "\$BACKUP_TMPFILE" "\$BACKUP_METADATA_FILE"' EXIT
+
+  BACKUP_HTTP_CODE="$(curl -fsSL -w '%{http_code}' -o "\$BACKUP_TMPFILE" "\$BACKUP_DOWNLOAD_URL" 2>/dev/null)" || true
+  if [[ "\$BACKUP_HTTP_CODE" != "200" ]]; then
+    fatal "Failed to download breeze-backup binary (HTTP \$BACKUP_HTTP_CODE)."
+  fi
+  if [[ ! -s "\$BACKUP_TMPFILE" ]]; then
+    fatal "Downloaded breeze-backup binary is empty."
+  fi
+
+  verify_sha256 "\$BACKUP_TMPFILE" "\$BACKUP_EXPECTED_SHA256"
+
+  # This subshell is the test of an \`if\`, so \`set -e\` is ignored inside it —
+  # mv/chmod failures would otherwise be silently swallowed instead of tripping
+  # the subshell's exit status. Check each explicitly and route through fatal
+  # (an unconditional \`exit\`, unaffected by -e) so a real failure here is
+  # reported as "could not be installed", not a false success.
+  if ! mv "\$BACKUP_TMPFILE" "\$INSTALL_DIR/breeze-backup"; then
+    fatal "Failed to install breeze-backup binary to \$INSTALL_DIR/breeze-backup."
+  fi
+  if ! chmod 755 "\$INSTALL_DIR/breeze-backup"; then
+    fatal "Failed to set permissions on \$INSTALL_DIR/breeze-backup."
+  fi
+  if command -v restorecon &>/dev/null; then
+    restorecon -v "\$INSTALL_DIR/breeze-backup" 2>/dev/null || true
+  fi
+  trap - EXIT
+); then
+  success "Installed \$INSTALL_DIR/breeze-backup"
+else
+  warn "breeze-backup helper could not be installed; backups will not run until it is present"
+fi
 
 # ----- Create config directory -----
 info "Creating config directory \$CONFIG_DIR..."

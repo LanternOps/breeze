@@ -12,10 +12,10 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-var log = logging.L("patching")
+// `var log` moved to the untagged log.go in #3197 — reboot_manager.go is
+// untagged and needs it on every platform.
 
 // WUA OperationResultCode constants
 const (

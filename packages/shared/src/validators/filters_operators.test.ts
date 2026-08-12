@@ -347,6 +347,15 @@ describe('createSavedFilterSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('should accept an explicit null description (dashboard sends null for blank)', () => {
+    const result = createSavedFilterSchema.safeParse({
+      name: 'Online Servers',
+      description: null,
+      conditions: validConditions,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('should reject empty name', () => {
     const result = createSavedFilterSchema.safeParse({
       name: '',

@@ -559,7 +559,9 @@
     "lastSeen": "Ultima visualizzazione",
     "loggedInUser": "Utente connesso",
     "rail": "rail",
-    "strip": "striscia"
+    "strip": "striscia",
+    "networkAsset": "Asset di rete",
+    "networkAssets": "Asset di rete (elenco)"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -713,7 +715,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Impossibile recuperare i gruppi di dispositivi",
     "windows": "windows",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossibile salvare il gruppo di dispositivi",
@@ -2032,18 +2033,18 @@
     "value": "Valore"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "Registrazione schermo e Accessibilità vengono configurate automaticamente. Se lo stato persiste, controlla i log dell'agente o riavvia l'agente.",
+    "configuringDescription": "macOS richiederà le autorizzazioni Registrazione schermo e Accessibilità su questo dispositivo. Se le richieste sono state ignorate, concedile in Impostazioni di sistema > Privacy e sicurezza.",
     "fullDiskAccess": "Accesso completo al disco",
-    "fullDiskAccessDescription": "È richiesto Accesso completo al disco. Concedilo in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco. Registrazione schermo e Accessibilità verranno configurate automaticamente.",
+    "fullDiskAccessDescription": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco. Gli amministratori del parco dispositivi possono concedere automaticamente Accesso completo al disco e Accessibilità tramite un profilo PPPC MDM — consulta la pagina delle autorizzazioni macOS nella documentazione.",
     "fullDiskAccessRequired": "Accesso completo al disco richiesto",
-    "permissionsConfiguring": "Configurazione delle autorizzazioni",
+    "permissionsConfiguring": "Autorizzazioni in attesa di approvazione",
     "remoteDesktop": "Desktop remoto",
     "remoteDesktopDescription": "Manca l'autorizzazione Desktop remoto di macOS. Il percorso desktop della finestra di login resterà non disponibile finché non viene concessa.",
     "remoteDesktopRequired": "Autorizzazione Desktop remoto richiesta"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "Registrazione schermo e Accessibilità vengono configurate automaticamente. Se lo stato persiste, controlla i log dell'agente o riavvia l'agente.",
-    "fullDiskAccessWarning": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza. Registrazione schermo e Accessibilità verranno configurate automaticamente.",
+    "configuringWarning": "macOS richiederà le autorizzazioni Registrazione schermo e Accessibilità su questo dispositivo. Se le richieste sono state ignorate, concedile in Impostazioni di sistema > Privacy e sicurezza.",
+    "fullDiskAccessWarning": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco, oppure automaticamente tramite un profilo PPPC MDM. macOS richiede Registrazione schermo e Accessibilità separatamente.",
     "lastChecked": "Ultimo controllo: {{date}}",
     "permissions": {
       "accessibility": "Accessibilità",
@@ -2053,7 +2054,7 @@
     },
     "remoteDesktopWarning": "L'autorizzazione Desktop remoto è richiesta per l'accesso non presidiato alla finestra di login su macOS 14+.",
     "states": {
-      "autoManaged": "Gestita automaticamente",
+      "autoManaged": "In attesa",
       "granted": "Concessa",
       "missing": "Mancante",
       "unknown": "Sconosciuta"
@@ -2130,11 +2131,27 @@
       "typeUpdateFailed": "Aggiornamento del tipo non riuscito",
       "typeUpdated": "Tipo aggiornato",
       "unlinkFailed": "Scollegamento non riuscito",
-      "unlinked": "Scollegato"
+      "unlinked": "Scollegato",
+      "linked": "Dispositivo collegato",
+      "linkFailed": "Impossibile collegare il dispositivo"
     },
     "unlink": "Scollega",
     "unlinking": "Scollegamento...",
-    "viewManagedDevice": "Visualizza dispositivo gestito"
+    "viewManagedDevice": "Visualizza dispositivo gestito",
+    "autoLinkSuppressed": "Collegamento automatico disabilitato: scollegato da un utente",
+    "linkManually": "Collega manualmente…",
+    "linkManuallySelectDevice": "Seleziona un dispositivo",
+    "linkManuallyLinking": "Collegamento in corso…",
+    "linkManuallyErrors": {
+      "loadDevices": "Impossibile caricare i dispositivi",
+      "noDevices": "Nessun dispositivo gestito in questo sito.",
+      "noSite": "Impossibile determinare il sito di questa risorsa."
+    },
+    "provenance": {
+      "auto": "— rilevato automaticamente",
+      "manual": "— impostato manualmente"
+    },
+    "sameDeviceAs": "Stesso dispositivo di {{name}}"
   },
   "osIcons": {
     "linux": "Linux",

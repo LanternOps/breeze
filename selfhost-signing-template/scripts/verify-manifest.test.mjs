@@ -162,6 +162,16 @@ expectFail(
   /repository mismatch/
 );
 
+// GitHub slugs are case-insensitive; the official manifest records the
+// canonical casing (LanternOps/breeze) while workflows pass the lowercase
+// slug. A case-sensitive comparison rejected every real release manifest
+// (caught by the first live dry-run against v0.105.0).
+const okCase = run(verifyArgs({ repository: 'LanternOps/BREEZE' }));
+expect(
+  'verify: repository comparison is case-insensitive (canonical org casing accepted)',
+  okCase.status === 0 && okCase.stdout.trim() === 'a'.repeat(40)
+);
+
 const noCommit = { ...manifest };
 delete noCommit.sourceCommit;
 const noCommitSigned = writeSigned('nocommit', noCommit);

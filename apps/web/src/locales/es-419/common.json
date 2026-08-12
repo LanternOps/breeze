@@ -1794,22 +1794,14 @@
         "partialWarning": "Algunos datos pueden estar incompletos. No se pudo cargar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",
-          "activeCount": "{{count}} activo",
           "deployments": "Implementaciones",
-          "deploymentsSubtitle": "{{total}} total, {{pending}} pendiente",
           "failedCount": "{{count}} falló",
           "patches": "Parches",
-          "pendingInstallation": "instalación pendiente",
           "alerts": "Alertas",
-          "alertsSubtitle": "{{critical}} crítico, {{high}} alto",
           "groups": "Grupos",
-          "deviceGroupsSubtitle": "grupos de dispositivos",
           "automations": "Automatizaciones",
-          "configured": "configurado",
           "maintenance": "Mantenimiento",
-          "activeWindows": "ventanas activas",
-          "reports": "Informes",
-          "reportDefinitions": "definiciones de informes"
+          "reports": "Informes"
         },
         "aiFleetActions": "AI Acciones de flota",
         "aiFleetActionsHint": "Haga clic para preguntarle al asistente AI",
@@ -1838,6 +1830,173 @@
           "high": "Alto",
           "medium": "Medio",
           "low": "Bajo"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Hallazgos de la flota",
+        "description": "Patrones entre dispositivos que ameritan una sola acción en lugar de muchas",
+        "filters": {
+          "orgLabel": "Filtrar por organización",
+          "kindLabel": "Filtrar por tipo de hallazgo",
+          "severityLabel": "Filtrar por severidad",
+          "statusLabel": "Filtrar por estado",
+          "allOrgs": "Todas las organizaciones",
+          "allKinds": "Todos los tipos de hallazgo",
+          "allSeverities": "Todas las severidades"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Anomalía de métrica",
+          "logCorrelation": "Correlación de registros",
+          "reliabilityOffenders": "Reincidentes de confiabilidad"
+        },
+        "severities": {
+          "critical": "Crítico",
+          "error": "Error",
+          "warning": "Advertencia",
+          "info": "Informativo"
+        },
+        "statuses": {
+          "open": "Abierto",
+          "acknowledged": "Reconocido",
+          "dismissed": "Descartado",
+          "resolved": "Resuelto"
+        },
+        "status": {
+          "active": "Abiertos y reconocidos",
+          "dismissed": "Descartados",
+          "resolved": "Resueltos"
+        },
+        "deviceCount": "{{count}} dispositivos",
+        "deviceCount_one": "{{count}} dispositivo",
+        "deviceCount_other": "{{count}} dispositivos",
+        "showing": "Mostrando {{shown}} de {{total}}",
+        "loadMore": "Cargar más",
+        "empty": {
+          "title": "La flota está limpia",
+          "noMatchesTitle": "No hay hallazgos coincidentes",
+          "body": "Ningún hallazgo coincide con estos filtros en este momento."
+        },
+        "errors": {
+          "loadFailed": "No se pudieron cargar los hallazgos de la flota",
+          "banner": "No pudimos cargar los hallazgos de la flota"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Detalles del hallazgo",
+        "meta": {
+          "firstSeen": "Visto por primera vez {{when}}",
+          "lastSeen": "Visto por última vez {{when}}"
+        },
+        "summaryHeading": "Resumen",
+        "resolvedNote": {
+          "heading": "Por qué está cerrado",
+          "body": "Este hallazgo se resolvió porque la señal subyacente desapareció. Volverá a aparecer como un hallazgo nuevo si el patrón se repite.",
+          "reason": "Motivo de la resolución: {{reason}}"
+        },
+        "dismissNotesHeading": "Nota de descarte",
+        "evidenceHeading": "Evidencia",
+        "membersHeading": "Dispositivos afectados",
+        "membersEmpty": "No hay dispositivos registrados para este hallazgo.",
+        "table": {
+          "device": "Dispositivo",
+          "source": "Origen",
+          "lastSeen": "Visto por última vez"
+        },
+        "runsHeading": "Historial de remediación",
+        "runsEmpty": "Todavía no se ha ejecutado ninguna remediación para este hallazgo.",
+        "runCounts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "runStatuses": {
+          "queued": "En cola",
+          "running": "En ejecución",
+          "partial": "Parcial",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "cancelled": "Cancelado"
+        },
+        "dismiss": {
+          "notesLabel": "¿Por qué lo descartas? (obligatorio)",
+          "notesPlaceholder": "Falso positivo conocido, gestionado en otro lugar, riesgo aceptado…",
+          "confirm": "Descartar hallazgo"
+        },
+        "actions": {
+          "remediate": "Remediar en {{count}} dispositivos",
+          "remediate_one": "Remediar en {{count}} dispositivo",
+          "remediate_other": "Remediar en {{count}} dispositivos",
+          "remediateDisabledReason": "Ya no quedan dispositivos en este hallazgo para remediar.",
+          "acknowledge": "Reconocer",
+          "dismiss": "Descartar",
+          "reopen": "Reabrir"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar el hallazgo",
+          "lifecycleFailed": "No se pudo actualizar el hallazgo"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "la señal subyacente desapareció"
+        }
+      },
+      "FixPicker": {
+        "title": "Remediar hallazgo",
+        "actions": {
+          "script": "Ejecutar un script",
+          "scriptHint": "Elige un script de tu biblioteca y completa sus parámetros.",
+          "restartService": "Reiniciar un servicio",
+          "restartServiceHint": "Reinicia un solo servicio con nombre en cada dispositivo seleccionado.",
+          "reboot": "Reiniciar dispositivos",
+          "rebootHint": "Reinicia los dispositivos seleccionados apenas se despache la ejecución."
+        },
+        "chooseScript": "Elegir un script…",
+        "changeScript": "Cambiar script",
+        "selectedScript": "Script elegido: {{name}}",
+        "serviceNameLabel": "Nombre del servicio",
+        "serviceNamePlaceholder": "p. ej. Spooler",
+        "rebootWarning": "Los dispositivos seleccionados se reinician de inmediato apenas se despache esta ejecución. Las sesiones activas terminan y se pierde el trabajo sin guardar.",
+        "targetsHeading": "Dispositivos por remediar",
+        "selectAll": "Seleccionar todos",
+        "selectNone": "Borrar selección",
+        "selectedCount": "{{selected}} de {{total}} dispositivos seleccionados",
+        "noTargets": "Selecciona al menos un dispositivo para continuar.",
+        "osIncompatibleNotice": "{{count}} dispositivos no pueden ejecutar este script y fueron excluidos. Solo admite {{os}}.",
+        "osIncompatibleNotice_one": "{{count}} dispositivo no puede ejecutar este script y fue excluido. Solo admite {{os}}.",
+        "osIncompatibleNotice_other": "{{count}} dispositivos no pueden ejecutar este script y fueron excluidos. Solo admite {{os}}.",
+        "osIncompatibleReason": "Requiere {{os}}",
+        "confirmAction": "Corrección elegida",
+        "confirmTargets": "Dispositivos",
+        "confirmRestartService": "Reiniciar el servicio {{name}}",
+        "confirmRebootNotice": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirmRebootNotice_one": "{{count}} dispositivo se reiniciará de inmediato.",
+        "confirmRebootNotice_other": "{{count}} dispositivos se reiniciarán de inmediato.",
+        "confirm": "Iniciar remediación",
+        "dispatchedSummary": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "dispatchedSummary_one": "{{count}} dispositivo fue objetivo de esta ejecución.",
+        "dispatchedSummary_other": "{{count}} dispositivos fueron objetivo de esta ejecución.",
+        "skippedHeading": "Dispositivos omitidos",
+        "skipReasons": {
+          "siteDenied": "Sitio no accesible para ti",
+          "notMember": "Ya no está afectado por este hallazgo",
+          "decommissioned": "El dispositivo está dado de baja",
+          "timeout": "Se agotó el tiempo tras 30 minutos",
+          "dispatchEnqueueFailed": "Nunca se envió: falló el encolado"
+        },
+        "viewProgress": "Ver progreso",
+        "errors": {
+          "dispatchFailed": "No se pudo iniciar la remediación"
+        }
+      },
+      "RunProgress": {
+        "heading": "Ejecución de remediación",
+        "counts": "{{succeeded}} con éxito, {{failed}} con error, {{skipped}} omitidos de {{targets}} objetivos",
+        "polling": "Actualizando mientras la ejecución está activa…",
+        "targetsEmpty": "Ningún dispositivo de esta ejecución es visible para ti.",
+        "targetStatuses": {
+          "pending": "Pendiente",
+          "queued": "En cola",
+          "succeeded": "Con éxito",
+          "failed": "Con error",
+          "skipped": "Omitido"
+        },
+        "errors": {
+          "loadFailed": "No se pudo cargar la ejecución de remediación"
         }
       }
     },

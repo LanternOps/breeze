@@ -12,6 +12,14 @@
 > same extension name — the boot fails rather than letting one silently shadow
 > the other. Stock images no longer build or bake in `extensions/*` sources.
 
+First-party extensions maintained in this repository (currently
+`ee/workspace`) do not live here — they are compiled into the API image as
+**built-in** extensions, registered at boot through
+`apps/api/src/extensions/builtinExtensions.ts` (no signing, no runtime
+artifact, no source-directory scan; see
+`docs/extensions/build-time-transition.md`, "Built-in (first-party)
+extensions"). This directory is exclusively for third-party delivery.
+
 This directory hosts the runtime deployment config (`extensions.yaml`) and,
 during the compatibility window only, legacy source extension checkouts:
 

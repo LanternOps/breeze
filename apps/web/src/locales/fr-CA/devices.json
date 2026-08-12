@@ -559,7 +559,9 @@
     "lastSeen": "Dernière apparition",
     "loggedInUser": "Utilisateur connecté",
     "rail": "Chemin de fer",
-    "strip": "Strip"
+    "strip": "Strip",
+    "networkAsset": "Actif réseau",
+    "networkAssets": "Actifs réseau"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -713,7 +715,6 @@
   "deviceGroupsPage": {
     "failedToFetchDeviceGroups": "Impossible de récupérer les groupes d’appareils",
     "windows": "Fenêtres",
-    "deviceGroups": "/device-groups",
     "put": "PUT",
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossible d’enregistrer le groupe de périphériques",
@@ -2032,18 +2033,18 @@
     "value": "Valeur"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "L’enregistrement d’écran et l’accessibilité sont configurés automatiquement. Si cela persiste, vérifiez les journaux de l’agent ou redémarrez l’agent.",
+    "configuringDescription": "macOS demandera l’autorisation pour l’enregistrement d’écran et l’accessibilité sur cet appareil. Si les invites ont été ignorées, accordez ces permissions dans les paramètres système > Confidentialité et sécurité.",
     "fullDiskAccess": "Accès complet au disque",
-    "fullDiskAccessDescription": "Un accès complet au disque est requis. Accordez-le dans les paramètres système > Confidentialité et sécurité > accès complet au disque. L’enregistrement d’écran et l’accessibilité seront configurés automatiquement.",
+    "fullDiskAccessDescription": "L’accès complet au disque doit être accordé dans les paramètres système > Confidentialité et sécurité > Accès complet au disque. Les administrateurs de parc peuvent accorder automatiquement l’accès complet au disque et l’accessibilité au moyen d’un profil PPPC MDM — consultez la page des permissions macOS dans la documentation.",
     "fullDiskAccessRequired": "Accès complet au disque requis",
-    "permissionsConfiguring": "Configuration des permissions",
+    "permissionsConfiguring": "Permissions en attente d’approbation",
     "remoteDesktop": "Bureau à distance",
     "remoteDesktopDescription": "L’autorisation Bureau à distance de macOS est manquante. L’accès au bureau à partir de la fenêtre d’ouverture de session restera indisponible tant qu’elle n’aura pas été accordée.",
     "remoteDesktopRequired": "Autorisation de bureau à distance requise"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "L’enregistrement d’écran et l’accessibilité sont configurés automatiquement. Si cela persiste, vérifiez les journaux de l’agent ou redémarrez l’agent.",
-    "fullDiskAccessWarning": "L’accès complet au disque doit être accordé dans les paramètres système > confidentialité et sécurité. L’enregistrement d’écran et l’accessibilité seront configurés automatiquement.",
+    "configuringWarning": "macOS demandera l’autorisation pour l’enregistrement d’écran et l’accessibilité sur cet appareil. Si les invites ont été ignorées, accordez ces permissions dans les paramètres système > Confidentialité et sécurité.",
+    "fullDiskAccessWarning": "L’accès complet au disque doit être accordé dans les paramètres système > Confidentialité et sécurité > Accès complet au disque, ou automatiquement au moyen d’un profil PPPC MDM. macOS demande l’enregistrement d’écran et l’accessibilité séparément.",
     "lastChecked": "Dernière vérification : {{date}}",
     "permissions": {
       "accessibility": "Accessibilité",
@@ -2053,7 +2054,7 @@
     },
     "remoteDesktopWarning": "L’autorisation Bureau à distance est requise pour l’accès sans surveillance à partir de la fenêtre d’ouverture de session sous macOS 14 ou une version ultérieure.",
     "states": {
-      "autoManaged": "Géré automatiquement",
+      "autoManaged": "En attente",
       "granted": "Accordé",
       "missing": "Manquants",
       "unknown": "Inconnu"
@@ -2130,11 +2131,27 @@
       "typeUpdateFailed": "Mise à jour du type échouée",
       "typeUpdated": "Type mis à jour",
       "unlinkFailed": "Échouement du déliement",
-      "unlinked": "Non lié"
+      "unlinked": "Non lié",
+      "linked": "Appareil lié",
+      "linkFailed": "Échec de la liaison de l'appareil"
     },
     "unlink": "Délier",
     "unlinking": "Déconnexion...",
-    "viewManagedDevice": "Voir le dispositif géré"
+    "viewManagedDevice": "Voir le dispositif géré",
+    "autoLinkSuppressed": "Liaison automatique désactivée — dissociée par un utilisateur",
+    "linkManually": "Lier manuellement…",
+    "linkManuallySelectDevice": "Sélectionner un appareil",
+    "linkManuallyLinking": "Liaison en cours…",
+    "linkManuallyErrors": {
+      "loadDevices": "Échec du chargement des appareils",
+      "noDevices": "Aucun appareil géré à ce site.",
+      "noSite": "Impossible de déterminer le site de cet actif."
+    },
+    "provenance": {
+      "auto": "— détecté automatiquement",
+      "manual": "— défini manuellement"
+    },
+    "sameDeviceAs": "Même appareil que {{name}}"
   },
   "osIcons": {
     "linux": "Linux",
