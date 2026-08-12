@@ -1,4 +1,4 @@
-import { render, waitFor, act } from '@testing-library/react';
+import { render, waitFor, act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 // Raw source of the component under test, for the build-mechanism guard below.
@@ -50,6 +50,16 @@ vi.mock('@/lib/authScope', async () => {
 vi.mock('@/stores/orgStore', async () => {
   const actual = await vi.importActual<typeof import('@/stores/orgStore')>('@/stores/orgStore');
   return { ...actual, useOrgStore: orgStoreMock };
+});
+
+// The variable picker fetches GET /tenant-variables on mount (#3409 PR2).
+// Stub the transport — the real store is kept so `useAuthStore.setState` below
+// still drives the same module instance the component reads.
+const { fetchWithAuthMock } = vi.hoisted(() => ({ fetchWithAuthMock: vi.fn() }));
+
+vi.mock('@/stores/auth', async () => {
+  const actual = await vi.importActual<typeof import('@/stores/auth')>('@/stores/auth');
+  return { ...actual, fetchWithAuth: fetchWithAuthMock };
 });
 
 import ScriptForm from './ScriptForm';
@@ -281,5 +291,73 @@ describe('ScriptForm availability picker — partner-wide capability gate (#3262
     );
     await findByText('Available to');
     expect(await findByText(/Editing it requires full partner org access/)).toBeTruthy();
+  });
+});
+
+// #3409 PR2: a `{{var.<key>}}` token the tenant has no variable for fails the
+// device at dispatch, so the editor says so — but a key can legitimately be
+// created after the script, so this must never gate the save.
+describe('ScriptForm unknown-variable notice', () => {
+  const tenantVariable = {
+    id: 'tv-1',
+    key: 'vendor_token',
+    value: 'abc',
+    isSecret: false,
+    description: 'Vendor portal token',
+    ownerScope: 'partner' as const,
+    orgId: null,
+    partnerId: 'p-1',
+    version: 1,
+    createdAt: '2026-08-11T00:00:00.000Z',
+    updatedAt: '2026-08-11T00:00:00.000Z',
+  };
+
+  const draft = { name: 'Draft', category: 'Custom', language: 'powershell' as const };
+
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    orgStoreMock.mockReturnValue({ organizations: [], partners: [], sites: [] });
+    fetchWithAuthMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [tenantVariable] }), { status: 200 })
+    );
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('warns — without blocking submit — when the content references an unknown key', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm isNew onSubmit={onSubmit} defaultValues={{ ...draft, content: 'echo {{var.ghost}}' }} />
+    );
+
+    const notice = await screen.findByTestId('script-variable-warning');
+    expect(notice).toHaveTextContent(/ghost/);
+
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not warn on ${{var.x}} or on a {{org.name}} token from another namespace', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{ ...draft, content: '${{var.ghost}} and {{org.name}} and {{var.vendor_token}}' }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('script-variable-warning')).toBeNull();
+  });
+
+  it('stays silent when the variable list could not be loaded', async () => {
+    fetchWithAuthMock.mockRejectedValue(new Error('offline'));
+    render(<ScriptForm isNew defaultValues={{ ...draft, content: 'echo {{var.ghost}}' }} />);
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('script-variable-warning')).toBeNull();
   });
 });

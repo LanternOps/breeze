@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef, useCallback, type ComponentType }
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Sparkles, AlertTriangle } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
 // Statically import Monaco's editor stylesheet so Astro bundles it into the
@@ -20,6 +20,8 @@ import 'monaco-editor/min/vs/editor/editor.main.css';
 
 import ScriptAiPanel from './ScriptAiPanel';
 import CollapsibleSection from './CollapsibleSection';
+import ScriptVariablePicker from './ScriptVariablePicker';
+import { findUnknownVariableKeys, useTenantVariables } from '@/lib/tenantVariableTokens';
 import { cn } from '@/lib/utils';
 import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
@@ -266,6 +268,27 @@ export default function ScriptForm({
   const watchOsTypes = watch('osTypes');
   const watchParameters = watch('parameters');
   const watchAvailability = watch('availability');
+  const watchContent = watch('content');
+
+  // Tenant variables (#3409). The unknown-key notice is derived from the
+  // watched content and rendered beside the content error — deliberately NOT
+  // part of `scriptSchema`/zodResolver, which would block the save: a key may
+  // legitimately be created after the script that references it, and dispatch
+  // already fails those devices loudly.
+  const tenantVariables = useTenantVariables();
+  const knownVariableKeys = useMemo(
+    () => new Set(tenantVariables.map(v => v.key)),
+    [tenantVariables]
+  );
+  const unknownVariableKeys = useMemo(
+    () =>
+      findUnknownVariableKeys(watchContent ?? '', knownVariableKeys, {
+        // An empty set means the list hasn't arrived (or the fetch failed) —
+        // never "every token is unknown".
+        requireKnownKeys: knownVariableKeys.size > 0,
+      }),
+    [watchContent, knownVariableKeys]
+  );
 
   // Partner-scope detection comes from the JWT scope claim — NOT
   // `useOrgStore().partners`, which is populated only from the system-scope-only
@@ -495,20 +518,31 @@ export default function ScriptForm({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold tracking-tight">{t('scriptForm.sections.content')}</h3>
-          <button
-            type="button"
-            onClick={togglePanel}
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition',
-              panelOpen
-                ? 'bg-primary text-primary-foreground'
-                : 'border hover:bg-muted'
-            )}
-            title={t('scriptForm.ai.toggleTitle')}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            {t('scriptForm.ai.button')}
-          </button>
+          <div className="flex items-center gap-2">
+            <ScriptVariablePicker
+              variables={tenantVariables}
+              editorRef={editorInstanceRef}
+              content={watchContent ?? ''}
+              // Content lives in react-hook-form, not component state — write it
+              // back the same way ScriptFormBridge does so the AI panel and the
+              // picker can't fight over it.
+              onInsert={next => setValue('content', next, { shouldDirty: true })}
+            />
+            <button
+              type="button"
+              onClick={togglePanel}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                panelOpen
+                  ? 'bg-primary text-primary-foreground'
+                  : 'border hover:bg-muted'
+              )}
+              title={t('scriptForm.ai.toggleTitle')}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              {t('scriptForm.ai.button')}
+            </button>
+          </div>
         </div>
         <div className="flex rounded-md border">
           <div className="min-w-0 flex-1">
@@ -564,6 +598,17 @@ export default function ScriptForm({
           {panelOpen && <ScriptAiPanel bridge={bridge} />}
         </div>
         {errors.content && <p className="text-sm text-destructive">{errors.content.message}</p>}
+        {unknownVariableKeys.length > 0 && (
+          <p
+            data-testid="script-variable-warning"
+            className="flex items-start gap-1.5 text-sm text-amber-600 dark:text-amber-500"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              {t('scriptForm.variables.unknown', { keys: unknownVariableKeys.join(', ') })}
+            </span>
+          </p>
+        )}
       </div>
 
       {/* Parameters */}

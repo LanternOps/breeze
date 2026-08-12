@@ -65,4 +65,28 @@ describe('findUnknownTokens', () => {
   it('tolerates inner whitespace', () => {
     expect(findUnknownTokens('{{ org.name }}', new Set())).toEqual([]);
   });
+
+  // #3409 PR2 — tenant variables share the installer template namespace; the
+  // API resolver fills `{{var.<key>}}` from the prefetched scope snapshot.
+  it('accepts tenant variable tokens on structure alone before the keys load', () => {
+    expect(findUnknownTokens('{{var.vendor_token}}', new Set())).toEqual([]);
+  });
+
+  it('validates tenant variable keys against the known set when required', () => {
+    const options = {
+      variableKeys: new Set(['vendor_token']),
+      requireKnownVariableKeys: true,
+    };
+    expect(findUnknownTokens('{{var.vendor_token}}', new Set(), options)).toEqual([]);
+    expect(findUnknownTokens('{{var.ghost}}', new Set(), options)).toEqual(['{{var.ghost}}']);
+  });
+
+  // The `var.*` namespace has exactly ONE strict form on both sides (no inner
+  // whitespace), unlike the legacy installer tokens above — flagging the spaced
+  // form here is what keeps the client from passing what the server rejects.
+  it('flags a spaced variable token rather than silently normalizing it', () => {
+    expect(findUnknownTokens('{{ var.vendor_token }}', new Set())).toEqual([
+      '{{ var.vendor_token }}',
+    ]);
+  });
 });

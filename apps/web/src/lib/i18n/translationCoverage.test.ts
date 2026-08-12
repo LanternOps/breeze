@@ -103,7 +103,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 59,
+    // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 60,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
     'settings.json': 114,
@@ -153,7 +155,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 62,
+    // +1: scriptForm.variables.button — "Variables" is identical in French
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 63,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
@@ -202,7 +206,9 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 62,
+    // +1: scriptForm.variables.button — "Variables" is identical in French
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 63,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
