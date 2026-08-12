@@ -8,6 +8,17 @@ import {
 } from './scriptParameters';
 
 describe('scriptParametersSchema', () => {
+
+  // The agent maps `-` to `_` when building BREEZE_PARAM_* names
+  // (executor.go:329-343), so a hyphenated key works end to end today and
+  // must keep working — rejecting it would be a regression, not a fix.
+  it('accepts a hyphenated key, which the agent normalizes to an underscore', () => {
+    expect(scriptParametersSchema.safeParse({ 'log-level': 'debug' }).success).toBe(true);
+  });
+
+  it('still rejects a leading hyphen', () => {
+    expect(scriptParametersSchema.safeParse({ '-bad': 'x' }).success).toBe(false);
+  });
   it('accepts strings, finite numbers and booleans', () => {
     const result = scriptParametersSchema.safeParse({ s: 'hello', n: 3, b: true, zero: 0, f: false });
     expect(result.success).toBe(true);
@@ -42,7 +53,6 @@ describe('scriptParametersSchema', () => {
     'has space',
     'a.b',
     'a=b',
-    'a-b',
     '9leading',
     '',
   ])('rejects a key the agent could not turn into an env var name: %j', (key) => {

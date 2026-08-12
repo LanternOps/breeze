@@ -28,8 +28,14 @@ import { z } from 'zod';
  * injectable (`=` splits an env entry into two). Restricting keys to this
  * pattern up front guarantees every accepted key survives that
  * transformation as a single well-formed `BREEZE_PARAM_<NAME>` entry.
+ *
+ * A hyphen IS allowed (after the first character) precisely because the agent
+ * normalizes it: `log-level` becomes `BREEZE_PARAM_LOG_LEVEL`, and
+ * `{{log-level}}` substitutes by plain string replacement. Excluding it would
+ * have made this schema REJECT parameter names that work end to end today —
+ * tightening into a regression rather than fixing one.
  */
-export const SCRIPT_PARAMETER_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+export const SCRIPT_PARAMETER_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 
 /** Mirrors the agent's `Parameters map[string]string` payload cap concerns:
  * bounds both the per-request JSON size and the number of `BREEZE_PARAM_*`
