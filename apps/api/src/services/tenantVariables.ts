@@ -12,7 +12,7 @@ import { tenantVariables, type TenantVariableRow } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from './encryptedColumnRegistry';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
-import { decryptSecret, encryptSecret } from './secretCrypto';
+import { decryptSecret, encryptSecret, isEncryptedSecret } from './secretCrypto';
 
 /**
  * Tenant variables (#3409) — a value an MSP defines once, org-scoped or
@@ -61,6 +61,13 @@ export class TenantVariableError extends Error {
  * the same degrade path every other registered column takes.
  */
 export function encryptTenantVariableValue(id: string, plaintext: string): string {
+  // encryptSecret passes an `enc:vN:` prefixed string straight through as
+  // "already encrypted". The Zod schema rejects such values at the ingress;
+  // this is the belt-and-braces check for any non-route caller, because the
+  // failure mode is storing caller-controlled text as if it were ciphertext.
+  if (isEncryptedSecret(plaintext)) {
+    throw new TenantVariableError('Value must not start with "enc:v<n>:"', 400);
+  }
   return encryptSecret(plaintext, { aad: columnAad(VALUE_SPEC, id) }) ?? plaintext;
 }
 
@@ -198,6 +205,11 @@ function resolveOwner(auth: AuthContext, input: CreateTenantVariableInput): Vari
  * Bound the number of variables per owner. This is what keeps PR 2's
  * per-dispatch resolution a single small query rather than an unbounded one,
  * so it is enforced on the write path, not merely displayed in the UI.
+ *
+ * Count-then-insert is deliberately not serialized: two concurrent creates can
+ * both observe 199 and land on 201. The cap is a resource bound, not a security
+ * boundary, and an advisory lock per owner would add contention to every create
+ * to prevent an overshoot of one.
  */
 async function assertOwnerCapacity(owner: VariableOwner): Promise<void> {
   const ownerCondition = owner.orgId
@@ -325,12 +337,24 @@ export async function updateTenantVariable(
     }
   }
 
+  // The predicate repeats the access condition and pins the version read above:
+  // the fetch and the write are separate statements, so without this a row that
+  // changed owner (or was edited by a concurrent request) in between would be
+  // updated anyway — and two concurrent value edits would both write version
+  // N+1, breaking the pinning PR 4's effect digest depends on. No row matching
+  // means the row moved out from under us, which is a 404/409, never a 500.
+  const conditions: SQL[] = [eq(tenantVariables.id, id), eq(tenantVariables.version, row.version)];
+  const accessCondition = tenantVariableWriteCondition(auth);
+  if (accessCondition) conditions.push(accessCondition);
+
   const [updated] = await db
     .update(tenantVariables)
     .set(updates)
-    .where(eq(tenantVariables.id, id))
+    .where(and(...conditions))
     .returning();
-  if (!updated) throw new TenantVariableError('Failed to update variable', 500);
+  if (!updated) {
+    throw new TenantVariableError('This variable changed while you were editing it — reload and try again', 409);
+  }
   return updated;
 }
 
@@ -351,6 +375,14 @@ export async function deleteTenantVariable(auth: AuthContext, id: string): Promi
     throw new TenantVariableError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 403);
   }
 
-  await db.delete(tenantVariables).where(eq(tenantVariables.id, id));
-  return row;
+  // Same reasoning as the update: re-apply the access condition and confirm a
+  // row was actually removed, so the caller is never told (and the audit log
+  // never records) that something was deleted when nothing was.
+  const conditions: SQL[] = [eq(tenantVariables.id, id)];
+  const accessCondition = tenantVariableWriteCondition(auth);
+  if (accessCondition) conditions.push(accessCondition);
+
+  const deleted = await db.delete(tenantVariables).where(and(...conditions)).returning();
+  if (deleted.length === 0) throw new TenantVariableError('Variable not found', 404);
+  return deleted[0]!;
 }

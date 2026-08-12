@@ -47,6 +47,13 @@ describe('createTenantVariableSchema', () => {
     expect(createTenantVariableSchema.safeParse({ ...valid, orgId: 'not-a-uuid' }).success).toBe(false);
   });
 
+  it('rejects a value that impersonates the at-rest ciphertext envelope', () => {
+    expect(createTenantVariableSchema.safeParse({ ...valid, value: 'enc:v1:abc' }).success).toBe(false);
+    expect(createTenantVariableSchema.safeParse({ ...valid, value: 'enc:v3:key:abc' }).success).toBe(false);
+    // A value that merely CONTAINS the prefix later is fine.
+    expect(createTenantVariableSchema.safeParse({ ...valid, value: 'x enc:v1:abc' }).success).toBe(true);
+  });
+
   it('rejects an oversized description', () => {
     expect(createTenantVariableSchema.safeParse({ ...valid, description: 'a'.repeat(501) }).success).toBe(false);
   });

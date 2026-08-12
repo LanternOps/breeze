@@ -3300,5 +3300,56 @@
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d'accès (Touch ID / Windows Hello) lors de l'enregistrement.",
     "authenticatorCode": "Code d'authentification",
     "confirmYourPassword": "Confirmez votre mot de passe"
+  },
+  "tenantVariablesPage": {
+    "title": "Variables",
+    "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
+    "loading": "Chargement des variables…",
+    "actions": {
+      "add": "Nouvelle variable",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "edit": "Modifier la variable",
+      "delete": "Supprimer la variable",
+      "confirmDelete": "Confirmer"
+    },
+    "fields": {
+      "key": "Clé",
+      "keyHint": "Minuscules, chiffres et tirets bas. Les scripts référencent la variable par ce nom.",
+      "keyImmutable": "La clé ne peut pas être modifiée : les scripts la référencent par son nom.",
+      "value": "Valeur",
+      "valueKeepHint": "Laissez vide pour conserver la valeur enregistrée.",
+      "description": "Description",
+      "scope": "S'applique à",
+      "isSecret": "Secret",
+      "isSecretHint": "Plus jamais affichée après enregistrement, et transmise aux scripts sous forme de variable d'environnement."
+    },
+    "editor": {
+      "newTitle": "Nouvelle variable",
+      "editTitle": "Modifier la variable",
+      "scopeLegend": "S'applique à",
+      "allOrgs": "Toutes les organisations",
+      "allOrgsHint": "Disponible pour tous les clients que vous gérez.",
+      "thisOrg": "Cette organisation"
+    },
+    "issues": {
+      "key": "Saisissez une clé composée de minuscules, de chiffres et de tirets bas, commençant par une lettre.",
+      "value": "Saisissez une valeur.",
+      "unsecret": "Saisissez une nouvelle valeur pour cesser de traiter cette variable comme un secret.",
+      "org": "Sélectionnez une organisation avant de créer une variable au périmètre d'une organisation."
+    },
+    "empty": {
+      "title": "Aucune variable pour l'instant",
+      "description": "Créez-en une pour ne plus coller le même jeton dans les scripts de chaque client."
+    },
+    "errors": {
+      "load": "Impossible de charger les variables."
+    },
+    "toasts": {
+      "saved": "Variable enregistrée",
+      "saveFailed": "Impossible d'enregistrer la variable",
+      "deleted": "Variable supprimée",
+      "deleteFailed": "Impossible de supprimer la variable"
+    }
   }
 }

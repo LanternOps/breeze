@@ -157,6 +157,12 @@ describe('value encryption', () => {
     expect(decryptTenantVariableValue({ id: ROW_A, value: sealed })).toBe('hunter2');
   });
 
+  it('refuses a plaintext that impersonates the at-rest envelope', () => {
+    // encryptSecret would pass `enc:v1:…` straight through as "already
+    // encrypted", persisting caller-controlled text as if it were ciphertext.
+    expect(() => encryptTenantVariableValue(ROW_A, 'enc:v1:pretend')).toThrow(TenantVariableError);
+  });
+
   it('refuses a value transplanted from another row', () => {
     const sealed = encryptTenantVariableValue(ROW_A, 'hunter2');
     expect(() => decryptTenantVariableValue({ id: ROW_B, value: sealed })).toThrow();
@@ -396,20 +402,37 @@ describe('updateTenantVariable', () => {
     stubSelect([]);
     await expect(updateTenantVariable(auth(), ROW_A, { description: 'x' })).rejects.toMatchObject({ status: 404 });
   });
+
+  it('409s — not 500s — when the row changed between the read and the write', async () => {
+    const row = makeRow();
+    stubSelect([row]);
+    // The version predicate matched nothing: a concurrent edit already bumped it.
+    dbMock.update.mockReturnValue({
+      set: () => ({ where: () => ({ returning: () => Promise.resolve([]) }) })
+    });
+    await expect(updateTenantVariable(auth(), row.id, { value: 'racing' })).rejects.toMatchObject({ status: 409 });
+  });
 });
 
 describe('deleteTenantVariable', () => {
   it('deletes a reachable row and returns it for auditing', async () => {
     const row = makeRow();
     stubSelect([row]);
-    dbMock.delete.mockReturnValue({ where: () => Promise.resolve([]) });
+    dbMock.delete.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([row]) }) });
     await expect(deleteTenantVariable(auth(), row.id)).resolves.toMatchObject({ id: row.id, key: row.key });
+  });
+
+  it('404s when the delete itself removes nothing (row vanished after the read)', async () => {
+    const row = makeRow();
+    stubSelect([row]);
+    dbMock.delete.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([]) }) });
+    await expect(deleteTenantVariable(auth(), row.id)).rejects.toMatchObject({ status: 404 });
   });
 
   it('blocks a partner-wide delete from a partner admin without full org access', async () => {
     const row = makeRow({ orgId: null, partnerId: PARTNER });
     stubSelect([row]);
-    dbMock.delete.mockReturnValue({ where: () => Promise.resolve([]) });
+    dbMock.delete.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([row]) }) });
     await expect(deleteTenantVariable(auth({ partnerOrgAccess: 'selected' }), row.id)).rejects.toMatchObject({
       status: 403
     });

@@ -308,7 +308,7 @@ describe('tenant variable routes', () => {
   describe('DELETE /tenant-variables/:id', () => {
     it('deletes a reachable variable and audits it', async () => {
       stubSelect([makeRow()]);
-      dbMock.delete.mockReturnValue({ where: () => Promise.resolve([]) });
+      dbMock.delete.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([makeRow()]) }) });
 
       const res = await jsonRequest(app, `/tenant-variables/${VAR_ID}`, 'DELETE');
 
@@ -324,7 +324,7 @@ describe('tenant variable routes', () => {
       currentAuth.scope = 'organization';
       currentAuth.partnerOrgAccess = undefined;
       stubSelect([]);
-      dbMock.delete.mockReturnValue({ where: () => Promise.resolve([]) });
+      dbMock.delete.mockReturnValue({ where: () => ({ returning: () => Promise.resolve([makeRow()]) }) });
 
       const res = await jsonRequest(app, `/tenant-variables/${VAR_ID}`, 'DELETE');
 

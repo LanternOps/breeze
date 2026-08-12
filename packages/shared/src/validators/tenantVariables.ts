@@ -34,8 +34,23 @@ export const tenantVariableKeySchema = z
  * materialized with its default and silently overwrite the stored value.
  * Create-time defaults live only on createTenantVariableSchema.
  */
+/**
+ * A value that already looks like our own at-rest envelope is rejected rather
+ * than stored: `encryptSecret` treats an `enc:vN:` prefix as "already
+ * encrypted" and passes it through untouched, which would persist caller-
+ * controlled text as if it were ciphertext — and then fail to decrypt on the
+ * way back out. No real vendor token starts with this prefix.
+ */
+export const TENANT_VARIABLE_CIPHERTEXT_PREFIX = /^enc:v\d+:/;
+
 const tenantVariableBaseSchema = z.object({
-  value: z.string().min(1).max(MAX_TENANT_VARIABLE_VALUE_LENGTH),
+  value: z
+    .string()
+    .min(1)
+    .max(MAX_TENANT_VARIABLE_VALUE_LENGTH)
+    .refine((v) => !TENANT_VARIABLE_CIPHERTEXT_PREFIX.test(v), {
+      message: 'Value must not start with "enc:v<n>:" — that prefix is reserved for encrypted storage'
+    }),
   isSecret: z.boolean(),
   // Nullable so the editor can CLEAR a description: the update schema is
   // .partial(), so omitting the key keeps the stored value.
