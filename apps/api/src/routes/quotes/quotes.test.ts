@@ -96,7 +96,7 @@ vi.mock('../../middleware/auth', () => ({
 import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { renderContractBlocksForClient, loadContractBlockAuthoring } from '../../services/contractTemplateRender';
+import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 
 function app() {
@@ -593,6 +593,25 @@ describe('quote crud + lines routes', () => {
       expect(q.id).toBe(QUOTE_ID);
       expect(blocks).toHaveLength(2);
       expect(lines).toHaveLength(1);
+    });
+
+    it('hands the billTo-overlaid quote to loadContractPdfInputs so {{client.name}} resolves on drafts', async () => {
+      (svc.getQuote as any).mockResolvedValue(quoteFixture);
+      dbRows.next = [
+        [{ name: 'Acme MSP', footer: null, currency: 'USD' }],
+        [{ logoUrl: null, primaryColor: null, footerText: null }]
+      ];
+      pdf.render.mockResolvedValue(Buffer.from('%PDF-1.4 test'));
+
+      await app().request(`/${QUOTE_ID}/pdf`, { method: 'GET' });
+
+      // A draft's raw row has billToName null (frozen only at send); contract
+      // auto-variables resolve from the quote arg passed HERE, so it must be the
+      // overlaid render row. Passing the raw row shipped as a blank
+      // {{client.name}} in the contract text while the page header — rendered
+      // from the overlaid row — showed the customer name fine.
+      const [, quoteArg] = (loadContractPdfInputs as any).mock.calls.at(-1) ?? [];
+      expect(quoteArg?.billToName).toBe('Acme Customer');
     });
 
     it('returns 404 when the quote is not found / cross-tenant (QUOTE_NOT_FOUND)', async () => {
