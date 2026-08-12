@@ -1,4 +1,4 @@
-// Classify-one-email filing pipeline (dev-preview; per-org content flag).
+// Classify-one-email filing pipeline (per-org content flag).
 //
 // Confidence rules (fixed, deterministic — never a vibe):
 //   HIGH — a strong entity (po/wdr/invoice/permit) in the email hits the
@@ -49,7 +49,17 @@ function displayEntity(type: string, valueNorm: string): string {
 export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
   const d = db;
 
-  async function unfiledEmails(orgId: string, groupIds: string[] = []): Promise<Array<{
+  /**
+   * Every unfiled, visible .eml in the org — or, when `fileIndexId` is given,
+   * just that one row. The single-file form exists because the /client match
+   * path resolves ONE id per pane open: scanning the org's whole unfiled list
+   * to `.find()` it is O(estate) for an O(1) question. Both forms run the
+   * identical predicate, so the visibility/fileability semantics cannot drift
+   * between them.
+   */
+  async function unfiledEmails(
+    orgId: string, groupIds: string[] = [], fileIndexId?: string,
+  ): Promise<Array<{
     id: string; rel_path: string; name: string; email_meta: FilingRecord['emailMeta'];
   }>> {
     const rows = await d.execute(sql`
@@ -61,12 +71,19 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
         AND fi.deleted_at IS NULL
         AND fi.is_dir = false
         AND fi.ext = 'eml'
+        ${fileIndexId === undefined ? sql`` : sql`AND fi.id = ${fileIndexId}`}
         AND ${visibleSourcePredicateSql(sql, groupIds)}
       ORDER BY fi.rel_path
     `) as unknown as Array<{
       id: string; rel_path: string; name: string; email_meta: FilingRecord['emailMeta'];
     }>;
     return rows.filter((r) => deriveDeclaredProject(r.rel_path) === null);
+  }
+
+  /** One unfiled, visible email; null when unknown, tombstoned, hidden by the
+   * caller's group claims, not an .eml, or already filed under a project path. */
+  async function unfiledEmail(orgId: string, fileIndexId: string, groupIds: string[]) {
+    return (await unfiledEmails(orgId, groupIds, fileIndexId))[0] ?? null;
   }
 
   async function filingRowsFor(orgId: string, fileIds: string[]): Promise<Map<string, Record<string, unknown>>> {
@@ -77,6 +94,10 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
              decided_project_key
       FROM workspace_email_filings
       WHERE org_id = ${orgId}
+        -- Semantic no-op (the caller maps by id anyway), but the single-file
+        -- callers — get/classify/assign — must not scan the org's filing table
+        -- to read back one row.
+        ${fileIds.length === 1 ? sql`AND file_index_id = ${fileIds[0]}` : sql``}
     `) as unknown as Array<Record<string, unknown> & { file_index_id: string }>;
     return new Map(rows.map((r) => [r.file_index_id, r]));
   }
@@ -109,12 +130,23 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
     },
 
     /**
+     * One filing record by file id, under the caller's visibility. Same null
+     * conditions as `classify` — unknown, tombstoned, hidden, not an .eml, or
+     * already filed under a project path — and never creates a row.
+     */
+    async get(orgId: string, fileIndexId: string, groupIds: string[] = []): Promise<FilingRecord | null> {
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
+      if (!email) return null;
+      const filings = await filingRowsFor(orgId, [fileIndexId]);
+      return toRecord(email, filings.get(fileIndexId));
+    },
+
+    /**
      * Classify one unfiled email. Returns null when the file is unknown,
      * tombstoned, hidden, not an email, or not unfiled (404 at the route).
      */
     async classify(orgId: string, fileIndexId: string, groupIds: string[] = []): Promise<FilingRecord | null> {
-      const emails = await unfiledEmails(orgId, groupIds);
-      const email = emails.find((e) => e.id === fileIndexId);
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
       if (!email) return null;
 
       // Deterministic entity order: strongest lead types first, then value —
@@ -242,6 +274,15 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
     /**
      * One-click (re)assign. Confirms when the choice matches the suggestion,
      * reassigns otherwise. Returns null for unknown file/filing or project.
+     *
+     * The visibility gate is enforced BEFORE and INSIDE the write, never after
+     * it. That ordering is the whole point: this is the one mutating path an
+     * end user drives, and a decision written onto a file the caller may not
+     * see is a real write even if the response is a 404. The pre-check makes
+     * the common case cheap and also covers fileability (already filed under a
+     * project path — a JS-side path rule that cannot live in SQL); the EXISTS
+     * in the UPDATE makes the visibility half atomic and true for any future
+     * caller, whatever it checked first.
      */
     async assign(
       orgId: string,
@@ -250,6 +291,8 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
       decidedLabel: string | null,
       groupIds: string[] = [],
     ): Promise<FilingRecord | null> {
+      const email = await unfiledEmail(orgId, fileIndexId, groupIds);
+      if (!email) return null;
       const project = (await d.execute(sql`
         SELECT project_key FROM workspace_projects
         WHERE org_id = ${orgId} AND project_key = ${projectKey}
@@ -265,12 +308,18 @@ export function createFilingService(db: WorkspaceDatabase, deps: FilingDeps) {
           decided_at = now(),
           updated_at = now()
         WHERE org_id = ${orgId} AND file_index_id = ${fileIndexId}
+          AND EXISTS (
+            SELECT 1
+            FROM workspace_file_index fi
+            JOIN workspace_sources s ON s.id = fi.source_id AND s.org_id = fi.org_id
+            WHERE fi.id = ${fileIndexId}
+              AND fi.org_id = ${orgId}
+              AND fi.deleted_at IS NULL
+              AND ${visibleSourcePredicateSql(sql, groupIds)}
+          )
         RETURNING file_index_id
       `) as unknown as Array<{ file_index_id: string }>;
       if (updated.length === 0) return null;
-      const emails = await unfiledEmails(orgId, groupIds);
-      const email = emails.find((e) => e.id === fileIndexId);
-      if (!email) return null;
       const filings = await filingRowsFor(orgId, [fileIndexId]);
       return toRecord(email, filings.get(fileIndexId));
     },

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   chunkText, FakeEmbedder, VoyageEmbedder, toVectorLiteral, EMBEDDING_DIM,
 } from './embedder';
+import { TransientIngestError } from '../services/ingestErrors';
 
 describe('chunkText', () => {
   it('packs paragraphs to ~1200 chars without splitting them', () => {
@@ -65,6 +66,21 @@ describe('VoyageEmbedder', () => {
     const fetchImpl = vi.fn(async () => new Response('nope', { status: 401 }));
     const e = new VoyageEmbedder('bad', 'voyage-3', 100, fetchImpl as unknown as typeof fetch);
     await expect(e.embed(['a'], 'query')).rejects.toThrow(/401/);
+  });
+
+  it('maps a fetch timeout to a TransientIngestError and passes an abort signal', async () => {
+    // A black-holed embedder must not hang an advance ~300s (undici default) —
+    // AbortSignal.timeout fires a TimeoutError we surface as transient so the
+    // ingest runner backs off the batch instead of wedging on a dead provider.
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      const err = new Error('The operation was aborted due to timeout');
+      err.name = 'TimeoutError';
+      throw err;
+    });
+    const e = new VoyageEmbedder('key', 'voyage-3', 100, fetchImpl as unknown as typeof fetch);
+    await expect(e.embed(['a'], 'document')).rejects.toBeInstanceOf(TransientIngestError);
+    await expect(e.embed(['b'], 'document')).rejects.toThrow(/voyage: timed out/);
   });
 });
 

@@ -15,6 +15,10 @@ import {
 import { CredentialDecryptError, createCredentialService } from '../services/credentialService';
 import { createSourcesService, type SafeSourceRow } from '../services/sourcesService';
 import { matchesScope, scopeForDevice } from '../services/runScope';
+import type { createIngestJobsService } from '../services/ingestJobsService';
+import {
+  AGENT_POKE_BATCH, AGENT_POKE_BUDGET_MS, type createIngestJobRunner,
+} from '../services/ingestJobRunner';
 import { DecodedBodyTooLargeError, readDecodedBody } from './gunzip';
 
 // Soft limit advertised to agents via /crawl-config so well-behaved clients
@@ -41,12 +45,22 @@ type BatchUpsertService = Pick<
   ReturnType<typeof createBatchUpsertService>,
   'upsertBatch' | 'tombstonePaths'
 >;
+// W3: the complete-hook only ever ensures a job (never claims/advances one
+// itself), so it needs nothing else off the jobs service.
+type IngestJobsService = Pick<ReturnType<typeof createIngestJobsService>, 'ensureJob'>;
+// W3: the crawl-config piggyback only ever pokes the runner's budgeted
+// advance — claiming/releasing stays entirely inside the runner.
+type IngestJobRunner = Pick<ReturnType<typeof createIngestJobRunner>, 'advance'>;
 
 export interface AgentRouteDeps {
   sourcesService: SourcesService;
   credentialService: CredentialService;
   crawlRunsService: CrawlRunsService;
   batchUpsertService: BatchUpsertService;
+  ingestJobs: IngestJobsService;
+  ingestRunner: IngestJobRunner;
+  /** Per-org content flag (W2 Task 3 pattern) — gates complete-hook job creation. */
+  getSettings: (orgId: string) => Promise<{ contentEnabled: boolean }>;
   audit: WorkspaceAudit;
   log: ExtensionLog;
 }
@@ -175,6 +189,26 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
     );
   }
 
+  // W3: piggyback a budgeted ingest advance onto the agent's existing poll.
+  // There is no background worker — this in-request nudge is what keeps a
+  // live job moving between explicit admin advances. Runs even when crawling
+  // itself is kill-switched (content gating is the runner's own per-org
+  // settings check, independent of crawl). Must NEVER perturb the poll
+  // response: any throw is caught and logged, not surfaced.
+  async function pokeIngest(agent: ExtensionAgentContext): Promise<void> {
+    try {
+      await deps.ingestRunner.advance(agent.orgId, {
+        budgetMs: AGENT_POKE_BUDGET_MS,
+        batch: AGENT_POKE_BATCH,
+      });
+    } catch (error) {
+      deps.log(
+        'error',
+        `workspace ingest poke failed org=${agent.orgId} device=${agent.deviceId}: ${errorDetail(error)}`,
+      );
+    }
+  }
+
   async function resolveRun(
     agent: ExtensionAgentContext,
     runId: string,
@@ -196,11 +230,14 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
   }
 
   app.get('/crawl-config', async (c) => {
+    const agent = c.get('agent');
     if (crawlKillSwitchActive()) {
       deps.log('warn', 'workspace crawl kill switch active (WORKSPACE_CRAWL_ENABLED)');
+      // Piggyback runs even with crawling kill-switched: content gating is
+      // per-org via the runner's own settings check, independent of crawl.
+      await pokeIngest(agent);
       return c.json({ enabled: false, pollIntervalSeconds: POLL_INTERVAL_SECONDS, sources: [] });
     }
-    const agent = c.get('agent');
     const sources = await visibleSources(agent);
     const configuredSources = await Promise.all(sources.map(async (source) => {
       const active = await deps.crawlRunsService.getActive(agent.orgId, source.id, agent.deviceId);
@@ -220,7 +257,7 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
         watch: source.kind === 'local_profile' ? source.watch : false,
       };
     }));
-    return c.json({
+    const payload = {
       enabled: true,
       pollIntervalSeconds: POLL_INTERVAL_SECONDS,
       limits: {
@@ -229,7 +266,11 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
         walkOpsPerSecond: WALK_OPS_PER_SECOND,
       },
       sources: configuredSources,
-    });
+    };
+    // Piggyback AFTER the response payload is built (Flag 4: adds up to
+    // ~AGENT_POKE_BUDGET_MS to this poll while a job is live).
+    await pokeIngest(agent);
+    return c.json(payload);
   });
 
   app.post('/sources/:id/credential', async (c) => {
@@ -363,8 +404,32 @@ export function createAgentRoutes(deps: AgentRouteDeps): Hono<WorkspaceAgentRout
     );
     if ('notFound' in result) return c.json({ error: 'not found' }, 404);
     // A retried complete (lost response) is answered idempotently; the
-    // tombstone sweep already ran on the first attempt.
+    // tombstone sweep already ran on the first attempt — and so did any job
+    // creation, so this path must NOT re-ensure one.
     if ('alreadyFinished' in result) return c.json({ tombstoned: 0, alreadyFinished: true });
+
+    // W3 complete-hook: a genuinely fresh, successful finish nudges
+    // productized ingest into motion. Job creation must NEVER fail (or even
+    // slow down the wire contract of) the agent's complete response — every
+    // failure mode here is caught and logged, never surfaced.
+    if (parsed.data.complete) {
+      try {
+        if ((await deps.getSettings(agent.orgId)).contentEnabled) {
+          const run = await deps.crawlRunsService.getById(agent.orgId, runId);
+          await deps.ingestJobs.ensureJob(agent.orgId, {
+            sourceId: run?.sourceId ?? null,
+            crawlRunId: runId,
+            trigger: 'crawl_complete',
+          });
+        }
+      } catch (error) {
+        deps.log(
+          'error',
+          `workspace ingest job creation failed run=${runId} org=${agent.orgId}: ${errorDetail(error)}`,
+        );
+      }
+    }
+
     return c.json({ tombstoned: result.tombstoned });
   });
 

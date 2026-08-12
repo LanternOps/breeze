@@ -12,8 +12,8 @@
   "server": { "entry": "server/index.cjs" },
   "web": {
     "entry": "web/index.js",
-    "pages": [{ "id": "sources", "path": "/extensions/workspace/sources", "element": "workspace-sources-page" }],
-    "navigation": [{ "id": "sources", "label": "Workspace Sources", "path": "/extensions/workspace/sources", "order": 100 }],
+    "pages": [{ "id": "sources", "path": "/extensions/workspace/sources", "element": "workspace-sources-page" }, { "id": "dashboard", "path": "/extensions/workspace/dashboard", "element": "workspace-dashboard" }],
+    "navigation": [{ "id": "sources", "label": "Workspace Sources", "path": "/extensions/workspace/sources", "order": 100 }, { "id": "dashboard", "label": "Workspace Dashboard", "path": "/extensions/workspace/dashboard", "order": 50 }],
     "slots": [{ "id": "device-index", "slot": "device.detail.tabs", "contractVersion": 1, "label": "Workspace", "element": "workspace-device-index", "order": 100 }]
   },
   "migrationsDir": "migrations",
@@ -23,7 +23,7 @@
   "jobs": [],
   "aiTools": [],
   "tenancy": {
-    "orgCascadeDeleteTables": ["memory_blocks", "workspace_content_chunks", "workspace_content_entities", "workspace_crawl_runs", "workspace_email_filings", "workspace_file_activity", "workspace_file_content", "workspace_file_enrichment", "workspace_file_index", "workspace_org_settings", "workspace_project_crosswalk", "workspace_projects", "workspace_sources"],
+    "orgCascadeDeleteTables": ["memory_blocks", "workspace_content_chunks", "workspace_content_entities", "workspace_crawl_runs", "workspace_email_filings", "workspace_file_activity", "workspace_file_content", "workspace_file_enrichment", "workspace_file_index", "workspace_ingest_jobs", "workspace_org_settings", "workspace_project_crosswalk", "workspace_projects", "workspace_sources"],
     "deviceCascadeDeleteTables": ["workspace_file_index"],
     "deviceOrgDenormalizedTables": ["workspace_file_activity"],
     "deviceOrgMoveDeleteTables": ["workspace_file_index"],
@@ -63,6 +63,10 @@
       "workspace_file_index": {
         "include": ["id", "org_id", "source_id", "device_id", "device_key", "rel_path", "parent_path", "name", "is_dir", "ext", "mime", "size", "mtime", "ctime", "attrs", "last_seen_at", "deleted_at", "created_at", "updated_at"],
         "exclude": []
+      },
+      "workspace_ingest_jobs": {
+        "include": ["id", "org_id", "source_id", "crawl_run_id", "trigger", "phase", "status", "force", "attempts", "max_attempts", "next_attempt_at", "stats", "last_error", "started_at", "finished_at", "created_at", "updated_at"],
+        "exclude": ["cursor"]
       },
       "workspace_org_settings": {
         "include": ["org_id", "content_enabled", "created_at", "updated_at"],

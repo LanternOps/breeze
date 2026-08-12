@@ -98,17 +98,16 @@ export function createCredentialService(
     },
 
     /**
-     * Org-scoped decrypt for the server-side content-ingest reader
-     * (dev-preview). Unlike decryptForDevice this is NOT device-gated — the
-     * ingest worker has no device identity — which is a deliberate,
-     * preview-only widening of the credential surface:
+     * Org-scoped decrypt for the server-side content-ingest reader. Unlike
+     * decryptForDevice this is NOT device-gated — the ingest worker has no
+     * device identity — which is a deliberate widening of the credential
+     * surface, guarded two ways:
      *   - hard-disabled unless content is enabled for the org (defense in
      *     depth; the routes that reach here are themselves gated on the same
      *     per-org setting), and
      *   - the bytes this credential unlocks are DLP-inspected at ingest
      *     (extracted text is redacted before store; a 'block' hit persists no
-     *     text), but this remains a preview-only widening — never enable in
-     *     production.
+     *     text).
      * Same null-vs-throw contract as decryptForDevice.
      */
     async decryptForContentIngest(

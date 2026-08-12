@@ -1,4 +1,4 @@
-// Text extraction (content phase, dev-preview).
+// Text extraction for the content layer.
 // This module extracts text ONLY; it stores nothing. DLP runs downstream in
 // contentIngestService, between extraction and persistence: the text returned
 // here is inspected there before anything is stored — 'redact' hits rewrite it,
@@ -12,6 +12,11 @@ export interface EmailMeta {
   cc?: string[];
   subject?: string;
   date?: string;
+  /** RFC 5322 Message-ID, angle brackets stripped and lowercased. Absent when
+   * the source mail carries no Message-ID header — the demo corpus fixture
+   * (PO-4021) is exactly this case, which is why the matcher (Task 6) never
+   * relies on tier 1 alone. */
+  messageId?: string;
 }
 
 export type ExtractionResult =
@@ -67,12 +72,16 @@ export async function extractContent(
       '',
       body,
     ].filter((l): l is string => l !== null).join('\n');
+    const messageId = parsed.messageId
+      ? parsed.messageId.trim().replace(/^<+|>+$/g, '').toLowerCase() || undefined
+      : undefined;
     const emailMeta: EmailMeta = {
       from,
       to: to.length ? to : undefined,
       cc: cc.length ? cc : undefined,
       subject,
       date: parsed.date?.toISOString(),
+      messageId,
     };
     return { status: 'extracted', text, contentHash, emailMeta };
   } catch (error) {

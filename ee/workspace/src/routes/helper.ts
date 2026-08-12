@@ -33,12 +33,12 @@ export interface HelperRouteDeps {
   fileQueryService: FileQueryService;
   activityService: ActivityService;
   /**
-   * Content-preview retrieval (dev-preview). Only consulted when content is
+   * Content retrieval for the content layer. Only consulted when content is
    * enabled for the caller's org; while disabled the legacy search path below
    * runs untouched — byte-identical responses (snapshot-tested).
    */
   contentSearchService?: Pick<ReturnType<typeof createContentSearchService>, 'search' | 'passages'>;
-  /** Filing panel backend (dev-preview); absent or content disabled → routes 404. */
+  /** Filing panel backend; absent or content disabled → routes 404. */
   filingService?: Pick<ReturnType<typeof createFilingService>, 'list' | 'classify' | 'assign' | 'projects'>;
   /**
    * Per-org content flag (W2 Task 3): resolves the caller org's content
@@ -148,7 +148,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     return c.json({ results });
   });
 
-  // Content-preview capability probe: the Helper shows content affordances
+  // Content capability probe: the Helper shows content affordances
   // (snippets, inferred metadata, filing) only when this answers 200. With
   // content disabled for the org it 404s — existing endpoint shapes never
   // change based on the flag.
@@ -163,8 +163,8 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
   });
 
   // Cited-RAG retrieval: visibility-scoped content passages for the chat
-  // file-passages tool. Content-preview only — 404s under the same gate as the
-  // rest of the /content/* surface (the caller org's content setting).
+  // file-passages tool. 404s under the same gate as the rest of the
+  // /content/* surface (the caller org's content setting).
   app.get('/content/passages', async (c) => {
     const device = c.get('helperDevice');
     if (!deps.contentSearchService?.passages || !(await deps.getSettings(device.orgId)).contentEnabled) {
@@ -186,7 +186,7 @@ export function createHelperRoutes(deps: HelperRouteDeps): Hono<WorkspaceHelperR
     return c.json({ passages });
   });
 
-  // ---- Filing panel (dev-preview) ---------------------------------------
+  // ---- Filing panel -------------------------------------------------------
   // Per-org gate: filing is available only when a filing service is wired AND
   // content is enabled for the caller's org (W2 Task 3).
   const filingAvailable = async (orgId: string) =>

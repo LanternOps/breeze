@@ -123,7 +123,7 @@ describe('credentialService', () => {
       .rejects.toBeInstanceOf(CredentialDecryptError);
   });
 
-  describe('decryptForContentIngest (dev-preview, org-scoped)', () => {
+  describe('decryptForContentIngest (content gating, org-scoped)', () => {
     it('is hard-disabled when content is not enabled for the org', async () => {
       const h = makeHarness({ kind: 'smb_share', credentialEnc: 'ciphertext' });
       await expect(createCredentialService(h.db, h.secrets, settingsStub(false)).decryptForContentIngest(ORG_ID, SOURCE_ID))

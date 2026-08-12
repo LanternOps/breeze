@@ -1,4 +1,4 @@
-// Content ingest runner (dev-preview; per-org content flag).
+// Content ingest runner (per-org content flag).
 //
 // Batch-per-request by design: the caller (admin route) processes up to N
 // pending files INSIDE the request, where the org RLS context is valid, and
@@ -34,6 +34,7 @@ import { extractEntities } from '../content/entities';
 import { deriveDeclaredProject } from '../content/projects';
 import { applyDlpToText, type DlpFinding } from '../content/dlp';
 import { getOrgSettings } from './orgSettingsService';
+import { TransientIngestError, isTransientIngestError } from './ingestErrors';
 
 export interface IngestError {
   fileIndexId: string;
@@ -45,6 +46,29 @@ export interface IngestRunResult {
   processed: number;
   remaining: number;
   errors: IngestError[];
+  // A transient (source-likely-down) failure aborts the remaining batch and is
+  // reported here; the failed file is left fully pending (no row written). Null
+  // when the whole batch drained without a transient abort.
+  transient: { reason: string; abortedAfter: number } | null;
+}
+
+/** Anything with `.execute` — the db handle or a transaction handle. */
+type Executor = Pick<WorkspaceDatabase, 'execute'>;
+
+export interface IngestRunOptions {
+  /**
+   * Re-scan every eligible file against the CURRENT DlpConfig, bypassing both
+   * the snapshot-pending filter and the same-hash short-circuit. Used to
+   * re-apply DLP after an org tightens its config without waiting for the
+   * underlying bytes to change.
+   */
+  force?: boolean;
+  /**
+   * Force-only convergence guard: exclude files whose content row was already
+   * refreshed at/after this instant, so a repeated forced sweep terminates.
+   * The caller (job runner) passes the job's DB-sourced started_at.
+   */
+  forceSince?: Date;
 }
 
 export interface IngestStatus {
@@ -53,6 +77,9 @@ export interface IngestStatus {
   failed: number;
   skippedTooLarge: number;
   skippedBinary: number;
+  // W3 (Task 6): DLP-blocked files (see status() below). Additive — safe for
+  // every existing consumer of this type.
+  blockedDlp: number;
   pending: number;
 }
 
@@ -66,6 +93,9 @@ interface PendingRow {
   root_path: string;
   source_kind: string;
   content_hash: string | null;
+  // Stored content row state — used by the force re-embed-avoidance check.
+  content_status: string | null;
+  extracted_text: string | null;
 }
 
 export interface ContentIngestDeps {
@@ -118,18 +148,49 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
     return Number((res as unknown as Array<{ n: number }>)[0]?.n ?? 0);
   }
 
+  // Force-aware pending count: how many eligible files THIS sweep has not yet
+  // re-walked. A forced run re-visits every eligible file regardless of its
+  // snapshot, so the non-force pendingCount (already 0 for an extracted estate)
+  // cannot measure force progress — an estate larger than one batch would report
+  // remaining=0 after the first batch and the job would phase-complete having
+  // visited only a fraction of it. A file is "visited" once its content row is
+  // refreshed at/after forceSince (every processed file bumps updated_at), so
+  // this mirrors the force SELECT arm and drains to 0 exactly when the whole
+  // estate has been re-walked. Without forceSince the sweep has no convergence
+  // guard, so every eligible file still counts as pending.
+  async function forcePendingCount(orgId: string, forceSince?: Date): Promise<number> {
+    const unvisitedArm = forceSince
+      ? sql`AND (c.updated_at IS NULL OR c.updated_at < ${forceSince.toISOString()}::timestamptz)`
+      : sql``;
+    const res = await d.execute(sql`
+      SELECT count(*)::int AS n
+      FROM workspace_file_index fi
+      JOIN workspace_sources s ON s.id = fi.source_id AND s.org_id = fi.org_id
+      LEFT JOIN workspace_file_content c ON c.file_index_id = fi.id
+      WHERE fi.org_id = ${orgId}
+        AND fi.deleted_at IS NULL
+        AND fi.is_dir = false
+        AND s.kind = 'smb_share'
+        AND s.status = 'active'
+        AND s.visibility_group_ids = '[]'::jsonb
+        ${unvisitedArm}
+    `);
+    return Number((res as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+  }
+
   async function replaceRegexEntities(
+    exec: Executor,
     orgId: string,
     fileIndexId: string,
     text: string,
   ): Promise<void> {
     const entities = extractEntities(text);
-    await d.execute(sql`
+    await exec.execute(sql`
       DELETE FROM workspace_content_entities
       WHERE org_id = ${orgId} AND file_index_id = ${fileIndexId} AND origin = 'regex'
     `);
     for (const e of entities) {
-      await d.execute(sql`
+      await exec.execute(sql`
         INSERT INTO workspace_content_entities (org_id, file_index_id, entity_type, value_norm, value_raw, origin)
         VALUES (${orgId}, ${fileIndexId}, ${e.type}, ${e.valueNorm}, ${e.valueRaw}, 'regex')
         ON CONFLICT (org_id, file_index_id, entity_type, value_norm) DO NOTHING
@@ -137,13 +198,13 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
     }
   }
 
-  async function upsertDeclaredProject(orgId: string, relPath: string): Promise<void> {
+  async function upsertDeclaredProject(exec: Executor, orgId: string, relPath: string): Promise<void> {
     const declared = deriveDeclaredProject(relPath);
     if (!declared) return;
     const label = declared.label ?? declared.key;
     // A real label (folder name) may replace a key-only placeholder, never the
     // other way round.
-    await d.execute(sql`
+    await exec.execute(sql`
       INSERT INTO workspace_projects (org_id, project_key, label)
       VALUES (${orgId}, ${declared.key}, ${label})
       ON CONFLICT (org_id, project_key) DO UPDATE
@@ -154,6 +215,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
   }
 
   async function upsertContentRow(
+    exec: Executor,
     orgId: string,
     fileIndexId: string,
     row: {
@@ -169,7 +231,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
       dlpFindings: DlpFinding[];
     },
   ): Promise<void> {
-    await d.execute(sql`
+    await exec.execute(sql`
       INSERT INTO workspace_file_content
         (org_id, file_index_id, content_hash, source_size, source_mtime, extracted_text, status, error_reason, dlp_findings)
       VALUES
@@ -190,7 +252,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
     // email_meta lives on the enrichment row (written deterministically here,
     // never by the LLM; the enrichment pass fills the inferred_* columns).
     if (row.emailMeta) {
-      await d.execute(sql`
+      await exec.execute(sql`
         INSERT INTO workspace_file_enrichment (org_id, file_index_id, email_meta)
         VALUES (${orgId}, ${fileIndexId}, ${JSON.stringify(row.emailMeta)}::jsonb)
         ON CONFLICT (file_index_id) DO UPDATE SET
@@ -200,12 +262,32 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
   }
 
   return {
-    async run(orgId: string, batch: number): Promise<IngestRunResult> {
+    async run(orgId: string, batch: number, opts?: IngestRunOptions): Promise<IngestRunResult> {
       // DLP config is per-org and stable for the whole run — fetch it once.
       const { dlpConfig } = await getOrgSettings(db, orgId);
+      const force = opts?.force === true;
+      const forceSince = force ? opts?.forceSince : undefined;
+      // Force re-scans EVERY eligible file against the current DlpConfig, so it
+      // drops the snapshot-mismatch arm of pendingPredicateSql (the single
+      // non-force truth) and instead adds a convergence guard: a file whose
+      // content row was already refreshed at/after forceSince in this sweep is
+      // excluded, so a repeated forced sweep terminates. Non-force keeps the
+      // shared snapshot predicate untouched.
+      const pendingArm = force
+        ? (forceSince
+          // forceSince is a DB-origin timestamp (the job's started_at) round-
+          // tripped through the host as a Date. Bind it as an ISO string with an
+          // explicit ::timestamptz cast — the postgres.js driver cannot serialize
+          // a raw Date parameter (it lands in Buffer.byteLength and throws), and
+          // the rest of the extension already crosses the driver boundary as
+          // toISOString() strings (contentSearchService/dashboardService/etc.).
+          ? sql`AND (c.updated_at IS NULL OR c.updated_at < ${forceSince.toISOString()}::timestamptz)`
+          : sql``)
+        : pendingPredicateSql;
       const pending = await d.execute(sql`
         SELECT fi.id, fi.source_id, fi.rel_path, fi.name, fi.size, fi.mtime,
-               s.root_path, s.kind AS source_kind, c.content_hash
+               s.root_path, s.kind AS source_kind,
+               c.content_hash, c.status AS content_status, c.extracted_text
         FROM workspace_file_index fi
         JOIN workspace_sources s ON s.id = fi.source_id AND s.org_id = fi.org_id
         LEFT JOIN workspace_file_content c ON c.file_index_id = fi.id
@@ -215,30 +297,42 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
           AND s.kind = 'smb_share'
           AND s.status = 'active'
           AND s.visibility_group_ids = '[]'::jsonb
-          ${pendingPredicateSql}
+          ${pendingArm}
         ORDER BY fi.rel_path
         LIMIT ${batch}
       `) as unknown as PendingRow[];
 
       const errors: IngestError[] = [];
       let processed = 0;
+      let transient: IngestRunResult['transient'] = null;
 
       for (const file of pending) {
         const source = { id: file.source_id, orgId, kind: file.source_kind, rootPath: file.root_path };
         const sourceSize = file.size === null ? null : Number(file.size);
         const sourceMtime = file.mtime;
-        // Once the content row is durably 'extracted', a later failure (entity
-        // replace, project upsert) must NOT overwrite it with a failed row —
-        // that would destroy good text AND, because the snapshot matches, park
-        // the file outside the pending set forever.
+        // Guards the failed-row fallback in the catch: once the file's new
+        // version is durably persisted (or a failed/blocked row is written),
+        // a later throw must NOT overwrite it with a failed row.
         let contentRowWritten = false;
         try {
-          const bytes = await deps.reader.read(source, file.rel_path);
+          // Byte fetch is the transient seam: a source that is down (SMB read
+          // refused) must not park the file as failed — it aborts the batch and
+          // is retried whole. Everything thrown AFTER bytes are in hand
+          // (extraction/parsing) stays permanent.
+          let bytes: Buffer;
+          try {
+            bytes = await deps.reader.read(source, file.rel_path);
+          } catch (readError) {
+            throw new TransientIngestError(
+              `reader: ${readError instanceof Error ? readError.message : String(readError)}`,
+              { cause: readError },
+            );
+          }
           const result = await extractContent(file.name, bytes, maxBytes);
 
           if (result.status !== 'extracted') {
             // failed / skipped_* — no text, nothing for DLP to inspect.
-            await upsertContentRow(orgId, file.id, {
+            await upsertContentRow(d, orgId, file.id, {
               contentHash: null,
               sourceSize,
               sourceMtime,
@@ -253,10 +347,11 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
             continue;
           }
 
-          if (file.content_hash === result.contentHash) {
+          if (!force && file.content_hash === result.contentHash) {
             // Same bytes as last time — refresh the snapshot only. The prior
             // run already applied DLP to these exact bytes, so its verdict
-            // (redacted text or blocked_dlp) stands untouched.
+            // (redacted text or blocked_dlp) stands untouched. Force skips this
+            // arm so DLP re-applies with the CURRENT config.
             await d.execute(sql`
               UPDATE workspace_file_content
               SET source_size = ${sourceSize}, source_mtime = ${sourceMtime}, updated_at = now()
@@ -271,8 +366,10 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
           if (dlp.blocked) {
             // Block before store/embed: persist a blocked_dlp row carrying the
             // findings and the snapshot (so it is skipped, not retried, next
-            // run) — no text, no entities, no chunks, no embedder call.
-            await upsertContentRow(orgId, file.id, {
+            // run) — no text, no entities, no chunks, no embedder call. Under
+            // force this is also the clean→blocked transition path when a
+            // newly-tightened config now blocks a previously-clean file.
+            await upsertContentRow(d, orgId, file.id, {
               contentHash: null,
               sourceSize,
               sourceMtime,
@@ -302,43 +399,82 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
 
           // Redacted (or clean) text is the ONLY text that flows downstream.
           const cleanText = dlp.text;
-          await upsertContentRow(orgId, file.id, {
-            contentHash: result.contentHash,
-            sourceSize,
-            sourceMtime,
-            extractedText: cleanText,
-            status: 'extracted',
-            errorReason: null,
-            emailMeta: result.emailMeta,
-            dlpFindings: dlp.findings,
-          });
-          contentRowWritten = true;
-          await replaceRegexEntities(orgId, file.id, cleanText);
-          await upsertDeclaredProject(orgId, file.rel_path);
-          if (deps.embedder) {
-            const chunks = chunkText(cleanText);
-            const vectors = await deps.embedder.embed(chunks, 'document');
-            // delete-then-insert per file: stale chunks must never linger
-            // after a shrink/rewrite.
+
+          // Force re-embed avoidance: if the file is already stored as
+          // 'extracted' with byte-identical text, the (possibly changed) config
+          // did not affect this file. Refresh snapshot + findings + updated_at
+          // only; skip the entity/chunk rewrite and the embedder call entirely.
+          if (force && file.content_status === 'extracted' && file.extracted_text === cleanText) {
             await d.execute(sql`
-              DELETE FROM workspace_content_chunks
+              UPDATE workspace_file_content
+              SET source_size = ${sourceSize}, source_mtime = ${sourceMtime},
+                  content_hash = ${result.contentHash},
+                  dlp_findings = ${JSON.stringify(dlp.findings)}::jsonb,
+                  updated_at = now()
               WHERE org_id = ${orgId} AND file_index_id = ${file.id}
             `);
-            for (let i = 0; i < chunks.length; i += 1) {
-              await d.execute(sql`
-                INSERT INTO workspace_content_chunks (org_id, file_index_id, chunk_index, text, embedding)
-                VALUES (${orgId}, ${file.id}, ${i}, ${chunks[i]}, ${toVectorLiteral(vectors[i]!)}::vector)
-              `);
-            }
+            processed += 1;
+            continue;
           }
+
+          // Embed BEFORE opening the transaction — never hold a tx across a
+          // network call. A transient embed failure throws here, before any
+          // write, leaving the file's old content row and old chunks fully
+          // intact (and pending, since the snapshot is untouched).
+          let chunks: string[] = [];
+          let vectors: number[][] = [];
+          if (deps.embedder) {
+            chunks = chunkText(cleanText);
+            vectors = await deps.embedder.embed(chunks, 'document');
+          }
+
+          // Persist the whole new version atomically: content row + entities +
+          // project + chunks land together or not at all (savepoint rollback),
+          // so extracted_text and chunks can never diverge.
+          await d.transaction(async (tx) => {
+            await upsertContentRow(tx, orgId, file.id, {
+              contentHash: result.contentHash,
+              sourceSize,
+              sourceMtime,
+              extractedText: cleanText,
+              status: 'extracted',
+              errorReason: null,
+              emailMeta: result.emailMeta,
+              dlpFindings: dlp.findings,
+            });
+            await replaceRegexEntities(tx, orgId, file.id, cleanText);
+            await upsertDeclaredProject(tx, orgId, file.rel_path);
+            if (deps.embedder) {
+              // delete-then-insert per file: stale chunks must never linger
+              // after a shrink/rewrite.
+              await tx.execute(sql`
+                DELETE FROM workspace_content_chunks
+                WHERE org_id = ${orgId} AND file_index_id = ${file.id}
+              `);
+              for (let i = 0; i < chunks.length; i += 1) {
+                await tx.execute(sql`
+                  INSERT INTO workspace_content_chunks (org_id, file_index_id, chunk_index, text, embedding)
+                  VALUES (${orgId}, ${file.id}, ${i}, ${chunks[i]}, ${toVectorLiteral(vectors[i]!)}::vector)
+                `);
+              }
+            }
+          });
+          contentRowWritten = true;
           processed += 1;
         } catch (error) {
+          if (isTransientIngestError(error)) {
+            // Source likely down — abort the rest of the batch and leave this
+            // file fully pending (no row written, no snapshot refresh).
+            transient = { reason: error.message, abortedAfter: processed };
+            break;
+          }
           const message = error instanceof Error ? error.message : String(error);
           if (!contentRowWritten) {
-            // Read/extract/first-write failure: record a failed row WITH the
-            // snapshot so the loop advances; re-ingest by touching the file.
+            // Permanent read/extract/first-write failure: record a failed row
+            // WITH the snapshot so the loop advances; re-ingest by touching the
+            // file.
             try {
-              await upsertContentRow(orgId, file.id, {
+              await upsertContentRow(d, orgId, file.id, {
                 contentHash: null,
                 sourceSize,
                 sourceMtime,
@@ -350,13 +486,20 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
               });
             } catch { /* keep the original error */ }
           }
-          // else: the extraction is durable; only the entity/project pass
-          // failed — surface the error but leave the extracted row intact.
+          // else: a durable row already exists for this file; surface the error
+          // but leave that row intact.
           errors.push({ fileIndexId: file.id, relPath: file.rel_path, error: message });
         }
       }
 
-      return { processed, remaining: await pendingCount(orgId), errors };
+      // A force sweep converges on the force-aware count (files not yet
+      // re-walked this sweep); non-force stays on the single snapshot-pending
+      // truth. Reporting the non-force count for a force job is the estate-
+      // sized-batch bug that let a job phase-complete after one batch.
+      const remaining = force
+        ? await forcePendingCount(orgId, forceSince)
+        : await pendingCount(orgId);
+      return { processed, remaining, errors, transient };
     },
 
     async status(orgId: string): Promise<IngestStatus> {
@@ -380,6 +523,7 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
         failed: counts.failed ?? 0,
         skippedTooLarge: counts.skipped_too_large ?? 0,
         skippedBinary: counts.skipped_binary ?? 0,
+        blockedDlp: counts.blocked_dlp ?? 0,
         pending,
       };
     },

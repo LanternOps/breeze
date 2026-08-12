@@ -1,4 +1,4 @@
-// Deterministic entity extraction (content phase, dev-preview).
+// Deterministic entity extraction for the content layer.
 // The structured types below are owned by THIS regex pass — the LLM enrichment
 // pass may only contribute person/org entities. Query-side detection
 // (normalizeQueryEntities) reuses the exact same patterns/normalizer so an
