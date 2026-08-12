@@ -135,13 +135,24 @@ describe('tenant_variables partner RLS', () => {
   it('key CHECK rejects keys that would not survive token/env interpolation (23514)', async () => {
     const partner = await createPartner();
 
-    for (const key of ['Bad_Key', 'has space', '9leading', 'trailing-dash', 'a'.repeat(65)]) {
+    for (const key of ['Bad_Key', 'has space', '9leading', 'trailing-dash', '_leading_underscore']) {
       await expect(
         withDbAccessContext(systemContext(), () =>
           db.insert(tenantVariables).values({ ...base, key, partnerId: partner.id, orgId: null }).returning()
         )
       ).rejects.toMatchObject({ cause: { code: '23514' } });
     }
+
+    // An over-length key is caught by varchar(64) first (22001), not the
+    // CHECK — asserted separately so the codes stay honest.
+    await expect(
+      withDbAccessContext(systemContext(), () =>
+        db
+          .insert(tenantVariables)
+          .values({ ...base, key: 'a'.repeat(65), partnerId: partner.id, orgId: null })
+          .returning()
+      )
+    ).rejects.toMatchObject({ cause: { code: '22001' } });
   });
 
   it('a key is unique per owner but reusable across owners (23505)', async () => {

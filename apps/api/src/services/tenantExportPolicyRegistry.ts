@@ -316,7 +316,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // tenant_variables (#3409): `value` is always ciphertext and may hold vendor
   // API tokens, so it is excludedSensitive for every row — not just the
   // is_secret ones. `key`/`description` are MSP-authored labels, not secrets.
-  "tenant_variables": tablePolicy("org_id", {"included":["id","partner_id","org_id","key","is_secret","description","version","created_by","updated_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["value"],"excludedOpen":[]}),
+  // `is_secret` trips SUSPICIOUS_NAME_PARTS on "secret" but is only the boolean
+  // that decides whether the API will ever return the value — reviewed, not
+  // credential material, hence reviewedIncluded.
+  "tenant_variables": tablePolicy("org_id", {"included":["id","partner_id","org_id","key","description","version","created_by","updated_by","created_at","updated_at"],"reviewedIncluded":["is_secret"],"excludedSensitive":["value"],"excludedOpen":[]}),
   "ticket_alert_links": tablePolicy("org_id", {"included":["id","ticket_id","org_id","alert_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_form_org_links": tablePolicy("org_id", {"included":["id","form_id","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_forms": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","description","category_id","title_template","description_intro","default_priority","default_tags","show_in_portal","is_active","sort_order","version","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["fields"]}),
