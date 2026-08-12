@@ -28,7 +28,12 @@ import {
   insertScriptRow,
   isScriptScopeError,
   resolveScriptCreateScope,
+  type ScriptCreateScope,
 } from '../services/scriptWrite';
+import {
+  describeSecretVariableRejection,
+  findSecretVariableReferences,
+} from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
 
 export const scriptRoutes = new Hono();
@@ -590,6 +595,13 @@ scriptRoutes.post(
       return c.json({ error: scope.error }, scope.status);
     }
 
+    // Save-time {{var.<secret>}} rejection (#3409 PR2). An UNKNOWN key is
+    // allowed — see findSecretVariableReferences's docblock.
+    const secretRefs = await findSecretVariableReferences(scope, data.content);
+    if (secretRefs.length > 0) {
+      return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+    }
+
     const script = await insertScriptRow(auth, scope, data, {
       requestedIsSystem: data.isSystem
     });
@@ -649,6 +661,13 @@ scriptRoutes.put(
 
     // Build updates object
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+    // The owning tenant to validate {{var.*}} content against (#3409 PR2,
+    // below) — defaults to the script's current scope and is overwritten by
+    // the re-scope block when `availability` moves it, so the check always
+    // runs against where the script will actually LIVE after this request,
+    // not where it lived before.
+    let effectiveScope: ScriptCreateScope = { orgId: script.orgId, partnerId: script.partnerId };
 
     // Re-scope on edit (issue #1734). Only applied when `availability` is sent;
     // a plain content/metadata edit never touches org/partner. System scripts
@@ -733,6 +752,7 @@ scriptRoutes.put(
 
       updates.orgId = target.orgId;
       updates.partnerId = target.partnerId;
+      effectiveScope = target;
     }
 
     if (data.name !== undefined) updates.name = data.name;
@@ -747,6 +767,13 @@ scriptRoutes.put(
 
     // Increment version if content changes
     if (data.content !== undefined && data.content !== script.content) {
+      // Save-time {{var.<secret>}} rejection (#3409 PR2), against the
+      // EFFECTIVE (post-rescope) scope. An UNKNOWN key is allowed — see
+      // findSecretVariableReferences's docblock.
+      const secretRefs = await findSecretVariableReferences(effectiveScope, data.content);
+      if (secretRefs.length > 0) {
+        return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+      }
       updates.content = data.content;
       updates.version = script.version + 1;
     }

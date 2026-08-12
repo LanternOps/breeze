@@ -11,6 +11,7 @@ import {
 } from '../db/schema';
 import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
 import { resolveInstallerVariables, type InstallerVariableContext } from './installerVariables';
+import { loadTenantVariableScope, resolveForOrg } from './tenantVariableResolution';
 import { getPresignedUrl, isS3Configured, isS3NotFound } from './s3Storage';
 import { queueCommand } from './commandQueue';
 import {
@@ -320,6 +321,14 @@ export async function buildAndDispatchSoftwareInstalls(
 
   let orgName = '';
   const siteNames = new Map<string, string>();
+  // Tenant variables (#3409 PR2): flattened KEY -> non-secret VALUE map for
+  // the `var.<key>` arm of installerVariables.ts's resolveKey. Secret
+  // variables are omitted entirely here — not merely left unresolved — so a
+  // template referencing one falls through to the pre-existing `unresolved`
+  // failure branch below with no new failure code or counter (dispatch's own
+  // per-device secret check, wired separately, is the actual security gate;
+  // this omission is a defense-in-depth belt on the deploy path too).
+  const tenantVars: Record<string, string> = {};
   if (templatesUseVariables) {
     const [org] = await db
       .select({ name: organizations.name })
@@ -332,6 +341,11 @@ export async function buildAndDispatchSoftwareInstalls(
       .from(sites)
       .where(eq(sites.orgId, orgId));
     for (const s of siteRows) siteNames.set(s.id, s.name);
+
+    const variableScope = await loadTenantVariableScope([orgId]);
+    for (const [key, variable] of resolveForOrg(variableScope, orgId)) {
+      if (!variable.isSecret) tenantVars[key] = variable.value;
+    }
   }
 
   // Detection rules (#2022) and the force-reinstall toggle ride along with the
@@ -394,6 +408,7 @@ export async function buildAndDispatchSoftwareInstalls(
           hostname: device.hostname,
           customFields: (device.customFields as Record<string, unknown> | null) ?? {},
         },
+        vars: tenantVars,
       };
       const resolved = resolveInstallerVariables(finalDownloadUrl, finalSilentInstallArgs, ctx);
       if (resolved.unresolved.length > 0) {
