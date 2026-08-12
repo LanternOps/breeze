@@ -2029,18 +2029,18 @@
     "value": "Wert"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "Bildschirmaufzeichnung und Barrierefreiheit werden automatisch konfiguriert. Wenn das Problem weiterhin besteht, überprüfen Sie die Agentenprotokolle oder starten Sie den Agenten neu.",
+    "configuringDescription": "macOS fordert auf diesem Gerät zur Freigabe von Bildschirmaufzeichnung und Barrierefreiheit auf. Wenn die Abfragen geschlossen wurden, gewähren Sie die Berechtigungen unter Systemeinstellungen > Datenschutz und Sicherheit.",
     "fullDiskAccess": "Vollständiger Festplattenzugriff",
-    "fullDiskAccessDescription": "Vollständiger Festplattenzugriff ist erforderlich. Gewähren Sie es unter Systemeinstellungen > Datenschutz und Sicherheit > Vollständiger Festplattenzugriff. Bildschirmaufzeichnung und Barrierefreiheit werden automatisch konfiguriert.",
+    "fullDiskAccessDescription": "Vollständiger Festplattenzugriff muss unter Systemeinstellungen > Datenschutz und Sicherheit > Vollständiger Festplattenzugriff gewährt werden. Flottenadministratoren können vollständigen Festplattenzugriff und Barrierefreiheit automatisch über ein MDM-PPPC-Profil gewähren — siehe die Seite zu macOS-Berechtigungen in der Dokumentation.",
     "fullDiskAccessRequired": "Vollständiger Festplattenzugriff erforderlich",
-    "permissionsConfiguring": "Berechtigungen konfigurieren",
+    "permissionsConfiguring": "Berechtigungen warten auf Freigabe",
     "remoteDesktop": "Remotedesktop",
     "remoteDesktopDescription": "Die Berechtigung für den macOS-Remotedesktop fehlt. Der Desktop-Pfad für das Anmeldefenster bleibt nicht verfügbar, bis er gewährt wird.",
     "remoteDesktopRequired": "Remotedesktopberechtigung erforderlich"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "Bildschirmaufzeichnung und Barrierefreiheit werden automatisch konfiguriert. Wenn das Problem weiterhin besteht, überprüfen Sie die Agentenprotokolle oder starten Sie den Agenten neu.",
-    "fullDiskAccessWarning": "Vollständiger Festplattenzugriff muss in den Systemeinstellungen > Datenschutz und Sicherheit gewährt werden. Bildschirmaufzeichnung und Barrierefreiheit werden automatisch konfiguriert.",
+    "configuringWarning": "macOS fordert auf diesem Gerät zur Freigabe von Bildschirmaufzeichnung und Barrierefreiheit auf. Wenn die Abfragen geschlossen wurden, gewähren Sie die Berechtigungen unter Systemeinstellungen > Datenschutz und Sicherheit.",
+    "fullDiskAccessWarning": "Vollständiger Festplattenzugriff muss unter Systemeinstellungen > Datenschutz und Sicherheit > Vollständiger Festplattenzugriff gewährt werden — oder automatisch über ein MDM-PPPC-Profil. macOS fragt Bildschirmaufzeichnung und Barrierefreiheit separat ab.",
     "lastChecked": "Zuletzt geprüft: {{date}}",
     "permissions": {
       "accessibility": "Barrierefreiheit",
@@ -2050,7 +2050,7 @@
     },
     "remoteDesktopWarning": "Für den unbeaufsichtigten Zugriff auf das Anmeldefenster unter macOS 14+ ist eine Remotedesktopberechtigung erforderlich.",
     "states": {
-      "autoManaged": "Automatisch verwaltet",
+      "autoManaged": "Ausstehend",
       "granted": "Zugegeben",
       "missing": "Fehlt",
       "unknown": "Unbekannt"

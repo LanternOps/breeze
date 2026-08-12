@@ -11,8 +11,8 @@ import (
 )
 
 // When Full Disk Access is already granted, the FDA guidance must be a no-op
-// even if Screen Recording / Accessibility are still missing — those raise their
-// own OS prompts and are auto-granted by the root daemon, so nagging for them
+// even if Screen Recording / Accessibility are still missing — the helper raises
+// the normal macOS system prompts for those, so nagging for them
 // here is exactly the behavior we removed. A no-op means no marker file is
 // written and no osascript dialog is launched.
 func TestHandleFullDiskAccessGuidance_NoOpWhenFDAGranted(t *testing.T) {

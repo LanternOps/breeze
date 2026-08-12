@@ -35,7 +35,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/state"
-	"github.com/breeze-rmm/agent/internal/tcc"
 	"github.com/breeze-rmm/agent/internal/unifi"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/breeze-rmm/agent/internal/websocket"
@@ -881,19 +880,6 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		logPAMActuatorStrategy(log, cfg.PAMActuatorStrategy)
 	}
 
-	// On macOS, the root daemon has Full Disk Access and can write to the
-	// system TCC database. Grant Screen Recording and Accessibility
-	// permissions so the agent doesn't rely on user interaction (bare
-	// binaries can't trigger TCC prompts properly).
-	if runtime.GOOS == "darwin" && os.Getuid() == 0 {
-		allTCCGranted := attemptTCCGrant()
-		if !allTCCGranted {
-			// Retry periodically for the first 30 minutes. This handles the
-			// common case where FDA is granted shortly after agent install.
-			go retryTCCGrant()
-		}
-	}
-
 	if cfg.IsHeadless {
 		log.Info("running in headless/daemon mode (no console attached)")
 	}
@@ -1081,56 +1067,6 @@ func logPAMActuatorStrategy(l *slog.Logger, configured string) {
 	default:
 		l.Warn("pam_actuator_strategy is not a recognized strategy, falling back to sendinput",
 			"configuredStrategy", configured)
-	}
-}
-
-// attemptTCCGrant runs tcc.EnsurePermissions and logs the results.
-// Returns true if all permissions were granted (or already present).
-func attemptTCCGrant() bool {
-	results, err := tcc.EnsurePermissions()
-	if err != nil {
-		log.Warn("TCC permission auto-grant incomplete", "error", err.Error())
-	}
-	allGranted := true
-	for _, r := range results {
-		if r.Already {
-			log.Debug("TCC permission pre-existing", "service", r.Name)
-		} else if r.Granted {
-			log.Info("TCC permission auto-granted", "service", r.Name)
-		} else if r.Err != nil {
-			log.Warn("TCC permission grant failed", "service", r.Name, "error", r.Err.Error())
-			allGranted = false
-		}
-	}
-	return allGranted && err == nil
-}
-
-// retryTCCGrant retries TCC permission grants every 5 minutes for the first
-// 30 minutes after startup. This handles the common case where FDA is granted
-// shortly after the agent is installed.
-func retryTCCGrant() {
-	const retryInterval = 5 * time.Minute
-	const retryDuration = 30 * time.Minute
-	deadline := time.Now().Add(retryDuration)
-	ticker := time.NewTicker(retryInterval)
-	defer ticker.Stop()
-
-	for {
-		<-ticker.C
-		if time.Now().After(deadline) {
-			log.Info("TCC retry window expired, stopping retries")
-			return
-		}
-		log.Debug("retrying TCC permission auto-grant")
-		if attemptTCCGrant() {
-			log.Info("TCC permissions all granted, stopping retries")
-			// The user just granted Full Disk Access, letting us write the
-			// Screen Recording + Accessibility grants. Already-running desktop
-			// helpers cached the old (denied) state — kickstart them so the new
-			// permissions take effect without the user manually restarting.
-			heartbeat.KickstartDesktopHelpers()
-			return
-		}
 	}
 }
 

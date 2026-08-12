@@ -2029,18 +2029,18 @@
     "value": "Valor"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "La grabación de pantalla y la accesibilidad se configuran automáticamente. Si esto persiste, verifique los registros del agente o reinicie el agente.",
+    "configuringDescription": "macOS solicitará los permisos de Grabación de pantalla y Accesibilidad en este dispositivo. Si las solicitudes se descartaron, concédalos en Configuración del sistema > Privacidad y seguridad.",
     "fullDiskAccess": "Acceso completo al disco",
-    "fullDiskAccessDescription": "Se requiere acceso completo al disco. Concédelo en Configuración del sistema > Privacidad y seguridad > Acceso total al disco. La grabación de pantalla y la accesibilidad se configurarán automáticamente.",
+    "fullDiskAccessDescription": "El Acceso total al disco debe otorgarse en Configuración del sistema > Privacidad y seguridad > Acceso total al disco. Los administradores de flota pueden otorgar Acceso total al disco y Accesibilidad automáticamente mediante un perfil PPPC de MDM; consulte la página de permisos de macOS en la documentación.",
     "fullDiskAccessRequired": "Se requiere acceso completo al disco",
-    "permissionsConfiguring": "Configuración de permisos",
+    "permissionsConfiguring": "Permisos pendientes de aprobación",
     "remoteDesktop": "Escritorio remoto",
     "remoteDesktopDescription": "macOS Falta el permiso de Escritorio remoto. La ruta del escritorio de la ventana de inicio de sesión no estará disponible hasta que se conceda.",
     "remoteDesktopRequired": "Se requiere permiso de escritorio remoto"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "La grabación de pantalla y la accesibilidad se configuran automáticamente. Si esto persiste, verifique los registros del agente o reinicie el agente.",
-    "fullDiskAccessWarning": "Se debe otorgar acceso total al disco en Configuración del sistema > Privacidad y seguridad. La grabación de pantalla y la accesibilidad se configurarán automáticamente.",
+    "configuringWarning": "macOS solicitará los permisos de Grabación de pantalla y Accesibilidad en este dispositivo. Si las solicitudes se descartaron, concédalos en Configuración del sistema > Privacidad y seguridad.",
+    "fullDiskAccessWarning": "El Acceso total al disco debe otorgarse en Configuración del sistema > Privacidad y seguridad > Acceso total al disco, o automáticamente mediante un perfil PPPC de MDM. macOS solicita Grabación de pantalla y Accesibilidad por separado.",
     "lastChecked": "Última comprobación: {{date}}",
     "permissions": {
       "accessibility": "Accesibilidad",
@@ -2050,7 +2050,7 @@
     },
     "remoteDesktopWarning": "Se requiere permiso de Escritorio remoto para acceder desatendido a la ventana de inicio de sesión en macOS 14+.",
     "states": {
-      "autoManaged": "Administrado automáticamente",
+      "autoManaged": "Pendiente",
       "granted": "Otorgada",
       "missing": "Faltante",
       "unknown": "Desconocido"

@@ -2029,18 +2029,18 @@
     "value": "Valore"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "Registrazione schermo e Accessibilità vengono configurate automaticamente. Se lo stato persiste, controlla i log dell'agente o riavvia l'agente.",
+    "configuringDescription": "macOS richiederà le autorizzazioni Registrazione schermo e Accessibilità su questo dispositivo. Se le richieste sono state ignorate, concedile in Impostazioni di sistema > Privacy e sicurezza.",
     "fullDiskAccess": "Accesso completo al disco",
-    "fullDiskAccessDescription": "È richiesto Accesso completo al disco. Concedilo in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco. Registrazione schermo e Accessibilità verranno configurate automaticamente.",
+    "fullDiskAccessDescription": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco. Gli amministratori del parco dispositivi possono concedere automaticamente Accesso completo al disco e Accessibilità tramite un profilo PPPC MDM — consulta la pagina delle autorizzazioni macOS nella documentazione.",
     "fullDiskAccessRequired": "Accesso completo al disco richiesto",
-    "permissionsConfiguring": "Configurazione delle autorizzazioni",
+    "permissionsConfiguring": "Autorizzazioni in attesa di approvazione",
     "remoteDesktop": "Desktop remoto",
     "remoteDesktopDescription": "Manca l'autorizzazione Desktop remoto di macOS. Il percorso desktop della finestra di login resterà non disponibile finché non viene concessa.",
     "remoteDesktopRequired": "Autorizzazione Desktop remoto richiesta"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "Registrazione schermo e Accessibilità vengono configurate automaticamente. Se lo stato persiste, controlla i log dell'agente o riavvia l'agente.",
-    "fullDiskAccessWarning": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza. Registrazione schermo e Accessibilità verranno configurate automaticamente.",
+    "configuringWarning": "macOS richiederà le autorizzazioni Registrazione schermo e Accessibilità su questo dispositivo. Se le richieste sono state ignorate, concedile in Impostazioni di sistema > Privacy e sicurezza.",
+    "fullDiskAccessWarning": "Accesso completo al disco deve essere concesso in Impostazioni di sistema > Privacy e sicurezza > Accesso completo al disco, oppure automaticamente tramite un profilo PPPC MDM. macOS richiede Registrazione schermo e Accessibilità separatamente.",
     "lastChecked": "Ultimo controllo: {{date}}",
     "permissions": {
       "accessibility": "Accessibilità",
@@ -2050,7 +2050,7 @@
     },
     "remoteDesktopWarning": "L'autorizzazione Desktop remoto è richiesta per l'accesso non presidiato alla finestra di login su macOS 14+.",
     "states": {
-      "autoManaged": "Gestita automaticamente",
+      "autoManaged": "In attesa",
       "granted": "Concessa",
       "missing": "Mancante",
       "unknown": "Sconosciuta"
