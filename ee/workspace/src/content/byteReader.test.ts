@@ -107,4 +107,39 @@ describe('SmbByteReader', () => {
     await reader.read(source, 'b.md');
     expect(connects).toBe(1);
   });
+
+  it('times out a read that never resolves (black-holed source) instead of hanging', async () => {
+    const reader = new SmbByteReader({
+      getCredential: async () => ({ username: 'u', password: 'p', domain: null }),
+      hostMap: {},
+      readTimeoutMs: 30,
+      // readFile never settles — models a severed/partitioned SMB connection.
+      smbFactory: () => ({ readFile: () => new Promise<Buffer>(() => {}), disconnect: () => {} }),
+    });
+    await expect(reader.read(source, 'x.md')).rejects.toThrow(/timed out/i);
+  });
+
+  it('evicts the wedged client after a failed read so the next read reconnects', async () => {
+    let connects = 0;
+    let disconnects = 0;
+    let call = 0;
+    const reader = new SmbByteReader({
+      getCredential: async () => ({ username: 'u', password: 'p', domain: null }),
+      hostMap: {},
+      readTimeoutMs: 30,
+      smbFactory: () => {
+        connects += 1;
+        return {
+          // First client's read hangs (times out); a fresh client's read succeeds.
+          readFile: () => (call++ === 0 ? new Promise<Buffer>(() => {}) : Promise.resolve(Buffer.from('ok'))),
+          disconnect: () => { disconnects += 1; },
+        };
+      },
+    });
+    await expect(reader.read(source, 'a.md')).rejects.toThrow(/timed out/i);
+    const buf = await reader.read(source, 'b.md');
+    expect(buf.toString()).toBe('ok');
+    expect(connects).toBe(2); // evicted → reconnected, not reused
+    expect(disconnects).toBe(1); // wedged client was disconnected on eviction
+  });
 });

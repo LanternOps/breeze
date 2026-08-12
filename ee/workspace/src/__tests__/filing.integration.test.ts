@@ -25,7 +25,7 @@ interface SeedFile {
   rel: string;
   entities?: Array<{ type: string; value: string; origin?: string }>;
   declared?: { key: string; label: string };
-  emailMeta?: object;
+  emailMeta?: Record<string, string>;
   /** Seed into the hidden ('["g1"]') source instead of the visible estate. */
   sourceOverride?: 'hidden';
 }
@@ -129,10 +129,15 @@ beforeAll(async () => {
     const m = f.rel.match(/^(?:Projects|Short Term)\/(\d{4}-\d{3})|^Emails\/(\d{4}-\d{3})\//);
     const declaredKey = m ? (m[1] ?? m[2]) : null;
     if (declaredKey || f.emailMeta) {
+      // admin.json(), never a stringify + ::jsonb cast: postgres.js reads the
+      // cast as a type hint and JSON-encodes the string it is handed, landing a
+      // jsonb STRING SCALAR in the column — after which every
+      // `email_meta ->> 'subject'` reads null and email assertions pass
+      // vacuously. Same note as client-filing.integration.test.ts.
       await admin`INSERT INTO workspace_file_enrichment (org_id, file_index_id, declared_project_key, declared_project_label, email_meta)
                   VALUES (${org}, ${id}, ${declaredKey},
                           ${declaredKey === '2023-041' ? 'Henderson Water Main Replacement' : declaredKey === '2025-012' ? 'Fairoaks Tank No 2 Seismic Retrofit' : declaredKey === '2020-088' ? 'Millbrook Acres Wildfire Rebuild' : null},
-                          ${f.emailMeta ? JSON.stringify(f.emailMeta) : null}::jsonb)`;
+                          ${f.emailMeta ? admin.json(f.emailMeta) : null})`;
     }
   }
 });

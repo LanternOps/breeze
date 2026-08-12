@@ -250,6 +250,51 @@ describe('workspace extension registration (v1 contract)', () => {
     expect(await res.json()).toEqual({ error: 'helper identity required' });
   });
 
+  // The client tree (W4) is the Outlook add-in's surface: core's generic
+  // client proxy authenticates the pane user and dispatches under /client/*
+  // with an organization-scoped auth context. Mounted before the admin-gated
+  // user routes, with its own catch-all, exactly like /helper.
+  const CLIENT_AUTH = {
+    user: { id: USER_ID, email: 'jenny@example.test', name: 'Jenny Tran' },
+    scope: 'organization',
+    orgId: ORG_ID,
+    partnerId: undefined,
+    accessibleOrgIds: [ORG_ID],
+  };
+
+  /**
+   * NOTE (ee/workspace catch-up): upstream mounted the real /client routes here
+   * and these cases asserted clientGate's behavior through them (200 for an
+   * organization-scoped session, 404 while the content flag is off, 403 for an
+   * operator principal). This repo does not mount them — core's client-ai proxy,
+   * the only caller that legitimately produces the organization-scoped context
+   * clientGate expects, is unmerged, and on the extension gateway's default arm
+   * an ORDINARY organization-scoped browser session satisfies that gate too. See
+   * the comment at the mount site in index.ts.
+   *
+   * What is pinned instead is the property that survives the surface being
+   * withheld, and the one that actually matters for safety: every /client/* path
+   * answers a flat 404 and NOTHING falls through to the admin-gated user routes
+   * below. clientGate's own logic keeps its direct coverage in
+   * src/routes/clientGate.test.ts; restoring the mount means restoring the
+   * upstream form of these cases.
+   */
+  it.each([
+    ['an organization-scoped session', CLIENT_AUTH],
+    ['a system principal', { user: { id: USER_ID }, scope: 'system', accessibleOrgIds: null }],
+    ['no auth at all', null],
+  ])('404s the unmounted /client tree for %s, never falling through to the admin routes', async (_label, auth) => {
+    const outer = await stagedApp({
+      auth,
+      context: { db: fakeDb([{ orgId: ORG_ID, contentEnabled: true, dlpConfig: {} }]) },
+    });
+    for (const path of ['/client/content/projects', '/client/filing/match', '/client/nope']) {
+      const res = await outer.request(`/api/v1/ext/workspace${path}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'not found' });
+    }
+  });
+
   // Content routes stay behind the per-org content flag (W2 Task 3): disabled
   // (no settings row) → 404 even for an authed admin; enabled via the org's
   // settings row → the route exists.
@@ -355,9 +400,10 @@ describe('workspace extension registration (v1 contract)', () => {
     expect(manifest.publicRoutes).toEqual([]);
     expect(manifest.agentRoutes).toBe(true);
     // NOTE (ee/workspace import): the legacy breeze-extension.json manifest
-    // and its helperRoutes flag are not carried into the monorepo — the
-    // built-in host path is v1-only (manifest.json) — so the assertion that
-    // used to pin legacyManifest.helperRoutes === true was dropped here.
+    // this used to pin `helperRoutes === true` from was dropped here. The
+    // built-in path carries the flag as an explicit field on the `BUILTINS`
+    // entry in apps/api/src/extensions/builtinRegistry.ts, which is where the
+    // equivalent assertion now lives.
   });
 
   // The admin gate is what still stands between a user route and another org's

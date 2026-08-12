@@ -52,6 +52,26 @@ const DLP_CONFIG = {
   customPatterns: [],
 };
 
+// force re-scan case: a file that is CLEAN under DLP_CONFIG (email off) but that
+// a later, tightened config (email block) must flip to blocked_dlp — WITHOUT any
+// byte change. Carries a PO number (a regex entity that lands on the clean pass
+// and must be purged on the forced block). This is W2's a22f079 scenario reached
+// via force instead of a byte change.
+const FORCE_REL = 'Projects/Comms/team-memo.md';
+const FORCE_CLEAN_BYTES = 'Team memo. PO 5501 covers the project. Reach alex@example.com with any questions.';
+const DLP_CONFIG_EMAIL_BLOCK = {
+  detectors: {
+    credit_card: 'redact', ssn: 'block', iban: 'off', api_key: 'off', email: 'block', phone: 'off',
+  },
+  customPatterns: [],
+};
+
+// transient case: a pending file whose byte read fails (source down). The run
+// must abort and leave NO content row, so the file stays pending and re-ingests
+// cleanly once the source is back.
+const TRANSIENT_REL = 'Projects/Ops/status-note.md';
+const TRANSIENT_BYTES = 'Ops status note. PO 6602 tracked. All systems nominal.';
+
 /** In-memory reader: rel_path → bytes. No disk, no network. */
 class MapReader implements ContentByteReader {
   constructor(private readonly files: Record<string, string>) {}
@@ -125,6 +145,32 @@ async function ingest(batch: number) {
 async function ingestWith(files: Record<string, string>, batch: number) {
   return withOrgTx((db) => createContentIngestService(db, {
     reader: new MapReader(files),
+    embedder: capturingEmbedder,
+  }).run(org, batch));
+}
+
+// Forced sweep: re-scans EVERY eligible file against the current config. The
+// map must therefore cover every live file's current bytes, or a missing
+// fixture would read-fail and abort the sweep.
+async function ingestForce(files: Record<string, string>, batch: number) {
+  return withOrgTx((db) => createContentIngestService(db, {
+    reader: new MapReader(files),
+    embedder: capturingEmbedder,
+  }).run(org, batch, { force: true }));
+}
+
+/** Reader that fails the read for one rel_path (source-down simulation). */
+class DownReader implements ContentByteReader {
+  constructor(private readonly down: string) {}
+  async read(_source: ContentSourceRef, relPath: string): Promise<Buffer> {
+    if (relPath === this.down) throw new Error('connect ECONNREFUSED 127.0.0.1:445');
+    throw new Error(`no fixture for ${relPath}`);
+  }
+}
+
+async function ingestWithReader(rd: ContentByteReader, batch: number) {
+  return withOrgTx((db) => createContentIngestService(db, {
+    reader: rd,
     embedder: capturingEmbedder,
   }).run(org, batch));
 }
@@ -307,5 +353,88 @@ describe('DLP-on-ingest (real DB)', () => {
     const entitiesAfter = await admin`SELECT id FROM workspace_content_entities
                                       WHERE file_index_id = ${transitionId} AND origin = 'regex'`;
     expect(entitiesAfter).toHaveLength(0);
+  });
+
+  it('force re-scan flips a stored clean file to blocked_dlp after tightening the config (no byte change)', async () => {
+    const forceId = randomUUID();
+    fileIds[FORCE_REL] = forceId;
+    const parent = FORCE_REL.slice(0, FORCE_REL.lastIndexOf('/'));
+    const name = FORCE_REL.split('/').pop()!;
+    await admin`INSERT INTO workspace_file_index
+                  (id, org_id, source_id, rel_path, parent_path, name, is_dir, ext, size, mtime)
+                VALUES (${forceId}, ${org}, ${source}, ${FORCE_REL}, ${parent}, ${name}, false, 'md', 100, now())`;
+
+    // v1: clean ingest under DLP_CONFIG (email off) → extracted, chunks + PO entity.
+    const clean = await ingestWith({ [FORCE_REL]: FORCE_CLEAN_BYTES }, 10);
+    expect(clean.errors).toEqual([]);
+    expect(clean.transient).toBeNull();
+    const [cleanRow] = await admin`SELECT status, extracted_text FROM workspace_file_content
+                                   WHERE file_index_id = ${forceId}`;
+    expect(cleanRow.status).toBe('extracted');
+    expect(cleanRow.extracted_text as string).toContain('alex@example.com'); // email survived (off)
+    const chunksBefore = await admin`SELECT id FROM workspace_content_chunks WHERE file_index_id = ${forceId}`;
+    expect(chunksBefore.length).toBeGreaterThan(0);
+    const entitiesBefore = await admin`SELECT id FROM workspace_content_entities
+                                       WHERE file_index_id = ${forceId} AND origin = 'regex'`;
+    expect(entitiesBefore.length).toBeGreaterThan(0);
+
+    // Tighten the org config so email now BLOCKS — same bytes, new verdict.
+    await admin`UPDATE workspace_org_settings SET dlp_config = ${JSON.stringify(DLP_CONFIG_EMAIL_BLOCK)}::jsonb
+                WHERE org_id = ${org}`;
+
+    // Forced sweep re-applies DLP to every eligible file — supply the full
+    // estate's current bytes so no read aborts the sweep.
+    const forced = await ingestForce({
+      [REDACT_REL]: REDACT_BYTES,
+      [BLOCK_REL]: BLOCK_BYTES,
+      [TRANSITION_REL]: TRANSITION_BLOCK_BYTES,
+      [FORCE_REL]: FORCE_CLEAN_BYTES,
+    }, 50);
+    expect(forced.errors).toEqual([]);
+    expect(forced.transient).toBeNull();
+
+    const [forcedRow] = await admin`SELECT status, extracted_text, dlp_findings FROM workspace_file_content
+                                    WHERE file_index_id = ${forceId}`;
+    expect(forcedRow.status).toBe('blocked_dlp');
+    expect(forcedRow.extracted_text).toBeNull();
+    const findings = forcedRow.dlp_findings as Array<{ detector: string; action: string }>;
+    expect(findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ detector: 'email', action: 'block' }),
+    ]));
+
+    // Stale chunks + regex entities from the clean pass must be purged — the
+    // passages/chunk scope has no status join, so any survivor stays retrievable.
+    const chunksAfter = await admin`SELECT id FROM workspace_content_chunks WHERE file_index_id = ${forceId}`;
+    expect(chunksAfter).toHaveLength(0);
+    const entitiesAfter = await admin`SELECT id FROM workspace_content_entities
+                                      WHERE file_index_id = ${forceId} AND origin = 'regex'`;
+    expect(entitiesAfter).toHaveLength(0);
+  });
+
+  it('a transient read failure leaves the file pending (no row) and it re-ingests once the source is back', async () => {
+    const transientId = randomUUID();
+    fileIds[TRANSIENT_REL] = transientId;
+    const parent = TRANSIENT_REL.slice(0, TRANSIENT_REL.lastIndexOf('/'));
+    const name = TRANSIENT_REL.split('/').pop()!;
+    await admin`INSERT INTO workspace_file_index
+                  (id, org_id, source_id, rel_path, parent_path, name, is_dir, ext, size, mtime)
+                VALUES (${transientId}, ${org}, ${source}, ${TRANSIENT_REL}, ${parent}, ${name}, false, 'md', 100, now())`;
+
+    // Source down: the only pending file read-fails → the run aborts and writes
+    // nothing for it.
+    const down = await ingestWithReader(new DownReader(TRANSIENT_REL), 10);
+    expect(down.transient).not.toBeNull();
+    expect(down.transient!.reason).toMatch(/reader:.*ECONNREFUSED/);
+    expect(down.processed).toBe(0);
+    const absent = await admin`SELECT id FROM workspace_file_content WHERE file_index_id = ${transientId}`;
+    expect(absent).toHaveLength(0); // fully pending: no failed/blocked row parked it
+
+    // Source back: the still-pending file ingests cleanly.
+    const back = await ingestWith({ [TRANSIENT_REL]: TRANSIENT_BYTES }, 10);
+    expect(back.errors).toEqual([]);
+    expect(back.transient).toBeNull();
+    expect(back.processed).toBe(1);
+    const [row] = await admin`SELECT status FROM workspace_file_content WHERE file_index_id = ${transientId}`;
+    expect(row.status).toBe('extracted');
   });
 });

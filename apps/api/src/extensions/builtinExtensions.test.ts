@@ -852,6 +852,20 @@ describe('BUILTIN_EXTENSION_NAMES', () => {
       else process.env.BREEZE_WORKSPACE_ENABLED = previous;
     }
   });
+
+  /**
+   * Workspace's /helper/* tree is called by the device helper, so it must sit
+   * behind core helper auth rather than the user default-deny. On the built-in
+   * path that boundary is declared ONLY by this field — the legacy
+   * breeze-extension.json the upstream repo asserted it from is not part of
+   * this delivery mode. Dropping the field would silently move helper traffic
+   * to authMiddleware (see the gateway's helperRoutes arm), so it is pinned
+   * against the real registry entry, not a fixture.
+   */
+  it('keeps workspace /helper/* behind core helper auth', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    expect(workspace?.helperRoutes).toBe(true);
+  });
 });
 
 /**

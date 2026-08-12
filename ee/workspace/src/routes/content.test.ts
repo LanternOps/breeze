@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { WorkspaceDatabase } from '../hostTypes';
 import { createContentRoutes, type ContentRouteDeps } from './content';
 import type { WorkspaceRouteEnv } from './adminGate';
+import { TransientIngestError } from '../services/ingestErrors';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const ORG_B = '99999999-9999-4999-8999-999999999999';
@@ -58,8 +59,17 @@ function makeApp(overrides: Partial<ContentRouteDeps> = {}, auth?: object | null
       eligible: 10, extracted: 3, failed: 1, skippedTooLarge: 0, skippedBinary: 1, pending: 5,
     })),
   };
+  const ingestJobs = {
+    ensureJob: vi.fn(async () => ({ job: { id: 'job-1', orgId: ORG_ID }, created: true })),
+    list: vi.fn(async () => [{ id: 'job-1', orgId: ORG_ID }]),
+  };
+  const ingestRunner = {
+    advance: vi.fn(async () => ({ advanced: true, job: { id: 'job-1', orgId: ORG_ID } })),
+  };
   const deps: ContentRouteDeps = {
     contentIngestService: ingest as unknown as ContentRouteDeps['contentIngestService'],
+    ingestJobs: ingestJobs as unknown as ContentRouteDeps['ingestJobs'],
+    ingestRunner: ingestRunner as unknown as ContentRouteDeps['ingestRunner'],
     // Default to content-enabled for ORG_ID so the behavior suites exercise the
     // live routes; gating/settings suites pass an explicit db.
     db: enabledDb(ORG_ID),
@@ -77,7 +87,7 @@ function makeApp(overrides: Partial<ContentRouteDeps> = {}, auth?: object | null
     await next();
   });
   app.route('/', createContentRoutes(deps));
-  return { app, ingest, deps };
+  return { app, ingest, ingestJobs, ingestRunner, deps };
 }
 
 describe('content routes — per-org content flag gating', () => {
@@ -201,6 +211,31 @@ describe('content routes — behavior (content enabled)', () => {
     }));
   });
 
+  it('enrich-run answers 503 when the provider is rate-limited/down (TransientIngestError)', async () => {
+    const enrichment = { run: vi.fn(async () => { throw new TransientIngestError('anthropic_429'); }) };
+    const { app, deps } = makeApp({
+      enrichmentService: enrichment as unknown as ContentRouteDeps['enrichmentService'],
+    });
+    const res = await app.request(`/content/enrich-run?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'enrichment provider unavailable or rate limited; retry later',
+    });
+    // A transient cap is not a successful run — nothing is audited as success.
+    expect(deps.audit).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: 'workspace.content.enrich_run',
+    }));
+  });
+
+  it('enrich-run rethrows a non-transient error (surfaces as 500)', async () => {
+    const enrichment = { run: vi.fn(async () => { throw new Error('kaboom'); }) };
+    const { app } = makeApp({
+      enrichmentService: enrichment as unknown as ContentRouteDeps['enrichmentService'],
+    });
+    const res = await app.request(`/content/enrich-run?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(res.status).toBe(500);
+  });
+
   it('reports per-file errors in the response body', async () => {
     const { app } = makeApp({
       contentIngestService: {
@@ -287,5 +322,107 @@ describe('content routes — settings (exempt from the content flag gate)', () =
       orgId: ORG_ID,
       result: 'success',
     }));
+  });
+});
+
+describe('content routes — admin job API (W3, exempt from the content flag gate)', () => {
+  it('POST /content/jobs creates a manual job', async () => {
+    const { app, ingestJobs } = makeApp();
+    const res = await app.request(`/content/jobs?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ job: { id: 'job-1', orgId: ORG_ID }, created: true });
+    expect(ingestJobs.ensureJob).toHaveBeenCalledWith(ORG_ID, {
+      sourceId: undefined,
+      crawlRunId: undefined,
+      trigger: 'manual',
+      force: false,
+    });
+  });
+
+  it('POST /content/jobs with force uses the reingest trigger', async () => {
+    const { app, ingestJobs } = makeApp();
+    const res = await app.request(`/content/jobs?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceId: '22222222-2222-4222-8222-222222222222', force: true }),
+    });
+    expect(res.status).toBe(200);
+    expect(ingestJobs.ensureJob).toHaveBeenCalledWith(ORG_ID, {
+      sourceId: '22222222-2222-4222-8222-222222222222',
+      crawlRunId: undefined,
+      trigger: 'reingest',
+      force: true,
+    });
+  });
+
+  it('POST /content/jobs/advance clamps budgetMs and batch and forwards to the runner', async () => {
+    const { app, ingestRunner } = makeApp();
+    const res = await app.request(`/content/jobs/advance?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ budgetMs: 999_999, batch: 999 }),
+    });
+    expect(res.status).toBe(400);
+    expect(ingestRunner.advance).not.toHaveBeenCalled();
+
+    const ok = await app.request(`/content/jobs/advance?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ budgetMs: 5000, batch: 10 }),
+    });
+    expect(ok.status).toBe(200);
+    expect(ingestRunner.advance).toHaveBeenCalledWith(ORG_ID, { budgetMs: 5000, batch: 10 });
+  });
+
+  it('POST /content/jobs/advance defaults budget/batch when omitted', async () => {
+    const { app, ingestRunner } = makeApp();
+    const res = await app.request(`/content/jobs/advance?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(ingestRunner.advance).toHaveBeenCalledWith(ORG_ID, { budgetMs: undefined, batch: undefined });
+  });
+
+  it('GET /content/jobs lists jobs for the org', async () => {
+    const { app, ingestJobs } = makeApp();
+    const res = await app.request(`/content/jobs?orgId=${ORG_ID}&limit=5`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jobs: [{ id: 'job-1', orgId: ORG_ID }] });
+    expect(ingestJobs.list).toHaveBeenCalledWith(ORG_ID, 5);
+  });
+
+  it('all three job endpoints work while content is disabled for the org', async () => {
+    const { app, ingestJobs, ingestRunner } = makeApp({ db: fakeSettingsDb() }); // no row → disabled
+    const create = await app.request(`/content/jobs?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(create.status).toBe(200);
+    const advance = await app.request(`/content/jobs/advance?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(advance.status).toBe(200);
+    const list = await app.request(`/content/jobs?orgId=${ORG_ID}`);
+    expect(list.status).toBe(200);
+    expect(ingestJobs.ensureJob).toHaveBeenCalled();
+    expect(ingestRunner.advance).toHaveBeenCalled();
+    expect(ingestJobs.list).toHaveBeenCalled();
+  });
+
+  it('403s all three job endpoints without partner/system scope (adminGate)', async () => {
+    const { app } = makeApp({}, {
+      user: { id: 'u1' }, scope: 'organization', orgId: ORG_ID, accessibleOrgIds: [ORG_ID],
+    });
+    const create = await app.request(`/content/jobs?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(create.status).toBe(403);
+    const advance = await app.request(`/content/jobs/advance?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(advance.status).toBe(403);
+    const list = await app.request(`/content/jobs?orgId=${ORG_ID}`);
+    expect(list.status).toBe(403);
   });
 });

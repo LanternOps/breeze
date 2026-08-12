@@ -288,7 +288,7 @@ describe('workspace helper routes', () => {
     });
   });
 
-  describe('filing routes (dev-preview gating)', () => {
+  describe('filing routes (content gating)', () => {
     const FILING = {
       fileIndexId: FILE_ID, relPath: 'Emails/Unfiled/x.eml', name: 'x.eml', emailMeta: null,
       status: 'suggested', suggestedProjectKey: '2023-041',

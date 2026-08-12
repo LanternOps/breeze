@@ -1,4 +1,4 @@
-// Byte readers for content ingest (dev-preview; per-org content flag).
+// Byte readers for content ingest (per-org content flag).
 //
 // Design decision (2026-07-18 spike): the primary reader is a server-side SMB
 // read with the STORED SOURCE CREDENTIAL (v9u-smb2, NTLMv2). It exercises the
@@ -91,6 +91,31 @@ export interface SmbByteReaderDeps {
   hostMap: Record<string, string>;
   /** Injectable for tests; defaults to a v9u-smb2 client. */
   smbFactory?: (opts: SmbConnectOptions) => SmbClientLike;
+  /**
+   * Bound on a single SMB read (which triggers the lazy connect). A source that
+   * becomes unreachable by REFUSING gives a fast socket error, but one that is
+   * black-holed (firewall drop / network partition — the common production
+   * failure) never answers the SYN, so v9u-smb2 would hang the read forever and
+   * wedge the ingest job as 'running'. This cap converts that into a normal
+   * transient (`reader: … timed out`), which the runner backs off and retries.
+   */
+  readTimeoutMs?: number;
+}
+
+export const DEFAULT_SMB_READ_TIMEOUT_MS = 8_000;
+
+/**
+ * Reject if `promise` has not settled within `ms`. The underlying operation is
+ * not cancelable (the SMB socket stays hung), so a swallow-handler is attached
+ * to keep a late rejection from surfacing as an unhandledRejection.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  promise.catch(() => { /* swallow settlement that arrives after the timeout */ });
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function defaultSmbFactory(opts: SmbConnectOptions): Promise<SmbClientLike> {
@@ -105,8 +130,21 @@ async function defaultSmbFactory(opts: SmbConnectOptions): Promise<SmbClientLike
 
 export class SmbByteReader implements ContentByteReader {
   private clients = new Map<string, SmbClientLike | Promise<SmbClientLike>>();
+  private readonly readTimeoutMs: number;
 
-  constructor(private readonly deps: SmbByteReaderDeps) {}
+  constructor(private readonly deps: SmbByteReaderDeps) {
+    this.readTimeoutMs = deps.readTimeoutMs ?? DEFAULT_SMB_READ_TIMEOUT_MS;
+  }
+
+  /** Drop (and best-effort disconnect) the cached client for a source so the
+   *  next read reconnects fresh instead of reusing a wedged/dead socket. */
+  private evict(sourceId: string): void {
+    const c = this.clients.get(sourceId);
+    this.clients.delete(sourceId);
+    if (c && !(c instanceof Promise)) {
+      try { c.disconnect(); } catch { /* best effort */ }
+    }
+  }
 
   private async clientFor(source: ContentSourceRef): Promise<SmbClientLike> {
     const existing = this.clients.get(source.id);
@@ -137,7 +175,19 @@ export class SmbByteReader implements ContentByteReader {
 
   async read(source: ContentSourceRef, relPath: string): Promise<Buffer> {
     const client = await this.clientFor(source);
-    return client.readFile(relPath.replace(/\//g, '\\'));
+    try {
+      return await withTimeout(
+        client.readFile(relPath.replace(/\//g, '\\')),
+        this.readTimeoutMs,
+        `smb read timed out after ${this.readTimeoutMs}ms`,
+      );
+    } catch (err) {
+      // A failed or timed-out read may have wedged the cached connection; drop it
+      // so the retry reconnects fresh. The throw propagates to contentIngest,
+      // which wraps it as a `reader:` transient (source-down → back off + retry).
+      this.evict(source.id);
+      throw err;
+    }
   }
 
   disconnectAll(): void {
@@ -158,8 +208,10 @@ export function buildContentReader(
 ): ContentByteReader {
   const mountMap = parseMountMap(process.env.WORKSPACE_CONTENT_MOUNT_MAP);
   if (Object.keys(mountMap).length > 0) return new MountedDirReader(mountMap);
+  const timeoutEnv = Number(process.env.WORKSPACE_CONTENT_SMB_TIMEOUT_MS);
   return new SmbByteReader({
     getCredential,
     hostMap: parseHostMap(process.env.WORKSPACE_CONTENT_SMB_HOST_MAP),
+    readTimeoutMs: Number.isFinite(timeoutEnv) && timeoutEnv > 0 ? timeoutEnv : undefined,
   });
 }

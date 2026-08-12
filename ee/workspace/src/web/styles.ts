@@ -55,4 +55,23 @@ input, select {
 .muted { opacity: 0.7; }
 .stats { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; }
 .row-actions { display: flex; gap: 0.4rem; }
+.skeleton { display: inline-block; }
+.ws-filing {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.ws-filing-label { opacity: 0.7; font-size: 0.85rem; }
+.ws-filing-project { font-weight: 600; }
+.ws-filing-badge {
+  font-size: 0.75rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+}
+.ws-filing-badge-high { color: #15803d; border-color: #15803d; }
+.ws-filing-badge-low { color: #b45309; border-color: #b45309; }
+.ws-filing-reassign { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 `;

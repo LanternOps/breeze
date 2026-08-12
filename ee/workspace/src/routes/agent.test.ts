@@ -2,7 +2,7 @@ import { gzipSync } from 'node:zlib';
 import { Hono } from 'hono';
 import type { ExtensionAgentContext, ExtensionAuditEvent } from '../hostTypes';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createAgentRoutes, type WorkspaceAgentRouteEnv } from './agent';
+import { createAgentRoutes, type AgentRouteDeps, type WorkspaceAgentRouteEnv } from './agent';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const SOURCE_ID = '22222222-2222-4222-8222-222222222222';
@@ -100,6 +100,13 @@ function makeHarness(agentValue = agent) {
   };
   const audit = vi.fn(async (_event: ExtensionAuditEvent) => {});
   const log = vi.fn();
+  const ingestJobs = {
+    ensureJob: vi.fn(async () => ({ job: { id: 'job-1' }, created: true })),
+  } as unknown as AgentRouteDeps['ingestJobs'] & { ensureJob: ReturnType<typeof vi.fn> };
+  const ingestRunner = {
+    advance: vi.fn(async () => ({ advanced: false, job: null })),
+  } as unknown as AgentRouteDeps['ingestRunner'] & { advance: ReturnType<typeof vi.fn> };
+  const getSettings = vi.fn(async () => ({ contentEnabled: true }));
   const app = new Hono<WorkspaceAgentRouteEnv>();
   app.use('*', async (c, next) => {
     c.set('agent', agentValue);
@@ -110,6 +117,9 @@ function makeHarness(agentValue = agent) {
     credentialService,
     crawlRunsService,
     batchUpsertService,
+    ingestJobs,
+    ingestRunner,
+    getSettings,
     audit,
     log,
   }));
@@ -119,6 +129,9 @@ function makeHarness(agentValue = agent) {
     credentialService,
     crawlRunsService,
     batchUpsertService,
+    ingestJobs,
+    ingestRunner,
+    getSettings,
     audit,
     log,
   };
@@ -498,5 +511,87 @@ describe('workspace agent routes', () => {
     const h = makeHarness({ ...agent, deviceId: OTHER_DEVICE_ID });
     await h.app.request(`/sources/${SOURCE_ID}/credential`, { method: 'POST' });
     expect(h.credentialService.decryptForDevice).toHaveBeenCalledWith(ORG_ID, SOURCE_ID, OTHER_DEVICE_ID);
+  });
+
+  describe('complete-hook job creation (W3)', () => {
+    it('creates an ingest job when content is enabled for the org', async () => {
+      const h = makeHarness();
+      const res = await h.app.request(`/runs/${RUN_ID}/complete`, jsonRequest({ complete: true }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tombstoned: 0 });
+      expect(h.getSettings).toHaveBeenCalledWith(ORG_ID);
+      expect(h.ingestJobs.ensureJob).toHaveBeenCalledWith(ORG_ID, {
+        sourceId: SOURCE_ID,
+        crawlRunId: RUN_ID,
+        trigger: 'crawl_complete',
+      });
+    });
+
+    it('skips job creation when content is disabled for the org', async () => {
+      const h = makeHarness();
+      h.getSettings.mockResolvedValueOnce({ contentEnabled: false });
+      const res = await h.app.request(`/runs/${RUN_ID}/complete`, jsonRequest({ complete: true }));
+      expect(res.status).toBe(200);
+      expect(h.ingestJobs.ensureJob).not.toHaveBeenCalled();
+    });
+
+    it('never 500s the complete response when ensureJob throws', async () => {
+      const h = makeHarness();
+      h.ingestJobs.ensureJob.mockRejectedValueOnce(new Error('db unavailable'));
+      const res = await h.app.request(`/runs/${RUN_ID}/complete`, jsonRequest({ complete: true }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tombstoned: 0 });
+      expect(h.log).toHaveBeenCalledWith('error', expect.stringContaining('ingest job'));
+    });
+
+    it('does not create a job for an alreadyFinished (retried) complete', async () => {
+      const h = makeHarness();
+      h.crawlRunsService.finish.mockResolvedValueOnce({ alreadyFinished: true } as never);
+      const res = await h.app.request(`/runs/${RUN_ID}/complete`, jsonRequest({ complete: true }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ tombstoned: 0, alreadyFinished: true });
+      expect(h.ingestJobs.ensureJob).not.toHaveBeenCalled();
+      expect(h.getSettings).not.toHaveBeenCalled();
+    });
+
+    it('does not create a job for a complete=false (failed) finish', async () => {
+      const h = makeHarness();
+      const res = await h.app.request(`/runs/${RUN_ID}/complete`, jsonRequest({ complete: false }));
+      expect(res.status).toBe(200);
+      expect(h.ingestJobs.ensureJob).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('crawl-config ingest piggyback (W3)', () => {
+    it('invokes runner.advance with the agent poke budget/batch on a normal poll', async () => {
+      const h = makeHarness();
+      const { AGENT_POKE_BUDGET_MS, AGENT_POKE_BATCH } = await import('../services/ingestJobRunner');
+      const res = await h.app.request('/crawl-config');
+      expect(res.status).toBe(200);
+      expect(h.ingestRunner.advance).toHaveBeenCalledWith(ORG_ID, {
+        budgetMs: AGENT_POKE_BUDGET_MS,
+        batch: AGENT_POKE_BATCH,
+      });
+    });
+
+    it('invokes runner.advance even when the crawl kill switch is active', async () => {
+      process.env.WORKSPACE_CRAWL_ENABLED = 'false';
+      const h = makeHarness();
+      const { AGENT_POKE_BUDGET_MS, AGENT_POKE_BATCH } = await import('../services/ingestJobRunner');
+      const res = await h.app.request('/crawl-config');
+      expect(await res.json()).toEqual({ enabled: false, pollIntervalSeconds: 300, sources: [] });
+      expect(h.ingestRunner.advance).toHaveBeenCalledWith(ORG_ID, {
+        budgetMs: AGENT_POKE_BUDGET_MS,
+        batch: AGENT_POKE_BATCH,
+      });
+    });
+
+    it('never fails the crawl-config response when advance throws', async () => {
+      const h = makeHarness();
+      h.ingestRunner.advance.mockRejectedValueOnce(new Error('advance blew up'));
+      const res = await h.app.request('/crawl-config');
+      expect(res.status).toBe(200);
+      expect(h.log).toHaveBeenCalledWith('error', expect.stringContaining('advance blew up'));
+    });
   });
 });

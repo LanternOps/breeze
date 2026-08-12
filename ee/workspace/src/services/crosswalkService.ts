@@ -1,4 +1,4 @@
-// Crosswalk miner (dev-preview; per-org content flag).
+// Crosswalk miner (per-org content flag).
 //
 // Mines counterparty identifiers (PO/WDR/invoice/permit — the deterministic
 // regex types only) from files whose PATH declares a project, producing

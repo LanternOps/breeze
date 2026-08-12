@@ -1,10 +1,10 @@
-// Content phase (dev-preview) table mirrors. As with workspace.ts, the SQL in
+// Content layer table mirrors. As with workspace.ts, the SQL in
 // migrations/ is the DDL source of truth — FKs, RLS policies, FTS/trigram
 // indexes, and the vector column (later migration) do not appear here.
-// All readers/writers of these tables sit behind the per-org content flag
-// (default off; never on in production). DLP runs at ingest, between extraction
-// and persistence: stored extracted_text is post-redaction, and files a 'block'
-// detector trips persist no text (status = blocked_dlp).
+// All readers/writers of these tables sit behind the per-org content flag.
+// DLP runs at ingest, between extraction and persistence: stored extracted_text
+// is post-redaction, and files a 'block' detector trips persist no text
+// (status = blocked_dlp).
 import {
   pgTable, uuid, text, varchar, bigint, integer, timestamp, jsonb, pgEnum, date,
   index, uniqueIndex, vector,

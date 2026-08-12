@@ -1,4 +1,4 @@
-// Hybrid content retrieval (dev-preview; per-org content flag).
+// Hybrid content retrieval (per-org content flag).
 //
 // Weighted Reciprocal Rank Fusion over independent arms, fused per-file:
 //   entity exact-match  3.0   (query-side detection uses the ingest normalizer)

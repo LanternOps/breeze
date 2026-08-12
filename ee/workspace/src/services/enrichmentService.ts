@@ -1,4 +1,4 @@
-// LLM enrichment pass (dev-preview; per-org content flag).
+// LLM enrichment pass (per-org content flag).
 //
 // Per extracted file, a single cheap-model call infers: document type, the
 // project the CONTENT belongs to, a document date, and person/org entities.
@@ -25,6 +25,19 @@ import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { z } from 'zod';
 import { deriveDeclaredProject } from '../content/projects';
+import { TransientIngestError } from './ingestErrors';
+
+/**
+ * An Anthropic-style APIError we must treat as transient: a 429 (rate cap) or
+ * any 5xx (provider outage). These must back the whole ingest job off with
+ * retry — NOT fail-soft into a null-model row on every pending file (which would
+ * park those files out of the enrichment queue until a manual re-run). Every
+ * other failure (bad JSON, schema miss, 4xx, generic error) stays fail-soft.
+ */
+function isRetryableApiError(err: unknown): err is { status: number } {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
 
 export interface AnthropicLike {
   messages: {
@@ -126,7 +139,12 @@ export function createEnrichmentService(db: WorkspaceDatabase, deps: EnrichmentD
       });
       const raw = res.content.find((c) => c.type === 'text')?.text ?? '';
       return resultSchema.parse(extractJson(raw, 'workspace-enrich'));
-    } catch {
+    } catch (err) {
+      // Rate cap / provider outage must back the job off (the runner releases it
+      // with backoff), not burn a null-model row into every pending file.
+      if (isRetryableApiError(err)) {
+        throw new TransientIngestError(`enrich_provider_${err.status}`, { cause: err });
+      }
       return null; // fail-soft: an LLM/parse hiccup never breaks the batch
     }
   }

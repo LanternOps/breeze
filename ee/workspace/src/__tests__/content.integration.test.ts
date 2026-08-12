@@ -1,4 +1,4 @@
-// Content phase (dev-preview) — migration/RLS/lifecycle integration coverage.
+// Content layer — migration/RLS/lifecycle integration coverage.
 // Mirrors workspaceRls.integration.test.ts bootstrap (:5433 stack, breeze_app
 // role, asOrg GUC scoping). Covers, per new content table:
 //   - RLS shape 1: org A context can neither read nor forge org B rows

@@ -1,9 +1,10 @@
-// Embeddings for content chunks (dev-preview). Pattern copied from hive's
+// Embeddings for content chunks. Pattern copied from hive's
 // colony-memory embedder: a narrow Embedder interface, a Voyage AI
 // implementation with a sliding-window soft rate cap, and a deterministic
 // FakeEmbedder for tests (FakeEmbedder is acceptable ONLY in plumbing tests —
 // never behind a real search result; see the demo gate rules).
 import { createHash } from 'node:crypto';
+import { TransientIngestError } from '../services/ingestErrors';
 
 export const EMBEDDING_DIM = 1024;
 
@@ -26,7 +27,9 @@ export class VoyageEmbedder implements Embedder {
     const now = Date.now();
     this.requestTimestamps = this.requestTimestamps.filter((t) => now - t < 60_000);
     if (this.requestTimestamps.length >= this.requestsPerMinute) {
-      throw new Error(`voyage_rate_limited:${this.requestTimestamps.length}/${this.requestsPerMinute}rpm`);
+      // Transient: the source-side embedder is back-pressuring. The ingest
+      // runner aborts the batch and retries whole rather than parking files.
+      throw new TransientIngestError(`voyage_rate_limited:${this.requestTimestamps.length}/${this.requestsPerMinute}rpm`);
     }
     this.requestTimestamps.push(now);
   }
@@ -34,16 +37,33 @@ export class VoyageEmbedder implements Embedder {
   async embed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
     if (texts.length === 0) return [];
     this.throttle();
-    const res = await this.fetchImpl('https://api.voyageai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ model: this.model, input: texts, input_type: inputType }),
-    });
+    // Bound the request: a black-holed embedder would otherwise hang an advance
+    // for undici's ~300s default, brushing the runner's 5-minute stale-reclaim
+    // window. A timeout is a network/service condition (not a bad file), so it
+    // maps to a transient — the ingest runner backs off the batch and retries
+    // whole rather than parking files as failed.
+    const timeoutMs = Number(process.env.WORKSPACE_CONTENT_VOYAGE_TIMEOUT_MS) || 15_000;
+    let res: Awaited<ReturnType<typeof fetch>>;
+    try {
+      res = await this.fetchImpl('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ model: this.model, input: texts, input_type: inputType }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new TransientIngestError(`voyage: timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    }
     if (!res.ok) {
-      throw new Error(`voyage embeddings failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      // Transient: a non-200 from the embedding API is a network/service
+      // condition, not a bad file — retry the batch rather than fail files.
+      throw new TransientIngestError(`voyage embeddings failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
     }
     const body = await res.json() as { data: Array<{ index: number; embedding: number[] }> };
     const out: number[][] = new Array(texts.length);

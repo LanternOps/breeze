@@ -147,16 +147,33 @@ describe('content ingest runner (real DB + fixture estate)', () => {
     await admin`UPDATE workspace_file_index SET deleted_at = NULL WHERE id = ${mdId}`;
   });
 
-  it('records a failed row (with snapshot) when bytes cannot be read, and the loop advances', async () => {
+  it('force re-sweep binds a forceSince Date against the real driver (no param-serialization crash)', async () => {
+    // Regression: forceSince (the runner passes job.startedAt, a JS Date) is used
+    // in the force pending predicate. Bound raw, postgres.js throws
+    // ERR_INVALID_ARG_TYPE in Bind ("… Received an instance of Date"); it must be
+    // serialized as an ISO ::timestamptz. A future forceSince selects every file
+    // so this also exercises a real force re-read end to end.
+    const future = new Date(Date.now() + 60_000);
+    const run = await asOrg((svc) => svc.run(org, 10, { force: true, forceSince: future }));
+    expect(run.transient).toBeNull();
+    expect(run.processed).toBeGreaterThan(0);
+    expect(typeof run.remaining).toBe('number');
+  });
+
+  it('treats an unreadable file as transient: aborts the batch, parks no row, stays re-ingestable', async () => {
+    // W3: a byte-read failure is a source-down signal, not a bad file. The run
+    // aborts the remaining batch and writes NOTHING for the unreadable file, so
+    // it stays fully pending and re-ingests once the source recovers — the old
+    // behavior (a parked `failed` row) would have wrongly retired it.
     const ghost = randomUUID();
     await admin`INSERT INTO workspace_file_index (id, org_id, source_id, rel_path, parent_path, name, is_dir, size, mtime)
                 VALUES (${ghost}, ${org}, ${source}, 'missing/ghost.md', 'missing', 'ghost.md', false, 5, now())`;
     const run = await asOrg((svc) => svc.run(org, 10));
-    expect(run.errors).toHaveLength(1);
-    expect(run.errors[0].relPath).toBe('missing/ghost.md');
-    expect(run.remaining).toBe(0); // failed row carries the snapshot; not pending anymore
-    const [row] = await admin`SELECT status, error_reason FROM workspace_file_content WHERE file_index_id = ${ghost}`;
-    expect(row.status).toBe('failed');
-    expect(row.error_reason).toBeTruthy();
+    expect(run.transient).not.toBeNull();
+    expect(run.transient!.reason).toMatch(/reader:/);
+    expect(run.errors).toEqual([]); // transient is reported via .transient, not .errors
+    const rows = await admin`SELECT id FROM workspace_file_content WHERE file_index_id = ${ghost}`;
+    expect(rows).toHaveLength(0); // no failed/blocked row parked it — still pending
+    await admin`DELETE FROM workspace_file_index WHERE id = ${ghost}`;
   });
 });

@@ -3,6 +3,7 @@ import type { WorkspaceDatabase } from '../hostTypes';
 import {
   buildEnrichmentPrompt, createEnrichmentService, extractJson, type AnthropicLike,
 } from './enrichmentService';
+import { TransientIngestError, isTransientIngestError } from './ingestErrors';
 
 const ORG = '11111111-1111-1111-1111-111111111111';
 
@@ -74,11 +75,31 @@ describe('classifyOne', () => {
     expect(await svc.classifyOne('a.md', 'text', [])).toBeNull();
   });
 
-  it('fails soft (null) when the client throws', async () => {
+  it('fails soft (null) when the client throws a plain (statusless) error', async () => {
     const client: AnthropicLike = {
       messages: { create: vi.fn(async () => { throw new Error('rate limited'); }) },
     };
     const svc = createEnrichmentService(db, { client });
+    expect(await svc.classifyOne('a.md', 'text', [])).toBeNull();
+  });
+
+  function throwingClient(err: unknown): AnthropicLike {
+    return { messages: { create: vi.fn(async () => { throw err; }) } };
+  }
+
+  it('rethrows an APIError 429 as TransientIngestError (rate cap backs the job off)', async () => {
+    const svc = createEnrichmentService(db, { client: throwingClient({ status: 429, message: 'rate' }) });
+    await expect(svc.classifyOne('a.md', 'text', [])).rejects.toThrow(TransientIngestError);
+    await expect(svc.classifyOne('a.md', 'text', [])).rejects.toSatisfy(isTransientIngestError);
+  });
+
+  it('rethrows an APIError >= 500 as TransientIngestError (provider outage)', async () => {
+    const svc = createEnrichmentService(db, { client: throwingClient({ status: 503 }) });
+    await expect(svc.classifyOne('a.md', 'text', [])).rejects.toThrow(TransientIngestError);
+  });
+
+  it('keeps fail-soft null for a non-retryable APIError (e.g. 400)', async () => {
+    const svc = createEnrichmentService(db, { client: throwingClient({ status: 400 }) });
     expect(await svc.classifyOne('a.md', 'text', [])).toBeNull();
   });
 });
