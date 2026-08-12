@@ -1832,24 +1832,36 @@ jobs:
           # Bound the wait for graceful shutdown instead of an unbounded
           # `wait "$BOOT_PID"`, which could otherwise eat the whole job
           # ceiling if the process ignores SIGTERM or hangs mid-shutdown.
-          # Poll for the process (group leader) to exit for up to 30s, then
-          # force-kill the group as a guarded fallback.
+          # Poll the GROUP, not $BOOT_PID: the leader (pnpm's wrapper) can
+          # exit seconds before the node/tsx descendants finish shutting
+          # down, and watching only the leader cuts the grace period short
+          # (observed on the first live run of this step). Count only
+          # NON-ZOMBIE members: `kill -0` "succeeds" against a zombie, but a
+          # zombie is dead — unreaped only because its parent died with it —
+          # and cannot touch the DB. The step's shell cannot reap
+          # grandchildren; init does so asynchronously after SIGKILL, so a
+          # zombie-only group must be treated as gone, not as a survivor
+          # (also observed live: `[node]`/`[esbuild] <defunct>` tripping a
+          # naive `kill -0 -- -PGID` assert).
+          live_in_group() {
+            ps -eo pgid=,stat= | awk -v p="$PGID" '$1 == p && $2 !~ /^Z/' | wc -l
+          }
           for _ in $(seq 1 30); do
-            kill -0 "$BOOT_PID" 2>/dev/null || break
+            [ "$(live_in_group)" -gt 0 ] || break
             sleep 1
           done
           kill -9 -- "-$PGID" 2>/dev/null || true
           wait "$BOOT_PID" 2>/dev/null || true
-          # Fail CLOSED on a surviving process group. `kill -0 -- -PGID`
-          # succeeding means at least one process in it is still alive after
-          # SIGTERM + 30s + SIGKILL — i.e. a fully-booted API (schedulers,
-          # reconciler, job workers) is still writing to the very DB shard the
-          # next step tests against. That is a flake generator, so it must
-          # stop the job rather than be inherited by the suite below.
-          if kill -0 -- "-$PGID" 2>/dev/null; then
+          # Fail CLOSED on a genuinely surviving process group — but give
+          # SIGKILL a moment to land before judging (delivery is async).
+          for _ in $(seq 1 10); do
+            [ "$(live_in_group)" -gt 0 ] || break
+            sleep 1
+          done
+          if [ "$(live_in_group)" -gt 0 ]; then
             echo "API process group $PGID survived SIGTERM and SIGKILL. A live API would keep writing to"
             echo "this step's DB shard and poison the workspace integration suite that runs next."
-            ps -o pid,pgid,cmd -e | awk -v pgid="$PGID" '$2 == pgid' || true
+            ps -eo pid,pgid,stat,cmd | awk -v pgid="$PGID" '$2 == pgid' || true
             exit 1
           fi
 
