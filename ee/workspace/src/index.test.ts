@@ -262,40 +262,37 @@ describe('workspace extension registration (v1 contract)', () => {
     accessibleOrgIds: [ORG_ID],
   };
 
-  it('serves /client routes for an organization-scoped session once content is enabled', async () => {
-    const outer = await stagedApp({
-      auth: CLIENT_AUTH,
-      context: { db: fakeDb([{ orgId: ORG_ID, contentEnabled: true, dlpConfig: {} }]) },
-    });
-    const projects = await outer.request('/api/v1/ext/workspace/client/content/projects');
-    expect(projects.status).toBe(200);
-
-    // The catch-all keeps unmatched client paths out of the admin-gated user app.
-    const nope = await outer.request('/api/v1/ext/workspace/client/nope');
-    expect(nope.status).toBe(404);
-    expect(await nope.json()).toEqual({ error: 'not found' });
-  });
-
-  it('404s the client tree while content is disabled for the org (default-deny)', async () => {
-    const outer = await stagedApp({ auth: CLIENT_AUTH });
-    const res = await outer.request('/api/v1/ext/workspace/client/content/projects');
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'content_disabled' });
-  });
-
-  // /client is the end-user surface: an operator principal must not reach it
-  // even though the same principal is welcome on the admin routes.
+  /**
+   * NOTE (ee/workspace catch-up): upstream mounted the real /client routes here
+   * and these cases asserted clientGate's behavior through them (200 for an
+   * organization-scoped session, 404 while the content flag is off, 403 for an
+   * operator principal). This repo does not mount them — core's client-ai proxy,
+   * the only caller that legitimately produces the organization-scoped context
+   * clientGate expects, is unmerged, and on the extension gateway's default arm
+   * an ORDINARY organization-scoped browser session satisfies that gate too. See
+   * the comment at the mount site in index.ts.
+   *
+   * What is pinned instead is the property that survives the surface being
+   * withheld, and the one that actually matters for safety: every /client/* path
+   * answers a flat 404 and NOTHING falls through to the admin-gated user routes
+   * below. clientGate's own logic keeps its direct coverage in
+   * src/routes/clientGate.test.ts; restoring the mount means restoring the
+   * upstream form of these cases.
+   */
   it.each([
-    ['system', { user: { id: USER_ID }, scope: 'system', accessibleOrgIds: null }],
+    ['an organization-scoped session', CLIENT_AUTH],
+    ['a system principal', { user: { id: USER_ID }, scope: 'system', accessibleOrgIds: null }],
     ['no auth at all', null],
-  ])('rejects a %s principal on /client with 403', async (_label, auth) => {
+  ])('404s the unmounted /client tree for %s, never falling through to the admin routes', async (_label, auth) => {
     const outer = await stagedApp({
       auth,
       context: { db: fakeDb([{ orgId: ORG_ID, contentEnabled: true, dlpConfig: {} }]) },
     });
-    const res = await outer.request('/api/v1/ext/workspace/client/content/projects');
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'organization access required' });
+    for (const path of ['/client/content/projects', '/client/filing/match', '/client/nope']) {
+      const res = await outer.request(`/api/v1/ext/workspace${path}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'not found' });
+    }
   });
 
   // Content routes stay behind the per-org content flag (W2 Task 3): disabled

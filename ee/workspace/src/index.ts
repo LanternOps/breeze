@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import Anthropic from '@anthropic-ai/sdk';
 import { asWorkspaceDatabase, type BreezeExtensionV1, type WorkspaceDatabase } from './hostTypes';
 import { createAgentRoutes } from './routes/agent';
-import { createClientRoutes } from './routes/client';
 import { createContentRoutes } from './routes/content';
 import { createDashboardRoutes } from './routes/dashboard';
 import { createDeviceSummaryRoutes } from './routes/deviceSummary';
@@ -21,7 +20,6 @@ import { createFilingService } from './services/filingService';
 import { createCrawlRunsService } from './services/crawlRunsService';
 import { createCredentialService } from './services/credentialService';
 import { createDeviceSummaryService } from './services/deviceSummaryService';
-import { createEmailMatchService } from './services/emailMatchService';
 import { createFileQueryService } from './services/fileQueryService';
 import { createIngestJobsService } from './services/ingestJobsService';
 import { createIngestJobRunner, type EnrichRunResult } from './services/ingestJobRunner';
@@ -152,21 +150,37 @@ const workspaceExtension: BreezeExtensionV1 = {
     helperApp.all('*', (c) => c.json({ error: 'not found' }, 404));
     app.route('/helper', helperApp);
 
-    // W4: the Outlook add-in's end-user surface. Core's generic client proxy
-    // authenticates the pane user through the client-ai Entra exchange and
-    // dispatches here under /client/* with an organization-scoped auth
-    // context; clientGate (inside createClientRoutes) admits only that shape.
-    // Mounted with the same discipline as /helper — before the admin-gated
-    // user routes, with its own catch-all so an unmatched /client/* request
-    // can never fall through to them.
+    // W4: the Outlook add-in's end-user surface — DELIBERATELY NOT MOUNTED HERE.
+    //
+    // Upstream (LanternOps/breeze-workspace) mounted `/client/*` at this point,
+    // because there it was only ever reachable through core's generic client-ai
+    // proxy: that proxy dispatches under its own `/api/v1/client-ai/ext/:extension/*`
+    // mount with a synthesized organization-scoped context, and clientGate
+    // (inside createClientRoutes) admits exactly that shape.
+    //
+    // That proxy does not exist in this repo yet — it is unmerged, on
+    // ToddHebebrand/client-ext-seam-w4. Mounting `/client` here anyway would
+    // NOT reach it; the extension gateway would route `/client/*` down its
+    // default arm, i.e. an ordinary browser session JWT. clientGate checks the
+    // SHAPE of the auth context, not its provenance, so any organization-scoped
+    // Breeze user would satisfy it — and `/client/*` would become the only
+    // Workspace surface an org-scoped user can reach at all, since adminGate
+    // rejects that scope outright. That is an intra-org authorization gap (mail
+    // metadata search, filing decisions overwritable by any org user), so the
+    // mount waits for its dispatcher.
+    //
+    // Everything else about the surface is ported and tested; restoring it means
+    // routing createClientRoutes into the app below, and belongs with whichever
+    // commits from that branch land the proxy. Note when doing so that the
+    // proxy's synthesized context sets no `principal` field, so a provenance
+    // check on clientGate cannot key off `principal.kind` as-is.
+    //
+    // The prefix is still claimed by a bare catch-all, for the same reason the
+    // real mount had one: without it, `/client/*` falls through to the
+    // admin-gated user routes below and answers their `adminGate` 403 instead,
+    // which both leaks that the prefix is unhandled and puts the tree one
+    // routing change away from the admin surface.
     const clientApp = new Hono();
-    clientApp.route('/', createClientRoutes({
-      emailMatchService: createEmailMatchService(db),
-      filingService,
-      getSettings,
-      audit: context.audit,
-      log: context.log,
-    }));
     clientApp.all('*', (c) => c.json({ error: 'not found' }, 404));
     app.route('/client', clientApp);
 

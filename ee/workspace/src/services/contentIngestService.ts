@@ -426,6 +426,19 @@ export function createContentIngestService(db: WorkspaceDatabase, deps: ContentI
           if (deps.embedder) {
             chunks = chunkText(cleanText);
             vectors = await deps.embedder.embed(chunks, 'document');
+            // The embedder fills a fixed-length array from a remote response
+            // keyed by the item's own `index`, so a short or misindexed
+            // response leaves holes rather than a shorter array. Unchecked,
+            // that surfaces as a TypeError inside the transaction below when a
+            // hole reaches toVectorLiteral. A service-response fault is
+            // transient by this module's taxonomy: abort the batch and leave
+            // the file pending rather than persisting a `failed` row that
+            // would park it out of the retry set.
+            if (vectors.length !== chunks.length || vectors.some((v) => v === undefined)) {
+              throw new TransientIngestError(
+                `embedder returned ${vectors.length} usable vectors for ${chunks.length} chunks`,
+              );
+            }
           }
 
           // Persist the whole new version atomically: content row + entities +
