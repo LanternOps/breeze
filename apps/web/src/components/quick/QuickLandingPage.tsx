@@ -45,8 +45,9 @@ export type QuickClient = { os: QuickOs; browser: QuickBrowser };
  * tested per platform — the page shows a Windows download, a "not on Mac yet"
  * message or a "go to the PC that needs help" notice off the back of it.
  *
- * Detection is advisory, never a gate: `unknown` keeps the full Windows flow
- * visible rather than stranding a user behind a UA string we failed to parse.
+ * Detection is advisory for unknown/Linux (Windows download stays reachable),
+ * but macOS is a hard gate: Phase 1 has no macOS support client, so we must
+ * never offer the Windows .exe to a Mac user (they cannot run it).
  */
 export function detectQuickClient(
   userAgent: string,
@@ -103,8 +104,8 @@ function safeAccent(value: string | null | undefined): string | null {
   return value && /^#[0-9a-fA-F]{6}$/.test(value) ? value : null;
 }
 
-function downloadUrl(code: string): string {
-  return `${API_BASE}/api/v1/support/download/windows?code=${encodeURIComponent(code)}`;
+function downloadUrl(code: string, platform: 'windows' | 'macos' = 'windows'): string {
+  return `${API_BASE}/api/v1/support/download/${platform}?code=${encodeURIComponent(code)}`;
 }
 
 export default function QuickLandingPage() {
@@ -374,28 +375,26 @@ export default function QuickLandingPage() {
             <p data-testid="quick-mobile-download-hidden" className="text-sm text-muted-foreground">
               {t('mobile.downloadHidden')}
             </p>
+          ) : client.os === 'macos' ? (
+            // Phase 1: no macOS Quick Support client. Never offer the Windows
+            // .exe here — a Mac cannot run it, and a secondary "Download for
+            // Windows" button was being mistaken for the Mac client.
+            <div
+              data-testid="quick-download-macos"
+              role="status"
+              className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3"
+            >
+              <p className="text-sm font-semibold">{t('download.macosPrimaryTitle')}</p>
+              <p className="text-sm text-muted-foreground">{t('download.macosPrimaryBody')}</p>
+              <p className="text-sm text-muted-foreground">{t('download.macosNoWindowsFallback')}</p>
+            </div>
           ) : (
             <>
-              {client.os === 'macos' && (
-                <div
-                  data-testid="quick-download-macos"
-                  aria-disabled="true"
-                  className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3"
-                >
-                  <p className="text-sm font-semibold">{t('download.macosPrimaryTitle')}</p>
-                  <p className="text-sm text-muted-foreground">{t('download.macosPrimaryBody')}</p>
-                </div>
-              )}
-
               <a
                 data-testid="quick-download-windows"
-                href={downloadUrl(state.code)}
-                style={client.os === 'macos' ? undefined : accentStyle}
-                className={
-                  client.os === 'macos'
-                    ? 'flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted'
-                    : 'flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:bg-primary/90'
-                }
+                href={downloadUrl(state.code, 'windows')}
+                style={accentStyle}
+                className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:bg-primary/90"
               >
                 {t('download.windows')}
               </a>
@@ -416,21 +415,19 @@ export default function QuickLandingPage() {
                 {t('download.manualFallback', { code: formatSupportCode(state.code) })}
               </p>
 
-              {client.os !== 'macos' && (
-                <div
-                  data-testid="quick-download-macos"
-                  aria-disabled="true"
-                  className="space-y-1 rounded-md border border-dashed p-3 opacity-60"
-                >
-                  <p className="flex items-center justify-between text-sm font-medium">
-                    <span>{t('download.macosLabel')}</span>
-                    <span className="rounded-full border px-2 py-0.5 text-xs font-normal">
-                      {t('download.macosBadge')}
-                    </span>
-                  </p>
-                  <p className="text-sm text-muted-foreground">{t('download.macosBody')}</p>
-                </div>
-              )}
+              <div
+                data-testid="quick-download-macos"
+                aria-disabled="true"
+                className="space-y-1 rounded-md border border-dashed p-3 opacity-60"
+              >
+                <p className="flex items-center justify-between text-sm font-medium">
+                  <span>{t('download.macosLabel')}</span>
+                  <span className="rounded-full border px-2 py-0.5 text-xs font-normal">
+                    {t('download.macosBadge')}
+                  </span>
+                </p>
+                <p className="text-sm text-muted-foreground">{t('download.macosBody')}</p>
+              </div>
 
               <div className="space-y-1 border-t pt-3">
                 <p className="text-sm font-semibold">{t('windowsPrompt.title')}</p>

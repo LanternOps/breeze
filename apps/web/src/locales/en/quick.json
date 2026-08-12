@@ -64,7 +64,8 @@
     "macosBadge": "Coming soon",
     "macosBody": "The program is not ready for Mac computers yet. Ask the person helping you what to do instead.",
     "macosPrimaryTitle": "The support program is not ready for Mac computers yet",
-    "macosPrimaryBody": "Ask the person helping you what to do instead, or open this page on a Windows computer that needs help."
+    "macosPrimaryBody": "Ask the person helping you what to do instead, or open this page on a Windows computer that needs help.",
+    "macosNoWindowsFallback": "There is no Mac download for this one-time session. Do not download the Windows program — it will not run on a Mac."
   },
   "windowsPrompt": {
     "title": "Windows will ask you before it runs",

@@ -64,7 +64,8 @@
     "macosBadge": "Demnächst verfügbar",
     "macosBody": "Für Mac-Computer ist das Programm noch nicht verfügbar. Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen.",
     "macosPrimaryTitle": "Für Mac-Computer ist das Support-Programm noch nicht verfügbar",
-    "macosPrimaryBody": "Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen, oder öffnen Sie diese Seite auf einem Windows-Computer, der Hilfe braucht."
+    "macosPrimaryBody": "Fragen Sie die Person, die Ihnen hilft, wie Sie stattdessen vorgehen, oder öffnen Sie diese Seite auf einem Windows-Computer, der Hilfe braucht.",
+    "macosNoWindowsFallback": "Für diese Einmalsitzung gibt es keinen Mac-Download. Laden Sie nicht das Windows-Programm herunter — es läuft nicht auf einem Mac."
   },
   "windowsPrompt": {
     "title": "Windows fragt Sie vor dem Start",

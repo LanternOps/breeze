@@ -64,7 +64,8 @@
     "macosBadge": "Em breve",
     "macosBody": "O programa ainda não está pronto para computadores Mac. Pergunte a quem está ajudando você o que fazer nesse caso.",
     "macosPrimaryTitle": "O programa de suporte ainda não está pronto para computadores Mac",
-    "macosPrimaryBody": "Pergunte a quem está ajudando você o que fazer nesse caso, ou abra esta página em um computador com Windows que precisa de ajuda."
+    "macosPrimaryBody": "Pergunte a quem está ajudando você o que fazer nesse caso, ou abra esta página em um computador com Windows que precisa de ajuda.",
+    "macosNoWindowsFallback": "Não há download para Mac nesta sessão única. Não baixe o programa do Windows — ele não funciona em um Mac."
   },
   "windowsPrompt": {
     "title": "O Windows vai perguntar antes de executar",

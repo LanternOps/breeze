@@ -370,7 +370,7 @@ describe('QuickLandingPage', () => {
       );
     });
 
-    it('leads with the macOS message and demotes the Windows download on a Mac', async () => {
+    it('shows macOS unavailable and never offers the Windows download on a Mac', async () => {
       stubUserAgent(UA.macSafari);
       mockFetch(() => jsonResponse({ valid: true }));
       window.history.replaceState({}, '', '/quick?code=234-567-892');
@@ -379,10 +379,10 @@ describe('QuickLandingPage', () => {
 
       const macBlock = await screen.findByTestId('quick-download-macos');
       expect(macBlock).toHaveTextContent('not ready for Mac computers yet');
+      expect(macBlock).toHaveTextContent('Do not download the Windows program');
       expect(macBlock).not.toHaveTextContent('Coming soon');
-      // Still reachable for a user moving to a PC, just not the primary action.
-      const download = screen.getByTestId('quick-download-windows');
-      expect(download.className).not.toContain('bg-primary');
+      // A Mac cannot run the Windows .exe — never offer it here.
+      expect(screen.queryByTestId('quick-download-windows')).not.toBeInTheDocument();
       expect(screen.queryByTestId('quick-browser-hint')).not.toBeInTheDocument();
     });
 

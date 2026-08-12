@@ -784,7 +784,9 @@ export default function AddDeviceModal({
                       <button
                         key={p}
                         type="button"
+                        data-testid={`platform-${p}`}
                         onClick={() => setSelectedPlatform(p)}
+                        aria-pressed={selectedPlatform === p}
                         className={`flex-1 rounded-md px-4 py-2.5 text-sm font-medium transition border ${
                           selectedPlatform === p
                             ? "bg-primary text-primary-foreground border-primary"
@@ -798,6 +800,9 @@ export default function AddDeviceModal({
                     ))}
                   </div>
                   <p className="mt-1.5 text-xs text-muted-foreground">
+                    {t("addDeviceModal.platformSelectHint")}{" "}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
                     {t("addDeviceModal.forLinuxUseTheCliCommands")}{" "}
                   </p>
                 </div>
@@ -871,9 +876,10 @@ export default function AddDeviceModal({
                   </p>
                 </div>
 
-                {/* Download button */}
+                {/* Download button — platform toggles above only select; this starts the download */}
                 <button
                   type="button"
+                  data-testid="download-installer"
                   onClick={handleDownload}
                   disabled={downloading || !selectedSiteId}
                   className="w-full h-10 rounded-md bg-primary text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
@@ -891,7 +897,9 @@ export default function AddDeviceModal({
                   ) : (
                     <>
                       <Download className="h-4 w-4" />
-                      {t("addDeviceModal.downloadInstaller")}{" "}
+                      {selectedPlatform === "windows"
+                        ? t("addDeviceModal.downloadWindowsInstaller")
+                        : t("addDeviceModal.downloadMacosInstaller")}{" "}
                     </>
                   )}
                 </button>
@@ -1012,12 +1020,19 @@ export default function AddDeviceModal({
 
                 {/* Success message */}
                 {downloadSuccess && (
-                  <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-700">
-                    {t("addDeviceModal.installerDownloadedRunItOn")}{" "}
-                    {deviceCount > 1
-                      ? `up to ${deviceCount} devices`
-                      : t("addDeviceModal.theTargetDevice")}{" "}
-                    {t("addDeviceModal.toEnroll")}{" "}
+                  <div className="rounded-md border border-green-500/40 bg-green-500/10 p-3 text-sm text-green-700 space-y-1">
+                    <p>
+                      {t("addDeviceModal.installerDownloadedRunItOn")}{" "}
+                      {deviceCount > 1
+                        ? `up to ${deviceCount} devices`
+                        : t("addDeviceModal.theTargetDevice")}{" "}
+                      {t("addDeviceModal.toEnroll")}{" "}
+                    </p>
+                    {selectedPlatform === "macos" && (
+                      <p className="text-xs">
+                        {t("addDeviceModal.macosInstallHint")}
+                      </p>
+                    )}
                   </div>
                 )}
               </>

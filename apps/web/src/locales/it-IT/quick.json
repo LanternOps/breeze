@@ -64,7 +64,8 @@
     "macosBadge": "Presto disponibile",
     "macosBody": "Il programma non è ancora pronto per i computer Mac. Chiedi alla persona che ti sta aiutando come procedere.",
     "macosPrimaryTitle": "Il programma di assistenza non è ancora pronto per i computer Mac",
-    "macosPrimaryBody": "Chiedi alla persona che ti sta aiutando come procedere, oppure apri questa pagina su un computer Windows che ha bisogno di assistenza."
+    "macosPrimaryBody": "Chiedi alla persona che ti sta aiutando come procedere, oppure apri questa pagina su un computer Windows che ha bisogno di assistenza.",
+    "macosNoWindowsFallback": "Non esiste un download per Mac per questa sessione una tantum. Non scaricare il programma Windows: non funziona su un Mac."
   },
   "windowsPrompt": {
     "title": "Windows ti chiederà conferma",

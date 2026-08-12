@@ -64,7 +64,8 @@
     "macosBadge": "Bientôt offert",
     "macosBody": "Le programme n’est pas encore offert pour les ordinateurs Mac. Demandez à la personne qui vous aide comment procéder autrement.",
     "macosPrimaryTitle": "Le programme de soutien n’est pas encore offert pour les ordinateurs Mac",
-    "macosPrimaryBody": "Demandez à la personne qui vous aide comment procéder autrement, ou ouvrez cette page sur un ordinateur Windows qui a besoin d’aide."
+    "macosPrimaryBody": "Demandez à la personne qui vous aide comment procéder autrement, ou ouvrez cette page sur un ordinateur Windows qui a besoin d’aide.",
+    "macosNoWindowsFallback": "Il n'y a pas de téléchargement Mac pour cette session ponctuelle. Ne téléchargez pas le programme Windows — il ne fonctionnera pas sur un Mac."
   },
   "windowsPrompt": {
     "title": "Windows vous demandera votre accord",

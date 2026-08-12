@@ -84,17 +84,9 @@ global.URL.revokeObjectURL = vi.fn();
 // contains the substring "win", so detectUserOS() returns 'windows'.
 // This means the installer tab is active by default and selectedPlatform is 'windows'.
 
-/** Find the action button labelled "Download Installer" (not the tab). */
+/** Find the installer download action button (not the tab). */
 function getDownloadButton(): HTMLElement {
-  // The tab button and the action button both contain text "Download Installer".
-  // The action button has the wider/primary class; use getAllByText and pick the
-  // one inside the form area (the one with the download icon / w-full class).
-  const all = screen.getAllByText(/Download Installer/);
-  // Action button has class 'w-full'; tab button does not.
-  const actionBtn = all.find((el) => el.className.includes('w-full'));
-  if (actionBtn) return actionBtn;
-  // Fallback: return the last one (action button comes after tab button in DOM)
-  return all[all.length - 1];
+  return screen.getByTestId('download-installer');
 }
 
 describe('AddDeviceModal', () => {
