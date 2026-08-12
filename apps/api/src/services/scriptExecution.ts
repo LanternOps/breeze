@@ -11,6 +11,7 @@ import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope } from './tenantVariableResolution';
+import { hasVariableTokens } from '@breeze/shared';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -158,7 +159,16 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
 
   // Preload ONCE per fan-out (#3409 PR2 Task 4), never per device — one
   // snapshot covers every org in this batch's executable device set.
-  const variableScope = await loadTenantVariableScope([...new Set(executableDevices.map((d) => d.orgId))]);
+  //
+  // Gated on the script actually containing a {{var.*}} token. Without the
+  // gate EVERY script run — the overwhelming majority of which reference no
+  // variable at all — would escape the request transaction via
+  // runOutsideDbContext and take a second connection to run a join that is
+  // then never consulted. loadTenantVariableScope short-circuits on an empty
+  // org list without querying, so passing [] is the no-op path.
+  const variableScope = await loadTenantVariableScope(
+    hasVariableTokens(script.content) ? [...new Set(executableDevices.map((d) => d.orgId))] : []
+  );
 
   // A multi-org run (partner/system script fanned out across orgs) must not
   // stamp every batch row with the first device's org — split one batch per

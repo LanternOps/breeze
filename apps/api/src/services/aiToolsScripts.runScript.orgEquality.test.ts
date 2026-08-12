@@ -323,7 +323,9 @@ describe('run_script escapes the ambient transaction for dispatch + poll (#3409 
   it('preloads the variable scope inside the same escape, and forwards it to dispatch (#3409 PR2 Task 4)', async () => {
     const scope = { orgIds: new Set([ORG_B]) };
     vi.mocked(loadTenantVariableScope).mockResolvedValueOnce(scope as any);
-    const scriptRow = { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' };
+    // Content MUST carry a {{var.*}} token — the preload is gated on it, so a
+    // token-free fixture would assert nothing.
+    const scriptRow = { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo {{var.repo_url}}', timeoutSeconds: 60, runAs: 'system' };
     const deviceRow = { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' };
     mockDb(scriptRow, deviceRow);
 

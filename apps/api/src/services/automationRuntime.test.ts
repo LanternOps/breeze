@@ -146,7 +146,12 @@ describe('automationRuntime', () => {
         osType: 'linux' as const, status: 'online' as const, agentId: 'agent-1',
       },
       scriptsById: new Map([
-        ['script-1', { id: 'script-1', orgId: 'org-a', osTypes: ['linux'], runAs: 'system' } as any],
+        // Content MUST carry a {{var.*}} token — the preload is gated on it,
+        // so a token-free fixture would assert nothing.
+        [
+          'script-1',
+          { id: 'script-1', orgId: 'org-a', osTypes: ['linux'], runAs: 'system', content: 'curl {{var.repo_url}}' } as any,
+        ],
       ]),
       channelsById: new Map(),
     };

@@ -359,7 +359,11 @@ describe('executeScriptOnDevices — tenant variable scope preload (#3409 PR2 Ta
 
   it('preloads the scope ONCE for the whole fan-out, not once per device', async () => {
     vi.mocked(db.select)
-      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: null, isSystem: true })]) as any)
+      // Content MUST carry a token — the preload is gated on it, so a
+      // token-free fixture would make this assertion vacuous.
+      .mockReturnValueOnce(scriptSelectChain([
+        baseScript({ orgId: null, isSystem: true, content: 'curl {{var.repo_url}}' }),
+      ]) as any)
       .mockReturnValueOnce(devicesSelectChain([
         baseDevice({ id: 'device-1', orgId: 'org-a' }),
         baseDevice({ id: 'device-2', orgId: 'org-a' }),
@@ -376,6 +380,25 @@ describe('executeScriptOnDevices — tenant variable scope preload (#3409 PR2 Ta
     // De-duplicated org set, order-insensitive.
     const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
     expect(new Set(orgIds)).toEqual(new Set(['org-a', 'org-b']));
+  });
+
+  // Without this gate every script run — the overwhelming majority of which
+  // reference no variable — would escape the request transaction and take a
+  // second connection to build a snapshot nothing consults.
+  it('does not load a variable scope for a script with no {{var.*}} token', async () => {
+    vi.mocked(loadTenantVariableScope).mockResolvedValue({ orgIds: new Set() } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-a', content: 'echo hi' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-a' })]) as any);
+
+    await executeScriptOnDevices({ scriptId: 'script-1', deviceIds: ['device-1'], auth: multiOrgAuth });
+
+    // Called with an EMPTY org list, which loadTenantVariableScope
+    // short-circuits without querying — no escape from the request
+    // transaction, no second connection.
+    const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
+    expect(orgIds).toEqual([]);
   });
 
   it('passes the preloaded scope through to every device dispatch call', async () => {

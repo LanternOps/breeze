@@ -33,6 +33,7 @@ import type { AiTool } from './aiTools';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
+import { hasVariableTokens } from '@breeze/shared';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -291,7 +292,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           // preload — there is no wider fan-out to batch it against.
           const dispatch = await runOutsideDbContext(() =>
             withSystemDbAccessContext(async () => {
-              const variableScope = await loadTenantVariableScope([access.device.orgId]);
+              const variableScope = await loadTenantVariableScope(
+                hasVariableTokens(script.content) ? [access.device.orgId] : []
+              );
               return dispatchScriptToDevice({
                 device: access.device,
                 source: { kind: 'saved', script },

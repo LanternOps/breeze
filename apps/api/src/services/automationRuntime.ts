@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
+import { hasVariableTokens, scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
   alertRules,
@@ -897,7 +897,11 @@ export async function executeRunScriptAction(
   // Preload ONCE for this single-device dispatch (#3409 PR2 Task 4). Only
   // run_script needs a scope — execute_command below dispatches a
   // {kind:'raw'} source, which scriptDispatch deliberately never substitutes.
-  const variableScope = await loadTenantVariableScope([context.device.orgId]);
+  // Gated on the content: an unconditional preload would take a second
+  // connection per automation run to build a snapshot nothing consults.
+  const variableScope = await loadTenantVariableScope(
+    hasVariableTokens(script.content) ? [context.device.orgId] : []
+  );
 
   // #3409 PR0: dispatchScriptToDevice owns the script_executions insert (#3162
   // — a REAL uuid row so handleScriptResult can correlate the agent's result),
