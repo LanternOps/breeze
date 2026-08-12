@@ -31,6 +31,7 @@ import {
   legacyExtensionHelperAuthMiddleware,
 } from './gateway';
 import { assertExtensionTenancyRls, assertNoUnaccountedPublicTables } from './tenancyTripwire';
+import { builtinTenancyDeclarations } from './builtinRegistry';
 import { aiTools, hasCoreAiToolName } from '../services/aiTools';
 import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
@@ -161,8 +162,11 @@ const DEPRECATION_DOCS = 'docs/extensions/build-time-transition.md';
  * same extensions root. Only names are extracted — full validation stays the
  * reconciler's job (config.ts) — but a PRESENT-yet-unreadable file fails
  * closed: the same-name gate cannot prove the absence of a collision.
+ *
+ * Exported because the BUILT-IN loading path (builtinExtensions.ts) enforces
+ * the same one-delivery-path-per-name gate against this exact set.
  */
-function declaredRuntimeExtensionNames(root: string): Set<string> {
+export function declaredRuntimeExtensionNames(root: string): Set<string> {
   const configPath = path.join(root, 'extensions.yaml');
   if (!existsSync(configPath)) return new Set();
   let raw: unknown;
@@ -261,8 +265,18 @@ export async function loadSourceExtensions(
   // same sweep once per boot AFTER publishing runtime tenancy, over
   // getExtensionTenancy()'s union of source manifests and runtime
   // declarations, so deferring keeps the fail-closed contract.
+  //
+  // BUILT-INS are the third delivery path and have exactly the same problem in
+  // this branch: `loadBuiltinExtensions` runs AFTER this loader, so no built-in
+  // tenancy has been published yet, while its tables were created by an earlier
+  // boot's migrations. Reading the compiled-in manifests directly
+  // (builtinTenancyDeclarations — a pure accessor, no publication side effects)
+  // accounts for them without weakening the sweep for anything else.
   if (runtimeNames.size === 0) {
-    await assertNoUnaccountedPublicTables(discovered.map((extension) => extension.manifest.tenancy));
+    await assertNoUnaccountedPublicTables([
+      ...discovered.map((extension) => extension.manifest.tenancy),
+      ...builtinTenancyDeclarations(),
+    ]);
   }
 
   const aiToolOwners = new Map<string, string>();

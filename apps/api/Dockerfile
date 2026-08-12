@@ -21,6 +21,9 @@ COPY packages/shared/package.json ./packages/shared/
 # creates the workspace symlinks the API's tsup bundle resolves at build time.
 COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
+COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
+COPY packages/extension-testkit/package.json ./packages/extension-testkit/
+COPY ee/workspace/package.json ./ee/workspace/
 
 # Install all dependencies
 RUN pnpm install --frozen-lockfile --prefer-offline
@@ -36,11 +39,18 @@ ENV NODE_ENV=${NODE_ENV}
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages ./packages
+COPY --from=deps /app/ee ./ee
 
 # Copy source code
 COPY apps/api ./apps/api
 COPY packages ./packages
+COPY ee ./ee
 COPY tsconfig.json ./
+
+# Build the built-in workspace extension's web bundle. Its server code needs
+# no separate build step here -- the API's own tsup build (below) bundles
+# @breeze/ext-workspace source directly via noExternal: [/^@breeze\//].
+RUN pnpm --filter @breeze/ext-workspace build:web
 
 # Build the API
 WORKDIR /app/apps/api
@@ -72,6 +82,11 @@ COPY --from=builder --chown=hono:nodejs /app/apps/api/package.json ./apps/api/pa
 COPY --from=deps --chown=hono:nodejs /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps --chown=hono:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=hono:nodejs /app/packages ./packages
+
+# Built-in extensions: this runner's WORKDIR ends at /app/apps/api (see below),
+# and builtinRegistry.ts's CJS-bundle fallback resolves packageDir relative to
+# process.cwd() -- so the copy destination must be apps/api/ee, not /app/ee.
+COPY --from=builder --chown=hono:nodejs /app/ee ./apps/api/ee
 
 # Copy migration files for auto-migrate on startup
 COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migrations

@@ -341,6 +341,7 @@ import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
+import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
 import { createOrgInstalledReader } from './extensions/orgInstallGate';
@@ -1954,6 +1955,14 @@ async function bootstrap(): Promise<void> {
   }
 
   await loadSourceExtensions(extensionContributionRegistry);
+
+  // Built-in (first-party, statically imported) extensions: same staged v1
+  // pipeline as signed bundles, no artifact verification. Any failure aborts
+  // boot — built-ins are required code, not optional deployments.
+  await loadBuiltinExtensions({
+    registry: extensionContributionRegistry,
+    stateStore: extensionStateStore,
+  });
 
   // Reconcile SIGNED runtime-extension bundles declared in extensions.yaml. Core
   // + legacy-extension migrations already ran (initializeDatabaseForStartup

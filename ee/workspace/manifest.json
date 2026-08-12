@@ -1,0 +1,85 @@
+{
+  "apiVersion": "breeze.extensions/v1",
+  "name": "workspace",
+  "version": "0.2.0",
+  "routeNamespace": "workspace",
+  "requires": {
+    "breeze": ">=0.1.0 <0.2.0",
+    "serverSdk": "^1.0.0",
+    "webSdk": "^1.0.0",
+    "capabilities": ["server.routes.v1", "server.agent-routes.v1", "server.db.rls.v1", "server.secrets.v1", "server.audit.v1", "web.pages.v1", "web.navigation.v1", "web.slots.v1"]
+  },
+  "server": { "entry": "server/index.cjs" },
+  "web": {
+    "entry": "web/index.js",
+    "pages": [{ "id": "sources", "path": "/extensions/workspace/sources", "element": "workspace-sources-page" }],
+    "navigation": [{ "id": "sources", "label": "Workspace Sources", "path": "/extensions/workspace/sources", "order": 100 }],
+    "slots": [{ "id": "device-index", "slot": "device.detail.tabs", "contractVersion": 1, "label": "Workspace", "element": "workspace-device-index", "order": 100 }]
+  },
+  "migrationsDir": "migrations",
+  "schemaCompatibilityFloor": "0.2.0",
+  "publicRoutes": [],
+  "agentRoutes": true,
+  "jobs": [],
+  "aiTools": [],
+  "tenancy": {
+    "orgCascadeDeleteTables": ["memory_blocks", "workspace_content_chunks", "workspace_content_entities", "workspace_crawl_runs", "workspace_email_filings", "workspace_file_activity", "workspace_file_content", "workspace_file_enrichment", "workspace_file_index", "workspace_org_settings", "workspace_project_crosswalk", "workspace_projects", "workspace_sources"],
+    "deviceCascadeDeleteTables": ["workspace_file_index"],
+    "deviceOrgDenormalizedTables": ["workspace_file_activity"],
+    "deviceOrgMoveDeleteTables": ["workspace_file_index"],
+    "orgExportColumns": {
+      "memory_blocks": {
+        "include": ["id", "org_id", "partner_id", "block_type", "subject_key", "content", "confidence", "authored_by_run_id", "confirmed_at", "retracted_at", "superseded_by_id", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_content_chunks": {
+        "include": ["id", "org_id", "file_index_id", "chunk_index", "text", "created_at"],
+        "exclude": ["embedding"]
+      },
+      "workspace_content_entities": {
+        "include": ["id", "org_id", "file_index_id", "entity_type", "value_norm", "value_raw", "origin", "created_at"],
+        "exclude": []
+      },
+      "workspace_crawl_runs": {
+        "include": ["id", "org_id", "source_id", "device_id", "device_key", "status", "started_at", "last_activity_at", "completed_at", "stats", "error_reason"],
+        "exclude": ["cursor"]
+      },
+      "workspace_email_filings": {
+        "include": ["id", "org_id", "file_index_id", "status", "suggested_project_key", "suggested_project_label", "matched_entity_type", "matched_entity_value", "confidence", "rationale", "decided_project_key", "decided_label", "decided_at", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_file_activity": {
+        "include": ["id", "org_id", "user_id", "file_index_id", "device_id", "action", "created_at", "helper_user"],
+        "exclude": []
+      },
+      "workspace_file_content": {
+        "include": ["id", "org_id", "file_index_id", "content_hash", "source_size", "source_mtime", "extracted_text", "status", "error_reason", "extracted_at", "created_at", "updated_at", "dlp_findings"],
+        "exclude": []
+      },
+      "workspace_file_enrichment": {
+        "include": ["id", "org_id", "file_index_id", "inferred_project_key", "inferred_project_label", "inferred_doc_type", "doc_date", "declared_project_key", "declared_project_label", "email_meta", "confidence", "model", "enriched_at", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_file_index": {
+        "include": ["id", "org_id", "source_id", "device_id", "device_key", "rel_path", "parent_path", "name", "is_dir", "ext", "mime", "size", "mtime", "ctime", "attrs", "last_seen_at", "deleted_at", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_org_settings": {
+        "include": ["org_id", "content_enabled", "created_at", "updated_at"],
+        "exclude": ["dlp_config"]
+      },
+      "workspace_project_crosswalk": {
+        "include": ["id", "org_id", "entity_type", "value_norm", "project_key", "project_label", "evidence_count", "sample_file_ids", "mined_at", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_projects": {
+        "include": ["id", "org_id", "project_key", "label", "aliases", "created_at", "updated_at"],
+        "exclude": []
+      },
+      "workspace_sources": {
+        "include": ["id", "org_id", "kind", "display_name", "root_path", "crawl_device_id", "visibility_group_ids", "exclude_globs", "watch", "crawl_cadence_minutes", "status", "status_detail", "error_reason", "last_complete_run_at", "created_at", "updated_at"],
+        "exclude": ["credential_enc", "crawl_cursor"]
+      }
+    }
+  }
+}
