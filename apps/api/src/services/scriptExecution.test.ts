@@ -235,6 +235,109 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
   });
 });
 
+describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Task 3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  it('records a per-device failure and still dispatches the remaining devices', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+        baseDevice({ id: 'device-c', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b', 'device-c'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.executions.map((e) => e.deviceId)).toEqual(['device-a', 'device-c']);
+    expect(result.failures).toEqual([
+      { deviceId: 'device-b', code: 'unresolved_variables', error: expect.any(String) },
+    ]);
+    // Still targeted all three — the failure didn't truncate the fan-out.
+    expect(result.devicesTargeted).toBe(3);
+  });
+
+  it('writes a failed script_executions row for the failed device, not nothing', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
+
+    await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    // db.insert always returns the same mocked chain object (mockReturnValue,
+    // not mockReturnValueOnce), so both the batch insert and the failed-row
+    // insert record their `.values(...)` call on that ONE shared mock fn —
+    // index into ITS call history, not `db.insert`'s. Call 0 is the batch
+    // insert (from batch creation above the dispatch loop); call 1 is the
+    // failed execution row.
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    const failedRowValues = insertChain.values.mock.calls[1][0];
+    expect(failedRowValues).toMatchObject({
+      scriptId: 'script-1',
+      deviceId: 'device-b',
+      orgId: 'org-b',
+      status: 'failed',
+      errorMessage: expect.any(String),
+      completedAt: expect.any(Date),
+    });
+  });
+
+  it('counts a per-device failure toward the batch devicesFailed, not devicesTargeted', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // devicesTargeted was set once at batch-creation time (both devices were
+    // targeted) and must not be decremented by a later per-device failure.
+    expect(result.devicesTargeted).toBe(2);
+
+    // db.update calls: one devicesFailed increment for the failed device's
+    // batch, plus the final batch-status update.
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls).toHaveLength(2);
+    const devicesFailedSetCall = updateCalls[0]!.value.set.mock.calls[0][0];
+    expect(devicesFailedSetCall).toHaveProperty('devicesFailed');
+  });
+});
+
 // Full MaintenanceWindowStatus shape (featureConfigResolver.ts) — the mocked
 // resolver must satisfy every field, not just the two this suite cares about.
 const maintenanceStatus = (overrides: { active: boolean; suppressScripts: boolean }) => ({

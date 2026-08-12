@@ -56,7 +56,21 @@ export type DispatchScriptResult =
       deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent';
       executedAt: Date | null;
     }
-  | { ok: false; code: 'device_decommissioned' | 'device_offline' | 'os_mismatch' | 'org_mismatch' | 'insert_failed'; error: string };
+  | {
+      ok: false;
+      code:
+        | 'device_decommissioned'
+        | 'device_offline'
+        | 'os_mismatch'
+        | 'org_mismatch'
+        | 'insert_failed'
+        // A {{var.*}} token in the script content had no resolvable value (or
+        // resolved to a secret) for this device's org. Per-device — Task 4
+        // (#3409 PR2) is what actually produces this code; this task only
+        // gives the fan-out a channel to carry it without aborting the batch.
+        | 'unresolved_variables';
+      error: string;
+    };
 
 export async function dispatchScriptToDevice(input: DispatchScriptInput): Promise<DispatchScriptResult> {
   const { device, source } = input;
