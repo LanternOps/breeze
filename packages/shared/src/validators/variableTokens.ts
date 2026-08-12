@@ -21,10 +21,31 @@
  * client-passes/server-fails divergence for that namespace. Do not extend
  * that bug into `var.*` — both sides import this one pattern.
  *
- * Global: use with `matchAll` / `String.replace`, never `.test()` in a loop
- * (a global regex is stateful via `lastIndex`).
+ * NOT global, and deliberately so: a module-level global regex carries
+ * mutable `lastIndex` state, and every consumer here shares this one module
+ * instance across the whole process. `.test()` on a global regex advances
+ * `lastIndex`, and `String.prototype.matchAll` SEEDS its internal matcher from
+ * the regex it is handed — so one `hasVariableTokens()` call would leave an
+ * offset behind that made a later `findVariableTokens()` silently skip every
+ * token before it. Since API requests interleave across `await` points, that
+ * desynchronised two different requests through one shared offset.
+ *
+ * Scanning for ALL tokens therefore goes through
+ * {@link createVariableTokenMatcher}, which mints a fresh, independently
+ * stateful matcher per call. This constant stays non-global so that sharing it
+ * is safe: `.test()` and `.exec()` on a non-global regex never touch
+ * `lastIndex`.
  */
-export const VARIABLE_TOKEN_PATTERN = /(?<!\$)\{\{var\.([a-z][a-z0-9_]{0,63})\}\}/g;
+export const VARIABLE_TOKEN_PATTERN = /(?<!\$)\{\{var\.([a-z][a-z0-9_]{0,63})\}\}/;
+
+/**
+ * A FRESH global matcher for the token grammar. Never hoist the result into a
+ * shared binding — `lastIndex` is per-instance state, and sharing one instance
+ * across calls is exactly the bug the comment above describes.
+ */
+export function createVariableTokenMatcher(): RegExp {
+  return new RegExp(VARIABLE_TOKEN_PATTERN.source, 'g');
+}
 
 /** `{{var.<key>}}` — the inverse of matching: build a token to insert a key. */
 export function variableToken(key: string): string {
@@ -34,7 +55,7 @@ export function variableToken(key: string): string {
 /** Unique keys referenced in `content`, in first-seen order. */
 export function findVariableTokens(content: string): string[] {
   const seen = new Set<string>();
-  for (const match of content.matchAll(VARIABLE_TOKEN_PATTERN)) {
+  for (const match of content.matchAll(createVariableTokenMatcher())) {
     // The capture group always participates when the outer pattern matches
     // (it is not itself optional); the `| undefined` in its type is only
     // TS's general capture-group typing under noUncheckedIndexedAccess.
@@ -45,9 +66,8 @@ export function findVariableTokens(content: string): string[] {
 }
 
 export function hasVariableTokens(content: string): boolean {
-  // .test() on a global regex mutates lastIndex; reset first so a caller
-  // reusing VARIABLE_TOKEN_PATTERN elsewhere never sees a stale offset.
-  VARIABLE_TOKEN_PATTERN.lastIndex = 0;
+  // Safe to share the module-level instance: VARIABLE_TOKEN_PATTERN is
+  // non-global, so .test() leaves no lastIndex behind for the next caller.
   return VARIABLE_TOKEN_PATTERN.test(content);
 }
 
@@ -82,7 +102,7 @@ export function replaceVariableTokens(
   lookup: (key: string) => string | undefined | null
 ): SubstitutedVariableTokens {
   const unresolved = new Set<string>();
-  const substituted = content.replace(VARIABLE_TOKEN_PATTERN, (token, key: string) => {
+  const substituted = content.replace(createVariableTokenMatcher(), (token, key: string) => {
     const value = lookup(key);
     if (value === undefined || value === null || value === '') {
       unresolved.add(key);

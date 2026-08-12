@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { findVariableTokens, replaceVariableTokens, variableToken } from './variableTokens';
+import {
+  findVariableTokens,
+  hasVariableTokens,
+  replaceVariableTokens,
+  variableToken,
+} from './variableTokens';
 
 describe('findVariableTokens', () => {
   it('finds a well-formed token', () => {
@@ -73,5 +78,30 @@ describe('replaceVariableTokens', () => {
 
   it('round-trips variableToken', () => {
     expect(replaceVariableTokens(variableToken('k'), () => 'v').content).toBe('v');
+  });
+});
+
+describe('shared-regex state isolation', () => {
+  // Regression: VARIABLE_TOKEN_PATTERN used to be a module-level GLOBAL regex.
+  // `.test()` advanced its lastIndex and `matchAll` seeds its matcher from the
+  // regex it is handed, so a hasVariableTokens() call left an offset that made
+  // the next findVariableTokens() skip every token before it. API requests
+  // interleave across awaits, so this desynchronised unrelated requests.
+  it('findVariableTokens is unaffected by a preceding hasVariableTokens call', () => {
+    const content = 'echo {{var.api_key}} then {{var.region}}';
+    expect(findVariableTokens(content)).toEqual(['api_key', 'region']);
+    expect(hasVariableTokens(content)).toBe(true);
+    expect(findVariableTokens(content)).toEqual(['api_key', 'region']);
+  });
+
+  it('tokenizes a short template after hasVariableTokens ran on a longer one', () => {
+    expect(hasVariableTokens('a much longer script body with {{var.some_key}} inside')).toBe(true);
+    // The installerVariables.ts shape: findVariableTokens on an isolated match.
+    expect(findVariableTokens('{{var.api_key}}')).toEqual(['api_key']);
+  });
+
+  it('replaceVariableTokens is unaffected by a preceding hasVariableTokens call', () => {
+    expect(hasVariableTokens('{{var.a}} {{var.b}}')).toBe(true);
+    expect(replaceVariableTokens('{{var.a}} {{var.b}}', (k) => k.toUpperCase()).content).toBe('A B');
   });
 });
