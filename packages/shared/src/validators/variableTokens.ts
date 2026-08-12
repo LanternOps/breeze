@@ -64,24 +64,31 @@ export interface SubstitutedVariableTokens {
  * expansion, by construction rather than by a depth guard.
  *
  * `lookup` returning `undefined`, `null`, or `''` means the key is
- * UNRESOLVED: it is pushed to `unresolved` and the original token is left
+ * UNRESOLVED: it is reported in `unresolved` and the original token is left
  * untouched in the output, rather than collapsing to an empty string. An
  * empty value is unresolved for the same reason the existing installer
  * tokenizer treats it that way (`installerVariables.ts` `resolveKey`) — a
  * blank substitution should fail loudly, not ship silently as nothing.
+ *
+ * `unresolved` is de-duplicated: it feeds a user-facing failure message, and
+ * a key written three times in one script is still one missing variable.
+ *
+ * Note the replacement is a FUNCTION, not a string — so a value containing
+ * `$&` or `$1` is inserted verbatim instead of being re-interpreted as a
+ * replacement pattern. Values substitute exactly as stored, with no escaping.
  */
 export function replaceVariableTokens(
   content: string,
   lookup: (key: string) => string | undefined | null
 ): SubstitutedVariableTokens {
-  const unresolved: string[] = [];
+  const unresolved = new Set<string>();
   const substituted = content.replace(VARIABLE_TOKEN_PATTERN, (token, key: string) => {
     const value = lookup(key);
     if (value === undefined || value === null || value === '') {
-      unresolved.push(key);
+      unresolved.add(key);
       return token;
     }
     return value;
   });
-  return { content: substituted, unresolved };
+  return { content: substituted, unresolved: [...unresolved] };
 }

@@ -61,6 +61,16 @@ describe('replaceVariableTokens', () => {
     expect(out).toEqual({ content: '${{var.k}}', unresolved: [] });
   });
 
+  it('de-duplicates unresolved keys — one missing variable, not three', () => {
+    const out = replaceVariableTokens('{{var.x}} {{var.x}} {{var.x}}', () => undefined);
+    expect(out.unresolved).toEqual(['x']);
+  });
+
+  it('inserts a value containing $& or $1 verbatim, not as a replacement pattern', () => {
+    expect(replaceVariableTokens('{{var.k}}', () => 'a$&b').content).toBe('a$&b');
+    expect(replaceVariableTokens('{{var.k}}', () => '$1').content).toBe('$1');
+  });
+
   it('round-trips variableToken', () => {
     expect(replaceVariableTokens(variableToken('k'), () => 'v').content).toBe('v');
   });
