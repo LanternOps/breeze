@@ -289,8 +289,8 @@ func sendTCCStatus(conn *ipc.Conn, status *ipc.TCCStatus, seq *uint64) error {
 // Full Disk Access is missing. FDA is the only required permission macOS gives
 // no API to prompt for, so this is the sole on-machine signal the user gets that
 // a manual grant is needed. We deliberately do NOT nag for Screen Recording or
-// Accessibility here — those raise their own system prompts and are auto-granted
-// by the root daemon once FDA is available. Shows an actionable dialog with
+// Accessibility here — the helper raises the normal macOS system prompts for
+// those, so the user approves them directly. Shows an actionable dialog with
 // "Open Settings" on first detection (guarded by a marker file), then quieter
 // notifications on later checks.
 func handleFullDiskAccessGuidance(status *ipc.TCCStatus, promptFile string) {
@@ -395,9 +395,10 @@ func tccPromptFilePath() string {
 // Uses bare `display dialog` (no `tell application` wrapper) to avoid
 // triggering Script Editor or requiring System Events accessibility access.
 //
-// The messaging follows the FDA-first approach: if Full Disk Access is missing,
-// that's the only action the user needs to take. Screen Recording and
-// Accessibility are auto-granted by the root daemon once FDA is available.
+// The messaging leads with FDA when it is missing, since macOS offers no API
+// to prompt for it. Screen Recording and Accessibility raise their own macOS
+// system prompts from the helper and can also be granted manually in the same
+// Privacy & Security pane.
 func showTCCDialog(missing []string) {
 	fdaMissing := false
 	for _, m := range missing {
@@ -409,17 +410,17 @@ func showTCCDialog(missing []string) {
 
 	var msg, script string
 	if fdaMissing {
-		msg = "Breeze Agent needs Full Disk Access to function properly.\n\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\n\nScreen Recording and Accessibility will be configured automatically."
+		msg = "Breeze Agent needs Full Disk Access to function properly.\n\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\n\nmacOS will prompt separately for Screen Recording and Accessibility — you can also grant them in the same Privacy & Security pane."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
 			escapeAppleScript(msg),
 		)
 	} else {
-		msg = "Screen Recording and Accessibility are being configured automatically.\n\nThis should resolve within a few minutes. If this persists, check agent logs or restart the agent."
+		msg = "Breeze Agent needs Screen Recording and Accessibility.\n\nmacOS should prompt for these — if the prompts were dismissed, grant them in System Settings > Privacy & Security."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
-				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Configuring" giving up after 60`,
+				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Required" giving up after 60`,
 			escapeAppleScript(msg),
 		)
 	}
@@ -451,9 +452,9 @@ func showTCCNotification(missing []string) {
 
 	var body string
 	if fdaMissing {
-		body = "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Other permissions will be configured automatically."
+		body = "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. macOS will prompt separately for Screen Recording and Accessibility."
 	} else {
-		body = "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent."
+		body = "Screen Recording and Accessibility still need approval. If the macOS prompts were dismissed, grant them in System Settings > Privacy & Security."
 	}
 
 	req := ipc.NotifyRequest{

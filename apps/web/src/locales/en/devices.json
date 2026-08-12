@@ -2029,18 +2029,18 @@
     "value": "Value"
   },
   "macOSPermissionsBanner": {
-    "configuringDescription": "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.",
+    "configuringDescription": "macOS will prompt for Screen Recording and Accessibility on this device. If the prompts were dismissed, grant them in System Settings > Privacy & Security.",
     "fullDiskAccess": "Full Disk Access",
-    "fullDiskAccessDescription": "Full Disk Access is required. Grant it in System Settings > Privacy & Security > Full Disk Access. Screen Recording and Accessibility will be configured automatically.",
+    "fullDiskAccessDescription": "Full Disk Access must be granted in System Settings > Privacy & Security > Full Disk Access. Fleet admins can grant Full Disk Access and Accessibility automatically via an MDM PPPC profile — see the macOS Permissions page in the docs.",
     "fullDiskAccessRequired": "Full Disk Access Required",
-    "permissionsConfiguring": "Permissions Configuring",
+    "permissionsConfiguring": "Permissions Awaiting Approval",
     "remoteDesktop": "Remote Desktop",
     "remoteDesktopDescription": "macOS Remote Desktop permission is missing. The login-window desktop path will stay unavailable until it is granted.",
     "remoteDesktopRequired": "Remote Desktop Permission Required"
   },
   "macOSPermissionsCard": {
-    "configuringWarning": "Screen Recording and Accessibility are being configured automatically. If this persists, check agent logs or restart the agent.",
-    "fullDiskAccessWarning": "Full Disk Access must be granted in System Settings > Privacy & Security. Screen Recording and Accessibility will be configured automatically.",
+    "configuringWarning": "macOS will prompt for Screen Recording and Accessibility on this device. If the prompts were dismissed, grant them in System Settings > Privacy & Security.",
+    "fullDiskAccessWarning": "Full Disk Access must be granted in System Settings > Privacy & Security > Full Disk Access, or automatically via an MDM PPPC profile. macOS prompts for Screen Recording and Accessibility separately.",
     "lastChecked": "Last checked: {{date}}",
     "permissions": {
       "accessibility": "Accessibility",
@@ -2050,7 +2050,7 @@
     },
     "remoteDesktopWarning": "Remote Desktop permission is required for unattended login-window access on macOS 14+.",
     "states": {
-      "autoManaged": "Auto Managed",
+      "autoManaged": "Pending",
       "granted": "Granted",
       "missing": "Missing",
       "unknown": "Unknown"

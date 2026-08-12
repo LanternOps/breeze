@@ -1,21 +1,9 @@
 //go:build !darwin
 
+// Package tcc provides read-only probes of macOS TCC permission state.
+// TCC (Transparency, Consent, and Control) is a macOS-only subsystem, so
+// the probes are no-ops on other platforms.
 package tcc
-
-// GrantResult holds the outcome of a TCC grant attempt for a single service.
-type GrantResult struct {
-	Service string
-	Name    string
-	Granted bool
-	Already bool
-	Err     error
-}
-
-// EnsurePermissions is a no-op on non-macOS platforms.
-// TCC (Transparency, Consent, and Control) is a macOS-only subsystem.
-func EnsurePermissions() ([]GrantResult, error) {
-	return nil, nil
-}
 
 // CheckFDA is a no-op on non-macOS platforms. Always returns false.
 func CheckFDA() bool {
