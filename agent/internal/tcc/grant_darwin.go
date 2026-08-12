@@ -3,6 +3,7 @@
 package tcc
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -210,13 +211,6 @@ func detectTCCSchemaForDB(dbPath string) ([]string, error) {
 	return columns, nil
 }
 
-// isAlreadyGranted checks if a TCC entry already exists and is allowed
-// (auth_value=2) for the agent binary. Kept as a thin wrapper so CheckFDA
-// and other agent-scoped callers don't have to pass the binary path.
-func isAlreadyGranted(dbPath, service string) (bool, error) {
-	return isAlreadyGrantedForBinary(dbPath, service, agentBinaryPath)
-}
-
 // isAlreadyGrantedForBinary checks if a TCC entry already exists and is
 // allowed (auth_value=2) for the given binary path. Does not filter on
 // indirect_object_identifier because older macOS TCC schemas may lack that
@@ -383,30 +377,42 @@ func getUserTCCDBPaths() []string {
 	return paths
 }
 
-// CheckFDA queries the system TCC database (as root) to determine whether the
-// agent binary has been granted Full Disk Access (kTCCServiceSystemPolicyAllFiles).
-// This is used as a daemon-side fallback when the user helper's os.Open probe
-// returns false — which happens on macOS 12 where even FDA-granted user-context
+// CheckFDA reports whether the agent daemon itself holds Full Disk Access,
+// by attempting to open the system TCC database in-process. macOS attributes
+// the permission check to the binary issuing the open() call, so this reflects
+// the daemon's own effective grant. It must NOT shell out to sqlite3: on
+// macOS 13+ the check is attributed to the sqlite3 subprocess, which holds no
+// FDA, so a subprocess-based query is denied regardless of the agent's grant
+// (issue #3380).
+//
+// This is used as a daemon-side fallback when the user helper's probe returns
+// false — which happens on macOS 12 where even FDA-granted user-context
 // processes cannot open the system TCC database.
 //
-// Returns true only if the agent binary has an explicit auth_value=2 entry.
-// Returns false (without error) if the database is unreadable or the entry is
-// missing, so callers can safely treat the result as a best-effort check.
+// Returns false (without error) when not root or when the database cannot be
+// opened, so callers can safely treat the result as a best-effort check.
 func CheckFDA() bool {
 	if os.Getuid() != 0 {
 		log.Debug("CheckFDA skipped — not running as root")
 		return false
 	}
-	if _, err := os.Stat(systemTCCDBPath); err != nil {
-		log.Debug("CheckFDA: cannot stat TCC database", "error", err.Error())
-		return false
-	}
-	granted, err := isAlreadyGranted(systemTCCDBPath, "kTCCServiceSystemPolicyAllFiles")
+	return checkFDAAtPath(systemTCCDBPath)
+}
+
+// checkFDAAtPath probes Full Disk Access by opening dbPath in-process.
+// Permission errors mean FDA is denied; other errors (e.g. ENOENT if Apple
+// moves the DB in a future macOS version) are logged and treated as denied.
+func checkFDAAtPath(dbPath string) bool {
+	f, err := os.Open(dbPath)
 	if err != nil {
-		log.Warn("CheckFDA: query failed", "error", err.Error())
+		if !errors.Is(err, os.ErrPermission) {
+			log.Warn("CheckFDA probe got unexpected error (not permission denied)",
+				"path", dbPath, "error", err.Error())
+		}
 		return false
 	}
-	return granted
+	f.Close()
+	return true
 }
 
 // sqlStr wraps a string value for SQL, escaping single quotes.
