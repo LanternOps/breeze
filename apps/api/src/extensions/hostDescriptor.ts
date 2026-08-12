@@ -78,9 +78,9 @@ export const HOST_DESCRIPTOR: ExtensionHostDescriptor = Object.freeze({
 
 /**
  * Throwing wrapper over the pure {@link checkExtensionCompatibility}. The pure
- * function returns a verdict; the reconciler wants a phase that either passes or
- * throws an {@link ExtensionIncompatibleError} (which `recordSanitizedFailure`
- * maps to lifecycle_state 'incompatible').
+ * function returns a verdict; the loading path wants a phase that either passes
+ * or throws an {@link ExtensionIncompatibleError} (which maps to
+ * lifecycle_state 'incompatible').
  */
 export function assertCompatible(
   manifest: ExtensionManifestV1,

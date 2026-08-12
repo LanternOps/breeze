@@ -18,8 +18,6 @@
     "oauth:gen-keys": "tsx scripts/oauth-gen-keys.ts",
     "metric-anomalies:backfill": "tsx scripts/metric-anomaly-backfill.ts",
     "metric-rollups:backfill": "tsx scripts/metric-rollup-backfill.ts",
-    "breezectl": "node dist/scripts/breezectl.cjs",
-    "breezectl:dev": "tsx scripts/breezectl.ts",
     "recover:stuck-agents": "tsx scripts/recover-stuck-agents.ts",
     "recover:stuck-agents:prod": "node dist/scripts/recover-stuck-agents.cjs",
     "secrets:reencrypt": "tsx ../../scripts/re-encrypt-secrets.ts",
@@ -42,9 +40,7 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@aws-sdk/client-s3": "^3.1100.0",
     "@aws-sdk/s3-request-presigner": "^3.1096.0",
-    "@breeze/ext-workspace": "workspace:*",
-    "@breeze/extension-api": "workspace:*",
-    "@breeze/extension-sdk": "workspace:*",
+    "@breeze/ext-workspace": "workspace:*",    "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
     "@elastic/elasticsearch": "^9.3.2",
     "@fastify/busboy": "^3.2.0",
@@ -94,7 +90,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@breeze/extension-cli": "workspace:*",
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.2.0",

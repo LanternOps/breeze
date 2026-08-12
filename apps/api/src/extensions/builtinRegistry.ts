@@ -15,7 +15,7 @@ import {
   type BreezeExtensionV1,
   type ExtensionManifestV1,
 } from '@breeze/extension-sdk';
-import type { ExtensionTenancyDeclaration } from '@breeze/extension-api';
+import type { ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
 import workspaceExtension from '@breeze/ext-workspace';
 
 /** One statically-imported, first-party extension. */
@@ -36,8 +36,8 @@ export interface BuiltinExtension {
   /**
    * The DEPLOYMENT enable flag for this built-in. Being compiled into the image
    * makes a built-in *available*, not *loaded*: the loading pipeline runs only
-   * when `process.env[enableEnvVar] === 'true'` (strict string, matching
-   * `BREEZE_LEGACY_SOURCE_EXTENSIONS` in loader.ts). Default OFF, so a
+   * when `process.env[enableEnvVar] === 'true'` (strict string: no `'1'`,
+   * `'TRUE'` or `'yes'`). Default OFF, so a
    * deployment that never asks for the built-in never pays for its migrations,
    * its infrastructure requirements (workspace needs pgvector) or its routes.
    *
@@ -84,8 +84,8 @@ function candidateBuiltinRoots(packageDir: string): string[] {
 /**
  * Resolve `<repo or image root>/<packageDir>`: the first candidate (see
  * {@link candidateBuiltinRoots}) whose `manifest.json` actually exists — not
- * just the directory, so an empty mount-point dir (e.g. the prod image's
- * `BREEZE_EXTENSIONS_DIR` mount) can never shadow the real root. Falls back to
+ * just the directory, so an empty same-named directory can never shadow the
+ * real root. Falls back to
  * `cwd/<packageDir>` when nothing matched, so callers (and error messages)
  * still get a sensible expected path rather than an arbitrary walk-up guess.
  */

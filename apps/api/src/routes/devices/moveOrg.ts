@@ -180,7 +180,7 @@ moveOrgRoutes.post(
 
         // Extension tables that must be DELETED (not re-stamped) on org-move: their rows
         // FK a source/config row that stays in the old org, so rewriting org_id would
-        // corrupt cross-row consistency. See extension-api tenancy docs.
+        // corrupt cross-row consistency. See the extension tenancy docs.
         for (const table of getDeviceOrgMoveDeleteTables()) {
           await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
         }

@@ -1,0 +1,31 @@
+-- Drop extension_org_installs — the L1 tenant-scoped-install (install-scoping)
+-- authorization record introduced by 2026-08-10-extension-org-installs.sql.
+--
+-- The two extension DELIVERY paths that could ever have produced an
+-- org-scoped extension (the legacy source-directory loader and the signed
+-- runtime-bundle reconciler) are removed in this same release. The one
+-- surviving path is BUILT-IN extensions, compiled into the core image; the
+-- only such extension, Breeze Workspace, is server-scoped
+-- (`installScope: "server"`, the schema default), so the gate could never
+-- fire. Every reader and writer of this table is deleted in the same PR:
+-- the gateway install guard (extensions/orgInstallGate.ts), its store
+-- (extensions/orgInstallStore.ts), the partner management API
+-- (routes/extensionOrgInstalls.ts), the MCP tools/list visibility filter and
+-- tools/call gate (routes/mcpServer.ts), and the AI-tool gate
+-- (services/aiTools.ts). It is also removed from
+-- CORE_ORG_CASCADE_DELETE_ORDER (services/tenantCascade.ts) and the tenant
+-- export policy registry, so nothing in core names it any more.
+--
+-- Ordering / deployment safety: autoMigrate runs at API boot, before the new
+-- code serves traffic, and each droplet runs a single API container — so no
+-- old container (whose gate still selects from this table) ever runs against
+-- the migrated database. A multi-replica or blue/green rollout would need
+-- this split across two releases (stop reading, then drop).
+--
+-- No transaction wrapper of our own: autoMigrate applies each file inside one
+-- transaction already (no `-- @no-transaction` directive here). Idempotent via
+-- IF EXISTS, so re-running on a database that never had the table, or that
+-- already dropped it, is a no-op. Dropping the table drops its RLS policies
+-- and its org index with it — no separate DROP POLICY / DROP INDEX needed.
+
+DROP TABLE IF EXISTS extension_org_installs;

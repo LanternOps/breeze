@@ -6,16 +6,6 @@ import {
   type ExtensionManifestV1,
 } from '@breeze/extension-sdk';
 
-// Hermetic: the tenant-export suite below reads getExtensionTenancy(), which
-// otherwise scans the repo's extensions/ root for source extensions. Stubbing
-// discovery keeps these assertions about the BUILT-IN declarations only. The
-// loading tests never reach these ports (the harness overrides both).
-vi.mock('./discovery', () => ({
-  discoverExtensions: () => [],
-  listSourceExtensionCandidates: () => [],
-  resolveExtensionsRoot: () => '/nonexistent/extensions',
-}));
-
 import {
   BUILTIN_EXTENSION_NAMES,
   builtinTenancyDeclarations,
@@ -45,15 +35,15 @@ import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import type { RegisterableExtensionWebAsset } from './webAssets';
 
 /**
- * The built-in loading path is exercised entirely through injected ports — the
- * same seam `reconcileExtensions` uses — so these tests need no database, no
- * bundle, no filesystem, and never import `@breeze/ext-workspace` themselves:
+ * The built-in loading path is exercised entirely through injected ports, so
+ * these tests need no database, no filesystem, and never import
+ * `@breeze/ext-workspace` themselves:
  * the built-in LIST is itself a port, so a fixture extension stands in for the
  * real one. Only the last suite (`BUILTIN_EXTENSION_NAMES`) looks at the real
  * registration, and only at its name.
  *
- * The in-memory state backend mirrors reconciler.test.ts's (which mirrors the
- * Drizzle backend's semantics): a fresh row is born `enabled: true` /
+ * The in-memory state backend mirrors the Drizzle backend's semantics: a fresh
+ * row is born `enabled: true` /
  * `lifecycle_state: 'discovered'`, and re-observing an existing row never
  * disturbs `enabled` or the lifecycle state.
  */
@@ -248,8 +238,6 @@ function createHarness(overrides: {
 
   const ports: Partial<BuiltinPorts> = {
     builtins: overrides.builtins ?? [fixtureBuiltin()],
-    declaredRuntimeNames: () => new Set<string>(),
-    sourceCandidates: () => [],
     createMigrationSql: () => { migrationSqlOpens.count += 1; return null; },
     runMigrations: async () => {},
     publishTenancy: (manifest) => { calls.push('tenancy'); publishedTenancy.push(manifest); },
@@ -351,27 +339,6 @@ describe('loadBuiltinExtensions', () => {
     expect(h.registry.get(NAME)?.enabled).toBe(false);
     expect(setEnabled).not.toHaveBeenCalled();
     expect((await stateStore.get(NAME))?.enabled).toBe(false);
-  });
-
-  it('fails boot when extensions.yaml declares a built-in name', async () => {
-    const h = createHarness({ ports: { declaredRuntimeNames: () => new Set([NAME]) } });
-
-    await expect(h.load()).rejects.toThrow(/built-in/i);
-    await expect(h.load()).rejects.toThrow(/extensions\.yaml/);
-
-    // Fails BEFORE any phase runs: nothing migrated, nothing staged, nothing live.
-    expect(h.calls).toEqual([]);
-    expect(h.registry.get(NAME)).toBeUndefined();
-  });
-
-  it('fails boot when a legacy source dir shadows a built-in name', async () => {
-    const h = createHarness({ ports: { sourceCandidates: () => [NAME] } });
-
-    await expect(h.load()).rejects.toThrow(/built-in/i);
-    await expect(h.load()).rejects.toThrow(/source director/i);
-
-    expect(h.calls).toEqual([]);
-    expect(h.registry.get(NAME)).toBeUndefined();
   });
 
   it('registers agent rate-limit skip prefixes when agentRoutes is true', async () => {
@@ -601,8 +568,8 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
   );
 
   // A previously-enabled deployment left `demo_*` on the database. Without the
-  // declaration, the loader's and the reconciler's unaccounted-public-tables
-  // sweeps abort boot on those tables, and org-deletion cascades skip them.
+  // declaration, the unaccounted-public-tables sweep aborts boot on those
+  // tables, and org-deletion cascades skip them.
   it('publishes tenancy — and ONLY tenancy (plus its RLS check) — when the built-in left tables behind', async () => {
     const warn = captureWarnings();
     try {
@@ -766,18 +733,6 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
       const h = createHarness();
       await h.load();
       expect(h.calls).not.toContain('probe');
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  // The one-delivery-path gate is not flag-aware on purpose: a collision is a
-  // misconfiguration whether or not this deployment switched the built-in on.
-  it('still fails boot on a delivery-path collision while disabled', async () => {
-    const warn = captureWarnings();
-    try {
-      const h = createHarness({ ports: { declaredRuntimeNames: () => new Set([NAME]) } });
-      await expect(h.load()).rejects.toThrow(/extensions\.yaml/);
     } finally {
       warn.mockRestore();
     }

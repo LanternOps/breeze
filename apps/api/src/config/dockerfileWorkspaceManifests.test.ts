@@ -262,7 +262,9 @@ function resolveWorkspaceClosure(roots: WorkspacePackage[], includeDev: boolean)
  * `unpinned` — the install has no `--frozen-lockfile` (the dev images:
  *   `RUN pnpm install`). pnpm must resolve every `workspace:*` spec from the
  *   manifests actually on disk, so a missing one is an immediate, loud build
- *   failure:
+ *   failure (the package named here was itself removed when the third-party
+ *   extension toolchain was retired — it is kept as the worked example because
+ *   this is the exact error a real build produced):
  *     ERR_PNPM_WORKSPACE_PKG_NOT_FOUND  In apps/api: "@breeze/extension-cli@workspace:*"
  *     is in the dependencies but no package named "@breeze/extension-cli" is
  *     present in the workspace

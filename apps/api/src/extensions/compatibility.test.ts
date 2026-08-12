@@ -5,7 +5,7 @@ import {
   parseExtensionManifestV1,
   type BreezeExtensionV1,
   type ExtensionManifestV1,
-} from '@breeze/extension-api';
+} from '@breeze/extension-sdk';
 import {
   checkExtensionCompatibility,
   type ExtensionHostDescriptor,
@@ -145,8 +145,6 @@ describe('SDK v1 release fixture', () => {
       new URL('manifest.json', fixtureDirectory),
       'utf8',
     ));
-    // Import from @breeze/extension-api intentionally exercises the legacy-to-v1
-    // compatibility adapter that remains supported during the v1 release window.
     const manifest = parseExtensionManifestV1(rawManifest);
 
     expect(checkExtensionCompatibility(manifest, makeHost({

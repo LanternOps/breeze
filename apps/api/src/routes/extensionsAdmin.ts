@@ -6,31 +6,27 @@
  * and audit-logs every request that reaches a handler).
  *
  * ── SOURCE-OF-TRUTH BOUNDARY ────────────────────────────────────────────────
- * `extensions.yaml` is the ONLY store of DESIRED state: which artifact, which
- * version, which digest, which publisher, whether it is required. None of that
- * is writable here, and this router never writes it to PostgreSQL. The single
- * mutable thing on this surface is the RUNTIME on/off switch
- * (`installed_extensions.enabled`), which is deliberately operational state:
- * an operator must be able to shut a misbehaving extension off fleet-wide
- * without a redeploy. Installing/upgrading is `breezectl extensions install`,
- * which edits the YAML.
+ * The CORE IMAGE is the only store of DESIRED state: which extensions exist,
+ * at which version, is fixed by the build (built-ins are compiled in and gated
+ * by their own deployment env flag — builtinRegistry.ts). None of that is
+ * writable here. The single mutable thing on this surface is the RUNTIME on/off
+ * switch (`installed_extensions.enabled`), which is deliberately operational
+ * state: an operator must be able to shut a misbehaving extension off
+ * fleet-wide without a redeploy. Changing WHICH extensions exist is a deploy.
  *
  * ── FLEET SEMANTICS ─────────────────────────────────────────────────────────
  * The `enabled` flag is the cross-replica contract, and it is honored by an
  * UNCACHED re-read of the flag at each point where extension code could run:
  *   • the request gateway reads it per request (enabledGate.ts);
- *   • the job processor reads it per tick (jobHost.ts `process`);
  *   • `executeTool` reads it before invoking an extension-contributed AI tool
  *     handler (aiTools.ts).
  * That is what makes a flip fleet-wide: no replica trusts its own in-memory
  * registry snapshot to decide whether extension code may execute, because a
  * disable landing on one replica does not invalidate any other replica's
- * snapshot. Schedule reconciliation reads the flag too (jobHost.ts `sync`), so a
- * stale replica cannot resurrect a disabled extension's repeatables.
+ * snapshot.
  *
- * The registry mutation and schedule resync below are the LOCAL replica's fast
- * path plus the fleet-wide schedule cleanup — see `applyEnabled` for why both
- * are needed.
+ * The registry mutation below is the LOCAL replica's fast path — see
+ * `applyEnabled`.
  *
  * ── SANITIZATION ────────────────────────────────────────────────────────────
  * Nothing derived from a raw error, a filesystem path, a key file, or a config
@@ -52,7 +48,6 @@ import {
   type ExtensionContributionRegistry,
 } from '../extensions/contributionRegistry';
 import { extensionRootsSnapshot } from '../extensions/faultAttribution';
-import { resyncExtensionSchedules } from '../extensions/jobHost';
 import {
   createExtensionStateStore,
   type ExtensionStateRecord,
@@ -61,7 +56,7 @@ import {
 
 /**
  * Fixed, secret-free explanations keyed by the coarse failure CATEGORY the
- * reconciler persists. The persisted `last_error_message` is never read; this
+ * loading path persists. The persisted `last_error_message` is never read; this
  * table is the only thing an operator sees, so the surface is provably free of
  * bundle bytes, key material, paths, SQL, and exception text.
  */
@@ -97,11 +92,6 @@ export type ExtensionsAdminRegistry = Pick<
 export interface ExtensionsAdminDeps {
   stateStore: ExtensionsAdminStore;
   registry: ExtensionsAdminRegistry;
-  /**
-   * Reconcile the BullMQ repeatable schedules against the current registry.
-   * Best-effort: a failure (Redis down) must not fail the enable/disable.
-   */
-  resyncSchedules: () => Promise<void>;
   hostDescriptor: ExtensionHostDescriptor;
   /** Live extension-name → extracted-root map (used only as a presence check). */
   extensionRoots: () => ReadonlyMap<string, string>;
@@ -116,12 +106,14 @@ function sanitizeRecord(
     name: row.name,
     enabled: row.enabled,
     lifecycleState: row.lifecycleState,
-    // Desired state, as OBSERVED from extensions.yaml + the verified bundle.
-    // Read-only here; `breezectl extensions install/upgrade` changes it.
+    // Desired state, as OBSERVED from the loaded extension's manifest.
+    // Read-only here; a deploy of a new core image changes it.
     configuredVersion: row.configuredVersion,
     activeVersion: row.activeVersion,
-    // The ARTIFACT digest is a public content address of a signed bundle — it
-    // is the thing an operator pins in extensions.yaml, not a secret.
+    // A public content address, never a secret. Always null for a built-in:
+    // the core image is its own supply-chain boundary, so there is no separate
+    // artifact to address. Retained on the row/response shape for DBs that
+    // still carry a value written by an older release.
     artifactDigest: row.artifactDigest,
     publisher: row.publisherId,
     manifestApiVersion: row.manifestApiVersion,
@@ -204,26 +196,14 @@ export function createExtensionsAdminRoutes(deps: ExtensionsAdminDeps): Hono {
 /**
  * Flip the runtime enabled flag and make it take effect NOW.
  *
- * Three things happen, in this order, and the order matters:
+ * Two things happen, in this order, and the order matters:
  *
  *  1. `stateStore.setEnabled` — the durable, fleet-wide source of truth for the
- *     on/off switch. Every replica's request gateway and job processor read it,
- *     so this alone already stops new requests and new job ticks everywhere.
+ *     on/off switch. Every replica's request gateway reads it, so this alone
+ *     already stops new requests everywhere.
  *  2. Registry withdraw/activate — the LOCAL replica's in-process view. The
  *     registry keeps the staged snapshot and only flips its `enabled` field, so
  *     a disable is fully reversible without a restart.
- *  3. Schedule resync — the piece the boot-only `ExtensionJobHost.sync()` could
- *     not deliver. Without this, a disabled extension's BullMQ REPEATABLE
- *     entries keep firing (the processor skips them, but the schedules linger
- *     and reappear as churn) until the next restart. Resyncing here removes the
- *     disabled extension's repeatables immediately, and restores them on enable.
- *
- * Step 3 is BEST-EFFORT on purpose: scheduling lives in Redis, the flag lives in
- * PostgreSQL, and an operator disabling a misbehaving extension must not be
- * blocked because Redis is unreachable. If the resync throws we still return
- * 200 with `scheduleSyncDeferred: true` — the flag is already authoritative, the
- * processor already skips disabled jobs, and the next boot's `sync()` reconciles
- * the leftover schedules.
  */
 async function applyEnabled(
   c: Context,
@@ -247,27 +227,13 @@ async function applyEnabled(
     }
   }
 
-  let scheduleSyncDeferred = false;
-  try {
-    await deps.resyncSchedules();
-  } catch (error) {
-    // Log the raw error for the operator's server logs, but never return it.
-    scheduleSyncDeferred = true;
-    console.error(
-      `[extensions] schedule resync after ${enabled ? 'enable' : 'disable'} of "${name}" failed; ` +
-        'the enabled flag is applied and will be honored per request and per job tick',
-      error,
-    );
-  }
-
-  return c.json({ name, enabled, scheduleSyncDeferred });
+  return c.json({ name, enabled });
 }
 
-/** The production router, wired to the shared registry, store and job queue. */
+/** The production router, wired to the shared registry and store. */
 export const extensionsAdminRoutes = createExtensionsAdminRoutes({
   stateStore: createExtensionStateStore(),
   registry: extensionContributionRegistry,
-  resyncSchedules: () => resyncExtensionSchedules(),
   hostDescriptor: HOST_DESCRIPTOR,
   extensionRoots: extensionRootsSnapshot,
 });

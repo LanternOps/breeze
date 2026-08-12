@@ -30,8 +30,8 @@ export function attributeExtensionError(
 }
 
 /**
- * The live extension name → extracted-root map. The reconciler POPULATES an
- * entry the instant an extension activates and CLEARS it on withdraw, so the
+ * The live extension name → root map. The loading path POPULATES an entry the
+ * instant an extension activates and CLEARS it on withdraw, so the
  * snapshot handed to {@link attributeExtensionError} always reflects the set of
  * extensions whose code is actually loaded in this process.
  */

@@ -249,15 +249,6 @@ const CLEANUP_TABLES = [
   'software_products',
   'vulnerabilities',
   'vulnerability_sources',
-  // extension_org_installs.org_id carries no FK to organizations by design
-  // (org deletion goes through the tenant cascade service, not a DB FK — see
-  // 2026-08-10-extension-org-installs.sql), so it is not reached by the
-  // organizations CASCADE either. List it explicitly to avoid cross-test
-  // accumulation, same rationale as the vuln tables above. installed_extensions
-  // (its FK parent) deliberately stays OUT of this list — see
-  // extensionState.integration.test.ts, which relies on that global table
-  // surviving beforeEach and uses a unique name + its own afterAll cleanup.
-  'extension_org_installs'
 ];
 
 // Resolved once per test file (module instance): which of CLEANUP_TABLES exist

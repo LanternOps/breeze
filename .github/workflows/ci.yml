@@ -152,12 +152,6 @@ jobs:
       - name: Type-check extension SDK
         run: pnpm --filter @breeze/extension-sdk typecheck
 
-      - name: Test legacy extension adapter
-        run: pnpm --filter @breeze/extension-api test
-
-      - name: Type-check legacy extension adapter
-        run: pnpm --filter @breeze/extension-api typecheck
-
       # ee/workspace's own unit + typecheck coverage (424 tests). The
       # apps/api typecheck step below separately covers the server code
       # through the static built-in-extension import; this covers the rest
@@ -1745,8 +1739,7 @@ jobs:
       # builtinExtensions.ts), which — unlike core migrations — runs ONLY at
       # actual `apps/api` server boot (src/index.ts), never inside the
       # vitest integration suite's globalSetup (which calls core
-      # autoMigrate() only; see src/db/autoMigrate.ts's planMigrations,
-      # which reads the LEGACY extensions/ dir, not the built-in registry).
+      # autoMigrate() only — core migrations, never the built-in registry).
       # Boot the real server once, against this shard's already
       # core-migrated :5433 DB, wait for its "loaded built-in" line, then
       # stop it — the same `tsx src/index.ts` boot Task 4 of the ee-merge

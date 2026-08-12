@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
-import type { ExtensionTenancyDeclaration } from '@breeze/extension-api';
+import type { ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
 import { getTestDb } from './setup';
 import {
   assertExtensionTenancyRls,
@@ -11,8 +11,8 @@ import {
 /**
  * Real-DB contract test for the extension RLS tripwire (#2424).
  *
- * WHY THIS FILE EXISTS: the unit tests in `extensions/loader.test.ts` mock
- * `db.execute`, so they assert the *verdict logic* but prove nothing about the
+ * WHY THIS FILE EXISTS: the unit tests over this tripwire mock `db.execute`,
+ * so they assert the *verdict logic* but prove nothing about the
  * catalog query itself. That gap already bit once — the first cut of this
  * assertion embedded the table list as `= ANY(${tables})`, which drizzle
  * expands into a TUPLE (`= ANY(($1, $2, ...))`) that Postgres rejects outright.

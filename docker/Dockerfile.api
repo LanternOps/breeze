@@ -6,7 +6,6 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
-COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 COPY packages/extension-testkit/package.json ./packages/extension-testkit/
@@ -18,7 +17,6 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/packages/extension-api/node_modules ./packages/extension-api/node_modules
 COPY --from=deps /app/packages/extension-sdk/node_modules ./packages/extension-sdk/node_modules
 COPY --from=deps /app/packages/extension-web-sdk/node_modules ./packages/extension-web-sdk/node_modules
 COPY --from=deps /app/packages/extension-testkit/node_modules ./packages/extension-testkit/node_modules
@@ -75,12 +73,9 @@ COPY --from=builder --chown=hono:nodejs /app/ee/workspace/manifest.json ./ee/wor
 COPY --from=builder --chown=hono:nodejs /app/ee/workspace/dist ./ee/workspace/dist
 
 # The stock image contains AGPL core + built-in ee/ code (compiled into
-# dist/index.cjs plus the runtime assets copied above). Third-party
-# extensions still arrive only as SIGNED runtime bundles, delivered by
-# mounting extensions.yaml (+ artifacts) into this directory; it is created
-# empty so the mount point exists and is owned by the runtime user.
-RUN mkdir -p /app/extensions && chown hono:nodejs /app/extensions
-ENV BREEZE_EXTENSIONS_DIR=/app/extensions
+# dist/index.cjs plus the runtime assets copied above). There is no
+# third-party extension delivery path: built-ins are the only extensions,
+# and each loads only when its per-deployment enable flag is set.
 USER hono
 
 EXPOSE 3001

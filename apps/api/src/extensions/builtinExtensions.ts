@@ -1,6 +1,7 @@
 // The startup loading path for BUILT-IN extensions: first-party extensions that
-// are compiled into the core image and imported statically, rather than
-// acquired as signed runtime bundles.
+// are compiled into the core image and imported statically. This is the ONLY
+// extension delivery path — the legacy source-directory loader and the signed
+// runtime-bundle reconciler are both gone.
 //
 // Compiled in ≠ loaded. Each built-in carries a deployment enable flag
 // (BuiltinExtension.enableEnvVar) and is OFF by default; only an explicitly
@@ -9,27 +10,28 @@
 // narrowed to whichever of its tables are actually on the database — none, some
 // or all — and the RLS tripwire over that declaration).
 //
-// It mirrors the reconciler's phase order for everything that still applies —
-// migration → tenancy → stage → validate → activate → web asset — and drops the
-// phases that only make sense for a third-party artifact (acquire / trust /
-// verify / extract / load): the code is already here, already ours, already
-// covered by the core image's own supply chain.
+// The phase order is migration → tenancy → stage → validate → activate → web
+// asset. There is no acquire / trust / verify / extract phase: the code is
+// already here, already ours, already covered by the core image's own supply
+// chain.
 //
-// Failure policy differs from `reconcileExtensions` on purpose. A runtime bundle
-// may be OPTIONAL, so its failure is recorded and stepped over. A built-in is
-// first-party REQUIRED code shipped inside the image: any phase failure
-// propagates and aborts boot. There is no half-working built-in state to
-// preserve, and silently degrading one would hide a broken image.
+// Failure policy: a built-in is first-party REQUIRED code shipped inside the
+// image, so any phase failure propagates and aborts boot. There is no
+// half-working built-in state to preserve, and silently degrading one would
+// hide a broken image.
 //
-// Every I/O seam is an injectable PORT (the same seam `reconcileExtensions`
-// uses), so these behaviors are unit-testable with no bundle, filesystem or DB —
-// including the built-in LIST itself, so tests never load the real extension.
+// Every I/O seam is an injectable PORT, so these behaviors are unit-testable
+// with no filesystem or DB — including the built-in LIST itself, so tests never
+// load the real extension.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import postgres from 'postgres';
-import type { BreezeExtensionV1, ExtensionManifestV1 } from '@breeze/extension-sdk';
-import type { ExtensionTenancyDeclaration } from '@breeze/extension-api';
+import type {
+  BreezeExtensionV1,
+  ExtensionManifestV1,
+  ExtensionTenancyDeclaration,
+} from '@breeze/extension-sdk';
 import {
   BUILTINS,
   resolveBuiltinRoot,
@@ -40,13 +42,11 @@ import type {
   StagedExtensionContributions,
 } from './contributionRegistry';
 import type { ExtensionStateStore } from './stateStore';
-import { defaultStageExtension } from './reconciler';
+import { defaultStageExtension } from './stageExtension';
 import { reconcileExtensionMigrations, type MigratableExtension } from './migrator';
 import { registerRuntimeExtensionTenancy } from './tenancyRegistry';
 import { assertExtensionTenancyRls } from './tenancyTripwire';
 import { registerExtensionWebAsset, type RegisterableExtensionWebAsset } from './webAssets';
-import { declaredRuntimeExtensionNames } from './loader';
-import { listSourceExtensionCandidates, resolveExtensionsRoot } from './discovery';
 import { registerGlobalRateLimitSkipPrefix } from '../middleware/globalRateLimit';
 
 export { BUILTIN_EXTENSION_NAMES, builtinTenancyDeclarations } from './builtinRegistry';
@@ -107,14 +107,12 @@ export function readWebDist(root: string): RegisterableExtensionWebAsset {
 }
 
 /**
- * `reconcileExtensionMigrations`'s rolling-update gate refuses to apply a
- * bundle whose schema floor is above the still-serving active version, and the
- * escape hatch is an operator flipping `rollout: replace` in extensions.yaml.
- * A built-in has no such entry — its code and its migrations ship together
- * inside the core image, on the core image's own deploy cadence — so a
- * 'rolling' gate here could only wedge boot with no way out. Built-ins
- * therefore migrate like core migrations do (autoMigrate applies core SQL with
- * no such gate): raising a built-in's `schemaCompatibilityFloor` is a breaking
+ * `reconcileExtensionMigrations`'s rolling-update gate refuses to apply
+ * migrations whose schema floor is above the still-serving active version. A
+ * built-in's code and its migrations ship together inside the core image, on
+ * the core image's own deploy cadence, so a 'rolling' gate here could only
+ * wedge boot with no way out. Built-ins therefore migrate like core migrations
+ * do (autoMigrate applies core SQL with no such gate): raising a built-in's `schemaCompatibilityFloor` is a breaking
  * change that must be coordinated with the core deploy, exactly as a breaking
  * core migration is.
  */
@@ -123,11 +121,10 @@ const BUILTIN_MIGRATION_ROLLOUT = 'replace' as const;
 /**
  * Is this built-in switched ON for this deployment?
  *
- * Strict-string convention, matching `BREEZE_LEGACY_SOURCE_EXTENSIONS` in
- * loader.ts: anything other than the exact string `'true'` — unset, empty,
- * `'1'`, `'TRUE'` — leaves the built-in unloaded. Default OFF is the point:
- * being compiled into the image must not oblige every deployment to satisfy the
- * built-in's infrastructure requirements (workspace needs pgvector) or carry its
+ * Strict-string convention: anything other than the exact string `'true'` —
+ * unset, empty, `'1'`, `'TRUE'` — leaves the built-in unloaded. Default OFF is
+ * the point: being compiled into the image must not oblige every deployment to
+ * satisfy the built-in's infrastructure requirements (workspace needs pgvector) or carry its
  * schema.
  */
 export function isBuiltinEnabled(builtin: BuiltinExtension): boolean {
@@ -246,17 +243,12 @@ async function runBuiltinMigrations(
 }
 
 /**
- * Every I/O seam the built-in loader touches, as a port — mirroring
- * {@link import('./reconciler').ReconcilePorts}. Production builds the real set
- * via {@link buildDefaultPorts}; tests inject fakes.
+ * Every I/O seam the built-in loader touches, as a port. Production builds the
+ * real set via {@link buildDefaultPorts}; tests inject fakes.
  */
 export interface BuiltinPorts {
   /** The built-ins to load. A port so tests never import the real package. */
   builtins: readonly BuiltinExtension[];
-  /** Names declared in the runtime deployment config (extensions.yaml). */
-  declaredRuntimeNames(): ReadonlySet<string>;
-  /** Legacy source-directory extension names present on disk. */
-  sourceCandidates(): readonly string[];
   /** The privileged migration connection, opened once and closed in a finally. */
   createMigrationSql(): postgres.Sql | null;
   runMigrations(
@@ -361,12 +353,9 @@ export interface LoadBuiltinExtensionsArgs {
 function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
   return {
     builtins: BUILTINS,
-    declaredRuntimeNames: () => declaredRuntimeExtensionNames(resolveExtensionsRoot()),
-    sourceCandidates: () => listSourceExtensionCandidates(),
     createMigrationSql: () => {
       // The migration connection is privileged (it issues extension DDL). Never
-      // substitute a guessed DSN for a missing DATABASE_URL — mirroring
-      // buildDefaultPorts.createMigrationSql in reconciler.ts.
+      // substitute a guessed DSN for a missing DATABASE_URL.
       const databaseUrl = process.env.DATABASE_URL;
       if (!databaseUrl) {
         throw new Error('DATABASE_URL is required to run built-in extension migrations');
@@ -391,7 +380,7 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
     existingDeclaredTables: defaultExistingDeclaredTables,
     stageExtension: (module, manifest, opts) =>
-      defaultStageExtension(module, manifest, args.registry, undefined, opts),
+      defaultStageExtension(module, manifest, args.registry, opts),
     validateTenancyDeclaration: (extensionName, tenancy) =>
       assertExtensionTenancyRls(extensionName, tenancy),
     registerRateLimitSkip: registerGlobalRateLimitSkipPrefix,
@@ -399,36 +388,6 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
     readWebDist,
     registerWebAsset: registerExtensionWebAsset,
   };
-}
-
-/**
- * One delivery path per extension name.
- *
- * `registry.activate()` REPLACES a same-name snapshot, so a runtime artifact
- * reconciled after this loader would silently shadow the built-in — and a failed
- * optional artifact would withdraw the built-in's live routes. The legacy loader
- * enforces the same rule between its two paths (loader.ts); this extends it to
- * the third. Both gates run before ANY phase, so a collision costs nothing but a
- * failed boot.
- */
-function assertNoDeliveryPathCollision(ports: BuiltinPorts): void {
-  const builtins = ports.builtins;
-  if (builtins.length === 0) return;
-
-  const runtimeNames = ports.declaredRuntimeNames();
-  const sourceNames = new Set(ports.sourceCandidates());
-  for (const { manifest } of builtins) {
-    if (runtimeNames.has(manifest.name)) {
-      throw new Error(
-        `[extensions] "${manifest.name}" is a BUILT-IN extension AND is declared as a runtime artifact in extensions.yaml; one delivery path per extension name — remove the extensions.yaml entry`,
-      );
-    }
-    if (sourceNames.has(manifest.name)) {
-      throw new Error(
-        `[extensions] "${manifest.name}" is a BUILT-IN extension AND is present as a legacy source directory; one delivery path per extension name — remove the source directory`,
-      );
-    }
-  }
 }
 
 /**
@@ -486,11 +445,10 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
  * Tenancy is the one exception, and it cuts BOTH ways:
  *
  *   • If the built-in's tables EXIST (a previous boot had it enabled and its
- *     migrations ran), the declaration must still be published. Two sweeps —
- *     the legacy loader's and the reconciler's repo-wide
- *     `assertNoUnaccountedPublicTables` — would otherwise read those orphaned
- *     `workspace_*` tables as belonging to no manifest and abort boot, and
- *     org-deletion cascades would silently skip the rows in them.
+ *     migrations ran), the declaration must still be published. The repo-wide
+ *     `assertNoUnaccountedPublicTables` sweep would otherwise read those
+ *     orphaned `workspace_*` tables as belonging to no manifest and abort boot,
+ *     and org-deletion cascades would silently skip the rows in them.
  *   • If they DO NOT exist, publishing is actively harmful: core cascade,
  *     device-move and tenant-export code iterates the declared tables and
  *     issues SQL against each one, which would now name relations that were
@@ -508,8 +466,8 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
  * a half-finished migration run instead of a never-started one.
  *
  * So the probe returns the present SUBSET and what gets published is a
- * declaration FILTERED to it. That is safe in both directions: the two
- * unaccounted-table sweeps only examine tables that EXIST, so a filtered
+ * declaration FILTERED to it. That is safe in both directions: the
+ * unaccounted-table sweep only examines tables that EXIST, so a filtered
  * declaration still accounts for every one of them, while cascade/export/
  * device-move never name a missing relation. A partial set also earns a
  * structured warning — a half-migrated built-in is an operator problem, not a
@@ -594,36 +552,17 @@ async function skipDisabledBuiltin(
  * {@link isBuiltinEnabled}) and is OFF unless the deployment says otherwise;
  * a disabled one takes {@link skipDisabledBuiltin} instead of the pipeline.
  *
- * BOOT ORDER IS PART OF THE CONTRACT: call this AFTER `loadSourceExtensions`
- * and BEFORE `reconcileExtensions`.
- *
- *   • BEFORE `reconcileExtensions` — mandatory. The reconciler ends with one
- *     repo-wide `assertNoUnaccountedPublicTables(getExtensionTenancy())` sweep
- *     whenever extensions.yaml declares at least one extension. If built-ins
- *     load after that sweep, their tenancy has not been published yet while
- *     their tables already exist (created by an earlier boot's migrations), so
- *     the sweep reads every `workspace_*` table as belonging to no manifest and
- *     aborts. The FIRST boot would survive (no tables yet) and every boot after
- *     it would fail — the worst possible failure shape.
- *   • AFTER `loadSourceExtensions` — the legacy loader stages and activates the
- *     deprecated source-directory path first; running built-ins first would let
- *     a built-in's activation be observed by that loader's own gates. Its
- *     repo-wide sweep is made built-in-aware through
- *     {@link builtinTenancyDeclarations} (loader.ts), so this ordering needs no
- *     tenancy to have been published yet.
+ * BOOT ORDER: this is now the only extension loading step, and it runs after
+ * `initializeDatabaseForStartup` (core migrations) and before the startup
+ * checks. Nothing else publishes extension tenancy, so nothing else can observe
+ * a half-published declaration; the ordering constraints that used to bind this
+ * call between the legacy source loader and the signed-bundle reconciler went
+ * away with those two paths.
  */
 export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Promise<void> {
   const ports: BuiltinPorts = { ...buildDefaultPorts(args), ...args.ports };
   const { registry, stateStore } = args;
   if (ports.builtins.length === 0) return;
-
-  // The gate is deliberately NOT flag-aware: a built-in's name is reserved by
-  // the registry whether or not this deployment switched it on, so a colliding
-  // extensions.yaml entry or source directory is a misconfiguration to shout
-  // about either way — and shouting about it only when the flag happens to be
-  // set would make the collision surface for the first time on the day someone
-  // enables the built-in.
-  assertNoDeliveryPathCollision(ports);
 
   const enabled: BuiltinExtension[] = [];
   for (const builtin of ports.builtins) {
@@ -644,7 +583,7 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
 
       // Publish tenancy the instant migrations succeed — before staging — so
       // cascade/device-move handling for the tables that now exist survives a
-      // later failure or a disable (same rationale as reconciler.ts).
+      // later failure or a disable.
       ports.publishTenancy(manifest);
 
       const staged = await ports.stageExtension(builtin.module, manifest, {
@@ -668,9 +607,9 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       // survives restarts and deploys.
       if (existing === null) await stateStore.setEnabled(name, true);
 
-      // Activation reads the SAME durable flag runtime bundles do, so the
-      // enabled gate, the platform-admin enable/disable surface and the
-      // per-org install gate all behave identically for a built-in.
+      // Activation reads the durable flag, so the enabled gate and the
+      // platform-admin enable/disable surface behave identically for a
+      // built-in.
       registry.activate({ ...staged, enabled: await stateStore.isEnabled(name) });
       if (staged.routeApp && manifest.agentRoutes === true) {
         ports.registerRateLimitSkip(`/api/v1/ext/${name}/agent/`);
@@ -679,7 +618,7 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
       await stateStore.recordActive(name, manifest.version);
 
       // NOTE: deliberately no registerExtensionRoot. Fault attribution keys on
-      // extracted-bundle stack paths; a built-in is compiled into the core
+      // per-extension root stack paths; a built-in is compiled into the core
       // image, so its faults correctly attribute to core.
       registerBuiltinWebAsset(builtin, ports);
 

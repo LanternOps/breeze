@@ -7,11 +7,6 @@ import {
   recordMigration,
   splitSqlStatements,
 } from '../db/autoMigrate';
-import {
-  assertVerifiedMemberBytes,
-  readBoundedZipDirectory,
-  type VerifiedExtensionBundle,
-} from './bundleVerifier';
 import type { ExtensionStateStore } from './stateStore';
 
 /**
@@ -48,18 +43,17 @@ export interface ExtensionMigrationFile {
 }
 
 /**
- * The migrator's input. Decoupled from `VerifiedExtensionBundle` on purpose:
- * the SQL bytes are read out of the bundle archive up front (see
- * {@link readBundleMigrations} / {@link toMigratableExtension}) so this core is
- * unit-testable with inline SQL and the Task-4 reconciler simply feeds it a
- * value derived from the verified bundle.
+ * The migrator's input. Decoupled from how the extension was delivered on
+ * purpose: the SQL bytes are read up front by the loading path
+ * (builtinExtensions.ts reads them off disk), so this core is unit-testable
+ * with inline SQL.
  */
 export interface MigratableExtension {
   /** Extension name — namespaces ledger rows, keys the advisory lock + store. */
   name: string;
-  /** The incoming bundle's manifest version. */
+  /** The incoming manifest version. */
   version: string;
-  /** The incoming bundle's declared schema-compatibility floor. */
+  /** The manifest's declared schema-compatibility floor. */
   schemaCompatibilityFloor: string;
   /** Ordered candidate migration files (already sorted). */
   migrations: readonly ExtensionMigrationFile[];
@@ -222,61 +216,4 @@ export async function reconcileExtensionMigrations(
   // ── 5. Record the floor this version applied (idempotent upsert keyed by
   //       name+version). Only reached once every file committed.
   await stateStore.recordSchemaFloor(name, version, floor);
-}
-
-/**
- * Read an extension bundle's migration files out of its verified archive. The
- * `files` map on {@link VerifiedExtensionBundle} carries only hashes, so the SQL
- * bytes are read from the archive members directly. Selects the direct `*.sql`
- * children of the manifest's `migrationsDir`, sorted by filename.
- *
- * The member LIST comes from `bundle.files` — the verifier's record — never from
- * a fresh directory read, and every read's bytes are re-hashed against the
- * recorded digest before the SQL is used. Re-opening the archive is a
- * time-of-check/time-of-use window: anyone able to write the artifact-store root
- * could otherwise swap in extra or altered `*.sql` members between verification
- * and application, giving them arbitrary DDL on the platform database while the
- * signature check passed over entirely different bytes.
- *
- * This is the seam between "a verified bundle on disk" and "SQL to apply": the
- * Task-4 reconciler composes it via {@link toMigratableExtension}.
- */
-export async function readBundleMigrations(
-  bundle: Pick<VerifiedExtensionBundle, 'archivePath' | 'manifest' | 'files'>,
-): Promise<ExtensionMigrationFile[]> {
-  const prefix = `${bundle.manifest.migrationsDir}/`;
-  const names = [...bundle.files.keys()]
-    .filter(
-      (member) =>
-        member.startsWith(prefix) &&
-        member.endsWith('.sql') &&
-        !member.slice(prefix.length).includes('/'),
-    )
-    .sort((a, b) => a.localeCompare(b));
-  if (names.length === 0) return [];
-
-  const archive = await readBoundedZipDirectory(bundle.archivePath);
-  try {
-    const out: ExtensionMigrationFile[] = [];
-    for (const member of names) {
-      const bytes = await archive.read(member);
-      assertVerifiedMemberBytes(member, bytes, bundle.files.get(member)!.sha256);
-      out.push({ filename: member.slice(prefix.length), sql: bytes.toString('utf8') });
-    }
-    return out;
-  } finally {
-    await archive.close().catch(() => {});
-  }
-}
-
-/** Derive a {@link MigratableExtension} from a verified bundle (Task-4 seam). */
-export async function toMigratableExtension(
-  bundle: VerifiedExtensionBundle,
-): Promise<MigratableExtension> {
-  return {
-    name: bundle.manifest.name,
-    version: bundle.manifest.version,
-    schemaCompatibilityFloor: bundle.manifest.schemaCompatibilityFloor,
-    migrations: await readBundleMigrations(bundle),
-  };
 }

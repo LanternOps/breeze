@@ -9,8 +9,7 @@
     "test:headed": "playwright test --headed",
     "test:debug": "PWDEBUG=1 playwright test",
     "test:report": "playwright show-report",
-    "monitor": "tsx live-signup/monitor.ts",
-    "stage:runtime-extension-fixture": "tsx fixtures/runtime-extension/stage.ts"
+    "monitor": "tsx live-signup/monitor.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2"
