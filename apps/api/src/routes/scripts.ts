@@ -928,6 +928,20 @@ scriptRoutes.post(
       }, result.status);
     }
 
+    // Every target device failed to dispatch (#3409 PR2's per-device failure
+    // channel — e.g. an unresolved or secret {{var.*}} token). The service
+    // still reports ok:true because the request itself was valid, but nothing
+    // was queued, so returning 201 {status:'queued', executions:[]} would show
+    // the caller a success toast for a run that dispatched to no one. Returned
+    // before the audit, matching the maintenance-suppressed path above: an
+    // error return does not write a `script.execute` success record.
+    if (result.executions.length === 0 && result.failures.length > 0) {
+      return c.json({
+        error: `Script could not be dispatched to any target device: ${result.failures[0]!.error}`,
+        failures: result.failures,
+      }, 422);
+    }
+
     writeRouteAudit(c, {
       orgId: result.auditOrgId,
       action: 'script.execute',
@@ -953,6 +967,10 @@ scriptRoutes.post(
         ? result.maintenanceSuppressedDeviceIds
         : undefined,
       executions: result.executions,
+      // Partial failure: some devices dispatched, others didn't (the
+      // all-failed case returned 422 above). Omitted when empty so the
+      // common clean-run response shape is unchanged.
+      failures: result.failures.length > 0 ? result.failures : undefined,
       status: result.status,
     }, 201);
   }

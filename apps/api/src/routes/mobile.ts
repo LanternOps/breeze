@@ -1211,7 +1211,19 @@ mobileRoutes.post(
         return c.json({ error: result.error }, result.status);
       }
 
-      const execution = result.executions[0]!;
+      // A dispatch can now fail per device WITHOUT failing the request
+      // (#3409 PR2's per-device failure channel) — e.g. an unresolved or
+      // secret {{var.*}} token. For this single-device endpoint that means
+      // `executions` is empty and `failures` carries the reason; indexing
+      // [0] here used to throw and turn a user-fixable problem into a 500.
+      const execution = result.executions[0];
+      if (!execution) {
+        const failure = result.failures[0];
+        return c.json(
+          { error: failure?.error ?? 'Script could not be dispatched to this device' },
+          422
+        );
+      }
       writeRouteAudit(c, {
         orgId: device.orgId,
         action: 'mobile.device.action',

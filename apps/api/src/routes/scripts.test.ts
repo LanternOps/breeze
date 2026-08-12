@@ -14,6 +14,14 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 // Mock all services
 vi.mock('../services', () => ({}));
 
+const { executeScriptOnDevicesMock } = vi.hoisted(() => ({
+  executeScriptOnDevicesMock: vi.fn(),
+}));
+
+vi.mock('../services/scriptExecution', () => ({
+  executeScriptOnDevices: executeScriptOnDevicesMock,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn()
@@ -939,6 +947,123 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  // #3409 PR2 gave executeScriptOnDevices a per-device failure channel. The
+  // service reports ok:true even when every device failed (the REQUEST was
+  // valid), so without these branches the route answered 201
+  // {status:'queued', executions:[]} and the UI toasted success for a run that
+  // dispatched to nobody.
+  describe('per-device dispatch failures on execute', () => {
+    const executeBody = (deviceIds: string[]) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ deviceIds }),
+    });
+
+    it('returns 422 and writes no audit when every device failed to dispatch', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: null,
+        batchIds: [],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [],
+        failures: [{
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          code: 'unresolved_variables',
+          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
+        }],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody(['11111111-1111-1111-1111-111111111111']),
+      );
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toContain('no value set for {{var.api_key}}');
+      expect(body.failures).toHaveLength(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('returns 201 with failures alongside executions on a partial failure', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: 'batch-1',
+        batchIds: ['batch-1'],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 2,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [{
+          executionId: 'exec-1',
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandId: 'cmd-1',
+        }],
+        failures: [{
+          deviceId: '22222222-2222-2222-2222-222222222222',
+          code: 'unresolved_variables',
+          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
+        }],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody([
+          '11111111-1111-1111-1111-111111111111',
+          '22222222-2222-2222-2222-222222222222',
+        ]),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.executions).toHaveLength(1);
+      expect(body.failures).toHaveLength(1);
+      expect(body.failures[0].deviceId).toBe('22222222-2222-2222-2222-222222222222');
+    });
+
+    it('omits failures entirely on a clean run', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: null,
+        batchIds: [],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [{
+          executionId: 'exec-1',
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandId: 'cmd-1',
+        }],
+        failures: [],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody(['11111111-1111-1111-1111-111111111111']),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.failures).toBeUndefined();
+    });
   });
 
   // ── Task 7: List union (org ∪ partner-wide ∪ system) ─────────────────────
