@@ -644,14 +644,11 @@ async function renderCoverPage(
   // Branding wordmark (mirrors the main document header's plain-text wordmark —
   // this renderer has no logo-image loader; logoUrl is a remote URL and the
   // renderer must stay network-free/pure).
-  doc.fillColor('#111827').fontSize(16).font('Helvetica-Bold').text(partnerName, c.left, top);
-
-  // Cover image: top ~55% of the page, full content width. A failed/absent
-  // load degrades to "no image" — never aborts the document (same discipline
-  // as every other image draw in this file).
-  const imageTop = top + 30;
-  const imageAreaHeight = doc.page.height * 0.55 - imageTop;
-  let imageBottom = imageTop;
+  // Cover image: full-bleed page background (cover-fit, clipped to the page —
+  // pdfkit's `cover` scales but does not crop). A failed/absent load degrades
+  // to "no image" — never aborts the document (same discipline as every other
+  // image draw in this file). Drawn FIRST so every text element paints on top.
+  let hasBackground = false;
   if (cp.coverImageId) {
     let img: { data: Buffer } | null = null;
     try {
@@ -662,17 +659,48 @@ async function renderCoverPage(
     }
     if (img?.data) {
       try {
-        doc.image(img.data, c.left, imageTop, { fit: [c.contentWidth, imageAreaHeight] });
-        imageBottom = imageTop + imageAreaHeight;
+        doc.save();
+        doc.rect(0, 0, doc.page.width, doc.page.height).clip();
+        doc.image(img.data, 0, 0, { cover: [doc.page.width, doc.page.height] });
+        doc.restore();
+        hasBackground = true;
       } catch (e) {
         console.error('[quotePdf] cover doc.image failed', cp.coverImageId, e instanceof Error ? e.message : e);
       }
     }
   }
 
-  // Title (24pt bold).
+  // Legibility scrim over arbitrary artwork: a near-opaque white band across
+  // the bottom of the page carries the title + prepared-for/by (and the page
+  // footer, which draws later in the same region). Skipped when there is no
+  // background — plain white pages need no scrim.
+  const bandTop = doc.page.height * 0.62;
+  if (hasBackground) {
+    doc.save();
+    doc.fillOpacity(0.94);
+    doc.rect(0, bandTop, doc.page.width, doc.page.height - bandTop).fill('#ffffff');
+    doc.restore();
+  }
+
+  // Branding wordmark (mirrors the main document header's plain-text wordmark —
+  // this renderer has no logo-image loader; logoUrl is a remote URL and the
+  // renderer must stay network-free/pure). On a background image it sits on a
+  // translucent white pill so it survives busy artwork.
+  if (hasBackground) {
+    doc.save();
+    doc.fontSize(16).font('Helvetica-Bold');
+    const wordW = doc.widthOfString(partnerName);
+    doc.fillOpacity(0.85);
+    doc.roundedRect(c.left - 10, top - 8, wordW + 20, 34, 6).fill('#ffffff');
+    doc.restore();
+  }
+  doc.fillColor('#111827').fontSize(16).font('Helvetica-Bold').text(partnerName, c.left, top);
+
+  // Title (24pt bold): inside the bottom band on a background cover, else in
+  // the classic position under the top margin.
   if (cp.title?.trim()) {
-    doc.fillColor('#111827').fontSize(24).font('Helvetica-Bold').text(cp.title.trim(), c.left, imageBottom + 24, { width: c.contentWidth });
+    const titleY = hasBackground ? bandTop + 28 : top + 54;
+    doc.fillColor('#111827').fontSize(24).font('Helvetica-Bold').text(cp.title.trim(), c.left, titleY, { width: c.contentWidth });
   }
 
   // Prepared for / Prepared by, side by side at the bottom of the page.
