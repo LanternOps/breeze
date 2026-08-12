@@ -793,6 +793,25 @@ describe('renderQuotePdf', () => {
       expect(pages).toBeGreaterThanOrEqual(2);
     });
 
+    it('cover page: with a cover image the title moves into the bottom legibility band; without one it stays at the top', async () => {
+      const base = {
+        id: 'q1', quoteNumber: 'Q-12', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+      };
+      const withImage = await renderQuotePdf(
+        { ...base, coverPage: { enabled: true, title: 'FULLBLEEDTITLE', coverImageId: 'img-cover' } } as never,
+        [], [], async () => ({ data: ONE_BY_ONE_PNG }), {},
+      );
+      const withoutImage = await renderQuotePdf(
+        { ...base, coverPage: { enabled: true, title: 'FULLBLEEDTITLE' } } as never,
+        [], [], async () => null, {},
+      );
+      const titleY = (buf: Buffer) => extractPositionedPdfText(buf).find((f) => f.text.includes('FULLBLEEDTITLE'))!.y;
+      // Full-bleed background → title sits inside the bottom band (>= 62% of
+      // the A4 page height); classic no-image cover keeps it under the top margin.
+      expect(titleY(withImage)).toBeGreaterThanOrEqual(841.89 * 0.62);
+      expect(titleY(withoutImage)).toBeLessThan(200);
+    });
+
     it('cover page: a wrapping preparedForName pushes the address down instead of overlapping it', async () => {
       const buf = await renderQuotePdf(
         {

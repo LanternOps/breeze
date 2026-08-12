@@ -270,7 +270,11 @@ quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), 
     // renderer: substituted HTML per authored contract block, plus any uploaded
     // contract PDFs to append after rendering (pdfkit can't draw an existing
     // PDF's pages — see pdfMerge.ts).
-    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quote);
+    // Must receive quoteForRender (the billTo-overlaid row), not the raw quote:
+    // on a DRAFT the raw row's billToName is still null, so {{client.name}} (and
+    // client.address) blank-fill in the contract text while the page header —
+    // rendered from quoteForRender three lines down — shows the org name fine.
+    const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender);
 
     const { renderQuotePdf } = await import('../../services/quotePdf');
     const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData);
