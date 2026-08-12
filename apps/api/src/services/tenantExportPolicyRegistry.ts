@@ -313,6 +313,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // material, never exported. claimed_from_ip is the end user's IP, which is
   // ordinary tenant record data (mirrors devices.enrollment_ip / last_seen_ip).
   "support_sessions": tablePolicy("org_id", {"included":["id","org_id","created_by_user_id","code_expires_at","status","hard_expires_at","device_id","attributed_org_id","attribution_label","claimed_at","claimed_from_ip","ended_at","ended_reason","created_at"],"reviewedIncluded":[],"excludedSensitive":["code_hash"],"excludedOpen":[]}),
+  // tenant_variables (#3409): `value` is always ciphertext and may hold vendor
+  // API tokens, so it is excludedSensitive for every row — not just the
+  // is_secret ones. `key`/`description` are MSP-authored labels, not secrets.
+  "tenant_variables": tablePolicy("org_id", {"included":["id","partner_id","org_id","key","is_secret","description","version","created_by","updated_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["value"],"excludedOpen":[]}),
   "ticket_alert_links": tablePolicy("org_id", {"included":["id","ticket_id","org_id","alert_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_form_org_links": tablePolicy("org_id", {"included":["id","form_id","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_forms": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","description","category_id","title_template","description_intro","default_priority","default_tags","show_in_portal","is_active","sort_order","version","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["fields"]}),
