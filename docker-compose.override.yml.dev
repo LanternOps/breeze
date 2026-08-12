@@ -73,6 +73,11 @@ services:
       BREEZE_BILLING_URL: ${BREEZE_BILLING_URL:-http://billing:3002}
       PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-http://localhost:4321}
       BREEZE_REGION: ${BREEZE_REGION:-us}
+      # Built-in extensions are off by default per deployment (the base mapping
+      # resolves to false). Dev is where Workspace is developed — and the ee
+      # source mounts above are pointless without it — so switch it on here.
+      # Requires the pgvector Postgres image the base stack already defaults to.
+      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-true}
     healthcheck:
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 60s

@@ -1768,6 +1768,11 @@ jobs:
           NODE_ENV: test
           AUTO_MIGRATE: 'true'
           API_PORT: '3199'
+          # Built-in extensions are OFF by default per deployment; this step
+          # exists only to apply workspace's migrations, so it must opt in.
+          # The shard DB is the pgvector-capable docker-compose.test.yml
+          # postgres, so `CREATE EXTENSION vector` succeeds here.
+          BREEZE_WORKSPACE_ENABLED: 'true'
         run: |
           # Launch in its own process group (setsid) so the group can be
           # killed as a unit below. `pnpm exec` execs a shell wrapper around
@@ -1822,6 +1827,10 @@ jobs:
         env:
           DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
           DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          # Set for the same reason as the boot step above: should any part of
+          # this suite boot the host or consult the built-in enable flag, it
+          # must see the extension it is testing as enabled.
+          BREEZE_WORKSPACE_ENABLED: 'true'
         run: pnpm --filter @breeze/ext-workspace test:integration
 
       # Dedicated exact-role enforcement runner. The general integration config
@@ -1928,10 +1937,12 @@ jobs:
           BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
-          # pgvector-enabled image required: the Workspace built-in runs
-          # ee/workspace/migrations/*.sql (CREATE EXTENSION vector) on API
-          # boot. Stock postgres:16-alpine lacks the extension and the API
-          # fails to start. Matches docker-compose.test.yml's pg16 major.
+          # Mirrors .env.example's default. This stack deliberately leaves
+          # BREEZE_WORKSPACE_ENABLED unset, so it exercises the DEFAULT-OFF
+          # built-in path end to end (no workspace migrations, no pgvector
+          # requirement); the image is pgvector-capable anyway so that a
+          # self-hoster who later flips the flag needs no database swap, which
+          # is exactly the shape .env.example ships.
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
           REDIS_IMAGE_REF=redis:7-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest

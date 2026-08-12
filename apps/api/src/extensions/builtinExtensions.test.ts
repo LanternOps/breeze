@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import {
   parseExtensionManifestV1,
@@ -19,10 +19,12 @@ vi.mock('./discovery', () => ({
 import {
   BUILTIN_EXTENSION_NAMES,
   builtinTenancyDeclarations,
+  isBuiltinEnabled,
   loadBuiltinExtensions,
   type BuiltinExtension,
   type BuiltinPorts,
 } from './builtinExtensions';
+import { BUILTINS } from './builtinRegistry';
 import {
   getExtensionOrgExportColumns,
   registerRuntimeExtensionTenancy,
@@ -143,6 +145,7 @@ class InMemoryExtensionStateBackend implements ExtensionStateBackend {
 const NAME = 'demo-builtin';
 const NAMESPACE = 'demo-ns';
 const VERSION = '1.4.0';
+const ENABLE_ENV_VAR = 'BREEZE_DEMO_BUILTIN_ENABLED';
 
 function fixtureManifest(overrides: Partial<ExtensionManifestV1> = {}): ExtensionManifestV1 {
   return {
@@ -185,6 +188,7 @@ function fixtureBuiltin(overrides: Partial<BuiltinExtension> = {}): BuiltinExten
     packageDir: 'ee/demo-builtin',
     packageName: '@breeze/ext-demo-builtin',
     helperRoutes: false,
+    enableEnvVar: ENABLE_ENV_VAR,
     ...overrides,
   };
 }
@@ -227,6 +231,8 @@ function createHarness(overrides: {
   const stateStore = overrides.stateStore
     ?? new ExtensionStateStore(new InMemoryExtensionStateBackend());
   const calls: string[] = [];
+  /** Counts privileged-connection opens, which the DISABLED path must never do. */
+  const migrationSqlOpens = { count: 0 };
   const rateLimitPrefixes: string[] = [];
   const registeredWebAssets: Array<{ name: string; asset: RegisterableExtensionWebAsset }> = [];
 
@@ -240,9 +246,10 @@ function createHarness(overrides: {
     builtins: overrides.builtins ?? [fixtureBuiltin()],
     declaredRuntimeNames: () => new Set<string>(),
     sourceCandidates: () => [],
-    createMigrationSql: () => null,
+    createMigrationSql: () => { migrationSqlOpens.count += 1; return null; },
     runMigrations: async () => { calls.push('migration'); },
     publishTenancy: () => { calls.push('tenancy'); },
+    anyDeclaredTableExists: async () => { calls.push('probe'); return false; },
     ...(overrides.realStage ? {} : {
       stageExtension: async (_module: BreezeExtensionV1, manifest: ExtensionManifestV1) => {
         calls.push('stage');
@@ -263,13 +270,31 @@ function createHarness(overrides: {
     registry,
     stateStore,
     calls,
+    migrationSqlOpens,
     rateLimitPrefixes,
     registeredWebAssets,
     load: () => loadBuiltinExtensions({ registry, stateStore, ports }),
   };
 }
 
+/**
+ * Switch the fixture built-in ON for a suite that exercises the loading
+ * pipeline. Deliberately a raw `process.env` write rather than `vi.stubEnv`:
+ * one test below stubs NODE_ENV and calls `vi.unstubAllEnvs()` mid-test, which
+ * would otherwise silently un-enable the built-in for the rest of that test.
+ */
+function enableFixtureBuiltin(): void {
+  beforeEach(() => {
+    process.env[ENABLE_ENV_VAR] = 'true';
+  });
+  afterEach(() => {
+    delete process.env[ENABLE_ENV_VAR];
+  });
+}
+
 describe('loadBuiltinExtensions', () => {
+  enableFixtureBuiltin();
+
   it('activates a built-in through the staged pipeline with enabled=true on first boot', async () => {
     const h = createHarness();
     await h.load();
@@ -388,6 +413,182 @@ describe('loadBuiltinExtensions', () => {
     });
     await expect(h.load()).rejects.toThrow(/permission denied/);
   });
+
+  /**
+   * The pgvector case is the ONE migration failure with a known cause and two
+   * concrete remedies, and the raw Postgres error names neither. Everything
+   * else must reach the operator unedited.
+   */
+  it('rewrites a pgvector-shaped migration failure into an actionable error', async () => {
+    const h = createHarness({
+      ports: {
+        runMigrations: async () => {
+          throw new Error('extension "vector" is not available');
+        },
+      },
+    });
+
+    const error = await h.load().then(() => null, (e: unknown) => e as Error);
+    expect(error?.message).toContain('pgvector');
+    expect(error?.message).toContain('pgvector/pgvector:pg16');
+    expect(error?.message).toContain(ENABLE_ENV_VAR);
+    // The original text survives, and so does the original error as `cause`.
+    expect(error?.message).toContain('extension "vector" is not available');
+    expect((error?.cause as Error)?.message).toBe('extension "vector" is not available');
+  });
+
+  it('rethrows an unrelated migration failure untouched', async () => {
+    const boom = new Error('relation "widgets" already exists');
+    const h = createHarness({ ports: { runMigrations: async () => { throw boom; } } });
+
+    await expect(h.load()).rejects.toBe(boom);
+  });
+});
+
+/**
+ * The DEPLOYMENT enable flag. Being compiled into the image makes a built-in
+ * available, not loaded: a deployment that never asked for it must boot with no
+ * migrations, no schema and none of the built-in's infrastructure requirements
+ * (workspace's pgvector) — while a deployment that enabled it ONCE and later
+ * switched it off must still boot, with its orphaned tables accounted for.
+ */
+describe('loadBuiltinExtensions — deployment enable flag', () => {
+  afterEach(() => {
+    delete process.env[ENABLE_ENV_VAR];
+  });
+
+  /** A built-in whose tenancy actually declares tables, so the probe matters. */
+  const TENANT_TABLES = ['demo_files', 'demo_projects'];
+  function tenantedBuiltin(): BuiltinExtension {
+    return fixtureBuiltin({
+      manifest: fixtureManifest({
+        tenancy: {
+          // Deliberately overlapping across the four lists: the probe must see
+          // the DEDUPED union, not one list or four copies.
+          orgCascadeDeleteTables: ['demo_projects', 'demo_files'],
+          deviceCascadeDeleteTables: ['demo_files'],
+          deviceOrgDenormalizedTables: [],
+          deviceOrgMoveDeleteTables: ['demo_files'],
+        },
+      } as Partial<ExtensionManifestV1>),
+    });
+  }
+
+  function captureWarnings() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+
+  it('loads nothing at all when the flag is unset', async () => {
+    const warn = captureWarnings();
+    try {
+      const h = createHarness();
+      await expect(h.load()).resolves.toBeUndefined();
+
+      // No phase ran, nothing is live, and the privileged migration connection
+      // was never even opened (so a plain-Postgres deployment boots clean).
+      expect(h.calls).toEqual([]);
+      expect(h.migrationSqlOpens.count).toBe(0);
+      expect(h.registry.get(NAME)).toBeUndefined();
+      expect(await h.stateStore.get(NAME)).toBeNull();
+      expect(h.registeredWebAssets).toEqual([]);
+
+      // Exactly ONE structured skip line, naming the flag to set.
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = warn.mock.calls[0]!.join(' ');
+      expect(line).toContain('builtin_extension_disabled');
+      expect(line).toContain(`"extension":"${NAME}"`);
+      expect(line).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(['', 'false', '1', 'TRUE', 'yes'])(
+    'stays off for the non-strict value %o',
+    async (value) => {
+      process.env[ENABLE_ENV_VAR] = value;
+      const warn = captureWarnings();
+      try {
+        const h = createHarness();
+        await h.load();
+        expect(h.calls).toEqual([]);
+        expect(h.registry.get(NAME)).toBeUndefined();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  // A previously-enabled deployment left `demo_*` on the database. Without the
+  // declaration, the loader's and the reconciler's unaccounted-public-tables
+  // sweeps abort boot on those tables, and org-deletion cascades skip them.
+  it('publishes tenancy — and ONLY tenancy — when the built-in left tables behind', async () => {
+    const warn = captureWarnings();
+    try {
+      const probed: Array<readonly string[]> = [];
+      const h = createHarness({
+        builtins: [tenantedBuiltin()],
+        ports: {
+          anyDeclaredTableExists: async (tables) => {
+            probed.push(tables);
+            return true;
+          },
+        },
+      });
+      await h.load();
+
+      expect(h.calls).toEqual(['tenancy']);
+      expect(h.migrationSqlOpens.count).toBe(0);
+      expect(h.registry.get(NAME)).toBeUndefined();
+      expect(await h.stateStore.get(NAME)).toBeNull();
+
+      // The probe sees the deduped, sorted union of all four tenancy lists.
+      expect(probed).toEqual([TENANT_TABLES]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The other direction: declaring tables that were never created would point
+  // core's cascade/export SQL at nonexistent relations.
+  it('publishes nothing when the built-in has no tables on the database', async () => {
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({
+        builtins: [tenantedBuiltin()],
+        ports: { anyDeclaredTableExists: async () => false },
+      });
+      await h.load();
+
+      expect(h.calls).toEqual([]);
+      expect(h.migrationSqlOpens.count).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips the probe entirely for a built-in that declares no tenancy tables', async () => {
+    const warn = captureWarnings();
+    try {
+      const h = createHarness();
+      await h.load();
+      expect(h.calls).not.toContain('probe');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The one-delivery-path gate is not flag-aware on purpose: a collision is a
+  // misconfiguration whether or not this deployment switched the built-in on.
+  it('still fails boot on a delivery-path collision while disabled', async () => {
+    const warn = captureWarnings();
+    try {
+      const h = createHarness({ ports: { declaredRuntimeNames: () => new Set([NAME]) } });
+      await expect(h.load()).rejects.toThrow(/extensions\.yaml/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 /**
@@ -401,6 +602,8 @@ describe('loadBuiltinExtensions', () => {
  * override), because the staged manifest is exactly what that function decides.
  */
 describe('loadBuiltinExtensions — helperRoutes staging', () => {
+  enableFixtureBuiltin();
+
   it('stages helperRoutes:true onto the manifest the registry session sees', async () => {
     const manifest = fixtureManifest();
     const h = createHarness({
@@ -434,6 +637,27 @@ describe('loadBuiltinExtensions — helperRoutes staging', () => {
 describe('BUILTIN_EXTENSION_NAMES', () => {
   it('names the workspace extension (the first and only built-in)', () => {
     expect([...BUILTIN_EXTENSION_NAMES]).toEqual(['workspace']);
+  });
+
+  /**
+   * The flag NAME is a deployment contract — it appears in .env.example, both
+   * dev composes, docker-compose.yml, the CI boot step and the deploy docs — so
+   * renaming it silently would leave every one of those switching nothing.
+   */
+  it('gates the workspace built-in on BREEZE_WORKSPACE_ENABLED, default off', () => {
+    const workspace = BUILTINS.find((builtin) => builtin.manifest.name === 'workspace');
+    expect(workspace?.enableEnvVar).toBe('BREEZE_WORKSPACE_ENABLED');
+
+    const previous = process.env.BREEZE_WORKSPACE_ENABLED;
+    try {
+      delete process.env.BREEZE_WORKSPACE_ENABLED;
+      expect(isBuiltinEnabled(workspace!)).toBe(false);
+      process.env.BREEZE_WORKSPACE_ENABLED = 'true';
+      expect(isBuiltinEnabled(workspace!)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.BREEZE_WORKSPACE_ENABLED;
+      else process.env.BREEZE_WORKSPACE_ENABLED = previous;
+    }
   });
 });
 

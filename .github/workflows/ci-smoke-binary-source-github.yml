@@ -41,10 +41,12 @@ jobs:
     timeout-minutes: 10
 
     services:
-      # pgvector-enabled image required: this job boots the API directly
-      # (`pnpm --filter=@breeze/api start`), which now runs the Workspace
-      # built-in's ee/workspace/migrations/*.sql (CREATE EXTENSION vector)
-      # on boot. Stock postgres:16-alpine lacks the extension.
+      # pgvector-enabled image, though this job no longer NEEDS it: built-in
+      # extensions load only when their enable flag is set, and this job
+      # leaves BREEZE_WORKSPACE_ENABLED unset, so ee/workspace/migrations/
+      # *.sql (CREATE EXTENSION vector) never runs. Kept to match the image
+      # .env.example ships, so the boot proved here is the one self-hosters
+      # run — a stock postgres:16-alpine would boot identically.
       postgres:
         image: pgvector/pgvector:pg16
         env:
@@ -87,13 +89,10 @@ jobs:
       - name: Build API
         run: pnpm --filter=@breeze/api build
 
-      - name: Build workspace web bundle
-        # The built-in loader fails production boot hard when
-        # ee/workspace/dist/web is missing (a real from-source deploy must
-        # build it — see docker/Dockerfile.api's builder stage, which runs
-        # this same command right after the API build). This job boots with
-        # NODE_ENV=production from a plain checkout, so it must build it too.
-        run: pnpm --filter @breeze/ext-workspace build:web
+      # NOTE: no `ee/workspace` web build here, deliberately — see the same
+      # note in ci-smoke-binary-source-local.yml. This job leaves
+      # BREEZE_WORKSPACE_ENABLED unset, so the built-in never loads and its
+      # dist/web is never required.
 
       - name: Boot API in BINARY_SOURCE=github mode
         env:

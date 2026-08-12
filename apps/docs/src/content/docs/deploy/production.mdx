@@ -25,7 +25,7 @@ The core stack (`docker-compose.yml`) includes:
 | **Redis** | `redis:7-alpine` | Job queue, caching, rate limiting |
 | **Coturn** | `coturn/coturn:4-alpine` | TURN relay server for WebRTC remote desktop (opt-in via `--profile turn`) |
 
-The `pgvector` extension is required as of the Workspace built-in, which uses it for content embeddings — the bundled `POSTGRES_IMAGE_REF` default already includes it, so no action is needed unless you supply your own Postgres image.
+The `pgvector` extension is required **only if you enable the Workspace built-in** (`BREEZE_WORKSPACE_ENABLED=true`), which uses it for content embeddings. Workspace ships inside the API image but is off by default: with the flag unset, no Workspace migrations run and any Postgres 16 image works. The bundled `POSTGRES_IMAGE_REF` default is pgvector-capable regardless, so enabling Workspace later needs no database swap — supply your own Postgres image and you must provide `pgvector` yourself before setting the flag, or the API will fail to start with `extension "vector" is not available`.
 
 An optional monitoring stack (Prometheus, Grafana, Alertmanager, Loki, Promtail, exporters) is available as a separate overlay — see [Monitoring](#adding-monitoring).
 

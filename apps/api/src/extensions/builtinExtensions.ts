@@ -2,6 +2,12 @@
 // are compiled into the core image and imported statically, rather than
 // acquired as signed runtime bundles.
 //
+// Compiled in ≠ loaded. Each built-in carries a deployment enable flag
+// (BuiltinExtension.enableEnvVar) and is OFF by default; only an explicitly
+// enabled built-in runs the pipeline below. See skipDisabledBuiltin for what a
+// switched-off built-in still does (one log line, plus its tenancy declaration
+// if and only if its tables are already on the database).
+//
 // It mirrors the reconciler's phase order for everything that still applies —
 // migration → tenancy → stage → validate → activate → web asset — and drops the
 // phases that only make sense for a third-party artifact (acquire / trust /
@@ -113,6 +119,77 @@ export function readWebDist(root: string): RegisterableExtensionWebAsset {
 const BUILTIN_MIGRATION_ROLLOUT = 'replace' as const;
 
 /**
+ * Is this built-in switched ON for this deployment?
+ *
+ * Strict-string convention, matching `BREEZE_LEGACY_SOURCE_EXTENSIONS` in
+ * loader.ts: anything other than the exact string `'true'` — unset, empty,
+ * `'1'`, `'TRUE'` — leaves the built-in unloaded. Default OFF is the point:
+ * being compiled into the image must not oblige every deployment to satisfy the
+ * built-in's infrastructure requirements (workspace needs pgvector) or carry its
+ * schema.
+ */
+export function isBuiltinEnabled(builtin: BuiltinExtension): boolean {
+  return process.env[builtin.enableEnvVar] === 'true';
+}
+
+/**
+ * Every distinct table the manifest's tenancy declaration names, sorted — the
+ * exact set that publishing the declaration would hand to core's cascade,
+ * device-move and tenant-export code.
+ */
+function declaredTenancyTables(manifest: ExtensionManifestV1): string[] {
+  const { tenancy } = manifest;
+  // `deviceOrgMoveDeleteTables` is optional in the v1 schema; the rest are not.
+  return [
+    ...new Set([
+      ...tenancy.orgCascadeDeleteTables,
+      ...tenancy.deviceCascadeDeleteTables,
+      ...tenancy.deviceOrgDenormalizedTables,
+      ...(tenancy.deviceOrgMoveDeleteTables ?? []),
+    ]),
+  ].sort();
+}
+
+/** The pgvector-unavailable fragment Postgres puts in `CREATE EXTENSION vector`'s error. */
+const PGVECTOR_UNAVAILABLE_FRAGMENT = '"vector" is not available';
+
+/**
+ * Run a built-in's migrations, translating ONE known-and-actionable
+ * infrastructure failure into an operator-facing error.
+ *
+ * `CREATE EXTENSION vector` on a stock Postgres image fails with a bare
+ * `extension "vector" is not available` and an SQL file name — true, but it
+ * names neither the requirement nor either way out, and it aborts boot. The
+ * match is deliberately narrow (that one message fragment); everything else
+ * rethrows untouched rather than being reinterpreted.
+ */
+async function runBuiltinMigrations(
+  builtin: BuiltinExtension,
+  sql: postgres.Sql | null,
+  stateStore: ExtensionStateStore,
+  ports: BuiltinPorts,
+): Promise<void> {
+  try {
+    await ports.runMigrations(builtin, sql, stateStore);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(PGVECTOR_UNAVAILABLE_FRAGMENT)) throw error;
+    throw new Error(
+      [
+        `[extensions] built-in "${builtin.manifest.name}" is enabled ` +
+          `(${builtin.enableEnvVar}=true) but its migrations require the PostgreSQL ` +
+          '"vector" (pgvector) extension, which this database does not provide.',
+        'Either:',
+        '  - run a pgvector-enabled Postgres image (e.g. pgvector/pgvector:pg16), or',
+        `  - unset ${builtin.enableEnvVar} (or set it to "false") to leave this built-in unloaded.`,
+        `Original error: ${message}`,
+      ].join('\n'),
+      { cause: error },
+    );
+  }
+}
+
+/**
  * Every I/O seam the built-in loader touches, as a port — mirroring
  * {@link import('./reconciler').ReconcilePorts}. Production builds the real set
  * via {@link buildDefaultPorts}; tests inject fakes.
@@ -132,6 +209,14 @@ export interface BuiltinPorts {
     stateStore: ExtensionStateStore,
   ): Promise<void>;
   publishTenancy(manifest: ExtensionManifestV1): void;
+  /**
+   * Do ANY of these public tables already exist? Used ONLY on the disabled
+   * path, to decide whether a switched-off built-in's tenancy declaration still
+   * has to be published (see {@link skipDisabledBuiltin}). Opens and closes its
+   * own short-lived connection — the disabled path never opens the privileged
+   * migration connection, and must not leave one behind either.
+   */
+  anyDeclaredTableExists(tables: readonly string[]): Promise<boolean>;
   stageExtension(
     module: BreezeExtensionV1,
     manifest: ExtensionManifestV1,
@@ -184,6 +269,33 @@ function buildDefaultPorts(args: LoadBuiltinExtensionsArgs): BuiltinPorts {
       );
     },
     publishTenancy: (manifest) => registerRuntimeExtensionTenancy(manifest.tenancy),
+    anyDeclaredTableExists: async (tables) => {
+      if (tables.length === 0) return false;
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) {
+        throw new Error(
+          'DATABASE_URL is required to check whether a disabled built-in extension left tables behind',
+        );
+      }
+      // ONE round trip, one connection, always closed. The names are bound as
+      // a plain scalar IN-list via postgres.js's documented `sql([...])` list
+      // helper — deliberately NO array parameter: binding a `text[]` (via
+      // sql.array or a ::json cast) mis-serialized against a real server
+      // ("malformed array literal"; caught by the live default-off boot check —
+      // the unit tests stub this port, so only a real boot exercises this SQL).
+      const sql = postgres(databaseUrl, { max: 1 });
+      try {
+        const rows = await sql<{ present: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name IN ${sql([...tables])}
+          ) AS present
+        `;
+        return rows[0]?.present === true;
+      } finally {
+        await sql.end();
+      }
+    },
     stageExtension: (module, manifest, opts) =>
       defaultStageExtension(module, manifest, args.registry, undefined, opts),
     validateTenancy: (_staged, manifest) =>
@@ -254,9 +366,57 @@ function registerBuiltinWebAsset(builtin: BuiltinExtension, ports: BuiltinPorts)
 }
 
 /**
- * Load every built-in extension at startup. The single entry point boot wires
- * in; resolves when all built-ins are activated, and REJECTS (aborting boot) if
- * any phase of any built-in fails.
+ * The DISABLED path: everything a switched-off built-in still owes the boot,
+ * which is one log line and — conditionally — its tenancy declaration.
+ *
+ * No migrations, no staging, no activation, no `installed_extensions` row, no
+ * web-dist requirement: a deployment that never enabled this built-in must boot
+ * on plain Postgres with none of the built-in's infrastructure.
+ *
+ * Tenancy is the one exception, and it cuts BOTH ways:
+ *
+ *   • If the built-in's tables EXIST (a previous boot had it enabled and its
+ *     migrations ran), the declaration must still be published. Two sweeps —
+ *     the legacy loader's and the reconciler's repo-wide
+ *     `assertNoUnaccountedPublicTables` — would otherwise read those orphaned
+ *     `workspace_*` tables as belonging to no manifest and abort boot, and
+ *     org-deletion cascades would silently skip the rows in them.
+ *   • If they DO NOT exist, publishing is actively harmful: core cascade,
+ *     device-move and tenant-export code iterates the declared tables and
+ *     issues SQL against each one, which would now name relations that were
+ *     never created.
+ *
+ * Hence the existence probe — one query over the whole declared list, on its
+ * own connection, closed before returning.
+ */
+async function skipDisabledBuiltin(
+  builtin: BuiltinExtension,
+  ports: BuiltinPorts,
+): Promise<void> {
+  const { manifest } = builtin;
+  console.warn(
+    `[extensions] ${JSON.stringify({
+      event: 'builtin_extension_disabled',
+      extension: manifest.name,
+      reason: 'built-in extensions are opt-in per deployment and this one is not enabled',
+      enableFlag: builtin.enableEnvVar,
+    })}`,
+  );
+
+  const tables = declaredTenancyTables(manifest);
+  if (tables.length === 0) return;
+  if (!(await ports.anyDeclaredTableExists(tables))) return;
+  ports.publishTenancy(manifest);
+}
+
+/**
+ * Load every ENABLED built-in extension at startup. The single entry point boot
+ * wires in; resolves when all enabled built-ins are activated, and REJECTS
+ * (aborting boot) if any phase of any of them fails.
+ *
+ * Each built-in carries its own deployment enable flag (see
+ * {@link isBuiltinEnabled}) and is OFF unless the deployment says otherwise;
+ * a disabled one takes {@link skipDisabledBuiltin} instead of the pipeline.
  *
  * BOOT ORDER IS PART OF THE CONTRACT: call this AFTER `loadSourceExtensions`
  * and BEFORE `reconcileExtensions`.
@@ -281,15 +441,30 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
   const { registry, stateStore } = args;
   if (ports.builtins.length === 0) return;
 
+  // The gate is deliberately NOT flag-aware: a built-in's name is reserved by
+  // the registry whether or not this deployment switched it on, so a colliding
+  // extensions.yaml entry or source directory is a misconfiguration to shout
+  // about either way — and shouting about it only when the flag happens to be
+  // set would make the collision surface for the first time on the day someone
+  // enables the built-in.
   assertNoDeliveryPathCollision(ports);
+
+  const enabled: BuiltinExtension[] = [];
+  for (const builtin of ports.builtins) {
+    if (isBuiltinEnabled(builtin)) enabled.push(builtin);
+    else await skipDisabledBuiltin(builtin, ports);
+  }
+  // Nothing to load: return BEFORE createMigrationSql, which both demands
+  // DATABASE_URL and opens a privileged connection.
+  if (enabled.length === 0) return;
 
   const sql = ports.createMigrationSql();
   try {
-    for (const builtin of ports.builtins) {
+    for (const builtin of enabled) {
       const { manifest } = builtin;
       const name = manifest.name;
 
-      await ports.runMigrations(builtin, sql, stateStore);
+      await runBuiltinMigrations(builtin, sql, stateStore, ports);
 
       // Publish tenancy the instant migrations succeed — before staging — so
       // cascade/device-move handling for the tables that now exist survives a

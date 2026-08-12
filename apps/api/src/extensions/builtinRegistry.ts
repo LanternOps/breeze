@@ -33,6 +33,20 @@ export interface BuiltinExtension {
    * the gateway reads off the STAGED manifest; see defaultStageExtension).
    */
   helperRoutes: boolean;
+  /**
+   * The DEPLOYMENT enable flag for this built-in. Being compiled into the image
+   * makes a built-in *available*, not *loaded*: the loading pipeline runs only
+   * when `process.env[enableEnvVar] === 'true'` (strict string, matching
+   * `BREEZE_LEGACY_SOURCE_EXTENSIONS` in loader.ts). Default OFF, so a
+   * deployment that never asks for the built-in never pays for its migrations,
+   * its infrastructure requirements (workspace needs pgvector) or its routes.
+   *
+   * This is a DIFFERENT switch from the persisted `installed_extensions.enabled`
+   * flag: that one is per-deployment operator state stored in the DB and toggled
+   * at runtime by a platform admin; this one is boot-time deployment
+   * configuration that decides whether the built-in is loaded at all.
+   */
+  enableEnvVar: string;
 }
 
 /**
@@ -137,6 +151,9 @@ export const BUILTINS: readonly BuiltinExtension[] = [
     // Workspace's /helper/* tree is called by the device helper, so it needs
     // core helper auth rather than the user default-deny.
     helperRoutes: true,
+    // Default OFF: workspace's migrations require a pgvector-enabled Postgres,
+    // which a stock `postgres:16-alpine` deployment does not have.
+    enableEnvVar: 'BREEZE_WORKSPACE_ENABLED',
   },
 ];
 
@@ -153,6 +170,17 @@ export const BUILTIN_EXTENSION_NAMES: ReadonlySet<string> = new Set(
  * (loader.ts). That sweep runs before `loadBuiltinExtensions` has published
  * anything, so without this accessor every `workspace_*` table created on an
  * earlier boot reads as belonging to no manifest and the sweep aborts boot.
+ *
+ * DELIBERATELY STATIC — it ignores {@link BuiltinExtension.enableEnvVar}, and
+ * must keep doing so. The sweep only examines tables that EXIST, so declaring a
+ * table that was never created is inert there, while gating the accessor on the
+ * enable flag would resurrect exactly the failure it was written to prevent: a
+ * deployment that enabled workspace once (creating `workspace_*`) and later
+ * unset the flag would have those tables read as unaccounted and abort boot.
+ * The narrower, existence-checked publication that the DISABLED path performs
+ * (builtinExtensions.ts) is a different thing: that one feeds the live tenancy
+ * registry, which core cascade/export code iterates and issues SQL against, so
+ * it must never name a table that does not exist.
  */
 export function builtinTenancyDeclarations(): ExtensionTenancyDeclaration[] {
   return BUILTINS.map((builtin) => builtin.manifest.tenancy);

@@ -23,6 +23,13 @@ below are unaffected. The stock image therefore contains AGPL core plus
 built-in `ee/` code — "extension-free" in the removal-gate sense refers to
 *externally delivered* extension code only.
 
+A built-in can carry a **deployment enable flag** (`BuiltinExtension.enableEnvVar`)
+and is not loaded unless that variable is exactly `"true"`; Workspace's is
+**`BREEZE_WORKSPACE_ENABLED`**, default off. A disabled built-in runs no
+migrations and activates nothing, emitting one structured
+`builtin_extension_disabled` warning naming the flag — it still publishes its
+tenancy declaration if its tables already exist from an earlier enabled boot.
+
 ## What changed
 
 - Stock images (`docker/Dockerfile.api`, `apps/api/Dockerfile`) no longer
