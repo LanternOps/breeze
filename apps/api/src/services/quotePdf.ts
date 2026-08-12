@@ -246,6 +246,46 @@ function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed = 40): number {
   return y;
 }
 
+/**
+ * Intrinsic pixel dimensions of a PNG or JPEG buffer (the two formats pdfkit
+ * can embed). PNG: IHDR is always the first chunk, width/height at bytes
+ * 16/20. JPEG: scan marker segments for a frame header (SOF0–SOF15, minus the
+ * DHT/DAC/RST family), height/width at offsets 5/7 of the segment payload.
+ * Returns null for anything unparseable — callers fall back to the fit-box
+ * height, trading whitespace for the guarantee that following content never
+ * lands on top of the image (doc.image with explicit x/y does NOT advance
+ * pdfkit's cursor, so the drawn height must be computed here).
+ */
+export function imageIntrinsicSize(buf: Buffer): { width: number; height: number } | null {
+  try {
+    if (buf.length >= 24 && buf.readUInt32BE(0) === 0x89504e47 && buf.toString('latin1', 12, 16) === 'IHDR') {
+      const width = buf.readUInt32BE(16);
+      const height = buf.readUInt32BE(20);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let off = 2;
+      while (off + 9 < buf.length) {
+        if (buf.readUInt8(off) !== 0xff) return null;
+        const marker = buf.readUInt8(off + 1);
+        if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) { off += 2; continue; } // standalone markers
+        const segLen = buf.readUInt16BE(off + 2);
+        if (segLen < 2) return null;
+        const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+        if (isSof) {
+          const height = buf.readUInt16BE(off + 5);
+          const width = buf.readUInt16BE(off + 7);
+          return width > 0 && height > 0 ? { width, height } : null;
+        }
+        off += 2 + segLen;
+      }
+    }
+  } catch {
+    /* fall through to null */
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Line table: qty | description | unit | total. Right-aligned money columns,
 // matching invoicePdf's table styling (uppercase grey headers, 1px rule).
@@ -644,7 +684,10 @@ async function renderCoverPage(
   if (preparedForName) {
     doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', c.left, rowY);
     doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(preparedForName, c.left, rowY + 14, { width: colW });
-    let addrY = rowY + 30;
+    // Start the address at the name's real bottom edge (doc.y) — a name long
+    // enough to wrap painted the address on top of its second line when this
+    // assumed a fixed one-line name height.
+    let addrY = Math.max(rowY + 30, doc.y + 4);
     doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
     for (const line of addressLines(quote.billToAddress as BillToAddress | null)) {
       doc.text(line, c.left, addrY, { width: colW });
@@ -658,7 +701,7 @@ async function renderCoverPage(
     const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
     doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED BY', rightX, rowY);
     doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? partnerName, rightX, rowY + 14, { width: colW });
-    let addrY = rowY + 30;
+    let addrY = Math.max(rowY + 30, doc.y + 4); // same wrap-safe start as PREPARED FOR
     doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
     for (const line of sellerAddressLines(seller)) {
       doc.text(line, rightX, addrY, { width: colW });
@@ -805,10 +848,21 @@ export async function renderQuotePdf(
         img = null;
       }
       if (img?.data) {
-        const fitWidth = Number((b.content as { width?: number }).width ?? 400);
+        const fitWidth = Math.min(Number((b.content as { width?: number }).width ?? 400), c.contentWidth);
+        const fitHeight = 400;
+        // doc.image() with explicit x/y never advances pdfkit's cursor, so the
+        // drawn height must be computed up front — both to reserve page space
+        // (a tall image near the bottom margin would otherwise overflow the
+        // page) and to advance y past the image (stale-cursor overlap shipped
+        // as text painting straight over every image block).
+        const dims = imageIntrinsicSize(img.data);
+        const drawnHeight = dims
+          ? Math.min(fitWidth / dims.width, fitHeight / dims.height) * dims.height
+          : fitHeight;
+        y = ensureSpace(doc, y, Math.min(drawnHeight, doc.page.height - doc.page.margins.top - doc.page.margins.bottom) + 6);
         try {
-          doc.image(img.data, c.left, y, { fit: [Math.min(fitWidth, c.contentWidth), 400] });
-          y = doc.y + 6;
+          doc.image(img.data, c.left, y, { fit: [fitWidth, fitHeight] });
+          y += drawnHeight + 6;
         } catch (e) {
           // A corrupt/unsupported image must not abort the whole document.
           console.error('[quotePdf] doc.image failed', imageId, e instanceof Error ? e.message : e);
