@@ -2436,10 +2436,88 @@ async function serveInstaller(
   }
 
   // ----------------------------------------------------------------
-  // macOS — build zip BEFORE incrementing usage (don't burn usage on
-  // build failure). install.sh downloads the arch-matched pkg at
-  // install time; nothing is bundled (one zip serves Intel + Apple Silicon).
+  // macOS — prefer notarized Installer.app (same as authenticated download).
+  // Legacy install.sh zip falls back only if the app asset is unavailable;
+  // that path downloads pkgs at install time and breaks when agent package
+  // URLs are auth-gated or S3 is not publicly reachable.
   // ----------------------------------------------------------------
+  {
+    const bundleApiHost = macosBundleApiHost(serverUrl);
+    const appZip = bundleApiHost ? await fetchMacosInstallerAppZip() : null;
+    if (appZip && bundleApiHost) {
+      let issued;
+      try {
+        issued = await issueBootstrapTokenForKey({
+          parentEnrollmentKeyId: keyRow.id,
+          createdByUserId: keyRow.createdBy ?? null,
+          usageKind: "per_download",
+          maxUsage: 1,
+          ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
+          installerPlatform: "macos",
+        });
+      } catch (err) {
+        if (err instanceof BootstrapTokenIssuanceError) {
+          if (err.code === "parent_not_found")
+            return c.json({ error: err.message }, 404);
+          return c.json({ error: err.message }, 410);
+        }
+        throw err;
+      }
+
+      const newAppName = `Breeze Installer [${issued.token}@${bundleApiHost}].app`;
+      try {
+        const renamedZip = await renameAppInZip(appZip, {
+          oldAppName: "Breeze Installer.app",
+          newAppName,
+          extraFiles: [
+            {
+              path: "Breeze Installer.bootstrap.json",
+              data: JSON.stringify({
+                token: issued.token,
+                apiHost: bundleApiHost,
+              }),
+              mode: 0o600,
+            },
+          ],
+        });
+
+        createAuditLogAsync({
+          orgId: keyRow.orgId,
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: "enrollment_key.public_download",
+          resourceType: "enrollment_key",
+          resourceId: keyRow.id,
+          resourceName: keyRow.name,
+          details: {
+            platform,
+            ip,
+            signed: false,
+            mode: "app-bundle",
+            tokenId: issued.id,
+          },
+          ipAddress: ip,
+          userAgent: c.req.header("user-agent"),
+          result: "success",
+        });
+
+        c.header("Content-Type", "application/zip");
+        c.header(
+          "Content-Disposition",
+          `attachment; filename="breeze-agent-macos-installer.zip"`,
+        );
+        c.header("Content-Length", String(renamedZip.length));
+        c.header("Cache-Control", "no-store");
+        return c.body(renamedZip as unknown as ArrayBuffer);
+      } catch (err) {
+        console.error(
+          "[public-download] renameAppInZip failed, falling back to legacy zip:",
+          err instanceof Error ? err.message : err,
+        );
+        captureException(err, c);
+      }
+    }
+  }
+
   try {
     const resultBuffer = await buildMacosInstallerZip({
       serverUrl,
@@ -2465,7 +2543,7 @@ async function serveInstaller(
       resourceType: "enrollment_key",
       resourceId: keyRow.id,
       resourceName: keyRow.name,
-      details: { platform, ip, signed: false },
+      details: { platform, ip, signed: false, mode: "legacy" },
       ipAddress: ip,
       userAgent: c.req.header("user-agent"),
       result: "success",
