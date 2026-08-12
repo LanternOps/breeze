@@ -78,6 +78,20 @@ export function findTokens(value: string): string[] {
 }
 
 /**
+ * Same scan as {@link findTokens}, but carrying each match's offset so a
+ * caller can inspect the character BEFORE the token — which is the only way
+ * to see a `$` prefix, since `$` sits outside the match itself.
+ *
+ * Uses a fresh matcher rather than the shared `TOKEN_SCAN` instance:
+ * `matchAll` seeds its internal matcher from the regex it is handed, so a
+ * module-level global regex would carry `lastIndex` state between callers.
+ */
+function scanTokens(value: string): Array<{ raw: string; offset: number }> {
+  const matcher = new RegExp(TOKEN_SCAN.source, 'g');
+  return [...value.matchAll(matcher)].map((m) => ({ raw: m[0], offset: m.index }));
+}
+
+/**
  * Validate the variables in a template string against the known vocabulary.
  * `knownCustomFieldKeys` is the set of device custom-field keys defined for the
  * partner/org (from `GET /custom-fields`); pass an empty set when they haven't
@@ -104,8 +118,16 @@ export function findUnknownTokens(
 ): string[] {
   const builtinTokens = new Set(BUILTIN_INSTALLER_VARIABLES.map((v) => v.token));
   const unknown: string[] = [];
-  for (const raw of findTokens(value)) {
-    const variable = VARIABLE_TOKEN.exec(raw); // raw, not normalized — strict grammar
+  for (const { raw, offset } of scanTokens(value)) {
+    // raw, not normalized — strict grammar. The `$` guard mirrors the shared
+    // pattern's `(?<!\$)` lookbehind and the server's `template[offset - 1]`
+    // check (`apps/api/src/services/installerVariables.ts`): a `${{var.x}}`
+    // is deliberately NOT a variable token, and the server treats it as
+    // unknown and fails the deploy. Without this the client validated it
+    // clean — the exact client-passes/server-fails divergence VARIABLE_TOKEN's
+    // docblock above claims to prevent. Falling through (rather than
+    // `continue`) lands it in `unknown` via the checks below.
+    const variable = offset > 0 && value[offset - 1] === '$' ? null : VARIABLE_TOKEN.exec(raw);
     if (variable) {
       const key = variable[1];
       if (!requireKnownVariableKeys || variableKeys?.has(key)) continue;

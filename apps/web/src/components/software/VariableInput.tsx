@@ -18,7 +18,7 @@ import {
 } from "@/lib/installerVariables";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { variableToken } from "@breeze/shared";
+import { findVariableTokens, variableToken } from "@breeze/shared";
 import type { TenantVariableEntry } from "@/lib/tenantVariableTokens";
 export interface DeviceCustomField {
   fieldKey: string;
@@ -80,6 +80,9 @@ export default function VariableInput({
     width: number;
   }>();
   const warnId = useId();
+  // Its own id so a template carrying BOTH an unknown token and a secret one
+  // announces both — a single shared id would drop whichever paragraph lost.
+  const secretWarnId = useId();
   const knownKeys = useMemo(
     () => new Set(customFields.map((f) => f.fieldKey)),
     [customFields],
@@ -87,6 +90,24 @@ export default function VariableInput({
   const knownVariableKeys = useMemo(
     () => new Set(tenantVariables.map((v) => v.key)),
     [tenantVariables],
+  );
+  // The picker disables secret rows, but nothing stopped a secret token being
+  // typed by hand — it passed validation here (the key IS known) and then
+  // failed the deploy on every device, because softwareDeployment.ts omits
+  // secrets from the substitution map entirely. Flagged separately from
+  // `unknownTokens` so the message can say "secret" rather than "unknown".
+  // findVariableTokens carries the `(?<!\$)` lookbehind, so a `${{var.x}}`
+  // is not reported here — findUnknownTokens flags that one as unknown.
+  const secretVariableKeys = useMemo(
+    () => new Set(tenantVariables.filter((v) => v.isSecret).map((v) => v.key)),
+    [tenantVariables],
+  );
+  const secretTokens = useMemo(
+    () =>
+      findVariableTokens(value)
+        .filter((key) => secretVariableKeys.has(key))
+        .map(variableToken),
+    [value, secretVariableKeys],
   );
   const variables = useMemo<VariableMenuEntry[]>(() => {
     const custom: VariableMenuEntry[] = customFields.map((f) => ({
@@ -130,6 +151,7 @@ export default function VariableInput({
       }),
     [value, knownKeys, knownVariableKeys],
   );
+  const hasTokenWarning = unknownTokens.length > 0 || secretTokens.length > 0;
   const positionMenu = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -197,13 +219,17 @@ export default function VariableInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          aria-invalid={unknownTokens.length > 0 || undefined}
+          aria-invalid={hasTokenWarning || undefined}
           aria-describedby={
-            cn(ariaDescribedBy, unknownTokens.length > 0 && warnId) || undefined
+            cn(
+              ariaDescribedBy,
+              secretTokens.length > 0 && secretWarnId,
+              unknownTokens.length > 0 && warnId,
+            ) || undefined
           }
           className={cn(
             "h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring",
-            unknownTokens.length > 0 &&
+            hasTokenWarning &&
               "border-destructive/60 focus:ring-destructive/40",
             className,
           )}
@@ -225,6 +251,20 @@ export default function VariableInput({
           </span>
         </button>
       </div>
+
+      {secretTokens.length > 0 && (
+        <p
+          id={secretWarnId}
+          className="mt-1 flex items-start gap-1.5 text-xs text-destructive"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {secretTokens.join(", ")}
+            {": "}
+            {i18n.t("policies:software.variableInput.secretUnavailable")}
+          </span>
+        </p>
+      )}
 
       {unknownTokens.length > 0 && (
         <p

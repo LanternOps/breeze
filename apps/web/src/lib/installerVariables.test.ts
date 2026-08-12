@@ -89,4 +89,24 @@ describe('findUnknownTokens', () => {
       '{{ var.vendor_token }}',
     ]);
   });
+
+  // The server treats `${{var.x}}` as NON-strict and therefore unknown
+  // (`apps/api/src/services/installerVariables.ts` checks `template[offset-1]`,
+  // and the shared grammar carries a `(?<!\$)` lookbehind). The client used to
+  // validate it clean because the `$` sits outside the scanned match — the
+  // exact client-passes/server-fails divergence this module warns about.
+  it('flags a $-escaped variable token, matching the server', () => {
+    const options = { variableKeys: new Set(['vendor_token']), requireKnownVariableKeys: true };
+    expect(findUnknownTokens('${{var.vendor_token}}', new Set(), options)).toEqual([
+      '{{var.vendor_token}}',
+    ]);
+    // Still clean without the `$`.
+    expect(findUnknownTokens('{{var.vendor_token}}', new Set(), options)).toEqual([]);
+  });
+
+  it('flags a $-escaped variable token even before the variable list loads', () => {
+    expect(findUnknownTokens('${{var.vendor_token}}', new Set())).toEqual([
+      '{{var.vendor_token}}',
+    ]);
+  });
 });

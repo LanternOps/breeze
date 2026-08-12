@@ -119,4 +119,34 @@ describe('VariableInput tenant variables', () => {
     render(<Harness initial="https://dl/{{var.ghost}}/app.msi" />);
     expect(screen.queryByText(/Unknown variable/i)).not.toBeInTheDocument();
   });
+
+  // The picker disables secret rows, but the key IS known, so a hand-typed
+  // secret token used to validate clean here and then fail the deploy on every
+  // device (softwareDeployment.ts omits secrets from the substitution map).
+  it('flags a hand-typed secret token as secret, not as unknown', () => {
+    render(
+      <Harness initial="https://dl/{{var.api_password}}/app.msi" tenantVariables={tenantVariables} />,
+    );
+    // The warning names the offending token, so a template with several
+    // variables tells the user which one to remove.
+    expect(screen.getByText(/environment variable/i)).toHaveTextContent(
+      '{{var.api_password}}',
+    );
+    expect(screen.queryByText(/Unknown variable/i)).not.toBeInTheDocument();
+  });
+
+  it('marks the field invalid when a secret token is present', () => {
+    render(
+      <Harness initial="https://dl/{{var.api_password}}/app.msi" tenantVariables={tenantVariables} />,
+    );
+    expect(screen.getByPlaceholderText('url')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('does not flag a non-secret token as secret', () => {
+    render(
+      <Harness initial="https://dl/{{var.vendor_token}}/app.msi" tenantVariables={tenantVariables} />,
+    );
+    expect(screen.queryByText(/environment variable/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('url')).not.toHaveAttribute('aria-invalid');
+  });
 });
