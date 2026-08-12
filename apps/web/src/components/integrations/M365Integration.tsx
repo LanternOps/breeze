@@ -379,6 +379,7 @@ export default function M365Integration() {
 
         <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
           {t("m365Integration.readsLookupGroupsSignInsNeed")}
+          <span className="font-medium">Organization.Read.All</span>,{" "}
           <span className="font-medium">User.Read.All</span>,{" "}
           <span className="font-medium">Group.Read.All</span>,{" "}
           <span className="font-medium">AuditLog.Read.All</span>

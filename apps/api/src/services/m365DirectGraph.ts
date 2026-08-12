@@ -12,7 +12,8 @@
  * once `aiToolsM365.ts` routes through here when a direct connection exists.
  *
  * Reuses `acquireClientCredentialsToken` from c2cM365 (fixed-host, SSRF-safe).
- * Reads need only User.Read.All / Group.Read.All / AuditLog.Read.All; the
+ * Save & Verify probes GET /organization (needs Organization.Read.All).
+ * Reads need User.Read.All / Group.Read.All / AuditLog.Read.All; the
  * mutations (disable, reset password) additionally require the app to hold
  * User.ReadWrite.All / User-PasswordProfile.ReadWrite.All plus the User
  * Administrator Entra role — surfaced as a clear error if the grant is missing.
