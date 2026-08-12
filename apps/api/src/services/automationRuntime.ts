@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { DeploymentTargetConfig } from '@breeze/shared';
+import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
   alertRules,
@@ -148,7 +148,9 @@ export type AutomationTrigger =
 export type RunScriptAction = {
   type: 'run_script';
   scriptId: string;
-  parameters?: Record<string, unknown>;
+  // #3409 PR2 Task 7: matches scriptParametersSchema's inferred value type —
+  // canonicalized to strings once, downstream, at scriptDispatch.ts.
+  parameters?: Record<string, string | number | boolean>;
   runAs?: 'system' | 'user' | 'elevated' | string;
 };
 
@@ -365,10 +367,24 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
       if (!scriptId) {
         throw new AutomationValidationError(`actions[${index}] run_script requires scriptId`);
       }
+      // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared),
+      // replacing the old hand-rolled isPlainRecord check — a malformed
+      // parameters map is now a save-time AutomationValidationError instead
+      // of a silent drop.
+      let parameters: Record<string, string | number | boolean> | undefined;
+      if (action.parameters !== undefined) {
+        const parsed = scriptParametersSchema.safeParse(action.parameters);
+        if (!parsed.success) {
+          throw new AutomationValidationError(
+            `actions[${index}] run_script has invalid parameters: ${parsed.error.issues[0]?.message ?? 'invalid parameters'}`
+          );
+        }
+        parameters = parsed.data;
+      }
       normalized.push({
         type: 'run_script',
         scriptId,
-        parameters: isPlainRecord(action.parameters) ? action.parameters : undefined,
+        parameters,
         runAs: asString(action.runAs),
       });
       continue;

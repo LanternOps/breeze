@@ -768,6 +768,32 @@ describe('scripts routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a nested-object parameter value on execute (#3409 PR2 Task 7 — one script-parameter schema)', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters: { nested: { bad: true } }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a parameter key the agent could not turn into an env var name on execute', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters: { 'has space': 'v' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it('should reject unsupported runAs override on execute', async () => {
     const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',

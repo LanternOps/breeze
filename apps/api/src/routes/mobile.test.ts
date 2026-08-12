@@ -1358,6 +1358,38 @@ describe('mobile routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
+    it('rejects a nested-object parameter value (#3409 PR2 Task 7 — one script-parameter schema)', async () => {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '11111111-1111-1111-1111-111111111111',
+          parameters: { nested: { bad: true } }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts string/number/boolean parameter values', async () => {
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '11111111-1111-1111-1111-111111111111',
+          parameters: { s: 'a', n: 3, b: true }
+        })
+      });
+
+      // Not 400: the request clears schema validation and proceeds to the
+      // (mocked-empty) device lookup, same as the existing 404 case below.
+      expect(res.status).not.toBe(400);
+    });
+
     it('requires scripts.execute for run_script actions before device lookup', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 

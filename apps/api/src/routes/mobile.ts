@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
@@ -304,7 +305,8 @@ const listDevicesSchema = z.object({
 const deviceActionSchema = z.object({
   action: z.enum(['reboot', 'wake', 'run_script']),
   scriptId: z.string().guid().optional(),
-  parameters: z.record(z.string(), z.unknown()).optional()
+  // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared).
+  parameters: scriptParametersSchema.optional()
 }).superRefine((data, ctx) => {
   if (data.action === 'run_script' && !data.scriptId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'scriptId is required for run_script' });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AutomationValidationError,
   isCronDue,
   normalizeAutomationActions,
   normalizeAutomationTrigger,
@@ -60,6 +61,37 @@ describe('automationRuntime', () => {
       'create_alert',
       'execute_command',
     ]);
+  });
+
+  it('normalizes a run_script action carrying string/number/boolean parameters (#3409 PR2 Task 7)', () => {
+    const actions = normalizeAutomationActions([
+      { type: 'run_script', scriptId: 'script-1', parameters: { s: 'a', n: 3, b: true } },
+    ]);
+
+    expect(actions).toEqual([
+      { type: 'run_script', scriptId: 'script-1', parameters: { s: 'a', n: 3, b: true }, runAs: undefined },
+    ]);
+  });
+
+  it('rejects a run_script action whose parameters fail the shared script-parameter schema', () => {
+    expect(() =>
+      normalizeAutomationActions([
+        { type: 'run_script', scriptId: 'script-1', parameters: { nested: { bad: true } } },
+      ])
+    ).toThrow(AutomationValidationError);
+  });
+
+  it('rejects a run_script parameter key the agent could not turn into an env var name', () => {
+    expect(() =>
+      normalizeAutomationActions([
+        { type: 'run_script', scriptId: 'script-1', parameters: { 'has space': 'v' } },
+      ])
+    ).toThrow(/actions\[0\]/);
+  });
+
+  it('leaves parameters undefined when the action omits them', () => {
+    const actions = normalizeAutomationActions([{ type: 'run_script', scriptId: 'script-1' }]);
+    expect(actions[0]).toMatchObject({ parameters: undefined });
   });
 
   it('normalizes notification targets from legacy and canonical payloads', () => {

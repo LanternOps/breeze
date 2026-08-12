@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { canonicalizeScriptParameters } from '@breeze/shared';
 
 import { db } from '../db';
 import { devices, scriptExecutions, scripts } from '../db/schema';
@@ -197,7 +198,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(input.batchId ? { batchId: input.batchId } : {}),
       language,
       content,
-      parameters,
+      // #3409 PR2 Task 7: canonicalize to strings ONCE, here, at the single
+      // dispatch chokepoint — the agent's wire type is `map[string]string`
+      // (agent/internal/executor/executor.go:39) and silently drops any
+      // non-string value (agent/internal/heartbeat/handlers_script.go:37-43).
+      // Every ingress (route, mobile, automation, AI tools, script builder,
+      // remediation suggestions) funnels through here, so this is the one
+      // place that guarantees the wire form regardless of caller.
+      parameters: canonicalizeScriptParameters(parameters as Record<string, string | number | boolean>),
       timeoutSeconds,
       runAs,
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),

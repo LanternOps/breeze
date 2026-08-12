@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { exitCodeSeverityMappingSchema } from '@breeze/shared';
+import { exitCodeSeverityMappingSchema, scriptParametersSchema } from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { db } from '../db';
@@ -270,7 +270,12 @@ export const executeScriptSchema = z
     deviceIds: z.array(z.string().guid()).min(1).max(500, {
       message: 'Cannot target more than 500 devices in a single script execution',
     }),
-    parameters: z.record(z.string(), z.any()).refine(
+    // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared) —
+    // accepts string/number/boolean values, canonicalized to strings once at
+    // dispatch (scriptDispatch.ts). The 64KB cap is kept ON TOP of the
+    // schema's own count/length caps: it bounds the raw JSON body size this
+    // route ever accepts, independent of the canonicalized wire form.
+    parameters: scriptParametersSchema.refine(
       (val) => JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }
     ).optional(),

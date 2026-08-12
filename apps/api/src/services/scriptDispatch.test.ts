@@ -230,6 +230,24 @@ describe('dispatchScriptToDevice — rows and payload', () => {
     expect((payload as Record<string, unknown>).executionId).toBeUndefined();
   });
 
+  it('canonicalizes number/boolean parameters to strings in the payload (#3409 PR2 Task 7)', async () => {
+    await dispatchScriptToDevice({
+      device: device(), source: { kind: 'saved', script: savedScript() },
+      parameters: { n: 3, b: true, s: 'already-a-string' },
+    });
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    expect((payload as Record<string, unknown>).parameters).toEqual({ n: '3', b: 'true', s: 'already-a-string' });
+  });
+
+  it('does not canonicalize the parameters stored on the script_executions row (raw values preserved for history)', async () => {
+    await dispatchScriptToDevice({
+      device: device(), source: { kind: 'saved', script: savedScript(), automationRunId: null },
+      parameters: { n: 3, b: true },
+    });
+    const execValues = vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0];
+    expect(execValues.parameters).toEqual({ n: 3, b: true });
+  });
+
   it('runs the payload through encryptSensitivePayloadFields before queueCommand', async () => {
     await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
     expect(encryptSensitivePayloadFields).toHaveBeenCalledWith('script', expect.any(Object));
