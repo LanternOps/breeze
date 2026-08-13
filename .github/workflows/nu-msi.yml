@@ -110,12 +110,14 @@ jobs:
             }
           }
 
-      # WiX v4+ CLI, same install path build-msi.ps1's own error message
-      # recommends. The dotnet global-tools dir is already on PATH on
-      # windows-latest runners.
+      # WiX CLI pinned to v4: an unpinned install now resolves to WiX v7,
+      # which refuses to run in CI until the Open Source Maintenance Fee
+      # EULA is accepted (WIX7015). v4 is the series build-msi.ps1 targets
+      # and carries no OSMF gate. The dotnet global-tools dir is already on
+      # PATH on windows-latest runners.
       - name: Install WiX CLI
         shell: pwsh
-        run: dotnet tool install --global wix
+        run: dotnet tool install --global wix --version 4.0.5
 
       # x64 MSI. Notes on the parameters:
       #  * All four -*ExePath args are passed explicitly because the script's
