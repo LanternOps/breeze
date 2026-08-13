@@ -12,7 +12,7 @@ import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
 import { isValidEmail } from '@/lib/email';
-import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
+import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
@@ -86,6 +86,34 @@ export function QuoteSendOutcomeBanners({ quote, orgName }: { quote: Quote; orgN
       <span>{banner.message}</span>
     </div>
   );
+}
+
+/** What to tell the user about the link, given where it came from.
+ *
+ *  The two reissue outcomes are OPPOSITE and must not be collapsed:
+ *  - `minted_no_identity` — the quote predates link tracking. Its original
+ *    token was never stored, so it cannot be revoked and is STILL LIVE. The
+ *    customer now holds two working links.
+ *  - `minted_key_unavailable` / `minted_expired` — the original link no longer
+ *    verifies at all (rotated signing key / lapsed token). It is dead, and
+ *    telling the user it "still works" would send them chasing a link nobody
+ *    can open.
+ *
+ *  Returns null when the link is the original one and there is nothing to warn
+ *  about. */
+// Takes already-translated strings rather than keys so every t() call site
+// stays a literal the i18n key-usage scanner can see (src/lib/i18n/keyUsage.test.ts).
+function linkOriginNotice(
+  origin: QuoteAcceptUrlOrigin | undefined, messages: { live: string; dead: string },
+): string | null {
+  switch (origin) {
+    case 'minted_no_identity': return messages.live;
+    case 'minted_key_unavailable':
+    case 'minted_expired': return messages.dead;
+    // 'reproduced', or an origin this client doesn't know yet — say nothing
+    // rather than guess which of the two opposite stories applies.
+    default: return null;
+  }
 }
 
 /** Mirrors the send route's `.max(10)` on both `to` and `cc`. */
@@ -495,10 +523,11 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       if (!includePdf) opts.includePdf = false;
       if (resendMode) {
         // A re-send is a second COPY of an already-issued document: it reuses
-        // the customer's existing accept link and changes no quote state, so
-        // there is nothing to undo and no draft→sent flip to wait on. It
-        // dispatches immediately rather than through the 30s window.
-        const result = await runAction<{ data?: { emailed?: boolean; reissued?: boolean } }>({
+        // the customer's existing accept link and changes no LIFECYCLE state
+        // (no status flip, no new number, no re-frozen snapshots), so there is
+        // nothing to undo and no draft→sent flip to wait on. It dispatches
+        // immediately rather than through the 30s window.
+        const result = await runAction<{ data?: { emailed?: boolean; origin?: QuoteAcceptUrlOrigin } }>({
           request: () => resendQuote(quote.id, opts),
           errorFallback: t('quotes.actions.resendError'),
           onUnauthorized: UNAUTHORIZED,
@@ -506,14 +535,25 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         setSendOpen(false);
         setSendMessage('');
         refresh();
-        // Honest outcome: the server swallows email failures so the request
-        // succeeds even when nothing was delivered. Don't claim a send that
-        // didn't happen — the persistent banner carries the reason.
-        showToast(
-          result?.data?.emailed === false
-            ? { message: t('quotes.actions.resendNotDelivered'), type: 'warning' }
-            : { message: t('quotes.actions.resendSuccess', { orgName }), type: 'success' },
-        );
+        // Honest outcome, in two independent dimensions:
+        //  1. Did an email actually go out? The server swallows delivery
+        //     failures, so the request succeeds even when nothing was sent —
+        //     `emailed !== true` (not `=== false`) so an unexpected response
+        //     shape can't be read as success.
+        //  2. Did the customer's link change? The confirm dialog promised "the
+        //     accept link stays the same"; when it didn't, that promise has to
+        //     be corrected here rather than silently broken.
+        const linkNotice = linkOriginNotice(result?.data?.origin, {
+          live: t('quotes.actions.resendNewLinkOriginalLive'),
+          dead: t('quotes.actions.resendNewLinkOriginalDead'),
+        });
+        if (result?.data?.emailed !== true) {
+          showToast({ message: t('quotes.actions.resendNotDelivered'), type: 'warning' });
+        } else {
+          showToast(linkNotice
+            ? { message: linkNotice, type: 'warning', duration: 12000 }
+            : { message: t('quotes.actions.resendSuccess', { orgName }), type: 'success' });
+        }
         return;
       }
       // Undo-send window: the composer confirm SCHEDULES the dispatch ~30s out
@@ -545,7 +585,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setMenuOpen(false);
     setCopyingLink(true);
     try {
-      const result = await runAction<{ data?: { acceptUrl?: string; reissued?: boolean } }>({
+      const result = await runAction<{ data?: { acceptUrl?: string; origin?: QuoteAcceptUrlOrigin } }>({
         request: () => getQuoteShareLink(quote.id),
         errorFallback: t('quotes.actions.shareLinkError'),
         onUnauthorized: UNAUTHORIZED,
@@ -557,24 +597,30 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
         showToast({ message: t('quotes.actions.shareLinkError'), type: 'error' });
         return;
       }
+      const linkNotice = linkOriginNotice(result?.data?.origin, {
+        live: t('quotes.actions.shareLinkNewLinkOriginalLive'),
+        dead: t('quotes.actions.shareLinkNewLinkOriginalDead'),
+      });
       // Clipboard access can be denied (insecure origin, permissions policy).
       // Fall back to showing the link so the user can select it by hand — a
-      // silent no-op here reads as a dead menu item.
+      // silent no-op here reads as a dead menu item. The reissue notice still
+      // has to reach them: the link being NEW is the more consequential fact,
+      // and it must not be swallowed just because the copy failed.
       try {
         await navigator.clipboard.writeText(url);
       } catch {
-        showToast({ message: t('quotes.actions.shareLinkCopyFailed', { url }), type: 'warning', duration: 15000 });
+        showToast({
+          message: linkNotice
+            ? `${t('quotes.actions.shareLinkCopyFailed', { url })} ${linkNotice}`
+            : t('quotes.actions.shareLinkCopyFailed', { url }),
+          type: 'warning',
+          duration: 15000,
+        });
         return;
       }
-      showToast(
-        result?.data?.reissued
-          // A reissue means the ORIGINAL link could not be reproduced (this
-          // quote predates link tracking, or its signing key was rotated). The
-          // customer's first link was never revoked and still works — say that
-          // plainly rather than implying we replaced it.
-          ? { message: t('quotes.actions.shareLinkCopiedReissued'), type: 'warning', duration: 12000 }
-          : { message: t('quotes.actions.shareLinkCopied'), type: 'success' },
-      );
+      showToast(linkNotice
+        ? { message: linkNotice, type: 'warning', duration: 12000 }
+        : { message: t('quotes.actions.shareLinkCopied'), type: 'success' });
     } catch (err) {
       handleActionError(err, t('quotes.actions.shareLinkError'));
     } finally {
@@ -722,12 +768,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
   const canDelete = can('quotes', 'write') && isDraft;
-  // Re-send and share-link mirror the server's gates (services/quoteLifecycle.ts):
-  // an OPEN quote only. Settled outcomes (accepted/declined/converted) and
-  // expired quotes are excluded — an expired quote's accept link is expired
-  // too, so re-sending it would deliver a link guaranteed to fail. Both are
-  // quotes:send, not quotes:read: each hands the customer a live accept
-  // credential.
+  // Mirrors assertLinkableQuote (services/quoteLifecycle.ts), which both the
+  // resend and share-link services call: an OPEN, non-expired quote only.
+  // Settled outcomes (accepted/declined/converted) and expired quotes are
+  // excluded because resolving a link can MINT one — manufacturing a fresh
+  // 30-day credential for a finished proposal. Both actions are quotes:send,
+  // not quotes:read: each hands the customer a live accept credential.
   const isOpen = quote.status === 'sent' || quote.status === 'viewed';
   const isExpired = quote.expiryDate != null && new Date(`${quote.expiryDate}T23:59:59Z`).getTime() < Date.now();
   const canResend = can('quotes', 'send') && isOpen && !isExpired;

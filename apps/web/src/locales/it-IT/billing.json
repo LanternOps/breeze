@@ -881,13 +881,16 @@
       "copyShareLink": "Copia link di condivisione",
       "copyingShareLink": "Copia in corso…",
       "shareLinkCopied": "Link di condivisione copiato: è lo stesso link inviato al cliente.",
-      "shareLinkCopiedReissued": "Link di condivisione copiato. Questa proposta precede il tracciamento dei link, quindi questo è un link NUOVO: anche quello che il cliente ha già continua a funzionare.",
       "shareLinkCopyFailed": "Copia automatica non riuscita. Il link di condivisione è: {{url}}",
       "shareLinkError": "Impossibile ottenere il link di condivisione.",
       "resendConfirm": {
         "title": "Invia di nuovo la proposta",
         "message": "Invia a {{orgName}} un’altra copia di questa proposta. Nulla cambia nel preventivo e il link di accettazione resta lo stesso."
-      }
+      },
+      "resendNewLinkOriginalLive": "Proposta inviata di nuovo, ma con un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme al nuovo.",
+      "resendNewLinkOriginalDead": "Proposta inviata di nuovo, ma con un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare quello nuovo.",
+      "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
+      "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo."
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",

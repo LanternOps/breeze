@@ -146,9 +146,10 @@ quoteLifecycleRoutes.post('/:id/resend', scopes, sendPerm, zValidator('param', i
       resourceType: 'quote',
       resourceId: id,
       result: result.emailed ? 'success' : 'failure',
-      // `reissued` is the notable case: the quote's original link could not be
-      // reproduced, so the customer now holds two working links.
-      details: { emailed: result.emailed, emailReason: result.emailReason, reissued: result.reissued },
+      // `origin` is the notable field: it distinguishes "the customer's
+      // original link still works alongside the new one" from "their original
+      // link is now dead", which the bare boolean cannot.
+      details: { emailed: result.emailed, emailReason: result.emailReason, reissued: result.reissued, linkOrigin: result.origin },
     });
     return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }
@@ -168,7 +169,7 @@ quoteLifecycleRoutes.get('/:id/share-link', scopes, sendPerm, zValidator('param'
       resourceType: 'quote',
       resourceId: id,
       result: 'success',
-      details: { reissued: result.reissued },
+      details: { reissued: result.reissued, linkOrigin: result.origin },
     });
     return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }

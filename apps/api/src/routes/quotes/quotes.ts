@@ -119,7 +119,18 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // had no way to see the addresses. Empty on drafts and on legacy sends that
     // predate quote_recipients.
     const recipients = await getQuoteRecipients(id);
-    return c.json({ data: { ...detail, blocks: blocksForEditor, branding, recipients } });
+    // Strip the accept-token identity before it leaves the API. getQuote reads
+    // the whole `quotes` row, but these four columns are classified
+    // excludedSensitive in CORE_TENANT_EXPORT_POLICY (they are the material
+    // that reproduces a live accept credential) — shipping them to every
+    // quotes:read holder would hand exactly the users we deliberately deny the
+    // share-link endpoint everything except the signing key.
+    const {
+      acceptTokenJti: _jti, acceptTokenIssuedAt: _iat,
+      acceptTokenExpiresAt: _exp, acceptTokenKid: _kid,
+      ...quoteForClient
+    } = detail.quote;
+    return c.json({ data: { ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, recipients } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

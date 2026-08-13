@@ -11,8 +11,8 @@ import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 const runAction = vi.hoisted(() => vi.fn(async (opts: { request: () => Promise<unknown> }) => opts.request()));
 const showToast = vi.hoisted(() => vi.fn());
 const api = vi.hoisted(() => ({
-  resendQuote: vi.fn(async () => ({ data: { emailed: true, reissued: false, acceptUrl: 'https://portal.example/quote/tok' } })),
-  getQuoteShareLink: vi.fn(async () => ({ data: { acceptUrl: 'https://portal.example/quote/tok', reissued: false } })),
+  resendQuote: vi.fn(async () => ({ data: { emailed: true, origin: 'reproduced', acceptUrl: 'https://portal.example/quote/tok' } })),
+  getQuoteShareLink: vi.fn(async () => ({ data: { acceptUrl: 'https://portal.example/quote/tok', origin: 'reproduced' } })),
 }));
 vi.mock('../../../lib/runAction', () => ({ runAction, handleActionError: vi.fn() }));
 vi.mock('../../shared/Toast', () => ({ showToast }));
@@ -69,8 +69,8 @@ const clipboard = vi.fn(async () => undefined);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  api.resendQuote.mockResolvedValue({ data: { emailed: true, reissued: false, acceptUrl: 'https://portal.example/quote/tok' } });
-  api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/tok', reissued: false } });
+  api.resendQuote.mockResolvedValue({ data: { emailed: true, origin: 'reproduced', acceptUrl: 'https://portal.example/quote/tok' } });
+  api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/tok', origin: 'reproduced' } });
   clipboard.mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { value: { writeText: clipboard }, configurable: true });
 });
@@ -123,11 +123,43 @@ describe('QuoteActions — re-send', () => {
     }));
   });
 
+  // The confirm dialog promises "the accept link stays the same". When it
+  // didn't, that promise has to be corrected — this path emails the customer,
+  // so getting it wrong is worse here than on copy-link.
+  it('corrects the "same link" promise when the re-send had to issue a new one', async () => {
+    api.resendQuote.mockResolvedValue({ data: { emailed: true, origin: 'minted_no_identity', acceptUrl: 'x' } });
+    render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
+    fireEvent.click(screen.getByTestId('quote-resend'));
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: expect.stringContaining('NEW link'),
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('same link'),
+    }));
+  });
+
+  // An unexpected response shape must not read as success on a path whose
+  // whole job is telling the user whether the customer got the email.
+  it('does not claim success when the response omits `emailed`', async () => {
+    // Deliberately omits `emailed` — the shape a mismatched server version, or
+    // a future response change, would produce.
+    api.resendQuote.mockResolvedValue({ data: { origin: 'reproduced', acceptUrl: 'x' } } as never);
+    render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
+    fireEvent.click(screen.getByTestId('quote-resend'));
+    fireEvent.click(screen.getByTestId('quote-send-confirm'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
   // The server swallows email failures so the request still succeeds. Claiming
   // "re-sent" when nothing was delivered is the exact dishonesty the send path's
   // emailed:false handling exists to avoid.
   it('warns rather than claiming success when no email was delivered', async () => {
-    api.resendQuote.mockResolvedValue({ data: { emailed: false, reissued: false, acceptUrl: 'x' } });
+    api.resendQuote.mockResolvedValue({ data: { emailed: false, origin: 'reproduced', acceptUrl: 'x' } });
     render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
     fireEvent.click(screen.getByTestId('quote-resend'));
     fireEvent.click(screen.getByTestId('quote-send-confirm'));
@@ -150,8 +182,8 @@ describe('QuoteActions — copy share link', () => {
 
   // A reissue does NOT revoke the customer's original link (we never stored the
   // parts needed to revoke it) — the copy must not imply that it did.
-  it('warns, without claiming the old link died, when a new link had to be minted', async () => {
-    api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/new', reissued: true } });
+  it('says the old link still works when the quote merely predates link tracking', async () => {
+    api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/new', origin: 'minted_no_identity' } });
     render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
     fireEvent.click(screen.getByTestId('quote-copy-share-link'));
 
@@ -159,6 +191,33 @@ describe('QuoteActions — copy share link', () => {
       type: 'warning',
       message: expect.stringContaining('still works'),
     })));
+  });
+
+  // The opposite outcome, and the one that used to be reported wrongly: when
+  // the signing key is gone the original link no longer verifies at all.
+  // Telling the customer it "still works" sends them chasing a dead url.
+  it.each(['minted_key_unavailable', 'minted_expired'])('says the old link is dead when it genuinely is (%s)', async (origin) => {
+    api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/new', origin } });
+    render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
+    fireEvent.click(screen.getByTestId('quote-copy-share-link'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'warning',
+      message: expect.stringContaining('no longer be opened'),
+    })));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('still works'),
+    }));
+  });
+
+  // An unknown origin from a newer server must not be guessed at — either
+  // story would be a coin flip, and both are consequential.
+  it('stays silent about the link when the origin is unrecognized', async () => {
+    api.getQuoteShareLink.mockResolvedValue({ data: { acceptUrl: 'https://portal.example/quote/tok', origin: 'something_new' } });
+    render(<QuoteActions detail={sent()} onChanged={vi.fn()} variant="rail" />);
+    fireEvent.click(screen.getByTestId('quote-copy-share-link'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
   });
 
   // A denied clipboard (insecure origin / permissions policy) must surface the

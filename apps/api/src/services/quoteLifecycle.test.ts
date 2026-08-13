@@ -861,7 +861,7 @@ describe('resendQuote', () => {
     expiryDate: null, taxRate: null, depositType: 'none' as const, depositPercent: null,
     terms: null, sellerSnapshot: { name: 'Acme MSP' },
     acceptTokenJti: 'jti-1', acceptTokenIssuedAt: new Date(1_760_000_000_000),
-    acceptTokenExpiresAt: new Date(1_770_000_000_000), acceptTokenKid: null,
+    acceptTokenExpiresAt: new Date(2_000_000_000_000), acceptTokenKid: null,
   };
 
   /** The six reads getQuote makes, for a given quote row. */
@@ -886,7 +886,7 @@ describe('resendQuote', () => {
     const { regenerateQuoteAcceptToken } = await import('./quoteAcceptToken');
     const expected = await regenerateQuoteAcceptToken(
       { quoteId: 'q1', orgId: 'org1', partnerId: 'p1' },
-      { jti: 'jti-1', issuedAtSeconds: 1_760_000_000, expiresAtSeconds: 1_770_000_000, kid: null },
+      { jti: 'jti-1', issuedAtSeconds: 1_760_000_000, expiresAtSeconds: 2_000_000_000, kid: null },
     );
 
     queueGetQuote(OPEN_QUOTE);
@@ -894,12 +894,19 @@ describe('resendQuote', () => {
     queueResult([{ billingContact: { email: 'ap@customer.example' } }]); // org
     queueResult([{ email: 'ap@customer.example' }]);     // existing recipients
     queueResult([]);                                     // portalBranding
+    queueResult([]);                                     // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);                    // final re-select
 
     const result = await resendQuote('q1', actor);
 
     expect(result.acceptUrl).toBe(buildPublicQuoteAcceptUrl(expected!));
+    expect(result.origin).toBe('reproduced');
     expect(result.reissued).toBe(false);
+    // The route reads result.quote.orgId to tenant-scope its audit record, so a
+    // silently-undefined row here would surface as a 500 in production.
+    expect(result.quote).toBeDefined();
+    expect(result.quote.id).toBe('q1');
+    expect(result.quote.orgId).toBe('org1');
     // The ONLY write is the email-outcome marker: no status, sentAt,
     // quoteNumber, billTo* or sellerSnapshot may appear in any `.set(...)`.
     // Guard against a vacuous pass — a re-send that wrote NOTHING would satisfy
@@ -920,6 +927,7 @@ describe('resendQuote', () => {
     queueResult([{ billingContact: null }]);              // org has NO billing contact any more
     queueResult([{ email: 'first@customer.example' }, { email: 'second@customer.example' }]);
     queueResult([]);                                     // portalBranding
+    queueResult([]);                                     // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);
 
     const result = await resendQuote('q1', actor);
@@ -934,7 +942,8 @@ describe('resendQuote', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP' }]);
     queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
     queueResult([{ email: 'ap@customer.example' }]);
-    queueResult([]);
+    queueResult([]);                                     // portalBranding
+    queueResult([]);                                     // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);
 
     await resendQuote('q1', actor, { to: ['New.Person@Customer.Example'] });
@@ -948,16 +957,21 @@ describe('resendQuote', () => {
 
   it('mints a fresh link when the quote has no reproducible token, and says so', async () => {
     queueGetQuote({ ...OPEN_QUOTE, acceptTokenJti: null, acceptTokenIssuedAt: null, acceptTokenExpiresAt: null });
-    queueResult([]);                                     // the identity-stamping update
+    queueResult([{ id: 'q1' }]);                         // identity-stamping claim (returning)
     queueResult([{ id: 'p1', name: 'Acme MSP' }]);
     queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
     queueResult([{ email: 'ap@customer.example' }]);
-    queueResult([]);
+    queueResult([]);                                     // portalBranding
+    queueResult([]);                                     // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);
 
     const result = await resendQuote('q1', actor);
 
     expect(result.reissued).toBe(true);
+    // A legacy quote's ORIGINAL link was never stored, so it cannot be revoked
+    // and is still live — the UI copy depends on this exact origin.
+    expect(result.origin).toBe('minted_no_identity');
+    expect(result.quote).toBeDefined();
     // The freshly-minted identity is persisted, or the NEXT re-send would mint
     // yet another link and the customer would accumulate dead urls.
     expect(setCalls.some((p) => typeof p.acceptTokenJti === 'string')).toBe(true);
@@ -978,7 +992,8 @@ describe('resendQuote', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP' }]);
     queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
     queueResult([{ email: 'ap@customer.example' }]);
-    queueResult([]);
+    queueResult([]);                                     // portalBranding
+    queueResult([]);                                     // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);
 
     await resendQuote('q1', actor);
@@ -991,6 +1006,7 @@ describe('resendQuote', () => {
     queueResult([{ id: 'p1', name: 'Acme MSP' }]);
     queueResult([{ billingContact: null }]); // no billing contact
     queueResult([]);                         // and no prior recipients
+    queueResult([]);                         // outcome-marker update
     queueResult([{ ...OPEN_QUOTE }]);
 
     const result = await resendQuote('q1', actor);
@@ -1007,7 +1023,7 @@ describe('getQuoteShareLink', () => {
     quoteNumber: 'Q-2026-0001', currencyCode: 'USD', total: '1000.00', expiryDate: null,
     taxRate: null, depositType: 'none' as const, depositPercent: null,
     acceptTokenJti: 'jti-1', acceptTokenIssuedAt: new Date(1_760_000_000_000),
-    acceptTokenExpiresAt: new Date(1_770_000_000_000), acceptTokenKid: null,
+    acceptTokenExpiresAt: new Date(2_000_000_000_000), acceptTokenKid: null,
   };
 
   function queueGetQuote(quote: Record<string, unknown>) {
@@ -1041,5 +1057,67 @@ describe('getQuoteShareLink', () => {
   it('refuses a draft — there is no link until the quote is sent', async () => {
     queueGetQuote({ ...SENT, status: 'draft' });
     await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
+  // Resolving a link can MINT one, and createQuoteAcceptToken deliberately
+  // falls back to a 30-day TTL when the quote's own expiry is already past. So
+  // handing out a share link for a finished quote doesn't just expose a stale
+  // url — it manufactures a fresh, live read-credential for a dead proposal
+  // that also sidesteps the single-use jti gates on the public routes. The UI
+  // hides these cases; a direct API/MCP caller does not.
+  it.each(['accepted', 'declined', 'converted'])('refuses a settled (%s) quote rather than minting a credential for it', async (status) => {
+    queueGetQuote({ ...SENT, status });
+    await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
+  it('refuses an expired quote rather than minting a 30-day link for it', async () => {
+    queueGetQuote({ ...SENT, expiryDate: '2020-01-01' });
+    await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 410, code: 'QUOTE_EXPIRED' });
+  });
+
+  // A stored token whose own `exp` has lapsed reproduces perfectly and then
+  // fails in the customer's browser. That happens on a live quote with no
+  // expiry_date once the token's default 30-day TTL runs out — the quote is
+  // NOT expired, so no gate catches it. Replace it, and say the previous link
+  // is dead (not "still works", which is the legacy story).
+  it('replaces a lapsed token on a still-live quote and reports the original as dead', async () => {
+    queueGetQuote({
+      ...SENT, expiryDate: null,
+      acceptTokenExpiresAt: new Date(Date.now() - 60_000),
+    });
+    queueResult([{ id: 'q1' }]); // identity-stamping claim (returning)
+    queueResult([]);             // recipients
+
+    const result = await getQuoteShareLink('q1', actor);
+
+    expect(result.origin).toBe('minted_expired');
+    expect(result.reissued).toBe(true);
+  });
+
+  // The share-link route is a GET that writes. A retry or double-click makes
+  // this race ordinary: without the conditional claim, each caller mints a
+  // separate live credential and only the last is recorded — so an earlier
+  // caller walks away with a link nobody can ever reproduce or revoke.
+  it('yields the winner\'s link when a concurrent resolve claimed the identity first', async () => {
+    queueGetQuote({ ...SENT, acceptTokenJti: null, acceptTokenIssuedAt: null, acceptTokenExpiresAt: null });
+    queueResult([]);        // our claim matches 0 rows — someone else got there first
+    queueResult([{         // re-read: the winner's persisted identity
+      ...SENT, acceptTokenJti: 'winner-jti',
+      acceptTokenIssuedAt: new Date(1_760_000_000_000),
+      acceptTokenExpiresAt: new Date(2_000_000_000_000),
+      acceptTokenKid: null,
+    }]);
+    queueResult([]);        // recipients
+
+    const { regenerateQuoteAcceptToken } = await import('./quoteAcceptToken');
+    const winner = await regenerateQuoteAcceptToken(
+      { quoteId: 'q1', orgId: 'org1', partnerId: 'p1' },
+      { jti: 'winner-jti', issuedAtSeconds: 1_760_000_000, expiresAtSeconds: 2_000_000_000, kid: null },
+    );
+
+    const result = await getQuoteShareLink('q1', actor);
+
+    // Both callers hand out the SAME url, and it is the one that is recorded.
+    expect(result.acceptUrl).toBe(buildPublicQuoteAcceptUrl(winner!));
   });
 });

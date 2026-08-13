@@ -308,6 +308,20 @@ export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Resp
   });
 }
 
+/** Why a resolved share link is what it is. Mirrors `AcceptUrlOrigin` in
+ *  apps/api/src/services/quoteLifecycle.ts — keep in sync.
+ *
+ *  The distinction is user-facing, not diagnostic: on `minted_no_identity` the
+ *  customer's ORIGINAL link is still live alongside the new one (we never
+ *  stored what we'd need to revoke it), while on `minted_key_unavailable` and
+ *  `minted_expired` their original link no longer works at all. Telling them
+ *  the wrong one is worse than saying nothing. */
+export type QuoteAcceptUrlOrigin =
+  | 'reproduced'
+  | 'minted_no_identity'
+  | 'minted_key_unavailable'
+  | 'minted_expired';
+
 /** Build the shared composer body for send/re-send. Only non-empty / non-default
  *  fields are included, so a bare call reproduces the classic body-less send. */
 function composerBody(opts: SendQuoteOptions): Record<string, unknown> {
@@ -326,9 +340,9 @@ function composerBody(opts: SendQuoteOptions): Record<string, unknown> {
  *  on quotes:send. Reuses the quote's EXISTING share link and leaves its status,
  *  sentAt and number untouched — this is a second copy of the same document, not
  *  a second issue. Responds with
- *  `{ data: { quote, emailed, emailReason?, acceptUrl, reissued } }`; `reissued`
- *  is true only when the original link could not be reproduced and a new one
- *  replaced it (legacy sends, or a rotated signing key). */
+ *  `{ data: { quote, emailed, emailReason?, acceptUrl, origin, reissued } }`.
+ *  `origin` says WHY a link was reissued, which matters because the outcomes
+ *  differ: see `QuoteAcceptUrlOrigin`. */
 export function resendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
   const body = composerBody(opts);
   return fetchWithAuth(`/quotes/${id}/resend`, {
@@ -341,7 +355,7 @@ export function resendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Re
  *  (GET /quotes/:id/share-link) — for pasting into a chat or SMS by hand. Gated
  *  server-side on quotes:send (it hands out a live accept credential) and
  *  audit-logged. Responds with
- *  `{ data: { acceptUrl, reissued, recipients, orgId } }`. */
+ *  `{ data: { acceptUrl, origin, reissued, recipients, orgId } }`. */
 export function getQuoteShareLink(id: string): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}/share-link`);
 }

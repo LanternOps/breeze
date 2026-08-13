@@ -2,6 +2,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'node:crypto';
 import { getRedis } from './redis';
 import { getSignKey, getSignKeyByKid, getVerifyKey, buildHeader } from './jwt';
+import { captureException } from './sentry';
 
 const ISSUER = 'breeze';
 const AUDIENCE = 'breeze-quote-accept';
@@ -34,8 +35,12 @@ export interface QuoteAcceptTokenIdentity {
  * re-send and every "copy link". That makes the setter ORDER below part of the
  * contract: jose serializes claims in insertion order, so reordering these
  * calls silently changes every existing quote's link. Both callers go through
- * here so there is exactly one such order to keep.
- * Pinned by the determinism test in quoteAcceptToken.test.ts.
+ * here so there is exactly one such order to keep — and the payload KEY order
+ * in the constructor below is load-bearing for the same reason.
+ * Pinned by the golden-vector test in quoteAcceptToken.test.ts, which asserts a
+ * hardcoded token string. (The mint-vs-regenerate byte-equality test alongside
+ * it CANNOT catch a reorder — both sides go through this function, so they
+ * change together and stay equal.)
  */
 function signAcceptToken(
   input: { quoteId: string; orgId: string; partnerId: string },
@@ -99,7 +104,14 @@ export async function regenerateQuoteAcceptToken(
   if (!identity) return null;
   const signKey = getSignKeyByKid(identity.kid);
   if (!signKey) {
-    console.warn(`[quoteAcceptToken] signing key '${identity.kid ?? 'legacy'}' unavailable — cannot reproduce the accept link for quote ${input.quoteId}`);
+    // Fleet-wide, not per-quote: a kid dropping out of the keyring silently
+    // reissues EVERY quote signed with it on next touch, and — unlike the
+    // legacy case — getVerifyKey refuses to fall back for an unknown kid, so
+    // each customer's existing link is dead, not merely duplicated. That
+    // deserves an alert, not a line in the logs.
+    const err = new Error(`[quoteAcceptToken] signing key '${identity.kid ?? 'legacy'}' unavailable — cannot reproduce the accept link for quote ${input.quoteId}`);
+    console.error(err.message);
+    captureException(err);
     return null;
   }
   return signAcceptToken(input, identity, signKey);

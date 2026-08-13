@@ -881,13 +881,16 @@
       "copyShareLink": "Copy share link",
       "copyingShareLink": "Copying…",
       "shareLinkCopied": "Share link copied — this is the same link the customer was emailed.",
-      "shareLinkCopiedReissued": "Share link copied. This proposal predates link tracking, so this is a NEW link — the one the customer already has still works too.",
       "shareLinkCopyFailed": "Could not copy automatically. The share link is: {{url}}",
       "shareLinkError": "Could not get the share link.",
       "resendConfirm": {
         "title": "Re-send proposal",
         "message": "Send {{orgName}} another copy of this proposal. Nothing about the quote changes and the accept link stays the same."
-      }
+      },
+      "resendNewLinkOriginalLive": "Proposal re-sent — but with a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside the new one.",
+      "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
+      "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
+      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",

@@ -27,8 +27,8 @@ vi.mock('../../services/permissions', async (importActual) => {
 // Stub the services the route file imports so mounting it never touches the DB.
 vi.mock('../../services/quoteLifecycle', () => ({
   sendQuote: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false, acceptUrl: 'http://x/quote/t' })),
-  resendQuote: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true, acceptUrl: 'http://x/quote/t', reissued: false })),
-  getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
+  resendQuote: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true, acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false })),
+  getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
   getQuoteRecipients: vi.fn(async () => []),
 }));
 // The two new routes audit-log; the writer is fire-and-forget and DB-backed.
@@ -397,6 +397,38 @@ describe('POST /:id/resend', () => {
       body: JSON.stringify({ to: ['not-an-email'] }),
     });
     expect(res.status).toBe(400);
+  });
+
+  // The server swallows delivery failures, so the request still 200s. The
+  // audit record is the only durable trace that nothing actually went out.
+  it('audit-logs result:failure when no email was delivered', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    vi.mocked(resendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: false,
+      emailReason: 'no_billing_contact', acceptUrl: 'http://x/quote/t',
+      origin: 'reproduced', reissued: false,
+    } as never);
+    await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.resend', result: 'failure',
+    }));
+  });
+
+  // `origin` is what distinguishes "the customer's old link still works" from
+  // "their old link is dead" — a bare reissued boolean cannot, and the audit
+  // trail is where that distinction has to survive.
+  it('records the link origin so a reissue is forensically distinguishable', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    vi.mocked(resendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true,
+      acceptUrl: 'http://x/quote/t', origin: 'minted_key_unavailable', reissued: true,
+    } as never);
+    await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ reissued: true, linkOrigin: 'minted_key_unavailable' }),
+    }));
   });
 
   it('audit-logs the re-send with its delivery outcome', async () => {
