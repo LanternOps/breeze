@@ -1,6 +1,11 @@
 .PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
-VERSION ?= 0.5.0
+# MUST stay >= the version the control plane reports, or the server sees our
+# build as out of date and pushes an "upgrade" to stock 0.104.0 — which
+# reinstalls the upstream binary that segfaults on Apple Silicon M5, undoing the
+# CGO fix below on every device. Observed live 2026-08-13: a 0.5.0 build enrolled
+# and was immediately ordered to upgrade, landing the device in "updating".
+VERSION ?= 0.104.0-nu1
 # Local-dev targets intentionally keep plain LDFLAGS (self-host by
 # construction — no hostpolicy ldflags are ever injected here). Release
 # builds go through agent/scripts/build-edition.sh instead, which adds the
