@@ -30,6 +30,8 @@ type ChartSeries = {
 
 type ChartWidgetProps = {
   title: string;
+  /** When set, the card title links through to the backing page. */
+  titleHref?: string;
   subtitle?: string;
   type: ChartType;
   data: Array<Record<string, number | string>>;
@@ -64,6 +66,7 @@ const formatAxisLabel = (value: unknown): string => {
 
 export default function ChartWidget({
   title,
+  titleHref,
   subtitle,
   type,
   data,
@@ -91,7 +94,13 @@ export default function ChartWidget({
   return (
     <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
       <div className="mb-4 flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold">
+          {titleHref ? (
+            <a href={titleHref} className="transition-colors hover:text-primary">{title}</a>
+          ) : (
+            title
+          )}
+        </h3>
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </div>
       <div className={`flex flex-1 ${minHeightPxClass(height)}`}>

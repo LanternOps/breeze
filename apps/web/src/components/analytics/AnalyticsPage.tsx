@@ -424,11 +424,15 @@ type KpiTile = {
   value: string;
   icon: LucideIcon;
   iconTone: string;
+  href?: string;
   change?: number;
   changeLabel?: string;
   sub?: string;
   subTone?: 'success' | 'warning' | 'destructive' | 'muted';
 };
+
+/** Slices beyond the top five collapse into one neutral "Other" segment. */
+const OS_PIE_SLICE_LIMIT = 5;
 
 const isDashboardValue = (value: string) => dashboardOptions.some(option => option.value === value);
 
@@ -617,7 +621,34 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         (async () => {
           try {
             const slaData = await fetchJson(withQuery('/analytics/sla'));
-            setSlaSummary(normalizeSla(slaData));
+            let summary = normalizeSla(slaData);
+
+            // `/analytics/sla` lists SLA *definitions*; the measured numbers
+            // live one call deeper. Prefer live compliance for the first
+            // definition, falling back to whatever the listing carried.
+            const definitions = getRecord(slaData).data;
+            const firstDefinition = getRecord(Array.isArray(definitions) ? definitions[0] : undefined);
+            if (typeof firstDefinition.id === 'string') {
+              try {
+                const compliance = getRecord(await fetchJson(`/analytics/sla/${firstDefinition.id}/compliance`));
+                const history = Array.isArray(compliance.history) ? compliance.history : [];
+                const uptime = pickOptionalNumber(
+                  compliance.liveUptime,
+                  getRecord(history[0]).compliancePercentage
+                );
+                if (uptime !== undefined) {
+                  summary = {
+                    uptime,
+                    target: pickOptionalNumber(compliance.uptimeTarget, firstDefinition.uptimeTarget) ?? summary?.target,
+                    incidents: summary?.incidents
+                  };
+                }
+              } catch {
+                // Definition list already loaded; live compliance is best-effort.
+              }
+            }
+
+            setSlaSummary(summary);
           } catch (err) {
             errors.push('sla');
             setSlaSummary(null);
@@ -721,6 +752,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       value: formatNumber(summaryMetrics.sessions),
       icon: Cast,
       iconTone: 'text-muted-foreground',
+      href: '/remote',
       change: summaryMetrics.sessionsChange,
       changeLabel: summaryMetrics.sessionsChangeLabel
     },
@@ -730,6 +762,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       value: formatNumber(fleetSummary.totalDevices),
       icon: HardDrive,
       iconTone: 'text-muted-foreground',
+      href: '/devices',
       sub: `${formatNumber(fleetSummary.onlineDevices)} ${t('analytics.executiveSummary.online')}`,
       subTone: 'success'
     },
@@ -738,7 +771,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       label: t('analytics.executiveSummary.offline'),
       value: formatNumber(fleetSummary.offlineDevices),
       icon: WifiOff,
-      iconTone: fleetSummary.offlineDevices > 0 ? 'text-warning-strong' : 'text-muted-foreground'
+      iconTone: fleetSummary.offlineDevices > 0 ? 'text-warning-strong' : 'text-muted-foreground',
+      href: '/devices'
     },
     {
       key: 'critical',
@@ -746,10 +780,21 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       value: formatNumber(fleetSummary.criticalAlerts),
       icon: AlertTriangle,
       iconTone: fleetSummary.criticalAlerts > 0 ? 'text-destructive' : 'text-muted-foreground',
+      href: '/alerts',
       sub: `${formatNumber(fleetSummary.warningAlerts)} ${t('analytics.executiveSummary.warnings')}`,
       subTone: fleetSummary.warningAlerts > 0 ? 'warning' : 'muted'
     }
   ], [fleetSummary, summaryMetrics, t]);
+
+  // Top slices by share; the rest collapse into "Other" so the palette never
+  // has to repeat a color to cover a long tail of OS builds.
+  const osChartData = useMemo(() => {
+    if (osDistribution.length <= OS_PIE_SLICE_LIMIT) return osDistribution;
+    const sorted = [...osDistribution].sort((a, b) => b.value - a.value);
+    const top = sorted.slice(0, OS_PIE_SLICE_LIMIT);
+    const rest = sorted.slice(OS_PIE_SLICE_LIMIT).reduce((sum, item) => sum + item.value, 0);
+    return [...top, { name: t('common:dashboard.fleetStatus.other'), value: rest }];
+  }, [osDistribution, t]);
 
   const alertTotal = useMemo(
     () => alertRows.reduce((sum, row) => sum + row.count, 0),
@@ -790,9 +835,10 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const osCard = (
     <ChartWidget
       title={t('analytics.analyticsPage.widgets.osBreakdown.title')}
+      titleHref="/devices"
       subtitle={t('analytics.analyticsPage.widgets.osBreakdown.subtitle')}
       type="pie"
-      data={osDistribution}
+      data={osChartData}
       nameKey="name"
       valueKey="value"
       height={180}
@@ -802,7 +848,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const alertsCard = (
     <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
       <div className="mb-4 flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold">{t('analytics.analyticsPage.widgets.alertTable.title')}</h3>
+        <h3 className="text-sm font-semibold">
+          <a href="/alerts" className="transition-colors hover:text-primary">
+            {t('analytics.analyticsPage.widgets.alertTable.title')}
+          </a>
+        </h3>
         <p className="text-xs text-muted-foreground">{rangeLabel}</p>
       </div>
       {alertRows.length === 0 ? (
@@ -1012,8 +1062,17 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
-            {kpiTiles.map(tile => (
-              <div key={tile.key} className="rounded-lg border bg-card px-4 py-3">
+            {kpiTiles.map(tile => {
+              const TileTag: React.ElementType = tile.href ? 'a' : 'div';
+              return (
+              <TileTag
+                key={tile.key}
+                href={tile.href}
+                className={cn(
+                  'rounded-lg border bg-card px-4 py-3',
+                  tile.href && 'transition-colors hover:border-primary/40 hover:bg-muted/30'
+                )}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-xs font-medium text-muted-foreground">{tile.label}</span>
                   <tile.icon className={cn('h-4 w-4 shrink-0', tile.iconTone)} aria-hidden="true" />
@@ -1045,8 +1104,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                     </span>
                   )}
                 </div>
-              </div>
-            ))}
+              </TileTag>
+              );
+            })}
           </div>
 
           {selectedDashboard === 'operations' && (
