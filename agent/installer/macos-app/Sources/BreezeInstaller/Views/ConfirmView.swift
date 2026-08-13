@@ -7,9 +7,9 @@ struct ConfirmView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Install Breeze Agent")
+            Text("Install NODES UNLIMITED AGENT")
                 .font(.title2).bold()
-            Text("This will install the Breeze monitoring agent for **\(payload.orgName)**. You will be prompted for your administrator password.")
+            Text("This will install the Nodes Unlimited monitoring agent for **\(payload.orgName)**. You will be prompted for your administrator password.")
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             HStack {

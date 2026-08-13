@@ -1,5 +1,5 @@
 #!/bin/bash
-# Breeze Agent macOS .pkg preinstall script
+# NODES UNLIMITED AGENT macOS .pkg preinstall script
 # Stops the existing agent service before files are replaced.
 
 # Stop watchdog

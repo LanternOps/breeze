@@ -131,7 +131,7 @@ func TestHandleTrayUpdateSendsToAllSameIdentityHelpers(t *testing.T) {
 		Type: CmdTrayUpdate,
 		Payload: map[string]any{
 			"status":  "ok",
-			"tooltip": "Breeze Agent",
+			"tooltip": "NODES UNLIMITED AGENT",
 		},
 	})
 

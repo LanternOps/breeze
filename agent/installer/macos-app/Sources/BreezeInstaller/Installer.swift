@@ -47,7 +47,7 @@ struct Installer {
         }
         let enrollCmd = enrollArgs.joined(separator: " ")
         let command = "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && /usr/local/bin/breeze-agent enroll \(enrollCmd)"
-        let prompt = "Breeze needs to install the agent and configure system services."
+        let prompt = "Nodes Unlimited Agent needs to install the agent and configure system services."
 
         do {
             _ = try PrivilegedShell.run(command: command, promptText: prompt)

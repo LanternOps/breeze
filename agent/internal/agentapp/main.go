@@ -197,8 +197,8 @@ func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
 
 var rootCmd = &cobra.Command{
 	Use:   "breeze-agent",
-	Short: "Breeze RMM Agent",
-	Long:  `Breeze Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
+	Short: "NODES UNLIMITED AGENT",
+	Long:  `Nodes Unlimited Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
 }
 
 var startCmd = &cobra.Command{
@@ -244,7 +244,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version number",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("Breeze Agent v%s\n", version)
+		fmt.Printf("Nodes Unlimited Agent v%s\n", version)
 	},
 }
 

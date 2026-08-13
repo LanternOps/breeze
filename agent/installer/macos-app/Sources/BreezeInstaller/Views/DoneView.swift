@@ -9,7 +9,7 @@ struct DoneView: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.green)
-            Text("Breeze Agent installed")
+            Text("NODES UNLIMITED AGENT installed")
                 .font(.title2).bold()
             Text("Your Mac is now monitored under **\(orgName)**.")
             Spacer()

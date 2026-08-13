@@ -95,7 +95,7 @@ struct BreezeInstallerApp: App {
     @StateObject private var controller = InstallController()
 
     var body: some Scene {
-        WindowGroup("Breeze Installer") {
+        WindowGroup("NODES UNLIMITED AGENT Installer") {
             RootView(controller: controller)
                 .frame(width: 480, height: 320)
                 .onAppear { controller.start() }

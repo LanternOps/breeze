@@ -11,9 +11,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.breeze.installer</string>
     <key>CFBundleName</key>
-    <string>Breeze Installer</string>
+    <string>NODES UNLIMITED AGENT Installer</string>
     <key>CFBundleDisplayName</key>
-    <string>Breeze Installer</string>
+    <string>NODES UNLIMITED AGENT Installer</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -25,7 +25,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Olive Technologies LLC.</string>
+    <string>Copyright © 2026 Nodes Unlimited</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

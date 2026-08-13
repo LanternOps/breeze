@@ -33,7 +33,7 @@ func handleNotifyUser(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	title := tools.GetPayloadString(cmd.Payload, "title", "Breeze Agent")
+	title := tools.GetPayloadString(cmd.Payload, "title", "NODES UNLIMITED AGENT")
 	body := tools.GetPayloadString(cmd.Payload, "body", "")
 	icon := tools.GetPayloadString(cmd.Payload, "icon", "")
 	urgency := tools.GetPayloadString(cmd.Payload, "urgency", "normal")
@@ -124,7 +124,7 @@ func handleTrayUpdate(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	status := tools.GetPayloadString(cmd.Payload, "status", "ok")
-	tooltip := tools.GetPayloadString(cmd.Payload, "tooltip", "Breeze Agent")
+	tooltip := tools.GetPayloadString(cmd.Payload, "tooltip", "NODES UNLIMITED AGENT")
 
 	var menuItems []ipc.MenuItem
 	if rawItems, ok := cmd.Payload["menuItems"].([]any); ok {

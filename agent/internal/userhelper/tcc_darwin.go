@@ -317,7 +317,7 @@ func handleFullDiskAccessGuidance(status *ipc.TCCStatus, promptFile string) {
 func showTCCCompleteNotification() {
 	showNotificationOS(ipc.NotifyRequest{
 		Title: "Breeze: Setup Complete",
-		Body:  "All required permissions are granted — Breeze Agent is ready.",
+		Body:  "All required permissions are granted — NODES UNLIMITED AGENT is ready.",
 	})
 }
 
@@ -410,14 +410,14 @@ func showTCCDialog(missing []string) {
 
 	var msg, script string
 	if fdaMissing {
-		msg = "Breeze Agent needs Full Disk Access to function properly.\n\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\n\nmacOS will prompt separately for Screen Recording and Accessibility — you can also grant them in the same Privacy & Security pane."
+		msg = "Nodes Unlimited Agent needs Full Disk Access to function properly.\n\nPlease grant it in System Settings > Privacy & Security > Full Disk Access.\n\nmacOS will prompt separately for Screen Recording and Accessibility — you can also grant them in the same Privacy & Security pane."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"Later", "Open Settings"} default button "Open Settings" with title "Breeze: Permissions Required" giving up after 60`,
 			escapeAppleScript(msg),
 		)
 	} else {
-		msg = "Breeze Agent needs Screen Recording and Accessibility.\n\nmacOS should prompt for these — if the prompts were dismissed, grant them in System Settings > Privacy & Security."
+		msg = "Nodes Unlimited Agent needs Screen Recording and Accessibility.\n\nmacOS should prompt for these — if the prompts were dismissed, grant them in System Settings > Privacy & Security."
 		script = fmt.Sprintf(
 			`display dialog "%s" `+
 				`buttons {"OK"} default button "OK" with title "Breeze: Permissions Required" giving up after 60`,

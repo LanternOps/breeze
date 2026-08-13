@@ -200,7 +200,7 @@ func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
 		return
 	}
 	req := ipc.NotifyRequest{
-		Title:   "Breeze Agent",
+		Title:   "NODES UNLIMITED AGENT",
 		Body:    body,
 		Urgency: "normal",
 	}

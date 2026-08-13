@@ -103,7 +103,7 @@ func noteFailoverHeartbeatFailure(fc *watchdog.FailoverClient, journal *watchdog
 
 var rootCmd = &cobra.Command{
 	Use:   "breeze-watchdog",
-	Short: "Breeze RMM Agent Watchdog",
+	Short: "NODES UNLIMITED AGENT Watchdog",
 	Long:  `Breeze Watchdog monitors the agent process and provides failover heartbeats when the agent is down.`,
 }
 

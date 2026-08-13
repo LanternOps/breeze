@@ -134,7 +134,7 @@ const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage the Breeze Agent system service (launchd)",
+	Short: "Manage the NODES UNLIMITED AGENT system service (launchd)",
 }
 
 var withUserHelper bool
@@ -176,7 +176,7 @@ var serviceInstallCmd = &cobra.Command{
 			if stopErr := exec.Command("launchctl", "unload", darwinPlistDst).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
-				fmt.Println("Stopped existing Breeze Agent service.")
+				fmt.Println("Stopped existing NODES UNLIMITED AGENT service.")
 			}
 		}
 
@@ -247,7 +247,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		fmt.Println()
-		fmt.Println("Breeze Agent service installed.")
+		fmt.Println("NODES UNLIMITED AGENT service installed.")
 
 		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
@@ -341,7 +341,7 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", darwinDesktopHelperBinaryPath, err)
 		}
 
-		fmt.Println("Breeze Agent service uninstalled.")
+		fmt.Println("NODES UNLIMITED AGENT service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", darwinConfigDir)
 		fmt.Printf("To remove config: sudo rm -rf '%s'\n", darwinConfigDir)
 		return nil
@@ -400,7 +400,7 @@ var serviceStartCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Println("Breeze Agent service started.")
+		fmt.Println("NODES UNLIMITED AGENT service started.")
 		fmt.Printf("Logs: tail -f %s/agent.log\n", darwinLogDir)
 
 		// Bootstrap the desktop helper LaunchAgents so remote desktop connects promptly.
@@ -434,7 +434,7 @@ var serviceStopCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Println("Breeze Agent service stopped.")
+		fmt.Println("NODES UNLIMITED AGENT service stopped.")
 		return nil
 	},
 }

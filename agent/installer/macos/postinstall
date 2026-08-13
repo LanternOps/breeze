@@ -1,5 +1,5 @@
 #!/bin/bash
-# Breeze Agent macOS .pkg postinstall script
+# NODES UNLIMITED AGENT macOS .pkg postinstall script
 # Runs as root after the installer places files on disk.
 
 set -e
@@ -141,5 +141,5 @@ done
 
 launchctl bootstrap loginwindow "$DESKTOP_LOGINWINDOW_PLIST" 2>/dev/null || true
 
-echo "Breeze Agent installed and started."
+echo "NODES UNLIMITED AGENT installed and started."
 exit 0

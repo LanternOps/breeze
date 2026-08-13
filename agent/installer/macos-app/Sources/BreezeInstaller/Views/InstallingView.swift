@@ -6,7 +6,7 @@ struct InstallingView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.2)
-            Text("Installing Breeze Agent…")
+            Text("Installing NODES UNLIMITED AGENT…")
                 .font(.headline)
             Text("This usually takes about 10 seconds.")
                 .foregroundStyle(.secondary)
