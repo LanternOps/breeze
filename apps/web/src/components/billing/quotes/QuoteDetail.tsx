@@ -54,6 +54,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   const [showMargin, toggleMargin] = useShowMargin();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, blocks, lines } = detail;
+  const recipients = detail.recipients ?? [];
   const currency = quote.currencyCode;
 
   // Same cents math as the editor rail (computeQuoteProfit), fed the read-model
@@ -196,6 +197,16 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
                 {quote.viewedAt && <LifecycleStage label={t('quotes.detail.lifecycle.viewed')} date={quote.viewedAt} first={!quote.sentAt} />}
                 {quote.acceptedAt && <LifecycleStage label={t('quotes.detail.lifecycle.accepted')} date={quote.acceptedAt} first={!quote.sentAt && !quote.viewedAt} />}
                 {quote.declinedAt && <LifecycleStage label={t('quotes.detail.lifecycle.declined')} date={quote.declinedAt} first={!quote.sentAt && !quote.viewedAt && !quote.acceptedAt} danger testId="quote-detail-lifecycle-declined" />}
+              </dl>
+            )}
+            {/* Who the quote actually went to. Recorded at send but previously
+                invisible to the tech who sent it. Rendered only when we have
+                addresses: an ABSENT `recipients` (older payload) and an EMPTY
+                one both mean "nothing to show" rather than "sent to nobody". */}
+            {quote.sentAt && recipients.length > 0 && (
+              <dl className="mt-2 flex flex-wrap items-baseline gap-x-1.5 text-xs" data-testid="quote-detail-recipients">
+                <dt className="text-muted-foreground">{t('quotes.detail.sentTo')}</dt>
+                <dd className="break-all font-medium">{recipients.join(', ')}</dd>
               </dl>
             )}
             {/* Once accepted → converted, the resulting invoice is the next stop; a

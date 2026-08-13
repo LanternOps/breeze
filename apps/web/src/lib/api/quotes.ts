@@ -301,6 +301,16 @@ export type QuoteSendEmailReason =
  *  `{ data: { quote, emailed, emailReason?, acceptUrl } }` (emailReason is a
  *  `QuoteSendEmailReason` when emailed is false). */
 export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
+  const body = composerBody(opts);
+  return fetchWithAuth(`/quotes/${id}/send`, {
+    method: 'POST',
+    ...(Object.keys(body).length > 0 ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
+  });
+}
+
+/** Build the shared composer body for send/re-send. Only non-empty / non-default
+ *  fields are included, so a bare call reproduces the classic body-less send. */
+function composerBody(opts: SendQuoteOptions): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   if (opts.to && opts.to.length > 0) body.to = opts.to;
   if (opts.cc && opts.cc.length > 0) body.cc = opts.cc;
@@ -309,10 +319,31 @@ export function sendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Resp
   const note = opts.message?.trim();
   if (note) body.message = note;
   if (opts.includePdf === false) body.includePdf = false;
-  return fetchWithAuth(`/quotes/${id}/send`, {
+  return body;
+}
+
+/** Re-email an already-sent quote (POST /quotes/:id/resend). Gated server-side
+ *  on quotes:send. Reuses the quote's EXISTING share link and leaves its status,
+ *  sentAt and number untouched — this is a second copy of the same document, not
+ *  a second issue. Responds with
+ *  `{ data: { quote, emailed, emailReason?, acceptUrl, reissued } }`; `reissued`
+ *  is true only when the original link could not be reproduced and a new one
+ *  replaced it (legacy sends, or a rotated signing key). */
+export function resendQuote(id: string, opts: SendQuoteOptions = {}): Promise<Response> {
+  const body = composerBody(opts);
+  return fetchWithAuth(`/quotes/${id}/resend`, {
     method: 'POST',
     ...(Object.keys(body).length > 0 ? { headers: JSON_HEADERS, body: JSON.stringify(body) } : {}),
   });
+}
+
+/** Fetch a sent quote's customer-facing share link WITHOUT emailing anything
+ *  (GET /quotes/:id/share-link) — for pasting into a chat or SMS by hand. Gated
+ *  server-side on quotes:send (it hands out a live accept credential) and
+ *  audit-logged. Responds with
+ *  `{ data: { acceptUrl, reissued, recipients, orgId } }`. */
+export function getQuoteShareLink(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/share-link`);
 }
 
 /** Upload an image for a quote (POST /quotes/:id/images). The body is multipart

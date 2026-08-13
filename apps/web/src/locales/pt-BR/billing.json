@@ -873,7 +873,21 @@
       "sendCanceledSaveFailed": "Uma alteração não pôde ser salva, então o envio foi cancelado. Corrija o campo destacado e tente novamente.",
       "sendBlockedUnsaved": "“{{field}}” tem uma alteração não salva. Corrija-a e depois envie.",
       "unsavedHint": "“{{field}}” tem uma alteração não salva — o envio será liberado quando ela for salva.",
-      "unsavedTitle": "“{{field}}” tem uma alteração não salva — o envio será liberado quando ela for salva."
+      "unsavedTitle": "“{{field}}” tem uma alteração não salva — o envio será liberado quando ela for salva.",
+      "resend": "Reenviar",
+      "resendError": "Não foi possível reenviar a proposta.",
+      "resendSuccess": "Proposta reenviada para {{orgName}} — mesmo link, mesmo documento.",
+      "resendNotDelivered": "Reenvio registrado, mas nenhum e-mail foi entregue. Verifique o endereço ou copie o link de compartilhamento e envie você mesmo.",
+      "copyShareLink": "Copiar link de compartilhamento",
+      "copyingShareLink": "Copiando…",
+      "shareLinkCopied": "Link de compartilhamento copiado — é o mesmo link enviado ao cliente.",
+      "shareLinkCopiedReissued": "Link de compartilhamento copiado. Esta proposta é anterior ao rastreamento de links, então este é um link NOVO — o que o cliente já tem continua funcionando.",
+      "shareLinkCopyFailed": "Não foi possível copiar automaticamente. O link de compartilhamento é: {{url}}",
+      "shareLinkError": "Não foi possível obter o link de compartilhamento.",
+      "resendConfirm": {
+        "title": "Reenviar proposta",
+        "message": "Envie a {{orgName}} outra cópia desta proposta. Nada muda no orçamento e o link de aceitação continua o mesmo."
+      }
     },
     "detail": {
       "addContentInEditor": "Adicionar conteúdo no Editor",
@@ -985,7 +999,8 @@
         "tax": "Imposto",
         "title": "Totais"
       },
-      "viewInvoice": "Ver fatura"
+      "viewInvoice": "Ver fatura",
+      "sentTo": "Enviado para"
     },
     "distributorLookup": {
       "available": "{{count}} disponíveis",

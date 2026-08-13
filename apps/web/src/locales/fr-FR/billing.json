@@ -873,7 +873,21 @@
       "sendCanceledSaveFailed": "Une modification n’a pas pu être enregistrée, l’envoi a donc été annulé. Corrigez le champ signalé et réessayez.",
       "sendBlockedUnsaved": "« {{field}} » contient une modification non enregistrée. Corrigez-la puis envoyez.",
       "unsavedHint": "« {{field}} » contient une modification non enregistrée — l’envoi sera disponible une fois enregistrée.",
-      "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’envoi sera disponible une fois enregistrée."
+      "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’envoi sera disponible une fois enregistrée.",
+      "resend": "Renvoyer",
+      "resendError": "Impossible de renvoyer la proposition.",
+      "resendSuccess": "Proposition renvoyée à {{orgName}} — même lien, même document.",
+      "resendNotDelivered": "Renvoi enregistré, mais aucun e-mail n'a été délivré. Vérifiez l'adresse ou copiez le lien de partage et envoyez-le vous-même.",
+      "copyShareLink": "Copier le lien de partage",
+      "copyingShareLink": "Copie en cours…",
+      "shareLinkCopied": "Lien de partage copié — c’est le même lien qui a été envoyé au client.",
+      "shareLinkCopiedReissued": "Lien de partage copié. Cette proposition est antérieure au suivi des liens, il s'agit donc d'un NOUVEAU lien — celui que le client possède déjà fonctionne toujours.",
+      "shareLinkCopyFailed": "Copie automatique impossible. Le lien de partage est : {{url}}",
+      "shareLinkError": "Impossible d'obtenir le lien de partage.",
+      "resendConfirm": {
+        "title": "Renvoyer la proposition",
+        "message": "Envoyez à {{orgName}} une autre copie de cette proposition. Rien ne change dans le devis et le lien d'acceptation reste le même."
+      }
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -985,7 +999,8 @@
         "tax": "Taxe",
         "title": "Totaux"
       },
-      "viewInvoice": "Voir la facture"
+      "viewInvoice": "Voir la facture",
+      "sentTo": "Envoyé à"
     },
     "distributorLookup": {
       "available": "{{count}} dispo",

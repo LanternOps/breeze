@@ -146,6 +146,26 @@ export function getSignKey(): { key: Uint8Array; kid?: string } {
 }
 
 /**
+ * Look up the signing key a PREVIOUSLY-issued token was signed with, by the
+ * `kid` from its protected header (`null`/`undefined` = legacy single-secret
+ * mode, no kid emitted).
+ *
+ * Unlike getSignKey this never throws and never falls back to a different key:
+ * it returns `null` when the requested key is no longer available, so callers
+ * that reproduce an old token byte-for-byte (quoteAcceptToken's
+ * regenerateQuoteAcceptToken) can detect a rotated-out key and mint a fresh
+ * token instead of silently signing with the wrong material.
+ */
+export function getSignKeyByKid(kid: string | null | undefined): { key: Uint8Array; kid?: string } | null {
+  if (kid) {
+    const key = getSigningKeyring().get(kid);
+    return key ? { key, kid } : null;
+  }
+  const legacy = getLegacySecretKey();
+  return legacy ? { key: legacy } : null;
+}
+
+/**
  * jose-shaped verify-key resolver. Looks up `header.kid` in the keyring;
  * falls back to `JWT_SECRET` for legacy tokens that carry no `kid`.
  *

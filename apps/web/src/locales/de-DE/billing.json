@@ -873,7 +873,21 @@
       "sendCanceledSaveFailed": "Eine Änderung konnte nicht gespeichert werden, daher wurde das Senden abgebrochen. Korrigieren Sie das markierte Feld und versuchen Sie es erneut.",
       "sendBlockedUnsaved": "„{{field}}“ enthält eine nicht gespeicherte Änderung. Korrigieren Sie sie dort und senden Sie dann.",
       "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist.",
-      "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist."
+      "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Senden wird freigegeben, sobald sie gespeichert ist.",
+      "resend": "Erneut senden",
+      "resendError": "Das Angebot konnte nicht erneut gesendet werden.",
+      "resendSuccess": "Angebot erneut an {{orgName}} gesendet — gleicher Link, gleiches Dokument.",
+      "resendNotDelivered": "Erneutes Senden erfasst, aber es wurde keine E-Mail zugestellt. Prüfen Sie die Adresse oder kopieren Sie den Freigabelink und senden Sie ihn selbst.",
+      "copyShareLink": "Freigabelink kopieren",
+      "copyingShareLink": "Wird kopiert…",
+      "shareLinkCopied": "Freigabelink kopiert — dies ist derselbe Link, der dem Kunden per E-Mail gesendet wurde.",
+      "shareLinkCopiedReissued": "Freigabelink kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher ist dies ein NEUER Link — der bereits vorhandene Link des Kunden funktioniert weiterhin.",
+      "shareLinkCopyFailed": "Automatisches Kopieren nicht möglich. Der Freigabelink lautet: {{url}}",
+      "shareLinkError": "Der Freigabelink konnte nicht abgerufen werden.",
+      "resendConfirm": {
+        "title": "Angebot erneut senden",
+        "message": "Senden Sie {{orgName}} eine weitere Kopie dieses Angebots. Am Angebot ändert sich nichts und der Annahme-Link bleibt gleich."
+      }
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -985,7 +999,8 @@
         "tax": "Steuer",
         "title": "Summen"
       },
-      "viewInvoice": "Rechnung ansehen"
+      "viewInvoice": "Rechnung ansehen",
+      "sentTo": "Gesendet an"
     },
     "distributorLookup": {
       "available": "{{count}} verfügbar",

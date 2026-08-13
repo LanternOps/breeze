@@ -68,7 +68,7 @@ vi.mock('./email', async (importOriginal) => {
   return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
 });
 
-import { buildPublicQuoteAcceptUrl, portalBase, sendQuote } from './quoteLifecycle';
+import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink } from './quoteLifecycle';
 import { renderQuotePdf } from './quotePdf';
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
@@ -842,5 +842,204 @@ describe('sendQuote contract-variable gate', () => {
     const html = contractRenderData.get('block-1')!.html!;
     expect(html).toContain('Customer Co');
     expect(html).toContain('Acme MSP');
+  });
+});
+
+/**
+ * Re-send + share link.
+ *
+ * The contract these guard: a re-send is a second COPY of an already-issued
+ * document. It must reuse the customer's existing accept link and leave the
+ * quote's status/sentAt/number/snapshots exactly as the original send froze
+ * them — anything else means our record and the customer's copy describe
+ * different documents.
+ */
+describe('resendQuote', () => {
+  const OPEN_QUOTE = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' as const,
+    quoteNumber: 'Q-2026-0001', currencyCode: 'USD', total: '1000.00',
+    expiryDate: null, taxRate: null, depositType: 'none' as const, depositPercent: null,
+    terms: null, sellerSnapshot: { name: 'Acme MSP' },
+    acceptTokenJti: 'jti-1', acceptTokenIssuedAt: new Date(1_760_000_000_000),
+    acceptTokenExpiresAt: new Date(1_770_000_000_000), acceptTokenKid: null,
+  };
+
+  /** The six reads getQuote makes, for a given quote row. */
+  function queueGetQuote(quote: Record<string, unknown>) {
+    queueResult([quote]);
+    queueResult([]); // blocks
+    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([]); // no staged Pax8 order
+    queueResult([]); // listQuoteOrders — headers
+    queueResult([]); // listQuoteOrders — lines
+  }
+
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    insertValueCalls.length = 0;
+    vi.clearAllMocks();
+    process.env.JWT_SECRET ||= 'test-secret-test-secret-test-secret-123';
+  });
+
+  it('emails the SAME accept link the original send issued, and writes no status/sentAt change', async () => {
+    const { regenerateQuoteAcceptToken } = await import('./quoteAcceptToken');
+    const expected = await regenerateQuoteAcceptToken(
+      { quoteId: 'q1', orgId: 'org1', partnerId: 'p1' },
+      { jti: 'jti-1', issuedAtSeconds: 1_760_000_000, expiresAtSeconds: 1_770_000_000, kid: null },
+    );
+
+    queueGetQuote(OPEN_QUOTE);
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);       // partnerRow
+    queueResult([{ billingContact: { email: 'ap@customer.example' } }]); // org
+    queueResult([{ email: 'ap@customer.example' }]);     // existing recipients
+    queueResult([]);                                     // portalBranding
+    queueResult([{ ...OPEN_QUOTE }]);                    // final re-select
+
+    const result = await resendQuote('q1', actor);
+
+    expect(result.acceptUrl).toBe(buildPublicQuoteAcceptUrl(expected!));
+    expect(result.reissued).toBe(false);
+    // The ONLY write is the email-outcome marker: no status, sentAt,
+    // quoteNumber, billTo* or sellerSnapshot may appear in any `.set(...)`.
+    // Guard against a vacuous pass — a re-send that wrote NOTHING would satisfy
+    // the loop below while also failing to refresh the outcome marker.
+    expect(setCalls.length).toBeGreaterThan(0);
+    for (const payload of setCalls) {
+      expect(payload).not.toHaveProperty('status');
+      expect(payload).not.toHaveProperty('sentAt');
+      expect(payload).not.toHaveProperty('quoteNumber');
+      expect(payload).not.toHaveProperty('billToName');
+      expect(payload).not.toHaveProperty('sellerSnapshot');
+    }
+  });
+
+  it('defaults recipients to who the quote was already sent to', async () => {
+    queueGetQuote(OPEN_QUOTE);
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);
+    queueResult([{ billingContact: null }]);              // org has NO billing contact any more
+    queueResult([{ email: 'first@customer.example' }, { email: 'second@customer.example' }]);
+    queueResult([]);                                     // portalBranding
+    queueResult([{ ...OPEN_QUOTE }]);
+
+    const result = await resendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendEmailMock.mock.calls[0]![0].to).toEqual(['first@customer.example', 'second@customer.example']);
+  });
+
+  it('records newly-addressed recipients as authorized signers', async () => {
+    queueGetQuote(OPEN_QUOTE);
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);
+    queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
+    queueResult([{ email: 'ap@customer.example' }]);
+    queueResult([]);
+    queueResult([{ ...OPEN_QUOTE }]);
+
+    await resendQuote('q1', actor, { to: ['New.Person@Customer.Example'] });
+
+    // Normalized to trimmed lowercase, matching the portal's authorization
+    // comparison (quote_recipients.email is stored canonically).
+    expect(insertValueCalls).toContainEqual([
+      { quoteId: 'q1', orgId: 'org1', email: 'new.person@customer.example' },
+    ]);
+  });
+
+  it('mints a fresh link when the quote has no reproducible token, and says so', async () => {
+    queueGetQuote({ ...OPEN_QUOTE, acceptTokenJti: null, acceptTokenIssuedAt: null, acceptTokenExpiresAt: null });
+    queueResult([]);                                     // the identity-stamping update
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);
+    queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
+    queueResult([{ email: 'ap@customer.example' }]);
+    queueResult([]);
+    queueResult([{ ...OPEN_QUOTE }]);
+
+    const result = await resendQuote('q1', actor);
+
+    expect(result.reissued).toBe(true);
+    // The freshly-minted identity is persisted, or the NEXT re-send would mint
+    // yet another link and the customer would accumulate dead urls.
+    expect(setCalls.some((p) => typeof p.acceptTokenJti === 'string')).toBe(true);
+  });
+
+  it.each(['draft', 'accepted', 'declined', 'converted'])('refuses to re-send a %s quote', async (status) => {
+    queueGetQuote({ ...OPEN_QUOTE, status });
+    await expect(resendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+
+  it('refuses to re-send an expired quote (its accept link is expired too)', async () => {
+    queueGetQuote({ ...OPEN_QUOTE, expiryDate: '2020-01-01' });
+    await expect(resendQuote('q1', actor)).rejects.toMatchObject({ status: 410, code: 'QUOTE_EXPIRED' });
+  });
+
+  it('refreshes the email-outcome marker so a successful re-send clears a stale failure', async () => {
+    queueGetQuote({ ...OPEN_QUOTE, sendEmailReason: 'send_failed' });
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);
+    queueResult([{ billingContact: { email: 'ap@customer.example' } }]);
+    queueResult([{ email: 'ap@customer.example' }]);
+    queueResult([]);
+    queueResult([{ ...OPEN_QUOTE }]);
+
+    await resendQuote('q1', actor);
+
+    expect(setCalls.some((p) => p.sendEmailReason === null)).toBe(true);
+  });
+
+  it('reports emailed:false rather than throwing when no recipient can be resolved', async () => {
+    queueGetQuote(OPEN_QUOTE);
+    queueResult([{ id: 'p1', name: 'Acme MSP' }]);
+    queueResult([{ billingContact: null }]); // no billing contact
+    queueResult([]);                         // and no prior recipients
+    queueResult([{ ...OPEN_QUOTE }]);
+
+    const result = await resendQuote('q1', actor);
+
+    expect(result.emailed).toBe(false);
+    expect(result.emailReason).toBe('no_billing_contact');
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('getQuoteShareLink', () => {
+  const SENT = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' as const,
+    quoteNumber: 'Q-2026-0001', currencyCode: 'USD', total: '1000.00', expiryDate: null,
+    taxRate: null, depositType: 'none' as const, depositPercent: null,
+    acceptTokenJti: 'jti-1', acceptTokenIssuedAt: new Date(1_760_000_000_000),
+    acceptTokenExpiresAt: new Date(1_770_000_000_000), acceptTokenKid: null,
+  };
+
+  function queueGetQuote(quote: Record<string, unknown>) {
+    queueResult([quote]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+    queueResult([]);
+  }
+
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    process.env.JWT_SECRET ||= 'test-secret-test-secret-test-secret-123';
+  });
+
+  it('returns the original link plus the recipients it went to', async () => {
+    queueGetQuote(SENT);
+    queueResult([{ email: 'ap@customer.example' }]);
+
+    const result = await getQuoteShareLink('q1', actor);
+
+    expect(result.reissued).toBe(false);
+    expect(result.recipients).toEqual(['ap@customer.example']);
+    expect(result.orgId).toBe('org1');
+    expect(new URL(result.acceptUrl).pathname).toContain('/quote/');
+  });
+
+  it('refuses a draft — there is no link until the quote is sent', async () => {
+    queueGetQuote({ ...SENT, status: 'draft' });
+    await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 });

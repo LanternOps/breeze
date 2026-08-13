@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'node:crypto';
 import { getRedis } from './redis';
-import { getSignKey, getVerifyKey, buildHeader } from './jwt';
+import { getSignKey, getSignKeyByKid, getVerifyKey, buildHeader } from './jwt';
 
 const ISSUER = 'breeze';
 const AUDIENCE = 'breeze-quote-accept';
@@ -11,31 +11,98 @@ const REVOKE_TTL_SECONDS = DEFAULT_TTL_SECONDS;
 
 export interface QuoteAcceptClaims { quoteId: string; orgId: string; partnerId: string; jti: string; }
 
+/** Everything needed to reproduce an already-issued accept token byte-for-byte.
+ *  None of it is secret on its own — the token string is only derivable with
+ *  the signing key — so these are safe to persist on `quotes` (see
+ *  regenerateQuoteAcceptToken). */
+export interface QuoteAcceptTokenIdentity {
+  jti: string;
+  /** `iat` claim, in whole seconds since the epoch. */
+  issuedAtSeconds: number;
+  /** `exp` claim, in whole seconds since the epoch. */
+  expiresAtSeconds: number;
+  /** Protected-header `kid`; null in legacy single-secret mode. */
+  kid: string | null;
+}
+
+/**
+ * Sign the accept-token claim set.
+ *
+ * IMPORTANT: HS256 is deterministic, and regenerateQuoteAcceptToken depends on
+ * that — the same inputs through this function MUST produce a byte-identical
+ * token, because a quote's share link is reproduced (not re-minted) on every
+ * re-send and every "copy link". That makes the setter ORDER below part of the
+ * contract: jose serializes claims in insertion order, so reordering these
+ * calls silently changes every existing quote's link. Both callers go through
+ * here so there is exactly one such order to keep.
+ * Pinned by the determinism test in quoteAcceptToken.test.ts.
+ */
+function signAcceptToken(
+  input: { quoteId: string; orgId: string; partnerId: string },
+  identity: { jti: string; issuedAtSeconds: number; expiresAtSeconds: number },
+  signKey: { key: Uint8Array; kid?: string },
+): Promise<string> {
+  return new SignJWT({ quoteId: input.quoteId, orgId: input.orgId, partnerId: input.partnerId, purpose: PURPOSE })
+    .setProtectedHeader(buildHeader(signKey.kid))
+    .setJti(identity.jti)
+    .setIssuedAt(identity.issuedAtSeconds)
+    .setExpirationTime(identity.expiresAtSeconds)
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .sign(signKey.key);
+}
+
 /**
  * Mint a signed, revocable token that lets a prospect without a portal account
  * open + accept exactly one quote. Mirrors the viewer-token pattern (jwt.ts +
  * viewerTokenRevocation.ts) but with its own audience/purpose so a viewer token
  * can never be replayed against the accept path.
+ *
+ * Returns the token's `identity` alongside it: persist that on the quote and a
+ * later re-send/copy-link can hand out the SAME url via
+ * regenerateQuoteAcceptToken, without ever storing the bearer token itself.
  */
 export async function createQuoteAcceptToken(input: {
   quoteId: string; orgId: string; partnerId: string; expiresAt?: Date | null;
-}): Promise<{ token: string; jti: string }> {
-  const { key, kid } = getSignKey();
+}): Promise<{ token: string; jti: string; identity: QuoteAcceptTokenIdentity }> {
+  const signKey = getSignKey();
   const jti = randomUUID();
   // Expiry = the quote's expiry_date if it's in the future, else +30d. jose's
   // setExpirationTime accepts a number of seconds since the epoch.
   const expSeconds = input.expiresAt && input.expiresAt.getTime() > Date.now()
     ? Math.floor(input.expiresAt.getTime() / 1000)
     : Math.floor(Date.now() / 1000) + DEFAULT_TTL_SECONDS;
-  const token = await new SignJWT({ quoteId: input.quoteId, orgId: input.orgId, partnerId: input.partnerId, purpose: PURPOSE })
-    .setProtectedHeader(buildHeader(kid))
-    .setJti(jti)
-    .setIssuedAt()
-    .setExpirationTime(expSeconds)
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
-    .sign(key);
-  return { token, jti };
+  // setIssuedAt() would stamp its own clock read; take it explicitly so the
+  // exact `iat` we persist is the one that got signed.
+  const iatSeconds = Math.floor(Date.now() / 1000);
+  const identity: QuoteAcceptTokenIdentity = {
+    jti, issuedAtSeconds: iatSeconds, expiresAtSeconds: expSeconds, kid: signKey.kid ?? null,
+  };
+  const token = await signAcceptToken(input, identity, signKey);
+  return { token, jti, identity };
+}
+
+/**
+ * Rebuild the exact token previously issued for a quote from its persisted,
+ * non-secret identity. This is how a quote keeps ONE stable share link across
+ * re-sends: the link is derived on demand rather than stored, so DB read access
+ * alone never yields a usable accept credential.
+ *
+ * Returns null when the token cannot be reproduced — the quote predates
+ * identity persistence, or its signing `kid` has been rotated out of the
+ * keyring. Callers mint a fresh token in that case (the link changes).
+ */
+export async function regenerateQuoteAcceptToken(
+  input: { quoteId: string; orgId: string; partnerId: string },
+  identity: QuoteAcceptTokenIdentity | null,
+): Promise<string | null> {
+  if (!identity) return null;
+  const signKey = getSignKeyByKid(identity.kid);
+  if (!signKey) {
+    console.warn(`[quoteAcceptToken] signing key '${identity.kid ?? 'legacy'}' unavailable — cannot reproduce the accept link for quote ${input.quoteId}`);
+    return null;
+  }
+  return signAcceptToken(input, identity, signKey);
 }
 
 export async function verifyQuoteAcceptToken(token: string): Promise<QuoteAcceptClaims | null> {

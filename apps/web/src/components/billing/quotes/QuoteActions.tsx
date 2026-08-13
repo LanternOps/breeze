@@ -12,7 +12,7 @@ import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
 import { isValidEmail } from '@/lib/email';
-import { cloneQuote, deleteQuote, sendQuote, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
+import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
 import { OrgCombobox, orgComboboxOptions } from '../shared/OrgCombobox';
@@ -149,11 +149,18 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const { can } = usePermissions();
   const organizations = useOrgStore((s) => s.organizations);
   const { quote, lines } = detail;
+  const recipients = useMemo(() => detail.recipients ?? [], [detail.recipients]);
   const currency = quote.currencyCode;
 
   const { busy, downloadPdf } = useQuotePdfDownload(quote);
   const [sending, setSending] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  // The same composer serves both the first send and a re-send. `resendMode`
+  // is what tells the confirm handler which one it is: a first send SCHEDULES
+  // (undo window, draft→sent flip), a re-send dispatches immediately and
+  // changes no quote state. Reset on every open so a re-send can never leak
+  // into the next send.
+  const [resendMode, setResendMode] = useState(false);
   const [sendMessage, setSendMessage] = useState('');
   // Send composer fields. To/Cc are raw text inputs parsed on the fly
   // (parseAddressList splits on comma / semicolon / newline); Subject left blank
@@ -263,8 +270,13 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   // Open the composer with fresh fields, then prefill/support-fetch in the
   // background. All three fetches are best-effort: the composer stays usable
   // when any fail (the user types the recipient — Send blocks on a valid To).
-  const openSend = useCallback(() => {
-    setSendTo('');
+  //
+  // `prefillTo` is the known-good recipient list for a RE-send (who the quote
+  // already went to). When it's empty — a first send, or a legacy send with no
+  // recorded recipients — we fall back to looking up the org's billing contact.
+  const openComposer = useCallback((opts: { resend: boolean; prefillTo: string[] }) => {
+    setResendMode(opts.resend);
+    setSendTo(opts.prefillTo.join(', '));
     setSendCc('');
     setCcOpen(false);
     setSendSubject('');
@@ -273,23 +285,25 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     setStripeStatus(null);
     setToPrefillMissing(false);
     setSendOpen(true);
-    void (async () => {
-      try {
-        const res = await fetchWithAuth(`/orgs/organizations/${quote.orgId}`);
-        if (!res.ok) return;
-        const org = (await res.json()) as { billingContact?: { email?: string | null } | null };
-        const email = org.billingContact?.email?.trim();
-        // Functional update so a slow response never clobbers a typed address.
-        if (email) setSendTo((cur) => cur || email);
-        // A CONFIRMED absence (the fetch succeeded and there is no contact)
-        // earns an explanation under the To field — at 9pm an empty To with no
-        // "why" forces the owner to recall an address from memory. A failed
-        // fetch stays silent: unknown is not absent, and claiming "no billing
-        // contact" on a lookup error would be false. (The user must type a
-        // recipient either way — the composer never submits an empty To.)
-        else setToPrefillMissing(true);
-      } catch { /* leave To empty — the user types the recipient */ }
-    })();
+    if (opts.prefillTo.length === 0) {
+      void (async () => {
+        try {
+          const res = await fetchWithAuth(`/orgs/organizations/${quote.orgId}`);
+          if (!res.ok) return;
+          const org = (await res.json()) as { billingContact?: { email?: string | null } | null };
+          const email = org.billingContact?.email?.trim();
+          // Functional update so a slow response never clobbers a typed address.
+          if (email) setSendTo((cur) => cur || email);
+          // A CONFIRMED absence (the fetch succeeded and there is no contact)
+          // earns an explanation under the To field — at 9pm an empty To with no
+          // "why" forces the owner to recall an address from memory. A failed
+          // fetch stays silent: unknown is not absent, and claiming "no billing
+          // contact" on a lookup error would be false. (The user must type a
+          // recipient either way — the composer never submits an empty To.)
+          else setToPrefillMissing(true);
+        } catch { /* leave To empty — the user types the recipient */ }
+      })();
+    }
     // Signature + Stripe status are partner-level support data. The endpoints
     // aren't scope-gated (they gate on permission + a non-null partnerId, not a
     // partner-vs-org token), but an org-scoped session has no partner context
@@ -314,6 +328,12 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       })();
     }
   }, [quote.orgId]);
+
+  const openSend = useCallback(() => openComposer({ resend: false, prefillTo: [] }), [openComposer]);
+  const openResend = useCallback(() => {
+    setMenuOpen(false);
+    openComposer({ resend: true, prefillTo: recipients });
+  }, [openComposer, recipients]);
 
   const closeSend = useCallback(() => {
     if (sending) return;
@@ -473,6 +493,29 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       const note = sendMessage.trim();
       if (note) opts.message = note;
       if (!includePdf) opts.includePdf = false;
+      if (resendMode) {
+        // A re-send is a second COPY of an already-issued document: it reuses
+        // the customer's existing accept link and changes no quote state, so
+        // there is nothing to undo and no draft→sent flip to wait on. It
+        // dispatches immediately rather than through the 30s window.
+        const result = await runAction<{ data?: { emailed?: boolean; reissued?: boolean } }>({
+          request: () => resendQuote(quote.id, opts),
+          errorFallback: t('quotes.actions.resendError'),
+          onUnauthorized: UNAUTHORIZED,
+        });
+        setSendOpen(false);
+        setSendMessage('');
+        refresh();
+        // Honest outcome: the server swallows email failures so the request
+        // succeeds even when nothing was delivered. Don't claim a send that
+        // didn't happen — the persistent banner carries the reason.
+        showToast(
+          result?.data?.emailed === false
+            ? { message: t('quotes.actions.resendNotDelivered'), type: 'warning' }
+            : { message: t('quotes.actions.resendSuccess', { orgName }), type: 'success' },
+        );
+        return;
+      }
       // Undo-send window: the composer confirm SCHEDULES the dispatch ~30s out
       // rather than emailing immediately — the quote stays a draft with the
       // window stamped, and the header offers Undo until it fires. The real
@@ -488,11 +531,56 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       refresh();
       showToast({ message: t('quotes.actions.sendScheduled', { orgName }), type: 'success' });
     } catch (err) {
-      handleActionError(err, t('quotes.actions.sendError'));
+      handleActionError(err, resendMode ? t('quotes.actions.resendError') : t('quotes.actions.sendError'));
     } finally {
       setSending(false);
     }
-  }, [sending, composerValid, quote.id, toParsed, ccParsed, sendSubject, sendMessage, includePdf, orgName, refresh, t]);
+  }, [sending, composerValid, resendMode, quote.id, toParsed, ccParsed, sendSubject, sendMessage, includePdf, orgName, refresh, t]);
+
+  // Copy the customer-facing accept link without emailing anything — for
+  // pasting into a chat/SMS/reply by hand.
+  const [copyingLink, setCopyingLink] = useState(false);
+  const copyShareLink = useCallback(async () => {
+    if (copyingLink) return;
+    setMenuOpen(false);
+    setCopyingLink(true);
+    try {
+      const result = await runAction<{ data?: { acceptUrl?: string; reissued?: boolean } }>({
+        request: () => getQuoteShareLink(quote.id),
+        errorFallback: t('quotes.actions.shareLinkError'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      const url = result?.data?.acceptUrl;
+      if (!url) {
+        // A 200 with no link is a server-side surprise, not a copy the user
+        // can paste — say so rather than silently writing "undefined".
+        showToast({ message: t('quotes.actions.shareLinkError'), type: 'error' });
+        return;
+      }
+      // Clipboard access can be denied (insecure origin, permissions policy).
+      // Fall back to showing the link so the user can select it by hand — a
+      // silent no-op here reads as a dead menu item.
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        showToast({ message: t('quotes.actions.shareLinkCopyFailed', { url }), type: 'warning', duration: 15000 });
+        return;
+      }
+      showToast(
+        result?.data?.reissued
+          // A reissue means the ORIGINAL link could not be reproduced (this
+          // quote predates link tracking, or its signing key was rotated). The
+          // customer's first link was never revoked and still works — say that
+          // plainly rather than implying we replaced it.
+          ? { message: t('quotes.actions.shareLinkCopiedReissued'), type: 'warning', duration: 12000 }
+          : { message: t('quotes.actions.shareLinkCopied'), type: 'success' },
+      );
+    } catch (err) {
+      handleActionError(err, t('quotes.actions.shareLinkError'));
+    } finally {
+      setCopyingLink(false);
+    }
+  }, [copyingLink, quote.id, t]);
 
   const remove = useCallback(async () => {
     if (deleting) return;
@@ -634,9 +722,19 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
   const canDelete = can('quotes', 'write') && isDraft;
+  // Re-send and share-link mirror the server's gates (services/quoteLifecycle.ts):
+  // an OPEN quote only. Settled outcomes (accepted/declined/converted) and
+  // expired quotes are excluded — an expired quote's accept link is expired
+  // too, so re-sending it would deliver a link guaranteed to fail. Both are
+  // quotes:send, not quotes:read: each hands the customer a live accept
+  // credential.
+  const isOpen = quote.status === 'sent' || quote.status === 'viewed';
+  const isExpired = quote.expiryDate != null && new Date(`${quote.expiryDate}T23:59:59Z`).getTime() < Date.now();
+  const canResend = can('quotes', 'send') && isOpen && !isExpired;
+  const canShareLink = canResend;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
-  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete) return null;
+  if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend) return null;
 
   return (
     <>
@@ -738,9 +836,35 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             </span>
           </button>
         )}
+        {/* Re-send is the primary action on an already-sent quote — the slot the
+            Send button occupies on a draft — so in the header it's a button, not
+            a buried menu item. It opens the same composer, prefilled with the
+            addresses the quote already went to. */}
+        {canResend && (
+          <button
+            type="button"
+            onClick={openResend}
+            disabled={sending}
+            data-testid="quote-resend"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {t('quotes.actions.resend')}
+          </button>
+        )}
         {/* In the rail the secondary actions stack as full-width buttons; in the
             header they fold into the kebab menu below so the cluster stays a
             stable Send + Download + ⋯ row that doesn't wrap awkwardly. */}
+        {!header && canShareLink && (
+          <button
+            type="button"
+            onClick={() => void copyShareLink()}
+            disabled={copyingLink}
+            data-testid="quote-copy-share-link"
+            className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
+          >
+            {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
+          </button>
+        )}
         {!header && canClone && (
           <button
             type="button"
@@ -776,7 +900,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             {t('quotes.actions.deleteDraft')}
           </button>
         )}
-        {header && (canClone || canDelete) && (
+        {header && (canClone || canDelete || canShareLink) && (
           <div className="relative" ref={menuRef}>
             <button
               ref={menuTriggerRef}
@@ -799,6 +923,19 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
                 data-testid="quote-actions-menu-list"
                 className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border bg-card py-1 shadow-lg"
               >
+                {canShareLink && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => void copyShareLink()}
+                    disabled={copyingLink}
+                    data-testid="quote-copy-share-link"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-muted focus:bg-muted focus:outline-hidden disabled:opacity-50"
+                  >
+                    {copyingLink ? t('quotes.actions.copyingShareLink') : t('quotes.actions.copyShareLink')}
+                  </button>
+                )}
                 {canClone && (
                   <button
                     type="button"
@@ -869,20 +1006,25 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
       <Dialog
         open={sendOpen}
         onClose={closeSend}
-        title={t('quotes.actions.sendConfirm.title')}
+        title={resendMode ? t('quotes.actions.resendConfirm.title') : t('quotes.actions.sendConfirm.title')}
         labelledBy="quote-send-dialog-title"
         maxWidth="xl"
         className="p-6"
       >
         <h3 id="quote-send-dialog-title" className="text-base font-semibold text-foreground">
-          {t('quotes.actions.sendConfirm.title')}
+          {resendMode ? t('quotes.actions.resendConfirm.title') : t('quotes.actions.sendConfirm.title')}
         </h3>
-        {/* Send summary + irreversibility copy carried over from the old confirm step. */}
+        {/* Send summary + irreversibility copy carried over from the old confirm
+            step. A re-send gets its own line: nothing about the quote changes,
+            and the customer gets the SAME link — the irreversibility warning
+            would be simply untrue there. */}
         <p className="mt-1 text-sm text-muted-foreground">
-          {t('quotes.actions.sendConfirm.message', {
-            orgName,
-            amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
-          })}
+          {resendMode
+            ? t('quotes.actions.resendConfirm.message', { orgName })
+            : t('quotes.actions.sendConfirm.message', {
+                orgName,
+                amount: formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency),
+              })}
         </p>
         {zeroTotal && (
           <p className="mt-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning" data-testid="quote-send-zero-warning">
@@ -1084,7 +1226,9 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
             data-testid="quote-send-confirm"
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            {sending ? t('quotes.actions.sending') : t('quotes.actions.sendProposal')}
+            {sending
+              ? t('quotes.actions.sending')
+              : resendMode ? t('quotes.actions.resend') : t('quotes.actions.sendProposal')}
           </button>
         </div>
       </Dialog>

@@ -7,7 +7,7 @@ import { getQuote, toCustomerLines } from './quoteService';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
 import { validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
-import { createQuoteAcceptToken } from './quoteAcceptToken';
+import { createQuoteAcceptToken, regenerateQuoteAcceptToken, type QuoteAcceptTokenIdentity } from './quoteAcceptToken';
 import { buildQuoteTemplate } from './quoteEmail';
 import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
@@ -168,10 +168,22 @@ export async function sendQuote(
       .map((email) => email.trim().toLowerCase())
       .filter((email) => email.length > 0),
   ));
+  // Mint the public accept token (expiry = quote.expiryDate if future, else
+  // +30d) BEFORE the claim so its identity is stamped atomically with the
+  // draft→sent flip — a send can never commit without the parts needed to
+  // reproduce the link it emailed. A token minted for a claim that then loses
+  // the race is simply discarded with the 409.
+  const { token, identity } = await createQuoteAcceptToken({
+    quoteId: id, orgId: quote.orgId, partnerId: quote.partnerId,
+    expiresAt: quote.expiryDate ? new Date(`${quote.expiryDate}T23:59:59Z`) : null,
+  });
+  const acceptUrl = buildPublicQuoteAcceptUrl(token);
+
   const claimed = await db
     .update(quotes)
     .set({
       status: 'sent', quoteNumber, issueDate, sentAt: now, updatedAt: now,
+      ...acceptTokenIdentityColumns(identity),
       // Retire any schedule state atomically with the flip: a scheduled-send
       // claim, a stale failure marker from an earlier attempt, or a pending
       // window must not survive onto a sent quote (a leftover send_email_reason
@@ -215,13 +227,64 @@ export async function sendQuote(
     sellerSnapshot,
   };
 
-  // Mint the public accept token (expiry = quote.expiryDate if future, else +30d).
-  const { token } = await createQuoteAcceptToken({
-    quoteId: id, orgId: quote.orgId, partnerId: quote.partnerId,
-    expiresAt: quote.expiryDate ? new Date(`${quote.expiryDate}T23:59:59Z`) : null,
+  const { emailed, emailReason } = await deliverQuoteEmail({
+    quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts,
   });
-  const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
+  const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
+  return { quote: updated!, emailed, emailReason, acceptUrl };
+}
+
+/** The `quotes` column patch that persists a freshly-minted token's identity. */
+function acceptTokenIdentityColumns(identity: QuoteAcceptTokenIdentity) {
+  return {
+    acceptTokenJti: identity.jti,
+    acceptTokenIssuedAt: new Date(identity.issuedAtSeconds * 1000),
+    acceptTokenExpiresAt: new Date(identity.expiresAtSeconds * 1000),
+    acceptTokenKid: identity.kid,
+  };
+}
+
+/** Read a quote's persisted accept-token identity back, or null when it has none
+ *  (draft, or sent before identity persistence shipped). */
+function readAcceptTokenIdentity(quote: QuoteRow): QuoteAcceptTokenIdentity | null {
+  if (!quote.acceptTokenJti || !quote.acceptTokenIssuedAt || !quote.acceptTokenExpiresAt) return null;
+  return {
+    jti: quote.acceptTokenJti,
+    issuedAtSeconds: Math.floor(quote.acceptTokenIssuedAt.getTime() / 1000),
+    expiresAtSeconds: Math.floor(quote.acceptTokenExpiresAt.getTime() / 1000),
+    kid: quote.acceptTokenKid ?? null,
+  };
+}
+
+interface DeliverQuoteEmailInput {
+  quote: QuoteRow;
+  blocks: Awaited<ReturnType<typeof getQuote>>['blocks'];
+  lines: Awaited<ReturnType<typeof getQuote>>['lines'];
+  partnerRow: typeof partners.$inferSelect | undefined;
+  quoteNumber: string;
+  acceptUrl: string;
+  /** The quote with send-time-frozen bill-to/seller values overlaid — what the
+   *  PDF and contract-variable substitution must render from. */
+  frozenQuote: QuoteRow;
+  /** Org billing-contact email, used when the composer names no recipients. */
+  billingRecipient: string | null | undefined;
+  opts: SendQuoteEmailOptions;
+}
+
+/**
+ * Render the customer PDF and deliver the quote email. Shared by the initial
+ * send and by resendQuote — extracted so the two paths can never drift on
+ * customer-visible-line filtering, contract merging, branding or envelope
+ * headers (the details that decide what a customer actually receives).
+ *
+ * Best effort by contract: every failure is swallowed into an `emailReason` so
+ * the caller's transaction still commits. Callers persist that reason.
+ */
+async function deliverQuoteEmail(
+  { quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts }: DeliverQuoteEmailInput,
+): Promise<{ emailed: boolean; emailReason?: SendQuoteEmailReason }> {
+  const id = quote.id;
   // Best-effort email, rendered + sent here within the request transaction
   // (it commits when the handler returns). A failure is swallowed so the send
   // still commits. NOTE: unlike the invoice path (contractService returns a
@@ -330,8 +393,146 @@ export async function sendQuote(
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 
+  return { emailed, emailReason };
+}
+
+/**
+ * Resolve the ONE customer-facing accept link for an already-sent quote,
+ * minting + persisting a token only if the quote has none it can reproduce
+ * (sent before identity persistence shipped, or its signing key was rotated
+ * out). Callers get back whether the link is the original one — the UI warns
+ * before a legacy quote's link silently changes under the customer.
+ *
+ * Not exported: every caller goes through resendQuote or getQuoteShareLink so
+ * the permission + status gates are never bypassed.
+ */
+async function resolveAcceptUrl(quote: QuoteRow): Promise<{ acceptUrl: string; reissued: boolean }> {
+  const identity = readAcceptTokenIdentity(quote);
+  const existing = await regenerateQuoteAcceptToken(
+    { quoteId: quote.id, orgId: quote.orgId, partnerId: quote.partnerId },
+    identity,
+  );
+  if (existing) return { acceptUrl: buildPublicQuoteAcceptUrl(existing), reissued: false };
+
+  const { token, identity: fresh } = await createQuoteAcceptToken({
+    quoteId: quote.id, orgId: quote.orgId, partnerId: quote.partnerId,
+    expiresAt: quote.expiryDate ? new Date(`${quote.expiryDate}T23:59:59Z`) : null,
+  });
+  await db.update(quotes).set(acceptTokenIdentityColumns(fresh)).where(eq(quotes.id, quote.id));
+  return { acceptUrl: buildPublicQuoteAcceptUrl(token), reissued: true };
+}
+
+/** Statuses a quote can be re-sent or share-linked from. Draft has no link yet
+ *  (send it instead); accepted/declined/converted are settled outcomes that a
+ *  re-send would only muddy. */
+const RESENDABLE_STATUSES = new Set(['sent', 'viewed']);
+
+/** Read the addresses a quote was sent to, oldest first. */
+export async function getQuoteRecipients(quoteId: string): Promise<string[]> {
+  const rows = await db
+    .select({ email: quoteRecipients.email })
+    .from(quoteRecipients)
+    .where(eq(quoteRecipients.quoteId, quoteId))
+    .orderBy(quoteRecipients.createdAt);
+  return rows.map((r) => r.email);
+}
+
+/**
+ * Hand back the share link for an already-sent quote without emailing anything
+ * — for pasting into Teams/SMS/a reply by hand.
+ *
+ * This dispenses a live accept credential, so the caller MUST have already
+ * enforced the quotes:send permission and MUST audit-log the result.
+ */
+export async function getQuoteShareLink(
+  id: string, actor: QuoteActor,
+): Promise<{ acceptUrl: string; reissued: boolean; recipients: string[]; orgId: string }> {
+  const { quote } = await getQuote(id, actor); // enforces org-access (404)
+  if (quote.status === 'draft') {
+    throw new QuoteServiceError('This quote has not been sent yet — send it to create a share link', 409, 'INVALID_STATE');
+  }
+  const { acceptUrl, reissued } = await resolveAcceptUrl(quote);
+  return { acceptUrl, reissued, recipients: await getQuoteRecipients(id), orgId: quote.orgId };
+}
+
+/**
+ * Re-email an already-sent quote, reusing its existing accept link.
+ *
+ * Deliberately NOT a second send: status, sentAt, quote_number and the
+ * send-time bill-to/seller snapshots all stay pinned to the original issue, so
+ * the customer's copy and ours keep describing the same document. The only
+ * state this writes is the recipient set (when the composer names new
+ * addresses) and the email-outcome marker.
+ *
+ * Expired quotes are refused rather than re-sent: their accept link is expired
+ * too, and the public accept path enforces quote expiry independently — a
+ * re-send would deliver a link that is guaranteed to fail. Clone instead.
+ */
+export async function resendQuote(
+  id: string, actor: QuoteActor, opts: SendQuoteEmailOptions = {},
+): Promise<{ quote: QuoteRow; emailed: boolean; emailReason?: SendQuoteEmailReason; acceptUrl: string; reissued: boolean }> {
+  const { quote, blocks, lines } = await getQuote(id, actor); // enforces org-access (404)
+  if (!RESENDABLE_STATUSES.has(quote.status)) {
+    throw new QuoteServiceError(`Cannot re-send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
+  }
+  if (isQuoteExpired(quote.expiryDate)) {
+    throw new QuoteServiceError('This quote has expired and can no longer be re-sent', 410, 'QUOTE_EXPIRED');
+  }
+  if (!quote.quoteNumber) {
+    // A sent quote always has a number (sendQuote allocates one on the way
+    // through). Missing here means the row was tampered with or half-migrated.
+    throw new QuoteServiceError('This quote has no quote number and cannot be re-sent', 409, 'INVALID_STATE');
+  }
+
+  const { acceptUrl, reissued } = await resolveAcceptUrl(quote);
+
+  const [partnerRow] = await db.select().from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  const [org] = await db
+    .select({ billingContact: organizations.billingContact })
+    .from(organizations)
+    .where(eq(organizations.id, quote.orgId))
+    .limit(1);
+
+  // Recipient precedence: composer picks > who it originally went to > the
+  // org's billing contact. The middle term is what makes a bare "Re-send"
+  // reach the same people as the first send, even if the org's billing
+  // contact has changed since.
+  const previous = await getQuoteRecipients(id);
+  const billingRecipient = resolveBillingEmail(org?.billingContact) ?? (previous[0] ?? null);
+  const effectiveTo = opts.to && opts.to.length > 0 ? opts.to : previous;
+
+  // New addresses become authorized portal signers, exactly as on a first send.
+  // Existing rows are kept: revoking a prior recipient's ability to act on the
+  // quote is a separate, deliberate operation, not a side effect of re-sending.
+  if (opts.to && opts.to.length > 0) {
+    const normalized = Array.from(new Set(
+      opts.to.map((email) => email.trim().toLowerCase()).filter((email) => email.length > 0),
+    ));
+    if (normalized.length > 0) {
+      await db.insert(quoteRecipients).values(
+        normalized.map((email) => ({ quoteId: id, orgId: quote.orgId, email })),
+      ).onConflictDoNothing();
+    }
+  }
+
+  const frozenQuote: QuoteRow = {
+    ...quote,
+    sellerSnapshot: quote.sellerSnapshot ?? buildSellerSnapshot(partnerRow),
+  };
+
+  const { emailed, emailReason } = await deliverQuoteEmail({
+    quote, blocks, lines, partnerRow, quoteNumber: quote.quoteNumber, acceptUrl,
+    frozenQuote, billingRecipient,
+    opts: { ...opts, to: effectiveTo },
+  });
+
+  // Refresh the outcome marker so the detail page's "no email was delivered"
+  // banner reflects THIS attempt — a successful re-send must clear a stale
+  // failure from the original send, and vice versa.
+  await db.update(quotes).set({ sendEmailReason: emailReason ?? null, updatedAt: new Date() }).where(eq(quotes.id, id));
+
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return { quote: updated!, emailed, emailReason, acceptUrl };
+  return { quote: updated!, emailed, emailReason, acceptUrl, reissued };
 }
 
 /**

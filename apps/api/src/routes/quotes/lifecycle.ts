@@ -1,10 +1,11 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { sendQuote } from '../../services/quoteLifecycle';
+import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
+import { writeRouteAudit } from '../../services/auditEvents';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
@@ -50,28 +51,38 @@ const sendBodySchema = z.object({
   includePdf: z.boolean().optional(),
 }).strict();
 
+/**
+ * Read the optional composer body shared by /send, /schedule-send and /resend.
+ *
+ * Distinguishes an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
+ * yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
+ * one. An empty body degrades to "no options"; a non-empty body that fails to
+ * parse/validate is rejected rather than silently swallowing recipients or a
+ * note the sender intended. A body-READ failure (stream aborted mid-request) is
+ * likewise an error, not an absent body.
+ *
+ * Returns the parsed options, or an `error` the caller returns verbatim.
+ */
+async function parseComposerBody<T extends z.ZodTypeAny>(
+  c: Context,
+  schema: T,
+): Promise<{ ok: true; data: Partial<z.infer<T>> } | { ok: false; error: string }> {
+  if (!(c.req.header('content-type') ?? '').includes('application/json')) return { ok: true, data: {} };
+  const raw = await c.req.text().catch(() => null);
+  if (raw === null) return { ok: false, error: 'Could not read request body' };
+  if (!raw.trim()) return { ok: true, data: {} };
+  let json: unknown;
+  try { json = JSON.parse(raw); } catch { return { ok: false, error: 'Invalid JSON body' }; }
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) return { ok: false, error: 'Invalid send options' };
+  return { ok: true, data: parsed.data };
+}
+
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.
 quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
-  let emailOpts: z.infer<typeof sendBodySchema> = {};
-  // Distinguish an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
-  // yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
-  // one. An empty body degrades to "no message"; a non-empty body that fails to
-  // parse/validate is rejected 400 rather than silently swallowing a note the
-  // sender intended (mirrors the image-from-URL route below).
-  if ((c.req.header('content-type') ?? '').includes('application/json')) {
-    // A body-READ failure (stream aborted mid-request) is not the same as an
-    // intentionally absent body: proceeding would silently drop the composer's
-    // explicit recipients and fall back to the org billing contact. Reject it.
-    const raw = await c.req.text().catch(() => null);
-    if (raw === null) return c.json({ error: 'Could not read request body' }, 400);
-    if (raw.trim()) {
-      let json: unknown;
-      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
-      const parsed = sendBodySchema.safeParse(json);
-      if (!parsed.success) return c.json({ error: 'Invalid send options' }, 400);
-      emailOpts = parsed.data;
-    }
-  }
+  const body = await parseComposerBody(c, sendBodySchema);
+  if (!body.ok) return c.json({ error: body.error }, 400);
+  const emailOpts = body.data;
   try {
     return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), {
       message: emailOpts.message || undefined,
@@ -94,21 +105,9 @@ const scheduleSendSchema = sendBodySchema.extend({
 });
 quoteLifecycleRoutes.post('/:id/schedule-send', scopes, sendPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
-  let body: z.infer<typeof scheduleSendSchema> = {};
-  if ((c.req.header('content-type') ?? '').includes('application/json')) {
-    // A body-READ failure (stream aborted mid-request) is not the same as an
-    // intentionally absent body: proceeding would silently drop the composer's
-    // explicit recipients and fall back to the org billing contact. Reject it.
-    const raw = await c.req.text().catch(() => null);
-    if (raw === null) return c.json({ error: 'Could not read request body' }, 400);
-    if (raw.trim()) {
-      let json: unknown;
-      try { json = JSON.parse(raw); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
-      const parsed = scheduleSendSchema.safeParse(json);
-      if (!parsed.success) return c.json({ error: 'Invalid send options' }, 400);
-      body = parsed.data;
-    }
-  }
+  const parsed = await parseComposerBody(c, scheduleSendSchema);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const body = parsed.data;
   try {
     const actor = quoteActorFrom(c);
     const { quote, lines } = await getQuote(id, actor); // org-access 404
@@ -122,6 +121,56 @@ quoteLifecycleRoutes.post('/:id/schedule-send', scopes, sendPerm, zValidator('pa
       includePdf: body.includePdf,
     }, (body.delaySeconds ?? 30) * 1000);
     return c.json({ data: { sendScheduledAt: sendScheduledAt.toISOString() } });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// POST /:id/resend — re-email an already-sent quote using its EXISTING accept
+// link. Not a second send: status, sentAt, quote number and the send-time
+// bill-to/seller snapshots are all left pinned to the original issue (see
+// resendQuote). Same quotes:send permission as /send.
+quoteLifecycleRoutes.post('/:id/resend', scopes, sendPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  const parsed = await parseComposerBody(c, sendBodySchema);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  try {
+    const result = await resendQuote(id, quoteActorFrom(c), {
+      message: parsed.data.message || undefined,
+      to: parsed.data.to,
+      cc: parsed.data.cc,
+      subject: parsed.data.subject || undefined,
+      includePdf: parsed.data.includePdf,
+    });
+    writeRouteAudit(c, {
+      orgId: result.quote.orgId,
+      action: 'quote.resend',
+      resourceType: 'quote',
+      resourceId: id,
+      result: result.emailed ? 'success' : 'failure',
+      // `reissued` is the notable case: the quote's original link could not be
+      // reproduced, so the customer now holds two working links.
+      details: { emailed: result.emailed, emailReason: result.emailReason, reissued: result.reissued },
+    });
+    return c.json({ data: result });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+// GET /:id/share-link — hand back the quote's accept link without emailing
+// anything, for pasting into a chat/SMS by hand. This dispenses a live accept
+// credential, hence the quotes:send permission (not quotes:read) and the audit
+// record on every successful call.
+quoteLifecycleRoutes.get('/:id/share-link', scopes, sendPerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  try {
+    const result = await getQuoteShareLink(id, quoteActorFrom(c));
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'quote.share_link_viewed',
+      resourceType: 'quote',
+      resourceId: id,
+      result: 'success',
+      details: { reissued: result.reissued },
+    });
+    return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }
 });
 
