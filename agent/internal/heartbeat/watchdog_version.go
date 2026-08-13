@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// watchdogStatusVersionPrefix is the line prefix `breeze-watchdog status` prints
-// the installed watchdog version under (see cmd/breeze-watchdog printStatus).
+// watchdogStatusVersionPrefix is the line prefix `nu-watchdog status` prints
+// the installed watchdog version under (see cmd/nu-watchdog printStatus).
 const watchdogStatusVersionPrefix = "Watchdog Version:"
 
 // watchdogVersionReadTimeout bounds the exec of the on-disk watchdog binary so a
@@ -112,7 +112,7 @@ func readInstalledWatchdogVersion() (string, bool) {
 	return parseWatchdogStatusVersion(string(out)), true
 }
 
-// parseWatchdogStatusVersion extracts the version from `breeze-watchdog status`
+// parseWatchdogStatusVersion extracts the version from `nu-watchdog status`
 // output, which leads with a `Watchdog Version: <v>` line.
 func parseWatchdogStatusVersion(out string) string {
 	for _, line := range strings.Split(out, "\n") {

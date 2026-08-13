@@ -1,0 +1,29 @@
+#!/bin/sh
+# NU Agent - postinstall
+#
+# Registers the launchd services. Deliberately does NOT enroll: the enrollment key
+# is per-download and lives in the wrapper (install.sh) alongside enrollment.json,
+# so the pkg itself stays credential-free and reusable.
+#
+# Never exit non-zero on a partial failure. `installer` surfaces any non-zero exit
+# as a bare "installation failed" with no detail, which is precisely the useless
+# error the stock installer produced.
+set -u
+
+AGENT=/usr/local/bin/nu-agent
+
+if [ ! -x "$AGENT" ]; then
+  echo "NU Agent: $AGENT missing after payload install" >&2
+  exit 1
+fi
+
+# --with-user-helper is only supported on some builds; fall back cleanly.
+if ! "$AGENT" service install --with-user-helper >/dev/null 2>&1; then
+  "$AGENT" service install >/dev/null 2>&1 || {
+    echo "NU Agent: service registration failed" >&2
+    exit 1
+  }
+fi
+
+echo "NU Agent installed. Enrollment runs next if this was launched from install.sh."
+exit 0

@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const plistPath = "/Library/LaunchAgents/com.breeze.helper.plist"
+const plistPath = "/Library/LaunchAgents/com.nodesunlimited.helper.plist"
 const appBundleName = "Breeze Helper.app"
 
 func packageExtension() string { return ".dmg" }

@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows ti chiederà conferma",
     "body": "Quando apri il file, Windows mostra una richiesta di conferma prima di eseguirlo. Il file è firmato digitalmente, quindi quella richiesta indica un autore: dovrebbe riportare {{publisher}}. Se indica che l’autore è sconosciuto, o riporta un nome che non ti aspetti, chiudi la finestra e chiama la persona che ti sta aiutando invece di proseguire.",
-    "publisher": "l’autore di Breeze"
+    "publisher": "l’autore di Nodes Unlimited"
   },
   "trust": {
     "title": "Che cosa fa il programma",

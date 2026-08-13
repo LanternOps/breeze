@@ -148,7 +148,7 @@ func TestAuthorizeCommandUsesHelperScopes(t *testing.T) {
 }
 
 func TestIsAllowedLaunchBinaryAllowsHelperInstallDir(t *testing.T) {
-	selfPath := filepath.Join(t.TempDir(), "breeze-agent")
+	selfPath := filepath.Join(t.TempDir(), "nu-agent")
 	helperPath := helper.DefaultBinaryPath()
 
 	if !isAllowedLaunchBinary(selfPath, helperPath) {
@@ -163,7 +163,7 @@ func TestIsAllowedLaunchBinaryAllowsHelperInstallDir(t *testing.T) {
 
 func TestValidateLaunchProcessRequestRejectsOversizedAndControlChars(t *testing.T) {
 	req := &ipc.LaunchProcessRequest{
-		BinaryPath: "/usr/local/bin/breeze-agent",
+		BinaryPath: "/usr/local/bin/nu-agent",
 		Args:       []string{"ok"},
 	}
 	if err := validateLaunchProcessRequest(req); err != nil {
@@ -177,7 +177,7 @@ func TestValidateLaunchProcessRequestRejectsOversizedAndControlChars(t *testing.
 	}
 
 	if err := validateLaunchProcessRequest(&ipc.LaunchProcessRequest{
-		BinaryPath: "/usr/local/bin/breeze-agent",
+		BinaryPath: "/usr/local/bin/nu-agent",
 		Args:       []string{"bad\narg"},
 	}); err == nil {
 		t.Fatal("expected control-char arg to be rejected")
@@ -188,7 +188,7 @@ func TestValidateLaunchProcessRequestRejectsOversizedAndControlChars(t *testing.
 		tooManyArgs[i] = "x"
 	}
 	if err := validateLaunchProcessRequest(&ipc.LaunchProcessRequest{
-		BinaryPath: "/usr/local/bin/breeze-agent",
+		BinaryPath: "/usr/local/bin/nu-agent",
 		Args:       tooManyArgs,
 	}); err == nil {
 		t.Fatal("expected too many args to be rejected")

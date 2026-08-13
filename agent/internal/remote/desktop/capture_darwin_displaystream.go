@@ -78,7 +78,7 @@ static int initCaptureStream(int displayIndex) {
         return 2;
     }
 
-    g_displayQueue = dispatch_queue_create("com.breeze.desktop.loginwindow", DISPATCH_QUEUE_SERIAL);
+    g_displayQueue = dispatch_queue_create("com.nodesunlimited.desktop.loginwindow", DISPATCH_QUEUE_SERIAL);
     if (g_displayQueue == NULL) {
         return 5;
     }

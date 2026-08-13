@@ -496,7 +496,7 @@
     },
     "approval": {
       "title": "Testar o fluxo de aprovação",
-      "description": "Envie uma notificação de aprovação de teste para seus próprios dispositivos Breeze Mobile. Ao tocar na notificação, a tela de aprovação ficará ativa por 60 segundos. Aprovar ou negar não executa nenhuma ação real — é apenas um teste.",
+      "description": "Envie uma notificação de aprovação de teste para seus próprios dispositivos Nodes Unlimited Mobile. Ao tocar na notificação, a tela de aprovação ficará ativa por 60 segundos. Aprovar ou negar não executa nenhuma ação real — é apenas um teste.",
       "sendTitle": "Enviar uma aprovação de teste ao seu telefone",
       "sendDescription": "Enviaremos uma notificação em alguns segundos. A aprovação expira automaticamente após 60 segundos se você não responder.",
       "sending": "Enviando…",
@@ -505,7 +505,7 @@
       "delivered": "Notificação entregue a {{sent}} de {{count}} dispositivos registrados. A aprovação expira em 60 segundos.",
       "delivered_one": "Notificação entregue a {{sent}} de {{count}} dispositivo registrado. A aprovação expira em 60 segundos.",
       "delivered_other": "Notificação entregue a {{sent}} de {{count}} dispositivos registrados. A aprovação expira em 60 segundos.",
-      "noDevices": "Não encontramos um dispositivo Breeze Mobile registrado em sua conta. Entre no aplicativo pelo menos uma vez e tente novamente.",
+      "noDevices": "Não encontramos um dispositivo Nodes Unlimited Mobile registrado em sua conta. Entre no aplicativo pelo menos uma vez e tente novamente.",
       "tip": "Dica: esta página pode ser compartilhada com os revisores da App Store. Eles podem entrar com a conta de teste fornecida, clicar no botão e verificar o fluxo de aprovação completo.",
       "errors": {
         "send": "Não foi possível enviar uma aprovação de teste. Tente novamente."
@@ -538,9 +538,9 @@
     },
     "devices": {
       "title": "Dispositivos confiáveis",
-      "description": "Telefones e tablets pareados com o aplicativo Breeze Mobile. Esses dispositivos podem aprovar solicitações MCP de alto risco em seu nome. Revogue os dispositivos que não usa mais.",
+      "description": "Telefones e tablets pareados com o aplicativo Nodes Unlimited Mobile. Esses dispositivos podem aprovar solicitações MCP de alto risco em seu nome. Revogue os dispositivos que não usa mais.",
       "empty": "Nenhum dispositivo pareado",
-      "emptyDescription": "Instale o aplicativo Breeze Mobile e entre para parear um dispositivo. As aprovações aparecerão no seu telefone.",
+      "emptyDescription": "Instale o aplicativo Nodes Unlimited Mobile e entre para parear um dispositivo. As aprovações aparecerão no seu telefone.",
       "thisDevice": "Este dispositivo",
       "blocked": "Bloqueado",
       "platform": "Plataforma",
@@ -650,7 +650,7 @@
       }
     },
     "search": {
-      "prompt": "Pesquisar no Breeze",
+      "prompt": "Pesquisar no Nodes Unlimited",
       "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
       "searching": "Pesquisando…",
       "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
@@ -994,7 +994,7 @@
           "username": "Usuário ou e-mail"
         },
         "help": {
-          "defaultQueue": "Opcional. Usado ao criar tickets a partir de alertas do Breeze."
+          "defaultQueue": "Opcional. Usado ao criar tickets a partir de alertas do Nodes Unlimited."
         },
         "keepExisting": "(deixe em branco para manter o existente)",
         "placeholders": {
@@ -1031,16 +1031,16 @@
         },
         "sync": {
           "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
+          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Nodes Unlimited forem resolvidos.",
           "enable": "Ativar sincronização",
           "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
           "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
+          "notesHelp": "Enviar comentários e atualizações do Nodes Unlimited para a linha do tempo do ticket PSA."
         },
         "syncDirections": {
           "bidirectional": "Bidirecional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
+          "inbound": "PSA → Nodes Unlimited",
+          "outbound": "Nodes Unlimited → PSA"
         },
         "syncIntervals": {
           "daily": "Diariamente",
@@ -1446,7 +1446,7 @@
           "googleCloud": "Google Cloud"
         },
         "oneClickTitle": "Integração Microsoft 365 com um clique",
-        "oneClickDescription": "Sua instância do Breeze tem um aplicativo Microsoft 365 pré-configurado. Clique em \"Conceder Acesso\" para autorizar o acesso de backup ao seu tenant M365. Um Administrador Global precisa aprovar a solicitação de consentimento.",
+        "oneClickDescription": "Sua instância do Nodes Unlimited tem um aplicativo Microsoft 365 pré-configurado. Clique em \"Conceder Acesso\" para autorizar o acesso de backup ao seu tenant M365. Um Administrador Global precisa aprovar a solicitação de consentimento.",
         "displayName": "Nome de Exibição",
         "displayNamePlaceholder": "Microsoft 365",
         "manualDisplayNamePlaceholder": "Minha conexão M365",
@@ -2135,7 +2135,7 @@
         },
         "loading": "Carregando solicitação de autorização…",
         "signInTitle": "Entre para continuar",
-        "signInDescription": "Você precisa entrar na sua conta Breeze antes de autorizar esta conexão.",
+        "signInDescription": "Você precisa entrar na sua conta Nodes Unlimited antes de autorizar esta conexão.",
         "signInAction": "Entrar",
         "redirectLoopTitle": "Não conseguimos fazer seu login",
         "redirectLoopDescription": "Seu navegador trouxe você de volta para cá sem um cookie de login. Cookies de terceiros ou armazenamento do site podem estar bloqueados. Permita cookies para este site e tente novamente, ou volte ao seu cliente MCP e comece de novo.",
@@ -2143,10 +2143,10 @@
         "expiredDescription": "Este link de autorização não é mais válido. Volte ao seu cliente MCP e inicie a conexão novamente.",
         "noTenantsTitle": "Nenhum tenant disponível",
         "noTenantsDescription": "Sua conta não é membro de nenhum tenant de parceiro, então não pode autorizar uma conexão MCP. Peça a um administrador para adicionar você a um parceiro antes de continuar.",
-        "consentTitle": "{{displayName}} quer acessar seu tenant Breeze",
+        "consentTitle": "{{displayName}} quer acessar seu tenant Nodes Unlimited",
         "clientId": "ID do cliente: {{clientId}}",
         "unverifiedLabel": "Integração não verificada",
-        "unverifiedDescription": "O Breeze não verificou esta integração. O nome é autodeclarado e pode se passar por um aplicativo confiável. Aprove somente se você iniciou esta conexão e reconhece o destino de retorno abaixo.",
+        "unverifiedDescription": "O Nodes Unlimited não verificou esta integração. O nome é autodeclarado e pode se passar por um aplicativo confiável. Aprove somente se você iniciou esta conexão e reconhece o destino de retorno abaixo.",
         "callbackLabel": "O código de autorização será enviado para:",
         "missingRedirectTitle": "Não é possível verificar o destino de retorno",
         "missingRedirectDescription": "Esta solicitação de autorização não incluiu um destino de retorno, portanto não pode ser aprovada com segurança. Volte ao seu cliente MCP e inicie a conexão novamente.",

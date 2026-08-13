@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Solicitudes de eliminación de cuenta",
-      "description": "Usuarios de su inquilino que solicitaron eliminar su cuenta Breeze. Apruebe ponerlos en cola para su procesamiento o rechace con una nota explicando el motivo.",
+      "description": "Usuarios de su inquilino que solicitaron eliminar su cuenta Nodes Unlimited. Apruebe ponerlos en cola para su procesamiento o rechace con una nota explicando el motivo.",
       "filterLabel": "Filtrar por estado",
       "refresh": "Actualizar",
       "retry": "Intentar otra vez",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Catálogo de paquetes de terceros",
-      "description": "Metadatos seleccionados por Breeze para software de terceros detectado por winget en los agentes.",
+      "description": "Metadatos seleccionados por Nodes Unlimited para software de terceros detectado por winget en los agentes.",
       "totalEntries": "Entradas totales:",
       "refresh": "Actualizar",
       "addPackage": "Agregar paquete",
       "searchPlaceholder": "Buscar por nombre, proveedor o ID de winget…",
-      "breezeTestedOnly": "Solo probado por Breeze",
-      "breezeTested": "Probado por Breeze",
+      "breezeTestedOnly": "Solo probado por Nodes Unlimited",
+      "breezeTested": "Probado por Nodes Unlimited",
       "dismiss": "Descartar",
       "loading": "Cargando catálogo…",
       "empty": "Ninguna entrada del catálogo coincide con los filtros actuales.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Se requiere acceso de administrador a la plataforma",
-        "prefix": "El catálogo de terceros lo administran los administradores de la plataforma Breeze. su cuenta",
+        "prefix": "El catálogo de terceros lo administran los administradores de la plataforma Nodes Unlimited. su cuenta",
         "role": "un administrador de organización/socio",
         "suffix": "Puede ver el catálogo administrado mediante los flujos normales de parches, pero no puede editarlo directamente."
       },
@@ -310,7 +310,7 @@
         "vendor": "Proveedor",
         "friendlyName": "Nombre amigable",
         "defaultSeverity": "Gravedad predeterminada",
-        "breezeTested": "Probado por Breeze",
+        "breezeTested": "Probado por Nodes Unlimited",
         "homepageUrl": "Página de inicio URL",
         "notes": "Notas"
       },

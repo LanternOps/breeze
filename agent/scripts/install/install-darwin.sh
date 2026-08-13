@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-BINARY="/usr/local/bin/breeze-agent"
-PLIST_SRC="$(dirname "$0")/../../service/launchd/com.breeze.agent.plist"
-PLIST_DST="/Library/LaunchDaemons/com.breeze.agent.plist"
-LOG_DIR="/Library/Logs/Breeze"
-CONFIG_DIR="/Library/Application Support/Breeze"
+BINARY="/usr/local/bin/nu-agent"
+PLIST_SRC="$(dirname "$0")/../../service/launchd/com.nodesunlimited.agent.plist"
+PLIST_DST="/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
+LOG_DIR="/Library/Logs/Nodes Unlimited"
+CONFIG_DIR="/Library/Application Support/Nodes Unlimited"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: must run as root (sudo $0)" >&2
@@ -95,54 +95,54 @@ chmod 700 "$CONFIG_DIR"
 chmod 755 "$LOG_DIR"
 
 # Copy binary
-if [ -f bin/breeze-agent ]; then
-    cp bin/breeze-agent "$BINARY"
-elif [ -f breeze-agent ]; then
-    cp breeze-agent "$BINARY"
+if [ -f bin/nu-agent ]; then
+    cp bin/nu-agent "$BINARY"
+elif [ -f nu-agent ]; then
+    cp nu-agent "$BINARY"
 else
-    echo "Error: breeze-agent binary not found. Run 'make build' first." >&2
+    echo "Error: nu-agent binary not found. Run 'make build' first." >&2
     exit 1
 fi
 chmod 755 "$BINARY"
 
 # Install watchdog
-if [ -f "bin/breeze-watchdog" ]; then
+if [ -f "bin/nu-watchdog" ]; then
     echo "Installing watchdog..."
-    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
-elif [ -f "breeze-watchdog" ]; then
+    cp bin/nu-watchdog /usr/local/bin/nu-watchdog
+    chmod 755 /usr/local/bin/nu-watchdog
+elif [ -f "nu-watchdog" ]; then
     echo "Installing watchdog..."
-    cp breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
+    cp nu-watchdog /usr/local/bin/nu-watchdog
+    chmod 755 /usr/local/bin/nu-watchdog
 fi
 
-# Install backup helper. The agent spawns breeze-backup from its own directory
+# Install backup helper. The agent spawns nu-backup from its own directory
 # (os.Executable dir), and neither the updater nor the heartbeat delivers it, so
-# it MUST be on disk next to breeze-agent or every backup fails with
-# "backup binary not found at /usr/local/bin/breeze-backup". The production .pkg
+# it MUST be on disk next to nu-agent or every backup fails with
+# "backup binary not found at /usr/local/bin/nu-backup". The production .pkg
 # (installer/macos/build-pkg.sh) already bundles it; this dev/manual install path
 # must match so `make install-service` yields a working backup setup.
-if [ -f "bin/breeze-backup" ]; then
+if [ -f "bin/nu-backup" ]; then
     echo "Installing backup helper..."
-    cp bin/breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
-elif [ -f "breeze-backup" ]; then
+    cp bin/nu-backup /usr/local/bin/nu-backup
+    chmod 755 /usr/local/bin/nu-backup
+elif [ -f "nu-backup" ]; then
     echo "Installing backup helper..."
-    cp breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
+    cp nu-backup /usr/local/bin/nu-backup
+    chmod 755 /usr/local/bin/nu-backup
 else
-    echo "Warning: breeze-backup binary not found — backups will fail with" \
+    echo "Warning: nu-backup binary not found — backups will fail with" \
          "'backup binary not found'. Run 'make build' (or 'make build-backup') first." >&2
 fi
 
 # Register watchdog service
-if [ -f "/usr/local/bin/breeze-watchdog" ]; then
-    if [ ! -f "/Library/LaunchDaemons/com.breeze.watchdog.plist" ]; then
+if [ -f "/usr/local/bin/nu-watchdog" ]; then
+    if [ ! -f "/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist" ]; then
         echo "Registering watchdog service..."
-        /usr/local/bin/breeze-watchdog service install
+        /usr/local/bin/nu-watchdog service install
     else
         echo "Restarting watchdog service..."
-        launchctl kickstart -k system/com.breeze.watchdog 2>/dev/null || true
+        launchctl kickstart -k system/com.nodesunlimited.watchdog 2>/dev/null || true
     fi
 fi
 
@@ -152,7 +152,7 @@ if [ -f "$PLIST_SRC" ]; then
 else
     # Fallback: find plist relative to script location
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    PLIST_ALT="$SCRIPT_DIR/../../service/launchd/com.breeze.agent.plist"
+    PLIST_ALT="$SCRIPT_DIR/../../service/launchd/com.nodesunlimited.agent.plist"
     if [ -f "$PLIST_ALT" ]; then
         cp "$PLIST_ALT" "$PLIST_DST"
     else
@@ -164,8 +164,8 @@ chown root:wheel "$PLIST_DST"
 chmod 644 "$PLIST_DST"
 
 # Install user helper LaunchAgent (runs per-user in GUI sessions)
-USER_PLIST_SRC="$(dirname "$0")/../../service/launchd/com.breeze.agent-user.plist"
-USER_PLIST_DST="/Library/LaunchAgents/com.breeze.agent-user.plist"
+USER_PLIST_SRC="$(dirname "$0")/../../service/launchd/com.nodesunlimited.agent-user.plist"
+USER_PLIST_DST="/Library/LaunchAgents/com.nodesunlimited.agent-user.plist"
 
 if [ -f "$USER_PLIST_SRC" ]; then
     cp "$USER_PLIST_SRC" "$USER_PLIST_DST"
@@ -174,7 +174,7 @@ if [ -f "$USER_PLIST_SRC" ]; then
     echo "User helper LaunchAgent installed."
 else
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    USER_PLIST_ALT="$SCRIPT_DIR/../../service/launchd/com.breeze.agent-user.plist"
+    USER_PLIST_ALT="$SCRIPT_DIR/../../service/launchd/com.nodesunlimited.agent-user.plist"
     if [ -f "$USER_PLIST_ALT" ]; then
         cp "$USER_PLIST_ALT" "$USER_PLIST_DST"
         chown root:wheel "$USER_PLIST_DST"
@@ -207,7 +207,7 @@ if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yam
     echo "     Users who log in later are added by the agent when their helper starts."
 else
     echo "Next steps:"
-    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
+    echo "  1. Enroll:  sudo nu-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
     echo "  2. Start:   sudo launchctl load $PLIST_DST"
     echo "  3. Status:  sudo launchctl list | grep breeze"
     echo "  4. Logs:    tail -f $LOG_DIR/agent.log"

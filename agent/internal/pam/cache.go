@@ -6,7 +6,7 @@
 //
 //	Windows:  %ProgramData%\Breeze\data\pam-rules.json
 //	Linux:    /var/lib/breeze/pam-rules.json
-//	macOS:    /Library/Application Support/Breeze/data/pam-rules.json
+//	macOS:    /Library/Application Support/Nodes Unlimited/data/pam-rules.json
 //
 // The HMAC key lives in a sibling `keys/` subdir under the same data root
 // (see DefaultKeyPath). Co-locating the key with the cache file would mean a
@@ -316,7 +316,7 @@ func computeMAC(signed *SignedFields, key []byte) (string, error) {
 // DefaultPath returns the platform default cache file path. Routes through
 // config.GetDataDir so all platforms land under the same data root the rest
 // of the agent uses (Windows: %ProgramData%\Breeze\data,
-// macOS: /Library/Application Support/Breeze/data, Linux: /var/lib/breeze).
+// macOS: /Library/Application Support/Nodes Unlimited/data, Linux: /var/lib/breeze).
 func DefaultPath() string {
 	return filepath.Join(config.GetDataDir(), "pam-rules.json")
 }

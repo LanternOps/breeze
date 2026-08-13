@@ -85,20 +85,20 @@ func Restart() error {
 // a *BinaryPair, nil means "no helper to swap", and a non-nil value carries
 // both paths together. Issue #816, #845 follow-up.
 type restartScriptOptions struct {
-	// Agent is the freshly-downloaded breeze-agent.exe temp file plus its
+	// Agent is the freshly-downloaded nu-agent.exe temp file plus its
 	// final install location. Required.
 	Agent BinaryPair
-	// UserHelper, when non-nil, is the freshly-downloaded breeze-user-helper.exe
+	// UserHelper, when non-nil, is the freshly-downloaded nu-user-helper.exe
 	// temp file plus its final install location (typically the same directory
 	// as the agent). nil means "no user-helper to swap" — the generated script
 	// omits the helper Copy-Item entirely (backward-compat with releases that
 	// lack the user-helper artifact). Issue #816.
 	UserHelper *BinaryPair
-	// Backup, when non-nil, is the freshly-downloaded breeze-backup.exe temp
+	// Backup, when non-nil, is the freshly-downloaded nu-backup.exe temp
 	// file plus its final install location. nil means "no backup helper to
 	// swap" — the generated script omits the backup Copy-Item AND the
-	// breeze-backup.exe entry in the Stop-Process kill list entirely.
-	// breeze-backup's version is slaved to the agent's (no independent
+	// nu-backup.exe entry in the Stop-Process kill list entirely.
+	// nu-backup's version is slaved to the agent's (no independent
 	// directive), and doUpgrade only prefetches it when a matching artifact
 	// downloaded successfully.
 	Backup *BinaryPair
@@ -149,14 +149,14 @@ func buildRestartScript(opts restartScriptOptions) string {
 		safeBackupTarget = strings.ReplaceAll(opts.Backup.Target, "'", "''")
 	}
 
-	// The exe lock on a running breeze-backup.exe would otherwise block its
-	// Copy-Item, same as breeze-agent.exe/breeze-user-helper.exe — only add it
+	// The exe lock on a running nu-backup.exe would otherwise block its
+	// Copy-Item, same as nu-agent.exe/nu-user-helper.exe — only add it
 	// to the kill list when there's actually a backup swap to perform, so an
 	// agent-only upgrade's script is unchanged (and doesn't kill an in-flight
 	// backup helper for no reason).
-	processNames := []string{"breeze-helper", "breeze-agent", "breeze-user-helper", "breeze-viewer"}
+	processNames := []string{"breeze-helper", "nu-agent", "nu-user-helper", "breeze-viewer"}
 	if hasBackup {
-		processNames = append(processNames, "breeze-backup")
+		processNames = append(processNames, "nu-backup")
 	}
 	quotedProcessNames := make([]string, len(processNames))
 	for i, name := range processNames {
@@ -204,7 +204,7 @@ func buildRestartScript(opts restartScriptOptions) string {
 		"  Start-Service -Name '"+serviceName+"'",
 		"} catch {",
 		// Failure path: log structured diagnostics. ${env:TEMP} always exists
-		// on Windows (unlike C:\ProgramData\Breeze, which may not exist yet
+		// on Windows (unlike C:\ProgramData\Nodes Unlimited, which may not exist yet
 		// on a fresh install — see #609 / HardenProgramDataAcl sequencing).
 		"  $stamp = [int][double]::Parse((Get-Date -UFormat %s))",
 		"  $logPath = Join-Path $env:TEMP (\"breeze-update-failure-$stamp.log\")",
@@ -245,7 +245,7 @@ func buildRestartScript(opts restartScriptOptions) string {
 //  1. Waits for the current process to exit
 //  2. Stops the service
 //  3. Copies the new agent binary (and, optionally, the new user-helper
-//     and/or breeze-backup) over the old one(s)
+//     and/or nu-backup) over the old one(s)
 //  4. Starts the service
 //  5. Cleans up temp files
 //
@@ -256,8 +256,8 @@ func buildRestartScript(opts restartScriptOptions) string {
 // companion swap (the pre-#816 behavior, when both are nil, is an agent-only
 // upgrade). When non-nil, the generated script also copies that companion
 // into place: for userHelper, so the post-upgrade HelperLifecycleManager
-// finds it on disk and does not fall back to spawning breeze-agent.exe in a
-// loop (issue #816); for backup, so breeze-backup stays in lockstep with the
+// finds it on disk and does not fall back to spawning nu-agent.exe in a
+// loop (issue #816); for backup, so nu-backup stays in lockstep with the
 // agent version it's slaved to.
 func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryPair) error {
 	script := buildRestartScript(restartScriptOptions{

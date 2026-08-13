@@ -92,7 +92,7 @@ func defaultDataDir() string {
 		}
 		return filepath.Join(programData, "Breeze")
 	case "darwin":
-		return "/Library/Application Support/Breeze"
+		return "/Library/Application Support/Nodes Unlimited"
 	default:
 		return "/var/lib/breeze"
 	}

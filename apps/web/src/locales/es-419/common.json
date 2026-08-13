@@ -496,7 +496,7 @@
     },
     "approval": {
       "title": "Probar el flujo de aprobación",
-      "description": "Envíe una aprobación de prueba a sus propios dispositivos móviles Breeze. Al tocar el botón, la pantalla de aprobación ocupará el teléfono durante 60 segundos. Aprobar o rechazar no ejecuta ninguna acción real; es solo una prueba.",
+      "description": "Envíe una aprobación de prueba a sus propios dispositivos móviles Nodes Unlimited. Al tocar el botón, la pantalla de aprobación ocupará el teléfono durante 60 segundos. Aprobar o rechazar no ejecuta ninguna acción real; es solo una prueba.",
       "sendTitle": "Envíe una aprobación de prueba a su teléfono",
       "sendDescription": "Le daremos un empujón en unos segundos. La aprobación caduca automáticamente después de 60 segundos si no actúa en consecuencia.",
       "sending": "Enviando…",
@@ -505,7 +505,7 @@
       "delivered": "Push entregado a {{sent}} de los dispositivos registrados {{count}}. La aprobación caduca en 60 segundos.",
       "delivered_one": "Push entregado a {{sent}} del dispositivo registrado {{count}}. La aprobación caduca en 60 segundos.",
       "delivered_other": "Push entregado a {{sent}} de los dispositivos registrados {{count}}. La aprobación caduca en 60 segundos.",
-      "noDevices": "No vemos ningún dispositivo móvil Breeze registrado en su cuenta. Inicie sesión en la aplicación al menos una vez y vuelva a intentarlo.",
+      "noDevices": "No vemos ningún dispositivo móvil Nodes Unlimited registrado en su cuenta. Inicie sesión en la aplicación al menos una vez y vuelva a intentarlo.",
       "tip": "Consejo: esta página es segura para compartir con los revisores de la App Store. Pueden iniciar sesión con la cuenta de prueba proporcionada, hacer clic en el botón y verificar la aprobación de principio a fin.",
       "errors": {
         "send": "No pudimos enviar una aprobación de prueba. Inténtelo de nuevo."
@@ -538,9 +538,9 @@
     },
     "devices": {
       "title": "Dispositivos confiables",
-      "description": "Teléfonos y tabletas que haya vinculado con la aplicación móvil Breeze. Estos dispositivos pueden aprobar solicitudes MCP de alto riesgo en su nombre. Revoque cualquier dispositivo que ya no utilice.",
+      "description": "Teléfonos y tabletas que haya vinculado con la aplicación móvil Nodes Unlimited. Estos dispositivos pueden aprobar solicitudes MCP de alto riesgo en su nombre. Revoque cualquier dispositivo que ya no utilice.",
       "empty": "No hay dispositivos emparejados",
-      "emptyDescription": "Instale la aplicación móvil Breeze e inicie sesión para vincular un dispositivo. Las aprobaciones aparecerán en su teléfono.",
+      "emptyDescription": "Instale la aplicación móvil Nodes Unlimited e inicie sesión para vincular un dispositivo. Las aprobaciones aparecerán en su teléfono.",
       "thisDevice": "este dispositivo",
       "blocked": "Bloqueado",
       "platform": "Plataforma",
@@ -650,7 +650,7 @@
       }
     },
     "search": {
-      "prompt": "Buscar en Breeze",
+      "prompt": "Buscar en Nodes Unlimited",
       "placeholder": "Buscar dispositivos, scripts, alertas, usuarios, configuraciones…",
       "searching": "Buscando…",
       "startTyping": "Empiece a escribir para buscar en dispositivos, scripts, alertas, usuarios y configuraciones.",
@@ -994,7 +994,7 @@
           "username": "Nombre de usuario o correo electrónico"
         },
         "help": {
-          "defaultQueue": "Opcional. Se utiliza al crear tickets a partir de alertas Breeze."
+          "defaultQueue": "Opcional. Se utiliza al crear tickets a partir de alertas Nodes Unlimited."
         },
         "keepExisting": "(déjelo en blanco para seguir existiendo)",
         "placeholders": {
@@ -1031,16 +1031,16 @@
         },
         "sync": {
           "autoClose": "Cierre automático de tickets PSA",
-          "autoCloseHelp": "Cierre los tickets vinculados cuando se resuelvan las alertas de Breeze.",
+          "autoCloseHelp": "Cierre los tickets vinculados cuando se resuelvan las alertas de Nodes Unlimited.",
           "enable": "Habilitar sincronización",
           "enableHelp": "Mantenga los tickets y enlaces de alertas actualizados según un cronograma.",
           "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Envíe comentarios y actualizaciones de Breeze a la línea de tiempo del ticket de PSA."
+          "notesHelp": "Envíe comentarios y actualizaciones de Nodes Unlimited a la línea de tiempo del ticket de PSA."
         },
         "syncDirections": {
           "bidirectional": "Bidireccional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
+          "inbound": "PSA → Nodes Unlimited",
+          "outbound": "Nodes Unlimited → PSA"
         },
         "syncIntervals": {
           "daily": "A diario",
@@ -1446,7 +1446,7 @@
           "googleCloud": "Google Nube"
         },
         "oneClickTitle": "Integración Microsoft 365 con un solo clic",
-        "oneClickDescription": "Su instancia Breeze tiene una aplicación Microsoft 365 preconfigurada. Haga clic en \"Otorgar acceso\" para autorizar el acceso de respaldo a su inquilino M365. Un administrador global debe aprobar la solicitud de consentimiento.",
+        "oneClickDescription": "Su instancia Nodes Unlimited tiene una aplicación Microsoft 365 preconfigurada. Haga clic en \"Otorgar acceso\" para autorizar el acceso de respaldo a su inquilino M365. Un administrador global debe aprobar la solicitud de consentimiento.",
         "displayName": "Nombre para mostrar",
         "displayNamePlaceholder": "Microsoft 365",
         "manualDisplayNamePlaceholder": "Mi conexión M365",
@@ -2135,7 +2135,7 @@
         },
         "loading": "Cargando solicitud de autorización…",
         "signInTitle": "Inicie sesión para continuar",
-        "signInDescription": "Debe iniciar sesión en su cuenta Breeze antes de autorizar esta conexión.",
+        "signInDescription": "Debe iniciar sesión en su cuenta Nodes Unlimited antes de autorizar esta conexión.",
         "signInAction": "Iniciar sesión",
         "redirectLoopTitle": "No podemos iniciar sesión",
         "redirectLoopDescription": "Su navegador lo envió de regreso aquí sin una cookie de inicio de sesión. Es posible que se bloqueen las cookies de terceros o el almacenamiento del sitio. Permita las cookies para este sitio e inténtelo nuevamente, o regrese a su cliente MCP y comience de nuevo.",
@@ -2143,10 +2143,10 @@
         "expiredDescription": "Este enlace de autorización ya no es válido. Regrese a su cliente MCP e inicie la conexión nuevamente.",
         "noTenantsTitle": "No hay inquilino disponible",
         "noTenantsDescription": "Su cuenta no es miembro de ningún inquilino asociado, por lo que no puede autorizar una conexión MCP. Pídale a un administrador que lo agregue a un socio antes de continuar.",
-        "consentTitle": "{{displayName}} quiere acceder a su inquilino Breeze",
+        "consentTitle": "{{displayName}} quiere acceder a su inquilino Nodes Unlimited",
         "clientId": "Cliente ID: {{clientId}}",
         "unverifiedLabel": "Integración no verificada",
-        "unverifiedDescription": "Breeze no ha verificado esta integración. Su nombre es autoinformado y podría hacerse pasar por una aplicación confiable. Apruebe solo si inició esta conexión y reconoce el destino de devolución de llamada a continuación.",
+        "unverifiedDescription": "Nodes Unlimited no ha verificado esta integración. Su nombre es autoinformado y podría hacerse pasar por una aplicación confiable. Apruebe solo si inició esta conexión y reconoce el destino de devolución de llamada a continuación.",
         "callbackLabel": "El código de autorización se enviará a:",
         "missingRedirectTitle": "No se puede verificar el destino de la devolución de llamada",
         "missingRedirectDescription": "Esta solicitud de autorización no incluía un destino de devolución de llamada, por lo que no se puede aprobar de forma segura. Regrese a su cliente MCP e inicie la conexión nuevamente.",

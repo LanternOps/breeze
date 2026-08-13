@@ -7,7 +7,7 @@ import (
 )
 
 func TestBinaryPathMatchesAllowedRequiresResolvablePeerPath(t *testing.T) {
-	allowed := filepath.Join(t.TempDir(), "breeze-agent")
+	allowed := filepath.Join(t.TempDir(), "nu-agent")
 	if err := os.WriteFile(allowed, []byte("agent"), 0o755); err != nil {
 		t.Fatalf("write allowed binary: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestBinaryPathMatchesAllowedRequiresResolvablePeerPath(t *testing.T) {
 
 func TestBinaryPathMatchesAllowedResolvesSymlinks(t *testing.T) {
 	dir := t.TempDir()
-	allowed := filepath.Join(dir, "breeze-desktop-helper")
+	allowed := filepath.Join(dir, "nu-desktop-helper")
 	if err := os.WriteFile(allowed, []byte("helper"), 0o755); err != nil {
 		t.Fatalf("write allowed binary: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestBinaryPathMatchesAllowedResolvesSymlinks(t *testing.T) {
 }
 
 // TestAllowedHelperPathsIncludesBackupHelper guards against a regression where
-// the backup helper (breeze-backup / breeze-backup.exe) is missing from the IPC
+// the backup helper (nu-backup / nu-backup.exe) is missing from the IPC
 // peer allowlist. Without it, verifyBinaryPath rejects the backup helper before
 // it can register, and every backup_run command fails with
 // "backup helper failed to connect within 15s".
@@ -44,16 +44,16 @@ func TestAllowedHelperPathsIncludesBackupHelper(t *testing.T) {
 	var hasBackup, hasBackupExe bool
 	for _, p := range paths {
 		switch filepath.Base(p) {
-		case "breeze-backup":
+		case "nu-backup":
 			hasBackup = true
-		case "breeze-backup.exe":
+		case "nu-backup.exe":
 			hasBackupExe = true
 		}
 	}
 	if !hasBackup {
-		t.Errorf("allowedHelperPaths() must include breeze-backup (non-Windows); got %v", paths)
+		t.Errorf("allowedHelperPaths() must include nu-backup (non-Windows); got %v", paths)
 	}
 	if !hasBackupExe {
-		t.Errorf("allowedHelperPaths() must include breeze-backup.exe (Windows); got %v", paths)
+		t.Errorf("allowedHelperPaths() must include nu-backup.exe (Windows); got %v", paths)
 	}
 }

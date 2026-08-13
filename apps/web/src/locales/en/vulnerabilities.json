@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Installs the approved patch for each CVE on {{deviceText}} ({{findingText}}). Findings without an approved, applicable patch are skipped.",
       "accept": "Hides {{findingText}} on {{deviceText}} from the open queue until the date you set. They do not reopen automatically — expiring acceptances surface in the “Accepted, expiring soon” card.",
-      "mitigate": "Marks {{findingText}} on {{deviceText}} mitigated, with your note recorded as the compensating control. Breeze does not change the devices."
+      "mitigate": "Marks {{findingText}} on {{deviceText}} mitigated, with your note recorded as the compensating control. Nodes Unlimited does not change the devices."
     },
     "fields": {
       "reason": "Reason",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "No vulnerability findings yet",
-      "description": "Breeze checks each device's software and OS inventory against known CVEs and queues anything that needs patching, mitigation, or risk acceptance here.",
+      "description": "Nodes Unlimited checks each device's software and OS inventory against known CVEs and queues anything that needs patching, mitigation, or risk acceptance here.",
       "setupHint": "Scanning is off by default — enable it on the Vulnerability tab of a configuration policy.",
       "setupAction": "Set up vulnerability scanning"
     },

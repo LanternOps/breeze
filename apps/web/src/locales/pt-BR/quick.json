@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "O Windows vai perguntar antes de executar",
     "body": "Ao abrir o arquivo, o Windows mostra um aviso perguntando se você permite a execução. O arquivo é assinado digitalmente, então esse aviso mostra um fornecedor: deve aparecer {{publisher}}. Se disser que o fornecedor é desconhecido, ou mostrar um nome que você não esperava, feche o aviso e ligue para quem está ajudando você em vez de continuar.",
-    "publisher": "o fornecedor do Breeze"
+    "publisher": "o fornecedor do Nodes Unlimited"
   },
   "trust": {
     "title": "O que o programa faz",

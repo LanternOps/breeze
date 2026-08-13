@@ -182,8 +182,8 @@ func TestNewCreatesUpdater(t *testing.T) {
 		BackupServerURL: "http://localhost:3002",
 		AuthToken:       secmem.NewSecureString("brz_test"),
 		CurrentVersion:  "0.1.0",
-		BinaryPath:      "/usr/local/bin/breeze-agent",
-		BackupPath:      "/usr/local/bin/breeze-agent.backup",
+		BinaryPath:      "/usr/local/bin/nu-agent",
+		BackupPath:      "/usr/local/bin/nu-agent.backup",
 	}
 	u := New(cfg)
 	if u == nil {
@@ -308,8 +308,8 @@ func TestNormalizePreflightErr_PassesThroughTransient(t *testing.T) {
 
 func TestBackupCurrentBinary(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
-	backupPath := filepath.Join(tmpDir, "breeze-agent.backup")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
+	backupPath := filepath.Join(tmpDir, "nu-agent.backup")
 
 	// Create a "binary"
 	if err := os.WriteFile(binaryPath, []byte("v0.1.0 binary"), 0755); err != nil {
@@ -344,7 +344,7 @@ func TestBackupCurrentBinary(t *testing.T) {
 
 func TestReplaceBinary(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
 	newBinaryPath := filepath.Join(tmpDir, "new-binary")
 
 	// Create current and new binaries
@@ -373,8 +373,8 @@ func TestReplaceBinary(t *testing.T) {
 
 func TestRollback(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
-	backupPath := filepath.Join(tmpDir, "breeze-agent.backup")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
+	backupPath := filepath.Join(tmpDir, "nu-agent.backup")
 
 	// Create current (corrupted) and backup
 	os.WriteFile(binaryPath, []byte("corrupted"), 0755)
@@ -425,9 +425,9 @@ func TestDownloadBinary(t *testing.T) {
 
 			// Return JSON with download info
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/breeze-agent", binaryContent))
+			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/nu-agent", binaryContent))
 
-		case r.URL.Path == "/binary/breeze-agent":
+		case r.URL.Path == "/binary/nu-agent":
 			// Serve the actual binary
 			w.Write(binaryContent)
 
@@ -473,7 +473,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 		Component: "agent",
 		Platform:  manifestPlatform(),
 		Arch:      runtime.GOARCH,
-		URL:       "http://example.invalid/binary/breeze-agent",
+		URL:       "http://example.invalid/binary/nu-agent",
 		Checksum:  hex.EncodeToString(sum[:]),
 		Size:      int64(len(binaryContent)),
 	}
@@ -490,7 +490,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 			if err := json.Unmarshal(payload, &tampered); err != nil {
 				t.Fatal(err)
 			}
-			tampered.URL = "http://" + r.Host + "/binary/breeze-agent"
+			tampered.URL = "http://" + r.Host + "/binary/nu-agent"
 			tamperedPayload, err := json.Marshal(tampered)
 			if err != nil {
 				t.Fatal(err)
@@ -503,7 +503,7 @@ func TestDownloadBinaryRejectsTamperedSignedMetadata(t *testing.T) {
 				ManifestSignature: base64.StdEncoding.EncodeToString(signature),
 				SigningKeyID:      testEmbeddedKeyID,
 			})
-		case r.URL.Path == "/binary/breeze-agent":
+		case r.URL.Path == "/binary/nu-agent":
 			w.Write(binaryContent)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -529,7 +529,7 @@ func TestDownloadBinaryAcceptsSignedReleaseArtifactManifest(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	assetName := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	assetName := "nu-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -574,7 +574,7 @@ func TestDownloadBinaryAcceptsServerRelativeUrlWithMatchingChecksum(t *testing.T
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	assetName := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	assetName := "nu-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 
 	// Signed manifest references the canonical github URL; the API hands back
 	// a server-relative URL pointing at its own proxy route.
@@ -664,9 +664,9 @@ func TestDownloadBinaryRejectsRedirectResponseWithoutSignedManifest(t *testing.T
 				t.Errorf("missing or wrong auth: %s", r.Header.Get("Authorization"))
 			}
 			w.Header().Set("X-Checksum", checksum)
-			w.Header().Set("Location", "/binary/breeze-agent")
+			w.Header().Set("Location", "/binary/nu-agent")
 			w.WriteHeader(http.StatusFound)
-		case r.URL.Path == "/binary/breeze-agent":
+		case r.URL.Path == "/binary/nu-agent":
 			w.Write(binaryContent)
 		default:
 			t.Errorf("unexpected request path: %s", r.URL.Path)
@@ -750,10 +750,10 @@ func TestDownloadBinary_ChecksumMismatchCleansUpTempFile(t *testing.T) {
 			// Manifest is signed against the *intended* bytes' SHA256.
 			json.NewEncoder(w).Encode(signedDownloadInfo(
 				t, "1.0.0", "agent",
-				"http://"+r.Host+"/binary/breeze-agent",
+				"http://"+r.Host+"/binary/nu-agent",
 				intendedContent,
 			))
-		case r.URL.Path == "/binary/breeze-agent":
+		case r.URL.Path == "/binary/nu-agent":
 			// Serve the tampered bytes so the post-write verifyChecksum
 			// inside DownloadBinary fails.
 			w.Write(tamperedContent)
@@ -780,16 +780,16 @@ func TestDownloadBinary_ChecksumMismatchCleansUpTempFile(t *testing.T) {
 
 	// Confirm no temp file was leaked: walk the redirected temp dir.
 	// The only entries should be ones t.TempDir created internally; the
-	// breeze-agent-dev-* file from downloadFromURL must not be present.
+	// nu-agent-dev-* file from downloadFromURL must not be present.
 	entries, err := os.ReadDir(tempRoot)
 	if err != nil {
 		t.Fatalf("failed to read temp dir %s: %v", tempRoot, err)
 	}
 	for _, entry := range entries {
 		// t.TempDir() places per-test subdirs under TMPDIR; allow those,
-		// but no breeze-agent-dev-* leftovers.
+		// but no nu-agent-dev-* leftovers.
 		name := entry.Name()
-		if strings.HasPrefix(name, "breeze-agent-dev-") {
+		if strings.HasPrefix(name, "nu-agent-dev-") {
 			t.Fatalf("temp file leaked after checksum failure: %s", filepath.Join(tempRoot, name))
 		}
 	}
@@ -797,8 +797,8 @@ func TestDownloadBinary_ChecksumMismatchCleansUpTempFile(t *testing.T) {
 
 func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
-	backupPath := filepath.Join(tmpDir, "breeze-agent.backup")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
+	backupPath := filepath.Join(tmpDir, "nu-agent.backup")
 
 	// Create current binary
 	os.WriteFile(binaryPath, []byte("old binary"), 0755)
@@ -808,8 +808,8 @@ func TestEndToEndUpdateWithoutRestart(t *testing.T) {
 		switch {
 		case r.URL.Path == "/api/v1/agent-versions/1.0.0/download":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/breeze-agent", newContent))
-		case r.URL.Path == "/binary/breeze-agent":
+			json.NewEncoder(w).Encode(signedDownloadInfo(t, "1.0.0", "agent", "http://"+r.Host+"/binary/nu-agent", newContent))
+		case r.URL.Path == "/binary/nu-agent":
 			w.Write(newContent)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -974,7 +974,7 @@ func TestVerifyUpdateManifest_AcceptsManifestSignedByPinnedKey(t *testing.T) {
 // assembly — see TestManifestTrustKeys_RejectsMalformedPinnedEntries below.
 
 // TestExpectedReleaseAssetNames_UserHelper covers the component=user-helper
-// branch added by #816. The breeze-user-helper exists only on Windows; other
+// branch added by #816. The nu-user-helper exists only on Windows; other
 // platforms must return an empty allowlist so verifyReleaseArtifactManifest
 // surfaces a clear "no expected asset names" error instead of accidentally
 // accepting an unrelated artifact.
@@ -983,7 +983,7 @@ func TestExpectedReleaseAssetNames_UserHelper(t *testing.T) {
 	got := u.expectedReleaseAssetNames()
 
 	if runtime.GOOS == "windows" {
-		expected := "breeze-user-helper-windows-" + runtime.GOARCH + ".exe"
+		expected := "nu-user-helper-windows-" + runtime.GOARCH + ".exe"
 		if len(got) != 1 {
 			t.Fatalf("expected exactly 1 asset name on windows, got %d (%v)", len(got), got)
 		}
@@ -1008,7 +1008,7 @@ func TestExpectedReleaseAssetNames_Agent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	expected := "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	expected := "nu-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 	if _, ok := got[expected]; !ok {
 		t.Fatalf("expected %q in agent asset name set, got %v", expected, got)
 	}
@@ -1027,7 +1027,7 @@ func TestExpectedReleaseAssetNames_Watchdog(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	expected := "breeze-watchdog-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	expected := "nu-watchdog-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 watchdog asset name on %s, got %d (%v)", runtime.GOOS, len(got), got)
 	}
@@ -1037,7 +1037,7 @@ func TestExpectedReleaseAssetNames_Watchdog(t *testing.T) {
 }
 
 // TestExpectedReleaseAssetNames_Backup covers the component=backup branch.
-// breeze-backup mirrors the watchdog's asset-name shape: per-arch on every
+// nu-backup mirrors the watchdog's asset-name shape: per-arch on every
 // platform, .exe suffix on windows.
 func TestExpectedReleaseAssetNames_Backup(t *testing.T) {
 	u := &Updater{config: &Config{Component: "backup"}}
@@ -1046,7 +1046,7 @@ func TestExpectedReleaseAssetNames_Backup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	expected := "breeze-backup-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	expected := "nu-backup-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 backup asset name on %s, got %d (%v)", runtime.GOOS, len(got), got)
 	}
@@ -1070,7 +1070,7 @@ func TestExpectedReleaseAssetNames_Backup(t *testing.T) {
 func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	// Synthesize a "pre-downloaded user-helper" tempfile. The test owns the
 	// file; UpdateToWithOptions is expected to remove it on update failure.
-	helperTemp, err := os.CreateTemp("", "breeze-user-helper-leak-test-*")
+	helperTemp, err := os.CreateTemp("", "nu-user-helper-leak-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1089,7 +1089,7 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	// misconfigured client and downloadBinary would return that error
 	// instead of "auth token not available", changing what this test proves
 	// without changing whether it passes).
-	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	binaryFile, err := os.CreateTemp("", "nu-agent-bin-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1106,7 +1106,7 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 	err = u.UpdateToWithOptions("9.9.9", UpdateOptions{
 		UserHelper: &BinaryPair{
 			Temp:   helperTempPath,
-			Target: `C:\target\breeze-user-helper.exe`,
+			Target: `C:\target\nu-user-helper.exe`,
 		},
 	})
 	if err == nil {
@@ -1125,7 +1125,7 @@ func TestUpdateToWithOptions_CleansHelperTempOnFailure(t *testing.T) {
 //
 // Ported from the pre-PR-B TestUpdateToWithUserHelper_NoHelperTempPathIsNoOp.
 func TestUpdateToWithOptions_NoUserHelperIsNoOp(t *testing.T) {
-	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	binaryFile, err := os.CreateTemp("", "nu-agent-bin-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1151,7 @@ func TestUpdateToWithOptions_NoUserHelperIsNoOp(t *testing.T) {
 // invocations produce the same observable error (no auth token), confirming
 // the shim doesn't drop arguments or short-circuit.
 func TestUpdateTo_DelegatesToUpdateToWithOptions(t *testing.T) {
-	binaryFile, err := os.CreateTemp("", "breeze-agent-bin-test-*")
+	binaryFile, err := os.CreateTemp("", "nu-agent-bin-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -260,7 +260,7 @@ func TestRunBackupContext_CleanRunStaysCompleted(t *testing.T) {
 // The `partial` status has to survive the backup result payload's oversize
 // degradation tiers (#3001 / PR #3004). The tiers themselves are exercised
 // directly against the real implementation in
-// agent/cmd/breeze-backup/partial_status_bounds_test.go — that is the
+// agent/cmd/nu-backup/partial_status_bounds_test.go — that is the
 // authoritative proof. This test guards the PRODUCING side of the contract,
 // which lives here and which that package cannot reach:
 //

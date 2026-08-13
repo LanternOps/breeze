@@ -6,13 +6,13 @@ AGENT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP_DIR="$(mktemp -d /tmp/breeze-loginwindow-test.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-HELPER_SRC_DEFAULT="/tmp/breeze-desktop-helper"
-HELPER_DST="/usr/local/bin/breeze-desktop-helper"
-USER_PLIST_SRC="$AGENT_DIR/service/launchd/com.breeze.desktop-helper-user.plist"
-USER_PLIST_DST="/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
-LOGIN_PLIST_SRC="$AGENT_DIR/service/launchd/com.breeze.desktop-helper-loginwindow.plist"
-LOGIN_PLIST_DST="/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
-LOG_DIR="/Library/Logs/Breeze"
+HELPER_SRC_DEFAULT="/tmp/nu-desktop-helper"
+HELPER_DST="/usr/local/bin/nu-desktop-helper"
+USER_PLIST_SRC="$AGENT_DIR/service/launchd/com.nodesunlimited.desktop-helper-user.plist"
+USER_PLIST_DST="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist"
+LOGIN_PLIST_SRC="$AGENT_DIR/service/launchd/com.nodesunlimited.desktop-helper-loginwindow.plist"
+LOGIN_PLIST_DST="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist"
+LOG_DIR="/Library/Logs/Nodes Unlimited"
 
 BUILD_HELPER=1
 BOOTSTRAP_USER_HELPER=1
@@ -20,7 +20,7 @@ HELPER_SRC=""
 
 usage() {
     cat <<EOF
-Usage: sudo $0 [--helper-src /path/to/breeze-desktop-helper] [--skip-build] [--skip-bootstrap-user]
+Usage: sudo $0 [--helper-src /path/to/nu-desktop-helper] [--skip-build] [--skip-bootstrap-user]
 
 Stages the dedicated macOS desktop helper and LaunchAgents for login-window testing.
 
@@ -65,17 +65,17 @@ fi
 
 ensure_default_plists() {
     if [ ! -f "$USER_PLIST_SRC" ]; then
-        USER_PLIST_SRC="$TMP_DIR/com.breeze.desktop-helper-user.plist"
+        USER_PLIST_SRC="$TMP_DIR/com.nodesunlimited.desktop-helper-user.plist"
         cat > "$USER_PLIST_SRC" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
+    <string>com.nodesunlimited.desktop-helper-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>user_session</string>
     </array>
@@ -99,17 +99,17 @@ PLIST
     fi
 
     if [ ! -f "$LOGIN_PLIST_SRC" ]; then
-        LOGIN_PLIST_SRC="$TMP_DIR/com.breeze.desktop-helper-loginwindow.plist"
+        LOGIN_PLIST_SRC="$TMP_DIR/com.nodesunlimited.desktop-helper-loginwindow.plist"
         cat > "$LOGIN_PLIST_SRC" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
+    <string>com.nodesunlimited.desktop-helper-loginwindow</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>login_window</string>
     </array>
@@ -138,18 +138,18 @@ ensure_default_plists
 if [ -z "$HELPER_SRC" ]; then
     HELPER_SRC="$HELPER_SRC_DEFAULT"
     if [ "$BUILD_HELPER" -eq 1 ]; then
-        if [ -d "$AGENT_DIR/cmd/breeze-desktop-helper" ]; then
-            echo "Building breeze-desktop-helper to $HELPER_SRC ..."
+        if [ -d "$AGENT_DIR/cmd/nu-desktop-helper" ]; then
+            echo "Building nu-desktop-helper to $HELPER_SRC ..."
             (
                 cd "$AGENT_DIR"
-                go build -o "$HELPER_SRC" ./cmd/breeze-desktop-helper
+                go build -o "$HELPER_SRC" ./cmd/nu-desktop-helper
             )
         elif [ -x "$HELPER_DST" ]; then
             echo "Repo checkout not found; reusing existing helper at $HELPER_DST"
             HELPER_SRC="$HELPER_DST"
         else
             echo "Error: could not find repo source under $AGENT_DIR and no existing helper at $HELPER_DST" >&2
-            echo "Run with --helper-src /path/to/breeze-desktop-helper or from a repo checkout." >&2
+            echo "Run with --helper-src /path/to/nu-desktop-helper or from a repo checkout." >&2
             exit 1
         fi
     fi
@@ -187,9 +187,9 @@ fi
 
 if [ "$BOOTSTRAP_USER_HELPER" -eq 1 ] && [ -n "$CONSOLE_UID" ]; then
     echo "Bootstrapping Aqua helper for console user $CONSOLE_USER (uid $CONSOLE_UID) ..."
-    launchctl bootout "gui/$CONSOLE_UID/com.breeze.desktop-helper-user" >/dev/null 2>&1 || true
+    launchctl bootout "gui/$CONSOLE_UID/com.nodesunlimited.desktop-helper-user" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$CONSOLE_UID" "$USER_PLIST_DST" || true
-    launchctl kickstart -k "gui/$CONSOLE_UID/com.breeze.desktop-helper-user" || true
+    launchctl kickstart -k "gui/$CONSOLE_UID/com.nodesunlimited.desktop-helper-user" || true
 else
     echo "Skipping Aqua helper bootstrap."
 fi
@@ -208,13 +208,13 @@ Current console user:
   UID:         ${CONSOLE_UID:-unknown}
 
 Suggested checks now:
-  1. tail -f /Library/Logs/Breeze/desktop-helper.log
-  2. launchctl print gui/${CONSOLE_UID:-<uid>}/com.breeze.desktop-helper-user
-  3. /usr/local/bin/breeze-desktop-helper probe --context user_session
-  4. /usr/local/bin/breeze-desktop-helper probe --context login_window
+  1. tail -f /Library/Logs/Nodes Unlimited/desktop-helper.log
+  2. launchctl print gui/${CONSOLE_UID:-<uid>}/com.nodesunlimited.desktop-helper-user
+  3. /usr/local/bin/nu-desktop-helper probe --context user_session
+  4. /usr/local/bin/nu-desktop-helper probe --context login_window
 
 For the real login-window test, log out or reboot this Mac and then inspect:
-  - /Library/Logs/Breeze/desktop-helper.log
-  - desktop-helper.log under /Library/Logs/Breeze when writable
+  - /Library/Logs/Nodes Unlimited/desktop-helper.log
+  - desktop-helper.log under /Library/Logs/Nodes Unlimited when writable
   - Breeze device desktopAccess state
 EOF

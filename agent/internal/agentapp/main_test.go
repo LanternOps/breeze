@@ -26,8 +26,8 @@ import (
 
 func TestProcessStartupFieldsContainRoleEvidenceOnly(t *testing.T) {
 	startup := ProcessStartup{
-		Binary:             "breeze-agent.exe",
-		ExecutablePath:     `C:\Program Files\Breeze\breeze-agent.exe`,
+		Binary:             "nu-agent.exe",
+		ExecutablePath:     `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		PID:                42,
 		ParentPID:          4,
 		WindowsSessionID:   7,
@@ -57,8 +57,8 @@ func TestLogProcessStartupEmitsOneStructuredEvent(t *testing.T) {
 	t.Cleanup(func() { logging.Init("text", "info", nil) })
 
 	startup := ProcessStartup{
-		Binary:             "breeze-agent.exe",
-		ExecutablePath:     `C:\Program Files\Breeze\breeze-agent.exe`,
+		Binary:             "nu-agent.exe",
+		ExecutablePath:     `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		PID:                42,
 		ParentPID:          4,
 		WindowsSessionID:   7,
@@ -105,8 +105,8 @@ func TestCachedMainProcessStartupUsesGuardRecord(t *testing.T) {
 	})
 
 	want := ProcessStartup{
-		Binary:           "breeze-agent.exe",
-		ExecutablePath:   `C:\Program Files\Breeze\breeze-agent.exe`,
+		Binary:           "nu-agent.exe",
+		ExecutablePath:   `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		PID:              42,
 		ParentPID:        4,
 		WindowsSessionID: 7,
@@ -879,9 +879,9 @@ func TestWaitForEnrollment_IgnoresTornWrite(t *testing.T) {
 	}
 }
 
-// TestUserHelperRoleDefault locks in the cobra default for `breeze-agent
+// TestUserHelperRoleDefault locks in the cobra default for `nu-agent
 // user-helper --role`. The Windows AgentUserHelper Scheduled Task invokes
-// `breeze-agent user-helper` (historically with no flags) under
+// `nu-agent user-helper` (historically with no flags) under
 // BUILTIN\Users at LeastPrivilege, so the default must be "user". The
 // previous "system" default caused the helper to claim HelperRoleSystem,
 // which the sessionbroker correctly rejected with "system role requires

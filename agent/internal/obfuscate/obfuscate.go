@@ -6,7 +6,7 @@
 // well-known malware names and test strings (e.g. the standard 68-byte AV
 // test-file pattern). When those are plain Go string/[]byte literals they are
 // compiled verbatim into the binary's data section, and antivirus engines then
-// flag breeze-agent.exe / breeze-user-helper.exe as malware (confirmed on
+// flag nu-agent.exe / nu-user-helper.exe as malware (confirmed on
 // VirusTotal). Storing the literals XOR-encoded and
 // decoding them at runtime keeps them out of the binary image while leaving
 // behavior unchanged. The CI guard

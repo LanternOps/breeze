@@ -66,7 +66,7 @@ func IsIdle(configPath string) bool {
 }
 
 // statusPathFrom derives the status file path from the config path.
-// e.g., /Library/Application Support/Breeze/helper_config.yaml -> helper_status.yaml
+// e.g., /Library/Application Support/Nodes Unlimited/helper_config.yaml -> helper_status.yaml
 func statusPathFrom(configPath string) string {
 	dir := filepath.Dir(configPath)
 	return filepath.Join(dir, "helper_status.yaml")

@@ -3,20 +3,20 @@
 # Stops the existing agent service before files are replaced.
 
 # Stop watchdog
-launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
+launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null || true
 
 # Stop existing daemon gracefully
-launchctl bootout system/com.breeze.agent 2>/dev/null || true
+launchctl bootout system/com.nodesunlimited.agent 2>/dev/null || true
 
 # Unload legacy-style if bootout fails (older macOS)
-if [ -f /Library/LaunchDaemons/com.breeze.agent.plist ]; then
-    launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null || true
+if [ -f /Library/LaunchDaemons/com.nodesunlimited.agent.plist ]; then
+    launchctl unload /Library/LaunchDaemons/com.nodesunlimited.agent.plist 2>/dev/null || true
 fi
 
 # Stop existing user helper for all logged-in GUI users
 for uid in $(ps -axo uid= -o comm= | grep -i '[lL]oginwindow' | awk '{print $1}' | sort -u); do
     [ "$uid" = "0" ] && continue
-    launchctl bootout "gui/$uid/com.breeze.agent-user" 2>/dev/null || true
+    launchctl bootout "gui/$uid/com.nodesunlimited.agent-user" 2>/dev/null || true
 done
 
 exit 0

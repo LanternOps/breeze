@@ -31,7 +31,7 @@ func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.role), func(t *testing.T) {
-			got := buildUserHelperCmdLine(`C:\Program Files\Breeze\breeze-agent.exe`, tc.role)
+			got := buildUserHelperCmdLine(`C:\Program Files\Nodes Unlimited\nu-agent.exe`, tc.role)
 			if !strings.Contains(got, tc.wantSubstr) {
 				t.Fatalf("cmdline missing %q: got %q", tc.wantSubstr, got)
 			}
@@ -39,7 +39,7 @@ func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 				t.Fatalf("cmdline missing user-helper subcommand: got %q", got)
 			}
 			// Quoting around the exe path matters — the path contains a space.
-			if !strings.HasPrefix(got, `"C:\Program Files\Breeze\breeze-agent.exe"`) {
+			if !strings.HasPrefix(got, `"C:\Program Files\Nodes Unlimited\nu-agent.exe"`) {
 				t.Fatalf("exe path not quoted: got %q", got)
 			}
 		})
@@ -49,7 +49,7 @@ func TestBuildUserHelperCmdLine_AlwaysExplicitRole(t *testing.T) {
 func TestSpawnedHelperDiagnosticsRetainRoleProvenance(t *testing.T) {
 	helper := &SpawnedHelper{
 		PID:                42,
-		BinaryPath:         `C:\Program Files\Breeze\breeze-agent.exe`,
+		BinaryPath:         `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		CommandMode:        "user-helper",
 		Role:               "user",
 		WindowsSessionID:   7,
@@ -59,7 +59,7 @@ func TestSpawnedHelperDiagnosticsRetainRoleProvenance(t *testing.T) {
 	if helper.CommandMode != "user-helper" || helper.Role != "user" || helper.WindowsSessionID != 7 {
 		t.Fatalf("spawn role provenance = command:%q role:%q session:%d", helper.CommandMode, helper.Role, helper.WindowsSessionID)
 	}
-	if helper.BinaryPath != `C:\Program Files\Breeze\breeze-agent.exe` || !helper.MainBinaryFallback {
+	if helper.BinaryPath != `C:\Program Files\Nodes Unlimited\nu-agent.exe` || !helper.MainBinaryFallback {
 		t.Fatalf("spawn executable provenance = path:%q fallback:%v", helper.BinaryPath, helper.MainBinaryFallback)
 	}
 }

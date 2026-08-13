@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows vous demandera confirmation",
     "body": "À l’ouverture du fichier, Windows affiche une demande de confirmation avant de l’exécuter. Le fichier est signé numériquement : cette demande indique donc un éditeur, et il doit s’agir de {{publisher}}. S’il est indiqué que l’éditeur est inconnu, ou s’il s’agit d’un nom auquel vous ne vous attendiez pas, fermez la fenêtre et appelez la personne qui vous aide au lieu de poursuivre.",
-    "publisher": "l’éditeur de Breeze"
+    "publisher": "l’éditeur de Nodes Unlimited"
   },
   "trust": {
     "title": "Ce que fait le programme",

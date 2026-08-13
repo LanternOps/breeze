@@ -57,7 +57,7 @@ func TestScrubHeaders(t *testing.T) {
 	in := map[string]string{
 		"Authorization": "Bearer abc",
 		"X-Agent-Token": "brz_abcdef",
-		"User-Agent":    "breeze-agent/1.0",
+		"User-Agent":    "nu-agent/1.0",
 		"Cookie":        "session=xyz",
 	}
 	out := scrubHeaders(in)
@@ -70,7 +70,7 @@ func TestScrubHeaders(t *testing.T) {
 	if out["Cookie"] != "[REDACTED]" {
 		t.Errorf("Cookie not redacted: %s", out["Cookie"])
 	}
-	if out["User-Agent"] != "breeze-agent/1.0" {
+	if out["User-Agent"] != "nu-agent/1.0" {
 		t.Errorf("User-Agent should pass through, got: %s", out["User-Agent"])
 	}
 }

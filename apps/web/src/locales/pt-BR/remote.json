@@ -482,7 +482,7 @@
     "title": "Terminal remoto"
   },
   "remoteToolsPage": {
-    "agentRestartingDescription": "O agente Breeze está reiniciando. O dispositivo se reconectará automaticamente...",
+    "agentRestartingDescription": "O agente Nodes Unlimited está reiniciando. O dispositivo se reconectará automaticamente...",
     "agentRestartingTitle": "Agente reiniciando",
     "errors": {
       "createRegistryKey": "Falha ao criar a chave do Registro",

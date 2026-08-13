@@ -45,7 +45,7 @@ func runDscl(args []string) (string, error) {
 
 // ensureIPCGroupScript creates the breeze group if absent, without assuming a
 // fixed GID: it scans the local system GID range for a free slot. Kept as a
-// shell script so the daemon, `breeze-agent service install`,
+// shell script so the daemon, `nu-agent service install`,
 // installer/macos/postinstall and scripts/install/install-darwin.sh all create
 // the group identically.
 const ensureIPCGroupScript = `

@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Installa la patch approvata per ogni CVE su {{deviceText}} ({{findingText}}). I rilevamenti senza una patch approvata e applicabile vengono ignorati.",
       "accept": "Nasconde {{findingText}} su {{deviceText}} dalla coda aperta fino alla data impostata. Non si riaprono automaticamente — le accettazioni in scadenza compaiono nella scheda “Accettati, in scadenza a breve”.",
-      "mitigate": "Contrassegna {{findingText}} su {{deviceText}} come mitigati, registrando la tua nota come controllo compensativo. Breeze non modifica i dispositivi."
+      "mitigate": "Contrassegna {{findingText}} su {{deviceText}} come mitigati, registrando la tua nota come controllo compensativo. Nodes Unlimited non modifica i dispositivi."
     },
     "fields": {
       "reason": "Motivo",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "Ancora nessun rilevamento di vulnerabilità",
-      "description": "Breeze confronta il software e l'inventario del sistema operativo di ogni dispositivo con le CVE note e mette in coda qui ciò che richiede patch, mitigazione o accettazione del rischio.",
+      "description": "Nodes Unlimited confronta il software e l'inventario del sistema operativo di ogni dispositivo con le CVE note e mette in coda qui ciò che richiede patch, mitigazione o accettazione del rischio.",
       "setupHint": "La scansione è disattivata per impostazione predefinita — abilitala nella scheda Vulnerabilità di un criterio di configurazione.",
       "setupAction": "Configura la scansione delle vulnerabilità"
     },

@@ -243,7 +243,7 @@ func repairLogFileMode(file *os.File) error {
 	if isTolerableChmodErrno(err) {
 		if chmodWarnFired.CompareAndSwap(false, true) {
 			fmt.Fprintf(os.Stderr,
-				"breeze-agent: WARNING log file permission repair unsupported on this filesystem (path=%s reason=%s); continuing without chmod 0600\n",
+				"nu-agent: WARNING log file permission repair unsupported on this filesystem (path=%s reason=%s); continuing without chmod 0600\n",
 				file.Name(), err)
 		}
 		return nil

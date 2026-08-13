@@ -14,7 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// WatchdogConfig holds settings for the breeze-watchdog service.
+// WatchdogConfig holds settings for the nu-watchdog service.
 type WatchdogConfig struct {
 	Enabled                 bool          `mapstructure:"enabled" yaml:"enabled"`
 	ProcessCheckInterval    time.Duration `mapstructure:"process_check_interval" yaml:"process_check_interval"`
@@ -99,7 +99,7 @@ type Config struct {
 	BackupS3SecretKey        string   `mapstructure:"backup_s3_secret_key"`
 	BackupVSSEnabled         bool     `mapstructure:"backup_vss_enabled"`          // Windows: VSS shadow copy before backup
 	BackupSystemStateEnabled bool     `mapstructure:"backup_system_state_enabled"` // Collect system state alongside file backup
-	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to breeze-backup helper binary
+	BackupBinaryPath         string   `mapstructure:"backup_binary_path"`          // Path to nu-backup helper binary
 	BackupStagingDir         string   `mapstructure:"backup_staging_dir"`          // Staging directory for Hyper-V exports, MSSQL backups, etc. (empty = OS temp dir)
 
 	// Local vault (SMB share / USB drive) configuration
@@ -233,7 +233,7 @@ type Config struct {
 	PendingMTLSCertificateID string    `mapstructure:"pending_mtls_certificate_id"`
 	PendingMTLSExpiresAt     time.Time `mapstructure:"pending_mtls_expires_at"`
 
-	// Watchdog configuration for the breeze-watchdog service.
+	// Watchdog configuration for the nu-watchdog service.
 	Watchdog WatchdogConfig `mapstructure:"watchdog" yaml:"watchdog"`
 
 	// WorkspaceIndex controls the server-driven workspace indexing loop.
@@ -288,7 +288,7 @@ func defaultLogFile() string {
 	case "windows":
 		return filepath.Join(configDir(), "logs", "agent.log")
 	case "darwin":
-		return "/Library/Application Support/Breeze/logs/agent.log"
+		return "/Library/Application Support/Nodes Unlimited/logs/agent.log"
 	default:
 		return "/var/log/breeze/agent.log"
 	}
@@ -993,7 +993,7 @@ func GetDataDir() string {
 	case "windows":
 		return filepath.Join(configDir(), "data")
 	case "darwin":
-		return "/Library/Application Support/Breeze/data"
+		return "/Library/Application Support/Nodes Unlimited/data"
 	default:
 		return "/var/lib/breeze"
 	}

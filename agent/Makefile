@@ -7,17 +7,30 @@ VERSION ?= 0.5.0
 # self-host/hosted-* edition rules on top of this same -X main.version= base.
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
+# CGO MUST stay off for every target.
+#
+# github.com/shoenig/go-m1cpu (pulled in indirectly by gopsutil/v3) calls into
+# IOKit via cgo during package init to read Apple Silicon CPU registers. It does
+# not recognise M4/M5 silicon and dereferences null, so the agent takes a SIGSEGV
+# in runtime.doInit before a single line of our code runs — it never enrolls and
+# launchd just sees exit status 2. With CGO off, go-m1cpu compiles to its pure-Go
+# stub (returns zeros) and the only thing lost is a CPU-frequency metric.
+#
+# Do not "fix" this by removing the flag. If cgo is ever genuinely needed, migrate
+# gopsutil/v3 -> v4 first: v4 dropped the go-m1cpu dependency entirely.
+export CGO_ENABLED := 0
+
 # Default build for current platform (agent + backup)
 build: build-agent build-desktop-helper build-backup
 
 build-agent:
-	go build $(LDFLAGS) -o bin/breeze-agent ./cmd/breeze-agent
+	go build $(LDFLAGS) -o bin/nu-agent ./cmd/nu-agent
 
 build-desktop-helper:
-	go build $(LDFLAGS) -o bin/breeze-desktop-helper ./cmd/breeze-desktop-helper
+	go build $(LDFLAGS) -o bin/nu-desktop-helper ./cmd/nu-desktop-helper
 
 build-backup:
-	go build $(LDFLAGS) -o bin/breeze-backup ./cmd/breeze-backup
+	go build $(LDFLAGS) -o bin/nu-backup ./cmd/nu-backup
 
 # Build for all platforms
 build-all: build-all-agent build-all-desktop-helper build-all-backup
@@ -25,28 +38,28 @@ build-all: build-all-agent build-all-desktop-helper build-all-backup
 build-all-agent: build-linux build-darwin build-windows
 
 build-all-desktop-helper:
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-desktop-helper-darwin-amd64 ./cmd/breeze-desktop-helper
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-desktop-helper-darwin-arm64 ./cmd/breeze-desktop-helper
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-desktop-helper-darwin-amd64 ./cmd/nu-desktop-helper
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-desktop-helper-darwin-arm64 ./cmd/nu-desktop-helper
 
 build-all-backup:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-linux-amd64 ./cmd/breeze-backup
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-backup-linux-arm64 ./cmd/breeze-backup
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-darwin-amd64 ./cmd/breeze-backup
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-backup-darwin-arm64 ./cmd/breeze-backup
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-backup-windows-amd64.exe ./cmd/breeze-backup
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-backup-linux-amd64 ./cmd/nu-backup
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-backup-linux-arm64 ./cmd/nu-backup
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-backup-darwin-amd64 ./cmd/nu-backup
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-backup-darwin-arm64 ./cmd/nu-backup
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-backup-windows-amd64.exe ./cmd/nu-backup
 
 build-linux:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-linux-amd64 ./cmd/breeze-agent
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-agent-linux-arm64 ./cmd/breeze-agent
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-agent-linux-amd64 ./cmd/nu-agent
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-agent-linux-arm64 ./cmd/nu-agent
 
 build-darwin:
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-amd64 ./cmd/breeze-agent
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-agent-darwin-arm64 ./cmd/breeze-agent
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-agent-darwin-amd64 ./cmd/nu-agent
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-agent-darwin-arm64 ./cmd/nu-agent
 
 build-windows: build-windows-user-helper
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-agent-windows-amd64.exe ./cmd/breeze-agent
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-agent-windows-amd64.exe ./cmd/nu-agent
 
-# build-windows-user-helper builds ./cmd/breeze-user-helper as a GUI-subsystem
+# build-windows-user-helper builds ./cmd/nu-user-helper as a GUI-subsystem
 # PE binary so the scheduled task that launches the user-helper at user logon
 # does not allocate a visible console window. Console-subsystem binaries (the
 # default `go build` output on Windows) get an attached console from the kernel
@@ -54,15 +67,15 @@ build-windows: build-windows-user-helper
 # task XML <Hidden> flag. -H windowsgui flips the PE subsystem byte from 3 to 2;
 # the kernel then allocates no console at all.
 #
-# cmd/breeze-user-helper is a thin wrapper over the same internal/agentapp code
-# as cmd/breeze-agent — same program, same subcommands, same agent.yaml. It
+# cmd/nu-user-helper is a thin wrapper over the same internal/agentapp code
+# as cmd/nu-agent — same program, same subcommands, same agent.yaml. It
 # exists as a separate cmd package solely so it can embed an asInvoker manifest
 # (see build-winres) instead of the agent's requireAdministrator one: the
 # sessionbroker spawns it into the logged-in user's non-elevated session, where
 # a requireAdministrator manifest makes CreateProcessAsUser fail with
 # ERROR_ELEVATION_REQUIRED (#949 regression).
 build-windows-user-helper:
-	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/breeze-user-helper-windows-amd64.exe ./cmd/breeze-user-helper
+	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/nu-user-helper-windows-amd64.exe ./cmd/nu-user-helper
 
 build-winres:
 	@command -v go-winres >/dev/null 2>&1 || (echo "go-winres not found. Install with: go install github.com/tc-hib/go-winres@v0.3.3" && exit 1)
@@ -72,7 +85,7 @@ build-winres:
 	# ("preserve user-modified unversioned files") leaves an existing copy in
 	# place on upgrade or reinstall whenever its on-disk hash differs from the
 	# one captured at MSI build time. The install.log line we kept seeing was:
-	#   File: C:\Program Files\Breeze\breeze-agent.exe;
+	#   File: C:\Program Files\Breeze\nu-agent.exe;
 	#   Won't Overwrite; Won't patch; Existing file is unversioned but modified.
 	# Embedding a FileVersion flips MSI into normal "newer wins" semantics.
 	# See issue #944.
@@ -82,60 +95,60 @@ build-winres:
 	# not in JSON-mode RT_GROUP_ICON entries, and (b) one Makefile line per
 	# binary keeps the source of truth here in the build file instead of
 	# scattered across resources/winres-*.json. The five binaries map to:
-	#   breeze-agent.exe            - admin manifest (matches existing UAC)
-	#   breeze-user-helper.exe      - per-user session, asInvoker (NOT admin: it
+	#   nu-agent.exe            - admin manifest (matches existing UAC)
+	#   nu-user-helper.exe      - per-user session, asInvoker (NOT admin: it
 	#                                 is spawned with the user's filtered token,
 	#                                 so an admin manifest => ELEVATION_REQUIRED)
-	#   breeze-watchdog.exe         - service, asInvoker
-	#   breeze-backup.exe           - launched by agent, asInvoker
-	#   breeze-desktop-helper.exe   - per-user session, asInvoker, GUI manifest
+	#   nu-watchdog.exe         - service, asInvoker
+	#   nu-backup.exe           - launched by agent, asInvoker
+	#   nu-desktop-helper.exe   - per-user session, asInvoker, GUI manifest
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico --admin \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM Agent" \
 		--file-description "Breeze RMM Agent" \
 		--copyright "Copyright (c) Breeze RMM" \
-		--original-filename "breeze-agent.exe" \
-		--out ../cmd/breeze-agent/rsrc_windows_amd64.syso
+		--original-filename "nu-agent.exe" \
+		--out ../cmd/nu-agent/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM User Helper" \
 		--file-description "Breeze RMM User Helper" \
 		--copyright "Copyright (c) Breeze RMM" \
-		--original-filename "breeze-user-helper.exe" \
-		--out ../cmd/breeze-user-helper/rsrc_windows_amd64.syso
+		--original-filename "nu-user-helper.exe" \
+		--out ../cmd/nu-user-helper/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM Watchdog" \
 		--file-description "Breeze RMM Watchdog" \
 		--copyright "Copyright (c) Breeze RMM" \
-		--original-filename "breeze-watchdog.exe" \
-		--out ../cmd/breeze-watchdog/rsrc_windows_amd64.syso
+		--original-filename "nu-watchdog.exe" \
+		--out ../cmd/nu-watchdog/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM Backup Helper" \
 		--file-description "Breeze RMM Backup Helper" \
 		--copyright "Copyright (c) Breeze RMM" \
-		--original-filename "breeze-backup.exe" \
-		--out ../cmd/breeze-backup/rsrc_windows_amd64.syso
+		--original-filename "nu-backup.exe" \
+		--out ../cmd/nu-backup/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix --manifest gui \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
 		--product-name "Breeze RMM Desktop Helper" \
 		--file-description "Breeze RMM Desktop Helper" \
 		--copyright "Copyright (c) Breeze RMM" \
-		--original-filename "breeze-desktop-helper.exe" \
-		--out ../cmd/breeze-desktop-helper/rsrc_windows_amd64.syso
+		--original-filename "nu-desktop-helper.exe" \
+		--out ../cmd/nu-desktop-helper/rsrc_windows_amd64.syso
 
 build-windows-msi: build-winres build-windows
 ifeq ($(OS),Windows_NT)
-	powershell -ExecutionPolicy Bypass -File installer/build-msi.ps1 -Version $(VERSION) -AgentExePath "$(CURDIR)\\bin\\breeze-agent-windows-amd64.exe" -OutputPath "$(CURDIR)\\..\\dist\\breeze-agent.msi"
+	powershell -ExecutionPolicy Bypass -File installer/build-msi.ps1 -Version $(VERSION) -AgentExePath "$(CURDIR)\\bin\\nu-agent-windows-amd64.exe" -OutputPath "$(CURDIR)\\..\\dist\\nu-agent.msi"
 else
 	@echo "build-windows-msi must be run on Windows with wix + PowerShell installed."
-	@echo "Run: pwsh -File agent/installer/build-msi.ps1 -Version $(VERSION) -AgentExePath agent/bin/breeze-agent-windows-amd64.exe -OutputPath dist/breeze-agent.msi"
+	@echo "Run: pwsh -File agent/installer/build-msi.ps1 -Version $(VERSION) -AgentExePath agent/bin/nu-agent-windows-amd64.exe -OutputPath dist/nu-agent.msi"
 	@exit 1
 endif
 
@@ -148,10 +161,10 @@ test:
 # Install locally (requires sudo on Linux/macOS)
 install: build
 ifeq ($(OS),Windows_NT)
-	copy bin\breeze-agent.exe "C:\Program Files\Breeze\breeze-agent.exe"
+	copy bin\nu-agent.exe "C:\Program Files\Breeze\nu-agent.exe"
 else
 	sudo mkdir -p /usr/local/bin
-	sudo cp bin/breeze-agent /usr/local/bin/breeze-agent
+	sudo cp bin/nu-agent /usr/local/bin/nu-agent
 endif
 
 # Install as system service (requires sudo)
@@ -174,27 +187,27 @@ endif
 
 # Development run
 run:
-	go run ./cmd/breeze-agent start
+	go run ./cmd/nu-agent start
 
 # Run user helper (for development)
 run-user-helper:
-	go run ./cmd/breeze-user-helper user-helper
+	go run ./cmd/nu-user-helper user-helper
 
 # Install user helper service files (requires sudo on Linux/macOS)
 install-user-helper:
 ifeq ($(shell uname -s),Darwin)
-	sudo cp service/launchd/com.breeze.agent-user.plist /Library/LaunchAgents/
-	sudo chown root:wheel /Library/LaunchAgents/com.breeze.agent-user.plist
-	sudo chmod 644 /Library/LaunchAgents/com.breeze.agent-user.plist
+	sudo cp service/launchd/com.nodesunlimited.agent-user.plist /Library/LaunchAgents/
+	sudo chown root:wheel /Library/LaunchAgents/com.nodesunlimited.agent-user.plist
+	sudo chmod 644 /Library/LaunchAgents/com.nodesunlimited.agent-user.plist
 	@echo "LaunchAgent installed. Users will get the helper at next login."
 else ifeq ($(shell uname -s),Linux)
 	sudo mkdir -p /usr/lib/systemd/user
-	sudo cp service/systemd/breeze-agent-user.service /usr/lib/systemd/user/
-	sudo chmod 644 /usr/lib/systemd/user/breeze-agent-user.service
-	sudo cp service/xdg/breeze-agent-user.desktop /etc/xdg/autostart/
-	sudo chmod 644 /etc/xdg/autostart/breeze-agent-user.desktop
+	sudo cp service/systemd/nu-agent-user.service /usr/lib/systemd/user/
+	sudo chmod 644 /usr/lib/systemd/user/nu-agent-user.service
+	sudo cp service/xdg/nu-agent-user.desktop /etc/xdg/autostart/
+	sudo chmod 644 /etc/xdg/autostart/nu-agent-user.desktop
 	@echo "Systemd user unit + XDG autostart installed."
-	@echo "Users: systemctl --user enable breeze-agent-user"
+	@echo "Users: systemctl --user enable nu-agent-user"
 else
 	@echo "Windows: run scripts/install/install-windows.ps1 as Administrator"
 endif
@@ -262,11 +275,11 @@ endif
 	$(eval BUILD_GOARCH := $(shell go env GOARCH))
 	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
 	@echo "Building for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
-	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-agent-dev ./cmd/breeze-agent
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/nu-agent-dev ./cmd/nu-agent
 ifneq ($(CODESIGN_IDENTITY),)
 ifeq ($(TARGET_GOOS),darwin)
 	@echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-agent-dev
+	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/nu-agent-dev
 endif
 endif
 	@echo "Uploading binary to API..."
@@ -274,23 +287,23 @@ endif
 		-H "$(AUTH_HEADER)" \
 		-F "agentId=$(DEVICE)" \
 		-F "version=$(DEV_VERSION)" \
-		-F "binary=@bin/breeze-agent-dev" | python3 -m json.tool
+		-F "binary=@bin/nu-agent-dev" | python3 -m json.tool
 	@echo "Dev push complete — agent will restart with $(DEV_VERSION)"
 
 # Watchdog targets
 build-watchdog:
-	go build $(LDFLAGS) -o bin/breeze-watchdog ./cmd/breeze-watchdog
+	go build $(LDFLAGS) -o bin/nu-watchdog ./cmd/nu-watchdog
 
 build-watchdog-linux:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-linux-amd64 ./cmd/breeze-watchdog
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-watchdog-linux-arm64 ./cmd/breeze-watchdog
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-watchdog-linux-amd64 ./cmd/nu-watchdog
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-watchdog-linux-arm64 ./cmd/nu-watchdog
 
 build-watchdog-darwin:
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-darwin-amd64 ./cmd/breeze-watchdog
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/breeze-watchdog-darwin-arm64 ./cmd/breeze-watchdog
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-watchdog-darwin-amd64 ./cmd/nu-watchdog
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-watchdog-darwin-arm64 ./cmd/nu-watchdog
 
 build-watchdog-windows:
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/breeze-watchdog-windows-amd64.exe ./cmd/breeze-watchdog
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-watchdog-windows-amd64.exe ./cmd/nu-watchdog
 
 # Dev push watchdog: build + upload watchdog binary to API + trigger watchdog update
 # Usage: make dev-push-watchdog [DEVICE=<deviceId>] [API_URL=...] [AUTH_TOKEN=...]
@@ -314,11 +327,11 @@ endif
 	$(eval BUILD_GOARCH := $(shell go env GOARCH))
 	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
 	@echo "Building watchdog for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
-	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-watchdog-dev ./cmd/breeze-watchdog
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/nu-watchdog-dev ./cmd/nu-watchdog
 ifneq ($(CODESIGN_IDENTITY),)
 ifeq ($(TARGET_GOOS),darwin)
 	@echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-watchdog-dev
+	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/nu-watchdog-dev
 endif
 endif
 	@echo "Uploading watchdog binary to API..."
@@ -327,7 +340,7 @@ endif
 		-F "agentId=$(DEVICE)" \
 		-F "version=$(DEV_VERSION)" \
 		-F "component=watchdog" \
-		-F "binary=@bin/breeze-watchdog-dev" | python3 -m json.tool
+		-F "binary=@bin/nu-watchdog-dev" | python3 -m json.tool
 	@echo "Dev push watchdog complete — watchdog will restart with $(DEV_VERSION)"
 
 # Dev push both agent and watchdog in sequence
@@ -357,10 +370,10 @@ endif
 	$(eval BUILD_GOARCH := $(shell go env GOARCH))
 	$(eval CGO_FLAG := $(if $(and $(filter $(BUILD_GOOS),$(TARGET_GOOS)),$(filter $(BUILD_GOARCH),$(TARGET_GOARCH))),,CGO_ENABLED=0))
 	@echo "Building desktop-helper for $(TARGET_GOOS)/$(TARGET_GOARCH) version=$(DEV_VERSION) (cgo=$(if $(CGO_FLAG),off,on))..."
-	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/breeze-desktop-helper-dev ./cmd/breeze-desktop-helper
+	GOOS=$(TARGET_GOOS) GOARCH=$(TARGET_GOARCH) $(CGO_FLAG) go build -ldflags "-X main.version=$(DEV_VERSION)" -o bin/nu-desktop-helper-dev ./cmd/nu-desktop-helper
 ifneq ($(CODESIGN_IDENTITY),)
 	@echo "Codesigning with identity '$(CODESIGN_IDENTITY)'..."
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/breeze-desktop-helper-dev
+	codesign --force --sign "$(CODESIGN_IDENTITY)" --options runtime --timestamp=none --entitlements dev-entitlements.plist bin/nu-desktop-helper-dev
 endif
 	@echo "Uploading desktop-helper binary to API..."
 	@curl -sf -X POST "$(API_URL)/api/v1/dev/push" \
@@ -368,5 +381,5 @@ endif
 		-F "agentId=$(DEVICE)" \
 		-F "version=$(DEV_VERSION)" \
 		-F "component=desktop-helper" \
-		-F "binary=@bin/breeze-desktop-helper-dev" | python3 -m json.tool
+		-F "binary=@bin/nu-desktop-helper-dev" | python3 -m json.tool
 	@echo "Dev push desktop-helper complete — helper will be kickstarted with $(DEV_VERSION)"

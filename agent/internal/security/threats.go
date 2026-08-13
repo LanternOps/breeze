@@ -43,7 +43,7 @@ type threatSignature struct {
 // and decoded lazily on first use. The signature names, filename patterns, and
 // content patterns are well-known malware/test-file tokens; as plain Go
 // literals they get compiled verbatim into the shipped binaries and AV engines
-// then flag breeze-agent.exe / breeze-user-helper.exe (issue #2797, confirmed
+// then flag nu-agent.exe / nu-user-helper.exe (issue #2797, confirmed
 // on VirusTotal). The entire table is encoded uniformly so
 // reviewers don't have to judge which tokens are "distinctive enough". The CI
 // guard scripts/security/check-agent-binary-signatures.sh checks built

@@ -187,15 +187,15 @@ func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
 // of the agent's own daemon + binary to a detached shell.
 func prepareSelfUninstallDarwin(removeConfig bool) error {
 	const (
-		label            = "com.breeze.agent"
-		userLabel        = "com.breeze.agent-user"
-		watchdogLabel    = "com.breeze.watchdog"
-		plistDst         = "/Library/LaunchDaemons/com.breeze.agent.plist"
-		userPlistDst     = "/Library/LaunchAgents/com.breeze.agent-user.plist"
-		watchdogPlistDst = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
-		binaryPath       = "/usr/local/bin/breeze-agent"
-		watchdogBinary   = "/usr/local/bin/breeze-watchdog"
-		configDir        = "/Library/Application Support/Breeze"
+		label            = "com.nodesunlimited.agent"
+		userLabel        = "com.nodesunlimited.agent-user"
+		watchdogLabel    = "com.nodesunlimited.watchdog"
+		plistDst         = "/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
+		userPlistDst     = "/Library/LaunchAgents/com.nodesunlimited.agent-user.plist"
+		watchdogPlistDst = "/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
+		binaryPath       = "/usr/local/bin/nu-agent"
+		watchdogBinary   = "/usr/local/bin/nu-watchdog"
+		configDir        = "/Library/Application Support/Nodes Unlimited"
 	)
 
 	// Watchdog FIRST — it must be gone before anything stops the agent, or it
@@ -226,7 +226,7 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 	script := buildDarwinUninstallScript(darwinUninstallScriptOptions{
 		Label:           label,
 		WatchdogLabel:   watchdogLabel,
-		WatchdogProcess: "breeze-watchdog",
+		WatchdogProcess: "nu-watchdog",
 		PlistPath:       plistDst,
 		BinaryPath:      binaryPath,
 		ConfigDir:       configDir,
@@ -281,14 +281,14 @@ func buildLinuxUninstallScript(opts linuxUninstallScriptOptions) string {
 // the agent's own unit + binary to a detached shell.
 func prepareSelfUninstallLinux(removeConfig bool) error {
 	const (
-		serviceName     = "breeze-agent"
-		watchdogService = "breeze-watchdog"
-		unitDst         = "/etc/systemd/system/breeze-agent.service"
-		watchdogUnitDst = "/etc/systemd/system/breeze-watchdog.service"
-		userUnitDst     = "/usr/lib/systemd/user/breeze-agent-user.service"
-		binaryPath      = "/usr/local/bin/breeze-agent"
-		watchdogBinary  = "/usr/local/bin/breeze-watchdog"
-		configDir       = "/etc/breeze"
+		serviceName     = "nu-agent"
+		watchdogService = "nu-watchdog"
+		unitDst         = "/etc/systemd/system/nu-agent.service"
+		watchdogUnitDst = "/etc/systemd/system/nu-watchdog.service"
+		userUnitDst     = "/usr/lib/systemd/user/nu-agent-user.service"
+		binaryPath      = "/usr/local/bin/nu-agent"
+		watchdogBinary  = "/usr/local/bin/nu-watchdog"
+		configDir       = "/etc/nodesunlimited"
 	)
 
 	// Watchdog FIRST (see prepareSelfUninstallDarwin).
@@ -312,8 +312,8 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 	// removal) runs from a detached helper after we exit.
 	//
 	// CRITICAL: Setsid alone is NOT enough on Linux. A Setsid'd child still
-	// lives in the breeze-agent.service CGROUP, and the unit runs
-	// KillMode=mixed — when `systemctl stop breeze-agent` runs, systemd
+	// lives in the nu-agent.service CGROUP, and the unit runs
+	// KillMode=mixed — when `systemctl stop nu-agent` runs, systemd
 	// SIGTERMs the main process and then SIGKILLs every remaining process in
 	// the cgroup at TimeoutStopSec (see internal/agentapp/systemd_unit.go), so
 	// a plain /bin/sh helper would die mid-script right after issuing the stop
@@ -325,7 +325,7 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 	script := buildLinuxUninstallScript(linuxUninstallScriptOptions{
 		ServiceName:     serviceName,
 		WatchdogService: watchdogService,
-		WatchdogProcess: "breeze-watchdog",
+		WatchdogProcess: "nu-watchdog",
 		UnitPath:        unitDst,
 		BinaryPath:      binaryPath,
 		ConfigDir:       configDir,
@@ -387,7 +387,7 @@ func buildWindowsUninstallScript(opts windowsUninstallScriptOptions) string {
 		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.WatchdogServiceName)),
 		fmt.Sprintf("Stop-Service -Name '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.ServiceName)),
 		fmt.Sprintf("sc.exe delete '%s' | Out-Null", psQuote(opts.ServiceName)),
-		"Get-Process -Name 'breeze-agent','breeze-user-helper','breeze-desktop-helper','breeze-watchdog' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
+		"Get-Process -Name 'nu-agent','nu-user-helper','nu-desktop-helper','nu-watchdog' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue",
 		"Start-Sleep -Seconds 1",
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.WatchdogBinaryPath)),
 		fmt.Sprintf("Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue", psQuote(opts.AgentBinaryPath)),
@@ -461,7 +461,7 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 		AgentBinaryPath:     exePath,
 		// The watchdog is installed as a sibling of the agent binary (see
 		// serviceinstall.InstallProtectedBinary / sessionbroker allowlist).
-		WatchdogBinaryPath: filepath.Join(filepath.Dir(exePath), "breeze-watchdog.exe"),
+		WatchdogBinaryPath: filepath.Join(filepath.Dir(exePath), "nu-watchdog.exe"),
 		ConfigDir:          configDir,
 		RemoveConfig:       removeConfig,
 		DelaySeconds:       uninstallHelperDelaySeconds,

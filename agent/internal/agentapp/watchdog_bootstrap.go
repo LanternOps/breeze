@@ -23,9 +23,9 @@ const watchdogReleasesBase = "https://github.com/LanternOps/breeze/releases/down
 // watchdogBinaryName returns the filename for the watchdog binary on the given GOOS.
 func watchdogBinaryName(goos string) string {
 	if goos == "windows" {
-		return "breeze-watchdog.exe"
+		return "nu-watchdog.exe"
 	}
-	return "breeze-watchdog"
+	return "nu-watchdog"
 }
 
 // watchdogDownloadURL returns the GitHub release download URL for the watchdog
@@ -35,7 +35,7 @@ func watchdogDownloadURL(version, goos, goarch string) string {
 	if goos == "windows" {
 		ext = ".exe"
 	}
-	return fmt.Sprintf("%s/v%s/breeze-watchdog-%s-%s%s",
+	return fmt.Sprintf("%s/v%s/nu-watchdog-%s-%s%s",
 		watchdogReleasesBase, version, goos, goarch, ext)
 }
 
@@ -188,7 +188,7 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 	watchdogPath, ok := locateSiblingWatchdog(opts.agentPath)
 	if !ok {
 		if opts.version == "" || opts.version == "dev" || strings.HasPrefix(opts.version, "dev-") {
-			return fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `breeze-watchdog service install` manually", opts.version)
+			return fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `nu-watchdog service install` manually", opts.version)
 		}
 		url := opts.urlOverride
 		if url == "" {

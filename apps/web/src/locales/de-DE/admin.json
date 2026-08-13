@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Kontolöschanträge",
-      "description": "Benutzer in Ihrem Mandanten, die die Löschung ihres Breeze-Kontos beantragt haben. Genehmigen Sie Anträge, um sie zur Verarbeitung einzureihen, oder lehnen Sie sie mit einer Begründung ab.",
+      "description": "Benutzer in Ihrem Mandanten, die die Löschung ihres Nodes Unlimited-Kontos beantragt haben. Genehmigen Sie Anträge, um sie zur Verarbeitung einzureihen, oder lehnen Sie sie mit einer Begründung ab.",
       "filterLabel": "Nach Status filtern",
       "refresh": "Aktualisieren",
       "retry": "Erneut versuchen",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Drittanbieter-Paketkatalog",
-      "description": "Von Breeze kuratierte Metadaten für Drittanbietersoftware, die von winget auf Agents erkannt wurde.",
+      "description": "Von Nodes Unlimited kuratierte Metadaten für Drittanbietersoftware, die von winget auf Agents erkannt wurde.",
       "totalEntries": "Einträge insgesamt:",
       "refresh": "Aktualisieren",
       "addPackage": "Paket hinzufügen",
       "searchPlaceholder": "Nach Name, Anbieter oder winget-ID suchen…",
-      "breezeTestedOnly": "Nur von Breeze getestet",
-      "breezeTested": "Von Breeze getestet",
+      "breezeTestedOnly": "Nur von Nodes Unlimited getestet",
+      "breezeTested": "Von Nodes Unlimited getestet",
       "dismiss": "Schließen",
       "loading": "Katalog wird geladen…",
       "empty": "Keine Katalogeinträge entsprechen den aktuellen Filtern.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Zugriff als Plattformadministrator erforderlich",
-        "prefix": "Der Drittanbieter-Katalog wird von Breeze-Plattformadministratoren verwaltet. Ihr Konto ",
+        "prefix": "Der Drittanbieter-Katalog wird von Nodes Unlimited-Plattformadministratoren verwaltet. Ihr Konto ",
         "role": "als Organisations-/Partneradministrator",
         "suffix": "kann den kuratierten Katalog über die regulären Patch-Abläufe anzeigen, aber nicht direkt bearbeiten."
       },
@@ -310,7 +310,7 @@
         "vendor": "Anbieter",
         "friendlyName": "Anzeigename",
         "defaultSeverity": "Standardschweregrad",
-        "breezeTested": "Von Breeze getestet",
+        "breezeTested": "Von Nodes Unlimited getestet",
         "homepageUrl": "Homepage-URL",
         "notes": "Anmerkungen"
       },

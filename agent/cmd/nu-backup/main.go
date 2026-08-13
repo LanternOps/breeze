@@ -1,5 +1,5 @@
-// Package main is the entry point for the breeze-backup helper binary.
-// It is spawned on demand by the main breeze-agent when backup commands
+// Package main is the entry point for the nu-backup helper binary.
+// It is spawned on demand by the main nu-agent when backup commands
 // arrive, connects to the agent over IPC, and owns all heavy backup
 // dependencies (cloud SDKs, VSS COM, MSSQL, Hyper-V).
 package main
@@ -36,7 +36,7 @@ import (
 var version = "dev"
 
 var rootCmd = &cobra.Command{
-	Use:   "breeze-backup",
+	Use:   "nu-backup",
 	Short: "NODES UNLIMITED AGENT Backup Helper",
 	Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
 	Run:   func(cmd *cobra.Command, args []string) { runBackupHelper() },
@@ -92,8 +92,8 @@ func (c *activeCommandCanceller) cancelAll() bool {
 func init() {
 	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
 
-	// Stable, parseable `breeze-backup --version` output, mirroring the
-	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
+	// Stable, parseable `nu-backup --version` output, mirroring the
+	// watchdog's "Watchdog Version:" line (cmd/nu-watchdog). The heartbeat's
 	// installedBackupVersion() execs this binary and parses the same prefix.
 	rootCmd.Version = version
 	rootCmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
@@ -108,7 +108,7 @@ func main() {
 // initLogging wires this process into the agent's logging stack: a rotating
 // file at <logdir>/backup.log plus the shared log shipper.
 //
-// Until this existed, breeze-backup relied on the package-level slog default
+// Until this existed, nu-backup relied on the package-level slog default
 // (stdout) and the backup packages used stdlib log.Printf (stderr). The agent
 // spawns us with inherited stdio (sessionbroker/backup.go), which under a
 // Windows service or a launchd daemon is NUL — so every line a backup run
@@ -188,7 +188,7 @@ func runBackupHelper() {
 	if cfgErr != nil {
 		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
 	}
-	log.Info("breeze-backup starting",
+	log.Info("nu-backup starting",
 		"version", version,
 		"pid", os.Getpid(),
 		"platform", runtime.GOOS,
@@ -248,7 +248,7 @@ func runBackupHelper() {
 	if mgr != nil {
 		mgr.Stop()
 	}
-	log.Info("breeze-backup exiting")
+	log.Info("nu-backup exiting")
 	stopLogging()
 }
 

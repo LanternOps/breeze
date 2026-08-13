@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Installiert den genehmigten Patch für jeden CVE auf {{deviceText}} ({{findingText}}). Befunde ohne genehmigten, anwendbaren Patch werden übersprungen.",
       "accept": "Versteckt {{findingText}} auf {{deviceText}} aus der offenen Warteschlange bis zu dem von Ihnen festgelegten Datum. Sie werden nicht automatisch wieder geöffnet – ablaufende Annahmen werden auf der Karte „Akzeptiert, läuft bald ab“ angezeigt.",
-      "mitigate": "Markiert {{findingText}} auf {{deviceText}} gemildert, wobei Ihre Notiz als kompensierende Kontrolle aufgezeichnet wird. Breeze verändert die Geräte nicht."
+      "mitigate": "Markiert {{findingText}} auf {{deviceText}} gemildert, wobei Ihre Notiz als kompensierende Kontrolle aufgezeichnet wird. Nodes Unlimited verändert die Geräte nicht."
     },
     "fields": {
       "reason": "Grund",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "Noch keine Schwachstellenbefunde",
-      "description": "Breeze vergleicht den Software- und Betriebssystembestand jedes Geräts mit bekannten CVEs und stellt hier alles in die Warteschlange, was Patches, Abhilfemaßnahmen oder Risikoakzeptanz erfordert.",
+      "description": "Nodes Unlimited vergleicht den Software- und Betriebssystembestand jedes Geräts mit bekannten CVEs und stellt hier alles in die Warteschlange, was Patches, Abhilfemaßnahmen oder Risikoakzeptanz erfordert.",
       "setupHint": "Das Scannen ist standardmäßig deaktiviert – aktivieren Sie es auf der Registerkarte „Schwachstelle“ einer Konfigurationsrichtlinie.",
       "setupAction": "Richten Sie das Scannen auf Schwachstellen ein"
     },

@@ -10,7 +10,7 @@ import (
 )
 
 // installAndRestartWatchdog downloads the verified watchdog binary, swaps it in
-// place, and restarts the breeze-watchdog systemd service so the new binary is
+// place, and restarts the nu-watchdog systemd service so the new binary is
 // re-exec'd. The agent runs as root, so it has rights over /usr/local/bin and
 // systemctl.
 func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
@@ -24,8 +24,8 @@ func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 		return err
 	}
 
-	if out, err := exec.Command("systemctl", "restart", "breeze-watchdog").CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl restart breeze-watchdog: %s: %w", strings.TrimSpace(string(out)), err)
+	if out, err := exec.Command("systemctl", "restart", "nu-watchdog").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl restart nu-watchdog: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

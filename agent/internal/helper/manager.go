@@ -233,7 +233,7 @@ func DefaultBinaryPath() string {
 func defaultBaseDir() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/Library/Application Support/Breeze"
+		return "/Library/Application Support/Nodes Unlimited"
 	case "windows":
 		pd := os.Getenv("ProgramData")
 		if pd == "" {
@@ -241,7 +241,7 @@ func defaultBaseDir() string {
 		}
 		return filepath.Join(pd, "Breeze")
 	default:
-		return "/etc/breeze"
+		return "/etc/nodesunlimited"
 	}
 }
 

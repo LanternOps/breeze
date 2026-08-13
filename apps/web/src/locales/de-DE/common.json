@@ -496,7 +496,7 @@
     },
     "approval": {
       "title": "Genehmigungsablauf testen",
-      "description": "Senden Sie eine Sandbox-Genehmigungs-Push-Nachricht an Ihre eigenen Breeze Mobile-Geräte. Beim Antippen übernimmt der Genehmigungsbildschirm 60 Sekunden lang Ihr Mobilgerät. Durch Genehmigen oder Ablehnen wird keine reale Aktion ausgeführt; der Ablauf dient ausschließlich Testzwecken.",
+      "description": "Senden Sie eine Sandbox-Genehmigungs-Push-Nachricht an Ihre eigenen Nodes Unlimited Mobile-Geräte. Beim Antippen übernimmt der Genehmigungsbildschirm 60 Sekunden lang Ihr Mobilgerät. Durch Genehmigen oder Ablehnen wird keine reale Aktion ausgeführt; der Ablauf dient ausschließlich Testzwecken.",
       "sendTitle": "Testgenehmigung an Ihr Mobilgerät senden",
       "sendDescription": "Die Push-Nachricht wird innerhalb weniger Sekunden zugestellt. Wenn Sie nicht reagieren, läuft die Genehmigung nach 60 Sekunden automatisch ab.",
       "sending": "Wird gesendet…",
@@ -505,7 +505,7 @@
       "delivered": "Push-Nachricht an {{sent}} von {{count}} registrierten Geräten zugestellt. Die Genehmigung läuft in 60 Sekunden ab.",
       "delivered_one": "Push-Nachricht an {{sent}} von {{count}} registriertem Gerät zugestellt. Die Genehmigung läuft in 60 Sekunden ab.",
       "delivered_other": "Push-Nachricht an {{sent}} von {{count}} registrierten Geräten zugestellt. Die Genehmigung läuft in 60 Sekunden ab.",
-      "noDevices": "Für Ihr Konto ist kein registriertes Breeze Mobile-Gerät vorhanden. Melden Sie sich mindestens einmal bei der App an und versuchen Sie es erneut.",
+      "noDevices": "Für Ihr Konto ist kein registriertes Nodes Unlimited Mobile-Gerät vorhanden. Melden Sie sich mindestens einmal bei der App an und versuchen Sie es erneut.",
       "tip": "Tipp: Diese Seite kann bedenkenlos mit Prüfern des App Store geteilt werden. Sie können sich mit dem bereitgestellten Testkonto anmelden, auf die Schaltfläche klicken und den vollständigen Genehmigungsablauf prüfen.",
       "errors": {
         "send": "Die Testgenehmigung konnte nicht gesendet werden. Bitte versuchen Sie es erneut."
@@ -538,9 +538,9 @@
     },
     "devices": {
       "title": "Vertrauenswürdige Geräte",
-      "description": "Mobiltelefone und Tablets, die Sie mit der Breeze Mobile-App gekoppelt haben. Diese Geräte können in Ihrem Namen MCP-Anfragen mit hohem Risiko genehmigen. Widerrufen Sie nicht mehr verwendete Geräte.",
+      "description": "Mobiltelefone und Tablets, die Sie mit der Nodes Unlimited Mobile-App gekoppelt haben. Diese Geräte können in Ihrem Namen MCP-Anfragen mit hohem Risiko genehmigen. Widerrufen Sie nicht mehr verwendete Geräte.",
       "empty": "Keine gekoppelten Geräte",
-      "emptyDescription": "Installieren Sie die Breeze Mobile-App und melden Sie sich an, um ein Gerät zu koppeln. Genehmigungen werden anschließend auf Ihrem Mobilgerät angezeigt.",
+      "emptyDescription": "Installieren Sie die Nodes Unlimited Mobile-App und melden Sie sich an, um ein Gerät zu koppeln. Genehmigungen werden anschließend auf Ihrem Mobilgerät angezeigt.",
       "thisDevice": "Dieses Gerät",
       "blocked": "Gesperrt",
       "platform": "Plattform",
@@ -650,7 +650,7 @@
       }
     },
     "search": {
-      "prompt": "Breeze durchsuchen",
+      "prompt": "Nodes Unlimited durchsuchen",
       "placeholder": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen…",
       "searching": "Wird gesucht…",
       "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen zu durchsuchen.",
@@ -994,7 +994,7 @@
           "username": "Benutzername oder E-Mail-Adresse"
         },
         "help": {
-          "defaultQueue": "Optional. Wird beim Erstellen von Tickets aus Breeze-Warnmeldungen verwendet."
+          "defaultQueue": "Optional. Wird beim Erstellen von Tickets aus Nodes Unlimited-Warnmeldungen verwendet."
         },
         "keepExisting": "(leer lassen, um den vorhandenen Wert beizubehalten)",
         "placeholders": {
@@ -1031,16 +1031,16 @@
         },
         "sync": {
           "autoClose": "PSA-Tickets automatisch schließen",
-          "autoCloseHelp": "Verknüpfte Tickets schließen, wenn Breeze-Warnmeldungen behoben wurden.",
+          "autoCloseHelp": "Verknüpfte Tickets schließen, wenn Nodes Unlimited-Warnmeldungen behoben wurden.",
           "enable": "Synchronisierung aktivieren",
           "enableHelp": "Tickets und Warnmeldungsverknüpfungen nach Zeitplan aktuell halten.",
           "notes": "Warnmeldungsnotizen synchronisieren",
-          "notesHelp": "Breeze-Kommentare und -Aktualisierungen an die PSA-Ticket-Zeitleiste übertragen."
+          "notesHelp": "Nodes Unlimited-Kommentare und -Aktualisierungen an die PSA-Ticket-Zeitleiste übertragen."
         },
         "syncDirections": {
           "bidirectional": "Bidirektional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
+          "inbound": "PSA → Nodes Unlimited",
+          "outbound": "Nodes Unlimited → PSA"
         },
         "syncIntervals": {
           "daily": "Täglich",
@@ -1446,7 +1446,7 @@
           "googleCloud": "Google Cloud"
         },
         "oneClickTitle": "Microsoft 365-Integration mit einem Klick",
-        "oneClickDescription": "Ihre Breeze-Instanz verfügt über eine vorkonfigurierte Microsoft 365-App. Klicken Sie auf „Zugriff gewähren“, um den Backup-Zugriff auf Ihren M365-Mandanten zu autorisieren. Ein globaler Administrator muss die Einwilligungsaufforderung genehmigen.",
+        "oneClickDescription": "Ihre Nodes Unlimited-Instanz verfügt über eine vorkonfigurierte Microsoft 365-App. Klicken Sie auf „Zugriff gewähren“, um den Backup-Zugriff auf Ihren M365-Mandanten zu autorisieren. Ein globaler Administrator muss die Einwilligungsaufforderung genehmigen.",
         "displayName": "Anzeigename",
         "displayNamePlaceholder": "Microsoft 365",
         "manualDisplayNamePlaceholder": "Meine M365-Verbindung",
@@ -2135,7 +2135,7 @@
         },
         "loading": "Autorisierungsanfrage wird geladen…",
         "signInTitle": "Melden Sie sich an, um fortzufahren",
-        "signInDescription": "Sie müssen sich bei Ihrem Breeze-Konto anmelden, bevor Sie diese Verbindung autorisieren.",
+        "signInDescription": "Sie müssen sich bei Ihrem Nodes Unlimited-Konto anmelden, bevor Sie diese Verbindung autorisieren.",
         "signInAction": "Melden Sie sich an",
         "redirectLoopTitle": "Wir können Sie nicht anmelden",
         "redirectLoopDescription": "Ihr Browser hat Sie ohne Anmelde-Cookie hierher zurückgeschickt. Cookies oder Standort-Speicher von Drittanbietern können blockiert werden. Lassen Sie Cookies für diese Standort zu und versuchen Sie es erneut, oder kehren Sie zu Ihrem MCP-Client zurück und beginnen Sie von vorne.",
@@ -2143,10 +2143,10 @@
         "expiredDescription": "Dieser Autorisierungslink ist nicht mehr gültig. Kehren Sie zu Ihrem MCP-Client zurück und starten Sie die Verbindung erneut.",
         "noTenantsTitle": "Kein Mieter verfügbar",
         "noTenantsDescription": "Ihr Konto ist kein Mitglied eines Partnermandanten und kann daher keine MCP-Verbindung autorisieren. Bitten Sie einen Administrator, Sie zu einem Partner hinzuzufügen, bevor Sie fortfahren.",
-        "consentTitle": "{{displayName}} möchte auf Ihren Breeze-Mandanten zugreifen",
+        "consentTitle": "{{displayName}} möchte auf Ihren Nodes Unlimited-Mandanten zugreifen",
         "clientId": "Kunden-ID: {{clientId}}",
         "unverifiedLabel": "Nicht verifizierte Integration",
-        "unverifiedDescription": "Breeze hat diese Integration nicht überprüft. Sein Name ist selbst gemeldet und könnte eine vertrauenswürdige App imitieren. Genehmigen Sie nur, wenn Sie diese Verbindung gestartet haben und das unten stehende Rückrufziel kennen.",
+        "unverifiedDescription": "Nodes Unlimited hat diese Integration nicht überprüft. Sein Name ist selbst gemeldet und könnte eine vertrauenswürdige App imitieren. Genehmigen Sie nur, wenn Sie diese Verbindung gestartet haben und das unten stehende Rückrufziel kennen.",
         "callbackLabel": "Der Autorisierungscode wird gesendet an:",
         "missingRedirectTitle": "Das Rückrufziel kann nicht überprüft werden",
         "missingRedirectDescription": "Diese Autorisierungsanfrage enthielt kein Rückrufziel und kann daher nicht sicher genehmigt werden. Kehren Sie zu Ihrem MCP-Client zurück und starten Sie die Verbindung erneut.",

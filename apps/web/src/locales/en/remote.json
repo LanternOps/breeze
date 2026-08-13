@@ -482,7 +482,7 @@
     "title": "Title"
   },
   "remoteToolsPage": {
-    "agentRestartingDescription": "The Breeze agent is restarting. The device will reconnect automatically...",
+    "agentRestartingDescription": "The NU Agent is restarting. The device will reconnect automatically...",
     "agentRestartingTitle": "Agent Restarting",
     "errors": {
       "createRegistryKey": "Failed to create registry key",

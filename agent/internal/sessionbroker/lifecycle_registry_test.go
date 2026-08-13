@@ -74,7 +74,7 @@ type fakeHelperProcess struct {
 func newFakeHelperProcess(pid uint32) *fakeHelperProcess {
 	return &fakeHelperProcess{
 		pid:            pid,
-		path:           "breeze-user-helper.exe",
+		path:           "nu-user-helper.exe",
 		alive:          true,
 		exited:         make(chan struct{}),
 		terminateExits: true,
@@ -416,12 +416,12 @@ func TestStaleExitCannotClearReplacement(t *testing.T) {
 	newProc := newFakeHelperProcess(4200)
 	m := newLifecycleHarness(t, nil, &fakeHelperSpawner{})
 	key := HelperKey{WindowsSessionID: 7, Role: "system"}
-	oldGeneration := m.registry.attach(key, oldProc, "breeze-user-helper.exe", "system-helper")
+	oldGeneration := m.registry.attach(key, oldProc, "nu-user-helper.exe", "system-helper")
 	oldProc.markExited(0)
 	if !m.registry.detach(key, oldGeneration) {
 		t.Fatal("failed to detach observably exited generation")
 	}
-	m.registry.attach(key, newProc, "breeze-user-helper.exe", "system-helper")
+	m.registry.attach(key, newProc, "nu-user-helper.exe", "system-helper")
 	m.registry.noteExit(key, oldGeneration, 0)
 	if got := m.registry.processID(key); got != 4200 {
 		t.Fatalf("replacement PID = %d, want 4200", got)

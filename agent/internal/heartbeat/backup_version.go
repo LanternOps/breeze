@@ -10,13 +10,13 @@ import (
 	"time"
 )
 
-// backupVersionPrefix is the line prefix `breeze-backup --version` prints the
-// installed backup helper version under (see cmd/breeze-backup rootCmd.Version
+// backupVersionPrefix is the line prefix `nu-backup --version` prints the
+// installed backup helper version under (see cmd/nu-backup rootCmd.Version
 // / SetVersionTemplate).
 const backupVersionPrefix = "Breeze Backup Version:"
 
 // backupVersionReadTimeout bounds the exec of the on-disk backup binary so a
-// hung/wedged breeze-backup can never stall a heartbeat.
+// hung/wedged nu-backup can never stall a heartbeat.
 const backupVersionReadTimeout = 5 * time.Second
 
 // backupVersionProbeCooldown bounds how often a FAILING `--version` probe is
@@ -56,7 +56,7 @@ const (
 	backupProbeUnresolved
 )
 
-// installedBackupVersion returns the version of the breeze-backup helper
+// installedBackupVersion returns the version of the nu-backup helper
 // currently installed on this device, for reporting in the normal heartbeat so
 // the server can keep devices.backup_version fresh and drive auto-update for
 // the component (mirrors installedWatchdogVersion / #1802). Callers that need
@@ -137,7 +137,7 @@ func (h *Heartbeat) installedBackupVersionOutcome() (string, backupProbeOutcome)
 	return v, outcome
 }
 
-// readInstalledBackupVersion execs the on-disk breeze-backup binary with
+// readInstalledBackupVersion execs the on-disk nu-backup binary with
 // --version and parses the version it prints. See backupProbeOutcome for what
 // each returned outcome means and how it is cached.
 func (h *Heartbeat) readInstalledBackupVersion() (string, backupProbeOutcome) {
@@ -179,14 +179,14 @@ func (h *Heartbeat) readInstalledBackupVersion() (string, backupProbeOutcome) {
 	return version, backupProbeOK
 }
 
-// resolveBackupBinaryPath resolves the on-disk path of the breeze-backup
+// resolveBackupBinaryPath resolves the on-disk path of the nu-backup
 // helper: an explicit config override (backup_binary_path) when set,
 // otherwise a sibling of the running agent executable with symlinks resolved.
 // This is the SINGLE resolution used by the version probe, reconcile, and the
 // upgrade prefetch (see backup_delivery.go) — prior to this they each
 // resolved independently: reconcile/prefetch derived the target as a sibling
 // of the agent binary and ignored this override entirely (the override
-// devices got reinstalled to a path breeze-backup never actually spawns from,
+// devices got reinstalled to a path nu-backup never actually spawns from,
 // every 30 minutes, forever), while this version probe resolved os.Executable()
 // without EvalSymlinks, disagreeing with reconcile's resolution on symlinked
 // installs. One resolution, three consumers.
@@ -204,20 +204,20 @@ func (h *Heartbeat) resolveBackupBinaryPath() (string, error) {
 	return filepath.Join(filepath.Dir(self), backupBinaryName(runtime.GOOS)), nil
 }
 
-// backupBinaryName returns the on-disk filename of the breeze-backup helper
-// for the given OS: breeze-backup.exe on Windows, breeze-backup elsewhere.
+// backupBinaryName returns the on-disk filename of the nu-backup helper
+// for the given OS: nu-backup.exe on Windows, nu-backup elsewhere.
 // Mirrors sessionbroker's unexported backupBinaryName — duplicated here
 // rather than exported across a package boundary for one string.
 func backupBinaryName(goos string) string {
 	if goos == "windows" {
-		return "breeze-backup.exe"
+		return "nu-backup.exe"
 	}
-	return "breeze-backup"
+	return "nu-backup"
 }
 
 // invalidateBackupVersionCache clears the installedBackupVersion cache
 // (including the probe-failure cooldown) so the next heartbeat re-execs
-// breeze-backup --version and reports the freshly-installed version, instead
+// nu-backup --version and reports the freshly-installed version, instead
 // of continuing to report the pre-install cached value — or a stale
 // probe-failure cooldown for a binary that was JUST replaced — for the rest
 // of the process lifetime. Called after installBackupBinary successfully
@@ -234,9 +234,9 @@ func (h *Heartbeat) invalidateBackupVersionCache() {
 	h.backupVersionReadWarned = false
 }
 
-// parseBackupVersion extracts the version from `breeze-backup --version`
+// parseBackupVersion extracts the version from `nu-backup --version`
 // output, which is a single `Breeze Backup Version: <v>` line (see
-// cmd/breeze-backup rootCmd.SetVersionTemplate).
+// cmd/nu-backup rootCmd.SetVersionTemplate).
 func parseBackupVersion(out string) string {
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)

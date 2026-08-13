@@ -14,14 +14,14 @@ import (
 // The daemon runs as root, so without an explicit group the socket lands on
 // whatever group the daemon's process inherits. On macOS that is worse than a
 // coin flip: BSD semantics give a newly created file the *parent directory's*
-// group, and the socket's parent is /Library/Application Support/Breeze, which
+// group, and the socket's parent is /Library/Application Support/Nodes Unlimited, which
 // is group `admin`. Mode 0660 + group `admin` means a Standard (non-admin)
 // console user's desktop helper can never dial the socket, which is exactly
 // what #3133/#3134/#3137 reported: `srw-rw---- root:admin` and
 // `dial unix .../agent.sock: permission denied`.
 //
 // The three install paths (installer/macos/postinstall,
-// scripts/install/install-darwin.sh, and `breeze-agent service install`) all
+// scripts/install/install-darwin.sh, and `nu-agent service install`) all
 // create this group already; the missing half was ever applying it to the
 // socket and putting the console user in it.
 const IPCGroupName = "breeze"

@@ -10,8 +10,8 @@ import (
 )
 
 // watchdogBinaryPathUnix is where the watchdog service binary lives on
-// Linux/macOS (matches breeze-watchdog's own service install paths).
-const watchdogBinaryPathUnix = "/usr/local/bin/breeze-watchdog"
+// Linux/macOS (matches nu-watchdog's own service install paths).
+const watchdogBinaryPathUnix = "/usr/local/bin/nu-watchdog"
 
 // watchdogBinaryPath returns the on-disk path of the installed watchdog binary
 // so the agent can read its version for heartbeat telemetry.
@@ -33,7 +33,7 @@ func replaceWatchdogBinaryUnix(srcTemp, dest string) error {
 	defer src.Close()
 
 	destDir := filepath.Dir(dest)
-	staging, err := os.CreateTemp(destDir, ".breeze-watchdog-*.new")
+	staging, err := os.CreateTemp(destDir, ".nu-watchdog-*.new")
 	if err != nil {
 		return fmt.Errorf("create staging file in %s: %w", destDir, err)
 	}

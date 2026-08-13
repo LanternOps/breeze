@@ -156,7 +156,7 @@ func TestOpenMainAgentLockUsesVerifiedRunHandle(t *testing.T) {
 		return wantLockHandle, nil
 	}
 
-	got, err := openMainAgentLock(filepath.Join(`C:\ProgramData\Breeze\run`, mainAgentLockFile))
+	got, err := openMainAgentLock(filepath.Join(`C:\ProgramData\Nodes Unlimited\run`, mainAgentLockFile))
 	if err != nil {
 		t.Fatal(err)
 	}

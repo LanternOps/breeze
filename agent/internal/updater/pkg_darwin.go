@@ -28,7 +28,7 @@ func (u *Updater) installViaPkg(version, expectedSHA256 string) error {
 		return fmt.Errorf("refusing to install .pkg without a signed checksum")
 	}
 	// Download .pkg directly from GitHub releases
-	pkgURL := fmt.Sprintf("https://github.com/LanternOps/breeze/releases/download/v%s/breeze-agent-darwin-%s.pkg",
+	pkgURL := fmt.Sprintf("https://github.com/LanternOps/breeze/releases/download/v%s/nu-agent-darwin-%s.pkg",
 		version, runtime.GOARCH)
 	log.Info("downloading pkg for update", "url", pkgURL, "version", version)
 
@@ -43,7 +43,7 @@ func (u *Updater) installViaPkg(version, expectedSHA256 string) error {
 	}
 
 	// Write .pkg to temp file
-	pkgFile, err := os.CreateTemp("", "breeze-agent-*.pkg")
+	pkgFile, err := os.CreateTemp("", "nu-agent-*.pkg")
 	if err != nil {
 		return fmt.Errorf("failed to create temp pkg file: %w", err)
 	}

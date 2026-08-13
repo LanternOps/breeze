@@ -15,9 +15,9 @@ import (
 // TestPrefetchUserHelper_HappyPath covers the success branch: the injected
 // downloader returns a temp path with no error, and prefetchUserHelper builds
 // a *BinaryPair pointing the helper-restart script at
-// <agent-dir>/breeze-user-helper.exe.
+// <agent-dir>/nu-user-helper.exe.
 func TestPrefetchUserHelper_HappyPath(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), "breeze-user-helper-dl-12345")
+	tempPath := filepath.Join(t.TempDir(), "nu-user-helper-dl-12345")
 	var calls atomic.Int32
 	h := &Heartbeat{
 		config:         &config.Config{},
@@ -32,7 +32,7 @@ func TestPrefetchUserHelper_HappyPath(t *testing.T) {
 		},
 	}
 
-	binaryPath := "/opt/breeze/breeze-agent"
+	binaryPath := "/opt/breeze/nu-agent"
 	pair := h.prefetchUserHelper("1.2.4", binaryPath)
 	if pair == nil {
 		t.Fatal("expected non-nil BinaryPair on happy path")
@@ -40,7 +40,7 @@ func TestPrefetchUserHelper_HappyPath(t *testing.T) {
 	if pair.Temp != tempPath {
 		t.Fatalf("Temp: expected %q, got %q", tempPath, pair.Temp)
 	}
-	wantTarget := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+	wantTarget := filepath.Join(filepath.Dir(binaryPath), "nu-user-helper.exe")
 	if pair.Target != wantTarget {
 		t.Fatalf("Target: expected %q, got %q", wantTarget, pair.Target)
 	}
@@ -66,7 +66,7 @@ func TestPrefetchUserHelper_DownloadFails(t *testing.T) {
 		},
 	}
 
-	pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/breeze-agent")
+	pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/nu-agent")
 	if pair != nil {
 		t.Fatalf("expected nil BinaryPair on download failure, got %+v", pair)
 	}
@@ -91,7 +91,7 @@ func TestPrefetchUserHelper_NonWindows(t *testing.T) {
 					return "/tmp/should-not-be-called", nil
 				},
 			}
-			pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/breeze-agent")
+			pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/nu-agent")
 			if pair != nil {
 				t.Fatalf("expected nil BinaryPair on non-Windows runtime %s, got %+v", goos, pair)
 			}
@@ -117,7 +117,7 @@ func TestPrefetchUserHelper_DefaultGOOSMatchesRuntime(t *testing.T) {
 		// On a non-Windows host this must short-circuit before constructing
 		// the real updater (which would otherwise try to hit ServerURL).
 	}
-	pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/breeze-agent")
+	pair := h.prefetchUserHelper("1.2.4", "/opt/breeze/nu-agent")
 	if pair != nil {
 		t.Fatalf("expected nil BinaryPair on non-Windows runtime, got %+v", pair)
 	}
@@ -126,7 +126,7 @@ func TestPrefetchUserHelper_DefaultGOOSMatchesRuntime(t *testing.T) {
 // --- reconcileUserHelper: decoupled self-heal of a missing helper binary ---
 
 // TestReconcileUserHelper_NonWindows_NoOp: macOS/Linux have no sibling helper
-// binary (the helper runs as a breeze-agent subcommand), so reconciliation must
+// binary (the helper runs as a nu-agent subcommand), so reconciliation must
 // short-circuit before any download or install — even when the sibling path
 // happens not to exist.
 func TestReconcileUserHelper_NonWindows_NoOp(t *testing.T) {
@@ -139,19 +139,19 @@ func TestReconcileUserHelper_NonWindows_NoOp(t *testing.T) {
 		userHelperInstaller:  func(string, string, string) error { instCalls.Add(1); return nil },
 	}
 
-	h.reconcileUserHelper(filepath.Join(t.TempDir(), "breeze-agent"))
+	h.reconcileUserHelper(filepath.Join(t.TempDir(), "nu-agent"))
 
 	if dlCalls.Load() != 0 || instCalls.Load() != 0 {
 		t.Fatalf("non-windows must be a no-op; downloader=%d installer=%d", dlCalls.Load(), instCalls.Load())
 	}
 }
 
-// TestReconcileUserHelper_Present_NoOp: when breeze-user-helper.exe already
+// TestReconcileUserHelper_Present_NoOp: when nu-user-helper.exe already
 // exists next to the agent there is nothing to heal — no download, no install.
 func TestReconcileUserHelper_Present_NoOp(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
-	if err := os.WriteFile(filepath.Join(dir, "breeze-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
+	if err := os.WriteFile(filepath.Join(dir, "nu-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var dlCalls, instCalls atomic.Int32
@@ -175,12 +175,12 @@ func TestReconcileUserHelper_Present_NoOp(t *testing.T) {
 // (not "latest") and installs it next to the agent binary.
 func TestReconcileUserHelper_Missing_DownloadsAndInstalls(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
-	tempDL := filepath.Join(dir, "breeze-user-helper-dl-999")
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
+	tempDL := filepath.Join(dir, "nu-user-helper-dl-999")
 	if err := os.WriteFile(tempDL, []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wantInstall := filepath.Join(dir, "breeze-user-helper.exe")
+	wantInstall := filepath.Join(dir, "nu-user-helper.exe")
 
 	var instCalls atomic.Int32
 	var gotDLVersion, gotTemp, gotInstallPath, gotInstallVersion string
@@ -223,7 +223,7 @@ func TestReconcileUserHelper_Missing_DownloadsAndInstalls(t *testing.T) {
 // nothing is installed and the call returns without panicking.
 func TestReconcileUserHelper_DownloadFails_NoInstall(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
 	var instCalls atomic.Int32
 	h := &Heartbeat{
 		config:               &config.Config{},
@@ -247,7 +247,7 @@ func TestReconcileUserHelper_DownloadFails_NoInstall(t *testing.T) {
 func TestAtomicReplaceFile_Success(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src.bin")
-	dst := filepath.Join(dir, "breeze-user-helper.exe")
+	dst := filepath.Join(dir, "nu-user-helper.exe")
 	if err := os.WriteFile(src, []byte("NEWHELPER"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestAtomicReplaceFile_Success(t *testing.T) {
 func TestAtomicReplaceFile_CopyFailLeavesDestIntact(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "does-not-exist.bin")
-	dst := filepath.Join(dir, "breeze-user-helper.exe")
+	dst := filepath.Join(dir, "nu-user-helper.exe")
 	if err := os.WriteFile(dst, []byte("OLDHELPER-INTACT"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestReconcileUserHelper_UnexpectedStatError_NoDownload(t *testing.T) {
 	if err := os.WriteFile(fakeDir, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	binaryPath := filepath.Join(fakeDir, "breeze-agent.exe")
+	binaryPath := filepath.Join(fakeDir, "nu-agent.exe")
 
 	var dlCalls, instCalls atomic.Int32
 	h := &Heartbeat{
@@ -332,8 +332,8 @@ func TestReconcileUserHelper_UnexpectedStatError_NoDownload(t *testing.T) {
 // forever.
 func TestReconcileUserHelper_ZeroLengthHelper_Refetches(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
-	if err := os.WriteFile(filepath.Join(dir, "breeze-user-helper.exe"), nil, 0o644); err != nil {
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
+	if err := os.WriteFile(filepath.Join(dir, "nu-user-helper.exe"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tempDL := filepath.Join(dir, "dl")
@@ -363,8 +363,8 @@ func TestReconcileUserHelper_ZeroLengthHelper_Refetches(t *testing.T) {
 // consecutive-failure counter advances.
 func TestReconcileUserHelper_InstallFails_NonFatal_RemovesTemp(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
-	tempDL := filepath.Join(dir, "breeze-user-helper-dl-777")
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
+	tempDL := filepath.Join(dir, "nu-user-helper-dl-777")
 	if err := os.WriteFile(tempDL, []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestReconcileUserHelper_InstallFails_NonFatal_RemovesTemp(t *testing.T) {
 // first success resets it to zero.
 func TestReconcileUserHelper_ConsecutiveFailures_TrackedAndReset(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
 	tempDL := filepath.Join(dir, "dl")
 	if err := os.WriteFile(tempDL, []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
@@ -432,8 +432,8 @@ func TestReconcileUserHelper_ConsecutiveFailures_TrackedAndReset(t *testing.T) {
 // the ERROR escalation prematurely.
 func TestReconcileUserHelper_PresentHealthy_ResetsFailureCounter(t *testing.T) {
 	dir := t.TempDir()
-	binaryPath := filepath.Join(dir, "breeze-agent.exe")
-	if err := os.WriteFile(filepath.Join(dir, "breeze-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
+	binaryPath := filepath.Join(dir, "nu-agent.exe")
+	if err := os.WriteFile(filepath.Join(dir, "nu-user-helper.exe"), []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h := &Heartbeat{
@@ -456,7 +456,7 @@ func TestReconcileUserHelper_PresentHealthy_ResetsFailureCounter(t *testing.T) {
 // exit 128 / "not found" output is the no-helper-running case (Debug); anything
 // else (access denied, could-not-terminate) is a real failure (Warn).
 func TestTaskkillProcessNotFound(t *testing.T) {
-	if !taskkillProcessNotFound([]byte(`ERROR: The process "breeze-user-helper.exe" not found.`), errors.New("exit status 128")) {
+	if !taskkillProcessNotFound([]byte(`ERROR: The process "nu-user-helper.exe" not found.`), errors.New("exit status 128")) {
 		t.Fatal("'not found' output must classify as process-not-found")
 	}
 	if !taskkillProcessNotFound([]byte("not FOUND"), errors.New("x")) {

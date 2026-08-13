@@ -9,7 +9,7 @@ import (
 )
 
 // TestResolveUserHelperPath_PicksGUIBinaryWhenAvailable verifies that when
-// breeze-user-helper.exe sits alongside the running agent binary,
+// nu-user-helper.exe sits alongside the running agent binary,
 // resolveUserHelperPath returns the helper path (so spawn paths use the
 // GUI-subsystem sibling and avoid the console-window flash bug).
 //
@@ -18,7 +18,7 @@ import (
 // XML and the SYSTEM-context broker spawn paths depend on.
 func TestResolveUserHelperPath_PicksGUIBinaryWhenAvailable(t *testing.T) {
 	tmpDir := t.TempDir()
-	agentExe := filepath.Join(tmpDir, "breeze-agent.exe")
+	agentExe := filepath.Join(tmpDir, "nu-agent.exe")
 	helperExe := filepath.Join(tmpDir, UserHelperBinaryName)
 	if err := os.WriteFile(agentExe, []byte("agent stub"), 0o644); err != nil {
 		t.Fatalf("write agent stub: %v", err)
@@ -39,18 +39,18 @@ func TestResolveUserHelperPath_PicksGUIBinaryWhenAvailable(t *testing.T) {
 // TestUserHelperExePath_FallsBackToAgentWhenSiblingMissing exercises the
 // fs.ErrNotExist branch of resolveUserHelperPath, which is the documented
 // defense-in-depth path for partially-upgraded installs where the new task
-// XML points at breeze-user-helper.exe but the binary itself is missing
+// XML points at nu-user-helper.exe but the binary itself is missing
 // (failed build, AV quarantine, tamper). The fallback returns the agent
 // path so run_as_user functionality keeps working at the cost of a visible
 // console window. The owning spawner uses the returned provenance to emit
 // bounded ops telemetry rather than warning on every reconciliation.
 func TestUserHelperExePath_FallsBackToAgentWhenSiblingMissing(t *testing.T) {
 	tmpDir := t.TempDir()
-	agentExe := filepath.Join(tmpDir, "breeze-agent.exe")
+	agentExe := filepath.Join(tmpDir, "nu-agent.exe")
 	if err := os.WriteFile(agentExe, []byte("agent stub"), 0o644); err != nil {
 		t.Fatalf("write agent stub: %v", err)
 	}
-	// Deliberately do NOT create the sibling breeze-user-helper.exe.
+	// Deliberately do NOT create the sibling nu-user-helper.exe.
 
 	got, err := resolveUserHelperPath(agentExe)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestUserHelperExePath_FallsBackToAgentWhenSiblingMissing(t *testing.T) {
 func TestHelperFallbackWarningOwnerWarnsOncePerOwner(t *testing.T) {
 	buf := captureLogs(t)
 	resolved := ResolvedHelperExecutable{
-		Path:               filepath.Join(t.TempDir(), "breeze-agent.exe"),
+		Path:               filepath.Join(t.TempDir(), "nu-agent.exe"),
 		MainBinaryFallback: true,
 	}
 
@@ -89,7 +89,7 @@ func TestHelperFallbackWarningOwnerWarnsOncePerOwner(t *testing.T) {
 	close(start)
 	calls.Wait()
 
-	const warning = "breeze-user-helper.exe missing"
+	const warning = "nu-user-helper.exe missing"
 	if got := strings.Count(buf.String(), warning); got != 2 {
 		t.Fatalf("warning count = %d, want one for each of two concurrent owners; logs: %s", got, buf.String())
 	}
@@ -107,7 +107,7 @@ func TestResolveUserHelperPath_PropagatesOtherStatErrors(t *testing.T) {
 	// error from os.Stat. This is portable: every OS POSIX-syscalls go
 	// through chokes on NUL in pathnames, returning ENOENT/EINVAL/etc.,
 	// none of which are wrapped as fs.ErrNotExist.
-	agentExe := "/tmp/breeze-agent.exe\x00invalid"
+	agentExe := "/tmp/nu-agent.exe\x00invalid"
 	_, err := resolveUserHelperPath(agentExe)
 	if err == nil {
 		t.Skip("filesystem unexpectedly accepted an invalid agent path; cannot exercise the error branch here")

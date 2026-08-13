@@ -496,7 +496,7 @@
     },
     "approval": {
       "title": "Test the approval flow",
-      "description": "Send a sandbox approval push to your own Breeze Mobile devices. Tapping the push will take over your phone with the approval screen for 60 seconds. Approving or denying does not run any real action — it's purely for testing.",
+      "description": "Send a sandbox approval push to your own Nodes Unlimited Mobile devices. Tapping the push will take over your phone with the approval screen for 60 seconds. Approving or denying does not run any real action — it's purely for testing.",
       "sendTitle": "Send a test approval to your phone",
       "sendDescription": "We'll deliver a push within a few seconds. The approval expires automatically after 60 seconds if you don't act on it.",
       "sending": "Sending…",
@@ -505,7 +505,7 @@
       "delivered": "Push delivered to {{sent}} of {{count}} registered devices. The approval expires in 60 seconds.",
       "delivered_one": "Push delivered to {{sent}} of {{count}} registered device. The approval expires in 60 seconds.",
       "delivered_other": "Push delivered to {{sent}} of {{count}} registered devices. The approval expires in 60 seconds.",
-      "noDevices": "We don't see a registered Breeze Mobile device on your account. Sign in to the app at least once, then try again.",
+      "noDevices": "We don't see a registered Nodes Unlimited Mobile device on your account. Sign in to the app at least once, then try again.",
       "tip": "Tip: this page is safe to share with App Store reviewers. They can sign in with the provided test account, click the button, and verify the approval takeover end-to-end.",
       "errors": {
         "send": "We could not send a test approval. Please try again."
@@ -538,9 +538,9 @@
     },
     "devices": {
       "title": "Trusted devices",
-      "description": "Phones and tablets you've paired with the Breeze mobile app. These devices can approve high-risk MCP requests on your behalf. Revoke any device you no longer use.",
+      "description": "Phones and tablets you've paired with the Nodes Unlimited mobile app. These devices can approve high-risk MCP requests on your behalf. Revoke any device you no longer use.",
       "empty": "No paired devices",
-      "emptyDescription": "Install the Breeze mobile app and sign in to pair a device. Approvals will then surface on your phone.",
+      "emptyDescription": "Install the Nodes Unlimited mobile app and sign in to pair a device. Approvals will then surface on your phone.",
       "thisDevice": "This device",
       "blocked": "Blocked",
       "platform": "Platform",
@@ -650,7 +650,7 @@
       }
     },
     "search": {
-      "prompt": "Search Breeze",
+      "prompt": "Search Nodes Unlimited",
       "placeholder": "Search devices, scripts, alerts, users, settings…",
       "searching": "Searching…",
       "startTyping": "Start typing to search across devices, scripts, alerts, users, and settings.",
@@ -994,7 +994,7 @@
           "username": "Username or email"
         },
         "help": {
-          "defaultQueue": "Optional. Used when creating tickets from Breeze alerts."
+          "defaultQueue": "Optional. Used when creating tickets from Nodes Unlimited alerts."
         },
         "keepExisting": "(leave blank to keep existing)",
         "placeholders": {
@@ -1031,16 +1031,16 @@
         },
         "sync": {
           "autoClose": "Auto-close PSA tickets",
-          "autoCloseHelp": "Close linked tickets when Breeze alerts are resolved.",
+          "autoCloseHelp": "Close linked tickets when Nodes Unlimited alerts are resolved.",
           "enable": "Enable sync",
           "enableHelp": "Keep tickets and alert links up to date on a schedule.",
           "notes": "Sync alert notes",
-          "notesHelp": "Push Breeze comments and updates to the PSA ticket timeline."
+          "notesHelp": "Push Nodes Unlimited comments and updates to the PSA ticket timeline."
         },
         "syncDirections": {
           "bidirectional": "Bidirectional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
+          "inbound": "PSA → Nodes Unlimited",
+          "outbound": "Nodes Unlimited → PSA"
         },
         "syncIntervals": {
           "daily": "Daily",
@@ -1446,7 +1446,7 @@
           "googleCloud": "Google Cloud"
         },
         "oneClickTitle": "One-click Microsoft 365 integration",
-        "oneClickDescription": "Your Breeze instance has a pre-configured Microsoft 365 app. Click \"Grant Access\" to authorize backup access to your M365 tenant. A Global Admin must approve the consent prompt.",
+        "oneClickDescription": "Your Nodes Unlimited instance has a pre-configured Microsoft 365 app. Click \"Grant Access\" to authorize backup access to your M365 tenant. A Global Admin must approve the consent prompt.",
         "displayName": "Display Name",
         "displayNamePlaceholder": "Microsoft 365",
         "manualDisplayNamePlaceholder": "My M365 Connection",
@@ -2135,7 +2135,7 @@
         },
         "loading": "Loading authorization request…",
         "signInTitle": "Sign in to continue",
-        "signInDescription": "You need to sign in to your Breeze account before authorizing this connection.",
+        "signInDescription": "You need to sign in to your Nodes Unlimited account before authorizing this connection.",
         "signInAction": "Sign in",
         "redirectLoopTitle": "We can't sign you in",
         "redirectLoopDescription": "Your browser sent you back here without a sign-in cookie. Third-party cookies or site storage may be blocked. Allow cookies for this site and try again, or return to your MCP client and start over.",
@@ -2143,10 +2143,10 @@
         "expiredDescription": "This authorization link is no longer valid. Return to your MCP client and start the connection again.",
         "noTenantsTitle": "No tenant available",
         "noTenantsDescription": "Your account isn't a member of any partner tenant, so it can't authorize an MCP connection. Ask an administrator to add you to a partner before continuing.",
-        "consentTitle": "{{displayName}} wants to access your Breeze tenant",
+        "consentTitle": "{{displayName}} wants to access your Nodes Unlimited tenant",
         "clientId": "Client ID: {{clientId}}",
         "unverifiedLabel": "Unverified integration",
-        "unverifiedDescription": "Breeze has not verified this integration. Its name is self-reported and could impersonate a trusted app. Only approve if you started this connection and recognize the callback destination below.",
+        "unverifiedDescription": "Nodes Unlimited has not verified this integration. Its name is self-reported and could impersonate a trusted app. Only approve if you started this connection and recognize the callback destination below.",
         "callbackLabel": "Authorization code will be sent to:",
         "missingRedirectTitle": "Can't verify the callback destination",
         "missingRedirectDescription": "This authorization request didn't include a callback destination, so it can't be safely approved. Return to your MCP client and start the connection again.",

@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Instala a correção aprovada para cada CVE em {{deviceText}} ({{findingText}}). Achados sem uma correção aprovada e aplicável são ignorados.",
       "accept": "Oculta {{findingText}} em {{deviceText}} da fila aberta até a data definida. Eles não reabrem automaticamente — aceitações perto do vencimento aparecem no cartão “Aceitos, vencendo em breve”.",
-      "mitigate": "Marca {{findingText}} em {{deviceText}} como mitigado, com sua observação registrada como controle compensatório. O Breeze não altera os dispositivos."
+      "mitigate": "Marca {{findingText}} em {{deviceText}} como mitigado, com sua observação registrada como controle compensatório. O Nodes Unlimited não altera os dispositivos."
     },
     "fields": {
       "reason": "Motivo",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "Ainda não há achados de vulnerabilidade",
-      "description": "O Breeze verifica o inventário de software e sistema operacional de cada dispositivo em relação a CVEs conhecidas e coloca aqui tudo que precisa de correção, mitigação ou aceitação de risco.",
+      "description": "O Nodes Unlimited verifica o inventário de software e sistema operacional de cada dispositivo em relação a CVEs conhecidas e coloca aqui tudo que precisa de correção, mitigação ou aceitação de risco.",
       "setupHint": "A varredura vem desativada por padrão — ative-a na aba Vulnerabilidade de uma política de configuração.",
       "setupAction": "Configurar varredura de vulnerabilidades"
     },

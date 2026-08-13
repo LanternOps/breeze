@@ -21,9 +21,9 @@ func TestWatchdogBinaryName(t *testing.T) {
 		goos string
 		want string
 	}{
-		{"windows", "breeze-watchdog.exe"},
-		{"linux", "breeze-watchdog"},
-		{"darwin", "breeze-watchdog"},
+		{"windows", "nu-watchdog.exe"},
+		{"linux", "nu-watchdog"},
+		{"darwin", "nu-watchdog"},
 	}
 	for _, tc := range tests {
 		got := watchdogBinaryName(tc.goos)
@@ -39,15 +39,15 @@ func TestWatchdogDownloadURL(t *testing.T) {
 	}{
 		{
 			"0.62.24", "windows", "amd64",
-			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/breeze-watchdog-windows-amd64.exe",
+			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/nu-watchdog-windows-amd64.exe",
 		},
 		{
 			"0.62.24", "linux", "arm64",
-			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/breeze-watchdog-linux-arm64",
+			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/nu-watchdog-linux-arm64",
 		},
 		{
 			"0.62.24", "darwin", "amd64",
-			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/breeze-watchdog-darwin-amd64",
+			"https://github.com/LanternOps/breeze/releases/download/v0.62.24/nu-watchdog-darwin-amd64",
 		},
 	}
 	for _, tc := range tests {
@@ -69,7 +69,7 @@ func TestWatchdogChecksumsURL(t *testing.T) {
 
 func TestLocateSiblingWatchdog_Found(t *testing.T) {
 	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
+	agentPath := filepath.Join(dir, "nu-agent")
 	if runtime.GOOS == "windows" {
 		agentPath += ".exe"
 	}
@@ -92,7 +92,7 @@ func TestLocateSiblingWatchdog_Found(t *testing.T) {
 
 func TestLocateSiblingWatchdog_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
+	agentPath := filepath.Join(dir, "nu-agent")
 	if err := os.WriteFile(agentPath, []byte("fake agent"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestDownloadWatchdog_Success(t *testing.T) {
 	defer srv.Close()
 
 	destDir := t.TempDir()
-	destPath := filepath.Join(destDir, "breeze-watchdog")
+	destPath := filepath.Join(destDir, "nu-watchdog")
 
 	if err := downloadWatchdog(srv.URL, destPath, testSHA256Hex(body)); err != nil {
 		t.Fatalf("downloadWatchdog: %v", err)
@@ -145,7 +145,7 @@ func TestDownloadWatchdog_404(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	destPath := filepath.Join(t.TempDir(), "nu-watchdog")
 	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("unused")))
 	if err == nil {
 		t.Fatalf("downloadWatchdog: expected error on 404, got nil")
@@ -162,7 +162,7 @@ func TestDownloadWatchdog_TooSmall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	destPath := filepath.Join(t.TempDir(), "nu-watchdog")
 	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("not a real binary")))
 	if err == nil {
 		t.Fatalf("downloadWatchdog: expected error on too-small body, got nil")
@@ -183,7 +183,7 @@ func TestDownloadWatchdog_ChecksumMismatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	destPath := filepath.Join(t.TempDir(), "breeze-watchdog")
+	destPath := filepath.Join(t.TempDir(), "nu-watchdog")
 	err := downloadWatchdog(srv.URL, destPath, testSHA256Hex([]byte("different body")))
 	if err == nil {
 		t.Fatalf("downloadWatchdog: expected checksum mismatch, got nil")
@@ -194,15 +194,15 @@ func TestDownloadWatchdog_ChecksumMismatch(t *testing.T) {
 }
 
 func TestFetchWatchdogChecksum(t *testing.T) {
-	body := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  breeze-watchdog-linux-amd64\n" +
-		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *breeze-watchdog-linux-arm64\n"
+	body := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  nu-watchdog-linux-amd64\n" +
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *nu-watchdog-linux-arm64\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
 
-	got, err := fetchWatchdogChecksum(srv.URL, "breeze-watchdog-linux-arm64")
+	got, err := fetchWatchdogChecksum(srv.URL, "nu-watchdog-linux-arm64")
 	if err != nil {
 		t.Fatalf("fetchWatchdogChecksum: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestFetchWatchdogChecksum(t *testing.T) {
 
 func TestBootstrapWatchdog_SiblingFound_RunsInstall(t *testing.T) {
 	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
+	agentPath := filepath.Join(dir, "nu-agent")
 	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestBootstrapWatchdog_DevVersionSkipsDownload(t *testing.T) {
 	for _, v := range cases {
 		t.Run(v, func(t *testing.T) {
 			dir := t.TempDir()
-			agentPath := filepath.Join(dir, "breeze-agent")
+			agentPath := filepath.Join(dir, "nu-agent")
 			if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
 				t.Fatal(err)
 			}
@@ -273,7 +273,7 @@ func TestBootstrapWatchdog_DownloadFailure(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
+	agentPath := filepath.Join(dir, "nu-agent")
 	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestBootstrapWatchdog_SiblingExitsNonZero(t *testing.T) {
 		t.Skip("skipping exec-sibling test on Windows (need real .exe)")
 	}
 	dir := t.TempDir()
-	agentPath := filepath.Join(dir, "breeze-agent")
+	agentPath := filepath.Join(dir, "nu-agent")
 	if err := os.WriteFile(agentPath, []byte("fake"), 0755); err != nil {
 		t.Fatal(err)
 	}

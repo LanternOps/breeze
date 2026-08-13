@@ -8,7 +8,7 @@ import (
 
 func TestSwapCompanionBinary_SwapsContentModeAndCleansUpTemp(t *testing.T) {
 	dir := t.TempDir()
-	dest := filepath.Join(dir, "breeze-backup")
+	dest := filepath.Join(dir, "nu-backup")
 	if err := os.WriteFile(dest, []byte("OLD backup"), 0o755); err != nil {
 		t.Fatalf("seed dest: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestSwapCompanionBinary_SwapsContentModeAndCleansUpTemp(t *testing.T) {
 	// No staging file may be left behind.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if e.Name() != "breeze-backup" {
+		if e.Name() != "nu-backup" {
 			t.Fatalf("unexpected leftover file in dir: %q", e.Name())
 		}
 	}
@@ -54,7 +54,7 @@ func TestSwapCompanionBinary_SwapsContentModeAndCleansUpTemp(t *testing.T) {
 
 func TestSwapCompanionBinary_MissingSourceLeavesDestIntactAndNoStaging(t *testing.T) {
 	dir := t.TempDir()
-	dest := filepath.Join(dir, "breeze-backup")
+	dest := filepath.Join(dir, "nu-backup")
 	if err := os.WriteFile(dest, []byte("OLD"), 0o755); err != nil {
 		t.Fatalf("seed dest: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestSwapCompanionBinary_CrossDirectory(t *testing.T) {
 	if err := os.WriteFile(src, []byte("cross-dir bytes"), 0o600); err != nil {
 		t.Fatalf("seed src: %v", err)
 	}
-	dest := filepath.Join(destDir, "breeze-backup")
+	dest := filepath.Join(destDir, "nu-backup")
 
 	pair := &BinaryPair{Temp: src, Target: dest}
 	if err := swapCompanionBinary(pair); err != nil {

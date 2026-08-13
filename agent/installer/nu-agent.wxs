@@ -28,19 +28,19 @@
 <?define OtherUpgradeCode={787838E2-1A3E-4B61-8514-75DD922A6B1B}?>
 <?endif?>
 <?ifndef AgentExePath?>
-<?define AgentExePath=..\breeze-agent-windows-amd64.exe?>
+<?define AgentExePath=..\nu-agent-windows-amd64.exe?>
 <?endif?>
 <?ifndef BackupExePath?>
-<?define BackupExePath=..\breeze-backup-windows-amd64.exe?>
+<?define BackupExePath=..\nu-backup-windows-amd64.exe?>
 <?endif?>
 <?ifndef WatchdogExePath?>
-<?define WatchdogExePath=..\breeze-watchdog-windows-amd64.exe?>
+<?define WatchdogExePath=..\nu-watchdog-windows-amd64.exe?>
 <?endif?>
 <?ifndef UserHelperExePath?>
-<?define UserHelperExePath=..\breeze-user-helper-windows-amd64.exe?>
+<?define UserHelperExePath=..\nu-user-helper-windows-amd64.exe?>
 <?endif?>
 <?ifndef UserTaskXmlPath?>
-<?define UserTaskXmlPath=..\service\windows\breeze-agent-user-task.xml?>
+<?define UserTaskXmlPath=..\service\windows\nu-agent-user-task.xml?>
 <?endif?>
 <?ifndef InstallUserHelperScriptPath?>
 <?define InstallUserHelperScriptPath=..\scripts\install\install-windows.ps1?>
@@ -162,7 +162,7 @@
          upgrade, repair) because a fresh install can land on top of a binary
          left behind by a previous uninstall or a non-MSI deployment — the
          MSI install log line we kept seeing was:
-            File: ...\breeze-agent.exe; Won't Overwrite;
+            File: ...\nu-agent.exe; Won't Overwrite;
             Existing file is unversioned but modified
          even on a "first-time" MSI install where the agent was previously
          dropped onto the box by another mechanism. Skipping the kill on
@@ -191,7 +191,7 @@
            4. taskkill WITHOUT /T. /T kills the named process's whole child
               tree — and when this MSI is deployed through Breeze's own
               script engine, msiexec/powershell run as DESCENDANTS of
-              breeze-agent.exe, so /T killed the very msiexec client
+              nu-agent.exe, so /T killed the very msiexec client
               performing this install. Every process we actually need dead
               is already named explicitly.
 
@@ -205,7 +205,7 @@
     <CustomAction
       Id="KillBreezeProcesses"
       Property="BREEZE_KILL_CMD"
-      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM breeze-agent.exe /IM breeze-user-helper.exe /IM breeze-watchdog.exe /IM breeze-desktop-helper.exe /IM breeze-backup.exe >nul 2>&amp;1 &amp; exit /b 0"
+      ExeCommand="/c sc failure BreezeWatchdog reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc failure BreezeAgent reset= 0 actions= &quot;&quot; >nul 2>&amp;1 &amp; sc stop BreezeWatchdog >nul 2>&amp;1 &amp; sc stop BreezeAgent >nul 2>&amp;1 &amp; (sc query BreezeAgent | findstr &quot;PENDING RUNNING&quot; >nul 2>&amp;1 &amp;&amp; ping -n 4 127.0.0.1 >nul) &amp; taskkill /F /IM nu-agent.exe /IM nu-user-helper.exe /IM nu-watchdog.exe /IM nu-desktop-helper.exe /IM nu-backup.exe >nul 2>&amp;1 &amp; exit /b 0"
       Execute="immediate"
       Return="ignore" />
 
@@ -315,12 +315,12 @@
       Return="ignore" />
 
     <!-- Set SCM failure-action recovery on both services after they're
-         installed. Mirrors agent/cmd/breeze-agent/service_cmd_windows.go:72-79
-         and agent/cmd/breeze-watchdog/service_cmd_windows.go:63-67 (5s/10s/30s
+         installed. Mirrors agent/cmd/nu-agent/service_cmd_windows.go:72-79
+         and agent/cmd/nu-watchdog/service_cmd_windows.go:63-67 (5s/10s/30s
          restart escalation with 24-hour counter reset).
 
          Without this, MSI-installed services have no SCM-driven auto-restart;
-         only `breeze-agent.exe service install` (the manual subcommand)
+         only `nu-agent.exe service install` (the manual subcommand)
          applied the recovery actions before. So every MSI deployment was
          missing this hardening.
 
@@ -343,7 +343,7 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Breeze">
         <Component Id="cmpBreezeAgentExe" Guid="*">
-          <File Id="filBreezeAgentExe" Name="breeze-agent.exe" Source="$(var.AgentExePath)" KeyPath="yes" />
+          <File Id="filBreezeAgentExe" Name="nu-agent.exe" Source="$(var.AgentExePath)" KeyPath="yes" />
           <ServiceInstall
             Id="svcInstallBreezeAgent"
             Name="BreezeAgent"
@@ -364,21 +364,21 @@
         </Component>
 
         <Component Id="cmpBreezeBackupExe" Guid="*">
-          <File Id="filBreezeBackupExe" Name="breeze-backup.exe"
+          <File Id="filBreezeBackupExe" Name="nu-backup.exe"
                 Source="$(var.BackupExePath)" KeyPath="yes" />
         </Component>
 
         <Component Id="cmpBreezeUserHelperExe" Guid="*">
-          <!-- GUI-subsystem sibling of breeze-agent.exe (same Go source, -H windowsgui).
+          <!-- GUI-subsystem sibling of nu-agent.exe (same Go source, -H windowsgui).
                Launched by the AgentUserHelper scheduled task at user logon and by the
                SYSTEM-context sessionbroker spawn paths. GUI subsystem prevents the
                Windows kernel from allocating a console window for the helper. -->
-          <File Id="filBreezeUserHelperExe" Name="breeze-user-helper.exe"
+          <File Id="filBreezeUserHelperExe" Name="nu-user-helper.exe"
                 Source="$(var.UserHelperExePath)" KeyPath="yes" />
         </Component>
 
         <Component Id="cmpBreezeWatchdogExe" Guid="*">
-          <File Id="filBreezeWatchdogExe" Name="breeze-watchdog.exe"
+          <File Id="filBreezeWatchdogExe" Name="nu-watchdog.exe"
                 Source="$(var.WatchdogExePath)" KeyPath="yes" />
           <ServiceInstall Id="svcInstallWatchdog"
                           Name="BreezeWatchdog"
@@ -533,7 +533,7 @@
          server (POST /agents/:id/uninstall-intent), run before secrets.yaml
          is deleted below so the agent can still authenticate as itself.
          Return="ignore" — unlike EnrollAgent/BootstrapEnroll above, this
-         must NEVER block or roll back an uninstall. breeze-agent.exe
+         must NEVER block or roll back an uninstall. nu-agent.exe
          uninstall-notify (runUninstallNotify, internal/agentapp/main.go)
          always exits 0 regardless of outcome: missing secrets.yaml, a
          network error, or the 403 tenant_offboarding drain response
@@ -580,12 +580,12 @@
       <!-- Enrollment runs after file copy but before InstallServices.
 
            Return="check" on the EnrollAgent CA means a non-zero exit
-           from breeze-agent.exe enroll rolls back the install cleanly.
+           from nu-agent.exe enroll rolls back the install cleanly.
            Admins see a specific cause in four places:
 
              1. install.log (captured from the CA's stderr)
-             2. C:\ProgramData\Breeze\logs\agent.log (slog structured)
-             3. C:\ProgramData\Breeze\logs\enroll-last-error.txt
+             2. C:\ProgramData\Nodes Unlimited\logs\agent.log (slog structured)
+             3. C:\ProgramData\Nodes Unlimited\logs\enroll-last-error.txt
                 (single-line timestamped, survives rollback because
                 CA-written files are opaque to MSI)
              4. Event Viewer, Application, BreezeAgent (Error)
@@ -593,8 +593,8 @@
            Installs without ENROLLMENT_KEY skip this CA entirely
            (condition below requires both SERVER_URL and ENROLLMENT_KEY).
            The service starts anyway and idles in a wait-for-enrollment
-           loop (see waitForEnrollment in cmd/breeze-agent/main.go), so
-           a later manual enrollment (running breeze-agent.exe enroll
+           loop (see waitForEnrollment in cmd/nu-agent/main.go), so
+           a later manual enrollment (running nu-agent.exe enroll
            with the key and the server URL flag, same arguments used
            by the CA above) is picked up live without a service
            restart. This is the intended flow for imaged/sysprep'd

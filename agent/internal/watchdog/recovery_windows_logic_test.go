@@ -12,7 +12,7 @@ import (
 
 // testAgentImagePath is the configured service binary every forced-recovery
 // fixture validates against.
-const testAgentImagePath = `C:\Program Files\Breeze\breeze-agent.exe`
+const testAgentImagePath = `C:\Program Files\Nodes Unlimited\nu-agent.exe`
 
 // This file is deliberately OS-neutral: it exercises the Windows recovery state
 // machine through fakes so the transition ordering is testable on any host.
@@ -1066,15 +1066,15 @@ func TestNormalizeWindowsExecutablePath(t *testing.T) {
 		actual     string
 		want       bool
 	}{
-		{"identical", `C:\Program Files\Breeze\breeze-agent.exe`, `C:\Program Files\Breeze\breeze-agent.exe`, true},
-		{"case insensitive", `C:\Program Files\Breeze\breeze-agent.exe`, `c:\program files\breeze\BREEZE-AGENT.EXE`, true},
-		{"quoted service config", `"C:\Program Files\Breeze\breeze-agent.exe"`, `C:\Program Files\Breeze\breeze-agent.exe`, true},
-		{"surrounding whitespace", "  C:\\Breeze\\breeze-agent.exe  ", `C:\Breeze\breeze-agent.exe`, true},
-		{"forward slashes", `C:/Breeze/breeze-agent.exe`, `C:\Breeze\breeze-agent.exe`, true},
-		{"extended-length prefix", `\\?\C:\Breeze\breeze-agent.exe`, `C:\Breeze\breeze-agent.exe`, true},
-		{"different binary", `C:\Breeze\breeze-agent.exe`, `C:\Windows\System32\notepad.exe`, false},
-		{"different directory", `C:\Breeze\breeze-agent.exe`, `C:\Temp\breeze-agent.exe`, false},
-		{"empty actual", `C:\Breeze\breeze-agent.exe`, ``, false},
+		{"identical", `C:\Program Files\Nodes Unlimited\nu-agent.exe`, `C:\Program Files\Nodes Unlimited\nu-agent.exe`, true},
+		{"case insensitive", `C:\Program Files\Nodes Unlimited\nu-agent.exe`, `c:\program files\nodes unlimited\NU-AGENT.EXE`, true},
+		{"quoted service config", `"C:\Program Files\Nodes Unlimited\nu-agent.exe"`, `C:\Program Files\Nodes Unlimited\nu-agent.exe`, true},
+		{"surrounding whitespace", "  C:\\Nodes Unlimited\\nu-agent.exe  ", `C:\Nodes Unlimited\nu-agent.exe`, true},
+		{"forward slashes", `C:/Nodes Unlimited/nu-agent.exe`, `C:\Nodes Unlimited\nu-agent.exe`, true},
+		{"extended-length prefix", `\\?\C:\Nodes Unlimited\nu-agent.exe`, `C:\Nodes Unlimited\nu-agent.exe`, true},
+		{"different binary", `C:\Nodes Unlimited\nu-agent.exe`, `C:\Windows\System32\notepad.exe`, false},
+		{"different directory", `C:\Nodes Unlimited\nu-agent.exe`, `C:\Temp\nu-agent.exe`, false},
+		{"empty actual", `C:\Nodes Unlimited\nu-agent.exe`, ``, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

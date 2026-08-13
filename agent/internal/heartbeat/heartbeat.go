@@ -63,7 +63,7 @@ import (
 var log = logging.L("heartbeat")
 var desktopSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-const backupProbeThreshold = 10 // keep in sync with agent/cmd/breeze-watchdog
+const backupProbeThreshold = 10 // keep in sync with agent/cmd/nu-watchdog
 
 // FINAL-REVIEW I10: slack allowed on the LOCAL comparison against the
 // server-supplied pending-activation deadline, so an agent with a fast clock
@@ -572,7 +572,7 @@ type Heartbeat struct {
 
 	// watchdogVersionReader is an optional test seam: when non-nil,
 	// installedWatchdogVersion calls this instead of the real on-disk read
-	// (readInstalledWatchdogVersion, which execs `breeze-watchdog status`). It
+	// (readInstalledWatchdogVersion, which execs `nu-watchdog status`). It
 	// returns (version, stable) — stable=false marks a transient failure that
 	// must NOT be cached. nil in production.
 	watchdogVersionReader func() (string, bool)
@@ -602,7 +602,7 @@ type Heartbeat struct {
 
 	// backupVersionReader is an optional test seam: when non-nil,
 	// installedBackupVersion calls this instead of the real on-disk read
-	// (readInstalledBackupVersion, which execs `breeze-backup --version`). It
+	// (readInstalledBackupVersion, which execs `nu-backup --version`). It
 	// returns (version, outcome) — see backupProbeOutcome for what each
 	// outcome means and how it is cached. nil in production.
 	backupVersionReader func() (string, backupProbeOutcome)
@@ -611,7 +611,7 @@ type Heartbeat struct {
 	// the watchdog version cache above but kept separate since it has nothing
 	// to do with watchdog upgrade bookkeeping.
 	backupVersionMu sync.Mutex
-	// backupVersionDisk caches the version parsed from the on-disk breeze-backup
+	// backupVersionDisk caches the version parsed from the on-disk nu-backup
 	// binary so we exec it at most once per process run (until invalidated).
 	// backupVersionOutcome is the outcome that produced backupVersionDisk;
 	// backupVersionRead records that a DURABLY-cached read happened (ok or
@@ -667,7 +667,7 @@ type Heartbeat struct {
 	// dedupe (which throttles retries), this is an escape hatch: a backup
 	// artifact that is permanently missing for a given release (self-hosted
 	// server with no backup binaries registered, or a release tag missing the
-	// asset) must not wedge agent upgrades forever just because a breeze-backup
+	// asset) must not wedge agent upgrades forever just because a nu-backup
 	// binary happens to already be installed. See backupUpgradeCompanion.
 	backupPrefetchFailureMu sync.Mutex
 	// backupPrefetchFailureVersion is the targetVersion the current failure
@@ -905,7 +905,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		}
 	}, cfg.PatchRebootMaxPerDay)
 
-	// Set backup binary path for IPC forwarding to breeze-backup helper
+	// Set backup binary path for IPC forwarding to nu-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
 
 	// For direct mode (non-service), notify API when WebRTC peer drops.
@@ -1368,12 +1368,12 @@ func (h *Heartbeat) Start() {
 	defer ticker.Stop()
 	const bootCheckInterval = 5 * time.Minute
 	var lastBootCheck time.Time
-	// Self-heal a missing breeze-user-helper.exe (Windows), decoupled from
+	// Self-heal a missing nu-user-helper.exe (Windows), decoupled from
 	// upgrades. Zero-valued timer → fires on the first tick (≈startup), then
 	// every interval after (issue #816 follow-up).
 	const userHelperCheckInterval = 30 * time.Minute
 	var lastUserHelperCheck time.Time
-	// Self-heal a missing or version-mismatched breeze-backup binary, on ALL
+	// Self-heal a missing or version-mismatched nu-backup binary, on ALL
 	// platforms (unlike the Windows-only user-helper check above). Same
 	// zero-valued-timer-fires-on-first-tick shape.
 	const backupHelperCheckInterval = 30 * time.Minute
@@ -1534,9 +1534,9 @@ func (h *Heartbeat) Start() {
 				}()
 			}
 
-			// Reconcile a missing or stale breeze-backup binary, decoupled
+			// Reconcile a missing or stale nu-backup binary, decoupled
 			// from any in-progress agent upgrade. Runs on every platform —
-			// breeze-backup ships everywhere, unlike the user-helper above.
+			// nu-backup ships everywhere, unlike the user-helper above.
 			if now.Sub(lastBackupHelperCheck) >= backupHelperCheckInterval {
 				lastBackupHelperCheck = now
 				go func() {
@@ -6114,7 +6114,7 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-// handleWatchdogUpgrade swaps the on-disk breeze-watchdog binary to
+// handleWatchdogUpgrade swaps the on-disk nu-watchdog binary to
 // targetVersion and restarts the watchdog service. Invoked when the server sets
 // watchdogUpgradeTo in the heartbeat response (it does so only after a watchdog
 // failover heartbeat told it the on-disk watchdog is behind the latest
@@ -6253,7 +6253,7 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 	}
 }
 
-// prefetchUserHelper pre-downloads breeze-user-helper.exe so the upgrade-restart
+// prefetchUserHelper pre-downloads nu-user-helper.exe so the upgrade-restart
 // script can drop it alongside the new agent binary. Returns nil when the
 // helper is not applicable (non-Windows) or could not be fetched (404 for
 // pre-#816 releases, network errors, checksum mismatches, manifest signature
@@ -6262,7 +6262,7 @@ func (h *Heartbeat) handleUpgrade(targetVersion string) {
 //
 // Without this prefetch, in-place upgrades produce an agent install missing
 // the user-helper (only the MSI installer ever placed it on disk before #816),
-// the HelperLifecycleManager falls through to a `breeze-agent.exe user-helper`
+// the HelperLifecycleManager falls through to a `nu-agent.exe user-helper`
 // fallback every ~30s, and orphaned processes accumulate during heartbeat
 // goroutine wedges until the service dies.
 //
@@ -6315,7 +6315,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	pair := &updater.BinaryPair{
 		Temp:   tempPath,
-		Target: filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe"),
+		Target: filepath.Join(filepath.Dir(binaryPath), "nu-user-helper.exe"),
 	}
 	log.Info(
 		"pre-downloaded user-helper for restart-helper swap",
@@ -6325,13 +6325,13 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 	return pair
 }
 
-// reconcileUserHelper self-heals a Windows agent whose breeze-user-helper.exe
+// reconcileUserHelper self-heals a Windows agent whose nu-user-helper.exe
 // sibling is missing from disk, decoupled from any version upgrade. The MSI
 // installer and the in-place upgrade prefetch (see prefetchUserHelper) are the
 // only two vectors that ever place the helper, so an agent installed via a
 // vector that skips it (direct-exe enrollment, pre-#816 MSI) and already at the
 // latest version has no path to acquire it — it falls back to spawning
-// breeze-agent.exe as the helper every ~30s, which is unstable (issue #816
+// nu-agent.exe as the helper every ~30s, which is unstable (issue #816
 // follow-up). This reconciliation closes that gap: if the helper is absent next
 // to the agent, fetch the matching CURRENT version via the user-helper update
 // component and drop it in. All failure modes are non-fatal — we log and return
@@ -6343,11 +6343,11 @@ func (h *Heartbeat) reconcileUserHelper(binaryPath string) {
 	}
 	if goos != "windows" {
 		// macOS/Linux have no sibling helper binary — the helper runs as a
-		// breeze-agent subcommand — so there is nothing to reconcile.
+		// nu-agent subcommand — so there is nothing to reconcile.
 		return
 	}
 
-	helperPath := filepath.Join(filepath.Dir(binaryPath), "breeze-user-helper.exe")
+	helperPath := filepath.Join(filepath.Dir(binaryPath), "nu-user-helper.exe")
 	switch fi, statErr := os.Stat(helperPath); {
 	case statErr == nil && fi.Size() > 0:
 		// Present and non-empty — nothing to heal. If we'd been failing (e.g.
@@ -6512,7 +6512,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		log.Error("failed to create backup directory", "path", backupDir, "error", err.Error())
 		return
 	}
-	backupPath := filepath.Join(backupDir, "breeze-agent.backup")
+	backupPath := filepath.Join(backupDir, "nu-agent.backup")
 
 	updaterCfg := &updater.Config{
 		ServerURL:                   h.serverURL,
@@ -6525,14 +6525,14 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		RequireManifestSigningKeyID: h.requireManifestSigningKeyID(),
 	}
 
-	// Pre-download breeze-user-helper.exe on Windows so the restart-helper
+	// Pre-download nu-user-helper.exe on Windows so the restart-helper
 	// script can drop it alongside the new agent binary. See prefetchUserHelper
 	// for the full rationale (issue #816 / PR #845). All failure modes are
 	// non-fatal — a nil return value is the normal "agent-only upgrade"
 	// outcome.
 	userHelperPair := h.prefetchUserHelper(targetVersion, binaryPath)
 
-	// breeze-backup is slaved to the agent version (no independent directive)
+	// nu-backup is slaved to the agent version (no independent directive)
 	// and is prefetched on every platform. Unlike the user-helper prefetch
 	// above, a failure here can ABORT the whole agent upgrade — see
 	// backupUpgradeCompanion for the present-vs-absent-vs-persistently-failing
@@ -6548,12 +6548,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	}
 
 	// A backup job may be mid-upload right now. The Windows restart script
-	// force-kills breeze-backup.exe whenever a swap is staged (see
+	// force-kills nu-backup.exe whenever a swap is staged (see
 	// buildRestartScript), and the non-Windows swap path replaces the binary
 	// file unconditionally too — so a staged backupPair must not proceed
 	// while a job is active, or it kills/corrupts an in-flight upload. Only
 	// gated when there's actually a backup swap staged: an agent-only or
-	// backup-less upgrade has nothing here that could touch breeze-backup.
+	// backup-less upgrade has nothing here that could touch nu-backup.
 	// This is a routine, expected deferral (not a failure), so it must NOT
 	// count against backupUpgradeCompanion's failure cap above — a busy
 	// backup job says nothing about whether the artifact itself is fetchable.

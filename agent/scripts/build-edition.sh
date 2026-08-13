@@ -145,11 +145,11 @@ esac
 # resolve to on some macOS runner images.
 component_package() {
   case "$1" in
-    agent) echo "./cmd/breeze-agent" ;;
-    backup) echo "./cmd/breeze-backup" ;;
-    watchdog) echo "./cmd/breeze-watchdog" ;;
-    user-helper) echo "./cmd/breeze-user-helper" ;;
-    desktop-helper) echo "./cmd/breeze-desktop-helper" ;;
+    agent) echo "./cmd/nu-agent" ;;
+    backup) echo "./cmd/nu-backup" ;;
+    watchdog) echo "./cmd/nu-watchdog" ;;
+    user-helper) echo "./cmd/nu-user-helper" ;;
+    desktop-helper) echo "./cmd/nu-desktop-helper" ;;
     *) return 1 ;;
   esac
 }

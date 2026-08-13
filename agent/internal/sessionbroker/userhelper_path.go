@@ -16,7 +16,7 @@ import (
 // user session. The constant is declared in this platform-independent file so
 // resolveUserHelperPath is testable on every OS the agent builds on, even
 // though only Windows actually uses the helper binary at runtime.
-const UserHelperBinaryName = "breeze-user-helper.exe"
+const UserHelperBinaryName = "nu-user-helper.exe"
 
 // resolveUserHelperPath picks the right binary path for a user-helper spawn,
 // given the running agent's executable path. Pure function modulo the
@@ -34,7 +34,7 @@ const UserHelperBinaryName = "breeze-user-helper.exe"
 // visible console-window flash at user logon that this whole change set
 // is meant to eliminate — so the fallback is a stop-gap, not a permanent
 // shape. Once fleet telemetry confirms that the MSI install path reliably
-// drops breeze-user-helper.exe alongside breeze-agent.exe on every
+// drops nu-user-helper.exe alongside nu-agent.exe on every
 // supported install vector (msiexec /i, /fa repair, in-place upgrade via
 // dev_update), the fs.ErrNotExist branch should be promoted to a hard
 // error so the regression surfaces loudly instead of degrading silently.
@@ -71,7 +71,7 @@ func (o *helperFallbackWarningOwner) WarnIfFallback(resolved ResolvedHelperExecu
 		return
 	}
 	o.once.Do(func() {
-		log.Warn("breeze-user-helper.exe missing — falling back to agent binary; console window will flash at user logon until the install is repaired",
+		log.Warn("nu-user-helper.exe missing — falling back to agent binary; console window will flash at user logon until the install is repaired",
 			"expectedPath", filepath.Join(filepath.Dir(resolved.Path), UserHelperBinaryName),
 			"fallbackPath", resolved.Path,
 		)

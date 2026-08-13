@@ -2,8 +2,8 @@
 $ErrorActionPreference = "Stop"
 
 $taskName = "AgentUserHelper"
-# Single backslashes: PowerShell does NOT escape "\", so "\\Breeze\\" was the
-# literal string \\Breeze\\ — it never matched the task registered at \Breeze\
+# Single backslashes: PowerShell does NOT escape "\", so "\\Nodes Unlimited\\" was the
+# literal string \\Nodes Unlimited\\ — it never matched the task registered at \Breeze\
 # by install-windows.ps1, making uninstall cleanup a silent no-op
 # (Get-ScheduledTask -ErrorAction SilentlyContinue returned nothing, so the
 # if ($existing) guard skipped the unregister — no error was ever raised).

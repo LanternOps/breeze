@@ -222,12 +222,12 @@ func fakeSuspendedHelper() *suspendedHelper {
 		process:    windows.Handle(101),
 		thread:     windows.Handle(102),
 		pid:        4100,
-		binaryPath: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+		binaryPath: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 	}
 }
 
 func fakeResolvedHelperExecutable() (ResolvedHelperExecutable, error) {
-	return ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`}, nil
+	return ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`}, nil
 }
 
 func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
@@ -235,7 +235,7 @@ func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
 	job := &fakeHelperJob{}
 	spawner := newWindowsHelperSpawnerWithJob(job, windowsSpawnOps{
 		resolveExecutable: func() (ResolvedHelperExecutable, error) {
-			return ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true}, nil
+			return ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-agent.exe`, MainBinaryFallback: true}, nil
 		},
 		createSuspended: func(_ HelperKey, _ ResolvedHelperExecutable) (*suspendedHelper, error) {
 			// Return deliberately stale suspended-process bookkeeping. The
@@ -255,7 +255,7 @@ func TestWindowsHelperSpawnerRetainsMainBinaryFallback(t *testing.T) {
 	if !helper.MainBinaryFallback {
 		t.Fatal("SpawnedHelper.MainBinaryFallback = false, want true")
 	}
-	if helper.BinaryPath != `C:\Program Files\Breeze\breeze-agent.exe` {
+	if helper.BinaryPath != `C:\Program Files\Nodes Unlimited\nu-agent.exe` {
 		t.Fatalf("SpawnedHelper.BinaryPath = %q, want typed resolver path", helper.BinaryPath)
 	}
 	if helper.CommandMode != "user-helper" || helper.Role != key.Role || helper.WindowsSessionID != key.WindowsSessionID {
@@ -332,24 +332,24 @@ func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
 		{
 			name:         "system fallback",
 			role:         "system",
-			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true},
+			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-agent.exe`, MainBinaryFallback: true},
 			wantWarnings: 1,
 		},
 		{
 			name:         "user fallback",
 			role:         "user",
-			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-agent.exe`, MainBinaryFallback: true},
+			resolved:     ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-agent.exe`, MainBinaryFallback: true},
 			wantWarnings: 1,
 		},
 		{
 			name:     "system companion",
 			role:     "system",
-			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`},
+			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`},
 		},
 		{
 			name:     "user companion",
 			role:     "user",
-			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Breeze\breeze-user-helper.exe`},
+			resolved: ResolvedHelperExecutable{Path: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`},
 		},
 	}
 	for _, tt := range tests {
@@ -384,7 +384,7 @@ func TestWindowsHelperSpawnerWarnsBeforeRepeatedCreateFailures(t *testing.T) {
 			if resolveCalls != 3 || createCalls != 3 {
 				t.Fatalf("calls resolve=%d create=%d, want 3 each", resolveCalls, createCalls)
 			}
-			if got := strings.Count(buf.String(), "breeze-user-helper.exe missing"); got != tt.wantWarnings {
+			if got := strings.Count(buf.String(), "nu-user-helper.exe missing"); got != tt.wantWarnings {
 				t.Fatalf("warning count = %d, want %d; logs: %s", got, tt.wantWarnings, buf.String())
 			}
 		})

@@ -3,23 +3,36 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.watchdog</string>
+    <string>com.nodesunlimited.agent</string>
+
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-watchdog</string>
+        <string>/usr/local/bin/nu-agent</string>
         <string>run</string>
     </array>
+
     <key>RunAtLoad</key>
     <true/>
+
     <key>KeepAlive</key>
     <true/>
+
     <key>ThrottleInterval</key>
     <integer>5</integer>
+
     <key>WorkingDirectory</key>
-    <string>/Library/Application Support/Breeze</string>
+    <string>/Library/Application Support/Nodes Unlimited</string>
+
     <key>StandardOutPath</key>
-    <string>/Library/Logs/Breeze/watchdog.log</string>
+    <string>/Library/Logs/Nodes Unlimited/agent.log</string>
+
     <key>StandardErrorPath</key>
-    <string>/Library/Logs/Breeze/watchdog.err</string>
+    <string>/Library/Logs/Nodes Unlimited/agent.err</string>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
 </dict>
 </plist>

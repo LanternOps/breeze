@@ -8,7 +8,7 @@
     Failure diagnostics: when this script fails, the MSI rolls back with
     "installer rolled back" and no actionable text in the default MSI log.
     To preserve the cause, every error path writes a single-line timestamped
-    record to C:\ProgramData\Breeze\logs\user-helper-install-last-error.txt
+    record to C:\ProgramData\Nodes Unlimited\logs\user-helper-install-last-error.txt
     (survives the rollback because CA-written files are opaque to MSI) and
     emits an Event Viewer entry under Application/BreezeAgent. This mirrors
     the enrollment CA's diagnostic trail.
@@ -16,11 +16,11 @@
 
 $ErrorActionPreference = "Stop"
 
-$BinaryPath = "C:\Program Files\Breeze\breeze-agent.exe"
-$UserHelperBinaryPath = "C:\Program Files\Breeze\breeze-user-helper.exe"
-$TaskXmlPath = Join-Path $PSScriptRoot "..\..\service\windows\breeze-agent-user-task.xml"
+$BinaryPath = "C:\Program Files\Nodes Unlimited\nu-agent.exe"
+$UserHelperBinaryPath = "C:\Program Files\Nodes Unlimited\nu-user-helper.exe"
+$TaskXmlPath = Join-Path $PSScriptRoot "..\..\service\windows\nu-agent-user-task.xml"
 $TaskName = "\Breeze\AgentUserHelper"
-$LogDir = "C:\ProgramData\Breeze\logs"
+$LogDir = "C:\ProgramData\Nodes Unlimited\logs"
 $SentinelPath = Join-Path $LogDir "user-helper-install-last-error.txt"
 
 function Write-FailureDiagnostic {
@@ -52,22 +52,22 @@ function Write-FailureDiagnostic {
 
 Write-Host "Installing Breeze Agent User Helper..."
 
-# Verify binaries exist. breeze-agent.exe is the console-subsystem CLI binary
-# used by the SCM service. breeze-user-helper.exe is the GUI-subsystem sibling
+# Verify binaries exist. nu-agent.exe is the console-subsystem CLI binary
+# used by the SCM service. nu-user-helper.exe is the GUI-subsystem sibling
 # that the scheduled task launches at user logon — same Go source, built with
 # -H windowsgui so no console window is allocated in the interactive session.
 if (-not (Test-Path $BinaryPath)) {
-    Write-FailureDiagnostic "breeze-agent.exe not found at $BinaryPath. Install the agent first."
+    Write-FailureDiagnostic "nu-agent.exe not found at $BinaryPath. Install the agent first."
     exit 1
 }
 if (-not (Test-Path $UserHelperBinaryPath)) {
-    Write-FailureDiagnostic "breeze-user-helper.exe not found at $UserHelperBinaryPath. Install the agent first."
+    Write-FailureDiagnostic "nu-user-helper.exe not found at $UserHelperBinaryPath. Install the agent first."
     exit 1
 }
 
 # Find task XML
 if (-not (Test-Path $TaskXmlPath)) {
-    $TaskXmlPath = Join-Path $PSScriptRoot "..\..\service\windows\breeze-agent-user-task.xml"
+    $TaskXmlPath = Join-Path $PSScriptRoot "..\..\service\windows\nu-agent-user-task.xml"
 }
 if (-not (Test-Path $TaskXmlPath)) {
     Write-FailureDiagnostic "Task XML template not found at $TaskXmlPath."

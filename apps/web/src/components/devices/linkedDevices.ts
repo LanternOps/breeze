@@ -3,7 +3,7 @@ import type { Device } from './DeviceList';
 /**
  * Linked device profiles for multi-boot systems (#2138) — v2 presentation.
  *
- * A physical machine that dual/multi-boots runs one Breeze agent per OS, so the
+ * A physical machine that dual/multi-boots runs one NU Agent per OS, so the
  * same hardware appears as several device records — only one can be online at a
  * time. Every record is a fully managed endpoint, so NOTHING is collapsed away
  * or hidden (that was v1's mistake, PR #2186). Instead, `groupLinkedDevices`

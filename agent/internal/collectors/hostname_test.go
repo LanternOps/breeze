@@ -177,7 +177,7 @@ func TestHostnameSourceChain_FirstElementIsOsHostname(t *testing.T) {
 }
 
 // TestCollectSystemInfo_HostnameFallbackFailureLeavesEmpty locks in the
-// contract that the enroll guard in cmd/breeze-agent/main.go relies on:
+// contract that the enroll guard in cmd/nu-agent/main.go relies on:
 // when the hostname resolver fails, CollectSystemInfo must leave
 // info.Hostname empty rather than silently keeping a stale value from
 // gopsutil. The guard's assertHostnameNonEmpty check then catches it

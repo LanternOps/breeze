@@ -63,7 +63,7 @@ const startupTypeColors: Record<StartupType, string> = {
 
 const startupTypeOptions: StartupType[] = ['Automatic', 'Automatic (Delayed)', 'Manual', 'Disabled'];
 
-// The Breeze agent's own service name per platform
+// The NU Agent's own service name per platform
 export const AGENT_SERVICE_NAMES = new Set([
   'breezeagent',       // Windows (case-insensitive match)
   'breeze-agent',      // Linux systemd

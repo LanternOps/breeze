@@ -43,7 +43,7 @@ var serviceInstallCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to determine executable path: %w", err)
 		}
-		serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-agent.exe")
+		serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "nu-agent.exe")
 		if err != nil {
 			return fmt.Errorf("failed to install service binary in protected Program Files location: %w", err)
 		}
@@ -92,9 +92,9 @@ var serviceInstallCmd = &cobra.Command{
 					"Warning: watchdog bootstrap failed: %v\n"+
 						"The agent service is installed and running. The watchdog is NOT installed.\n"+
 						"To retry, choose one of:\n"+
-						"  1. Re-run `breeze-agent.exe service install` (will retry the download).\n"+
-						"  2. Download %s manually, place it next to breeze-agent.exe,\n"+
-						"     then run `breeze-watchdog.exe service install`.\n"+
+						"  1. Re-run `nu-agent.exe service install` (will retry the download).\n"+
+						"  2. Download %s manually, place it next to nu-agent.exe,\n"+
+						"     then run `nu-watchdog.exe service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
 					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}

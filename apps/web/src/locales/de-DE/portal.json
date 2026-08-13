@@ -20,7 +20,7 @@
     "title": "Asset-Verlauf"
   },
   "branding": {
-    "defaultName": "Breeze Portal"
+    "defaultName": "Nodes Unlimited Portal"
   },
   "customerDeviceList": {
     "deviceCount": "{{count}} mit Ihrem Konto verknüpfte Geräte",

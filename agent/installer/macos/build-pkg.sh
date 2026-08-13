@@ -1,90 +1,96 @@
-#!/bin/bash
-# ============================================
-# Breeze Agent macOS .pkg Builder
-# ============================================
-# Usage:
-#   ./build-pkg.sh <agent-binary> <desktop-helper-binary> <backup-binary> <watchdog-binary> <version> <arch> <output-path>
+#!/usr/bin/env bash
+# Build the NU Agent macOS installer package.
 #
-# Example:
-#   ./build-pkg.sh ./breeze-agent-darwin-amd64 ./breeze-desktop-helper-darwin-amd64 ./breeze-backup-darwin-amd64 ./breeze-watchdog-darwin-amd64 0.13.3 amd64 ./dist/breeze-agent-darwin-amd64.pkg
-# ============================================
-
+# Upstream ships no macOS packaging — the Makefile only produces raw binaries and
+# a Windows MSI; the .pkg and Installer.app come from LanternOps' private release
+# pipeline. This is our replacement.
+#
+#   ./build-pkg.sh arm64
+#   VERSION=0.104.0-nu2 SIGN_IDENTITY="NU Agent Signing" ./build-pkg.sh amd64
+#
+# Signing: pass SIGN_IDENTITY to sign with our self-signed identity. That does NOT
+# make the package Apple-notarised — the user still gets the "unidentified
+# developer" prompt and chooses to proceed. What it buys is a STABLE code-signing
+# identity, so macOS keeps the TCC grants (Full Disk Access, Accessibility, Screen
+# Recording) across agent self-updates. Ad-hoc signing re-randomises identity on
+# every build and silently drops those grants, which would break remote control
+# after the first update.
 set -euo pipefail
 
-AGENT_BIN="$1"
-DESKTOP_HELPER_BIN="$2"
-BACKUP_BIN="$3"
-WATCHDOG_BIN="$4"
-VERSION="$5"
-ARCH="$6"
-OUTPUT="$7"
+ARCH="${1:-arm64}"
+case "$ARCH" in
+  arm64|amd64) ;;
+  *) echo "usage: $0 [arm64|amd64]" >&2; exit 2 ;;
+esac
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_DIR="$(cd "$HERE/../.." && pwd)"
+VERSION="${VERSION:-0.104.0-nu1}"
+IDENTIFIER="${IDENTIFIER:-com.nodesunlimited.agent}"
+OUT_DIR="${OUT_DIR:-$AGENT_DIR/dist}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 
-echo "Building Breeze Agent .pkg"
-echo "  Agent:    $AGENT_BIN"
-echo "  Desktop:  $DESKTOP_HELPER_BIN"
-echo "  Backup:   $BACKUP_BIN"
-echo "  Watchdog: $WATCHDOG_BIN"
-echo "  Version:  $VERSION"
-echo "  Arch:     $ARCH"
-echo "  Output:   $OUTPUT"
-echo ""
+BINARIES=(nu-agent nu-watchdog nu-desktop-helper nu-backup)
 
-# ----- Build payload root -----
-# Mirror the on-disk layout the installer will create
-PAYLOAD="$WORK_DIR/payload"
-mkdir -p "$PAYLOAD/usr/local/bin"
-mkdir -p "$PAYLOAD/Library/LaunchDaemons"
-mkdir -p "$PAYLOAD/Library/LaunchAgents"
+echo "==> building binaries ($ARCH, CGO off)"
+cd "$AGENT_DIR"
+for b in "${BINARIES[@]}"; do
+  CGO_ENABLED=0 GOOS=darwin GOARCH="$ARCH" \
+    go build -ldflags "-X main.version=$VERSION" -o "bin/$b-darwin-$ARCH" "./cmd/$b"
+done
 
-cp "$AGENT_BIN" "$PAYLOAD/usr/local/bin/breeze-agent"
-chmod 755 "$PAYLOAD/usr/local/bin/breeze-agent"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE/root/usr/local/bin"
 
-cp "$DESKTOP_HELPER_BIN" "$PAYLOAD/usr/local/bin/breeze-desktop-helper"
-chmod 755 "$PAYLOAD/usr/local/bin/breeze-desktop-helper"
+for b in "${BINARIES[@]}"; do
+  install -m 0755 "bin/$b-darwin-$ARCH" "$STAGE/root/usr/local/bin/$b"
+done
 
-# Install backup binary
-cp "$BACKUP_BIN" "$PAYLOAD/usr/local/bin/breeze-backup"
-chmod 755 "$PAYLOAD/usr/local/bin/breeze-backup"
+# Strip extended attributes (quarantine, provenance, resource forks). Left in
+# place, pkgbuild materialises them as AppleDouble "._name" siblings that ship
+# inside the payload and land in /usr/local/bin on the customer's machine.
+xattr -cr "$STAGE/root" 2>/dev/null || true
 
-# Install watchdog binary
-cp "$WATCHDOG_BIN" "$PAYLOAD/usr/local/bin/breeze-watchdog"
-chmod 755 "$PAYLOAD/usr/local/bin/breeze-watchdog"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "==> signing binaries as '$SIGN_IDENTITY'"
+  for b in "${BINARIES[@]}"; do
+    codesign --force --options runtime --timestamp=none \
+      --sign "$SIGN_IDENTITY" "$STAGE/root/usr/local/bin/$b"
+  done
+else
+  echo "==> WARNING: no SIGN_IDENTITY — binaries are ad-hoc signed."
+  echo "    macOS will drop TCC permissions on every agent update."
+fi
 
-cp "$SCRIPT_DIR/../../service/launchd/com.breeze.agent.plist" \
-   "$PAYLOAD/Library/LaunchDaemons/com.breeze.agent.plist"
+cp "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$STAGE/scripts/" 2>/dev/null || {
+  mkdir -p "$STAGE/scripts"
+  cp "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$STAGE/scripts/"
+}
+chmod +x "$STAGE/scripts/preinstall" "$STAGE/scripts/postinstall"
 
-cp "$SCRIPT_DIR/../../service/launchd/com.breeze.desktop-helper-user.plist" \
-   "$PAYLOAD/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
+mkdir -p "$OUT_DIR"
+PKG="$OUT_DIR/nu-agent-$ARCH.pkg"
 
-cp "$SCRIPT_DIR/../../service/launchd/com.breeze.desktop-helper-loginwindow.plist" \
-   "$PAYLOAD/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
-
-# Install watchdog launchd plist
-cp "$SCRIPT_DIR/com.breeze.watchdog.plist" \
-   "$PAYLOAD/Library/LaunchDaemons/com.breeze.watchdog.plist"
-
-# ----- Prepare install scripts -----
-SCRIPTS="$WORK_DIR/scripts"
-mkdir -p "$SCRIPTS"
-cp "$SCRIPT_DIR/preinstall" "$SCRIPTS/preinstall"
-cp "$SCRIPT_DIR/postinstall" "$SCRIPTS/postinstall"
-chmod 755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
-
-# ----- Build component package -----
-mkdir -p "$(dirname "$OUTPUT")"
-
+echo "==> pkgbuild $PKG"
 pkgbuild \
-    --root "$PAYLOAD" \
-    --scripts "$SCRIPTS" \
-    --identifier "com.breeze.agent" \
-    --version "$VERSION" \
-    --install-location "/" \
-    "$OUTPUT"
+  --root "$STAGE/root" \
+  --scripts "$STAGE/scripts" \
+  --identifier "$IDENTIFIER" \
+  --version "$VERSION" \
+  --install-location / \
+  "$PKG"
 
-echo ""
-echo "Package built: $OUTPUT"
-ls -lh "$OUTPUT"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  INSTALLER_IDENTITY="${INSTALLER_SIGN_IDENTITY:-$SIGN_IDENTITY}"
+  if productsign --sign "$INSTALLER_IDENTITY" "$PKG" "$PKG.signed" 2>/dev/null; then
+    mv "$PKG.signed" "$PKG"
+    echo "==> package signed as '$INSTALLER_IDENTITY'"
+  else
+    echo "==> note: productsign skipped (needs an installer-type identity); payload is still signed"
+  fi
+fi
+
+echo
+echo "built: $PKG"
+pkgutil --payload-files "$PKG" | sed 's/^/  /'

@@ -71,7 +71,7 @@ func TestUnitNeedsReconcile(t *testing.T) {
 }
 
 func TestReconcileTransientArgs(t *testing.T) {
-	args := reconcileTransientArgs(4242, "/usr/local/bin/breeze-agent")
+	args := reconcileTransientArgs(4242, "/usr/local/bin/nu-agent")
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--collect") {
@@ -90,14 +90,14 @@ func TestReconcileTransientArgs(t *testing.T) {
 		t.Fatalf("argv too short: %v", args)
 	}
 	tail := args[len(args)-3:]
-	if tail[0] != "/usr/local/bin/breeze-agent" || tail[1] != "service" || tail[2] != "reconcile-unit" {
+	if tail[0] != "/usr/local/bin/nu-agent" || tail[1] != "service" || tail[2] != "reconcile-unit" {
 		t.Errorf("must invoke `<bin> service reconcile-unit`; got trailing %v", tail)
 	}
 }
 
 func TestStaticUnitMatchesEmbedded(t *testing.T) {
-	// Test runs with cwd = package dir (agent/cmd/breeze-agent).
-	data, err := os.ReadFile("../../service/systemd/breeze-agent.service")
+	// Test runs with cwd = package dir (agent/cmd/nu-agent).
+	data, err := os.ReadFile("../../service/systemd/nu-agent.service")
 	if err != nil {
 		t.Fatalf("read static unit: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestStaticUnitMatchesEmbedded(t *testing.T) {
 		for i < len(got) && i < len(want) && got[i] == want[i] {
 			i++
 		}
-		t.Fatalf("static breeze-agent.service is not byte-identical to embedded linuxUnit "+
+		t.Fatalf("static nu-agent.service is not byte-identical to embedded linuxUnit "+
 			"(first divergence at byte %d: file has %q, const has %q). "+
 			"Keep them in sync (the auto-heal writes the embedded copy).",
 			i, snippetAt(got, i), snippetAt(want, i))
@@ -173,7 +173,7 @@ func TestUnitDeclaresRuntimeDirectory(t *testing.T) {
 }
 
 // TestUnitDeclaresRuntimeDirectoryPreserve guards the #1297 follow-up: on a
-// partially-upgraded host the still-hardened breeze-watchdog binds /run/breeze
+// partially-upgraded host the still-hardened nu-watchdog binds /run/breeze
 // via ReadWritePaths, so an agent restart must NOT remove the directory out
 // from under it. RuntimeDirectoryPreserve defaults to 'no' (remove on stop), so
 // the directive must be set explicitly.

@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Instala el parche aprobado para cada CVE en {{deviceText}} ({{findingText}}). Se omiten los hallazgos sin un parche aplicable y aprobado.",
       "accept": "Oculta {{findingText}} en {{deviceText}} de la cola abierta hasta la fecha que establezca. No se vuelven a abrir automáticamente: las aceptaciones que vencen aparecen en la tarjeta \"Aceptado, vence pronto\".",
-      "mitigate": "Marca {{findingText}} en {{deviceText}} como mitigados y registra su nota como control compensatorio. Breeze no modifica los dispositivos."
+      "mitigate": "Marca {{findingText}} en {{deviceText}} como mitigados y registra su nota como control compensatorio. Nodes Unlimited no modifica los dispositivos."
     },
     "fields": {
       "reason": "Razón",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "Aún no hay hallazgos de vulnerabilidad",
-      "description": "Breeze compara el software y el inventario del sistema operativo de cada dispositivo con los CVE conocidos y pone en cola todo lo que necesita parches, mitigación o aceptación de riesgos aquí.",
+      "description": "Nodes Unlimited compara el software y el inventario del sistema operativo de cada dispositivo con los CVE conocidos y pone en cola todo lo que necesita parches, mitigación o aceptación de riesgos aquí.",
       "setupHint": "El análisis está desactivado de forma predeterminada; habilítelo en la pestaña Vulnerabilidad de una política de configuración.",
       "setupAction": "Configurar el escaneo de vulnerabilidades"
     },

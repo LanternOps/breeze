@@ -166,7 +166,7 @@ func TestLaunchProcessViaUserHelperBroadcastsToAllUserSessions(t *testing.T) {
 	startResponder("older", olderClient)
 	startResponder("newer", newerClient)
 
-	if err := b.LaunchProcessViaUserHelper("/usr/local/bin/breeze-agent"); err != nil {
+	if err := b.LaunchProcessViaUserHelper("/usr/local/bin/nu-agent"); err != nil {
 		t.Fatalf("LaunchProcessViaUserHelper: %v", err)
 	}
 
@@ -978,11 +978,11 @@ func TestPamScopeBelongsOnlyToSystemHelper(t *testing.T) {
 	}
 
 	b := &Broker{}
-	userScopes := b.scopesForRole(ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
+	userScopes := b.scopesForRole(ipc.HelperRoleUser, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`)
 	if containsString(userScopes, ipc.ScopePam) {
 		t.Fatalf("scopesForRole(user) = %v, must not contain %q", userScopes, ipc.ScopePam)
 	}
-	systemScopes := b.scopesForRole(ipc.HelperRoleSystem, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Breeze\breeze-user-helper.exe`)
+	systemScopes := b.scopesForRole(ipc.HelperRoleSystem, ipc.HelperBinaryUserHelper, "windows", `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`)
 	if !containsString(systemScopes, ipc.ScopePam) {
 		t.Fatalf("scopesForRole(system) = %v, want %q", systemScopes, ipc.ScopePam)
 	}
@@ -1095,7 +1095,7 @@ func containsString(values []string, want string) bool {
 // "<ProgramFiles>\Breeze Helper\" install location, causing the broker to reject
 // the genuine Helper on Windows. Runs on any host via the OS-parameterized core.
 func TestAssistHelperBinaryPathsWindowsRealInstallPath(t *testing.T) {
-	paths := assistHelperBinaryPathsForOS(`C:\Program Files\Breeze`, "windows", `C:\Program Files`)
+	paths := assistHelperBinaryPathsForOS(`C:\Program Files\Nodes Unlimited`, "windows", `C:\Program Files`)
 	// At least one candidate must point at the "Breeze Helper" install dir
 	// (not the agent's "Breeze" dir) and be the breeze-helper.exe binary.
 	found := false

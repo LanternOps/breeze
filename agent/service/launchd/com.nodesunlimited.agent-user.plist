@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.agent-user</string>
+    <string>com.nodesunlimited.agent-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-agent</string>
+        <string>/usr/local/bin/nu-agent</string>
         <string>user-helper</string>
         <string>--role</string>
         <string>user</string>

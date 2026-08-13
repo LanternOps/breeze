@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows vous demandera votre accord",
     "body": "Au moment où vous ouvrez le fichier, Windows affiche une demande d’autorisation avant de l’exécuter. Le fichier porte une signature numérique : la demande nomme donc un éditeur, et ce nom doit être {{publisher}}. Si l’on y lit que l’éditeur est inconnu, ou un nom auquel vous ne vous attendiez pas, fermez la fenêtre et téléphonez à la personne qui vous aide plutôt que de poursuivre.",
-    "publisher": "l’éditeur de Breeze"
+    "publisher": "l’éditeur de Nodes Unlimited"
   },
   "trust": {
     "title": "Ce que fait le programme",

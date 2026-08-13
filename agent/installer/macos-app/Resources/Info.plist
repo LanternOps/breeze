@@ -9,7 +9,7 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.breeze.installer</string>
+    <string>com.nodesunlimited.installer</string>
     <key>CFBundleName</key>
     <string>NODES UNLIMITED AGENT Installer</string>
     <key>CFBundleDisplayName</key>

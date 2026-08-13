@@ -30,7 +30,7 @@ var probePrompt bool
 var log = logging.L("desktop-helper")
 
 var rootCmd = &cobra.Command{
-	Use: "breeze-desktop-helper",
+	Use: "nu-desktop-helper",
 	Run: func(cmd *cobra.Command, args []string) {
 		runDesktopHelper()
 	},

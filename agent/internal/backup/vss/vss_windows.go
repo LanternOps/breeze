@@ -1052,7 +1052,7 @@ const writerStatusTimeout = 30 * time.Second
 
 // createBackupComponents constructs an IVssBackupComponents, checking that the
 // export resolves first. windows.LazyProc.Call *panics* when the DLL or export
-// is missing, and a panic takes the whole breeze-backup process down — whereas
+// is missing, and a panic takes the whole nu-backup process down — whereas
 // the caller is written to degrade gracefully on an error ("proceeding without
 // VSS"). Hosts without a usable vssapi.dll must get the degraded path, not a
 // crashed job.

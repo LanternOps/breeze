@@ -6,8 +6,8 @@
 #
 # Usage:
 #   ./build-app-bundle.sh \
-#     --pkg-amd64 /path/to/breeze-agent-darwin-amd64.pkg \
-#     --pkg-arm64 /path/to/breeze-agent-darwin-arm64.pkg \
+#     --pkg-amd64 /path/to/nu-agent-darwin-amd64.pkg \
+#     --pkg-arm64 /path/to/nu-agent-darwin-arm64.pkg \
 #     --output    /path/to/output/Breeze\ Installer.app
 #
 # Requires Swift 5.9+ toolchain and macOS 13+ SDK (matches Package.swift target).
@@ -75,8 +75,8 @@ if [[ -f Resources/AppIcon.icns ]]; then
     cp Resources/AppIcon.icns "$OUTPUT/Contents/Resources/AppIcon.icns"
 fi
 
-cp "$PKG_AMD64" "$OUTPUT/Contents/Resources/breeze-agent-amd64.pkg"
-cp "$PKG_ARM64" "$OUTPUT/Contents/Resources/breeze-agent-arm64.pkg"
+cp "$PKG_AMD64" "$OUTPUT/Contents/Resources/nu-agent-amd64.pkg"
+cp "$PKG_ARM64" "$OUTPUT/Contents/Resources/nu-agent-arm64.pkg"
 
 echo "-> .app bundle assembled:"
 ls -la "$OUTPUT/Contents/"

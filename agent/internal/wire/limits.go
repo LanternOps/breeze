@@ -3,7 +3,7 @@
 //
 // They live in their own leaf package, with no dependencies, because the two
 // places that must respect them sit on opposite sides of the agent: the backup
-// helper (cmd/breeze-backup) which BUILDS an oversize-capable result, and the
+// helper (cmd/nu-backup) which BUILDS an oversize-capable result, and the
 // websocket client (internal/websocket) which SENDS it. Importing
 // internal/websocket from the helper just to read a number would drag gorilla
 // and the whole connection machinery into a helper binary that never opens a

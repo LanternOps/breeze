@@ -318,8 +318,23 @@ func mustDecodeKey(b64 string) ed25519.PublicKey {
 // Self-hosters can add keys via the BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS env var
 // (read in manifestTrustKeys), preferably in "<keyId>:<base64>" form so they
 // participate in exact-ID verification.
+// NODES UNLIMITED build: this is OUR release signing key, not LanternOps'.
+//
+// We build and publish our own agent, so the agent must trust our manifests and
+// not upstream's — an agent pinned to LanternOps' key would reject every update
+// we ship and park devices in "updating" forever (the exact regression the test
+// below was written for).
+//
+// The key ID is deliberately unchanged: apps/api/src/services/binarySync.ts
+// stamps "release-artifact-manifest-ed25519" onto download responses, so reusing
+// the ID keeps agent and control plane in agreement with no API change.
+//
+// Private counterpart lives OUTSIDE this repo at
+// ~/.nu-agent-signing/nu-release-manifest.ed25519.key (0600) and is what signs
+// release-artifact-manifest.json. Lose it and every deployed agent stops
+// accepting updates until it is re-enrolled with a new pinned key.
 var embeddedManifestPublicKeys = ManifestPublicKeys{
-	"release-artifact-manifest-ed25519": mustDecodeKey("yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso="),
+	"release-artifact-manifest-ed25519": mustDecodeKey("ci+TJGpKwzxW90u1F31b5uZPE/GbQBQKWxLMINqx66c="),
 }
 
 // missingSigningKeyIDWarned bounds the compatibility warning to once per
@@ -454,7 +469,7 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 			suffix = ".exe"
 		}
 		return map[string]struct{}{
-			fmt.Sprintf("breeze-agent-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
+			fmt.Sprintf("nu-agent-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
 	case "helper":
 		switch runtime.GOOS {
@@ -475,7 +490,7 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 			return map[string]struct{}{"breeze-viewer-linux.AppImage": {}}
 		}
 	case "user-helper":
-		// breeze-user-helper is the GUI-subsystem sibling of breeze-agent
+		// nu-user-helper is the GUI-subsystem sibling of nu-agent
 		// that runs in interactive user sessions (sessionbroker spawn path).
 		// It only exists on Windows — Linux/macOS user-session work is
 		// handled by other surfaces. See agent/installer/build-msi.ps1
@@ -483,11 +498,11 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 		// auto-upgrade path (#816) downloads it as a separate artifact.
 		if runtime.GOOS == "windows" {
 			return map[string]struct{}{
-				fmt.Sprintf("breeze-user-helper-%s-%s.exe", runtime.GOOS, runtime.GOARCH): {},
+				fmt.Sprintf("nu-user-helper-%s-%s.exe", runtime.GOOS, runtime.GOARCH): {},
 			}
 		}
 	case "watchdog":
-		// breeze-watchdog is the supervisor sibling of breeze-agent, shipped
+		// nu-watchdog is the supervisor sibling of nu-agent, shipped
 		// per-arch on every platform with the same asset-name shape as the
 		// agent. Used by doUpdateWatchdog (the watchdog's failover self-update)
 		// and by the agent's handleWatchdogUpgrade self-heal. Without this case the
@@ -499,10 +514,10 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 			suffix = ".exe"
 		}
 		return map[string]struct{}{
-			fmt.Sprintf("breeze-watchdog-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
+			fmt.Sprintf("nu-watchdog-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
 	case "backup":
-		// breeze-backup is the on-demand backup helper spawned by sessionbroker
+		// nu-backup is the on-demand backup helper spawned by sessionbroker
 		// (internal/sessionbroker/backup.go) when backup commands arrive; it is
 		// bundled by every platform installer and, since this change, auto-updated
 		// the same way the agent and watchdog are.
@@ -511,7 +526,7 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 			suffix = ".exe"
 		}
 		return map[string]struct{}{
-			fmt.Sprintf("breeze-backup-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
+			fmt.Sprintf("nu-backup-%s-%s%s", runtime.GOOS, runtime.GOARCH, suffix): {},
 		}
 	}
 	return map[string]struct{}{}
@@ -521,7 +536,7 @@ func (u *Updater) expectedReleaseAssetNames() map[string]struct{} {
 // the running architecture. The .pkg is built and listed in the signed release
 // manifest's asset list alongside the bare binary (release.yml).
 func pkgAssetName() string {
-	return fmt.Sprintf("breeze-agent-darwin-%s.pkg", runtime.GOARCH)
+	return fmt.Sprintf("nu-agent-darwin-%s.pkg", runtime.GOARCH)
 }
 
 // pkgAssetChecksum extracts the signed SHA-256 of the macOS .pkg installer from
@@ -785,7 +800,7 @@ func writeUpdateMarker(version string) {
 
 // UpdateTo is a thin shim around UpdateToWithOptions for the common case of
 // an agent-only upgrade. New code (and any caller that needs to thread a
-// companion binary like breeze-user-helper.exe through the Windows restart
+// companion binary like nu-user-helper.exe through the Windows restart
 // helper) should call UpdateToWithOptions directly.
 func (u *Updater) UpdateTo(version string) error {
 	return u.UpdateToWithOptions(version, UpdateOptions{})
@@ -865,7 +880,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		// caller (heartbeat.doUpgrade), not here — the updater package is
 		// component-agnostic, and downloading a second component requires
 		// the caller's AuthToken/server context. Pass nil for an agent-only
-		// swap (backward compatible). Issue #816 (user-helper); breeze-backup
+		// swap (backward compatible). Issue #816 (user-helper); nu-backup
 		// follows the same pattern.
 		if err := RestartWithHelper(BinaryPair{Temp: tempPath, Target: u.config.BinaryPath}, opts.UserHelper, opts.Backup); err != nil {
 			removeCleanup(tempPath)
@@ -912,7 +927,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 			key, value := SafeDownloadErrorFields(installErr)
 			log.Warn("pkg install failed, falling back to binary replacement", key, value)
 		} else {
-			// The .pkg already contains /usr/local/bin/breeze-backup — a
+			// The .pkg already contains /usr/local/bin/nu-backup — a
 			// staged Backup pair must be discarded, not swapped, or we'd
 			// stomp the binary the installer just placed. Only the raw-binary
 			// fallback below (pkg unavailable or failed) needs the explicit
@@ -939,7 +954,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 		return fmt.Errorf("failed to replace binary (rolled back): %w", err)
 	}
 
-	// Swap the pre-fetched breeze-backup binary (if any) into place BEFORE
+	// Swap the pre-fetched nu-backup binary (if any) into place BEFORE
 	// restarting the agent — this is the Linux / macOS-pkg-fallback half of
 	// the delivery contract (Windows swaps inside the restart-helper script
 	// above; the macOS .pkg success path already returned above). A swap
@@ -950,7 +965,7 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	// mean un-replacing an agent binary the OS may already be executing.
 	if opts.Backup != nil {
 		if err := swapCompanionBinary(opts.Backup); err != nil {
-			log.Error("failed to swap breeze-backup binary during agent upgrade; will retry via reconcile", "error", err.Error())
+			log.Error("failed to swap nu-backup binary during agent upgrade; will retry via reconcile", "error", err.Error())
 			removeCleanup(opts.Backup.Temp)
 		}
 	}
@@ -1089,7 +1104,7 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 	// rather than parsed from info.URL — the URL may be a server-relative
 	// proxy (e.g. https://breeze.example.com/api/v1/agents/download/...)
 	// whose last segment is not the asset filename. The signed manifest's
-	// asset list still uses canonical names like "breeze-agent-windows-amd64.exe".
+	// asset list still uses canonical names like "nu-agent-windows-amd64.exe".
 	// Issue #646.
 	expected := u.expectedReleaseAssetNames()
 	if len(expected) == 0 {
@@ -1145,7 +1160,7 @@ func (u *Updater) verifyReleaseArtifactManifest(payload []byte, info downloadInf
 
 // DownloadBinary is the exported wrapper around downloadBinary used by
 // callers that need to pre-download a companion artifact (e.g. the
-// breeze-user-helper.exe) outside the full UpdateTo flow. Returns the
+// nu-user-helper.exe) outside the full UpdateTo flow. Returns the
 // temp-file path on success after verifying the downloaded bytes against
 // the signed manifest checksum. The caller is responsible for cleanup.
 // Issue #816.
@@ -1489,7 +1504,7 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 		return "", fmt.Errorf("binary download failed with status %d", resp.StatusCode)
 	}
 
-	tempFile, err := os.CreateTemp("", "breeze-agent-dev-*")
+	tempFile, err := os.CreateTemp("", "nu-agent-dev-*")
 	if err != nil {
 		return "", err
 	}

@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows will ask you before it runs",
     "body": "When you open the file, Windows shows a prompt asking whether you want to allow it to run. The file is digitally signed, so that prompt names a publisher: it should read {{publisher}}. If it says the publisher is unknown, or names anyone you were not expecting, close the prompt and call the person helping you instead of continuing.",
-    "publisher": "the publisher of Breeze"
+    "publisher": "the publisher of Nodes Unlimited"
   },
   "trust": {
     "title": "What the program does",

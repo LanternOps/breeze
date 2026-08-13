@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Demandes de suppression de compte",
-      "description": "Utilisateurs dans votre locataire qui ont demandé à supprimer leur compte Breeze. Approuver pour les mettre en file d’attente pour traitement, ou refuser avec une note expliquant pourquoi.",
+      "description": "Utilisateurs dans votre locataire qui ont demandé à supprimer leur compte Nodes Unlimited. Approuver pour les mettre en file d’attente pour traitement, ou refuser avec une note expliquant pourquoi.",
       "filterLabel": "Filtrer par statut",
       "refresh": "Actualiser",
       "retry": "Réessayer",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Catalogue de paquets tiers",
-      "description": "Breeze des métadonnées sélectionnées pour des logiciels tiers détectés par winget sur des agents.",
+      "description": "Nodes Unlimited des métadonnées sélectionnées pour des logiciels tiers détectés par winget sur des agents.",
       "totalEntries": "Total des participations :",
       "refresh": "Actualiser",
       "addPackage": "Ajouter un package",
       "searchPlaceholder": "Rechercher par nom, vendeur ou winget ID...",
-      "breezeTestedOnly": "Breeze uniquement testé",
-      "breezeTested": "Breeze-testé",
+      "breezeTestedOnly": "Nodes Unlimited uniquement testé",
+      "breezeTested": "Nodes Unlimited-testé",
       "dismiss": "Fermer",
       "loading": "Catalog de chargement...",
       "empty": "Aucune entrée de catalogue ne correspond aux filtres actuels.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Accès administrateur de plateforme requis",
-        "prefix": "Le catalogue tiers est géré par des administrateurs de plateformes Breeze. Votre compte",
+        "prefix": "Le catalogue tiers est géré par des administrateurs de plateformes Nodes Unlimited. Votre compte",
         "role": "Un administrateur d’organisation/partenaire",
         "suffix": "Peut consulter le catalogue sélectionné via des flux de patch normaux mais ne peut pas le modifier directement."
       },
@@ -310,7 +310,7 @@
         "vendor": "Fournisseur",
         "friendlyName": "Nom amical",
         "defaultSeverity": "Sévérité par défaut",
-        "breezeTested": "Breeze-testé",
+        "breezeTested": "Nodes Unlimited-testé",
         "homepageUrl": "Page d’accueil URL",
         "notes": "Notes"
       },
