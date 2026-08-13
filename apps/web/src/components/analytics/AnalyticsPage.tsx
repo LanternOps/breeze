@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, RefreshCw } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  Cast,
+  ChevronRight,
+  HardDrive,
+  Loader2,
+  RefreshCw,
+  TrendingDown,
+  TrendingUp,
+  WifiOff,
+  type LucideIcon
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import DashboardGrid, { type GridItem } from './DashboardGrid';
-import WidgetRenderer, { type WidgetDefinition } from './WidgetRenderer';
-import QueryBuilder from './QueryBuilder';
+import ChartWidget from './ChartWidget';
+import GaugeWidget from './GaugeWidget';
+import QueryBuilder, { type QueryResult } from './QueryBuilder';
 import CapacityForecast, { type ForecastPoint, type Thresholds } from './CapacityForecast';
 import SLAComplianceCard from './SLAComplianceCard';
-import ExecutiveSummary, { type ExecutiveSummaryProps } from './ExecutiveSummary';
+import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
+import { cn, formatNumber } from '@/lib/utils';
 import { formatTime } from '@/lib/dateTimeFormat';
 import { formatPercent } from '@/lib/i18n/format';
 
@@ -302,20 +315,27 @@ const normalizeCapacity = (raw: unknown): CapacityState => {
   };
 };
 
-const normalizeSla = (raw: unknown): SlaSummary => {
+/**
+ * Null when the payload carries no compliance figure at all (e.g. no SLA
+ * definitions exist yet) — rendering that as 0% would read as a breach.
+ */
+const normalizeSla = (raw: unknown): SlaSummary | null => {
   const record = getRecord(raw);
   const source = Array.isArray(record.data) && record.data.length > 0 ? record.data[0] : record;
   const sourceRecord = getRecord(source);
   const history = Array.isArray(sourceRecord.history) ? sourceRecord.history : [];
   const historyRecord = history.length > 0 ? getRecord(history[0]) : {};
 
+  const uptime = pickOptionalNumber(
+    sourceRecord.uptime,
+    sourceRecord.compliancePercentage,
+    sourceRecord.compliance,
+    historyRecord.compliancePercentage
+  );
+  if (uptime === undefined) return null;
+
   return {
-    uptime: pickNumber(
-      sourceRecord.uptime,
-      sourceRecord.compliancePercentage,
-      sourceRecord.compliance,
-      historyRecord.compliancePercentage
-    ),
+    uptime,
     target: pickOptionalNumber(sourceRecord.targetPercentage, sourceRecord.target, sourceRecord.slaTarget),
     incidents: pickOptionalNumber(sourceRecord.incidents, sourceRecord.incidentCount, sourceRecord.breachCount)
   };
@@ -379,6 +399,39 @@ interface AnalyticsPageProps {
   timezone?: string;
 }
 
+/** Fleet-wide roll-up shown in the KPI strip and the trend card. */
+type FleetSummary = {
+  totalDevices: number;
+  onlineDevices: number;
+  offlineDevices: number;
+  criticalAlerts: number;
+  warningAlerts: number;
+  trendData: Array<{ timestamp: string; value: number }>;
+  trendLabel: string;
+};
+
+const SEVERITY_TONES: Record<AlertSeverityKey, string> = {
+  critical: 'bg-destructive',
+  high: 'bg-warning-strong',
+  medium: 'bg-warning',
+  low: 'bg-info',
+  acknowledged: 'bg-chart-neutral'
+};
+
+type KpiTile = {
+  key: string;
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  iconTone: string;
+  change?: number;
+  changeLabel?: string;
+  sub?: string;
+  subTone?: 'success' | 'warning' | 'destructive' | 'muted';
+};
+
+const isDashboardValue = (value: string) => dashboardOptions.some(option => option.value === value);
+
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const { t } = useTranslation('reports');
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
@@ -397,8 +450,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [alertRows, setAlertRows] = useState<AlertRow[]>([]);
   const [complianceStats, setComplianceStats] = useState<ComplianceStats>({ complianceRate: 0 });
   const [capacityForecast, setCapacityForecast] = useState<CapacityState>({ currentValue: 0, data: [] });
-  const [slaSummary, setSlaSummary] = useState<SlaSummary>({ uptime: 0, incidents: 0 });
-  const [executiveSummary, setExecutiveSummary] = useState<ExecutiveSummaryProps>({
+  const [slaSummary, setSlaSummary] = useState<SlaSummary | null>(null);
+  const [fleetSummary, setFleetSummary] = useState<FleetSummary>({
     totalDevices: 0,
     onlineDevices: 0,
     offlineDevices: 0,
@@ -411,6 +464,25 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [exploreOpen, setExploreOpen] = useState(false);
+  const [queryResult, setQueryResult] = useState<{ label: string; data: Array<{ timestamp: string; value: number }> } | null>(null);
+
+  // Selected view lives in the URL hash (repo convention for transient UI
+  // state) so a view survives refresh and can be linked directly.
+  useEffect(() => {
+    const applyHash = () => {
+      const hash = window.location.hash.replace('#', '');
+      if (isDashboardValue(hash)) setSelectedDashboard(hash);
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
+
+  const selectDashboard = useCallback((value: string) => {
+    setSelectedDashboard(value);
+    if (typeof window !== 'undefined') window.location.hash = value;
+  }, []);
 
   const rangeLabel = useMemo(
     () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
@@ -548,7 +620,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             setSlaSummary(normalizeSla(slaData));
           } catch (err) {
             errors.push('sla');
-            setSlaSummary({ uptime: 0, incidents: 0 });
+            setSlaSummary(null);
           }
         })(),
         (async () => {
@@ -605,7 +677,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         analyticsRecord.data
       );
 
-      setExecutiveSummary({
+      setFleetSummary({
         totalDevices,
         onlineDevices,
         offlineDevices,
@@ -633,169 +705,215 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     fetchAnalyticsData();
   }, [fetchAnalyticsData]);
 
-  const widgets = useMemo<WidgetDefinition[]>(
-    () => [
-      {
-        id: 'summary-uptime',
-        title: t('analytics.analyticsPage.widgets.uptime.title'),
-        type: 'summary',
-        data: {
-          value: formatPercent(summaryMetrics.uptime / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-          label: t('analytics.analyticsPage.widgets.uptime.label'),
-          change: summaryMetrics.uptimeChange,
-          changeLabel: summaryMetrics.uptimeChangeLabel
-        }
-      },
-      {
-        id: 'summary-sessions',
-        title: t('analytics.analyticsPage.widgets.remoteSessions.title'),
-        type: 'summary',
-        data: {
-          value: summaryMetrics.sessions,
-          label: t('analytics.analyticsPage.widgets.remoteSessions.label'),
-          change: summaryMetrics.sessionsChange,
-          changeLabel: summaryMetrics.sessionsChangeLabel
-        }
-      },
-      {
-        id: 'performance',
-        type: 'chart',
-        data: {
-          title: t('analytics.analyticsPage.widgets.performance.title'),
-          subtitle: t('analytics.analyticsPage.widgets.performance.subtitle'),
-          type: 'line',
-          data: performanceData,
-          xKey: 'timestamp',
-          series: [
-            { key: 'cpu', label: t('analytics.analyticsPage.widgets.performance.cpu'), color: '#3b82f6' },
-            { key: 'memory', label: t('analytics.analyticsPage.widgets.performance.memory'), color: '#22c55e' }
-          ]
-        }
-      },
-      {
-        id: 'os-breakdown',
-        type: 'chart',
-        data: {
-          title: t('analytics.analyticsPage.widgets.osBreakdown.title'),
-          subtitle: t('analytics.analyticsPage.widgets.osBreakdown.subtitle'),
-          type: 'pie',
-          data: osDistribution,
-          nameKey: 'name',
-          valueKey: 'value'
-        }
-      },
-      {
-        id: 'alert-table',
-        type: 'table',
-        data: {
-          title: t('analytics.analyticsPage.widgets.alertTable.title'),
-          columns: [
-            { key: 'severity', label: t('analytics.analyticsPage.widgets.alertTable.severity'), sortable: true },
-            { key: 'count', label: t('analytics.analyticsPage.widgets.alertTable.count'), sortable: true, className: 'text-right' }
-          ],
-          data: alertRows.map(row => ({
-            ...row,
-            severity: t(/* i18n-dynamic */ `analytics.analyticsPage.alertSeverity.${row.severity}`)
-          }))
-        }
-      },
-      {
-        id: 'compliance-gauge',
-        type: 'gauge',
-        data: {
-          title: t('analytics.analyticsPage.widgets.complianceGauge.title'),
-          value: complianceStats.complianceRate,
-          description: complianceStats.totalPolicies !== undefined
-            ? t('analytics.analyticsPage.widgets.complianceGauge.policiesEvaluated', {
-              count: complianceStats.enabledPolicies ?? complianceStats.totalPolicies
-            })
-            : undefined
-        }
-      }
-    ],
-    [
-      alertRows,
-      complianceStats.enabledPolicies,
-      complianceStats.complianceRate,
-      complianceStats.totalPolicies,
-      osDistribution,
-      performanceData,
-      summaryMetrics.sessions,
-      summaryMetrics.sessionsChange,
-      summaryMetrics.sessionsChangeLabel,
-      summaryMetrics.uptime,
-      summaryMetrics.uptimeChange,
-      summaryMetrics.uptimeChangeLabel,
-      t
-    ]
-  );
-
-  const dashboardLayouts = useMemo<Record<string, GridItem[]>>(() => ({
-    operations: [
-      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
-      { i: 'summary-uptime', x: 0, y: 3, w: 4, h: 2 },
-      { i: 'summary-sessions', x: 4, y: 3, w: 4, h: 2 },
-      { i: 'compliance-gauge', x: 8, y: 3, w: 4, h: 2 },
-      { i: 'performance', x: 0, y: 5, w: 8, h: 3 },
-      { i: 'os-breakdown', x: 8, y: 5, w: 4, h: 3 },
-      { i: 'alert-table', x: 0, y: 8, w: 12, h: 3 }
-    ],
-    capacity: [
-      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
-      { i: 'summary-uptime', x: 0, y: 3, w: 4, h: 2 },
-      { i: 'compliance-gauge', x: 4, y: 3, w: 4, h: 2 },
-      { i: 'sla-card', x: 8, y: 3, w: 4, h: 2 },
-      { i: 'capacity', x: 0, y: 5, w: 8, h: 3 },
-      { i: 'performance', x: 8, y: 5, w: 4, h: 3 },
-      { i: 'os-breakdown', x: 0, y: 8, w: 12, h: 3 }
-    ],
-    sla: [
-      { i: 'executive', x: 0, y: 0, w: 12, h: 3 },
-      { i: 'sla-card', x: 0, y: 3, w: 4, h: 2 },
-      { i: 'compliance-gauge', x: 4, y: 3, w: 4, h: 2 },
-      { i: 'summary-uptime', x: 8, y: 3, w: 4, h: 2 },
-      { i: 'performance', x: 0, y: 5, w: 8, h: 3 },
-      { i: 'alert-table', x: 8, y: 5, w: 4, h: 3 },
-      { i: 'os-breakdown', x: 0, y: 8, w: 12, h: 3 }
-    ]
-  }), []);
-
-  const filteredLayout = useMemo(
-    () => {
-      const layout = dashboardLayouts[selectedDashboard] ?? dashboardLayouts.operations;
-      // Drop only the trend card; every other card on the dashboard is still
-      // backed by a site-scoped endpoint the restricted caller may read.
-      return performanceUnavailable ? layout.filter(item => item.i !== 'performance') : layout;
+  const kpiTiles = useMemo<KpiTile[]>(() => [
+    {
+      key: 'uptime',
+      label: t('analytics.analyticsPage.widgets.uptime.label'),
+      value: formatPercent(summaryMetrics.uptime / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      icon: Activity,
+      iconTone: summaryMetrics.uptime >= 99 ? 'text-success' : summaryMetrics.uptime >= 95 ? 'text-warning-strong' : 'text-destructive',
+      change: summaryMetrics.uptimeChange,
+      changeLabel: summaryMetrics.uptimeChangeLabel
     },
-    [dashboardLayouts, performanceUnavailable, selectedDashboard]
+    {
+      key: 'sessions',
+      label: t('analytics.analyticsPage.widgets.remoteSessions.label'),
+      value: formatNumber(summaryMetrics.sessions),
+      icon: Cast,
+      iconTone: 'text-muted-foreground',
+      change: summaryMetrics.sessionsChange,
+      changeLabel: summaryMetrics.sessionsChangeLabel
+    },
+    {
+      key: 'devices',
+      label: t('analytics.executiveSummary.totalDevices'),
+      value: formatNumber(fleetSummary.totalDevices),
+      icon: HardDrive,
+      iconTone: 'text-muted-foreground',
+      sub: `${formatNumber(fleetSummary.onlineDevices)} ${t('analytics.executiveSummary.online')}`,
+      subTone: 'success'
+    },
+    {
+      key: 'offline',
+      label: t('analytics.executiveSummary.offline'),
+      value: formatNumber(fleetSummary.offlineDevices),
+      icon: WifiOff,
+      iconTone: fleetSummary.offlineDevices > 0 ? 'text-warning-strong' : 'text-muted-foreground'
+    },
+    {
+      key: 'critical',
+      label: t('analytics.executiveSummary.critical'),
+      value: formatNumber(fleetSummary.criticalAlerts),
+      icon: AlertTriangle,
+      iconTone: fleetSummary.criticalAlerts > 0 ? 'text-destructive' : 'text-muted-foreground',
+      sub: `${formatNumber(fleetSummary.warningAlerts)} ${t('analytics.executiveSummary.warnings')}`,
+      subTone: fleetSummary.warningAlerts > 0 ? 'warning' : 'muted'
+    }
+  ], [fleetSummary, summaryMetrics, t]);
+
+  const alertTotal = useMemo(
+    () => alertRows.reduce((sum, row) => sum + row.count, 0),
+    [alertRows]
   );
 
-  const widgetMap = useMemo(() => {
-    const map = new Map(widgets.map(widget => [widget.id, widget]));
-    return map;
-  }, [widgets]);
+  const handleQueryResult = useCallback((result: QueryResult) => {
+    const series = getRecord(result.series?.[0]);
+    const data = Array.isArray(series.data) ? series.data : [];
+    setQueryResult({
+      label: result.query.metricName,
+      data: data.map((point, index) => {
+        const entry = getRecord(point);
+        const timestamp = entry.timestamp ?? entry.time ?? entry.label ?? String(index + 1);
+        return { timestamp: String(timestamp), value: pickNumber(entry.value) };
+      })
+    });
+  }, []);
 
   const isInitialLoading = loading && !lastUpdated;
+  const showPerformance = !performanceUnavailable;
+
+  const performanceCard = (
+    <ChartWidget
+      title={t('analytics.analyticsPage.widgets.performance.title')}
+      subtitle={t('analytics.analyticsPage.widgets.performance.subtitle')}
+      type="line"
+      data={performanceData}
+      xKey="timestamp"
+      series={[
+        { key: 'cpu', label: t('analytics.analyticsPage.widgets.performance.cpu'), color: 'hsl(var(--primary))' },
+        { key: 'memory', label: t('analytics.analyticsPage.widgets.performance.memory'), color: 'hsl(var(--success))' }
+      ]}
+      height={240}
+    />
+  );
+
+  const osCard = (
+    <ChartWidget
+      title={t('analytics.analyticsPage.widgets.osBreakdown.title')}
+      subtitle={t('analytics.analyticsPage.widgets.osBreakdown.subtitle')}
+      type="pie"
+      data={osDistribution}
+      nameKey="name"
+      valueKey="value"
+      height={180}
+    />
+  );
+
+  const alertsCard = (
+    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
+      <div className="mb-4 flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold">{t('analytics.analyticsPage.widgets.alertTable.title')}</h3>
+        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
+      </div>
+      {alertRows.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
+          {t('analytics.chartWidget.noData')}
+        </div>
+      ) : (
+        <>
+          {alertTotal > 0 && (
+            <div className="mb-4 flex h-2 gap-px overflow-hidden rounded-full bg-muted" aria-hidden="true">
+              {alertRows.filter(row => row.count > 0).map(row => (
+                <div
+                  key={row.severity}
+                  className={SEVERITY_TONES[row.severity]}
+                  style={{ width: `${(row.count / alertTotal) * 100}%` }}
+                />
+              ))}
+            </div>
+          )}
+          <ul className="space-y-2.5 text-sm">
+            {alertRows.map(row => (
+              <li key={row.severity} className="flex items-center gap-2">
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', SEVERITY_TONES[row.severity])} aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {t(/* i18n-dynamic */ `analytics.analyticsPage.alertSeverity.${row.severity}`)}
+                </span>
+                <span className="font-medium tabular-nums">{formatNumber(row.count)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+
+  const trendCard = (
+    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
+      <div className="mb-4 flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold">{fleetSummary.trendLabel}</h3>
+        <p className="text-xs text-muted-foreground">{t('analytics.executiveSummary.weeklyTrend')}</p>
+      </div>
+      {fleetSummary.trendData.length < 2 ? (
+        <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
+          {t('analytics.chartWidget.noData')}
+        </div>
+      ) : (
+        <div className="flex flex-1 flex-col justify-end">
+          <Sparkline
+            points={fleetSummary.trendData.map(point => ({ label: point.timestamp, value: point.value }))}
+            color="hsl(var(--primary))"
+            min={0}
+            max={Math.max(...fleetSummary.trendData.map(point => point.value), 1)}
+          />
+        </div>
+      )}
+    </div>
+  );
+
+  const complianceCard = (
+    <GaugeWidget
+      title={t('analytics.analyticsPage.widgets.complianceGauge.title')}
+      value={complianceStats.complianceRate}
+      description={complianceStats.totalPolicies !== undefined
+        ? t('analytics.analyticsPage.widgets.complianceGauge.policiesEvaluated', {
+          count: complianceStats.enabledPolicies ?? complianceStats.totalPolicies
+        })
+        : undefined}
+    />
+  );
+
+  const slaCard = slaSummary ? (
+    <SLAComplianceCard
+      uptime={slaSummary.uptime}
+      target={slaSummary.target}
+      incidents={slaSummary.incidents}
+      periodLabel={rangeLabel}
+    />
+  ) : (
+    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
+      <div className="mb-4 flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold">{t('analytics.slaComplianceCard.title')}</h3>
+        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
+      </div>
+      <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
+        {t('analytics.chartWidget.noData')}
+      </div>
+    </div>
+  );
+
+  const capacityCard = (
+    <CapacityForecast
+      title={t('analytics.analyticsPage.widgets.capacity.title')}
+      currentValue={capacityForecast.currentValue}
+      data={capacityForecast.data}
+      thresholds={capacityForecast.thresholds}
+    />
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-xl font-semibold">{t('analytics.analyticsPage.title')}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('analytics.analyticsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">{t('analytics.analyticsPage.subtitle')}</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={selectedDashboard}
-            onChange={event => setSelectedDashboard(event.target.value)}
-            className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-          >
-            {dashboardOptions.map(option => (
-              <option key={option.value} value={option.value}>
-                {t(/* i18n-dynamic */ option.labelKey)}
-              </option>
-            ))}
-          </select>
+          {lastUpdated && (
+            <span className="text-xs text-muted-foreground">
+              {t('analytics.analyticsPage.lastUpdated', { time: formatTime(lastUpdated, { timeZone: timezone }) })}
+            </span>
+          )}
           <select
             value={dateRange}
             onChange={event => setDateRange(event.target.value)}
@@ -810,17 +928,12 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           <button
             type="button"
             onClick={fetchAnalyticsData}
-            className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm hover:bg-muted"
+            className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm transition-colors hover:bg-muted"
             disabled={loading}
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             {t('analytics.analyticsPage.actions.refresh')}
           </button>
-          {lastUpdated && (
-            <span className="text-xs text-muted-foreground">
-              {t('analytics.analyticsPage.lastUpdated', { time: formatTime(lastUpdated, { timeZone: timezone }) })}
-            </span>
-          )}
         </div>
       </div>
 
@@ -841,6 +954,26 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         </div>
       )}
 
+      <div className="flex gap-1 border-b" role="tablist">
+        {dashboardOptions.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            role="tab"
+            aria-selected={selectedDashboard === option.value}
+            onClick={() => selectDashboard(option.value)}
+            className={cn(
+              '-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors',
+              selectedDashboard === option.value
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {t(/* i18n-dynamic */ option.labelKey)}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
@@ -855,67 +988,124 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         </div>
       )}
 
-      <QueryBuilder
-        deviceIds={deviceIds}
-        onQueryResult={(result) => {
-          if (result.series && result.series.length > 0) {
-            const series = getRecord(result.series[0]);
-            const data = Array.isArray(series.data) ? series.data : [];
-            setPerformanceData(data.map((point, index) => {
-              const entry = getRecord(point);
-              const timestamp = entry.timestamp ?? entry.time ?? entry.label ?? String(index + 1);
-              return {
-                timestamp: String(timestamp),
-                cpu: pickNumber(entry.value, entry.cpu),
-                memory: 0
-              };
-            }));
-          }
-        }}
-      />
+      {isInitialLoading ? (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+            {kpiTiles.map(tile => (
+              <div key={tile.key} className="rounded-lg border bg-card px-4 py-3">
+                <div className="skeleton h-3 w-20" />
+                <div className="skeleton mt-2 h-7 w-14" />
+              </div>
+            ))}
+          </div>
+          <div className="grid items-start gap-6 lg:grid-cols-3">
+            <div className="rounded-lg border bg-card p-5 lg:col-span-2">
+              <div className="skeleton h-3 w-32" />
+              <div className="skeleton mt-4 h-56 w-full" />
+            </div>
+            <div className="rounded-lg border bg-card p-5">
+              <div className="skeleton h-3 w-24" />
+              <div className="skeleton mt-4 h-56 w-full" />
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+            {kpiTiles.map(tile => (
+              <div key={tile.key} className="rounded-lg border bg-card px-4 py-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-medium text-muted-foreground">{tile.label}</span>
+                  <tile.icon className={cn('h-4 w-4 shrink-0', tile.iconTone)} aria-hidden="true" />
+                </div>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-2xl font-semibold tracking-tight">{tile.value}</span>
+                  {tile.change !== undefined && tile.changeLabel && (
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-0.5 truncate text-xs font-medium',
+                        tile.change >= 0 ? 'text-success' : 'text-destructive'
+                      )}
+                    >
+                      {tile.change >= 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                      {formatPercent(Math.abs(tile.change) / 100, { maximumFractionDigits: 1 })}
+                    </span>
+                  )}
+                  {tile.sub && (
+                    <span
+                      className={cn(
+                        'truncate text-xs font-medium',
+                        tile.subTone === 'success' && 'text-success',
+                        tile.subTone === 'warning' && 'text-warning-strong',
+                        tile.subTone === 'destructive' && 'text-destructive',
+                        (!tile.subTone || tile.subTone === 'muted') && 'text-muted-foreground'
+                      )}
+                    >
+                      {tile.sub}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
 
-      <DashboardGrid
-        layout={filteredLayout}
-        columns={12}
-        rowHeight={64}
-        gap={12}
-        renderItem={item => {
-          // DashboardGrid mirrors `layout` into its own state, so the filtered
-          // layout only reaches it on the next commit. Refuse to render the
-          // trend card here too, so a denied caller never sees it at all.
-          if (performanceUnavailable && item.i === 'performance') {
-            return null;
-          }
-          if (isInitialLoading) {
-            return <div className="h-full w-full animate-pulse rounded-lg border bg-muted/40" />;
-          }
-          if (item.i === 'executive') {
-            return <ExecutiveSummary {...executiveSummary} />;
-          }
-          if (item.i === 'sla-card') {
-            return (
-              <SLAComplianceCard
-                uptime={slaSummary.uptime}
-                target={slaSummary.target}
-                incidents={slaSummary.incidents}
-                periodLabel={rangeLabel}
-              />
-            );
-          }
-          if (item.i === 'capacity') {
-            return (
-              <CapacityForecast
-                title={t('analytics.analyticsPage.widgets.capacity.title')}
-                currentValue={capacityForecast.currentValue}
-                data={capacityForecast.data}
-                thresholds={capacityForecast.thresholds}
-              />
-            );
-          }
-          const widget = widgetMap.get(item.i);
-          return widget ? <WidgetRenderer widget={widget} /> : null;
-        }}
-      />
+          {selectedDashboard === 'operations' && (
+            <div className="grid items-start gap-6 lg:grid-cols-3">
+              {showPerformance && <div className="lg:col-span-2">{performanceCard}</div>}
+              {osCard}
+              {alertsCard}
+              {trendCard}
+              {complianceCard}
+            </div>
+          )}
+
+          {selectedDashboard === 'capacity' && (
+            <div className="grid items-start gap-6 lg:grid-cols-3">
+              <div className="lg:col-span-2">{capacityCard}</div>
+              {complianceCard}
+              {showPerformance && <div className="lg:col-span-2">{performanceCard}</div>}
+              {osCard}
+            </div>
+          )}
+
+          {selectedDashboard === 'sla' && (
+            <div className="grid items-start gap-6 lg:grid-cols-3">
+              {slaCard}
+              {complianceCard}
+              {alertsCard}
+              {showPerformance && <div className="lg:col-span-2">{performanceCard}</div>}
+              {trendCard}
+            </div>
+          )}
+
+          <section className="space-y-4">
+            <button
+              type="button"
+              onClick={() => setExploreOpen(open => !open)}
+              aria-expanded={exploreOpen}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold transition-colors hover:text-primary"
+            >
+              <ChevronRight className={cn('h-4 w-4 transition-transform', exploreOpen && 'rotate-90')} aria-hidden="true" />
+              {t('analytics.queryBuilder.title')}
+            </button>
+            {exploreOpen && (
+              <>
+                <QueryBuilder deviceIds={deviceIds} onQueryResult={handleQueryResult} />
+                {queryResult && (
+                  <ChartWidget
+                    title={queryResult.label}
+                    type="line"
+                    data={queryResult.data}
+                    xKey="timestamp"
+                    series={[{ key: 'value', label: queryResult.label, color: 'hsl(var(--primary))' }]}
+                    height={240}
+                  />
+                )}
+              </>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
