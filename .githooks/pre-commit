@@ -30,3 +30,4 @@ run_guard() {
 
 run_guard security/scan-confidential.sh --staged
 run_guard check-migration-naming.sh --staged
+run_guard check-ps1-encoding.sh
