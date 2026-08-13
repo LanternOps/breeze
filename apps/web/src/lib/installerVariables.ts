@@ -19,7 +19,13 @@
  * loudly, but the UI should never offer an unresolvable built-in).
  */
 
-export type InstallerVariableGroup = 'Organization' | 'Site' | 'Device' | 'Custom fields';
+export type InstallerVariableGroup =
+  | 'Organization'
+  | 'Site'
+  | 'Device'
+  | 'Custom fields'
+  /** Tenant variables (#3409) — `{{var.<key>}}`, dynamic like custom fields. */
+  | 'Variables';
 
 export interface InstallerVariable {
   /** The full token as inserted, e.g. `{{org.name}}`. */
@@ -54,6 +60,15 @@ const CUSTOM_FIELD_TOKEN = /^\{\{device\.customField\.([a-z][a-z0-9_]*)\}\}$/;
 const TOKEN_SCAN = /\{\{\s*[^{}]*?\s*\}\}/g;
 
 /**
+ * `{{var.<key>}}` (#3409) — matched against the RAW token, never the
+ * whitespace-normalized one. The `var.*` namespace has exactly one strict form
+ * on both client and server (`VARIABLE_TOKEN_PATTERN` in `@breeze/shared`);
+ * accepting `{{ var.x }}` here would recreate the client-passes/server-fails
+ * divergence the legacy tokens above already suffer from.
+ */
+const VARIABLE_TOKEN = /^\{\{var\.([a-z][a-z0-9_]{0,63})\}\}$/;
+
+/**
  * Return the list of syntactically-tokenish substrings in a string, e.g.
  * `["{{org.name}}", "{{device.customField.licenseKey}}"]`. Used both for
  * highlighting and for validation.
@@ -63,11 +78,27 @@ export function findTokens(value: string): string[] {
 }
 
 /**
+ * Same scan as {@link findTokens}, but carrying each match's offset so a
+ * caller can inspect the character BEFORE the token — which is the only way
+ * to see a `$` prefix, since `$` sits outside the match itself.
+ *
+ * Uses a fresh matcher rather than the shared `TOKEN_SCAN` instance:
+ * `matchAll` seeds its internal matcher from the regex it is handed, so a
+ * module-level global regex would carry `lastIndex` state between callers.
+ */
+function scanTokens(value: string): Array<{ raw: string; offset: number }> {
+  const matcher = new RegExp(TOKEN_SCAN.source, 'g');
+  return [...value.matchAll(matcher)].map((m) => ({ raw: m[0], offset: m.index }));
+}
+
+/**
  * Validate the variables in a template string against the known vocabulary.
  * `knownCustomFieldKeys` is the set of device custom-field keys defined for the
  * partner/org (from `GET /custom-fields`); pass an empty set when they haven't
  * loaded yet, in which case custom-field tokens are accepted on structure alone
- * so the field never blocks on a slow fetch.
+ * so the field never blocks on a slow fetch. `variableKeys` /
+ * `requireKnownVariableKeys` are the same pair for tenant variables
+ * (`GET /tenant-variables`, #3409).
  *
  * Returns the list of tokens that are NOT recognized. An empty array means the
  * string is clean.
@@ -75,11 +106,34 @@ export function findTokens(value: string): string[] {
 export function findUnknownTokens(
   value: string,
   knownCustomFieldKeys: ReadonlySet<string>,
-  { requireKnownCustomKeys = false }: { requireKnownCustomKeys?: boolean } = {},
+  {
+    requireKnownCustomKeys = false,
+    variableKeys,
+    requireKnownVariableKeys = false,
+  }: {
+    requireKnownCustomKeys?: boolean;
+    variableKeys?: ReadonlySet<string>;
+    requireKnownVariableKeys?: boolean;
+  } = {},
 ): string[] {
   const builtinTokens = new Set(BUILTIN_INSTALLER_VARIABLES.map((v) => v.token));
   const unknown: string[] = [];
-  for (const raw of findTokens(value)) {
+  for (const { raw, offset } of scanTokens(value)) {
+    // raw, not normalized — strict grammar. The `$` guard mirrors the shared
+    // pattern's `(?<!\$)` lookbehind and the server's `template[offset - 1]`
+    // check (`apps/api/src/services/installerVariables.ts`): a `${{var.x}}`
+    // is deliberately NOT a variable token, and the server treats it as
+    // unknown and fails the deploy. Without this the client validated it
+    // clean — the exact client-passes/server-fails divergence VARIABLE_TOKEN's
+    // docblock above claims to prevent. Falling through (rather than
+    // `continue`) lands it in `unknown` via the checks below.
+    const variable = offset > 0 && value[offset - 1] === '$' ? null : VARIABLE_TOKEN.exec(raw);
+    if (variable) {
+      const key = variable[1];
+      if (!requireKnownVariableKeys || variableKeys?.has(key)) continue;
+      unknown.push(raw);
+      continue;
+    }
     const token = raw.replace(/\s+/g, ''); // tolerate `{{ org.name }}`
     if (builtinTokens.has(token)) continue;
     const custom = CUSTOM_FIELD_TOKEN.exec(token);

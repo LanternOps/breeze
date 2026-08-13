@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../db';
 import {
@@ -10,6 +10,8 @@ import {
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
+import { hasVariableTokens } from '@breeze/shared';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -44,6 +46,12 @@ type ExecuteScriptOnDevicesSuccess = {
   devicesTargeted: number;
   maintenanceSuppressedDeviceIds: string[];
   executions: Array<{ executionId: string; deviceId: string; commandId: string }>;
+  // Per-device dispatch failures (e.g. unresolved {{var.*}} tokens). These
+  // devices are excluded from `executions` but still counted in
+  // `devicesTargeted` — they were targeted, just failed to dispatch. Each one
+  // gets its own 'failed' script_executions row (see the dispatch loop below)
+  // so `devicesTargeted` never outlives the rows a caller can find.
+  failures: Array<{ deviceId: string; code: string; error: string }>;
   status: 'queued';
   triggerType: 'manual' | 'scheduled' | 'alert' | 'policy';
   runAs: string;
@@ -149,6 +157,19 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   const parameters = input.parameters ?? {};
   const runAs = input.runAs ?? script.runAs;
 
+  // Preload ONCE per fan-out (#3409 PR2 Task 4), never per device — one
+  // snapshot covers every org in this batch's executable device set.
+  //
+  // Gated on the script actually containing a {{var.*}} token. Without the
+  // gate EVERY script run — the overwhelming majority of which reference no
+  // variable at all — would escape the request transaction via
+  // runOutsideDbContext and take a second connection to run a join that is
+  // then never consulted. loadTenantVariableScope short-circuits on an empty
+  // org list without querying, so passing [] is the no-op path.
+  const variableScope = await loadTenantVariableScope(
+    hasVariableTokens(script.content) ? [...new Set(executableDevices.map((d) => d.orgId))] : []
+  );
+
   // A multi-org run (partner/system script fanned out across orgs) must not
   // stamp every batch row with the first device's org — split one batch per
   // org instead. A single-org, single-device run keeps today's no-batch
@@ -191,6 +212,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   }
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
+  const failures: Array<{ deviceId: string; code: string; error: string }> = [];
   // This loop itself is sequential/awaited and therefore bounded, but
   // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
   // fire-and-forget audit transaction PER DEVICE for 'script' commands
@@ -213,12 +235,40 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       runAs,
       targetSessionId: input.targetSessionId,
       batchId: batchIdByOrg.get(device.orgId) ?? null,
+      variableScope,
     });
     if (!dispatch.ok) {
-      // Pre-checks above (org access, os filter, decommissioned filter) make
-      // these unreachable for this caller; treat as the insert failures the
-      // old code threw on.
-      throw new Error(dispatch.error);
+      // 'insert_failed' means queueCommand/the execution insert itself broke
+      // — a programming error, not a per-device condition. Every other code
+      // (today: 'unresolved_variables', once Task 4 wires resolution in) is a
+      // condition specific to this device and must not truncate the rest of
+      // the fan-out — see softwareDeployment.ts:399-414 for the pattern this
+      // mirrors.
+      if (dispatch.code === 'insert_failed') {
+        throw new Error(dispatch.error);
+      }
+      await db.insert(scriptExecutions).values({
+        scriptId: input.scriptId,
+        deviceId: device.id,
+        // Child rows always take the DEVICE's org (partner-wide fan-out
+        // rule) — never the script's, which may be null/partner-wide.
+        orgId: device.orgId,
+        triggeredBy: input.auth.user.id,
+        triggerType,
+        parameters,
+        status: 'failed',
+        errorMessage: dispatch.error,
+        completedAt: new Date(),
+      });
+      const batchId = batchIdByOrg.get(device.orgId);
+      if (batchId) {
+        await db
+          .update(scriptExecutionBatches)
+          .set({ devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` })
+          .where(eq(scriptExecutionBatches.id, batchId));
+      }
+      failures.push({ deviceId: device.id, code: dispatch.code, error: dispatch.error });
+      continue;
     }
     executions.push({
       executionId: dispatch.executionId!,
@@ -251,6 +301,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     devicesTargeted: executableDevices.length,
     maintenanceSuppressedDeviceIds,
     executions,
+    failures,
     status: 'queued',
     triggerType,
     runAs,

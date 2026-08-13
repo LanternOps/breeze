@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, gte, ilike, inArray, like, ne, or, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db } from '../db';
@@ -304,7 +305,8 @@ const listDevicesSchema = z.object({
 const deviceActionSchema = z.object({
   action: z.enum(['reboot', 'wake', 'run_script']),
   scriptId: z.string().guid().optional(),
-  parameters: z.record(z.string(), z.unknown()).optional()
+  // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared).
+  parameters: scriptParametersSchema.optional()
 }).superRefine((data, ctx) => {
   if (data.action === 'run_script' && !data.scriptId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'scriptId is required for run_script' });
@@ -1209,7 +1211,19 @@ mobileRoutes.post(
         return c.json({ error: result.error }, result.status);
       }
 
-      const execution = result.executions[0]!;
+      // A dispatch can now fail per device WITHOUT failing the request
+      // (#3409 PR2's per-device failure channel) — e.g. an unresolved or
+      // secret {{var.*}} token. For this single-device endpoint that means
+      // `executions` is empty and `failures` carries the reason; indexing
+      // [0] here used to throw and turn a user-fixable problem into a 500.
+      const execution = result.executions[0];
+      if (!execution) {
+        const failure = result.failures[0];
+        return c.json(
+          { error: failure?.error ?? 'Script could not be dispatched to this device' },
+          422
+        );
+      }
       writeRouteAudit(c, {
         orgId: device.orgId,
         action: 'mobile.device.action',

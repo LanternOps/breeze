@@ -47,6 +47,11 @@ vi.mock('../db', () => ({
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
   },
+  // tenantVariableResolution.ts (#3409 PR2) requires both wrappers around its
+  // query; pass-throughs here mirror the pattern already used by
+  // routes/scripts.test.ts and tenantVariableResolution.test.ts.
+  runOutsideDbContext: <T>(fn: () => T): T => fn(),
+  withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -78,8 +83,18 @@ vi.mock('../db/schema', () => ({
     hostname: 'd.hostname',
     customFields: 'd.customFields',
   },
-  organizations: { id: 'o.id', name: 'o.name' },
+  organizations: { id: 'o.id', name: 'o.name', partnerId: 'o.partnerId' },
   sites: { id: 's.id', name: 's.name', orgId: 's.orgId' },
+  // tenantVariableResolution.ts's scope query (#3409 PR2) joins these two.
+  tenantVariables: {
+    id: 'tv.id',
+    key: 'tv.key',
+    value: 'tv.value',
+    isSecret: 'tv.isSecret',
+    version: 'tv.version',
+    orgId: 'tv.orgId',
+    partnerId: 'tv.partnerId',
+  },
 }));
 
 import {
@@ -111,6 +126,20 @@ function selLimit(rows: unknown[]) {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  };
+}
+
+/**
+ * Chainable select for loadTenantVariableScope's join query:
+ * db.select().from().innerJoin().where() → Promise<rows>
+ */
+function selJoin(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows),
       }),
     }),
   };
@@ -317,7 +346,8 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(sel([catalogItem]))
       .mockReturnValueOnce(sel(targetDevices))
       .mockReturnValueOnce(selLimit([{ name: 'Acme' }])) // organizations
-      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])); // sites
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])) // sites
+      .mockReturnValueOnce(selJoin([])); // tenant variable scope (#3409 PR2) — none defined
     insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
 
     const result = await createSoftwareDeployment({
@@ -334,6 +364,111 @@ describe('createSoftwareDeployment', () => {
     expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe(
       'https://dl/org-1/KEY-1/app.msi',
     );
+  });
+
+  it('resolves a {{var.<key>}} tenant variable into the download URL (#3409 PR2)', async () => {
+    const versionRecord = {
+      id: 'ver-var2',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{var.repo_token}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: null,
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-var2', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: {} },
+    ];
+    // A non-secret row for org-1 (forOrgId), plus a SECRET row that must never
+    // be flattened into the vars map at all.
+    const variableRows = [
+      { id: 'tv-1', key: 'repo_token', value: 'tok-live', isSecret: false, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+      { id: 'tv-2', key: 'super_secret', value: 'sekrit', isSecret: true, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }])) // organizations
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])) // sites
+      .mockReturnValueOnce(selJoin(variableRows)); // tenant variable scope
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-var2',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+    expect(sendCommandMock.mock.calls[0]![1].payload.downloadUrl).toBe(
+      'https://dl/tok-live/app.msi',
+    );
+  });
+
+  it('fails the device (no dispatch) through the existing unresolved branch when the URL references a SECRET tenant variable (#3409 PR2)', async () => {
+    const versionRecord = {
+      id: 'ver-var3',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{var.super_secret}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: null,
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-var3', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: {} },
+    ];
+    const variableRows = [
+      { id: 'tv-2', key: 'super_secret', value: 'sekrit', isSecret: true, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }])) // organizations
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])) // sites
+      .mockReturnValueOnce(selJoin(variableRows)); // tenant variable scope
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-var3',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    // The secret is OMITTED from the vars map entirely (softwareDeployment.ts),
+    // so `{{var.super_secret}}` is indistinguishable from an unknown token here
+    // — it fails through the PRE-EXISTING unresolved branch, no new failure
+    // code or counter. The only (and last) device failed resolution, so the
+    // batch itself reports failed too (mirrors the sibling "cannot be
+    // resolved" test above).
+    expect(result.status).toBe('failed');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    const failureWrite = updateSetCalls.find(
+      (c) => typeof c.errorMessage === 'string' && c.errorMessage.includes('super_secret'),
+    );
+    expect(failureWrite).toBeDefined();
+    expect(failureWrite?.status).toBe('failed');
   });
 
   it('dispatches a built-in EDR install using the resolver-provided URL/args', async () => {
@@ -438,7 +573,8 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(sel([catalogItem]))
       .mockReturnValueOnce(sel(targetDevices))
       .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
-      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]))
+      .mockReturnValueOnce(selJoin([])); // tenant variable scope (#3409 PR2) — none defined
     insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
 
     const result = await createSoftwareDeployment({
@@ -483,7 +619,8 @@ describe('createSoftwareDeployment', () => {
       .mockReturnValueOnce(sel([catalogItem]))
       .mockReturnValueOnce(sel(targetDevices))
       .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
-      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]));
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]))
+      .mockReturnValueOnce(selJoin([])); // tenant variable scope (#3409 PR2) — none defined
     insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
 
     const result = await createSoftwareDeployment({

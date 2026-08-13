@@ -203,6 +203,13 @@ describe('no envelope-fallthrough in ?? chains', () => {
     ).toEqual([]);
   });
 
+  // Explicit timeout: this case TS-parses every file under apps/web/src, so
+  // its runtime scales with the repo and is dominated by scheduler delay when
+  // the full 565-file suite runs it in parallel. Vitest's 5s default is a
+  // latent tripwire that any sizeable PR eventually trips for reasons that
+  // have nothing to do with the guard it enforces — matches the timeouts on
+  // the sibling whole-tree guards (no-hash-in-usestate, no-clipped-tables,
+  // no-translated-comparisons).
   it('no source file in apps/web/src uses the idiom', () => {
     const offenders = walk(SRC_ROOT)
       .map((file) => ({ file, violations: findViolations(readFileSync(file, 'utf8'), file) }))
@@ -216,5 +223,5 @@ describe('no envelope-fallthrough in ?? chains', () => {
       offenders,
       `Use asList() from src/lib/asList.ts instead:\n${offenders.join('\n')}`,
     ).toEqual([]);
-  });
+  }, 60_000);
 });

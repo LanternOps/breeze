@@ -17,19 +17,35 @@
  * device doesn't have) is returned in `unresolved` and left verbatim in the
  * string. Callers MUST fail that device rather than dispatch a literal `{{...}}`
  * to an agent.
+ *
+ * `var.<key>` (#3409 PR2) is the ONE namespace here that is ALSO substituted
+ * at script dispatch (`tenantVariableResolution.ts`) via a different, strict
+ * tokenizer (`VARIABLE_TOKEN_PATTERN` in `@breeze/shared`, no inner
+ * whitespace, no `${{...}}` escape). See `isStrictVariableToken` below for how
+ * this file's own whitespace-tolerant TOKEN regex is kept from silently
+ * accepting a form the script-content path would reject.
  */
+import { findVariableTokens } from '@breeze/shared';
 
 export interface InstallerVariableContext {
   org: { id: string; name: string };
   site: { id: string; name: string };
   device: { hostname: string; customFields: Record<string, unknown> | null };
+  /**
+   * Tenant variables (#3409 PR2), prefetched and flattened by the caller
+   * (`softwareDeployment.ts`) — KEY → non-secret VALUE only. Secret variables
+   * are omitted from this map entirely by the caller, so a `{{var.<secret>}}`
+   * reference here always falls through to the `unresolved` branch, never a
+   * substituted secret value.
+   */
+  vars: Record<string, string>;
 }
 
 // Matches `{{ key }}` with optional inner whitespace; the key itself excludes braces.
 const TOKEN = /\{\{\s*([^{}]+?)\s*\}\}/g;
 const CUSTOM_FIELD_KEY = /^device\.customField\.([a-z][a-z0-9_]*)$/;
 
-function resolveKey(key: string, ctx: InstallerVariableContext): string | null {
+function resolveKey(key: string, ctx: InstallerVariableContext, isStrictVariableToken: boolean): string | null {
   let raw: unknown;
   switch (key) {
     case 'org.name':
@@ -48,6 +64,25 @@ function resolveKey(key: string, ctx: InstallerVariableContext): string | null {
       raw = ctx.device.hostname;
       break;
     default: {
+      if (key.startsWith('var.')) {
+        // The var.* namespace must accept ONLY the strict `{{var.<key>}}`
+        // token form shared with script content (no inner whitespace, no
+        // `${{...}}` escape — see the module docblock). This tokenizer
+        // normalizes whitespace and tolerates a `${{` prefix for the
+        // pre-existing org.*/site.*/device.* namespaces (that regex is left
+        // untouched deliberately — changing it would alter their established
+        // behaviour), but extending that leniency to var.* would let an
+        // installer template silently resolve a token that the
+        // script-content path (`findVariableTokens`, used for save-time
+        // secret rejection and dispatch substitution) treats as inert
+        // literal text — a divergence between the two surfaces referencing
+        // the same nominal vocabulary. So a loosely-written `{{ var.x }}`
+        // (or a `$`-escaped `${{var.x}}`) is deliberately treated as unknown
+        // here too, exactly like an unrecognized token.
+        if (!isStrictVariableToken) return null;
+        raw = ctx.vars[key.slice(4)] ?? null;
+        break;
+      }
       const fieldKey = CUSTOM_FIELD_KEY.exec(key)?.[1];
       if (!fieldKey) return null; // unknown token — not in the vocabulary
       raw = ctx.device.customFields?.[fieldKey];
@@ -75,8 +110,16 @@ export function substituteInstallerVariables(
   if (!template.includes('{{')) return { value: template, unresolved: [] };
 
   const unresolved: string[] = [];
-  const value = template.replace(TOKEN, (match, rawKey: string) => {
-    const resolved = resolveKey(rawKey.trim(), ctx);
+  const value = template.replace(TOKEN, (match: string, rawKey: string, offset: number) => {
+    // Per-OCCURRENCE strictness for the var.* namespace: `findVariableTokens`
+    // applied to the isolated match reproduces the shared `{{var.<key>}}`
+    // grammar exactly (key charset, no inner whitespace), and the manual
+    // `$`-prefix check covers `${{var.x}}` — a case findVariableTokens alone
+    // can't see since the `$` sits outside `match`. Computed per match (not
+    // just per key) so the same key written once strictly and once loosely
+    // in one template is judged independently each time.
+    const isStrictVariableToken = template[offset - 1] !== '$' && findVariableTokens(match).length === 1;
+    const resolved = resolveKey(rawKey.trim(), ctx, isStrictVariableToken);
     if (resolved == null) {
       unresolved.push(match);
       return match;

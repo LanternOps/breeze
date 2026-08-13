@@ -31,7 +31,9 @@ import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
+import { hasVariableTokens } from '@breeze/shared';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -281,9 +283,19 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           //   the identical 0-row bug under a different (system-scoped)
           //   transaction: the INSERT wouldn't commit until the 60s wait
           //   finished either.
+          // Task 4 (#3409 PR2): the variable-scope preload joins this SAME
+          // escape rather than getting its own — it must run inside the
+          // identical system-context transaction as dispatchScriptToDevice
+          // (see the long comment above for why a bare/contextless read
+          // would reproduce the 0-row trap this escape exists to avoid). One
+          // device per iteration here (max 10, capped above), so one org per
+          // preload — there is no wider fan-out to batch it against.
           const dispatch = await runOutsideDbContext(() =>
-            withSystemDbAccessContext(() =>
-              dispatchScriptToDevice({
+            withSystemDbAccessContext(async () => {
+              const variableScope = await loadTenantVariableScope(
+                hasVariableTokens(script.content) ? [access.device.orgId] : []
+              );
+              return dispatchScriptToDevice({
                 device: access.device,
                 source: { kind: 'saved', script },
                 parameters: (input.parameters as Record<string, unknown>) ?? {},
@@ -291,8 +303,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
                 triggeredBy: auth.user.id,
                 createdBy: auth.user.id,
                 requireOnline: true,
-              })
-            )
+                variableScope,
+              });
+            })
           );
           if (!dispatch.ok) {
             results[deviceId] = { error: dispatch.error };

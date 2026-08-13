@@ -18,6 +18,8 @@ import {
 } from "@/lib/installerVariables";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { findVariableTokens, variableToken } from "@breeze/shared";
+import type { TenantVariableEntry } from "@/lib/tenantVariableTokens";
 export interface DeviceCustomField {
   fieldKey: string;
   name: string;
@@ -28,16 +30,28 @@ interface VariableInputProps {
   placeholder?: string;
   /** Device custom-field definitions, offered under "Custom fields" in the menu. */
   customFields?: DeviceCustomField[];
+  /** Tenant variables (#3409), offered under "Variables" as `{{var.<key>}}`. */
+  tenantVariables?: TenantVariableEntry[];
   /** Applied as the input's `id` so a parent `<label htmlFor>` can associate a visible label. */
   id?: string;
   "aria-describedby"?: string;
   className?: string;
 }
+/**
+ * A menu row. `disabled` covers secret tenant variables: PR 2 has no channel to
+ * deliver a secret value, so it rejects a secret token at save time — the
+ * picker must not be able to write one.
+ */
+type VariableMenuEntry = InstallerVariable & {
+  disabled?: boolean;
+  hint?: string;
+};
 const GROUP_ORDER: InstallerVariableGroup[] = [
   "Organization",
   "Site",
   "Device",
   "Custom fields",
+  "Variables",
 ];
 /**
  * A single-line text input for installer URLs / silent args that accepts
@@ -50,6 +64,7 @@ export default function VariableInput({
   onChange,
   placeholder,
   customFields = [],
+  tenantVariables = [],
   id,
   className,
   "aria-describedby": ariaDescribedBy,
@@ -65,21 +80,56 @@ export default function VariableInput({
     width: number;
   }>();
   const warnId = useId();
+  // Its own id so a template carrying BOTH an unknown token and a secret one
+  // announces both — a single shared id would drop whichever paragraph lost.
+  const secretWarnId = useId();
   const knownKeys = useMemo(
     () => new Set(customFields.map((f) => f.fieldKey)),
     [customFields],
   );
-  const variables = useMemo<InstallerVariable[]>(() => {
-    const custom: InstallerVariable[] = customFields.map((f) => ({
+  const knownVariableKeys = useMemo(
+    () => new Set(tenantVariables.map((v) => v.key)),
+    [tenantVariables],
+  );
+  // The picker disables secret rows, but nothing stopped a secret token being
+  // typed by hand — it passed validation here (the key IS known) and then
+  // failed the deploy on every device, because softwareDeployment.ts omits
+  // secrets from the substitution map entirely. Flagged separately from
+  // `unknownTokens` so the message can say "secret" rather than "unknown".
+  // findVariableTokens carries the `(?<!\$)` lookbehind, so a `${{var.x}}`
+  // is not reported here — findUnknownTokens flags that one as unknown.
+  const secretVariableKeys = useMemo(
+    () => new Set(tenantVariables.filter((v) => v.isSecret).map((v) => v.key)),
+    [tenantVariables],
+  );
+  const secretTokens = useMemo(
+    () =>
+      findVariableTokens(value)
+        .filter((key) => secretVariableKeys.has(key))
+        .map(variableToken),
+    [value, secretVariableKeys],
+  );
+  const variables = useMemo<VariableMenuEntry[]>(() => {
+    const custom: VariableMenuEntry[] = customFields.map((f) => ({
       token: customFieldToken(f.fieldKey),
       label: f.name || f.fieldKey,
       group: "Custom fields",
       example: f.fieldKey,
     }));
-    return [...BUILTIN_INSTALLER_VARIABLES, ...custom];
-  }, [customFields]);
+    const tenant: VariableMenuEntry[] = tenantVariables.map((v) => ({
+      token: variableToken(v.key),
+      label: v.description || v.key,
+      group: "Variables",
+      example: v.key,
+      disabled: v.isSecret,
+      hint: v.isSecret
+        ? i18n.t("policies:software.variableInput.secretUnavailable")
+        : undefined,
+    }));
+    return [...BUILTIN_INSTALLER_VARIABLES, ...custom, ...tenant];
+  }, [customFields, tenantVariables]);
   const grouped = useMemo(() => {
-    const map = new Map<InstallerVariableGroup, InstallerVariable[]>();
+    const map = new Map<InstallerVariableGroup, VariableMenuEntry[]>();
     for (const v of variables) {
       const list = map.get(v.group) ?? [];
       list.push(v);
@@ -89,15 +139,19 @@ export default function VariableInput({
       ([, l]) => l.length > 0,
     );
   }, [variables]);
-  // Custom-field keys load async; until they arrive, accept custom-field tokens
-  // on structure alone so a slow fetch never flags a valid `{{device.customField.x}}`.
+  // Custom-field keys and tenant-variable keys both load async; until they
+  // arrive, accept those tokens on structure alone so a slow (or failed) fetch
+  // never flags a valid `{{device.customField.x}}` / `{{var.x}}`.
   const unknownTokens = useMemo(
     () =>
       findUnknownTokens(value, knownKeys, {
         requireKnownCustomKeys: knownKeys.size > 0,
+        variableKeys: knownVariableKeys,
+        requireKnownVariableKeys: knownVariableKeys.size > 0,
       }),
-    [value, knownKeys],
+    [value, knownKeys, knownVariableKeys],
   );
+  const hasTokenWarning = unknownTokens.length > 0 || secretTokens.length > 0;
   const positionMenu = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -165,13 +219,17 @@ export default function VariableInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          aria-invalid={unknownTokens.length > 0 || undefined}
+          aria-invalid={hasTokenWarning || undefined}
           aria-describedby={
-            cn(ariaDescribedBy, unknownTokens.length > 0 && warnId) || undefined
+            cn(
+              ariaDescribedBy,
+              secretTokens.length > 0 && secretWarnId,
+              unknownTokens.length > 0 && warnId,
+            ) || undefined
           }
           className={cn(
             "h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring",
-            unknownTokens.length > 0 &&
+            hasTokenWarning &&
               "border-destructive/60 focus:ring-destructive/40",
             className,
           )}
@@ -193,6 +251,20 @@ export default function VariableInput({
           </span>
         </button>
       </div>
+
+      {secretTokens.length > 0 && (
+        <p
+          id={secretWarnId}
+          className="mt-1 flex items-start gap-1.5 text-xs text-destructive"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            {secretTokens.join(", ")}
+            {": "}
+            {i18n.t("policies:software.variableInput.secretUnavailable")}
+          </span>
+        </p>
+      )}
 
       {unknownTokens.length > 0 && (
         <p
@@ -230,8 +302,10 @@ export default function VariableInput({
                     key={v.token}
                     type="button"
                     role="menuitem"
+                    disabled={v.disabled}
+                    aria-disabled={v.disabled || undefined}
                     onClick={() => insert(v.token)}
-                    className="flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden"
+                    className="flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-transparent"
                   >
                     <span className="min-w-0">
                       <span className="block truncate text-sm text-foreground">
@@ -240,6 +314,11 @@ export default function VariableInput({
                       <span className="block truncate font-mono text-[11px] text-muted-foreground">
                         {v.token}
                       </span>
+                      {v.hint && (
+                        <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-500">
+                          {v.hint}
+                        </span>
+                      )}
                     </span>
                   </button>
                 ))}

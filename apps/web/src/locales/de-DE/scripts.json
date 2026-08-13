@@ -990,6 +990,13 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "variables": {
+      "button": "Variablen",
+      "insertTitle": "Variable einfügen",
+      "empty": "Noch keine Variablen.",
+      "secretUnavailable": "Geheim – wird erst in einer späteren Version als Umgebungsvariable übergeben.",
+      "unknown": "Für {{keys}} existiert keine Variable – die Ausführung schlägt auf jedem Zielgerät fehl, bis Sie sie anlegen."
     }
   },
   "scriptList": {
