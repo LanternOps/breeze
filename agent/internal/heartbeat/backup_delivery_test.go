@@ -15,7 +15,7 @@ import (
 // platform and surfaces the download error to the caller. ---
 
 func TestPrefetchBackupHelper_HappyPath(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), "breeze-backup-dl-12345")
+	tempPath := filepath.Join(t.TempDir(), "nu-backup-dl-12345")
 	overridePath := filepath.Join(t.TempDir(), "custom-backup")
 	var calls atomic.Int32
 	h := &Heartbeat{
@@ -104,7 +104,7 @@ func TestBackupUpgradeCompanion_PresentAndPrefetchFails_Aborts(t *testing.T) {
 
 func TestBackupUpgradeCompanion_AbsentAndPrefetchFails_Proceeds(t *testing.T) {
 	dir := t.TempDir()
-	// No breeze-backup binary written at all.
+	// No nu-backup binary written at all.
 
 	h := &Heartbeat{
 		config:           &config.Config{},
@@ -179,7 +179,7 @@ func TestBackupUpgradeCompanion_PrefetchSucceeds_ReturnsPairRegardlessOfPresence
 }
 
 // TestBackupUpgradeCompanion_ThirdConsecutiveFailure_ProceedsAgentOnly is
-// Finding 1: a target version whose breeze-backup artifact is permanently
+// Finding 1: a target version whose nu-backup artifact is permanently
 // missing must not wedge agent upgrades forever. After backupPrefetchFailureCap
 // (3) consecutive failures for the SAME target version, the third abort
 // becomes a proceed.
@@ -351,7 +351,7 @@ func TestBackupHelperIdle_SeamReportsIdle(t *testing.T) {
 func TestReconcileBackupHelper_Missing_DownloadsAndInstalls(t *testing.T) {
 	dir := t.TempDir()
 	wantInstall := filepath.Join(dir, "custom-backup")
-	tempDL := filepath.Join(dir, "breeze-backup-dl-999")
+	tempDL := filepath.Join(dir, "nu-backup-dl-999")
 	if err := os.WriteFile(tempDL, []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +679,7 @@ func TestReconcileBackupHelper_DownloadFails_NoInstall(t *testing.T) {
 
 func TestReconcileBackupHelper_InstallFails_NonFatal_RemovesTemp(t *testing.T) {
 	dir := t.TempDir()
-	tempDL := filepath.Join(dir, "breeze-backup-dl-777")
+	tempDL := filepath.Join(dir, "nu-backup-dl-777")
 	if err := os.WriteFile(tempDL, []byte("MZ"), 0o644); err != nil {
 		t.Fatal(err)
 	}

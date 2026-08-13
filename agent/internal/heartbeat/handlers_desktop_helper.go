@@ -679,15 +679,15 @@ func (h *Heartbeat) findOrSpawnHelper(targetSession string) *sessionbroker.Sessi
 // darwinHelperPlists defines the LaunchAgent plists the agent writes to disk
 // when they're missing, so the desktop helper self-configures without a .pkg.
 var darwinHelperPlists = map[string]string{
-	"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist": `<?xml version="1.0" encoding="UTF-8"?>
+	"/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist": `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
+    <string>com.nodesunlimited.desktop-helper-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>user_session</string>
     </array>
@@ -708,15 +708,15 @@ var darwinHelperPlists = map[string]string{
 </dict>
 </plist>
 `,
-	"/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist": `<?xml version="1.0" encoding="UTF-8"?>
+	"/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist": `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
+    <string>com.nodesunlimited.desktop-helper-loginwindow</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>login_window</string>
     </array>
@@ -777,7 +777,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 			bootstrapped := false
 			for _, uid := range uids {
 				domain := "gui/" + uid
-				label := domain + "/com.breeze.desktop-helper-user"
+				label := domain + "/com.nodesunlimited.desktop-helper-user"
 				// kickstart -k kills any existing instance and restarts it.
 				if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
 					log.Info("kickstarted desktop helper LaunchAgent", "uid", uid)
@@ -788,7 +788,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				}
 				// Fallback: try bootstrap in case the plist was never loaded.
 				if err := exec.Command("launchctl", "bootstrap", domain,
-					"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist").Run(); err != nil {
+					"/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist").Run(); err != nil {
 					log.Warn("launchctl bootstrap also failed",
 						"uid", uid, "domain", domain, "error", err.Error())
 				} else {
@@ -800,12 +800,12 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				return nil // let the caller's poll loop wait for the connection
 			}
 		}
-		if err := exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
+		if err := exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.nodesunlimited.desktop-helper-loginwindow").Run(); err == nil {
 			log.Info("kickstarted login-window desktop helper LaunchAgent")
 			return nil
 		}
 		// Fallback: try bootstrap in case the plist was never loaded into the loginwindow domain.
-		const loginwindowPlist = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
+		const loginwindowPlist = "/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist"
 		if err := exec.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
 			log.Info("bootstrapped login-window desktop helper LaunchAgent")
 			return nil
@@ -905,7 +905,7 @@ func kickstartDarwinDesktopHelpers() {
 
 	uids := findGUIUserUIDs()
 	for _, uid := range uids {
-		label := "gui/" + uid + "/com.breeze.desktop-helper-user"
+		label := "gui/" + uid + "/com.nodesunlimited.desktop-helper-user"
 		if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err != nil {
 			log.Warn("post-update: launchctl kickstart failed",
 				"uid", uid, "label", label, "error", err.Error())
@@ -916,7 +916,7 @@ func kickstartDarwinDesktopHelpers() {
 
 	// Also kickstart the login-window helper.
 	if err := exec.Command("launchctl", "kickstart", "-k",
-		"loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err != nil {
+		"loginwindow/com.nodesunlimited.desktop-helper-loginwindow").Run(); err != nil {
 		log.Warn("post-update: launchctl kickstart login-window helper failed",
 			"error", err.Error())
 	} else {

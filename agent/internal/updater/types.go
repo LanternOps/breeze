@@ -1,7 +1,7 @@
 package updater
 
 // BinaryPair is a freshly-downloaded binary in a temp location plus its final
-// install path. Used to pipe optional companion binaries (e.g. breeze-user-helper.exe)
+// install path. Used to pipe optional companion binaries (e.g. nu-user-helper.exe)
 // through the Windows in-place upgrade swap.
 type BinaryPair struct {
 	Temp   string
@@ -29,11 +29,11 @@ type UpdateOptions struct {
 	// this upgrade: on Windows via the restart-helper script (like UserHelper),
 	// on Linux and the macOS raw-binary fallback via an atomic same-directory
 	// rename before the agent restarts (see swapCompanionBinary). Unlike
-	// UserHelper this applies on EVERY platform — breeze-backup ships
+	// UserHelper this applies on EVERY platform — nu-backup ships
 	// everywhere (agent/Makefile), not just Windows — with one exception: the
-	// macOS .pkg install path already bundles its own breeze-backup, so
+	// macOS .pkg install path already bundles its own nu-backup, so
 	// updateTo discards (rather than swaps) a staged Backup pair when the pkg
-	// path is taken. breeze-backup's version is slaved to the agent's; there
+	// path is taken. nu-backup's version is slaved to the agent's; there
 	// is no independent backup update directive.
 	Backup *BinaryPair
 }

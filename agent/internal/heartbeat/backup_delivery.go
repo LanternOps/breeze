@@ -12,7 +12,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
-// breeze-backup's version is SLAVED to the agent version: there is no
+// nu-backup's version is SLAVED to the agent version: there is no
 // independent backup directive or server-driven promotion. Delivery happens
 // two ways — (A) prefetch + swap during an agent upgrade (this file's
 // prefetchBackupHelper / backupUpgradeCompanion, called from doUpgrade) and
@@ -21,12 +21,12 @@ import (
 // in progress. Both paths always fetch h.agentVersion, never "latest".
 //
 // Both paths, and the version probe in backup_version.go, resolve the
-// on-disk breeze-backup path through the single h.resolveBackupBinaryPath()
+// on-disk nu-backup path through the single h.resolveBackupBinaryPath()
 // helper — see its doc for why a single resolution matters.
 
-// prefetchBackupHelper pre-downloads breeze-backup so the upgrade-restart path
+// prefetchBackupHelper pre-downloads nu-backup so the upgrade-restart path
 // can drop it alongside the new agent binary. Unlike prefetchUserHelper this
-// runs on EVERY platform — breeze-backup ships on Linux/macOS/Windows alike
+// runs on EVERY platform — nu-backup ships on Linux/macOS/Windows alike
 // (see agent/Makefile), not just Windows — and unlike prefetchUserHelper it
 // returns the download error to the caller instead of swallowing it: doUpgrade
 // needs to distinguish failure to decide whether to abort the whole agent
@@ -71,7 +71,7 @@ func (h *Heartbeat) prefetchBackupHelper(targetVersion string) (*updater.BinaryP
 // backupPrefetchFailureCap is the number of consecutive backupUpgradeCompanion
 // prefetch failures — for the SAME target version, with a backup binary
 // already present — tolerated before giving up on aborting and proceeding
-// agent-only instead. Without this cap, a target version whose breeze-backup
+// agent-only instead. Without this cap, a target version whose nu-backup
 // artifact is permanently missing (a self-hosted server that never registered
 // backup binaries, or a release tag that shipped without the asset) would
 // wedge agent upgrades forever: every cycle re-aborts, the agent never
@@ -86,7 +86,7 @@ const backupPrefetchFailureCap = 3
 //
 // Failure policy deliberately differs from the user-helper prefetch (which is
 // always non-fatal):
-//   - a breeze-backup binary is currently present at the target path: ABORT
+//   - a nu-backup binary is currently present at the target path: ABORT
 //     the whole agent upgrade with a loud error, UNLESS this is the
 //     backupPrefetchFailureCap'th consecutive failure for this exact target
 //     version — see backupPrefetchFailureCap. The heartbeat loop naturally
@@ -94,7 +94,7 @@ const backupPrefetchFailureCap = 3
 //     (network blip, momentary server hiccup) self-heals without ever leaving
 //     a stale/mismatched backup helper installed next to a newer agent — but
 //     a PERMANENTLY missing artifact must not wedge agent upgrades forever.
-//   - no breeze-backup binary is present on disk: proceed agent-only. A
+//   - no nu-backup binary is present on disk: proceed agent-only. A
 //     backup-less fleet (or a device where the artifact was never installed)
 //     must not be permanently wedged off agent updates by a component it
 //     doesn't have.
@@ -119,18 +119,18 @@ func (h *Heartbeat) backupUpgradeCompanion(targetVersion string) (pair *updater.
 
 	key, value := updater.SafeDownloadErrorFields(err)
 	if !present {
-		log.Warn("breeze-backup prefetch failed and no backup helper is installed; proceeding with agent-only upgrade",
+		log.Warn("nu-backup prefetch failed and no backup helper is installed; proceeding with agent-only upgrade",
 			"targetVersion", targetVersion, key, value)
 		return nil, false
 	}
 
 	failures := h.noteBackupPrefetchFailure(targetVersion)
 	if failures >= backupPrefetchFailureCap {
-		log.Error("proceeding with agent upgrade after failed breeze-backup prefetch attempts — backup binary will drift until reconcile succeeds",
+		log.Error("proceeding with agent upgrade after failed nu-backup prefetch attempts — backup binary will drift until reconcile succeeds",
 			"targetVersion", targetVersion, "consecutiveFailures", failures, key, value)
 		return nil, false
 	}
-	log.Error("agent upgrade blocked: matching breeze-backup artifact unavailable — retrying next cycle",
+	log.Error("agent upgrade blocked: matching nu-backup artifact unavailable — retrying next cycle",
 		"targetVersion", targetVersion, "consecutiveFailures", failures, key, value)
 	return nil, true
 }
@@ -182,7 +182,7 @@ func removeStagedUpgradeTemps(pairs ...*updater.BinaryPair) {
 }
 
 // backupHelperIdle reports whether it is currently safe to replace the
-// on-disk breeze-backup binary: no backup job may be in flight, since
+// on-disk nu-backup binary: no backup job may be in flight, since
 // swapping (or an installer's taskkill backstop) killing the file out from
 // under a job that's mid-upload would corrupt or kill it. Consults the same
 // idle-check both callers need: h.backupHelperStopIfIdle (test seam) when
@@ -201,13 +201,13 @@ func (h *Heartbeat) backupHelperIdle() bool {
 	return stopIfIdle()
 }
 
-// reconcileBackupHelper self-heals a stale or missing breeze-backup binary,
+// reconcileBackupHelper self-heals a stale or missing nu-backup binary,
 // decoupled from any in-progress agent upgrade. Runs on ALL platforms —
-// unlike reconcileUserHelper's Windows-only gate, breeze-backup ships
+// unlike reconcileUserHelper's Windows-only gate, nu-backup ships
 // everywhere.
 //
 // Unlike reconcileUserHelper's stat-only check (present vs. absent), this
-// detection is VERSION-AWARE: breeze-backup's version is slaved to the
+// detection is VERSION-AWARE: nu-backup's version is slaved to the
 // agent's, so a present-but-stale (or present-but-broken, see
 // backupProbeOutcome) binary is just as much a defect as a missing one — a
 // stat-only check would never notice an agent that upgraded while a backup
@@ -235,7 +235,7 @@ func (h *Heartbeat) reconcileBackupHelper() {
 		// Present and non-empty. A dev-prefixed agent version skips the
 		// version-mismatch check entirely: dev pushes run off the release
 		// train on purpose (mirrors bootstrapWatchdog's dev- handling), and
-		// there is no published breeze-backup artifact for a dev version to
+		// there is no published nu-backup artifact for a dev version to
 		// reconcile toward — attempting one would just fail every tick.
 		if !strings.HasPrefix(h.agentVersion, "dev-") {
 			installed, outcome := h.installedBackupVersionOutcome()
@@ -305,7 +305,7 @@ func (h *Heartbeat) reconcileBackupHelper() {
 	}
 
 	// Always fetch the CURRENTLY-installed agent version, never "latest" —
-	// breeze-backup is slaved to the agent, not independently promoted.
+	// nu-backup is slaved to the agent, not independently promoted.
 	tempPath, dlErr := download(h.agentVersion)
 	if dlErr != nil {
 		// A version whose backup artifact genuinely doesn't exist would 404
@@ -389,7 +389,7 @@ func (h *Heartbeat) reconcileBackupHelperFromExecutable() {
 	h.reconcileBackupHelper()
 }
 
-// installBackupBinary places a freshly-downloaded breeze-backup at installPath
+// installBackupBinary places a freshly-downloaded nu-backup at installPath
 // and makes it usable, mirroring installUserHelperBinary: best-effort backup
 // of the existing binary, an atomic replace, and a broker hash-allowlist
 // refresh so the next spawn is admitted over IPC. Unlike the Windows-only
@@ -410,10 +410,10 @@ func (h *Heartbeat) installBackupBinary(tempPath, installPath, version string) e
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return fmt.Errorf("failed to create backup directory %s: %w", backupDir, err)
 	}
-	backupOfOld := filepath.Join(backupDir, "breeze-backup.backup"+filepath.Ext(installPath))
+	backupOfOld := filepath.Join(backupDir, "nu-backup.backup"+filepath.Ext(installPath))
 	if _, statErr := os.Stat(installPath); statErr == nil {
 		if err := copyFile(installPath, backupOfOld); err != nil {
-			log.Warn("failed to back up existing breeze-backup binary — proceeding anyway (rollback unavailable if the install fails)",
+			log.Warn("failed to back up existing nu-backup binary — proceeding anyway (rollback unavailable if the install fails)",
 				"installPath", installPath, "backupPath", backupOfOld, "error", err.Error())
 		}
 	}
@@ -425,15 +425,15 @@ func (h *Heartbeat) installBackupBinary(tempPath, installPath, version string) e
 		// lock (e.g. a helper started out of band) — without it the
 		// subsequent replace can fail with a sharing violation. Exit 128
 		// ("process not found") is the benign no-process-running case.
-		killCmd := exec.Command("taskkill", "/F", "/IM", "breeze-backup.exe")
+		killCmd := exec.Command("taskkill", "/F", "/IM", "nu-backup.exe")
 		killOut, killErr := killCmd.CombinedOutput()
 		switch {
 		case killErr == nil:
-			log.Info("stopped running breeze-backup.exe before install", "output", string(killOut))
+			log.Info("stopped running nu-backup.exe before install", "output", string(killOut))
 		case taskkillProcessNotFound(killOut, killErr):
-			log.Debug("no running breeze-backup.exe to stop", "output", string(killOut))
+			log.Debug("no running nu-backup.exe to stop", "output", string(killOut))
 		default:
-			log.Warn("taskkill breeze-backup.exe failed unexpectedly; the install copy may hit a sharing violation",
+			log.Warn("taskkill nu-backup.exe failed unexpectedly; the install copy may hit a sharing violation",
 				"output", string(killOut), "error", killErr.Error())
 		}
 	}

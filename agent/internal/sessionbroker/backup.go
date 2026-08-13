@@ -34,7 +34,7 @@ const backupHelperDiedError = "backup helper exited unexpectedly"
 // backup, duplicated here as a literal because internal/remote/tools (which
 // declares CmdBackupRun) imports this package — taking the constant from there
 // would be an import cycle. It must stay in step with tools.CmdBackupRun and
-// with the helper's own literal in cmd/breeze-backup/main.go.
+// with the helper's own literal in cmd/nu-backup/main.go.
 const backupRunCommandType = "backup_run"
 
 // backupLog carries component=backup rather than component=sessionbroker so
@@ -45,17 +45,17 @@ var backupLog = logging.L("backup")
 // backupHelperScopes defines allowed IPC scopes for the backup helper.
 var backupHelperScopes = []string{"backup"}
 
-// backupBinaryName returns the on-disk filename of the breeze-backup helper as
-// installed alongside the agent. Unlike the Windows-only breeze-user-helper,
+// backupBinaryName returns the on-disk filename of the nu-backup helper as
+// installed alongside the agent. Unlike the Windows-only nu-user-helper,
 // the backup helper is built for every supported OS (see agent/Makefile), so
-// the executable suffix must be applied conditionally: breeze-backup.exe on
-// Windows, breeze-backup elsewhere. Taking goos as a parameter keeps this
+// the executable suffix must be applied conditionally: nu-backup.exe on
+// Windows, nu-backup elsewhere. Taking goos as a parameter keeps this
 // testable on every platform the agent builds on.
 func backupBinaryName(goos string) string {
 	if goos == "windows" {
-		return "breeze-backup.exe"
+		return "nu-backup.exe"
 	}
-	return "breeze-backup"
+	return "nu-backup"
 }
 
 // backupHelper tracks the backup helper process and session.
@@ -74,7 +74,7 @@ type backupHelper struct {
 	// `system_image` resolve to commandType backup_run
 	// (apps/api/src/jobs/backupWorker.ts), the agent dispatches commands from a
 	// worker pool, and the helper runs each in its own goroutine
-	// (cmd/breeze-backup/main.go). A single slot would let the second run
+	// (cmd/nu-backup/main.go). A single slot would let the second run
 	// overwrite the first and leave the first stranded for the 15-minute
 	// reaper — the very bug #2998 fixes.
 	//
@@ -239,7 +239,7 @@ func (b *Broker) StopBackupHelper() {
 // backup run is currently in flight, reporting whether it did so (true) or
 // deferred because a run is active (false). Used by the agent's backup-binary
 // delivery paths (upgrade swap, reconcile) before replacing the on-disk
-// breeze-backup binary: swapping the file out from under a job that's
+// nu-backup binary: swapping the file out from under a job that's
 // mid-upload would corrupt or kill it. The check-and-stop happens atomically
 // under bh.mu, so a run cannot start in the gap between "no active runs" and
 // "kill the process".

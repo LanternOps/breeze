@@ -632,7 +632,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
                       <p className="text-xs opacity-80">{t('brandingEditor.weeklySummary')}</p>
                     </div>
                   </div>
-                  <span className="text-xs font-semibold uppercase tracking-wide">Breeze</span>
+                  <span className="text-xs font-semibold uppercase tracking-wide">Nodes Unlimited</span>
                 </div>
                 <div className="space-y-3 p-4 text-sm">
                   <p>{t('brandingEditor.helloPreview')}</p>

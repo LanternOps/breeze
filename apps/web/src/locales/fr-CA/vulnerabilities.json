@@ -202,7 +202,7 @@
     "consequence": {
       "remediate": "Installe le correctif approuvé pour chaque CVE sur {{deviceText}} ({{findingText}}). Les constats sans correctif approuvé applicable sont ignorés.",
       "accept": "Masque {{findingText}} sur {{deviceText}} de la file des constats ouverts jusqu’à la date définie. Ces constats ne se rouvrent pas automatiquement ; les acceptations arrivant à expiration apparaissent dans la carte « Acceptés, expiration prochaine ».",
-      "mitigate": "Marque {{findingText}} sur {{deviceText}} comme atténués et enregistre votre note comme contrôle compensatoire. Breeze ne modifie pas les appareils."
+      "mitigate": "Marque {{findingText}} sur {{deviceText}} comme atténués et enregistre votre note comme contrôle compensatoire. Nodes Unlimited ne modifie pas les appareils."
     },
     "fields": {
       "reason": "Raison",
@@ -228,7 +228,7 @@
     },
     "unscanned": {
       "title": "Aucun constat de vulnérabilité pour le moment",
-      "description": "Breeze vérifie l’inventaire logiciel et OS de chaque appareil par rapport aux CVE connus et met en file tout ce qui nécessite des correctifs, des mitigations ou une acceptation de risque ici.",
+      "description": "Nodes Unlimited vérifie l’inventaire logiciel et OS de chaque appareil par rapport aux CVE connus et met en file tout ce qui nécessite des correctifs, des mitigations ou une acceptation de risque ici.",
       "setupHint": "Le balayage est désactivé par défaut — activez-la dans l’onglet Vulnérabilité d’une politique de configuration.",
       "setupAction": "Configurez l’analyse des vulnérabilités"
     },

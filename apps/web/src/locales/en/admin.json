@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Account deletion requests",
-      "description": "Users in your tenant who've asked to delete their Breeze account. Approve to queue them for processing, or reject with a note explaining why.",
+      "description": "Users in your tenant who've asked to delete their Nodes Unlimited account. Approve to queue them for processing, or reject with a note explaining why.",
       "filterLabel": "Filter by status",
       "refresh": "Refresh",
       "retry": "Try again",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Third-Party Package Catalog",
-      "description": "Breeze-curated metadata for third-party software detected by winget on agents.",
+      "description": "Nodes Unlimited-curated metadata for third-party software detected by winget on agents.",
       "totalEntries": "Total entries:",
       "refresh": "Refresh",
       "addPackage": "Add package",
       "searchPlaceholder": "Search by name, vendor, or winget ID…",
-      "breezeTestedOnly": "Breeze-tested only",
-      "breezeTested": "Breeze-tested",
+      "breezeTestedOnly": "Nodes Unlimited-tested only",
+      "breezeTested": "Nodes Unlimited-tested",
       "dismiss": "Dismiss",
       "loading": "Loading catalog…",
       "empty": "No catalog entries match the current filters.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Platform-admin access required",
-        "prefix": "The third-party catalog is managed by Breeze platform admins. Your account",
+        "prefix": "The third-party catalog is managed by Nodes Unlimited platform admins. Your account",
         "role": "an org/partner admin",
         "suffix": "can view the curated catalog through normal patch flows but cannot edit it directly."
       },
@@ -310,7 +310,7 @@
         "vendor": "Vendor",
         "friendlyName": "Friendly name",
         "defaultSeverity": "Default severity",
-        "breezeTested": "Breeze-tested",
+        "breezeTested": "Nodes Unlimited-tested",
         "homepageUrl": "Homepage URL",
         "notes": "Notes"
       },
@@ -528,9 +528,15 @@
       "sensitiveOperations": "Sensitive Operations",
       "reviewRequired": "Review required",
       "categories": {
-        "gdpr": { "label": "GDPR" },
-        "soc2": { "label": "SOC 2" },
-        "hipaa": { "label": "HIPAA" }
+        "gdpr": {
+          "label": "GDPR"
+        },
+        "soc2": {
+          "label": "SOC 2"
+        },
+        "hipaa": {
+          "label": "HIPAA"
+        }
       },
       "summary": {
         "gdpr": {

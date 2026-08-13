@@ -62,7 +62,7 @@ var allCommandTypes = []string{
 	tools.CmdSensitiveDataScan, tools.CmdQuarantineFile,
 	tools.CmdEncryptFile, tools.CmdSecureDeleteFile,
 
-	// handlers_backup_forward.go init() — backup commands forwarded to breeze-backup via IPC
+	// handlers_backup_forward.go init() — backup commands forwarded to nu-backup via IPC
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
 
 	// handlers_backup_verify_forward.go init()

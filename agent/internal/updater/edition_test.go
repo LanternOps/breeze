@@ -64,7 +64,7 @@ func agentAssetName() string {
 	if runtime.GOOS == "windows" {
 		suffix = ".exe"
 	}
-	return "breeze-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
+	return "nu-agent-" + runtime.GOOS + "-" + runtime.GOARCH + suffix
 }
 
 // --- editionAllowed: pure helper -------------------------------------------------
@@ -203,7 +203,7 @@ func TestVerifyUpdateManifest_ReleaseArtifact_HostedEdition_AcceptedInHostedBuil
 // --- fallback path that still consults manifest asset entries: pkgAssetChecksum --
 
 func TestPkgAssetChecksum_EditionAbsent_AcceptedSelfHost(t *testing.T) {
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20},
 	})
@@ -216,7 +216,7 @@ func TestPkgAssetChecksum_EditionAbsent_AcceptedHosted(t *testing.T) {
 	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
 	defer restore()
 
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20},
 	})
@@ -226,7 +226,7 @@ func TestPkgAssetChecksum_EditionAbsent_AcceptedHosted(t *testing.T) {
 }
 
 func TestPkgAssetChecksum_SelfHostEdition_AcceptedInSelfHostBuild(t *testing.T) {
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20, Edition: "self-host"},
 	})
@@ -239,7 +239,7 @@ func TestPkgAssetChecksum_SelfHostEdition_RejectedInHostedBuild(t *testing.T) {
 	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
 	defer restore()
 
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20, Edition: "self-host"},
 	})
@@ -249,7 +249,7 @@ func TestPkgAssetChecksum_SelfHostEdition_RejectedInHostedBuild(t *testing.T) {
 }
 
 func TestPkgAssetChecksum_HostedEdition_RejectedInSelfHostBuild(t *testing.T) {
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20, Edition: "hosted"},
 	})
@@ -262,7 +262,7 @@ func TestPkgAssetChecksum_HostedEdition_AcceptedInHostedBuild(t *testing.T) {
 	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
 	defer restore()
 
-	pkgName := "breeze-agent-darwin-" + runtime.GOARCH + ".pkg"
+	pkgName := "nu-agent-darwin-" + runtime.GOARCH + ".pkg"
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20, Edition: "hosted"},
 	})

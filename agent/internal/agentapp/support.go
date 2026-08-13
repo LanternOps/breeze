@@ -187,7 +187,7 @@ func parseSupportFilename(base string) (code, host string, ok bool) {
 // the download twice) cannot fight over one directory.
 //
 // It is NEVER config.ConfigDir(). A support client writing into
-// C:\ProgramData\Breeze would overwrite the config, secrets and agent.state
+// C:\ProgramData\Nodes Unlimited would overwrite the config, secrets and agent.state
 // of a real permanently-installed agent on the same machine — the single most
 // destructive failure mode this feature has.
 func supportWorkDir() string {

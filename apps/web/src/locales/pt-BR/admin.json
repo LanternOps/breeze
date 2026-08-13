@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Solicitações de exclusão de conta",
-      "description": "Usuários no seu tenant que pediram para excluir a conta Breeze. Aprove para colocá-los na fila de processamento ou rejeite com uma observação explicando o motivo.",
+      "description": "Usuários no seu tenant que pediram para excluir a conta Nodes Unlimited. Aprove para colocá-los na fila de processamento ou rejeite com uma observação explicando o motivo.",
       "filterLabel": "Filtrar por status",
       "refresh": "Atualizar",
       "retry": "Tentar novamente",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Catálogo de pacotes de terceiros",
-      "description": "Metadados curados pela Breeze para softwares de terceiros detectados pelo winget nos agentes.",
+      "description": "Metadados curados pela Nodes Unlimited para softwares de terceiros detectados pelo winget nos agentes.",
       "totalEntries": "Total de entradas:",
       "refresh": "Atualizar",
       "addPackage": "Adicionar pacote",
       "searchPlaceholder": "Pesquisar por nome, fornecedor ou ID do winget…",
-      "breezeTestedOnly": "Somente testados pela Breeze",
-      "breezeTested": "Testado pela Breeze",
+      "breezeTestedOnly": "Somente testados pela Nodes Unlimited",
+      "breezeTested": "Testado pela Nodes Unlimited",
       "dismiss": "Dispensar",
       "loading": "Carregando catálogo…",
       "empty": "Nenhuma entrada do catálogo corresponde aos filtros atuais.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Acesso de administrador da plataforma necessário",
-        "prefix": "O catálogo de terceiros é gerenciado por administradores da plataforma Breeze. Sua conta",
+        "prefix": "O catálogo de terceiros é gerenciado por administradores da plataforma Nodes Unlimited. Sua conta",
         "role": "um administrador de org/parceiro",
         "suffix": "pode ver o catálogo curado pelos fluxos normais de patches, mas não pode editá-lo diretamente."
       },
@@ -310,7 +310,7 @@
         "vendor": "Fornecedor",
         "friendlyName": "Nome amigável",
         "defaultSeverity": "Severidade padrão",
-        "breezeTested": "Testado pela Breeze",
+        "breezeTested": "Testado pela Nodes Unlimited",
         "homepageUrl": "URL da página inicial",
         "notes": "Observações"
       },
@@ -528,9 +528,15 @@
       "sensitiveOperations": "Operações sensíveis",
       "reviewRequired": "Revisão obrigatória",
       "categories": {
-        "gdpr": { "label": "GDPR" },
-        "soc2": { "label": "SOC 2" },
-        "hipaa": { "label": "HIPAA" }
+        "gdpr": {
+          "label": "GDPR"
+        },
+        "soc2": {
+          "label": "SOC 2"
+        },
+        "hipaa": {
+          "label": "HIPAA"
+        }
       },
       "summary": {
         "gdpr": {

@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	watchdogBinaryPath = "/usr/local/bin/breeze-watchdog"
-	watchdogPlistDst   = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
-	watchdogLabel      = "com.breeze.watchdog"
+	watchdogBinaryPath = "/usr/local/bin/nu-watchdog"
+	watchdogPlistDst   = "/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
+	watchdogLabel      = "com.nodesunlimited.watchdog"
 )
 
 const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -23,11 +23,11 @@ const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.watchdog</string>
+    <string>com.nodesunlimited.watchdog</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-watchdog</string>
+        <string>/usr/local/bin/nu-watchdog</string>
         <string>run</string>
     </array>
 
@@ -41,13 +41,13 @@ const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <integer>5</integer>
 
     <key>WorkingDirectory</key>
-    <string>/Library/Application Support/Breeze</string>
+    <string>/Library/Application Support/Nodes Unlimited</string>
 
     <key>StandardOutPath</key>
-    <string>/Library/Logs/Breeze/watchdog.log</string>
+    <string>/Library/Logs/Nodes Unlimited/watchdog.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Library/Logs/Breeze/watchdog.err</string>
+    <string>/Library/Logs/Nodes Unlimited/watchdog.err</string>
 </dict>
 </plist>
 `
@@ -70,11 +70,11 @@ func serviceInstallCmd() *cobra.Command {
 		Short: "Install the watchdog as a launchd service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if os.Geteuid() != 0 {
-				return fmt.Errorf("must run as root (sudo breeze-watchdog service install)")
+				return fmt.Errorf("must run as root (sudo nu-watchdog service install)")
 			}
 
 			// Create log directory.
-			logDir := "/Library/Logs/Breeze"
+			logDir := "/Library/Logs/Nodes Unlimited"
 			if err := os.MkdirAll(logDir, 0755); err != nil {
 				return fmt.Errorf("failed to create %s: %w", logDir, err)
 			}
@@ -138,7 +138,7 @@ func serviceUninstallCmd() *cobra.Command {
 		Short: "Uninstall the watchdog launchd service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if os.Geteuid() != 0 {
-				return fmt.Errorf("must run as root (sudo breeze-watchdog service uninstall)")
+				return fmt.Errorf("must run as root (sudo nu-watchdog service uninstall)")
 			}
 
 			// Stop and unload.
@@ -176,11 +176,11 @@ func serviceStartCmd() *cobra.Command {
 		Short: "Start the watchdog service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if os.Geteuid() != 0 {
-				return fmt.Errorf("must run as root (sudo breeze-watchdog service start)")
+				return fmt.Errorf("must run as root (sudo nu-watchdog service start)")
 			}
 
 			if !fileExists(watchdogPlistDst) {
-				return fmt.Errorf("service not installed — run 'sudo breeze-watchdog service install' first")
+				return fmt.Errorf("service not installed — run 'sudo nu-watchdog service install' first")
 			}
 
 			if isWatchdogLoaded() {
@@ -211,7 +211,7 @@ func serviceStopCmd() *cobra.Command {
 		Short: "Stop the watchdog service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if os.Geteuid() != 0 {
-				return fmt.Errorf("must run as root (sudo breeze-watchdog service stop)")
+				return fmt.Errorf("must run as root (sudo nu-watchdog service stop)")
 			}
 
 			if !isWatchdogLoaded() {
@@ -245,7 +245,7 @@ func restartWatchdogService() error {
 
 // agentBinaryPath returns the platform-specific agent binary path.
 func agentBinaryPath() string {
-	return "/usr/local/bin/breeze-agent"
+	return "/usr/local/bin/nu-agent"
 }
 
 func isWatchdogLoaded() bool {

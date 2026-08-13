@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/breeze-agent user-helper
+ExecStart=/usr/local/bin/nu-agent user-helper
 Restart=on-failure
 RestartSec=10
 Environment=DISPLAY=%I
@@ -17,7 +17,7 @@ PrivateNetwork=true
 NoNewPrivileges=true
 ProtectHome=read-only
 ReadOnlyPaths=/
-ReadWritePaths=/var/run/breeze /tmp
+ReadWritePaths=/var/run/nodesunlimited /tmp
 
 [Install]
 WantedBy=graphical-session.target

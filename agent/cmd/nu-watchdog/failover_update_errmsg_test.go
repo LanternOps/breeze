@@ -18,7 +18,7 @@ import (
 // box, and net/http's *url.Error message repeats the full URL of the failed hop
 // (the presigned CDN URL after a redirect).
 func TestFailoverUpdateErrMsgNeverCarriesTheDownloadURL(t *testing.T) {
-	const secretURL = "https://cdn.example/breeze-agent?X-Amz-Signature=CAPABILITY-SECRET"
+	const secretURL = "https://cdn.example/nu-agent?X-Amz-Signature=CAPABILITY-SECRET"
 
 	leaks := func(t *testing.T, msg string) {
 		t.Helper()

@@ -10,7 +10,7 @@ import (
 // swapCompanionBinary atomically installs pair.Temp at pair.Target using a
 // same-directory staging file + rename, mirroring
 // heartbeat.replaceWatchdogBinaryUnix. It is currently only used for the
-// breeze-backup companion binary on the Linux and macOS-fallback raw-binary
+// nu-backup companion binary on the Linux and macOS-fallback raw-binary
 // upgrade paths (updateTo); Windows swaps its companions via the restart-helper
 // PowerShell script instead (see restart_windows.go).
 //
@@ -38,7 +38,7 @@ func swapCompanionBinary(pair *BinaryPair) error {
 	defer func() { _ = src.Close() }()
 
 	destDir := filepath.Dir(pair.Target)
-	staging, err := os.CreateTemp(destDir, ".breeze-backup-*.new")
+	staging, err := os.CreateTemp(destDir, ".nu-backup-*.new")
 	if err != nil {
 		return fmt.Errorf("create staging file in %s: %w", destDir, err)
 	}

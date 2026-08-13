@@ -160,16 +160,16 @@ func initBootstrapLogging(cfg *config.Config) {
 // before enrollment completes.
 //
 // Intended for post-MSI-install scenarios where the service starts
-// before a later `breeze-agent enroll` call populates the config. The
+// before a later `nu-agent enroll` call populates the config. The
 // ctx allows the caller to cancel the wait on shutdown (SIGINT/SIGTERM
 // via signal.NotifyContext in runAgent, or SCM Stop in the Windows
 // service wrapper).
 func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
 	log.Warn("agent not enrolled — waiting for enrollment. "+
-		"Run 'breeze-agent enroll <key> --server <url>' to complete setup.",
+		"Run 'nu-agent enroll <key> --server <url>' to complete setup.",
 		"pollInterval", waitForEnrollmentPollInterval)
 	eventlog.Info("BreezeAgent",
-		"Waiting for enrollment. Run 'breeze-agent enroll <key> --server <url>'.")
+		"Waiting for enrollment. Run 'nu-agent enroll <key> --server <url>'.")
 
 	ticker := time.NewTicker(waitForEnrollmentPollInterval)
 	defer ticker.Stop()
@@ -196,7 +196,7 @@ func waitForEnrollment(ctx context.Context, cfgFile string) *config.Config {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "breeze-agent",
+	Use:   "nu-agent",
 	Short: "NODES UNLIMITED AGENT",
 	Long:  `Nodes Unlimited Agent - Remote Monitoring and Management agent for Windows, macOS, and Linux`,
 }
@@ -291,7 +291,7 @@ var desktopHelperCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/nodesunlimited/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
 	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
@@ -316,10 +316,10 @@ func init() {
 	rootCmd.AddCommand(desktopHelperCmd)
 }
 
-// Main is the shared entrypoint for both the breeze-agent and
-// breeze-user-helper binaries. They build the same program from the same code
+// Main is the shared entrypoint for both the nu-agent and
+// nu-user-helper binaries. They build the same program from the same code
 // but live in separate cmd/ packages so each can embed a different Windows
-// manifest: breeze-agent ships requireAdministrator, breeze-user-helper ships
+// manifest: nu-agent ships requireAdministrator, nu-user-helper ships
 // asInvoker (it is spawned into the interactive user's non-elevated session).
 // version is injected by each cmd wrapper via -X main.version.
 func Main(v string) {
@@ -354,7 +354,7 @@ func Main(v string) {
 		panic("sentry-go-smoke: BREEZE_SMOKE_PANIC=1")
 	}
 
-	if filepath.Base(os.Args[0]) == "breeze-desktop-helper" {
+	if filepath.Base(os.Args[0]) == "nu-desktop-helper" {
 		for i := 1; i < len(os.Args)-1; i++ {
 			if os.Args[i] == "--context" {
 				desktopContext = os.Args[i+1]
@@ -1084,7 +1084,7 @@ func runAgent() {
 		if errors.Is(err, ErrMainAgentAlreadyRunning) {
 			fmt.Fprintf(
 				os.Stderr,
-				"Breeze main agent is already running (pid=%d session=%d mode=%s)\n",
+				"NU Agent main agent is already running (pid=%d session=%d mode=%s)\n",
 				startup.PID,
 				startup.WindowsSessionID,
 				startup.LaunchMode,
@@ -1092,7 +1092,7 @@ func runAgent() {
 			mainAgentExitFn(exitAlreadyRunning)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "Breeze main-agent instance guard failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "NU Agent main-agent instance guard failed: %v\n", err)
 		mainAgentExitFn(exitInstanceGuardError)
 		return
 	}
@@ -1147,11 +1147,11 @@ func runAgent() {
 			fmt.Fprintln(os.Stderr, "Check service status with:")
 			switch runtime.GOOS {
 			case "darwin":
-				fmt.Fprintln(os.Stderr, "  sudo breeze-agent status")
+				fmt.Fprintln(os.Stderr, "  sudo nu-agent status")
 				fmt.Fprintln(os.Stderr, "  sudo launchctl list | grep breeze")
 			case "linux":
-				fmt.Fprintln(os.Stderr, "  sudo breeze-agent status")
-				fmt.Fprintln(os.Stderr, "  sudo systemctl status breeze-agent")
+				fmt.Fprintln(os.Stderr, "  sudo nu-agent status")
+				fmt.Fprintln(os.Stderr, "  sudo systemctl status nu-agent")
 			default:
 				fmt.Fprintln(os.Stderr, "  Try running with elevated privileges (e.g. sudo).")
 			}
@@ -1171,7 +1171,7 @@ func runAgent() {
 
 	// Wait for ctx to be cancelled — SIGINT or SIGTERM via
 	// signal.NotifyContext above. Behaviour change: console-mode
-	// breeze-agent now treats SIGINT as shutdown instead of ignoring
+	// nu-agent now treats SIGINT as shutdown instead of ignoring
 	// it. The Windows service path is unaffected (SCM signals arrive
 	// via the request channel, not Unix signals).
 	<-ctx.Done()
@@ -1392,11 +1392,11 @@ func enrollDevice(enrollmentKey string) {
 	} else if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
 		if !quietEnroll {
 			fmt.Println("Start the agent with:")
-			fmt.Println("  sudo breeze-agent service start")
+			fmt.Println("  sudo nu-agent service start")
 		}
 	} else {
 		if !quietEnroll {
-			fmt.Println("Run 'breeze-agent start' to start the agent.")
+			fmt.Println("Run 'nu-agent start' to start the agent.")
 		}
 	}
 }
@@ -1716,12 +1716,12 @@ func checkStatus() {
 			switch runtime.GOOS {
 			case "darwin":
 				fmt.Println("  The agent runs as a system service. Check status with:")
-				fmt.Println("    sudo breeze-agent status")
+				fmt.Println("    sudo nu-agent status")
 				fmt.Println("    sudo launchctl list | grep breeze")
 			case "linux":
 				fmt.Println("  The agent runs as a system service. Check status with:")
-				fmt.Println("    sudo breeze-agent status")
-				fmt.Println("    sudo systemctl status breeze-agent")
+				fmt.Println("    sudo nu-agent status")
+				fmt.Println("    sudo systemctl status nu-agent")
 			default:
 				fmt.Println("  Try running with elevated privileges (e.g. sudo).")
 			}
@@ -1816,17 +1816,17 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// every helper role — user-helper, desktop-helper, and any future
 	// helper subcommand routed through runHelperProcess — because all of
 	// them risk inheriting a console window when the parent path uses the
-	// legacy console-subsystem breeze-agent.exe (e.g. operators running
+	// legacy console-subsystem nu-agent.exe (e.g. operators running
 	// the helper manually from cmd.exe, or partially-upgraded installs
 	// where the new MSI hasn't repointed the scheduled task at
-	// breeze-user-helper.exe yet). The GUI-subsystem sibling built per
+	// nu-user-helper.exe yet). The GUI-subsystem sibling built per
 	// agent/Makefile build-windows-user-helper has no console to free, so
 	// the call is a documented no-op there. Cross-platform stub on
 	// macOS/Linux.
 	detachHelperConsole()
 
 	// Log to file in the same logs folder as the main agent
-	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
+	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Nodes Unlimited\logs
 	os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {

@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
+    <string>com.nodesunlimited.desktop-helper-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>user_session</string>
     </array>

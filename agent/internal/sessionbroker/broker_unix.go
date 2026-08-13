@@ -25,7 +25,7 @@ func (b *Broker) setupSocket() (net.Listener, error) {
 	// The breeze group must exist before the socket can be group-owned by it.
 	// Ensuring it here — on every daemon start — is what makes the socket come
 	// back correctly after a reboot or `launchctl kickstart -k
-	// system/com.breeze.agent`, not just at first install (#3133/#3134/#3137).
+	// system/com.nodesunlimited.agent`, not just at first install (#3133/#3134/#3137).
 	if err := EnsureIPCGroup(); err != nil {
 		log.Warn("could not ensure IPC socket group; non-admin user helpers may be denied",
 			"group", IPCGroupName, "error", err.Error())

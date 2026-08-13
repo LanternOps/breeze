@@ -274,7 +274,7 @@ func (m *BackupManager) RunBackupWithExcludes(excludes []string) (*BackupJob, er
 // RunBackupContext is identical to RunBackupWithExcludes except the run's
 // internal context is derived from the caller-supplied ctx (via
 // context.WithCancel) instead of context.Background(). This lets an external
-// cancellation source — e.g. the breeze-backup helper's commandCanceller,
+// cancellation source — e.g. the nu-backup helper's commandCanceller,
 // tracking a server-dispatched backup_run's commandID — abort an in-flight
 // run the same way Stop() does, even for ephemeral per-command managers that
 // never go through Stop() (#2452 follow-up: backup_stop must actually cancel
@@ -1231,7 +1231,7 @@ func isLocalVolumePath(p string) bool {
 // summarizeLiveReads renders the unmapped paths for an operator-facing message,
 // capped like every other per-item summary in this file. The cap is not
 // cosmetic: this string is promoted into job.Warning, which the IPC result
-// bounding truncates and appends to (see cmd/breeze-backup/result_bounds.go),
+// bounding truncates and appends to (see cmd/nu-backup/result_bounds.go),
 // so an unbounded join can be cut mid-path or crowd out other diagnostics.
 func summarizeLiveReads(paths []string) string {
 	if len(paths) <= maxUploadFailureDetails {
@@ -1261,7 +1261,7 @@ func summarizeLiveReads(paths []string) string {
 // run — an agent.yaml enabling backup_vss_enabled and
 // backup_system_state_enabled, or a system_image run with an explicit vss
 // override. Server-dispatched system_image runs default VSS off (defaultVSS in
-// cmd/breeze-backup/exec_backup.go), so this is opt-in rather than universal.
+// cmd/nu-backup/exec_backup.go), so this is opt-in rather than universal.
 //
 // The second return value holds the indices of paths left pointing at the live
 // volume — those that found no shadow root, plus stagingIdx when it is in

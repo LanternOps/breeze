@@ -15,7 +15,7 @@
     "title": "Approbation requise",
     "pendingApproverTitle": "En attente d’un approbateur",
     "selfApproveTitle": "Votre approbation est requise",
-    "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Breeze.",
+    "pendingApproverDescription": "Cette action doit être approuvée dans la section Approbations ou dans l’application mobile Nodes Unlimited.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} secondes restantes",
     "urgentWarning": "Moins de 30 secondes restantes. Cette demande sera automatiquement rejetée.",
     "progressLabel": "Temps restant avant l’auto-rejet",
@@ -44,7 +44,7 @@
     "sendShortcut": "Cmd+Entrée pour envoyer"
   },
   "aiChatMessages": {
-    "title": "Breeze AI Assistant",
+    "title": "Nodes Unlimited AI Assistant",
     "description": "Demandez des informations sur vos appareils, alertes, indicateurs ou dépannez les problèmes.",
     "unknownTool": "Outil inconnu",
     "toolResult": "Résultat de l’outil",
@@ -78,7 +78,7 @@
   },
   "aiChatSidebar": {
     "history": "Histoire",
-    "title": "Breeze AI",
+    "title": "Nodes Unlimited AI",
     "conversationHistory": "Historique des conversations",
     "newConversation": "Nouvelle conversation",
     "unflagConversation": "Retirer le signalement de la conversation",
@@ -153,7 +153,7 @@
       "aiEnabled": "AI for Office activé pour {{orgName}}"
     },
     "notEnabled": {
-      "title": "Breeze AI for Office n’est pas activé sur cette instance.",
+      "title": "Nodes Unlimited AI for Office n’est pas activé sur cette instance.",
       "description": "Définissez <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (l’inscription de l’application complémentaire Entra) dans l’API, puis rechargez."
     },
     "title": "Organisations clientes",
@@ -187,11 +187,11 @@
       "entraTenantId": "ID du tenant Entra",
       "guidError": "Ce champ doit contenir un GUID (Centre d’administration Microsoft Entra → Vue d’ensemble → ID du tenant).",
       "saveContinue": "Enregistrer et continuer",
-      "consentDescription": "Un administrateur Microsoft 365 du locataire client doit accorder son consentement administrateur à l’application Breeze AI for Office. Envoyez-leur ce lien (ou ouvrez-le vous-même si vous détenez l’option Administrateur Global dans le locataire client) :",
+      "consentDescription": "Un administrateur Microsoft 365 du locataire client doit accorder son consentement administrateur à l’application Nodes Unlimited AI for Office. Envoyez-leur ce lien (ou ouvrez-le vous-même si vous détenez l’option Administrateur Global dans le locataire client) :",
       "loadingConsent": "Chargement du consentement URL...",
       "copyUrl": "Copier l’URL",
       "openNewTab": "Ouvrir dans un nouvel onglet",
-      "afterConsent": "Après avoir accordé, Microsoft redirige vers une page de confirmation Breeze. Le consentement apparaît comme accordé ici une fois que le premier utilisateur se connecte depuis Excel — il n’y a pas de sondage en direct contre Microsoft (décision Plan-4 1).",
+      "afterConsent": "Après avoir accordé, Microsoft redirige vers une page de confirmation Nodes Unlimited. Le consentement apparaît comme accordé ici une fois que le premier utilisateur se connecte depuis Excel — il n’y a pas de sondage en direct contre Microsoft (décision Plan-4 1).",
       "consentGranted": "J’ai donné mon consentement",
       "enableDescription": "Activez l’assistant pour cette organisation. Cela inscrit <code>enabled: true</code> dans la politique de l’organisation avec des valeurs par défaut sûres (tous les utilisateurs, accès en lecture/écriture avec approbation de l’utilisateur final et masquage DLP des données financières et d’identification). Ajustez ensuite tous les paramètres dans l’éditeur de politiques.",
       "enabling": "Facilitant...",
@@ -200,7 +200,7 @@
       "deployTitle": "Déploie l’extension Excel via un déploiement centralisé Microsoft 365",
       "deploySteps": {
         "signIn": "Connectez-vous au <strong>Centre d’administration Microsoft 365</strong> du tenant client → Paramètres → Applications intégrées.",
-        "upload": "Choisissez <strong>Charger des applications personnalisées</strong> → Complément Office, puis indiquez l’URL du manifeste Breeze AI for Office de votre instance Breeze.",
+        "upload": "Choisissez <strong>Charger des applications personnalisées</strong> → Complément Office, puis indiquez l’URL du manifeste Nodes Unlimited AI for Office de votre instance Nodes Unlimited.",
         "assign": "Attribuez le module complémentaire à tous ou aux groupes d’utilisateurs couverts par la politique d’accès de cette organisation.",
         "wait": "Le déploiement peut prendre jusqu’à 24 heures pour apparaître dans le ruban Excel des utilisateurs (modules complémentaires → maison).",
         "signInAutomatically": "Les utilisateurs se connectent automatiquement avec leur compte professionnel Microsoft — sans identifiants supplémentaires."
@@ -259,7 +259,7 @@
     "displayName": "Nom d’affichage",
     "mspNamePlaceholder": "Votre nom MSP",
     "logoUrl": "URL du logo",
-    "dlpDescription": "Chaque charge utile quittant Breeze pour le modèle est balayée (spécification §6). Les valeurs expurgées sont stockées en version expurgée — la trace d’audit ne conserve jamais le formulaire sensible.",
+    "dlpDescription": "Chaque charge utile quittant Nodes Unlimited pour le modèle est balayée (spécification §6). Les valeurs expurgées sont stockées en version expurgée — la trace d’audit ne conserve jamais le formulaire sensible.",
     "builtins": {
       "creditCard": "Numéros de carte de crédit (validés par Luhn)",
       "ssn": "Numéro de sécurité sociale / cartes d’identité nationales",

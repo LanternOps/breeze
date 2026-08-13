@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BINARY="/usr/local/bin/breeze-agent"
-SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/breeze-agent.service"
-SERVICE_DST="/etc/systemd/system/breeze-agent.service"
-CONFIG_DIR="/etc/breeze"
+BINARY="/usr/local/bin/nu-agent"
+SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/nu-agent.service"
+SERVICE_DST="/etc/systemd/system/nu-agent.service"
+CONFIG_DIR="/etc/nodesunlimited"
 DATA_DIR="/var/lib/breeze"
 LOG_DIR="/var/log/breeze"
 
@@ -18,7 +18,7 @@ echo "Installing Breeze Agent..."
 
 # Stop existing service before replacing binary (safe for upgrades).
 if [ -f "$SERVICE_DST" ]; then
-    if systemctl stop breeze-agent 2>&1; then
+    if systemctl stop nu-agent 2>&1; then
         echo "Stopped existing Breeze Agent service."
     else
         echo "Warning: failed to stop existing service cleanly — continuing anyway" >&2
@@ -31,49 +31,49 @@ chmod 700 "$CONFIG_DIR"
 chmod 755 "$DATA_DIR" "$LOG_DIR"
 
 # Copy binary
-if [ -f bin/breeze-agent ]; then
-    cp bin/breeze-agent "$BINARY"
-elif [ -f breeze-agent ]; then
-    cp breeze-agent "$BINARY"
+if [ -f bin/nu-agent ]; then
+    cp bin/nu-agent "$BINARY"
+elif [ -f nu-agent ]; then
+    cp nu-agent "$BINARY"
 else
-    echo "Error: breeze-agent binary not found. Run 'make build' first." >&2
+    echo "Error: nu-agent binary not found. Run 'make build' first." >&2
     exit 1
 fi
 chmod 755 "$BINARY"
 
 # Install watchdog
-if [ -f "bin/breeze-watchdog" ]; then
+if [ -f "bin/nu-watchdog" ]; then
     echo "Installing watchdog..."
-    cp bin/breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
-elif [ -f "breeze-watchdog" ]; then
+    cp bin/nu-watchdog /usr/local/bin/nu-watchdog
+    chmod 755 /usr/local/bin/nu-watchdog
+elif [ -f "nu-watchdog" ]; then
     echo "Installing watchdog..."
-    cp breeze-watchdog /usr/local/bin/breeze-watchdog
-    chmod 755 /usr/local/bin/breeze-watchdog
+    cp nu-watchdog /usr/local/bin/nu-watchdog
+    chmod 755 /usr/local/bin/nu-watchdog
 fi
 
-# Install backup helper. The agent spawns breeze-backup from its own directory
+# Install backup helper. The agent spawns nu-backup from its own directory
 # (os.Executable dir), and neither the updater nor the heartbeat delivers it, so
-# it MUST be on disk next to breeze-agent or every backup fails with
-# "backup binary not found at /usr/local/bin/breeze-backup". The macOS .pkg and
+# it MUST be on disk next to nu-agent or every backup fails with
+# "backup binary not found at /usr/local/bin/nu-backup". The macOS .pkg and
 # Windows MSI already bundle it; this shell-script install path is the Linux
 # install path, so it has to install it too.
-if [ -f "bin/breeze-backup" ]; then
+if [ -f "bin/nu-backup" ]; then
     echo "Installing backup helper..."
-    cp bin/breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
-elif [ -f "breeze-backup" ]; then
+    cp bin/nu-backup /usr/local/bin/nu-backup
+    chmod 755 /usr/local/bin/nu-backup
+elif [ -f "nu-backup" ]; then
     echo "Installing backup helper..."
-    cp breeze-backup /usr/local/bin/breeze-backup
-    chmod 755 /usr/local/bin/breeze-backup
+    cp nu-backup /usr/local/bin/nu-backup
+    chmod 755 /usr/local/bin/nu-backup
 else
-    echo "Warning: breeze-backup binary not found — backups will fail with" \
+    echo "Warning: nu-backup binary not found — backups will fail with" \
          "'backup binary not found'. Run 'make build' (or 'make build-backup') first." >&2
 fi
 
 # (Re)install the watchdog systemd unit on EVERY install/upgrade.
 #
-# `breeze-watchdog service install` always rewrites the unit file (and runs
+# `nu-watchdog service install` always rewrites the unit file (and runs
 # daemon-reload + enable). Re-running it on an existing host is how unit changes
 # — e.g. the RuntimeDirectory=breeze / RuntimeDirectoryPreserve=yes additions
 # for #1297 — reach already-deployed watchdogs. The old "rewrite only when
@@ -82,11 +82,11 @@ fi
 # 226/NAMESPACE wedge. `service install` is idempotent, so always calling it is
 # safe. It stops the service while writing the unit but does not start it, so we
 # (re)start explicitly afterward.
-if [ -f "/usr/local/bin/breeze-watchdog" ]; then
+if [ -f "/usr/local/bin/nu-watchdog" ]; then
     echo "Registering watchdog service..."
-    /usr/local/bin/breeze-watchdog service install
+    /usr/local/bin/nu-watchdog service install
     echo "Starting watchdog service..."
-    systemctl restart breeze-watchdog || true
+    systemctl restart nu-watchdog || true
 fi
 
 # Install systemd unit
@@ -99,11 +99,11 @@ fi
 chmod 644 "$SERVICE_DST"
 
 systemctl daemon-reload
-systemctl enable breeze-agent
+systemctl enable nu-agent
 
 # Install user helper systemd user unit
-USER_SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/breeze-agent-user.service"
-USER_SERVICE_DST="/usr/lib/systemd/user/breeze-agent-user.service"
+USER_SERVICE_SRC="$SCRIPT_DIR/../../service/systemd/nu-agent-user.service"
+USER_SERVICE_DST="/usr/lib/systemd/user/nu-agent-user.service"
 
 if [ -f "$USER_SERVICE_SRC" ]; then
     mkdir -p "$(dirname "$USER_SERVICE_DST")"
@@ -113,8 +113,8 @@ if [ -f "$USER_SERVICE_SRC" ]; then
 fi
 
 # Install XDG autostart desktop file (fallback for non-systemd)
-XDG_SRC="$SCRIPT_DIR/../../service/xdg/breeze-agent-user.desktop"
-XDG_DST="/etc/xdg/autostart/breeze-agent-user.desktop"
+XDG_SRC="$SCRIPT_DIR/../../service/xdg/nu-agent-user.desktop"
+XDG_DST="/etc/xdg/autostart/nu-agent-user.desktop"
 
 if [ -f "$XDG_SRC" ]; then
     mkdir -p "$(dirname "$XDG_DST")"
@@ -130,14 +130,14 @@ if ! getent group breeze &>/dev/null; then
 fi
 
 # Install tmpfiles.d snippet so /run/breeze is recreated on every boot.
-# /run is tmpfs-backed and wiped across reboots. The breeze-agent.service and
-# breeze-watchdog.service units now declare RuntimeDirectory=breeze, so systemd
+# /run is tmpfs-backed and wiped across reboots. The nu-agent.service and
+# nu-watchdog.service units now declare RuntimeDirectory=breeze, so systemd
 # recreates /run/breeze before each ExecStart even without this snippet — that
 # is the primary, self-contained fix for #1297. The snippet remains as defense-
 # in-depth so /run/breeze also exists for tooling that runs before the units
 # start. Runs AFTER groupadd because the snippet references the breeze group.
-TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/breeze-agent.conf"
-TMPFILES_DST="/usr/lib/tmpfiles.d/breeze-agent.conf"
+TMPFILES_SRC="$SCRIPT_DIR/../../service/tmpfiles.d/nu-agent.conf"
+TMPFILES_DST="/usr/lib/tmpfiles.d/nu-agent.conf"
 if [ -f "$TMPFILES_SRC" ]; then
     cp "$TMPFILES_SRC" "$TMPFILES_DST"
     chmod 644 "$TMPFILES_DST"
@@ -177,15 +177,15 @@ echo ""
 # If the agent is already enrolled, skip the enrollment step in Next Steps.
 if [ -f "$CONFIG_DIR/agent.yaml" ] && grep -q 'agent_id:' "$CONFIG_DIR/agent.yaml" 2>/dev/null; then
     echo "Next steps:"
-    echo "  1. Start:   sudo systemctl start breeze-agent"
-    echo "  2. Status:  sudo systemctl status breeze-agent"
-    echo "  3. Logs:    journalctl -u breeze-agent -f"
-    echo "  4. User helper: systemctl --user enable breeze-agent-user (per-user)"
+    echo "  1. Start:   sudo systemctl start nu-agent"
+    echo "  2. Status:  sudo systemctl status nu-agent"
+    echo "  3. Logs:    journalctl -u nu-agent -f"
+    echo "  4. User helper: systemctl --user enable nu-agent-user (per-user)"
 else
     echo "Next steps:"
-    echo "  1. Enroll:  sudo breeze-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
-    echo "  2. Start:   sudo systemctl start breeze-agent"
-    echo "  3. Status:  sudo systemctl status breeze-agent"
-    echo "  4. Logs:    journalctl -u breeze-agent -f"
-    echo "  5. User helper: systemctl --user enable breeze-agent-user (per-user)"
+    echo "  1. Enroll:  sudo nu-agent enroll <enrollment-key> --server https://your-server [--enrollment-secret <secret>]"
+    echo "  2. Start:   sudo systemctl start nu-agent"
+    echo "  3. Status:  sudo systemctl status nu-agent"
+    echo "  4. Logs:    journalctl -u nu-agent -f"
+    echo "  5. User helper: systemctl --user enable nu-agent-user (per-user)"
 fi

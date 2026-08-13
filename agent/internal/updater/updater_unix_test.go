@@ -14,8 +14,8 @@ import (
 
 func TestRollback_UnlinksBeforeWrite(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
-	backupPath := filepath.Join(tmpDir, "breeze-agent.backup")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
+	backupPath := filepath.Join(tmpDir, "nu-agent.backup")
 
 	// Create "current" binary and hold it open (simulates running executable)
 	os.WriteFile(binaryPath, []byte("corrupted"), 0755)
@@ -53,7 +53,7 @@ func TestRollback_UnlinksBeforeWrite(t *testing.T) {
 
 func TestReplaceBinary_UnlinksBeforeWrite(t *testing.T) {
 	tmpDir := t.TempDir()
-	binaryPath := filepath.Join(tmpDir, "breeze-agent")
+	binaryPath := filepath.Join(tmpDir, "nu-agent")
 	newBinaryPath := filepath.Join(tmpDir, "new-binary")
 
 	// Create current binary and hold it open (simulates running executable holding inode)

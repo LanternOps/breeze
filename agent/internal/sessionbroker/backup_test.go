@@ -140,11 +140,11 @@ func TestHelperRoleBackupConstant(t *testing.T) {
 	}
 }
 
-// TestBackupBinaryName pins the platform-suffix contract for the breeze-backup
+// TestBackupBinaryName pins the platform-suffix contract for the nu-backup
 // helper. The helper is built for every supported OS (see agent/Makefile), and
-// is installed as breeze-backup.exe on Windows but breeze-backup elsewhere. The
-// original bug resolved the sibling fallback as "breeze-backup" on every OS, so
-// on Windows os.Stat could never find the installed breeze-backup.exe and every
+// is installed as nu-backup.exe on Windows but nu-backup elsewhere. The
+// original bug resolved the sibling fallback as "nu-backup" on every OS, so
+// on Windows os.Stat could never find the installed nu-backup.exe and every
 // backup run failed with "backup binary not found". No non-Windows CI run could
 // have caught it, hence this GOOS-parameterized test.
 func TestBackupBinaryName(t *testing.T) {
@@ -152,9 +152,9 @@ func TestBackupBinaryName(t *testing.T) {
 		goos string
 		want string
 	}{
-		{"windows", "breeze-backup.exe"},
-		{"linux", "breeze-backup"},
-		{"darwin", "breeze-backup"},
+		{"windows", "nu-backup.exe"},
+		{"linux", "nu-backup"},
+		{"darwin", "nu-backup"},
 	}
 	for _, tt := range tests {
 		if got := backupBinaryName(tt.goos); got != tt.want {

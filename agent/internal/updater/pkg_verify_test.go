@@ -25,8 +25,8 @@ func buildReleaseManifest(t *testing.T, release string, assets []releaseArtifact
 
 func TestPkgAssetChecksum_ReturnsSignedSHAForPkg(t *testing.T) {
 	want := strings.Repeat("a", 64)
-	pkgName := fmt.Sprintf("breeze-agent-darwin-%s.pkg", runtime.GOARCH)
-	binName := fmt.Sprintf("breeze-agent-darwin-%s", runtime.GOARCH)
+	pkgName := fmt.Sprintf("nu-agent-darwin-%s.pkg", runtime.GOARCH)
+	binName := fmt.Sprintf("nu-agent-darwin-%s", runtime.GOARCH)
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: binName, SHA256: strings.Repeat("b", 64), Size: 10},
 		{Name: pkgName, SHA256: want, Size: 20},
@@ -45,7 +45,7 @@ func TestPkgAssetChecksum_FailsClosedWhenPkgAbsent(t *testing.T) {
 	// Manifest lists only the bare binary, no .pkg. pkgAssetChecksum MUST error
 	// so the caller falls back to verified-binary replacement rather than
 	// running `installer` on bytes never bound to the signed trust root.
-	binName := fmt.Sprintf("breeze-agent-darwin-%s", runtime.GOARCH)
+	binName := fmt.Sprintf("nu-agent-darwin-%s", runtime.GOARCH)
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: binName, SHA256: strings.Repeat("b", 64), Size: 10},
 	})
@@ -56,7 +56,7 @@ func TestPkgAssetChecksum_FailsClosedWhenPkgAbsent(t *testing.T) {
 }
 
 func TestPkgAssetChecksum_RejectsVersionMismatch(t *testing.T) {
-	pkgName := fmt.Sprintf("breeze-agent-darwin-%s.pkg", runtime.GOARCH)
+	pkgName := fmt.Sprintf("nu-agent-darwin-%s.pkg", runtime.GOARCH)
 	payload := buildReleaseManifest(t, "v9.9.9", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("a", 64), Size: 20},
 	})
@@ -67,7 +67,7 @@ func TestPkgAssetChecksum_RejectsVersionMismatch(t *testing.T) {
 }
 
 func TestPkgAssetChecksum_RejectsNonHexChecksum(t *testing.T) {
-	pkgName := fmt.Sprintf("breeze-agent-darwin-%s.pkg", runtime.GOARCH)
+	pkgName := fmt.Sprintf("nu-agent-darwin-%s.pkg", runtime.GOARCH)
 	payload := buildReleaseManifest(t, "v1.2.3", []releaseArtifactAsset{
 		{Name: pkgName, SHA256: strings.Repeat("z", 64), Size: 20}, // 64 chars but not hex
 	})

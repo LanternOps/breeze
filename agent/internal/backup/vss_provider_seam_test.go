@@ -324,7 +324,7 @@ func TestRunBackupContext_VSSProviderReturningNoSessionDoesNotPanic(t *testing.T
 // run does when it gives up waiting for the process-wide snapshot-creation gate
 // (#3269): it backs the data up from the live volume and says so, loudly.
 //
-// It matters because that gate is new. breeze-backup dispatches every IPC command
+// It matters because that gate is new. nu-backup dispatches every IPC command
 // in its own goroutine and builds an ephemeral BackupManager per
 // server-dispatched backup_run, so overlapping runs are ordinary, not exotic.
 // They normally all get a shadow copy — creation is merely queued — but a run

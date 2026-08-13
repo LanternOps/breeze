@@ -16,7 +16,7 @@ func TestDownloadOrigin(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"presigned url loses query and path", "https://cdn.example.com/builds/breeze-agent?X-Amz-Signature=SECRET", "https://cdn.example.com"},
+		{"presigned url loses query and path", "https://cdn.example.com/builds/nu-agent?X-Amz-Signature=SECRET", "https://cdn.example.com"},
 		{"port is kept", "https://files.corp.internal:8443/pkg.exe?token=abc", "https://files.corp.internal:8443"},
 		{"fragment dropped", "https://cdn.example.com/a#frag", "https://cdn.example.com"},
 		{"userinfo dropped", "https://user:pass@cdn.example.com/a", "https://cdn.example.com"},

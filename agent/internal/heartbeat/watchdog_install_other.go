@@ -4,13 +4,13 @@ package heartbeat
 
 import "fmt"
 
-// installAndRestartWatchdog is unsupported on platforms without a breeze-watchdog
+// installAndRestartWatchdog is unsupported on platforms without a nu-watchdog
 // service. The agent only ships a watchdog on Linux, macOS, and Windows.
 func (h *Heartbeat) installAndRestartWatchdog(targetVersion string) error {
 	return fmt.Errorf("watchdog auto-update is not supported on this platform")
 }
 
-// watchdogBinaryPath is unsupported on platforms without a breeze-watchdog
+// watchdogBinaryPath is unsupported on platforms without a nu-watchdog
 // binary, so there is no installed version to read for telemetry.
 func watchdogBinaryPath() (string, error) {
 	return "", fmt.Errorf("watchdog is not supported on this platform")

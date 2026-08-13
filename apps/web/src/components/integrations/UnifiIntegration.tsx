@@ -303,7 +303,7 @@ export default function UnifiIntegration() {
   const [status, setStatus] = useState<UnifiStatus | null>(null);
   const [apiKey, setApiKey] = useState("");
   // Not-connected screen: choose between a UniFi cloud account vs a self-hosted
-  // controller polled by an on-network Breeze agent. Cloud is the default.
+  // controller polled by an on-network NU Agent. Cloud is the default.
   const [connectMode, setConnectMode] = useState<UnifiConnectionType>("cloud");
   const [accountLabel, setAccountLabel] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1115,7 +1115,7 @@ export default function UnifiIntegration() {
           data-testid="unifi-disconnected"
         >
           {/* Connection-type chooser: a UniFi cloud account (Site Manager API key) vs a
-              self-hosted Network controller polled directly by an on-network Breeze agent. */}
+              self-hosted Network controller polled directly by an on-network NU Agent. */}
           <div
             className="inline-flex rounded-md border bg-muted/40 p-1"
             role="radiogroup"

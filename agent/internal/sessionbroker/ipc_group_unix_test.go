@@ -161,7 +161,7 @@ func TestSetupSocketCreatesTraversableParentDirectory(t *testing.T) {
 
 func TestSetupSocketReplacesAStaleSocket(t *testing.T) {
 	// The daemon restarts (reboot, `launchctl kickstart -k
-	// system/com.breeze.agent`, self-update) leave a stale socket file behind.
+	// system/com.nodesunlimited.agent`, self-update) leave a stale socket file behind.
 	// The reporter expected it to "recreate tight again" — assert the second bind
 	// re-applies ownership rather than inheriting whatever the stale file had.
 	gid, ok := chownTargetGID(t)

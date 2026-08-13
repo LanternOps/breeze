@@ -10,19 +10,19 @@ import (
 // TestBuildRestartScript_AgentOnly is the pre-#816 baseline: when the caller
 // passes a nil UserHelper the generated script must not reference the
 // user-helper at all (backward-compatible with releases that don't yet ship
-// the breeze-user-helper artifact and with non-Windows release histories).
+// the nu-user-helper artifact and with non-Windows release histories).
 func TestBuildRestartScript_AgentOnly(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
-			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Temp:   `C:\Windows\Temp\nu-agent-1234.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 	})
 
-	if !strings.Contains(got, `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`) {
+	if !strings.Contains(got, `Copy-Item -Path 'C:\Windows\Temp\nu-agent-1234.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-agent.exe' -Force`) {
 		t.Fatalf("expected agent Copy-Item line; script was:\n%s", got)
 	}
-	if strings.Contains(got, "breeze-user-helper") {
+	if strings.Contains(got, "nu-user-helper") {
 		t.Fatalf("agent-only script should not mention user-helper; script was:\n%s", got)
 	}
 	if !strings.Contains(got, "Start-Service -Name 'BreezeAgent'") {
@@ -41,13 +41,13 @@ func TestBuildRestartScript_NilUserHelperIsAbsent(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: nil,
 	})
 
-	if strings.Contains(got, "breeze-user-helper") {
-		t.Fatalf("nil UserHelper script must not mention breeze-user-helper; script was:\n%s", got)
+	if strings.Contains(got, "nu-user-helper") {
+		t.Fatalf("nil UserHelper script must not mention nu-user-helper; script was:\n%s", got)
 	}
 	// Defense in depth: also verify no second Copy-Item snuck in. The agent
 	// Copy-Item is the only Copy-Item line we expect.
@@ -64,7 +64,7 @@ func TestBuildRestartScript_ErrorActionPreference(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 	})
 	if !strings.Contains(got, "$ErrorActionPreference = 'Stop'") {
@@ -79,11 +79,11 @@ func TestBuildRestartScript_TryCatchWrapsSwap(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
 			Temp:   `C:\tmp\helper.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 	})
 
@@ -98,8 +98,8 @@ func TestBuildRestartScript_TryCatchWrapsSwap(t *testing.T) {
 
 	// Both Copy-Item calls must live inside the try block (i.e. between the
 	// `try {` opener and the `} catch {` line).
-	agentCopy := `Copy-Item -Path 'C:\tmp\agent.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
-	helperCopy := `Copy-Item -Path 'C:\tmp\helper.exe' -Destination 'C:\Program Files\Breeze\breeze-user-helper.exe' -Force`
+	agentCopy := `Copy-Item -Path 'C:\tmp\agent.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-agent.exe' -Force`
+	helperCopy := `Copy-Item -Path 'C:\tmp\helper.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-user-helper.exe' -Force`
 	agentIdx := strings.Index(got, agentCopy)
 	helperIdx := strings.Index(got, helperCopy)
 	if agentIdx < tryIdx || agentIdx > catchIdx {
@@ -119,7 +119,7 @@ func TestBuildRestartScript_StartServiceInBothPaths(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 	})
 
@@ -141,13 +141,13 @@ func TestBuildRestartScript_StartServiceInBothPaths(t *testing.T) {
 
 // TestBuildRestartScript_FailureLogUsesTemp verifies the structured failure
 // log goes to ${env:TEMP}, not a hardcoded drive letter or
-// C:\ProgramData\Breeze (which may not exist yet on a fresh install — see
+// C:\ProgramData\Nodes Unlimited (which may not exist yet on a fresh install — see
 // #609). %TEMP% is guaranteed to exist on any Windows host.
 func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 	})
 
@@ -162,8 +162,8 @@ func TestBuildRestartScript_FailureLogUsesTemp(t *testing.T) {
 		t.Fatalf("expected Out-File -Append -Encoding utf8 for the failure log; script was:\n%s", got)
 	}
 	// Defense-in-depth: no hardcoded C:\ProgramData log path crept in.
-	if strings.Contains(got, `C:\ProgramData\Breeze\breeze-update-failure`) {
-		t.Fatalf("failure log must not be written under C:\\ProgramData\\Breeze (may not exist on fresh installs); script was:\n%s", got)
+	if strings.Contains(got, `C:\ProgramData\Nodes Unlimited\breeze-update-failure`) {
+		t.Fatalf("failure log must not be written under C:\\ProgramData\\Nodes Unlimited (may not exist on fresh installs); script was:\n%s", got)
 	}
 }
 
@@ -174,11 +174,11 @@ func TestBuildRestartScript_CleanupOutsideTryCatch(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
 			Temp:   `C:\tmp\helper.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 	})
 
@@ -222,17 +222,17 @@ func TestBuildRestartScript_CleanupOutsideTryCatch(t *testing.T) {
 func TestBuildRestartScript_WithUserHelper(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
-			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Temp:   `C:\Windows\Temp\nu-agent-1234.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
-			Temp:   `C:\Windows\Temp\breeze-user-helper-5678.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Temp:   `C:\Windows\Temp\nu-user-helper-5678.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 	})
 
-	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
-	helperCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-user-helper-5678.exe' -Destination 'C:\Program Files\Breeze\breeze-user-helper.exe' -Force`
+	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\nu-agent-1234.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-agent.exe' -Force`
+	helperCopy := `Copy-Item -Path 'C:\Windows\Temp\nu-user-helper-5678.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-user-helper.exe' -Force`
 
 	agentIdx := strings.Index(got, agentCopy)
 	helperIdx := strings.Index(got, helperCopy)
@@ -247,12 +247,12 @@ func TestBuildRestartScript_WithUserHelper(t *testing.T) {
 	}
 
 	// Helper temp file cleanup line.
-	if !strings.Contains(got, `Remove-Item -Path 'C:\Windows\Temp\breeze-user-helper-5678.exe' -Force -ErrorAction SilentlyContinue`) {
+	if !strings.Contains(got, `Remove-Item -Path 'C:\Windows\Temp\nu-user-helper-5678.exe' -Force -ErrorAction SilentlyContinue`) {
 		t.Fatalf("expected Remove-Item cleanup for helper temp; script was:\n%s", got)
 	}
 }
 
-// --- Backup companion (breeze-backup) ---
+// --- Backup companion (nu-backup) ---
 
 // TestBuildRestartScript_NilBackupIsAbsent verifies a nil Backup omits every
 // backup-related line: no Copy-Item, no kill-list entry, no cleanup — an
@@ -262,13 +262,13 @@ func TestBuildRestartScript_NilBackupIsAbsent(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		Backup: nil,
 	})
 
-	if strings.Contains(got, "breeze-backup") {
-		t.Fatalf("nil Backup script must not mention breeze-backup; script was:\n%s", got)
+	if strings.Contains(got, "nu-backup") {
+		t.Fatalf("nil Backup script must not mention nu-backup; script was:\n%s", got)
 	}
 	if c := strings.Count(got, "Copy-Item -Path"); c != 1 {
 		t.Fatalf("expected exactly one Copy-Item line with nil Backup; got %d. Script was:\n%s", c, got)
@@ -276,27 +276,27 @@ func TestBuildRestartScript_NilBackupIsAbsent(t *testing.T) {
 }
 
 // TestBuildRestartScript_WithBackup verifies a non-nil Backup adds: the
-// breeze-backup.exe name to the Stop-Process kill list (its exe lock would
+// nu-backup.exe name to the Stop-Process kill list (its exe lock would
 // otherwise block the Copy-Item), a Copy-Item AFTER the agent's, and a
 // cleanup Remove-Item for its temp file.
 func TestBuildRestartScript_WithBackup(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
-			Temp:   `C:\Windows\Temp\breeze-agent-1234.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Temp:   `C:\Windows\Temp\nu-agent-1234.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		Backup: &BinaryPair{
-			Temp:   `C:\Windows\Temp\breeze-backup-9999.exe`,
-			Target: `C:\Program Files\Breeze\breeze-backup.exe`,
+			Temp:   `C:\Windows\Temp\nu-backup-9999.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-backup.exe`,
 		},
 	})
 
-	if !strings.Contains(got, "'breeze-backup'") {
-		t.Fatalf("expected breeze-backup in the Stop-Process kill list; script was:\n%s", got)
+	if !strings.Contains(got, "'nu-backup'") {
+		t.Fatalf("expected nu-backup in the Stop-Process kill list; script was:\n%s", got)
 	}
 
-	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-agent-1234.exe' -Destination 'C:\Program Files\Breeze\breeze-agent.exe' -Force`
-	backupCopy := `Copy-Item -Path 'C:\Windows\Temp\breeze-backup-9999.exe' -Destination 'C:\Program Files\Breeze\breeze-backup.exe' -Force`
+	agentCopy := `Copy-Item -Path 'C:\Windows\Temp\nu-agent-1234.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-agent.exe' -Force`
+	backupCopy := `Copy-Item -Path 'C:\Windows\Temp\nu-backup-9999.exe' -Destination 'C:\Program Files\Nodes Unlimited\nu-backup.exe' -Force`
 	agentIdx := strings.Index(got, agentCopy)
 	backupIdx := strings.Index(got, backupCopy)
 	if agentIdx < 0 {
@@ -309,29 +309,29 @@ func TestBuildRestartScript_WithBackup(t *testing.T) {
 		t.Fatalf("backup Copy-Item must come AFTER agent Copy-Item; script was:\n%s", got)
 	}
 
-	if !strings.Contains(got, `Remove-Item -Path 'C:\Windows\Temp\breeze-backup-9999.exe' -Force -ErrorAction SilentlyContinue`) {
+	if !strings.Contains(got, `Remove-Item -Path 'C:\Windows\Temp\nu-backup-9999.exe' -Force -ErrorAction SilentlyContinue`) {
 		t.Fatalf("expected Remove-Item cleanup for backup temp; script was:\n%s", got)
 	}
 }
 
 // TestBuildRestartScript_KillListOmitsBackupWhenAbsent is the flip side of
 // TestBuildRestartScript_WithBackup: an upgrade that does NOT swap
-// breeze-backup must not kill a resident backup helper — killing a process
+// nu-backup must not kill a resident backup helper — killing a process
 // this script has no intention of replacing would be a pointless (and
 // user-visible, if a backup job is mid-run) disruption.
 func TestBuildRestartScript_KillListOmitsBackupWhenAbsent(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
 			Temp:   `C:\tmp\helper.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 	})
-	if strings.Contains(got, "breeze-backup") {
-		t.Fatalf("kill list / script must not mention breeze-backup when Backup is nil; script was:\n%s", got)
+	if strings.Contains(got, "nu-backup") {
+		t.Fatalf("kill list / script must not mention nu-backup when Backup is nil; script was:\n%s", got)
 	}
 }
 
@@ -342,15 +342,15 @@ func TestBuildRestartScript_UserHelperAndBackupTogether(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
 			Temp:   `C:\tmp\helper.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 		Backup: &BinaryPair{
 			Temp:   `C:\tmp\backup.exe`,
-			Target: `C:\Program Files\Breeze\breeze-backup.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-backup.exe`,
 		},
 	})
 
@@ -363,7 +363,7 @@ func TestBuildRestartScript_UserHelperAndBackupTogether(t *testing.T) {
 	if !(agentIdx < helperIdx && helperIdx < backupIdx) {
 		t.Fatalf("expected Copy-Item order agent < userHelper < backup; script was:\n%s", got)
 	}
-	if !strings.Contains(got, "'breeze-user-helper'") || !strings.Contains(got, "'breeze-backup'") {
+	if !strings.Contains(got, "'nu-user-helper'") || !strings.Contains(got, "'nu-backup'") {
 		t.Fatalf("expected both companions in the kill list; script was:\n%s", got)
 	}
 	if c := strings.Count(got, "Copy-Item -Path"); c != 3 {
@@ -381,11 +381,11 @@ func TestBuildRestartScript_EscapesSingleQuotes(t *testing.T) {
 	got := buildRestartScript(restartScriptOptions{
 		Agent: BinaryPair{
 			Temp:   `C:\tmp\agent'evil.exe`,
-			Target: `C:\Program Files\Breeze\breeze-agent.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		},
 		UserHelper: &BinaryPair{
 			Temp:   `C:\tmp\helper'evil.exe`,
-			Target: `C:\Program Files\Breeze\breeze-user-helper.exe`,
+			Target: `C:\Program Files\Nodes Unlimited\nu-user-helper.exe`,
 		},
 	})
 

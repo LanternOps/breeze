@@ -79,7 +79,7 @@ func (h *Heartbeat) computeDesktopAccess(_ *collectors.SystemInfo) *DesktopAcces
 		}
 	}
 
-	if _, err := os.Stat("/usr/local/bin/breeze-desktop-helper"); err != nil {
+	if _, err := os.Stat("/usr/local/bin/nu-desktop-helper"); err != nil {
 		if state.Reason == "" {
 			state.Reason = "manual_install"
 		}

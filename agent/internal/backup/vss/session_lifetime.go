@@ -171,7 +171,7 @@ func (t *serialThread) close() {
 // up holding their own live shadow copies; only their creation is queued.
 //
 // Gating the whole session instead would have been a behaviour regression
-// dressed as safety: breeze-backup dispatches every IPC command in its own
+// dressed as safety: nu-backup dispatches every IPC command in its own
 // goroutine and builds an ephemeral BackupManager per server-dispatched
 // backup_run, so overlapping runs are routine, and a session-wide gate would
 // silently downgrade one of them to a live read for the entire duration of the

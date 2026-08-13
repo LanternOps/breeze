@@ -13,9 +13,9 @@ import (
 )
 
 // windowsWatchdogServiceName is the SCM name installed by
-// `breeze-watchdog service install` (agent/cmd/breeze-watchdog/service_cmd_windows.go:16).
+// `nu-watchdog service install` (agent/cmd/nu-watchdog/service_cmd_windows.go:16).
 // Kept duplicated here rather than imported so this file can stand alone in
-// the breeze-agent package without pulling watchdog cmd internals.
+// the nu-agent package without pulling watchdog cmd internals.
 const watchdogSupervisorServiceName = "BreezeWatchdog"
 
 // Supervisor tick cadence. Sixty seconds is fast enough to recover from a

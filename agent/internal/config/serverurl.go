@@ -29,7 +29,7 @@ const defaultPersistedServerURLTTL = 60 * time.Second
 
 // PersistedServerURL reads server_url straight out of agent.yaml.
 //
-// It exists for the HELPER processes (breeze-user-helper, breeze-desktop-
+// It exists for the HELPER processes (nu-user-helper, breeze-desktop-
 // helper). They are separate, long-lived processes: they load config once at
 // spawn and are never respawned when the agent promotes a backup server URL
 // (#2323) — HelperLifecycleManager only spawns helpers that are MISSING, and

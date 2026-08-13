@@ -482,7 +482,7 @@
     "title": "Titre"
   },
   "remoteToolsPage": {
-    "agentRestartingDescription": "L’agent Breeze redémarre. L’appareil se reconnectera automatiquement...",
+    "agentRestartingDescription": "L’agent Nodes Unlimited redémarre. L’appareil se reconnectera automatiquement...",
     "agentRestartingTitle": "Redémarrage de l’agent",
     "errors": {
       "createRegistryKey": "Impossible de créer la clé du registre",

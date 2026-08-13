@@ -53,7 +53,7 @@ func TestResolveBootstrapInputs(t *testing.T) {
 		},
 		{
 			name:    "no token anywhere",
-			data:    `C:\dl\breeze-agent.msi||`,
+			data:    `C:\dl\nu-agent.msi||`,
 			wantErr: errNoBootstrapInput,
 		},
 		{
@@ -64,7 +64,7 @@ func TestResolveBootstrapInputs(t *testing.T) {
 			// soft-exits 0 — otherwise the deferred CA's Return="check" would roll
 			// back every tokenless/manual install.
 			name:    "real product filename without token (manual install, must not error-rollback)",
-			data:    `C:\Program Files\Breeze\Breeze Agent.msi||`,
+			data:    `C:\Program Files\Nodes Unlimited\Breeze Agent.msi||`,
 			wantErr: errNoBootstrapInput,
 		},
 		{
@@ -120,7 +120,7 @@ func TestRunBootstrapSkipsRedeemWhenAlreadyEnrolled(t *testing.T) {
 	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
 	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
 	cfgFile, quietEnroll = cfgPath, true
-	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+	bootstrapInstallData = `C:\dl\nu-agent.msi|TESTTOKEN1|` + srv.URL
 
 	origExit := osExit
 	osExit = func(code int) { panic(fmt.Sprintf("unexpected exit %d", code)) }
@@ -266,7 +266,7 @@ func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
 	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
 	cfgFile, quietEnroll = filepath.Join(dir, "agent.yaml"), true
-	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+	bootstrapInstallData = `C:\dl\nu-agent.msi|TESTTOKEN1|` + srv.URL
 
 	origExit := osExit
 	var exitCode int

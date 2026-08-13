@@ -25,10 +25,10 @@ func TestConfiguredExecutablePath(t *testing.T) {
 		command string
 		want    string
 	}{
-		{"quoted with argument", `"C:\Program Files\Breeze\breeze-agent.exe" run`, `C:\Program Files\Breeze\breeze-agent.exe`},
-		{"unquoted with argument", `C:\Breeze\breeze-agent.exe run`, `C:\Breeze\breeze-agent.exe`},
-		{"no argument", `C:\Breeze\breeze-agent.exe`, `C:\Breeze\breeze-agent.exe`},
-		{"surrounding whitespace", `   "C:\Breeze\breeze-agent.exe"  run  `, `C:\Breeze\breeze-agent.exe`},
+		{"quoted with argument", `"C:\Program Files\Nodes Unlimited\nu-agent.exe" run`, `C:\Program Files\Nodes Unlimited\nu-agent.exe`},
+		{"unquoted with argument", `C:\Breeze\nu-agent.exe run`, `C:\Breeze\nu-agent.exe`},
+		{"no argument", `C:\Breeze\nu-agent.exe`, `C:\Breeze\nu-agent.exe`},
+		{"surrounding whitespace", `   "C:\Breeze\nu-agent.exe"  run  `, `C:\Breeze\nu-agent.exe`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,7 +44,7 @@ func TestConfiguredExecutablePath(t *testing.T) {
 // single absolute image is "we do not know what the service runs". Returning a
 // best guess here would feed the identity gate that authorizes termination.
 func TestConfiguredExecutablePathRejectsUnusable(t *testing.T) {
-	for _, command := range []string{``, `   `, `"" run`, `breeze-agent.exe run`, `..\breeze-agent.exe`} {
+	for _, command := range []string{``, `   `, `"" run`, `nu-agent.exe run`, `..\nu-agent.exe`} {
 		got, err := configuredExecutablePath(command)
 		if err == nil {
 			t.Fatalf("configuredExecutablePath(%q)=%q, want an error", command, got)
@@ -213,7 +213,7 @@ func writeUTF16(buf *uint16, size *uint32, value string) {
 func TestWindowsWatchedProcessImagePathGrowsBuffer(t *testing.T) {
 	proc := openTestProcess(t)
 
-	const want = `C:\Program Files\Breeze\breeze-agent.exe`
+	const want = `C:\Program Files\Nodes Unlimited\nu-agent.exe`
 	var sizes []uint32
 	proc.queryImageName = func(_ windows.Handle, _ uint32, buf *uint16, size *uint32) error {
 		sizes = append(sizes, *size)

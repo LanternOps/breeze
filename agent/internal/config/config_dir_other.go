@@ -8,7 +8,7 @@ import (
 
 func configDir() string {
 	if runtime.GOOS == "darwin" {
-		return "/Library/Application Support/Breeze"
+		return "/Library/Application Support/Nodes Unlimited"
 	}
-	return "/etc/breeze"
+	return "/etc/nodesunlimited"
 }

@@ -9,7 +9,7 @@ import (
 
 func writeInstanceGuardMarker(startup ProcessStartup, guardErr error) {
 	message := fmt.Sprintf(
-		"Breeze main-agent instance guard failure: pid=%d parentPid=%d windowsSessionId=%d launchMode=%s binary=%q version=%q error=%v",
+		"NU Agent main-agent instance guard failure: pid=%d parentPid=%d windowsSessionId=%d launchMode=%s binary=%q version=%q error=%v",
 		startup.PID,
 		startup.ParentPID,
 		startup.WindowsSessionID,

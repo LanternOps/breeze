@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const agentServiceLabel = "com.breeze.agent"
+const agentServiceLabel = "com.nodesunlimited.agent"
 
 // osServiceController is the production serviceController on macOS. launchd
 // owns the daemon lifecycle, so the historical escalation ladder is kept as-is
@@ -35,7 +35,7 @@ func restartAgentService() error {
 		_ = bootoutErr
 	}
 
-	const darwinPlistPath = "/Library/LaunchDaemons/com.breeze.agent.plist"
+	const darwinPlistPath = "/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
 	out, err = exec.Command("launchctl", "bootstrap", "system", darwinPlistPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootstrap failed: %s: %w", strings.TrimSpace(string(out)), err)
@@ -58,7 +58,7 @@ func startAgentService() error {
 	}
 
 	// Not loaded — bootstrap from plist.
-	const darwinPlistPath = "/Library/LaunchDaemons/com.breeze.agent.plist"
+	const darwinPlistPath = "/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
 	out, err := exec.Command("launchctl", "bootstrap", "system", darwinPlistPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl bootstrap failed: %s: %w", strings.TrimSpace(string(out)), err)

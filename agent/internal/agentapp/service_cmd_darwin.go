@@ -18,30 +18,30 @@ import (
 )
 
 const (
-	darwinBinaryPath                 = "/usr/local/bin/breeze-agent"
-	darwinDesktopHelperBinaryPath    = "/usr/local/bin/breeze-desktop-helper"
-	darwinPlistDst                   = "/Library/LaunchDaemons/com.breeze.agent.plist"
-	darwinDesktopUserPlistDst        = "/Library/LaunchAgents/com.breeze.desktop-helper-user.plist"
-	darwinDesktopLoginWindowPlistDst = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
-	darwinLogDir                     = "/Library/Logs/Breeze"
-	darwinConfigDir                  = "/Library/Application Support/Breeze"
-	darwinLabel                      = "com.breeze.agent"
-	darwinWatchdogBinaryPath         = "/usr/local/bin/breeze-watchdog"
-	darwinWatchdogPlistDst           = "/Library/LaunchDaemons/com.breeze.watchdog.plist"
-	darwinWatchdogLabel              = "com.breeze.watchdog"
+	darwinBinaryPath                 = "/usr/local/bin/nu-agent"
+	darwinDesktopHelperBinaryPath    = "/usr/local/bin/nu-desktop-helper"
+	darwinPlistDst                   = "/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
+	darwinDesktopUserPlistDst        = "/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist"
+	darwinDesktopLoginWindowPlistDst = "/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist"
+	darwinLogDir                     = "/Library/Logs/Nodes Unlimited"
+	darwinConfigDir                  = "/Library/Application Support/Nodes Unlimited"
+	darwinLabel                      = "com.nodesunlimited.agent"
+	darwinWatchdogBinaryPath         = "/usr/local/bin/nu-watchdog"
+	darwinWatchdogPlistDst           = "/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
+	darwinWatchdogLabel              = "com.nodesunlimited.watchdog"
 )
 
-// Embedded plist — matches agent/service/launchd/com.breeze.agent.plist
+// Embedded plist — matches agent/service/launchd/com.nodesunlimited.agent.plist
 const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.agent</string>
+    <string>com.nodesunlimited.agent</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-agent</string>
+        <string>/usr/local/bin/nu-agent</string>
         <string>run</string>
     </array>
 
@@ -55,13 +55,13 @@ const darwinPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <integer>5</integer>
 
     <key>WorkingDirectory</key>
-    <string>/Library/Application Support/Breeze</string>
+    <string>/Library/Application Support/Nodes Unlimited</string>
 
     <key>StandardOutPath</key>
-    <string>/Library/Logs/Breeze/agent.log</string>
+    <string>/Library/Logs/Nodes Unlimited/agent.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Library/Logs/Breeze/agent.err</string>
+    <string>/Library/Logs/Nodes Unlimited/agent.err</string>
 
     <key>SoftResourceLimits</key>
     <dict>
@@ -77,10 +77,10 @@ const darwinDesktopUserPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-user</string>
+    <string>com.nodesunlimited.desktop-helper-user</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>user_session</string>
     </array>
@@ -107,10 +107,10 @@ const darwinDesktopLoginWindowPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.breeze.desktop-helper-loginwindow</string>
+    <string>com.nodesunlimited.desktop-helper-loginwindow</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/breeze-desktop-helper</string>
+        <string>/usr/local/bin/nu-desktop-helper</string>
         <string>--context</string>
         <string>login_window</string>
     </array>
@@ -156,7 +156,7 @@ var serviceInstallCmd = &cobra.Command{
 	Short: "Install the agent as a launchd service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service install)")
+			return fmt.Errorf("must run as root (sudo nu-agent service install)")
 		}
 
 		// Create directories
@@ -207,7 +207,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 		fmt.Printf("LaunchDaemon plist installed to %s\n", darwinPlistDst)
 
-		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "breeze-desktop-helper")
+		desktopHelperSource := filepath.Join(filepath.Dir(exePath), "nu-desktop-helper")
 		desktopHelperBytes, desktopHelperErr := os.ReadFile(desktopHelperSource)
 		if desktopHelperErr != nil {
 			desktopHelperBytes, desktopHelperErr = os.ReadFile(exePath)
@@ -261,15 +261,15 @@ var serviceInstallCmd = &cobra.Command{
 		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
-			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")
-			fmt.Printf("  2. Status:  sudo breeze-agent service status\n")
+			fmt.Printf("  1. Start:   sudo nu-agent service start\n")
+			fmt.Printf("  2. Status:  sudo nu-agent service status\n")
 			fmt.Printf("  3. Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		} else {
 			fmt.Println()
 			fmt.Println("Next steps:")
-			fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
-			fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
-			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
+			fmt.Printf("  1. Enroll:  sudo nu-agent enroll <key> --server https://your-server\n")
+			fmt.Printf("  2. Start:   sudo nu-agent service start\n")
+			fmt.Printf("  3. Status:  sudo nu-agent service status\n")
 			fmt.Printf("  4. Logs:    tail -f %s/agent.log\n", darwinLogDir)
 		}
 		if !noWatchdog {
@@ -284,9 +284,9 @@ var serviceInstallCmd = &cobra.Command{
 					"Warning: watchdog bootstrap failed: %v\n"+
 						"The agent service is installed and running. The watchdog is NOT installed.\n"+
 						"To retry, choose one of:\n"+
-						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
-						"  2. Download %s manually, place it next to breeze-agent,\n"+
-						"     then run `sudo breeze-watchdog service install`.\n"+
+						"  1. Re-run `sudo nu-agent service install` (will retry the download).\n"+
+						"  2. Download %s manually, place it next to nu-agent,\n"+
+						"     then run `sudo nu-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
 					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}
@@ -301,7 +301,7 @@ var serviceUninstallCmd = &cobra.Command{
 	Short: "Uninstall the agent launchd service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service uninstall)")
+			return fmt.Errorf("must run as root (sudo nu-agent service uninstall)")
 		}
 
 		// Stop and unload the daemon
@@ -374,11 +374,11 @@ var serviceStartCmd = &cobra.Command{
 	Short: "Start the agent service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service start)")
+			return fmt.Errorf("must run as root (sudo nu-agent service start)")
 		}
 
 		if !fileExists(darwinPlistDst) {
-			return fmt.Errorf("service not installed — run 'sudo breeze-agent service install' first")
+			return fmt.Errorf("service not installed — run 'sudo nu-agent service install' first")
 		}
 
 		// Use bootstrap (modern) with fallback to load (legacy)
@@ -416,7 +416,7 @@ var serviceStopCmd = &cobra.Command{
 	Short: "Stop the agent service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service stop)")
+			return fmt.Errorf("must run as root (sudo nu-agent service stop)")
 		}
 
 		if !isLaunchdLoaded(darwinLabel) {
@@ -496,8 +496,8 @@ func healLaunchdPlists() {
 		domain  string // launchd domain for reload
 	}{
 		{darwinPlistDst, darwinPlist, darwinLabel, "system"},
-		{darwinDesktopUserPlistDst, darwinDesktopUserPlist, "com.breeze.desktop-helper-user", ""},
-		{darwinDesktopLoginWindowPlistDst, darwinDesktopLoginWindowPlist, "com.breeze.desktop-helper-loginwindow", "loginwindow"},
+		{darwinDesktopUserPlistDst, darwinDesktopUserPlist, "com.nodesunlimited.desktop-helper-user", ""},
+		{darwinDesktopLoginWindowPlistDst, darwinDesktopLoginWindowPlist, "com.nodesunlimited.desktop-helper-loginwindow", "loginwindow"},
 	} {
 		data, err := os.ReadFile(entry.path)
 		if err != nil {
@@ -532,7 +532,7 @@ func ensureDesktopHelpersLoaded() {
 	if fileExists(darwinDesktopUserPlistDst) {
 		if uid := consoleUserUID(); uid != "" {
 			domain := "gui/" + uid
-			label := domain + "/com.breeze.desktop-helper-user"
+			label := domain + "/com.nodesunlimited.desktop-helper-user"
 			if exec.Command("launchctl", "print", label).Run() != nil {
 				out, err := exec.Command("launchctl", "bootstrap", domain, darwinDesktopUserPlistDst).CombinedOutput()
 				if err != nil {
@@ -546,7 +546,7 @@ func ensureDesktopHelpersLoaded() {
 	}
 
 	if fileExists(darwinDesktopLoginWindowPlistDst) {
-		lwLabel := "loginwindow/com.breeze.desktop-helper-loginwindow"
+		lwLabel := "loginwindow/com.nodesunlimited.desktop-helper-loginwindow"
 		if exec.Command("launchctl", "print", lwLabel).Run() != nil {
 			out, err := exec.Command("launchctl", "bootstrap", "loginwindow", darwinDesktopLoginWindowPlistDst).CombinedOutput()
 			if err != nil {
@@ -602,7 +602,7 @@ func bootstrapDesktopHelperPlists() {
 
 	// Bootstrap the login-window helper (covers login screen remote access).
 	// Use kickstart first (stable interface), fall back to bootstrap.
-	const loginWindowLabel = "loginwindow/com.breeze.desktop-helper-loginwindow"
+	const loginWindowLabel = "loginwindow/com.nodesunlimited.desktop-helper-loginwindow"
 	if err := exec.Command("launchctl", "kickstart", "-k", loginWindowLabel).Run(); err == nil {
 		fmt.Println("Login-window desktop helper kickstarted.")
 	} else {

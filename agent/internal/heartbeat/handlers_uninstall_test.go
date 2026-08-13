@@ -40,9 +40,9 @@ func TestBuildWindowsUninstallScript(t *testing.T) {
 	base := windowsUninstallScriptOptions{
 		ServiceName:         "BreezeAgent",
 		WatchdogServiceName: "BreezeWatchdog",
-		AgentBinaryPath:     `C:\Program Files\Breeze\breeze-agent.exe`,
-		WatchdogBinaryPath:  `C:\Program Files\Breeze\breeze-watchdog.exe`,
-		ConfigDir:           `C:\ProgramData\Breeze`,
+		AgentBinaryPath:     `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
+		WatchdogBinaryPath:  `C:\Program Files\Nodes Unlimited\nu-watchdog.exe`,
+		ConfigDir:           `C:\ProgramData\Nodes Unlimited`,
 		RemoveConfig:        true,
 		DelaySeconds:        5,
 	}
@@ -64,9 +64,9 @@ func TestBuildWindowsUninstallScript(t *testing.T) {
 				"Stop-Service -Name 'BreezeAgent' -Force",
 				"sc.exe delete 'BreezeAgent'",
 				"Stop-Process -Force",
-				`Remove-Item -LiteralPath 'C:\Program Files\Breeze\breeze-watchdog.exe' -Force`,
-				`Remove-Item -LiteralPath 'C:\Program Files\Breeze\breeze-agent.exe' -Force`,
-				`Remove-Item -LiteralPath 'C:\ProgramData\Breeze' -Recurse -Force`,
+				`Remove-Item -LiteralPath 'C:\Program Files\Nodes Unlimited\nu-watchdog.exe' -Force`,
+				`Remove-Item -LiteralPath 'C:\Program Files\Nodes Unlimited\nu-agent.exe' -Force`,
+				`Remove-Item -LiteralPath 'C:\ProgramData\Nodes Unlimited' -Recurse -Force`,
 				"Remove-Item -LiteralPath $PSCommandPath -Force",
 			},
 			// -Path would glob-expand [ ] in install paths into a silent no-op.
@@ -76,7 +76,7 @@ func TestBuildWindowsUninstallScript(t *testing.T) {
 			name: "kill list covers a watchdog-respawned agent and lock-holding siblings",
 			opts: base,
 			wantPresent: []string{
-				"Get-Process -Name 'breeze-agent','breeze-user-helper','breeze-desktop-helper','breeze-watchdog'",
+				"Get-Process -Name 'nu-agent','nu-user-helper','nu-desktop-helper','nu-watchdog'",
 			},
 		},
 		{
@@ -86,7 +86,7 @@ func TestBuildWindowsUninstallScript(t *testing.T) {
 				o.RemoveConfig = false
 				return o
 			}(),
-			wantAbsent: []string{`'C:\ProgramData\Breeze'`},
+			wantAbsent: []string{`'C:\ProgramData\Nodes Unlimited'`},
 			wantOrder: []string{
 				"Stop-Service -Name 'BreezeAgent'",
 				"sc.exe delete 'BreezeAgent'",
@@ -107,10 +107,10 @@ func TestBuildWindowsUninstallScript(t *testing.T) {
 			name: "single quotes in paths are doubled for PowerShell",
 			opts: func() windowsUninstallScriptOptions {
 				o := base
-				o.AgentBinaryPath = `C:\O'Brien\breeze-agent.exe`
+				o.AgentBinaryPath = `C:\O'Brien\nu-agent.exe`
 				return o
 			}(),
-			wantPresent: []string{`'C:\O''Brien\breeze-agent.exe'`},
+			wantPresent: []string{`'C:\O''Brien\nu-agent.exe'`},
 			wantAbsent:  []string{`'C:\O'Brien`},
 		},
 	}
@@ -144,8 +144,8 @@ func TestBuildWindowsUninstallScript_SelfStopComesAfterDelayAndWatchdog(t *testi
 	script := buildWindowsUninstallScript(windowsUninstallScriptOptions{
 		ServiceName:         "BreezeAgent",
 		WatchdogServiceName: "BreezeWatchdog",
-		AgentBinaryPath:     `C:\pf\breeze-agent.exe`,
-		WatchdogBinaryPath:  `C:\pf\breeze-watchdog.exe`,
+		AgentBinaryPath:     `C:\pf\nu-agent.exe`,
+		WatchdogBinaryPath:  `C:\pf\nu-watchdog.exe`,
 		DelaySeconds:        7,
 	})
 	assertOrder(t, script,
@@ -155,18 +155,18 @@ func TestBuildWindowsUninstallScript_SelfStopComesAfterDelayAndWatchdog(t *testi
 	)
 	assertOrder(t, script,
 		"sc.exe delete 'BreezeAgent'",
-		`Remove-Item -LiteralPath 'C:\pf\breeze-agent.exe'`,
+		`Remove-Item -LiteralPath 'C:\pf\nu-agent.exe'`,
 	)
 }
 
 func TestBuildDarwinUninstallScript(t *testing.T) {
 	base := darwinUninstallScriptOptions{
-		Label:           "com.breeze.agent",
-		WatchdogLabel:   "com.breeze.watchdog",
-		WatchdogProcess: "breeze-watchdog",
-		PlistPath:       "/Library/LaunchDaemons/com.breeze.agent.plist",
-		BinaryPath:      "/usr/local/bin/breeze-agent",
-		ConfigDir:       "/Library/Application Support/Breeze",
+		Label:           "com.nodesunlimited.agent",
+		WatchdogLabel:   "com.nodesunlimited.watchdog",
+		WatchdogProcess: "nu-watchdog",
+		PlistPath:       "/Library/LaunchDaemons/com.nodesunlimited.agent.plist",
+		BinaryPath:      "/usr/local/bin/nu-agent",
+		ConfigDir:       "/Library/Application Support/Nodes Unlimited",
 		RemoveConfig:    true,
 		DelaySeconds:    5,
 	}
@@ -182,12 +182,12 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 			opts: base,
 			wantOrder: []string{
 				"sleep 5",
-				"launchctl bootout system/'com.breeze.watchdog'",
-				"pkill -x 'breeze-watchdog'",
-				"launchctl bootout system/'com.breeze.agent' || launchctl unload '/Library/LaunchDaemons/com.breeze.agent.plist'",
-				"rm -f '/Library/LaunchDaemons/com.breeze.agent.plist'",
-				"rm -f '/usr/local/bin/breeze-agent'",
-				"rm -rf '/Library/Application Support/Breeze'",
+				"launchctl bootout system/'com.nodesunlimited.watchdog'",
+				"pkill -x 'nu-watchdog'",
+				"launchctl bootout system/'com.nodesunlimited.agent' || launchctl unload '/Library/LaunchDaemons/com.nodesunlimited.agent.plist'",
+				"rm -f '/Library/LaunchDaemons/com.nodesunlimited.agent.plist'",
+				"rm -f '/usr/local/bin/nu-agent'",
+				"rm -rf '/Library/Application Support/Nodes Unlimited'",
 			},
 		},
 		{
@@ -197,7 +197,7 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 				o.RemoveConfig = false
 				return o
 			}(),
-			wantOrder:  []string{"rm -f '/usr/local/bin/breeze-agent'"},
+			wantOrder:  []string{"rm -f '/usr/local/bin/nu-agent'"},
 			wantAbsent: []string{"rm -rf"},
 		},
 		{
@@ -226,12 +226,12 @@ func TestBuildDarwinUninstallScript(t *testing.T) {
 
 func TestBuildLinuxUninstallScript(t *testing.T) {
 	base := linuxUninstallScriptOptions{
-		ServiceName:     "breeze-agent",
-		WatchdogService: "breeze-watchdog",
-		WatchdogProcess: "breeze-watchdog",
-		UnitPath:        "/etc/systemd/system/breeze-agent.service",
-		BinaryPath:      "/usr/local/bin/breeze-agent",
-		ConfigDir:       "/etc/breeze",
+		ServiceName:     "nu-agent",
+		WatchdogService: "nu-watchdog",
+		WatchdogProcess: "nu-watchdog",
+		UnitPath:        "/etc/systemd/system/nu-agent.service",
+		BinaryPath:      "/usr/local/bin/nu-agent",
+		ConfigDir:       "/etc/nodesunlimited",
 		RemoveConfig:    true,
 		DelaySeconds:    5,
 	}
@@ -247,13 +247,13 @@ func TestBuildLinuxUninstallScript(t *testing.T) {
 			opts: base,
 			wantOrder: []string{
 				"sleep 5",
-				"systemctl stop 'breeze-watchdog'",
-				"pkill -x 'breeze-watchdog'",
-				"systemctl stop 'breeze-agent'",
-				"rm -f '/etc/systemd/system/breeze-agent.service'",
+				"systemctl stop 'nu-watchdog'",
+				"pkill -x 'nu-watchdog'",
+				"systemctl stop 'nu-agent'",
+				"rm -f '/etc/systemd/system/nu-agent.service'",
 				"systemctl daemon-reload",
-				"rm -f '/usr/local/bin/breeze-agent'",
-				"rm -rf '/etc/breeze'",
+				"rm -f '/usr/local/bin/nu-agent'",
+				"rm -rf '/etc/nodesunlimited'",
 			},
 		},
 		{
@@ -263,7 +263,7 @@ func TestBuildLinuxUninstallScript(t *testing.T) {
 				o.RemoveConfig = false
 				return o
 			}(),
-			wantOrder:  []string{"rm -f '/usr/local/bin/breeze-agent'"},
+			wantOrder:  []string{"rm -f '/usr/local/bin/nu-agent'"},
 			wantAbsent: []string{"rm -rf"},
 		},
 	}

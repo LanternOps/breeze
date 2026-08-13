@@ -150,7 +150,7 @@ esac
 
 host_goos="$(go env GOOS)"
 host_goarch="$(go env GOARCH)"
-built_bin="${TMP_DIR}/breeze-agent-selftest"
+built_bin="${TMP_DIR}/nu-agent-selftest"
 
 if ! "${BUILD_EDITION}" \
   --edition self-host --component agent \

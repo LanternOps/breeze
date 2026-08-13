@@ -108,5 +108,5 @@ func (p *PeerCredentials) IdentityKey() string {
 
 // DefaultSocketPath returns the default IPC socket path for macOS.
 func DefaultSocketPath() string {
-	return "/Library/Application Support/Breeze/agent.sock"
+	return "/Library/Application Support/Nodes Unlimited/agent.sock"
 }

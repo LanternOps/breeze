@@ -7,7 +7,7 @@ import "os"
 // The MSI installer's HardenProgramDataAcl custom action runs Return="ignore"
 // (#1480) so that an external control (Controlled Folder Access / ASR / EDR /
 // GPO) blocking its icacls child can never roll back an otherwise-good install.
-// The trade-off: when that icacls is blocked, the C:\ProgramData\Breeze\logs
+// The trade-off: when that icacls is blocked, the C:\ProgramData\Nodes Unlimited\logs
 // and \data dirs silently keep the default ProgramData ACL (BUILTIN\Users:
 // read + create files/subdirs) — a confidentiality/tamper exposure with no
 // operator-visible signal.

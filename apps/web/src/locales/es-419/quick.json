@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows le preguntará antes de ejecutarlo",
     "body": "Al abrir el archivo, Windows muestra un aviso que pregunta si permite ejecutarlo. El archivo está firmado digitalmente, así que ese aviso indica un editor: debería decir {{publisher}}. Si dice que el editor es desconocido, o muestra un nombre que usted no esperaba, cierre el aviso y llame a la persona que le está ayudando en lugar de continuar.",
-    "publisher": "el editor de Breeze"
+    "publisher": "el editor de Nodes Unlimited"
   },
   "trust": {
     "title": "Qué hace el programa",

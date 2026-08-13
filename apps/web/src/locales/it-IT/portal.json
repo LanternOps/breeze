@@ -20,7 +20,7 @@
     "title": "Cronologia asset"
   },
   "branding": {
-    "defaultName": "Breeze Portal"
+    "defaultName": "Nodes Unlimited Portal"
   },
   "customerDeviceList": {
     "deviceCount": "{{count}} dispositivi collegati al tuo account",

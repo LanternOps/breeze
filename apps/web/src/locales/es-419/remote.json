@@ -482,7 +482,7 @@
     "title": "Título"
   },
   "remoteToolsPage": {
-    "agentRestartingDescription": "El agente Breeze se está reiniciando. El dispositivo se volverá a conectar automáticamente...",
+    "agentRestartingDescription": "El agente Nodes Unlimited se está reiniciando. El dispositivo se volverá a conectar automáticamente...",
     "agentRestartingTitle": "Reinicio del agente",
     "errors": {
       "createRegistryKey": "No se pudo crear la clave de registro",

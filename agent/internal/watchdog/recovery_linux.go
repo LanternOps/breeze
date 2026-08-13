@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const agentServiceName = "breeze-agent"
+const agentServiceName = "nu-agent"
 
 // osServiceController is the production serviceController on Linux. systemd
 // owns the unit lifecycle, so the historical escalation ladder is kept as-is

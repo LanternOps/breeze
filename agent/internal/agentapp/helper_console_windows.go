@@ -10,7 +10,7 @@ var procFreeConsole = syscall.NewLazyDLL("kernel32.dll").NewProc("FreeConsole")
 // The user-helper binary shipped with the MSI is built with -H windowsgui so
 // the kernel never allocates a console to begin with — this call is then a
 // no-op. The defense-in-depth value kicks in when the legacy console-subsystem
-// breeze-agent.exe is invoked with the `user-helper` subcommand (e.g. manual
+// nu-agent.exe is invoked with the `user-helper` subcommand (e.g. manual
 // CLI usage, or a partially-upgraded install where the new MSI hasn't repointed
 // the scheduled task yet): in that path FreeConsole closes the inherited
 // console immediately so any visible window collapses within milliseconds of

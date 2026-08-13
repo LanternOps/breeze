@@ -34,7 +34,7 @@ func serviceInstallCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to determine executable path: %w", err)
 			}
-			serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "breeze-watchdog.exe")
+			serviceExePath, copied, err := serviceinstall.InstallProtectedBinary(exePath, "nu-watchdog.exe")
 			if err != nil {
 				return fmt.Errorf("failed to install service binary in protected Program Files location: %w", err)
 			}
@@ -206,5 +206,5 @@ func restartWatchdogService() error {
 
 // agentBinaryPath returns the platform-specific agent binary path.
 func agentBinaryPath() string {
-	return os.Getenv("ProgramFiles") + `\Breeze\breeze-agent.exe`
+	return os.Getenv("ProgramFiles") + `\Breeze\nu-agent.exe`
 }

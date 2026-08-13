@@ -114,8 +114,8 @@ func newBackupDeathRigOn(t *testing.T, brokerSide, helperSide net.Conn) *backupD
 }
 
 // serveAcks plays the helper side for n forwarded commands, replying on each
-// request's envelope id the way breeze-backup's async ack does
-// (cmd/breeze-backup/main.go). ackSuccess=false models a refused run.
+// request's envelope id the way nu-backup's async ack does
+// (cmd/nu-backup/main.go). ackSuccess=false models a refused run.
 func (r *backupDeathRig) serveAcks(n int, ackSuccess bool) {
 	go func() {
 		for i := 0; i < n; i++ {
@@ -147,7 +147,7 @@ func (r *backupDeathRig) startAsyncRun(t *testing.T, commandID string, ackSucces
 	}
 }
 
-// killHelper simulates breeze-backup.exe being terminated: the helper end of
+// killHelper simulates nu-backup.exe being terminated: the helper end of
 // the pipe goes away, RecvLoop hits EOF, and the production cleanup runs.
 func (r *backupDeathRig) killHelper(t *testing.T) {
 	t.Helper()
@@ -220,7 +220,7 @@ func assertHelperDeathResult(t *testing.T, result backupipc.BackupCommandResult,
 }
 
 // TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure is the #2998 headline:
-// when breeze-backup dies mid-run the disconnect must synthesize a terminal
+// when nu-backup dies mid-run the disconnect must synthesize a terminal
 // backup_result so the server fails the job in seconds, instead of leaving it
 // "running" for the 15-minute stale reaper to mislabel as "no progress".
 func TestBackupHelperDeath_ActiveRun_ReportsTerminalFailure(t *testing.T) {
@@ -290,7 +290,7 @@ func TestBackupHelperDeath_AfterTerminalResult_DoesNotDoubleReport(t *testing.T)
 	rig.startAsyncRun(t, "cmd-run-2", true)
 
 	// Helper delivers the real terminal result on a fresh envelope id, exactly
-	// as sendUnsolicitedResult does in cmd/breeze-backup/main.go.
+	// as sendUnsolicitedResult does in cmd/nu-backup/main.go.
 	genuine := backupipc.BackupCommandResult{
 		CommandID: "cmd-run-2",
 		Success:   true,

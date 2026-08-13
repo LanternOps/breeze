@@ -9,19 +9,19 @@ import (
 func TestProtectedBinaryPathIn(t *testing.T) {
 	programFiles := t.TempDir()
 
-	got, err := ProtectedBinaryPathIn(programFiles, "breeze-agent.exe")
+	got, err := ProtectedBinaryPathIn(programFiles, "nu-agent.exe")
 	if err != nil {
 		t.Fatalf("ProtectedBinaryPathIn returned error: %v", err)
 	}
 
-	want := filepath.Join(programFiles, "Breeze", "breeze-agent.exe")
+	want := filepath.Join(programFiles, "Breeze", "nu-agent.exe")
 	if got != want {
 		t.Fatalf("ProtectedBinaryPathIn = %q, want %q", got, want)
 	}
 }
 
 func TestProtectedBinaryPathInRejectsInvalidInput(t *testing.T) {
-	if _, err := ProtectedBinaryPathIn("", "breeze-agent.exe"); err == nil {
+	if _, err := ProtectedBinaryPathIn("", "nu-agent.exe"); err == nil {
 		t.Fatal("expected empty ProgramFiles path to be rejected")
 	}
 	if _, err := ProtectedBinaryPathIn(t.TempDir(), filepath.Join("nested", "agent.exe")); err == nil {
@@ -31,8 +31,8 @@ func TestProtectedBinaryPathInRejectsInvalidInput(t *testing.T) {
 
 func TestStageProtectedBinaryCopiesExecutableToTarget(t *testing.T) {
 	dir := t.TempDir()
-	source := filepath.Join(dir, "Downloads", "breeze-agent.exe")
-	target := filepath.Join(dir, "Program Files", "Breeze", "breeze-agent.exe")
+	source := filepath.Join(dir, "Downloads", "nu-agent.exe")
+	target := filepath.Join(dir, "Program Files", "Breeze", "nu-agent.exe")
 	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestStageProtectedBinaryCopiesExecutableToTarget(t *testing.T) {
 }
 
 func TestStageProtectedBinaryKeepsProtectedExecutable(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "Program Files", "Breeze", "breeze-agent.exe")
+	target := filepath.Join(t.TempDir(), "Program Files", "Breeze", "nu-agent.exe")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
 	}

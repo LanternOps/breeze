@@ -10,7 +10,7 @@ import (
 
 func TestReplaceWatchdogBinaryUnix_SwapsContentAndMode(t *testing.T) {
 	dir := t.TempDir()
-	dest := filepath.Join(dir, "breeze-watchdog")
+	dest := filepath.Join(dir, "nu-watchdog")
 	if err := os.WriteFile(dest, []byte("OLD watchdog"), 0o755); err != nil {
 		t.Fatalf("seed dest: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestReplaceWatchdogBinaryUnix_SwapsContentAndMode(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		name := e.Name()
-		if name != "breeze-watchdog" && name != "downloaded.tmp" {
+		if name != "nu-watchdog" && name != "downloaded.tmp" {
 			t.Fatalf("unexpected leftover file in dir: %q", name)
 		}
 	}
@@ -53,7 +53,7 @@ func TestReplaceWatchdogBinaryUnix_SwapsContentAndMode(t *testing.T) {
 
 func TestReplaceWatchdogBinaryUnix_MissingSourceLeavesNoStaging(t *testing.T) {
 	dir := t.TempDir()
-	dest := filepath.Join(dir, "breeze-watchdog")
+	dest := filepath.Join(dir, "nu-watchdog")
 	if err := os.WriteFile(dest, []byte("OLD"), 0o755); err != nil {
 		t.Fatalf("seed dest: %v", err)
 	}

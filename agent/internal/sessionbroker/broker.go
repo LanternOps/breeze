@@ -2602,7 +2602,7 @@ func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {
 	}
 	peerResolved = normalizeBinaryPath(filepath.Clean(peerResolved))
 	for _, candidate := range b.allowedHelperPaths() {
-		if !strings.Contains(filepath.Base(candidate), "breeze-desktop-helper") {
+		if !strings.Contains(filepath.Base(candidate), "nu-desktop-helper") {
 			continue
 		}
 		resolvedCandidate, err := filepath.EvalSymlinks(candidate)
@@ -2627,9 +2627,9 @@ func (b *Broker) allowedHelperPaths() []string {
 		}
 		log.Warn("failed to get executable path, falling back to hardcoded helper paths", "error", err.Error())
 		return []string{
-			"/usr/local/bin/breeze-agent",
-			"/usr/local/bin/breeze-desktop-helper",
-			"/usr/local/bin/breeze-watchdog",
+			"/usr/local/bin/nu-agent",
+			"/usr/local/bin/nu-desktop-helper",
+			"/usr/local/bin/nu-watchdog",
 		}
 	}
 	exePath, err = filepath.EvalSymlinks(exePath)
@@ -2639,21 +2639,21 @@ func (b *Broker) allowedHelperPaths() []string {
 	dir := filepath.Dir(exePath)
 	paths := []string{
 		exePath,
-		filepath.Join(dir, "breeze-desktop-helper"),
-		filepath.Join(dir, "breeze-watchdog"),
-		filepath.Join(dir, "breeze-desktop-helper.exe"),
+		filepath.Join(dir, "nu-desktop-helper"),
+		filepath.Join(dir, "nu-watchdog"),
+		filepath.Join(dir, "nu-desktop-helper.exe"),
 		filepath.Join(dir, UserHelperBinaryName),
-		filepath.Join(dir, "breeze-watchdog.exe"),
-		// Backup helper (breeze-backup / breeze-backup.exe) connects to the same
+		filepath.Join(dir, "nu-watchdog.exe"),
+		// Backup helper (nu-backup / nu-backup.exe) connects to the same
 		// IPC socket and must be allowed, else backup_run always times out.
-		filepath.Join(dir, "breeze-backup"),
-		filepath.Join(dir, "breeze-backup.exe"),
+		filepath.Join(dir, "nu-backup"),
+		filepath.Join(dir, "nu-backup.exe"),
 	}
 	if runtime.GOOS != "windows" {
 		paths = append(paths,
-			"/usr/local/bin/breeze-agent",
-			"/usr/local/bin/breeze-desktop-helper",
-			"/usr/local/bin/breeze-watchdog",
+			"/usr/local/bin/nu-agent",
+			"/usr/local/bin/nu-desktop-helper",
+			"/usr/local/bin/nu-watchdog",
 		)
 	}
 	// Allowlist the Breeze Assist helper binary so it can connect over IPC.
@@ -2697,8 +2697,8 @@ func assistHelperBinaryPathsForOS(agentDir, goos, programFiles string) []string 
 	switch goos {
 	case "windows":
 		paths := []string{
-			// Sibling of the agent dir, e.g. C:\Program Files\Breeze ->
-			// C:\Program Files\Breeze Helper. Robust to ProgramFiles localization.
+			// Sibling of the agent dir, e.g. C:\Program Files\Nodes Unlimited ->
+			// C:\Program Files\Nodes Unlimited Helper. Robust to ProgramFiles localization.
 			filepath.Join(filepath.Dir(agentDir), "Breeze Helper", "breeze-helper.exe"),
 			filepath.Join(agentDir, "breeze-helper.exe"), // legacy/colocated
 		}

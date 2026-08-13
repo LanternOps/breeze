@@ -16,17 +16,17 @@ import (
 )
 
 const (
-	linuxBinaryPath  = "/usr/local/bin/breeze-agent"
-	linuxUnitDst     = "/etc/systemd/system/breeze-agent.service"
-	linuxUserUnitDst = "/usr/lib/systemd/user/breeze-agent-user.service"
-	linuxConfigDir   = "/etc/breeze"
+	linuxBinaryPath  = "/usr/local/bin/nu-agent"
+	linuxUnitDst     = "/etc/systemd/system/nu-agent.service"
+	linuxUserUnitDst = "/usr/lib/systemd/user/nu-agent-user.service"
+	linuxConfigDir   = "/etc/nodesunlimited"
 	linuxDataDir     = "/var/lib/breeze"
 	linuxLogDir      = "/var/log/breeze"
-	linuxServiceName = "breeze-agent"
+	linuxServiceName = "nu-agent"
 
-	linuxWatchdogBinaryPath  = "/usr/local/bin/breeze-watchdog"
-	linuxWatchdogUnitDst     = "/etc/systemd/system/breeze-watchdog.service"
-	linuxWatchdogServiceName = "breeze-watchdog"
+	linuxWatchdogBinaryPath  = "/usr/local/bin/nu-watchdog"
+	linuxWatchdogUnitDst     = "/etc/systemd/system/nu-watchdog.service"
+	linuxWatchdogServiceName = "nu-watchdog"
 )
 
 // Embedded user-helper unit
@@ -37,7 +37,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/breeze-agent user-helper
+ExecStart=/usr/local/bin/nu-agent user-helper
 Restart=on-failure
 RestartSec=5
 
@@ -76,7 +76,7 @@ func reconcileServiceUnitIfNeeded() {
 				fmt.Fprintf(os.Stderr,
 					"Warning: could not read %s to check for an outdated systemd unit: %v. "+
 						"If the remote terminal/scripts hit privilege errors, run: "+
-						"sudo breeze-agent service install\n", linuxUnitDst, err)
+						"sudo nu-agent service install\n", linuxUnitDst, err)
 				recordReconcileFailure(fmt.Sprintf("could not read unit file %s: %v", linuxUnitDst, err))
 			}
 			return
@@ -86,9 +86,9 @@ func reconcileServiceUnitIfNeeded() {
 		}
 		if _, err := exec.LookPath("systemd-run"); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"Warning: breeze-agent systemd unit is outdated (pre-v%d) and systemd-run is "+
+				"Warning: nu-agent systemd unit is outdated (pre-v%d) and systemd-run is "+
 					"unavailable to auto-heal it. The remote terminal/scripts may hit privilege "+
-					"errors (e.g. apt). Fix: sudo breeze-agent service install\n", currentUnitVersion)
+					"errors (e.g. apt). Fix: sudo nu-agent service install\n", currentUnitVersion)
 			recordReconcileFailure(fmt.Sprintf(
 				"systemd-run unavailable to auto-heal outdated unit (pre-v%d)", currentUnitVersion))
 			return
@@ -106,7 +106,7 @@ func reconcileServiceUnitIfNeeded() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"Warning: failed to auto-heal outdated systemd unit via systemd-run: %s. "+
-					"Fix: sudo breeze-agent service install\n", strings.TrimSpace(string(out)))
+					"Fix: sudo nu-agent service install\n", strings.TrimSpace(string(out)))
 			recordReconcileFailure(fmt.Sprintf("systemd-run launch failed: %s", strings.TrimSpace(string(out))))
 		}
 	})
@@ -129,7 +129,7 @@ var serviceInstallCmd = &cobra.Command{
 	Short: "Install the agent as a systemd service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service install)")
+			return fmt.Errorf("must run as root (sudo nu-agent service install)")
 		}
 
 		// Create directories
@@ -237,22 +237,22 @@ var serviceInstallCmd = &cobra.Command{
 			statusCmd.Run() // best-effort; ignore error
 
 			fmt.Println("\nHelpful Commands:")
-			fmt.Println("  Logs:    journalctl -u breeze-agent -f")
-			fmt.Println("  Status:  sudo breeze-agent service status")
-			fmt.Println("  Restart: sudo breeze-agent service start")
+			fmt.Println("  Logs:    journalctl -u nu-agent -f")
+			fmt.Println("  Status:  sudo nu-agent service status")
+			fmt.Println("  Restart: sudo nu-agent service start")
 		} else if enrolled {
 			fmt.Println()
 			fmt.Println("Next steps:")
-			fmt.Printf("  1. Start:   sudo breeze-agent service start\n")
-			fmt.Printf("  2. Status:  sudo breeze-agent service status\n")
-			fmt.Println("  3. Logs:    journalctl -u breeze-agent -f")
+			fmt.Printf("  1. Start:   sudo nu-agent service start\n")
+			fmt.Printf("  2. Status:  sudo nu-agent service status\n")
+			fmt.Println("  3. Logs:    journalctl -u nu-agent -f")
 		} else {
 			fmt.Println()
 			fmt.Println("Next steps:")
-			fmt.Printf("  1. Enroll:  sudo breeze-agent enroll <key> --server https://your-server\n")
-			fmt.Printf("  2. Start:   sudo breeze-agent service start\n")
-			fmt.Printf("  3. Status:  sudo breeze-agent service status\n")
-			fmt.Println("  4. Logs:    journalctl -u breeze-agent -f")
+			fmt.Printf("  1. Enroll:  sudo nu-agent enroll <key> --server https://your-server\n")
+			fmt.Printf("  2. Start:   sudo nu-agent service start\n")
+			fmt.Printf("  3. Status:  sudo nu-agent service status\n")
+			fmt.Println("  4. Logs:    journalctl -u nu-agent -f")
 		}
 
 		if !noWatchdog {
@@ -267,9 +267,9 @@ var serviceInstallCmd = &cobra.Command{
 					"Warning: watchdog bootstrap failed: %v\n"+
 						"The agent service is installed and running. The watchdog is NOT installed.\n"+
 						"To retry, choose one of:\n"+
-						"  1. Re-run `sudo breeze-agent service install` (will retry the download).\n"+
-						"  2. Download %s manually, place it next to breeze-agent,\n"+
-						"     then run `sudo breeze-watchdog service install`.\n"+
+						"  1. Re-run `sudo nu-agent service install` (will retry the download).\n"+
+						"  2. Download %s manually, place it next to nu-agent,\n"+
+						"     then run `sudo nu-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
 					err, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
 			}
@@ -284,7 +284,7 @@ var serviceUninstallCmd = &cobra.Command{
 	Short: "Uninstall the agent systemd service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service uninstall)")
+			return fmt.Errorf("must run as root (sudo nu-agent service uninstall)")
 		}
 
 		// Stop the service
@@ -344,11 +344,11 @@ var serviceStartCmd = &cobra.Command{
 	Short: "Start the agent service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service start)")
+			return fmt.Errorf("must run as root (sudo nu-agent service start)")
 		}
 
 		if _, err := os.Stat(linuxUnitDst); os.IsNotExist(err) {
-			return fmt.Errorf("service not installed — run 'sudo breeze-agent service install' first")
+			return fmt.Errorf("service not installed — run 'sudo nu-agent service install' first")
 		}
 
 		// Reload systemd so any updated unit file on disk is recognized before enabling.
@@ -365,7 +365,7 @@ var serviceStartCmd = &cobra.Command{
 		}
 
 		fmt.Println("Breeze Agent service started and enabled for auto-start.")
-		fmt.Println("Logs: journalctl -u breeze-agent -f")
+		fmt.Println("Logs: journalctl -u nu-agent -f")
 		return nil
 	},
 }
@@ -375,7 +375,7 @@ var serviceStopCmd = &cobra.Command{
 	Short: "Stop the agent service",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("must run as root (sudo breeze-agent service stop)")
+			return fmt.Errorf("must run as root (sudo nu-agent service stop)")
 		}
 
 		out, err := exec.Command("systemctl", "stop", linuxServiceName).CombinedOutput()

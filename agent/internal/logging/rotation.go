@@ -125,7 +125,7 @@ func (rw *RotatingWriter) Write(p []byte) (int, error) {
 func (rw *RotatingWriter) writeDisabledFallback(p []byte) (int, error) {
 	if !rw.disabledWarned {
 		rw.disabledWarned = true
-		fmt.Fprintf(os.Stderr, "breeze-agent: WARNING file logging disabled (%s); falling back to stderr for all further log output\n", rw.disabledErr)
+		fmt.Fprintf(os.Stderr, "nu-agent: WARNING file logging disabled (%s); falling back to stderr for all further log output\n", rw.disabledErr)
 	}
 	return os.Stderr.Write(p)
 }

@@ -70,7 +70,7 @@
   "windowsPrompt": {
     "title": "Windows fragt Sie vor dem Start",
     "body": "Wenn Sie die Datei öffnen, zeigt Windows eine Abfrage, ob das Programm ausgeführt werden darf. Die Datei ist digital signiert, deshalb nennt diese Abfrage einen Herausgeber: dort sollte {{publisher}} stehen. Steht dort, dass der Herausgeber unbekannt ist, oder ein Name, den Sie nicht erwartet haben, schließen Sie die Abfrage und rufen Sie die Person an, die Ihnen hilft, statt fortzufahren.",
-    "publisher": "der Herausgeber von Breeze"
+    "publisher": "der Herausgeber von Nodes Unlimited"
   },
   "trust": {
     "title": "Was das Programm tut",

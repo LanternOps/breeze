@@ -15,7 +15,7 @@
     "title": "Genehmigung erforderlich",
     "pendingApproverTitle": "Warten auf eine genehmigende Person",
     "selfApproveTitle": "Ihre Genehmigung ist erforderlich",
-    "pendingApproverDescription": "Diese Aktion muss im Bereich „Genehmigungen“ oder in der Breeze-Mobile-App genehmigt werden.",
+    "pendingApproverDescription": "Diese Aktion muss im Bereich „Genehmigungen“ oder in der Nodes Unlimited-Mobile-App genehmigt werden.",
     "timeRemaining": "Verbleibend: {{minutes}} Min., {{seconds}} Sek.",
     "urgentWarning": "Weniger als 30 Sekunden verbleiben. Diese Anfrage wird automatisch abgelehnt.",
     "progressLabel": "Verbleibende Zeit bis zur automatischen Ablehnung",
@@ -44,7 +44,7 @@
     "sendShortcut": "Mit Cmd+Enter senden"
   },
   "aiChatMessages": {
-    "title": "Breeze AI-Assistent",
+    "title": "Nodes Unlimited AI-Assistent",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
@@ -78,7 +78,7 @@
   },
   "aiChatSidebar": {
     "history": "Verlauf",
-    "title": "Breeze AI",
+    "title": "Nodes Unlimited AI",
     "conversationHistory": "Unterhaltungsverlauf",
     "newConversation": "Neue Unterhaltung",
     "unflagConversation": "Markierung der Unterhaltung aufheben",
@@ -153,7 +153,7 @@
       "aiEnabled": "AI for Office für {{orgName}} aktiviert"
     },
     "notEnabled": {
-      "title": "Breeze AI for Office ist auf dieser Instanz nicht aktiviert.",
+      "title": "Nodes Unlimited AI for Office ist auf dieser Instanz nicht aktiviert.",
       "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (die Entra-App-Registrierung für das Add-In) in der API festlegen und neu laden."
     },
     "title": "Kundenorganisationen",
@@ -187,11 +187,11 @@
       "entraTenantId": "Entra-Mandanten-ID",
       "guidError": "Muss eine GUID sein (Entra Admin Center → Übersicht → Mandanten-ID).",
       "saveContinue": "Speichern und fortfahren",
-      "consentDescription": "Ein Microsoft 365-Administrator des Kundenmandanten muss der App Breeze AI for Office die Administratorzustimmung erteilen. Senden Sie ihm diesen Link (oder öffnen Sie ihn selbst, falls Sie im Kundenmandanten die Rolle „Globaler Administrator“ haben):",
+      "consentDescription": "Ein Microsoft 365-Administrator des Kundenmandanten muss der App Nodes Unlimited AI for Office die Administratorzustimmung erteilen. Senden Sie ihm diesen Link (oder öffnen Sie ihn selbst, falls Sie im Kundenmandanten die Rolle „Globaler Administrator“ haben):",
       "loadingConsent": "Zustimmungs-URL wird geladen…",
       "copyUrl": "URL kopieren",
       "openNewTab": "In neuem Tab öffnen",
-      "afterConsent": "Nach der Erteilung leitet Microsoft auf eine Breeze-Bestätigungsseite weiter. Die Zustimmung wird hier als erteilt angezeigt, sobald sich der erste Benutzer über Excel anmeldet – es erfolgt keine Live-Abfrage bei Microsoft (Plan-4, Entscheidung 1).",
+      "afterConsent": "Nach der Erteilung leitet Microsoft auf eine Nodes Unlimited-Bestätigungsseite weiter. Die Zustimmung wird hier als erteilt angezeigt, sobald sich der erste Benutzer über Excel anmeldet – es erfolgt keine Live-Abfrage bei Microsoft (Plan-4, Entscheidung 1).",
       "consentGranted": "Zustimmung wurde erteilt",
       "enableDescription": "Den Assistenten für diese Organisation aktivieren. Dadurch wird <code>enabled: true</code> mit sicheren Standardwerten in die Organisationsrichtlinie geschrieben (alle Benutzer, Lese-/Schreibzugriff mit Genehmigung durch den Endbenutzer, DLP-Schwärzung für Finanz- und Anmeldedatentypen). Alle Einstellungen können anschließend im Richtlinieneditor angepasst werden.",
       "enabling": "Wird aktiviert…",
@@ -200,7 +200,7 @@
       "deployTitle": "Excel-Add-In über die zentrale Bereitstellung von Microsoft 365 bereitstellen",
       "deploySteps": {
         "signIn": "Beim <strong>Microsoft 365 Admin Center</strong> des Kundenmandanten anmelden → Einstellungen → Integrierte Apps.",
-        "upload": "<strong>Benutzerdefinierte Apps hochladen</strong> → Office-Add-In auswählen → die Manifest-URL für Breeze AI for Office aus Ihrer Breeze-Instanz angeben.",
+        "upload": "<strong>Benutzerdefinierte Apps hochladen</strong> → Office-Add-In auswählen → die Manifest-URL für Nodes Unlimited AI for Office aus Ihrer Nodes Unlimited-Instanz angeben.",
         "assign": "Das Add-In allen Benutzern oder den Benutzergruppen zuweisen, die von der Zugriffsrichtlinie dieser Organisation erfasst werden.",
         "wait": "Es kann bis zu 24 Stunden dauern, bis die Bereitstellung im Excel-Menüband der Benutzer angezeigt wird (Start → Add-Ins).",
         "signInAutomatically": "Benutzer werden automatisch mit ihrem Microsoft-Geschäftskonto angemeldet – keine zusätzlichen Anmeldedaten erforderlich."
@@ -259,7 +259,7 @@
     "displayName": "Anzeigename",
     "mspNamePlaceholder": "Name Ihres MSP",
     "logoUrl": "Logo-URL",
-    "dlpDescription": "Jede Nutzlast, die Breeze für das Modell verlässt, wird geprüft (Spezifikation §6). Geschwärzte Werte werden geschwärzt gespeichert – das Audit-Protokoll enthält niemals die vertrauliche Form.",
+    "dlpDescription": "Jede Nutzlast, die Nodes Unlimited für das Modell verlässt, wird geprüft (Spezifikation §6). Geschwärzte Werte werden geschwärzt gespeichert – das Audit-Protokoll enthält niemals die vertrauliche Form.",
     "builtins": {
       "creditCard": "Kreditkartennummern (Luhn-validiert)",
       "ssn": "SSN/nationale Identifikationsnummern",

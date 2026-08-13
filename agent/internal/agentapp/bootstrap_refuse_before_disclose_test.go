@@ -50,7 +50,7 @@ func TestRunBootstrapNeverDisclosesTokenToNonAllowlistedHost(t *testing.T) {
 	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
 	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
 	cfgFile, quietEnroll = cfgPath, true
-	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+	bootstrapInstallData = `C:\dl\nu-agent.msi|TESTTOKEN1|` + srv.URL
 
 	var exitCode atomic.Int32
 	exitCode.Store(-1)
@@ -97,7 +97,7 @@ func TestRunBootstrapSelfHostStillReachesTheServer(t *testing.T) {
 	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
 	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
 	cfgFile, quietEnroll = cfgPath, true
-	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+	bootstrapInstallData = `C:\dl\nu-agent.msi|TESTTOKEN1|` + srv.URL
 
 	origExit := osExit
 	osExit = func(code int) {} // redeem will fail against the 403; swallow the exit

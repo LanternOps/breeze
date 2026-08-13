@@ -95,7 +95,7 @@ func TestResolveSupportInput(t *testing.T) {
 		// out loud, so the flag must accept it verbatim.
 		{
 			name:     "dashed display code from the flag is normalized",
-			argv0:    "breeze-agent",
+			argv0:    "nu-agent",
 			codeFlag: "ktm-4h7-p2x",
 			wantCode: "KTM4H7P2X",
 		},
@@ -122,7 +122,7 @@ func TestResolveSupportInput(t *testing.T) {
 		},
 		{
 			name:     "dashed digits-only display code from the flag",
-			argv0:    "breeze-agent",
+			argv0:    "nu-agent",
 			codeFlag: "234-567-892",
 			wantCode: "234567892",
 		},
@@ -146,7 +146,7 @@ func TestResolveSupportInput(t *testing.T) {
 		// Nothing embedded and no flags -> error so the caller prompts.
 		{
 			name:    "plain agent binary with no flags errors",
-			argv0:   "breeze-agent",
+			argv0:   "nu-agent",
 			wantErr: true,
 		},
 		{
@@ -158,19 +158,19 @@ func TestResolveSupportInput(t *testing.T) {
 		// rejected rather than redeemed as a typo'd code.
 		{
 			name:     "code containing an excluded letter is rejected",
-			argv0:    "breeze-agent",
+			argv0:    "nu-agent",
 			codeFlag: "KTM4H7P2I",
 			wantErr:  true,
 		},
 		{
 			name:     "code containing a zero is rejected",
-			argv0:    "breeze-agent",
+			argv0:    "nu-agent",
 			codeFlag: "KTM4H7P20",
 			wantErr:  true,
 		},
 		{
 			name:     "short code is rejected",
-			argv0:    "breeze-agent",
+			argv0:    "nu-agent",
 			codeFlag: "KTM4H7P",
 			wantErr:  true,
 		},
@@ -213,12 +213,12 @@ func TestResolveSupportInput(t *testing.T) {
 // the sentinel exists so the prompt path can stay silent instead of printing
 // a validation complaint about input the user never gave.
 func TestResolveSupportInputMissingSentinel(t *testing.T) {
-	_, _, err := resolveSupportInput("breeze-agent", "", "")
+	_, _, err := resolveSupportInput("nu-agent", "", "")
 	if !errors.Is(err, errNoSupportCode) {
 		t.Fatalf("expected errNoSupportCode, got %v", err)
 	}
 
-	_, _, err = resolveSupportInput("breeze-agent", "KTM4H7P20", "")
+	_, _, err = resolveSupportInput("nu-agent", "KTM4H7P20", "")
 	if errors.Is(err, errNoSupportCode) {
 		t.Fatal("a malformed code must not report as a missing code")
 	}
@@ -283,7 +283,7 @@ func TestSupportWatchdogDecision(t *testing.T) {
 
 func TestSupportWorkDirIsNotTheRealConfigDir(t *testing.T) {
 	// The single most dangerous failure mode for this feature: a throwaway
-	// support client writing into C:\ProgramData\Breeze would clobber the
+	// support client writing into C:\ProgramData\Nodes Unlimited would clobber the
 	// config, secrets and agent.state of a real permanently-installed agent
 	// on the same machine.
 	dir := supportWorkDir()

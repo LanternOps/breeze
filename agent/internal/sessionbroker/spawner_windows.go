@@ -19,7 +19,7 @@ import (
 // release the handle.
 //
 // BinaryPath records the executable the spawner actually launched so callers
-// can distinguish the GUI-subsystem sibling (breeze-user-helper.exe) from
+// can distinguish the GUI-subsystem sibling (nu-user-helper.exe) from
 // the console-subsystem agent fallback when logging spawn outcomes — useful
 // when chasing reports of the logon console flash regression.
 type SpawnedHelper struct {

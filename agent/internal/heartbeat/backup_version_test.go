@@ -188,9 +188,9 @@ func TestBackupBinaryName(t *testing.T) {
 		goos string
 		want string
 	}{
-		{"windows", "breeze-backup.exe"},
-		{"linux", "breeze-backup"},
-		{"darwin", "breeze-backup"},
+		{"windows", "nu-backup.exe"},
+		{"linux", "nu-backup"},
+		{"darwin", "nu-backup"},
 	}
 	for _, tt := range tests {
 		if got := backupBinaryName(tt.goos); got != tt.want {

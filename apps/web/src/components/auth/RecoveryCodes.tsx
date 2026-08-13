@@ -21,7 +21,7 @@ export default function RecoveryCodes({ codes, onContinue }: RecoveryCodesProps)
     const separator = '='.repeat(30);
     const text = t('recoveryCodes.downloadText', {
       defaultValue:
-        'Breeze RMM Recovery Codes\n{{separator}}\n\n{{codes}}\n\nGenerated: 2024-01-15T12:00:00.000Z\n\nStore these codes safely. Each code can only be used once.',
+        'Nodes Unlimited RMM Recovery Codes\n{{separator}}\n\n{{codes}}\n\nGenerated: 2024-01-15T12:00:00.000Z\n\nStore these codes safely. Each code can only be used once.',
       separator,
       codes: codes.join('\n'),
       interpolation: { escapeValue: false },

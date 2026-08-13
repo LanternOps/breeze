@@ -20,7 +20,7 @@
     "title": "Historique des actifs"
   },
   "branding": {
-    "defaultName": "Breeze Portal"
+    "defaultName": "Nodes Unlimited Portal"
   },
   "customerDeviceList": {
     "deviceCount": "{{count}} appareils liés à votre compte",

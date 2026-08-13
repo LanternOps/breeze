@@ -38,7 +38,7 @@ func TestParseInstallerFilenameToken(t *testing.T) {
 		{"bracket full path", `C:\Users\me\Downloads\Breeze Agent [Z9Y8X7W6V5@host.example.com].msi`, "Z9Y8X7W6V5", "host.example.com", false},
 		{"bracket host with hyphen", "Breeze Agent [ABCDE12345@my-rmm.example].msi", "ABCDE12345", "my-rmm.example", false},
 		{"bracket host with port", "Breeze Agent [ABCDE12345@my-rmm.example_8443].msi", "ABCDE12345", "my-rmm.example:8443", false},
-		{"no delimiter", "breeze-agent.msi", "", "", true},
+		{"no delimiter", "nu-agent.msi", "", "", true},
 		{"bracket token too short", "Breeze Agent [ABCDE1234@host].msi", "", "", true},
 		{"bracket token lowercase", "Breeze Agent [abcde12345@host].msi", "", "", true},
 		{"empty", "", "", "", true},

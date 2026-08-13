@@ -79,7 +79,7 @@
     },
     "accountDeletionRequestsList": {
       "title": "Richieste di eliminazione account",
-      "description": "Utenti nel tuo tenant che hanno chiesto di eliminare il proprio account Breeze. Approva per accodarli all'elaborazione oppure rifiuta con una nota che spiega il motivo.",
+      "description": "Utenti nel tuo tenant che hanno chiesto di eliminare il proprio account Nodes Unlimited. Approva per accodarli all'elaborazione oppure rifiuta con una nota che spiega il motivo.",
       "filterLabel": "Filtra per stato",
       "refresh": "Aggiorna",
       "retry": "Riprova",
@@ -233,13 +233,13 @@
     },
     "thirdPartyCatalog": {
       "title": "Catalogo pacchetti di terze parti",
-      "description": "Metadati curati da Breeze per software di terze parti rilevato da winget sugli agent.",
+      "description": "Metadati curati da Nodes Unlimited per software di terze parti rilevato da winget sugli agent.",
       "totalEntries": "Voci totali:",
       "refresh": "Aggiorna",
       "addPackage": "Aggiungi pacchetto",
       "searchPlaceholder": "Cerca per nome, fornitore o winget ID…",
-      "breezeTestedOnly": "Solo testati da Breeze",
-      "breezeTested": "Testato da Breeze",
+      "breezeTestedOnly": "Solo testati da Nodes Unlimited",
+      "breezeTested": "Testato da Nodes Unlimited",
       "dismiss": "Ignora",
       "loading": "Caricamento catalogo…",
       "empty": "Nessuna voce del catalogo corrisponde ai filtri correnti.",
@@ -261,7 +261,7 @@
       },
       "platformAdmin": {
         "title": "Accesso amministratore piattaforma richiesto",
-        "prefix": "Il catalogo di terze parti è gestito dagli amministratori della piattaforma Breeze. Il tuo account",
+        "prefix": "Il catalogo di terze parti è gestito dagli amministratori della piattaforma Nodes Unlimited. Il tuo account",
         "role": "amministratore organizzazione/partner",
         "suffix": "può visualizzare il catalogo curato nei normali flussi di patch, ma non può modificarlo direttamente."
       },
@@ -310,7 +310,7 @@
         "vendor": "Fornitore",
         "friendlyName": "Nome descrittivo",
         "defaultSeverity": "Severità predefinita",
-        "breezeTested": "Testato da Breeze",
+        "breezeTested": "Testato da Nodes Unlimited",
         "homepageUrl": "Homepage URL",
         "notes": "Note"
       },
@@ -528,9 +528,15 @@
       "sensitiveOperations": "Operazioni sensibili",
       "reviewRequired": "Revisione richiesta",
       "categories": {
-        "gdpr": { "label": "GDPR" },
-        "soc2": { "label": "SOC 2" },
-        "hipaa": { "label": "HIPAA" }
+        "gdpr": {
+          "label": "GDPR"
+        },
+        "soc2": {
+          "label": "SOC 2"
+        },
+        "hipaa": {
+          "label": "HIPAA"
+        }
       },
       "summary": {
         "gdpr": {

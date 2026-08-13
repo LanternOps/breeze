@@ -5,7 +5,7 @@ import "testing"
 func TestValidateServiceName(t *testing.T) {
 	t.Parallel()
 
-	valid := []string{"sshd", "com.breeze.agent", "postgresql@15-main"}
+	valid := []string{"sshd", "com.nodesunlimited.agent", "postgresql@15-main"}
 	for _, name := range valid {
 		got, err := validateServiceName(name)
 		if err != nil {

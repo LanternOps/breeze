@@ -1,5 +1,5 @@
 // Package backupipc defines shared IPC message types for communication between
-// the main breeze-agent and the breeze-backup helper binary.
+// the main nu-agent and the nu-backup helper binary.
 package backupipc
 
 import "encoding/json"

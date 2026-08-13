@@ -482,7 +482,7 @@
     "title": "Titel"
   },
   "remoteToolsPage": {
-    "agentRestartingDescription": "Der Breeze-Agent wird neu gestartet. Das Gerät verbindet sich automatisch wieder...",
+    "agentRestartingDescription": "Der Nodes Unlimited-Agent wird neu gestartet. Das Gerät verbindet sich automatisch wieder...",
     "agentRestartingTitle": "Agent wird neu gestartet",
     "errors": {
       "createRegistryKey": "Registrierungsschlüssel konnte nicht erstellt werden",

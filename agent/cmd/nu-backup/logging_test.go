@@ -10,7 +10,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-// TestInitLoggingWritesToFile is the regression guard for #2790: breeze-backup
+// TestInitLoggingWritesToFile is the regression guard for #2790: nu-backup
 // used to rely on the package-level slog default (stdout) while the agent
 // spawned it with inherited stdio, which under a Windows service is NUL. Every
 // line a backup run produced was discarded. The contract this pins is narrow

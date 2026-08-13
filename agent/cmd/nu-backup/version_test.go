@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestRootCmd_VersionFlagRendersStablePrefix pins the exact `breeze-backup
+// TestRootCmd_VersionFlagRendersStablePrefix pins the exact `nu-backup
 // --version` output the heartbeat's installedBackupVersion() parses
 // (internal/heartbeat/backup_version.go, backupVersionPrefix). A drift here
 // silently breaks backup version reporting without any compile-time signal,

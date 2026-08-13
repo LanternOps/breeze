@@ -20,7 +20,7 @@ import (
 //
 // RuntimeDirectory=breeze makes systemd create /run/breeze BEFORE building the
 // namespace, eliminating that dependency. systemd reference-counts the runtime
-// directory across breeze-agent + breeze-watchdog, so it persists while either
+// directory across nu-agent + nu-watchdog, so it persists while either
 // unit is active.
 func TestWatchdogUnitDeclaresRuntimeDirectory(t *testing.T) {
 	if !strings.Contains(watchdogUnit, "RuntimeDirectory=breeze") {
@@ -32,7 +32,7 @@ func TestWatchdogUnitDeclaresRuntimeDirectory(t *testing.T) {
 	}
 	// RuntimeDirectoryPreserve defaults to 'no' (remove on stop). Without it, a
 	// watchdog restart on a partially-upgraded host would remove /run/breeze out
-	// from under a still-running breeze-agent, re-wedging it at 226/NAMESPACE.
+	// from under a still-running nu-agent, re-wedging it at 226/NAMESPACE.
 	if !strings.Contains(watchdogUnit, "RuntimeDirectoryPreserve=yes") {
 		t.Error("watchdogUnit must declare RuntimeDirectoryPreserve=yes so a watchdog restart " +
 			"does not remove /run/breeze out from under a still-running agent (#1297)")

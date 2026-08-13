@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_BINARY="/usr/local/bin/breeze-agent"
-WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
-BACKUP_BINARY="/usr/local/bin/breeze-backup"
+AGENT_BINARY="/usr/local/bin/nu-agent"
+WATCHDOG_BINARY="/usr/local/bin/nu-watchdog"
+BACKUP_BINARY="/usr/local/bin/nu-backup"
 
 fatal() {
   echo "Error: $*" >&2
@@ -21,15 +21,15 @@ require_root() {
 }
 
 uninstall_macos() {
-  local agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
-  local watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
-  local user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
+  local agent_plist="/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
+  local watchdog_plist="/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
+  local user_plist="/Library/LaunchAgents/com.nodesunlimited.agent-user.plist"
 
   echo "Uninstalling Breeze Agent for macOS..."
 
   if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout system/com.breeze.agent 2>/dev/null || launchctl unload "$agent_plist" 2>/dev/null || true
-    launchctl bootout system/com.breeze.watchdog 2>/dev/null || launchctl unload "$watchdog_plist" 2>/dev/null || true
+    launchctl bootout system/com.nodesunlimited.agent 2>/dev/null || launchctl unload "$agent_plist" 2>/dev/null || true
+    launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null || launchctl unload "$watchdog_plist" 2>/dev/null || true
     launchctl unload "$user_plist" 2>/dev/null || true
   else
     warn "launchctl not found; skipping service stop"
@@ -43,33 +43,33 @@ uninstall_macos() {
   rm -f "$BACKUP_BINARY"
 
   echo "Breeze Agent uninstalled."
-  echo "Config at /Library/Application Support/Breeze/ was preserved."
-  echo "To remove config: sudo rm -rf '/Library/Application Support/Breeze'"
+  echo "Config at /Library/Application Support/Nodes Unlimited/ was preserved."
+  echo "To remove config: sudo rm -rf '/Library/Application Support/Nodes Unlimited'"
 }
 
 uninstall_linux() {
-  local agent_service="/etc/systemd/system/breeze-agent.service"
-  local watchdog_service="/etc/systemd/system/breeze-watchdog.service"
-  local user_service="/usr/lib/systemd/user/breeze-agent-user.service"
-  local xdg_autostart="/etc/xdg/autostart/breeze-agent-user.desktop"
+  local agent_service="/etc/systemd/system/nu-agent.service"
+  local watchdog_service="/etc/systemd/system/nu-watchdog.service"
+  local user_service="/usr/lib/systemd/user/nu-agent-user.service"
+  local xdg_autostart="/etc/xdg/autostart/nu-agent-user.desktop"
   local ipc_dir="/var/run/breeze"
 
   echo "Uninstalling Breeze Agent for Linux..."
 
   if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet breeze-agent 2>/dev/null; then
-      systemctl stop breeze-agent
+    if systemctl is-active --quiet nu-agent 2>/dev/null; then
+      systemctl stop nu-agent
       echo "Service stopped."
     fi
-    if systemctl is-enabled --quiet breeze-agent 2>/dev/null; then
-      systemctl disable breeze-agent
+    if systemctl is-enabled --quiet nu-agent 2>/dev/null; then
+      systemctl disable nu-agent
     fi
-    if systemctl is-active --quiet breeze-watchdog 2>/dev/null; then
-      systemctl stop breeze-watchdog
+    if systemctl is-active --quiet nu-watchdog 2>/dev/null; then
+      systemctl stop nu-watchdog
       echo "Watchdog service stopped."
     fi
-    if systemctl is-enabled --quiet breeze-watchdog 2>/dev/null; then
-      systemctl disable breeze-watchdog
+    if systemctl is-enabled --quiet nu-watchdog 2>/dev/null; then
+      systemctl disable nu-watchdog
     fi
   else
     warn "systemctl not found; skipping service stop and disable"
@@ -89,8 +89,8 @@ uninstall_linux() {
   fi
 
   echo "Breeze Agent uninstalled."
-  echo "Config at /etc/breeze/ was preserved."
-  echo "To remove config: sudo rm -rf /etc/breeze"
+  echo "Config at /etc/nodesunlimited/ was preserved."
+  echo "To remove config: sudo rm -rf /etc/nodesunlimited"
 }
 
 require_root

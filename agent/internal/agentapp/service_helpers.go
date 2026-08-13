@@ -31,9 +31,9 @@ func isSystemServiceRunning() bool {
 
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.CommandContext(ctx, "launchctl", "print", "system/com.breeze.agent").Run() == nil
+		return exec.CommandContext(ctx, "launchctl", "print", "system/com.nodesunlimited.agent").Run() == nil
 	case "linux":
-		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "breeze-agent").Output()
+		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "nu-agent").Output()
 		return err == nil && strings.TrimSpace(string(out)) == "active"
 	case "windows":
 		out, err := exec.CommandContext(ctx, "sc", "query", "BreezeAgent").Output()

@@ -38,15 +38,15 @@ func TestClassifyProcess(t *testing.T) {
 		wantMode      string
 		wantFallback  bool
 	}{
-		{"SCM main", "run", "", "breeze-agent.exe", true, "service-run", false},
-		{"console main", "run", "", "breeze-agent.exe", false, "console-run", false},
-		{"companion user", "user-helper", "user", "breeze-user-helper.exe", false, "user-helper", false},
-		{"fallback user", "user-helper", "user", "breeze-agent.exe", false, "user-helper", true},
-		{"renamed fallback user", "user-helper", "user", "breeze-agent-0.70.exe", false, "user-helper", true},
-		{"companion system", "user-helper", "system", "breeze-user-helper.exe", false, "system-helper", false},
-		{"empty helper role", "user-helper", "", "breeze-agent.exe", false, "other", false},
-		{"invalid helper role", "user-helper", "invalid", "breeze-agent.exe", false, "other", false},
-		{"status", "status", "", "breeze-agent.exe", false, "other", false},
+		{"SCM main", "run", "", "nu-agent.exe", true, "service-run", false},
+		{"console main", "run", "", "nu-agent.exe", false, "console-run", false},
+		{"companion user", "user-helper", "user", "nu-user-helper.exe", false, "user-helper", false},
+		{"fallback user", "user-helper", "user", "nu-agent.exe", false, "user-helper", true},
+		{"renamed fallback user", "user-helper", "user", "nu-agent-0.70.exe", false, "user-helper", true},
+		{"companion system", "user-helper", "system", "nu-user-helper.exe", false, "system-helper", false},
+		{"empty helper role", "user-helper", "", "nu-agent.exe", false, "other", false},
+		{"invalid helper role", "user-helper", "invalid", "nu-agent.exe", false, "other", false},
+		{"status", "status", "", "nu-agent.exe", false, "other", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,8 +61,8 @@ func TestClassifyProcess(t *testing.T) {
 func TestProcessStartupFieldsContainsOnlyDiagnosticMetadata(t *testing.T) {
 	createdAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	startup := ProcessStartup{
-		Binary:             "breeze-agent.exe",
-		ExecutablePath:     `C:\Program Files\Breeze\breeze-agent.exe`,
+		Binary:             "nu-agent.exe",
+		ExecutablePath:     `C:\Program Files\Nodes Unlimited\nu-agent.exe`,
 		PID:                42,
 		ParentPID:          7,
 		WindowsSessionID:   3,

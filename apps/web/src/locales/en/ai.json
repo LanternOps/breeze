@@ -15,7 +15,7 @@
     "title": "Approval Required",
     "pendingApproverTitle": "Waiting for an Approver",
     "selfApproveTitle": "Your Approval Is Required",
-    "pendingApproverDescription": "This action needs approval in the Approvals area or the Breeze mobile app.",
+    "pendingApproverDescription": "This action needs approval in the Approvals area or the Nodes Unlimited mobile app.",
     "timeRemaining": "{{minutes}} minutes {{seconds}} seconds remaining",
     "urgentWarning": "Less than 30 seconds remaining. This request will be auto-rejected.",
     "progressLabel": "Time remaining before auto-rejection",
@@ -44,7 +44,7 @@
     "sendShortcut": "Cmd+Enter to send"
   },
   "aiChatMessages": {
-    "title": "Breeze AI Assistant",
+    "title": "Nodes Unlimited AI Assistant",
     "description": "Ask about your devices, alerts, metrics, or troubleshoot issues.",
     "unknownTool": "Unknown tool",
     "toolResult": "Tool result",
@@ -78,7 +78,7 @@
   },
   "aiChatSidebar": {
     "history": "History",
-    "title": "Breeze AI",
+    "title": "Nodes Unlimited AI",
     "conversationHistory": "Conversation history",
     "newConversation": "New conversation",
     "unflagConversation": "Unflag conversation",
@@ -153,7 +153,7 @@
       "aiEnabled": "AI for Office enabled for {{orgName}}"
     },
     "notEnabled": {
-      "title": "Breeze AI for Office is not enabled on this instance.",
+      "title": "Nodes Unlimited AI for Office is not enabled on this instance.",
       "description": "Set <code>CLIENT_AI_ENTRA_CLIENT_ID</code> (the Entra add-in app registration) on the API and reload."
     },
     "title": "Client organizations",
@@ -187,11 +187,11 @@
       "entraTenantId": "Entra tenant ID",
       "guidError": "Must be a GUID (Entra admin center → Overview → Tenant ID).",
       "saveContinue": "Save & continue",
-      "consentDescription": "A Microsoft 365 admin of the client tenant must grant admin consent to the Breeze AI for Office app. Send them this link (or open it yourself if you hold Global Admin in the client tenant):",
+      "consentDescription": "A Microsoft 365 admin of the client tenant must grant admin consent to the Nodes Unlimited AI for Office app. Send them this link (or open it yourself if you hold Global Admin in the client tenant):",
       "loadingConsent": "Loading consent URL…",
       "copyUrl": "Copy URL",
       "openNewTab": "Open in new tab",
-      "afterConsent": "After granting, Microsoft redirects to a Breeze confirmation page. Consent shows as granted here once the first user signs in from Excel — there is no live poll against Microsoft (Plan-4 decision 1).",
+      "afterConsent": "After granting, Microsoft redirects to a Nodes Unlimited confirmation page. Consent shows as granted here once the first user signs in from Excel — there is no live poll against Microsoft (Plan-4 decision 1).",
       "consentGranted": "I've granted consent",
       "enableDescription": "Enable the assistant for this org. This writes <code>enabled: true</code> to the org policy with safe defaults (all users, read/write with end-user approval, DLP redaction for financial/credential types). Tune everything in the policy editor afterwards.",
       "enabling": "Enabling…",
@@ -200,7 +200,7 @@
       "deployTitle": "Deploy the Excel add-in via Microsoft 365 centralized deployment",
       "deploySteps": {
         "signIn": "Sign in to the client tenant's <strong>Microsoft 365 admin center</strong> → Settings → Integrated apps.",
-        "upload": "Choose <strong>Upload custom apps</strong> → Office add-in → provide the Breeze AI for Office manifest URL from your Breeze instance.",
+        "upload": "Choose <strong>Upload custom apps</strong> → Office add-in → provide the Nodes Unlimited AI for Office manifest URL from your Nodes Unlimited instance.",
         "assign": "Assign the add-in to everyone or to the user groups covered by this org's access policy.",
         "wait": "Deployment can take up to 24h to appear in users' Excel ribbon (Home → Add-ins).",
         "signInAutomatically": "Users sign in automatically with their Microsoft work account — no extra credentials."
@@ -259,7 +259,7 @@
     "displayName": "Display name",
     "mspNamePlaceholder": "Your MSP name",
     "logoUrl": "Logo URL",
-    "dlpDescription": "Every payload leaving Breeze for the model is scanned (spec §6). Redacted values are stored redacted — the audit trail never keeps the sensitive form.",
+    "dlpDescription": "Every payload leaving Nodes Unlimited for the model is scanned (spec §6). Redacted values are stored redacted — the audit trail never keeps the sensitive form.",
     "builtins": {
       "creditCard": "Credit card numbers (Luhn-validated)",
       "ssn": "SSN / national IDs",

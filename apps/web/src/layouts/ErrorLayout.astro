@@ -14,7 +14,7 @@ const { title, statusCode } = Astro.props;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Breeze RMM - Remote Monitoring and Management" />
+    <meta name="description" content="Nodes Unlimited RMM - Remote Monitoring and Management" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!--
       Theme bootstrap is the same already-CSP-allowed external script used by
@@ -22,7 +22,7 @@ const { title, statusCode } = Astro.props;
       here on purpose — error pages must render without view-transition JS.
     -->
     <script is:inline src="/theme-bootstrap.js"></script>
-    <title>{title} | Breeze RMM</title>
+    <title>{title} | Nodes Unlimited RMM</title>
   </head>
   <body class="min-h-screen bg-background antialiased">
     <main class="flex min-h-screen flex-col items-center justify-center px-4 py-12 text-center">
@@ -32,7 +32,7 @@ const { title, statusCode } = Astro.props;
           <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
           <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
-        <span class="text-lg font-bold tracking-tight text-foreground">Breeze</span>
+        <span class="text-lg font-bold tracking-tight text-foreground">Nodes Unlimited</span>
       </div>
 
       <p class="mt-10 text-7xl font-bold tracking-tight text-primary sm:text-8xl">{statusCode}</p>

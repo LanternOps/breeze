@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-const agentServiceName = "com.breeze.agent"
+const agentServiceName = "com.nodesunlimited.agent"
 
 func isAgentService(name string) bool {
 	return strings.EqualFold(name, agentServiceName)

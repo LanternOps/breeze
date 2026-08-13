@@ -54,7 +54,7 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
                 <path d="M8 34C8 34 18 34 30 34C42 34 46 28 52 28C55 28 57 30 57 32C57 34 55 36 52 36C48 36 46 34 46 34" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
                 <path d="M14 46C14 46 22 46 32 46C40 46 44 40 50 40C53 40 55 42 55 44C55 46 53 48 50 48C46 48 44 46 44 46" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
               </svg>
-              <span className="text-xl font-bold tracking-tight">Breeze</span>
+              <span className="text-xl font-bold tracking-tight">Nodes Unlimited</span>
             </>
           )}
         </div>
@@ -117,7 +117,7 @@ export default function AuthPanelBranding({ tagline }: { tagline: string }) {
         )}
       </div>
 
-      <p className="text-xs text-white/40">&copy; {new Date().getFullYear()} {branding ? '' : 'Breeze RMM'}</p>
+      <p className="text-xs text-white/40">&copy; {new Date().getFullYear()} {branding ? '' : 'Nodes Unlimited RMM'}</p>
     </div>
   );
 }
