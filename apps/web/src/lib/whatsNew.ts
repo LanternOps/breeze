@@ -18,6 +18,18 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.105.2-nu.1',
+    date: '2026-08-13',
+    title: 'Nodes Unlimited takes ownership of the platform',
+    highlights: [
+      'The server now runs NODES UNLIMITED builds — our fixes ship to production the day they merge.',
+      'Agents are NU Agent throughout — installers, service names and system descriptions.',
+      'Fixed the crash that stopped agents starting on Apple Silicon (M-series) Macs entirely.',
+      'The server serves our own signed agent builds, with native Windows on ARM support.',
+      'Remote desktop wired end-to-end: NU Viewer download plus RustDesk launch on managed devices.',
+    ],
+  },
+  {
     version: '0.105.0',
     date: '2026-08-12',
     title: 'Faster fleet views and clearer device health',
@@ -26,17 +38,5 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
       'Device health cards surface reliability at a glance.',
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
-  },
-  {
-    version: '0.104.1',
-    date: '2026-08-13',
-    title: 'Nodes Unlimited branding, working agent installs, and a trusted update chain',
-    highlights: [
-      'Agents are now NU Agent throughout — service names, installer text and system service descriptions.',
-      'Fixed the crash that stopped agents starting on Apple Silicon (M-series) Macs entirely.',
-      'The server now serves our own signed agent builds instead of upstream ones.',
-      'Added native Windows on ARM agent builds, which were previously unavailable.',
-      'New Linux endpoint support, verified end-to-end from enrollment through remote script execution.',
-    ],
   },
 ];

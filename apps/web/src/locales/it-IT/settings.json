@@ -3300,5 +3300,56 @@
     "youWillConfirmWithYourPasskey": "Confermerai con la tua passkey (Touch ID / Windows Hello) al momento della registrazione.",
     "authenticatorCode": "Codice authenticator",
     "confirmYourPassword": "Conferma la password"
+  },
+  "tenantVariablesPage": {
+    "title": "Variabili",
+    "description": "Definisci un valore una sola volta — un token di sito di un fornitore, l'URL di un repository interno — e richiamalo dagli script invece di scriverlo per ogni cliente.",
+    "loading": "Caricamento delle variabili…",
+    "actions": {
+      "add": "Nuova variabile",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "edit": "Modifica variabile",
+      "delete": "Elimina variabile",
+      "confirmDelete": "Conferma"
+    },
+    "fields": {
+      "key": "Chiave",
+      "keyHint": "Lettere minuscole, cifre e trattini bassi. Gli script richiamano la variabile con questo nome.",
+      "keyImmutable": "La chiave non può essere modificata: gli script la richiamano per nome.",
+      "value": "Valore",
+      "valueKeepHint": "Lascia vuoto per mantenere il valore salvato.",
+      "description": "Descrizione",
+      "scope": "Si applica a",
+      "isSecret": "Segreto",
+      "isSecretHint": "Non viene più mostrato dopo il salvataggio e viene passato agli script come variabile d'ambiente."
+    },
+    "editor": {
+      "newTitle": "Nuova variabile",
+      "editTitle": "Modifica variabile",
+      "scopeLegend": "Si applica a",
+      "allOrgs": "Tutte le organizzazioni",
+      "allOrgsHint": "Disponibile per ogni cliente che gestisci.",
+      "thisOrg": "Questa organizzazione"
+    },
+    "issues": {
+      "key": "Inserisci una chiave composta da lettere minuscole, cifre e trattini bassi, che inizi con una lettera.",
+      "value": "Inserisci un valore.",
+      "unsecret": "Inserisci un nuovo valore per non trattare più questa variabile come segreta.",
+      "org": "Seleziona un'organizzazione prima di creare una variabile con ambito organizzazione."
+    },
+    "empty": {
+      "title": "Ancora nessuna variabile",
+      "description": "Creane una per smettere di incollare lo stesso token negli script di ogni cliente."
+    },
+    "errors": {
+      "load": "Impossibile caricare le variabili."
+    },
+    "toasts": {
+      "saved": "Variabile salvata",
+      "saveFailed": "Impossibile salvare la variabile",
+      "deleted": "Variabile eliminata",
+      "deleteFailed": "Impossibile eliminare la variabile"
+    }
   }
 }

@@ -48,7 +48,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'search', 'security', 'sensitive-data', 'service-principals', 'settings',
   'snmp', 'software',
   'software-inventory', 'software-policies', 'sso', 'support',
-  'system', 'system-tools', 'tags', 'third-party-catalog',
+  'system', 'system-tools', 'tags', 'tenant-variables', 'third-party-catalog',
   'ticket-categories', 'ticket-config', 'ticket-forms',
   'ticket-response-templates', 'tickets', 'time-entries', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'viewers',

@@ -64,7 +64,8 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Relatórios",
     "sectionSettings": "Configurações",
-    "sectionExtensions": "Extensões"
+    "sectionExtensions": "Extensões",
+    "variables": "Variáveis"
   },
   "documentTitles": {
     "dashboard": "Painel",

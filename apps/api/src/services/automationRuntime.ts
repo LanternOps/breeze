@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { DeploymentTargetConfig } from '@breeze/shared';
+import { hasVariableTokens, scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
   alertRules,
@@ -20,6 +20,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
@@ -148,7 +149,9 @@ export type AutomationTrigger =
 export type RunScriptAction = {
   type: 'run_script';
   scriptId: string;
-  parameters?: Record<string, unknown>;
+  // #3409 PR2 Task 7: matches scriptParametersSchema's inferred value type —
+  // canonicalized to strings once, downstream, at scriptDispatch.ts.
+  parameters?: Record<string, string | number | boolean>;
   runAs?: 'system' | 'user' | 'elevated' | string;
 };
 
@@ -365,10 +368,24 @@ export function normalizeAutomationActions(input: unknown): AutomationAction[] {
       if (!scriptId) {
         throw new AutomationValidationError(`actions[${index}] run_script requires scriptId`);
       }
+      // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared),
+      // replacing the old hand-rolled isPlainRecord check — a malformed
+      // parameters map is now a save-time AutomationValidationError instead
+      // of a silent drop.
+      let parameters: Record<string, string | number | boolean> | undefined;
+      if (action.parameters !== undefined) {
+        const parsed = scriptParametersSchema.safeParse(action.parameters);
+        if (!parsed.success) {
+          throw new AutomationValidationError(
+            `actions[${index}] run_script has invalid parameters: ${parsed.error.issues[0]?.message ?? 'invalid parameters'}`
+          );
+        }
+        parameters = parsed.data;
+      }
       normalized.push({
         type: 'run_script',
         scriptId,
-        parameters: isPlainRecord(action.parameters) ? action.parameters : undefined,
+        parameters,
         runAs: asString(action.runAs),
       });
       continue;
@@ -877,6 +894,15 @@ export async function executeRunScriptAction(
 
   const parameters = action.parameters ?? {};
 
+  // Preload ONCE for this single-device dispatch (#3409 PR2 Task 4). Only
+  // run_script needs a scope — execute_command below dispatches a
+  // {kind:'raw'} source, which scriptDispatch deliberately never substitutes.
+  // Gated on the content: an unconditional preload would take a second
+  // connection per automation run to build a snapshot nothing consults.
+  const variableScope = await loadTenantVariableScope(
+    hasVariableTokens(script.content) ? [context.device.orgId] : []
+  );
+
   // #3409 PR0: dispatchScriptToDevice owns the script_executions insert (#3162
   // — a REAL uuid row so handleScriptResult can correlate the agent's result),
   // payload build, sensitive-field encryption, queueCommand, and claim/decrypt/
@@ -898,6 +924,7 @@ export async function executeRunScriptAction(
     // whatever value was configured rather than adding new validation here.
     runAs: (action.runAs ?? script.runAs) as 'system' | 'user' | 'elevated',
     requireOnline: true,
+    variableScope,
   });
 
   if (!dispatch.ok) {

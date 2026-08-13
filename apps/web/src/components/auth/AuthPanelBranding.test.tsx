@@ -20,13 +20,13 @@ describe('AuthPanelBranding', () => {
     vi.clearAllMocks();
   });
 
-  it('renders stock Breeze content when branding is null', async () => {
+  it('renders stock Nodes Unlimited content when branding is null', async () => {
     resolveWith({ branding: null, partnerSso: null });
 
     render(<AuthPanelBranding tagline="The modern RMM platform." />);
 
     // Stock wordmark + marketing copy present.
-    expect(screen.getByText('Breeze')).toBeInTheDocument();
+    expect(screen.getByText('Nodes Unlimited')).toBeInTheDocument();
     expect(screen.getByText(/Effortless endpoint/i)).toBeInTheDocument();
     expect(screen.getByText('10,000+ endpoints')).toBeInTheDocument();
 
@@ -48,7 +48,7 @@ describe('AuthPanelBranding', () => {
 
     // Marketing copy is gone.
     expect(screen.queryByText('10,000+ endpoints')).not.toBeInTheDocument();
-    expect(screen.queryByText('Breeze')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nodes Unlimited')).not.toBeInTheDocument();
 
     // Partner logo present.
     const logo = screen.getByTestId('partner-logo') as HTMLImageElement;

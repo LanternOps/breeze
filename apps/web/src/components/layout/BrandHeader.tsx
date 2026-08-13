@@ -30,7 +30,7 @@ const BREEZE_SVG = (
 export default function BrandHeader({ logoUrl, name, showLabel }: BrandHeaderProps) {
   const { t } = useTranslation('common');
   const safeLogoUrl = sanitizeImageSrc(logoUrl);
-  const label = name?.trim() || 'Breeze';
+  const label = name?.trim() || 'Nodes Unlimited';
 
   return (
     <div className="flex items-center gap-2">

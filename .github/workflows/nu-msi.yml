@@ -1,0 +1,160 @@
+# NU Windows MSI — builds the Nodes Unlimited agent MSI on the
+# bloomingbrands/breeze fork, separate from upstream release.yml (which signs
+# and publishes upstream's own installers on 'v*' tags).
+#
+# ── AGENT VERSION PIN (read before "fixing" this) ────────────────────────────
+# The agent version is ALWAYS 0.104.0 by default — even on nu-v* tag runs it
+# is NOT derived from the tag. The control plane's server binaries VERSION
+# file is 0.104.0 (see agent/Makefile: "MUST equal the version the control
+# plane serves"); an agent stamped higher OR lower than what the server serves
+# makes the self-update logic see a mismatch and loop reinstalling ("update-
+# order loop"). Bump the workflow_dispatch default / fallback below only in
+# lockstep with the server-side VERSION file.
+name: NU Windows MSI
+
+on:
+  push:
+    tags:
+      - 'nu-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Agent version stamp (-X main.version + MSI ProductVersion). Must match the version the control plane serves.'
+        required: false
+        default: '0.104.0'
+
+env:
+  # Same Go toolchain pin as release.yml.
+  GO_VERSION: '1.25.12'
+
+permissions:
+  contents: read
+
+jobs:
+  build-msi:
+    name: Build NU Agent MSI (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      # Tag runs deliver an EMPTY inputs.version -> fall back to the pinned
+      # 0.104.0 (see header comment: never derive it from the tag name).
+      - name: Resolve agent version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $v = $env:INPUT_VERSION
+          if ([string]::IsNullOrWhiteSpace($v)) { $v = '0.104.0' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Agent version stamp: $v"
+
+      # Embed VERSIONINFO + UAC manifests + icon as .syso files BEFORE the go
+      # builds — `go build` links any rsrc_windows_amd64.syso it finds in the
+      # cmd package dir. This is NOT cosmetic: without an embedded FileVersion
+      # the MSI treats a modified on-disk exe as "unversioned but modified" and
+      # refuses to overwrite it on upgrade (Makefile build-winres comment,
+      # issue #944) — and the fleet's exes HAVE been hand-swapped, so every
+      # upgrade would silently keep the old binary. The manifests also carry
+      # requireAdministrator (nu-agent) vs asInvoker (nu-user-helper — an admin
+      # manifest there breaks CreateProcessAsUser with ERROR_ELEVATION_REQUIRED,
+      # #949). The .syso files are amd64-suffixed, so the arm64 builds simply
+      # link without resources — acceptable; the MSI is x64-only today.
+      # bash shell on purpose: the Makefile recipe uses `command -v`, and
+      # go-winres installs into $(go env GOPATH)/bin which is not on the
+      # runner's default PATH.
+      - name: Embed Windows version resources (go-winres)
+        shell: bash
+        working-directory: agent
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          go install github.com/tc-hib/go-winres@v0.3.3
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make build-winres VERSION="$AGENT_VERSION"
+
+      # Build the four Windows executables for BOTH amd64 and arm64, into
+      # agent/bin/ with the same names agent/Makefile produces. CGO off:
+      # required for clean cross-compilation and it fixed the M5 agent crash.
+      # nu-user-helper additionally gets -H windowsgui (no console window for
+      # the per-user helper — mirrors the Makefile's windows targets).
+      - name: Build agent executables (amd64 + arm64)
+        shell: pwsh
+        working-directory: agent
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.version }}
+          CGO_ENABLED: '0'
+          GOOS: windows
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($arch in @('amd64', 'arm64')) {
+            $env:GOARCH = $arch
+            foreach ($cmd in @('nu-agent', 'nu-backup', 'nu-watchdog', 'nu-user-helper')) {
+              $ldflags = "-X main.version=$env:AGENT_VERSION"
+              if ($cmd -eq 'nu-user-helper') { $ldflags = "$ldflags -H windowsgui" }
+              $out = "bin/$cmd-windows-$arch.exe"
+              Write-Host "go build $cmd ($arch) -> $out"
+              go build -ldflags $ldflags -o $out "./cmd/$cmd"
+              if ($LASTEXITCODE -ne 0) { throw "go build failed for $cmd ($arch)" }
+            }
+          }
+
+      # WiX v4+ CLI, same install path build-msi.ps1's own error message
+      # recommends. The dotnet global-tools dir is already on PATH on
+      # windows-latest runners.
+      - name: Install WiX CLI
+        shell: pwsh
+        run: dotnet tool install --global wix
+
+      # x64 MSI. Notes on the parameters:
+      #  * All four -*ExePath args are passed explicitly because the script's
+      #    defaults expect the exes at agent/ root, not agent/bin/ where we
+      #    built them.
+      #  * -Edition is left at its default "Hosted" ON PURPOSE: Hosted is the
+      #    identity (ProductName + UpgradeCode) of every MSI already deployed
+      #    in the fleet, so this build upgrades existing installs in place.
+      #    SelfHost is a different UpgradeCode lineage — using it would leave
+      #    two parallel installs instead of an upgrade.
+      #  * arm64: build-msi.ps1 hardcodes `-arch x64` in its wix args and
+      #    exposes no architecture parameter, so per policy (never guess extra
+      #    script params) we ship x64 only. The arm64 exes are still built
+      #    above so the gap is only in packaging.
+      #    TODO(arm64): add an -Arch param to build-msi.ps1 (wix -arch arm64 +
+      #    arm64 exe paths), then invoke it a second time here for
+      #    dist/nu-agent-arm64.msi.
+      - name: Build x64 MSI
+        shell: pwsh
+        env:
+          AGENT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & pwsh -File agent/installer/build-msi.ps1 `
+            -Version $env:AGENT_VERSION `
+            -AgentExePath      (Resolve-Path 'agent/bin/nu-agent-windows-amd64.exe') `
+            -BackupExePath     (Resolve-Path 'agent/bin/nu-backup-windows-amd64.exe') `
+            -WatchdogExePath   (Resolve-Path 'agent/bin/nu-watchdog-windows-amd64.exe') `
+            -UserHelperExePath (Resolve-Path 'agent/bin/nu-user-helper-windows-amd64.exe') `
+            -OutputPath        (Join-Path $PWD 'dist/nu-agent-x64.msi')
+          if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 failed with exit code $LASTEXITCODE" }
+
+      # Shipped UNSIGNED by policy (no Apple/Authenticode blocker for the NU
+      # fleet); release.yml's azure signing steps are intentionally absent.
+      - name: Upload MSI artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nu-agent-msi
+          path: dist/*.msi
+          retention-days: 30
+          if-no-files-found: error

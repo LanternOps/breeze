@@ -73,22 +73,22 @@ vi.mock('../../stores/auth', () => ({
 describe('DeviceEffectiveConfigTab baseline labeling', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('shows the empty state with a Breeze Defaults link when only the baseline is present', async () => {
+  it('shows the empty state with a Nodes Unlimited Defaults link when only the baseline is present', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-1" />);
     await waitFor(() =>
       expect(screen.getByText('No Configuration Policies')).toBeInTheDocument(),
     );
-    const link = screen.getByText('View Breeze Defaults');
+    const link = screen.getByText('View Nodes Unlimited Defaults');
     expect(link).toBeInTheDocument();
     expect(link.getAttribute('href')).toBe('/configuration-policies/defaults');
   });
 
-  it('labels baseline fall-through features as sourced from Breeze Defaults', async () => {
+  it('labels baseline fall-through features as sourced from Nodes Unlimited Defaults', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-2" />);
     // Real assigned policy still renders normally...
     await waitFor(() => expect(screen.getAllByText('Org Patch Policy').length).toBeGreaterThan(0));
-    // ...and the baseline fall-through feature shows "Breeze Defaults" as its source.
-    expect(screen.getAllByText(/Breeze Defaults/).length).toBeGreaterThan(0);
+    // ...and the baseline fall-through feature shows "Nodes Unlimited Defaults" as its source.
+    expect(screen.getAllByText(/Nodes Unlimited Defaults/).length).toBeGreaterThan(0);
     // ...and is explicitly marked "Not enforced" so it never reads as configured.
     expect(screen.getByText('Not enforced')).toBeInTheDocument();
   });

@@ -126,7 +126,7 @@ export default function ForcedMfaSetupPage() {
         >
           {t('forcedMfa.requiredBanner', {
             defaultValue:
-              'Your role requires multi-factor authentication. You must enroll an authenticator app before you can continue using Breeze.',
+              'Your role requires multi-factor authentication. You must enroll an authenticator app before you can continue using Nodes Unlimited.',
           })}
         </div>
       )}

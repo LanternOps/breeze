@@ -1714,7 +1714,8 @@
       "unknownVariable": "Variável desconhecida",
       "pickOneFromInsertVariable": "— escolha uma em Inserir variável.",
       "menu": "menu",
-      "undefined": "undefined"
+      "undefined": "undefined",
+      "secretUnavailable": "Secreto — uma versão futura o entregará como variável de ambiente."
     }
   }
 }

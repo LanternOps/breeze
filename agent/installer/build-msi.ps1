@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$installerPath = Join-Path $PSScriptRoot "breeze.wxs"
+$installerPath = Join-Path $PSScriptRoot "nu-agent.wxs"
 $taskXmlPath = Join-Path $repoRoot "service\\windows\\nu-agent-user-task.xml"
 $installUserHelperScriptPath = Join-Path $repoRoot "scripts\\install\\install-windows.ps1"
 $removeUserHelperScriptPath = Join-Path $PSScriptRoot "remove-windows-task.ps1"

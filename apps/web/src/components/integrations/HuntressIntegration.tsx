@@ -397,7 +397,7 @@ export default function HuntressIntegration() {
       throw new Error(
         readError(
           orgJson,
-          `Failed to load Breeze organizations (${orgRes.status})`,
+          `Failed to load Nodes Unlimited organizations (${orgRes.status})`,
         ),
       );
     setHuntressOrgs(

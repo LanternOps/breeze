@@ -85,7 +85,8 @@ const namespaceDuplicateBaselines = {
     // in every catalog.
     // +1: longTail.fleet.FindingsFeed.severities.error — "Error" is the correct
     // es-419 severity label and spells identically to English.
-    'common.json': 85,
+    // +1: nav.variables — "Variables" is the same word in Spanish.
+    'common.json': 86,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -102,9 +103,12 @@ const namespaceDuplicateBaselines = {
     'reports.json': 32,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 59,
+    // +1: scriptForm.variables.button — "Variables" is the same word in Spanish
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 60,
     'security.json': 114,
-    'settings.json': 113,
+    // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
+    'settings.json': 114,
     'tickets.json': 13,
     'vulnerabilities.json': 16,
   },
@@ -135,7 +139,8 @@ const namespaceDuplicateBaselines = {
     // in every catalog.
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
-    'common.json': 103,
+    // +1: nav.variables — "Variables" is identical in French.
+    'common.json': 104,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -150,13 +155,17 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 62,
+    // +1: scriptForm.variables.button — "Variables" is identical in French
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 63,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
     // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
     // in French.
-    'settings.json': 146,
+    // +3: tenant variables page — "Variables", "Description" and "Secret"
+    // are spelled identically in French.
+    'settings.json': 149,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -181,7 +190,8 @@ const namespaceDuplicateBaselines = {
     // in every catalog.
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
-    'common.json': 105,
+    // +1: nav.variables — "Variables" is identical in French.
+    'common.json': 106,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -196,13 +206,17 @@ const namespaceDuplicateBaselines = {
     'reports.json': 43,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
-    'scripts.json': 62,
+    // +1: scriptForm.variables.button — "Variables" is identical in French
+    // (same cognate already accepted for nav.variables).
+    'scripts.json': 63,
     'security.json': 144,
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
     // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word
     // in French.
-    'settings.json': 151,
+    // +3: tenant variables page — "Variables", "Description" and "Secret"
+    // are spelled identically in French.
+    'settings.json': 154,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },

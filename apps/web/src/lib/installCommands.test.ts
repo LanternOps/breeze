@@ -31,7 +31,7 @@ describe('buildInstallCommands', () => {
 
     it('scopes the connectivity error to the fetch + shebang check', () => {
       const { macos } = buildInstallCommands(base);
-      expect(macos).toContain('Could not fetch the Breeze installer from https://rmm.example.com');
+      expect(macos).toContain('Could not fetch the Nodes Unlimited installer from https://rmm.example.com');
       // The fallback must wrap only the fetch/verify group: install.sh prints
       // its own precise errors, so a failure inside `sudo bash` must NOT
       // trigger the "could not fetch" message.

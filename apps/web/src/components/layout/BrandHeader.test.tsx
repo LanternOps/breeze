@@ -12,15 +12,15 @@ describe('BrandHeader', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
-  it('renders "Breeze" when name is null and showLabel is true', () => {
+  it('renders "Nodes Unlimited" when name is null and showLabel is true', () => {
     render(<BrandHeader logoUrl={null} name={null} showLabel />);
-    expect(screen.getByText('Breeze')).toBeInTheDocument();
+    expect(screen.getByText('Nodes Unlimited')).toBeInTheDocument();
   });
 
   it('renders the partner name when provided and showLabel is true', () => {
     render(<BrandHeader logoUrl={null} name="Acme MSP" showLabel />);
     expect(screen.getByText('Acme MSP')).toBeInTheDocument();
-    expect(screen.queryByText('Breeze')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nodes Unlimited')).not.toBeInTheDocument();
   });
 
   it('hides the label when showLabel is false', () => {

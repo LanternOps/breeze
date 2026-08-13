@@ -795,7 +795,7 @@ export default function Pax8Integration() {
                         }
                         className="h-9 w-full rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         data-testid={`pax8-company-map-${company.pax8CompanyId}`}
-                        aria-label={`Map ${company.pax8CompanyName ?? company.pax8CompanyId} to a Breeze organization`}
+                        aria-label={`Map ${company.pax8CompanyName ?? company.pax8CompanyId} to a Nodes Unlimited organization`}
                       >
                         <option value="">
                           {t("pax8Integration.unmapped")}

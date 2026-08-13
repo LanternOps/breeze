@@ -3300,5 +3300,56 @@
     "tDSYNNEXPriceFileSyncCouldNotBeQueued": "TD SYNNEX Preisdatei-Synchronisierung konnte nicht eingereiht werden.",
     "tDSYNNEXPriceFileSearchFailed": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen.",
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen (ungültige Antwort)."
+  },
+  "tenantVariablesPage": {
+    "title": "Variablen",
+    "description": "Definieren Sie einen Wert einmal – ein Anbieter-Site-Token, eine interne Repository-URL – und verweisen Sie in Skripten darauf, statt ihn pro Kunde fest einzutragen.",
+    "loading": "Variablen werden geladen …",
+    "actions": {
+      "add": "Neue Variable",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "edit": "Variable bearbeiten",
+      "delete": "Variable löschen",
+      "confirmDelete": "Bestätigen"
+    },
+    "fields": {
+      "key": "Schlüssel",
+      "keyHint": "Kleinbuchstaben, Ziffern und Unterstriche. Skripte verweisen über diesen Namen auf die Variable.",
+      "keyImmutable": "Der Schlüssel kann nicht geändert werden – Skripte verweisen namentlich darauf.",
+      "value": "Wert",
+      "valueKeepHint": "Leer lassen, um den gespeicherten Wert beizubehalten.",
+      "description": "Beschreibung",
+      "scope": "Gilt für",
+      "isSecret": "Geheim",
+      "isSecretHint": "Wird nach dem Speichern nie wieder angezeigt und Skripten als Umgebungsvariable übergeben."
+    },
+    "editor": {
+      "newTitle": "Neue Variable",
+      "editTitle": "Variable bearbeiten",
+      "scopeLegend": "Gilt für",
+      "allOrgs": "Alle Organisationen",
+      "allOrgsHint": "Für jeden von Ihnen betreuten Kunden verfügbar.",
+      "thisOrg": "Diese Organisation"
+    },
+    "issues": {
+      "key": "Geben Sie einen Schlüssel aus Kleinbuchstaben, Ziffern und Unterstrichen ein, der mit einem Buchstaben beginnt.",
+      "value": "Geben Sie einen Wert ein.",
+      "unsecret": "Geben Sie einen Ersatzwert ein, um diese Variable nicht mehr als geheim zu behandeln.",
+      "org": "Wählen Sie eine Organisation aus, bevor Sie eine organisationsbezogene Variable anlegen."
+    },
+    "empty": {
+      "title": "Noch keine Variablen",
+      "description": "Legen Sie eine an, damit Sie dasselbe Token nicht mehr in die Skripte jedes Kunden kopieren müssen."
+    },
+    "errors": {
+      "load": "Variablen konnten nicht geladen werden."
+    },
+    "toasts": {
+      "saved": "Variable gespeichert",
+      "saveFailed": "Variable konnte nicht gespeichert werden",
+      "deleted": "Variable gelöscht",
+      "deleteFailed": "Variable konnte nicht gelöscht werden"
+    }
   }
 }

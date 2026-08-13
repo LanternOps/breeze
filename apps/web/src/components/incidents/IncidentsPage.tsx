@@ -42,7 +42,7 @@ const severityColors: Record<IncidentSeverity, string> = {
 };
 
 const sourceLabels: Record<IncidentSource, string> = {
-  breeze: 'Breeze',
+  breeze: 'Nodes Unlimited',
   huntress: 'Huntress',
   s1: 'SentinelOne',
 };

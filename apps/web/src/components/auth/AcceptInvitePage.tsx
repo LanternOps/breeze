@@ -145,7 +145,7 @@ export default function AcceptInvitePage() {
                   defaultValue: `you're invited to ${target}`,
                   target,
                 })
-              : t('acceptInvite.invitedToBreeze', { defaultValue: "you're invited to Breeze" })}
+              : t('acceptInvite.invitedToBreeze', { defaultValue: "you're invited to Nodes Unlimited" })}
           </h2>
           {preview?.email && (
             <p className="text-sm text-muted-foreground">

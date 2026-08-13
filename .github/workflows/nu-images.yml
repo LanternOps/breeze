@@ -1,0 +1,238 @@
+# NU Images — builds and pushes the API + Web Docker images for the
+# bloomingbrands/breeze fork (Nodes Unlimited deployment on Coolify/titan01).
+#
+# Deliberately separate from release.yml: that workflow is upstream's full
+# release train (agents, installers, signing, GitHub Release). This one only
+# produces the two server images the NU Coolify stack consumes, on our own
+# 'nu-v*' tag namespace so upstream 'v*' tags never collide with fork releases.
+#
+# Patterns (pinned action SHAs, pnpm/node setup via .node-version, docker
+# login/metadata/build-push) are copied from release.yml so both stay
+# mechanically comparable. If you bump a SHA here, bump it there too (or vice
+# versa) — drift between the two is how supply-chain pins rot.
+name: NU Images
+
+on:
+  push:
+    tags:
+      - 'nu-v*'
+  workflow_dispatch: {}
+
+env:
+  # Same toolchain pins as release.yml.
+  PNPM_VERSION: '10.34.5'
+  REGISTRY: ghcr.io
+  # github.repository = bloomingbrands/breeze on the fork, so images land at
+  # ghcr.io/bloomingbrands/breeze/{api,web} — never under upstream's namespace.
+  IMAGE_NAME: ${{ github.repository }}
+
+# Least-privilege default (mirrors release.yml SR-007); the image jobs opt in
+# to packages: write individually.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # API image.
+  #
+  # release.yml splits this into build-api (pnpm build + upload apps/api/dist
+  # artifact) and build-docker-api (download the artifact back into
+  # apps/api/dist, then docker build with context "."). The split exists there
+  # only because create-release sits between them. We have no release job, so
+  # we collapse both into ONE job: after `pnpm build --filter=@breeze/api` the
+  # dist sits at apps/api/dist in the workspace — the exact same build-context
+  # state release.yml reconstructs via download-artifact. The Dockerfile is a
+  # self-contained multi-stage build (it re-runs pnpm build inside), so the
+  # host-side build additionally acts as a fail-fast gate: a broken TS build
+  # dies in ~2 min instead of ~15 min into the docker job.
+  # ---------------------------------------------------------------------------
+  build-api:
+    name: Build & Push NU API Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build API
+        run: pnpm build --filter=@breeze/api
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # APP_VERSION build-arg stamp: strip the nu-v prefix on tag runs
+      # (nu-v0.104.0 -> 0.104.0). On workflow_dispatch this yields the branch
+      # name — an informational label only, harmless.
+      - name: Get version from ref
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#nu-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api
+          # Tag policy: the literal git tag (nu-v0.104.0) for pinning, plus a
+          # mutable 'latest-nu' the Coolify service tracks. NOT plain 'latest'
+          # — that name is upstream release.yml's, and reusing it would let a
+          # fork build shadow an upstream image. type=ref covers both trigger
+          # shapes (tag name on tag push, sanitized branch name on dispatch).
+          tags: |
+            type=ref,event=tag
+            type=ref,event=branch
+            type=raw,value=latest-nu
+
+      - name: Build and push API image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          # titan01 is amd64 and QEMU-emulated arm64 builds roughly double the
+          # job time for an image nothing consumes — amd64 only, on purpose.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Web image — same shape as build-api; see the comments there.
+  # ---------------------------------------------------------------------------
+  build-web:
+    name: Build & Push NU Web Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Get version from ref
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#nu-v}" >> "$GITHUB_OUTPUT"
+
+      # release.yml's build-web exports PUBLIC_APP_VERSION for the host build
+      # too (Astro inlines it at build time) — mirror that.
+      - name: Build Web
+        env:
+          PUBLIC_APP_VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm build --filter=@breeze/web
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/web
+          tags: |
+            type=ref,event=tag
+            type=ref,event=branch
+            type=raw,value=latest-nu
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PUBLIC_APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Optional Coolify redeploy hook. Both images must have pushed; then, only
+  # if BOTH repo secrets are configured, ping the webhook so Coolify pulls the
+  # fresh latest-nu tags. Secrets are optional on purpose: the workflow must
+  # stay green on a fork/clone with no Coolify wiring, so an unset secret is a
+  # silent (::notice) skip, never a failure.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Trigger Coolify Deploy
+    runs-on: ubuntu-latest
+    needs: [build-api, build-web]
+    if: success()
+    steps:
+      # Secrets can't be tested in a job-level `if:` (the secrets context is
+      # unavailable there for forks and always awkward to guard), so map them
+      # into env and branch in shell / a step-level check instead.
+      - name: Check Coolify secrets
+        id: check
+        env:
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -n "$COOLIFY_WEBHOOK_URL" ] && [ -n "$COOLIFY_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::COOLIFY_WEBHOOK_URL / COOLIFY_TOKEN repo secrets not set — skipping Coolify deploy trigger."
+          fi
+
+      - name: Trigger Coolify redeploy
+        if: steps.check.outputs.configured == 'true'
+        env:
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        # -f: non-2xx fails the job (a broken webhook should be loud);
+        # -sS: quiet transfer but keep real errors on stderr.
+        run: |
+          curl -fsS -H "Authorization: Bearer $COOLIFY_TOKEN" "$COOLIFY_WEBHOOK_URL"
+          echo "Coolify deploy webhook triggered."

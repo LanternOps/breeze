@@ -89,7 +89,7 @@ export default function PartnerRegisterForm({
       <div>
         <h2 className="text-base font-semibold">{t('partnerRegister.company.title', { defaultValue: 'Your company' })}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          {t('partnerRegister.company.description', { defaultValue: 'This creates your MSP account in Breeze' })}
+          {t('partnerRegister.company.description', { defaultValue: 'This creates your MSP account in Nodes Unlimited' })}
         </p>
       </div>
 

@@ -281,7 +281,7 @@ export default function ThemingSettings({ preferences, onSaved }: ThemingSetting
           </legend>
           <p className="text-xs text-muted-foreground">
             {t('language.description', {
-              defaultValue: 'Language for the Breeze console. More languages coming — contributions welcome.',
+              defaultValue: 'Language for the Nodes Unlimited console. More languages coming — contributions welcome.',
             })}
           </p>
           <div className="grid gap-2 sm:grid-cols-2">

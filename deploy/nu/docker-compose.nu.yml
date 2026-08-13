@@ -1,0 +1,254 @@
+# =============================================================================
+# NU RMM (Breeze) — production compose — SOURCE OF TRUTH
+# =============================================================================
+# This file is the canonical copy of the docker_compose_raw stored in the
+# Coolify Service (uuid zsv4uxqp8xoozq1c069b9oco) on titan01. If Coolify and
+# this file ever differ, THIS file wins — reconcile by re-applying it.
+#
+# HOW TO APPLY:
+#   Run deploy/nu/apply-compose.sh (on titan01, or with COOLIFY_HOST pointed
+#   at the Coolify API). It uploads this file into the service and triggers a
+#   deploy. Never paste-edit the compose in the Coolify UI without mirroring
+#   the change here.
+#
+# LANDMINES:
+#   * Coolify parser: a bare-key network entry (`coolify:` with no value,
+#     i.e. YAML null) is SILENTLY DROPPED by Coolify's compose parser — the
+#     container then never joins the coolify network and Traefik cannot reach
+#     the gateway. Always use dict/empty-map form: `coolify: {  }` or the
+#     full dict form with ipv4_address as below.
+#   * TRUSTED_PROXY_CIDRS (breeze-api) must be EXACT /32 entries (e.g.
+#     172.29.0.10/32,10.0.1.250/32). The API refuses broad private ranges
+#     (10.0.0.0/8, 172.16.0.0/12, ...) and will CRASH-LOOP on boot if given
+#     one. The gateway's coolify-network IP is pinned below precisely so this
+#     /32 list stays valid across container recreations.
+#   * Postgres is NOT in this compose — it is a separate Coolify resource
+#     (container r75rs3j2yea71ss08hqjgx8x). The API auto-migrates its DB on
+#     boot (AUTO_MIGRATE=true).
+#   * Images are switched via env interpolation (BREEZE_API_IMAGE /
+#     BREEZE_WEB_IMAGE); pull_policy is `never` — the images must already
+#     exist locally on titan01.
+# =============================================================================
+services:
+  gateway:
+    image: '${CADDY_IMAGE:-caddy:2-alpine}'
+    restart: unless-stopped
+    expose:
+      - '80'
+    environment:
+      SERVICE_URL_GATEWAY_80: '${SERVICE_URL_GATEWAY_80:-}'
+      CADDY_TRUSTED_PROXIES: '${CADDY_TRUSTED_PROXIES:-10.0.1.0/24}'
+      CADDY_CLIENT_IP_HEADERS: '${CADDY_CLIENT_IP_HEADERS:-X-Forwarded-For X-Real-IP}'
+    volumes:
+      - './coolify/Caddyfile:/etc/caddy/Caddyfile:ro'
+      - './coolify/public-remote-support:/srv/remote-support:ro'
+    depends_on:
+      breeze-api:
+        condition: service_healthy
+      breeze-web:
+        condition: service_started
+    networks:
+      nu-rmm:
+        ipv4_address: '${BREEZE_CADDY_IP:-172.29.0.10}'
+      coolify:
+        ipv4_address: '${BREEZE_CADDY_COOLIFY_IP:-10.0.1.250}'
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      test:
+        - CMD
+        - caddy
+        - version
+      start_period: 10s
+  breeze-api:
+    image: '${BREEZE_API_IMAGE:-ghcr.io/lanternops/breeze/api:0.104.0}'
+    platform: linux/amd64
+    pull_policy: never
+    restart: unless-stopped
+    expose:
+      - '3001'
+    environment:
+      NODE_ENV: production
+      IS_HOSTED: '${IS_HOSTED:-false}'
+      API_PORT: '3001'
+      AUTO_MIGRATE: '${AUTO_MIGRATE:-true}'
+      DATABASE_URL: '${DATABASE_URL:?}'
+      DATABASE_URL_APP: '${DATABASE_URL_APP:-}'
+      BREEZE_APP_DB_PASSWORD: '${BREEZE_APP_DB_PASSWORD:-}'
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:-}'
+      REDIS_HOST: '${REDIS_HOST:?}'
+      REDIS_PORT: '${REDIS_PORT:-6379}'
+      REDIS_PASSWORD: '${REDIS_PASSWORD:-}'
+      REDIS_URL: '${REDIS_URL:-}'
+      BREEZE_ALLOW_UNAUTH_REDIS: '${BREEZE_ALLOW_UNAUTH_REDIS:-}'
+      JWT_SECRET: '${JWT_SECRET:?}'
+      SESSION_SECRET: '${SESSION_SECRET:-}'
+      APP_ENCRYPTION_KEY: '${APP_ENCRYPTION_KEY:?}'
+      MFA_ENCRYPTION_KEY: '${MFA_ENCRYPTION_KEY:?}'
+      ENROLLMENT_KEY_PEPPER: '${ENROLLMENT_KEY_PEPPER:?}'
+      MFA_RECOVERY_CODE_PEPPER: '${MFA_RECOVERY_CODE_PEPPER:?}'
+      AGENT_ENROLLMENT_SECRET: '${AGENT_ENROLLMENT_SECRET:?}'
+      PARTNER_API_CURSOR_SIGNING_KEY: '${PARTNER_API_CURSOR_SIGNING_KEY:?}'
+      METRICS_SCRAPE_TOKEN: '${METRICS_SCRAPE_TOKEN:-}'
+      REMOTE_ACCESS_ADMISSION_MODE: '${REMOTE_ACCESS_ADMISSION_MODE:-open}'
+      REMOTE_WS_AUTH_MODE: '${REMOTE_WS_AUTH_MODE:-post_upgrade}'
+      REMOTE_WS_REDIS_TOPOLOGY: '${REMOTE_WS_REDIS_TOPOLOGY:-standalone-single-primary}'
+      EVENT_PERMISSION_EPOCH_MODE: '${EVENT_PERMISSION_EPOCH_MODE:-compat}'
+      BINARY_SOURCE: '${BINARY_SOURCE:-local}'
+      AGENT_BINARY_DIR: '${AGENT_BINARY_DIR:-/data/binaries/agent}'
+      VIEWER_BINARY_DIR: '${VIEWER_BINARY_DIR:-/data/binaries/viewer}'
+      BINARY_VERSION_FILE: '${BINARY_VERSION_FILE:-/data/binaries/agent/VERSION}'
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: '${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-ci+TJGpKwzxW90u1F31b5uZPE/GbQBQKWxLMINqx66c=}'
+      BREEZE_VERSION: '${BREEZE_VERSION:-0.104.0}'
+      APP_VERSION: '${BREEZE_VERSION:-0.104.0}'
+      S3_ENDPOINT: '${S3_ENDPOINT:-}'
+      S3_REGION: '${S3_REGION:-Germany-1}'
+      S3_BUCKET: '${S3_BUCKET:-}'
+      S3_ACCESS_KEY: '${S3_ACCESS_KEY:-}'
+      S3_SECRET_KEY: '${S3_SECRET_KEY:-}'
+      S3_PRESIGN_TTL: '${S3_PRESIGN_TTL:-900}'
+      BREEZE_DOMAIN: '${BREEZE_DOMAIN:?}'
+      PUBLIC_WEB_URL: '${PUBLIC_WEB_URL:?}'
+      PUBLIC_API_URL: '${PUBLIC_API_URL:?}'
+      PUBLIC_APP_URL: '${PUBLIC_APP_URL:?}'
+      DASHBOARD_URL: '${DASHBOARD_URL:?}'
+      CORS_ALLOWED_ORIGINS: '${CORS_ALLOWED_ORIGINS:?}'
+      FORCE_HTTPS: '${FORCE_HTTPS:-false}'
+      TRUST_PROXY_HEADERS: '${TRUST_PROXY_HEADERS:-true}'
+      TRUSTED_PROXY_CIDRS: '${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.29.0.10}/32}'
+      TRUST_CF_CONNECTING_IP: '${TRUST_CF_CONNECTING_IP:-false}'
+      ENABLE_REGISTRATION: '${ENABLE_REGISTRATION:-false}'
+      BREEZE_BOOTSTRAP_ADMIN_EMAIL: '${BREEZE_BOOTSTRAP_ADMIN_EMAIL:-}'
+      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: '${BREEZE_BOOTSTRAP_ADMIN_PASSWORD:-}'
+      BREEZE_BOOTSTRAP_ADMIN_NAME: '${BREEZE_BOOTSTRAP_ADMIN_NAME:-Nodes Unlimited Admin}'
+      GOOGLE_WORKSPACE_ENABLED: '${GOOGLE_WORKSPACE_ENABLED:-true}'
+      M365_ENABLED: '${M365_ENABLED:-true}'
+      TURN_HOST: '${TURN_HOST:-}'
+      TURN_PORT: '${TURN_PORT:-3478}'
+      TURN_SECRET: '${TURN_SECRET:-}'
+      TURN_REALM: '${TURN_REALM:-}'
+      EMAIL_PROVIDER: '${EMAIL_PROVIDER:-}'
+      RESEND_API_KEY: '${RESEND_API_KEY:-}'
+      EMAIL_FROM: '${EMAIL_FROM:-}'
+      ANTHROPIC_API_KEY: '${ANTHROPIC_API_KEY:-}'
+      VOYAGE_API_KEY: '${VOYAGE_API_KEY:-}'
+    volumes:
+      - 'breeze-api-data:/data'
+    networks:
+      - nu-rmm
+      - coolify
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      test:
+        - CMD
+        - wget
+        - '--no-verbose'
+        - '--tries=1'
+        - '--spider'
+        - 'http://127.0.0.1:3001/health'
+      start_period: 90s
+  breeze-web:
+    image: '${BREEZE_WEB_IMAGE:-ghcr.io/lanternops/breeze/web:0.104.0}'
+    platform: linux/amd64
+    pull_policy: never
+    restart: unless-stopped
+    expose:
+      - '4321'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '4321'
+      PUBLIC_API_URL: '${PUBLIC_API_URL:?}'
+      PUBLIC_APP_URL: '${PUBLIC_APP_URL:?}'
+      API_URL: 'http://breeze-api:3001'
+    depends_on:
+      breeze-api:
+        condition: service_healthy
+    networks:
+      - nu-rmm
+      - coolify
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      test:
+        - CMD-SHELL
+        - 'wget --no-verbose --tries=1 --spider http://127.0.0.1:4321/ || exit 1'
+      start_period: 30s
+  hbbr:
+    image: '${RUSTDESK_SERVER_IMAGE:-rustdesk/rustdesk-server:latest}'
+    command: hbbr
+    restart: unless-stopped
+    volumes:
+      - 'rustdesk-data:/root'
+    ports:
+      - '${RUSTDESK_HBBR_PORT:-21117}:21117'
+      - '${RUSTDESK_HBBR_PORT_EXTRA:-21119}:21119'
+    networks:
+      - nu-rmm
+      - coolify
+  hbbs:
+    image: '${RUSTDESK_SERVER_IMAGE:-rustdesk/rustdesk-server:latest}'
+    command: 'hbbs -r ${RUSTDESK_RELAY_HOST}:21117'
+    restart: unless-stopped
+    environment:
+      RUSTDESK_RELAY_HOST: '${RUSTDESK_RELAY_HOST:?}'
+    volumes:
+      - 'rustdesk-data:/root'
+    ports:
+      - '${RUSTDESK_HBBS_PORT_TCP1:-21115}:21115'
+      - '${RUSTDESK_HBBS_PORT_TCP2:-21116}:21116'
+      - '${RUSTDESK_HBBS_PORT_UDP:-21116}:21116/udp'
+      - '${RUSTDESK_HBBS_PORT_TCP3:-21118}:21118'
+    depends_on:
+      - hbbr
+    networks:
+      - nu-rmm
+      - coolify
+  rustdesk-api:
+    image: '${RUSTDESK_API_IMAGE:-lejianwen/rustdesk-api:latest}'
+    restart: unless-stopped
+    expose:
+      - '21114'
+    environment:
+      RUSTDESK_API_LANG: '${RUSTDESK_API_LANG:-en}'
+      RUSTDESK_API_RUSTDESK_ID_SERVER: '${RUSTDESK_API_RUSTDESK_ID_SERVER:?}'
+      RUSTDESK_API_RUSTDESK_RELAY_SERVER: '${RUSTDESK_API_RUSTDESK_RELAY_SERVER:?}'
+      RUSTDESK_API_RUSTDESK_API_SERVER: '${RUSTDESK_API_RUSTDESK_API_SERVER:-}'
+      RUSTDESK_API_RUSTDESK_KEY: '${RUSTDESK_API_RUSTDESK_KEY:-}'
+      RUSTDESK_API_ADMIN_TITLE: '${RUSTDESK_API_ADMIN_TITLE:-Nodes Unlimited Remote}'
+      SERVICE_URL_RUSTDESKAPI_21114: '${SERVICE_URL_RUSTDESKAPI_21114:-}'
+    volumes:
+      - 'rustdesk-api-data:/app/data'
+    networks:
+      - nu-rmm
+      - coolify
+    healthcheck:
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      test:
+        - CMD
+        - wget
+        - '--no-verbose'
+        - '--tries=1'
+        - '--spider'
+        - 'http://127.0.0.1:21114/'
+      start_period: 30s
+networks:
+  nu-rmm:
+    name: nu-rmm
+    ipam:
+      config:
+        -
+          subnet: '${BREEZE_DOCKER_SUBNET:-172.29.0.0/24}'
+  coolify:
+    name: coolify
+    external: true
+volumes:
+  breeze-api-data: null
+  rustdesk-data: null
+  rustdesk-api-data: null

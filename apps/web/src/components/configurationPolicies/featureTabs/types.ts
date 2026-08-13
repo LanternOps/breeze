@@ -61,7 +61,7 @@ export const FEATURE_META: Record<FeatureType, {
   sensitive_data: { label: 'Data Discovery', fetchUrl: '/sensitive-data/policies', description: 'Sensitive data scanning configuration' },
   peripheral_control: { label: 'Peripheral Control', fetchUrl: '/peripherals/policies', description: 'USB, Bluetooth, and Thunderbolt device policies' },
   warranty:    { label: 'Warranty',    fetchUrl: null,                   description: 'Warranty expiry alert thresholds' },
-  helper:      { label: 'Breeze Assist',     fetchUrl: null,                   description: 'End-user Breeze Assist tray application' },
+  helper:      { label: 'Nodes Unlimited Assist',     fetchUrl: null,                   description: 'End-user Nodes Unlimited Assist tray application' },
   remote_access: { label: 'Remote Access',  fetchUrl: null,                   description: 'Remote desktop, proxy tunnels, and session limits' },
   pam:         { label: 'Privileged Access', fetchUrl: null,              description: 'Windows UAC elevation prompt capture (PAM)' },
   vulnerability: { label: 'Vulnerability Scanning', fetchUrl: null,       description: 'Enable per-device CVE correlation (vulnerability detection)' },

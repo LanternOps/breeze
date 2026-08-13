@@ -32,6 +32,14 @@ export const PERMISSION_GRANTS = {
   SCRIPTS_DELETE: { resource: 'scripts', action: 'delete' },
   SCRIPTS_EXECUTE: { resource: 'scripts', action: 'execute' },
 
+  // Tenant variables (#3409). These gate MANAGEMENT of variable definitions
+  // only. Holding scripts:execute already implies USE of any variable
+  // reachable from a script (a script can echo its own $BREEZE_VAR_X), so this
+  // is deliberately not an exposure boundary — see the threat model in the
+  // #3409 scope comment.
+  VARIABLES_READ: { resource: 'variables', action: 'read' },
+  VARIABLES_MANAGE: { resource: 'variables', action: 'manage' },
+
   // Alerts
   ALERTS_READ: { resource: 'alerts', action: 'read' },
   ALERTS_WRITE: { resource: 'alerts', action: 'write' },

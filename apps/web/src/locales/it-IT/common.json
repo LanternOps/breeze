@@ -64,7 +64,8 @@
     "sectionBackup": "Backup",
     "sectionReporting": "Reportistica",
     "sectionSettings": "Impostazioni",
-    "sectionExtensions": "Estensioni"
+    "sectionExtensions": "Estensioni",
+    "variables": "Variabili"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

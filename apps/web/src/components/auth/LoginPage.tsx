@@ -332,7 +332,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     <div data-testid="login-page">
       <div className="mb-8">
         <p className="text-sm font-medium text-muted-foreground">{t('login.eyebrow', { defaultValue: 'Welcome back' })}</p>
-        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">{t('login.title', { defaultValue: 'Sign in to Breeze' })}</h1>
+        <h1 data-testid="login-heading" className="mt-1 text-2xl font-bold tracking-tight">{t('login.title', { defaultValue: 'Sign in to Nodes Unlimited'})}</h1>
       </div>
 
       {registrationNotice && (

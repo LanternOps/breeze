@@ -731,7 +731,7 @@ export default function SecurityIntegration() {
                         disabled={mappingSaving[site.s1SiteId]}
                         className="h-9 w-full max-w-xs rounded-md border bg-background px-2 text-sm outline-hidden focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                         data-testid={`s1-site-map-${site.s1SiteId}`}
-                        aria-label={`Map ${site.s1SiteName || site.s1SiteId} to a Breeze organization`}
+                        aria-label={`Map ${site.s1SiteName || site.s1SiteId} to a Nodes Unlimited organization`}
                       >
                         <option value="">
                           {t("securityIntegration.selectOrganization")}

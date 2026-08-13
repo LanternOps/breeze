@@ -172,10 +172,10 @@ export default function VerifyEmailPage() {
           <p className="text-sm text-muted-foreground">
             {state.autoActivated
               ? t('verifyEmail.success.autoActivated', {
-                  defaultValue: 'Your account is now active. You can sign in to start using Breeze.',
+                  defaultValue: 'Your account is now active. You can sign in to start using Nodes Unlimited.',
                 })
               : t('verifyEmail.success.confirmed', {
-                  defaultValue: 'Thanks for confirming your email. You can close this tab and return to Breeze.',
+                  defaultValue: 'Thanks for confirming your email. You can close this tab and return to Nodes Unlimited.',
                 })}
           </p>
         </div>
@@ -197,7 +197,7 @@ export default function VerifyEmailPage() {
       }),
     },
     network: {
-      title: t('verifyEmail.errors.network.title', { defaultValue: 'We couldn’t reach Breeze' }),
+      title: t('verifyEmail.errors.network.title', { defaultValue: 'We couldn’t reach Nodes Unlimited'}),
       body: t('verifyEmail.errors.network.body', { defaultValue: 'Check your connection and try the link again.' }),
     },
   };

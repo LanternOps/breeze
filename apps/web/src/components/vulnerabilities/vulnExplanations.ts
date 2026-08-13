@@ -10,7 +10,7 @@
  */
 
 export const RISK_EXPLANATION =
-  'Breeze priority score (0–100): the CVSS score scaled to 100, plus a bump for exploitation likelihood (EPSS). Known-exploited (KEV) CVEs never score below 85. Higher = fix sooner.';
+  'Nodes Unlimited priority score (0–100): the CVSS score scaled to 100, plus a bump for exploitation likelihood (EPSS). Known-exploited (KEV) CVEs never score below 85. Higher = fix sooner.';
 
 export const CVSS_EXPLANATION =
   'Industry-standard severity score (0–10) for how damaging exploitation would be — not how likely it is.';

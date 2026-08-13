@@ -126,41 +126,41 @@ build-winres:
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico --admin \
 		--file-version $(VERSION) --product-version $(VERSION) \
-		--product-name "Breeze RMM Agent" \
-		--file-description "Breeze RMM Agent" \
-		--copyright "Copyright (c) Breeze RMM" \
+		--product-name "NU Agent" \
+		--file-description "Nodes Unlimited Agent" \
+		--copyright "Copyright (c) Nodes Unlimited" \
 		--original-filename "nu-agent.exe" \
 		--out ../cmd/nu-agent/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
-		--product-name "Breeze RMM User Helper" \
-		--file-description "Breeze RMM User Helper" \
-		--copyright "Copyright (c) Breeze RMM" \
+		--product-name "NU Agent User Helper" \
+		--file-description "Nodes Unlimited Agent User Helper" \
+		--copyright "Copyright (c) Nodes Unlimited" \
 		--original-filename "nu-user-helper.exe" \
 		--out ../cmd/nu-user-helper/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
-		--product-name "Breeze RMM Watchdog" \
-		--file-description "Breeze RMM Watchdog" \
-		--copyright "Copyright (c) Breeze RMM" \
+		--product-name "NU Agent Watchdog" \
+		--file-description "Nodes Unlimited Agent Watchdog" \
+		--copyright "Copyright (c) Nodes Unlimited" \
 		--original-filename "nu-watchdog.exe" \
 		--out ../cmd/nu-watchdog/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
-		--product-name "Breeze RMM Backup Helper" \
-		--file-description "Breeze RMM Backup Helper" \
-		--copyright "Copyright (c) Breeze RMM" \
+		--product-name "NU Agent Backup Helper" \
+		--file-description "Nodes Unlimited Agent Backup Helper" \
+		--copyright "Copyright (c) Nodes Unlimited" \
 		--original-filename "nu-backup.exe" \
 		--out ../cmd/nu-backup/rsrc_windows_amd64.syso
 	cd resources && go-winres simply --arch amd64 --no-suffix --manifest gui \
 		--icon icon.ico \
 		--file-version $(VERSION) --product-version $(VERSION) \
-		--product-name "Breeze RMM Desktop Helper" \
-		--file-description "Breeze RMM Desktop Helper" \
-		--copyright "Copyright (c) Breeze RMM" \
+		--product-name "NU Agent Desktop Helper" \
+		--file-description "Nodes Unlimited Agent Desktop Helper" \
+		--copyright "Copyright (c) Nodes Unlimited" \
 		--original-filename "nu-desktop-helper.exe" \
 		--out ../cmd/nu-desktop-helper/rsrc_windows_amd64.syso
 

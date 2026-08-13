@@ -3300,5 +3300,56 @@
       "messageSuffix": " They'll sign in with just their password, be prompted to set up MFA again, and any active sessions are signed out.",
       "confirm": "Reset MFA"
     }
+  },
+  "tenantVariablesPage": {
+    "title": "Variables",
+    "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
+    "loading": "Loading variables…",
+    "actions": {
+      "add": "New variable",
+      "save": "Save",
+      "cancel": "Cancel",
+      "edit": "Edit variable",
+      "delete": "Delete variable",
+      "confirmDelete": "Confirm"
+    },
+    "fields": {
+      "key": "Key",
+      "keyHint": "Lowercase letters, digits and underscores. Scripts reference the variable by this name.",
+      "keyImmutable": "The key cannot be changed — scripts reference it by name.",
+      "value": "Value",
+      "valueKeepHint": "Leave blank to keep the stored value.",
+      "description": "Description",
+      "scope": "Applies to",
+      "isSecret": "Secret",
+      "isSecretHint": "Never shown again after saving, and delivered to scripts as an environment variable."
+    },
+    "editor": {
+      "newTitle": "New variable",
+      "editTitle": "Edit variable",
+      "scopeLegend": "Applies to",
+      "allOrgs": "All organizations",
+      "allOrgsHint": "Available to every customer you manage.",
+      "thisOrg": "This organization"
+    },
+    "issues": {
+      "key": "Enter a key of lowercase letters, digits and underscores, starting with a letter.",
+      "value": "Enter a value.",
+      "unsecret": "Enter a replacement value to stop treating this variable as a secret.",
+      "org": "Select an organization before creating an organization-scoped variable."
+    },
+    "empty": {
+      "title": "No variables yet",
+      "description": "Create one to stop pasting the same token into every customer's scripts."
+    },
+    "errors": {
+      "load": "Could not load variables."
+    },
+    "toasts": {
+      "saved": "Variable saved",
+      "saveFailed": "Could not save the variable",
+      "deleted": "Variable deleted",
+      "deleteFailed": "Could not delete the variable"
+    }
   }
 }

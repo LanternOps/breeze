@@ -47,7 +47,7 @@ type SavedBranding = {
 
 const defaultBranding: BrandingData = {
   organizationName: '',
-  portalName: 'Breeze Portal',
+  portalName: 'Nodes Unlimited Portal',
   portalUrl: '',
   supportEmail: '',
   primaryColor: '#2563eb',
@@ -414,7 +414,7 @@ export default function BrandingEditor({ organizationId, onDirty, onSave }: Bran
   const secondarySwatch = normalizeHex(resolvedSecondary) ?? defaultBranding.secondaryColor;
   const primaryToken = resolveUiColorToken(resolvedPrimary, defaultBranding.primaryColor);
   const secondaryToken = resolveUiColorToken(resolvedSecondary, defaultBranding.secondaryColor);
-  const initials = getInitials(branding.organizationName || 'Breeze');
+  const initials = getInitials(branding.organizationName || 'Nodes Unlimited');
   const safeLogoLightPreview = sanitizeImageSrc(logoLightPreview);
   const safeLogoDarkPreview = sanitizeImageSrc(logoDarkPreview);
   const safeFaviconPreview = sanitizeImageSrc(faviconPreview);

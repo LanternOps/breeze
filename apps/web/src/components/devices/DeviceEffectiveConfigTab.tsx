@@ -119,7 +119,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
   sensitive_data: { label: "Data Discovery", Icon: FileSearch },
   peripheral_control: { label: "Peripheral Control", Icon: Usb },
   event_log: { label: "Event Logs", Icon: ScrollText },
-  helper: { label: "Breeze Assist", Icon: LifeBuoy },
+  helper: { label: "Nodes Unlimited Assist", Icon: LifeBuoy },
   onedrive_helper: { label: "OneDrive Helper", Icon: Cloud },
   vulnerability: { label: "Vulnerability Scanning", Icon: ShieldAlert },
 };
@@ -135,7 +135,7 @@ const LEVEL_LABELS: Record<AssignmentLevel, string> = {
   site: "Site",
   device_group: "Device Group",
   device: "Device",
-  default: "Breeze Defaults",
+  default: "Nodes Unlimited Defaults",
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────

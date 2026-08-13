@@ -12,6 +12,7 @@ const ctx: InstallerVariableContext = {
     hostname: 'WKS-014',
     customFields: { license_key: 'ABC-999', region: 'us-east', blank: '' },
   },
+  vars: { repo_url: 'https://dl.example/pkg', blank_var: '' },
 };
 
 describe('substituteInstallerVariables', () => {
@@ -89,6 +90,64 @@ describe('substituteInstallerVariables', () => {
       device: { hostname: 'H', customFields: null },
     });
     expect(r.unresolved).toEqual(['{{device.customField.license_key}}']);
+  });
+});
+
+// #3409 PR2 — the `var.<key>` arm, resolved from the caller-prefetched `vars` map.
+describe('substituteInstallerVariables — var.* (#3409 PR2)', () => {
+  it('resolves {{var.key}} from the prefetched map', () => {
+    const r = substituteInstallerVariables('{{var.repo_url}}/pkg.msi', ctx);
+    expect(r.value).toBe('https://dl.example/pkg/pkg.msi');
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it('treats an empty variable value as unresolved (fail loudly)', () => {
+    const r = substituteInstallerVariables('{{var.blank_var}}', ctx);
+    expect(r.unresolved).toEqual(['{{var.blank_var}}']);
+  });
+
+  it('flags an unknown variable key as unresolved', () => {
+    const r = substituteInstallerVariables('{{var.no_such_key}}', ctx);
+    expect(r.unresolved).toEqual(['{{var.no_such_key}}']);
+  });
+
+  it('does not resolve ${{var.key}} — the $-escape excludes it, exactly like script content', () => {
+    // The leading `$` means "shell/Actions syntax, not a Breeze variable" in
+    // the shared var.* grammar (variableTokens.ts). This tokenizer cannot
+    // literally leave the WHOLE `${{var.repo_url}}` span alone (its own TOKEN
+    // regex has no `$`-exclusion and that regex is deliberately left
+    // untouched — see the module docblock): it still matches the inner
+    // `{{var.repo_url}}` and reports IT as unresolved. What matters is what
+    // it must NEVER do — substitute the variable's value in — and it
+    // doesn't: the value string is unchanged and the key is reported
+    // unresolved, same as any other unrecognized token.
+    const r = substituteInstallerVariables('run ${{var.repo_url}}', ctx);
+    expect(r.value).toBe('run ${{var.repo_url}}');
+    expect(r.unresolved).toEqual(['{{var.repo_url}}']);
+  });
+
+  it('does NOT resolve {{ var.key }} with inner whitespace — one strict form only, matching the script-content grammar', () => {
+    // Every OTHER namespace here tolerates inner whitespace (see "tolerates
+    // inner whitespace" above) — that leniency is deliberately NOT extended
+    // to var.*, because a script containing `{{ var.x }}` is invisible to
+    // findVariableTokens (the same grammar used for save-time secret
+    // rejection and dispatch-time substitution): it is not recognized as a
+    // variable reference there at all, so resolving it here would silently
+    // succeed on the exact form the script path treats as inert literal
+    // text — a divergence between the two surfaces. Reported unresolved,
+    // same as any other unrecognized token.
+    const r = substituteInstallerVariables('{{ var.repo_url }}', ctx);
+    expect(r.value).toBe('{{ var.repo_url }}');
+    expect(r.unresolved).toEqual(['{{ var.repo_url }}']);
+  });
+
+  it('resolves a var.* token alongside built-in/custom tokens in one template', () => {
+    const r = substituteInstallerVariables(
+      'https://dl/{{org.id}}/{{var.repo_url}}?key={{device.customField.license_key}}',
+      ctx,
+    );
+    expect(r.value).toBe('https://dl/org-123/https://dl.example/pkg?key=ABC-999');
+    expect(r.unresolved).toEqual([]);
   });
 });
 

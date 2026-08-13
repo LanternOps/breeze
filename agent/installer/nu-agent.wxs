@@ -52,14 +52,14 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
     Name="$(var.ProductName)"
-    Manufacturer="Breeze RMM"
+    Manufacturer="Nodes Unlimited"
     Version="$(var.Version)"
     UpgradeCode="$(var.UpgradeCode)"
     Scope="perMachine"
     InstallerVersion="500"
     Language="1033">
 
-    <SummaryInformation Description="Breeze RMM endpoint agent" />
+    <SummaryInformation Description="Nodes Unlimited endpoint agent" />
     <MediaTemplate EmbedCab="yes" />
     <!-- Schedule="afterInstallExecute" is LOAD-BEARING — do not move it
          earlier. The old product's uninstall (RemoveExistingProducts) runs
@@ -347,8 +347,8 @@
           <ServiceInstall
             Id="svcInstallBreezeAgent"
             Name="BreezeAgent"
-            DisplayName="Breeze Agent"
-            Description="Breeze RMM endpoint agent"
+            DisplayName="NU Agent"
+            Description="Nodes Unlimited endpoint agent"
             Type="ownProcess"
             Arguments="run"
             Start="auto"
@@ -382,8 +382,8 @@
                 Source="$(var.WatchdogExePath)" KeyPath="yes" />
           <ServiceInstall Id="svcInstallWatchdog"
                           Name="BreezeWatchdog"
-                          DisplayName="Breeze RMM Watchdog"
-                          Description="Monitors and recovers the Breeze RMM Agent"
+                          DisplayName="NU Agent Watchdog"
+                          Description="Monitors and recovers the NU Agent"
                           Start="auto"
                           Type="ownProcess"
                           ErrorControl="normal"

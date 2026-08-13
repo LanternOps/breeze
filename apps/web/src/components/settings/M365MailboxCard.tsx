@@ -60,15 +60,15 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
 
 const APP_ID =
   (import.meta.env.PUBLIC_TICKET_MAILBOX_APP_ID as string | undefined)?.trim() ||
-  '<Breeze Ticketing app id>';
+  '<Nodes Unlimited Ticketing app id>';
 
 function powershellSnippet(mailbox: string): string {
   return [
     '# Run in Exchange Online PowerShell (Connect-ExchangeOnline) as a tenant admin:',
-    `New-DistributionGroup -Name "Breeze Ticketing Mailboxes" -Type Security -Members "${mailbox}"`,
+    `New-DistributionGroup -Name "Nodes Unlimited Ticketing Mailboxes" -Type Security -Members "${mailbox}"`,
     `New-ApplicationAccessPolicy -AppId ${APP_ID} \\`,
-    '  -PolicyScopeGroupId "Breeze Ticketing Mailboxes" -AccessRight RestrictAccess \\',
-    '  -Description "Restrict Breeze Ticketing to the support mailbox"',
+    '  -PolicyScopeGroupId "Nodes Unlimited Ticketing Mailboxes" -AccessRight RestrictAccess \\',
+    '  -Description "Restrict Nodes Unlimited Ticketing to the support mailbox"',
   ].join('\n');
 }
 

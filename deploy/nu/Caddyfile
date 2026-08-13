@@ -1,0 +1,47 @@
+# =============================================================================
+# NU RMM gateway Caddyfile — SOURCE OF TRUTH (tracked copy of the deployed file)
+# =============================================================================
+# Deployed location: Coolify LocalFileVolume mounted at /etc/caddy/Caddyfile
+# inside the gateway container (host path ./coolify/Caddyfile under the
+# service's compose dir). To re-export the live copy:
+#   docker exec gateway-zsv4uxqp8xoozq1c069b9oco cat /etc/caddy/Caddyfile
+# LANDMINE: Coolify stores this content in the local_file_volumes DB row; if
+# that row's content is NULL, a Deploy writes an EMPTY file and downs the site.
+# See BOOTSTRAP.md step 6.
+# =============================================================================
+
+# Coolify Traefik terminates TLS and forwards here (:80).
+# Same-origin: UI + /api on one host (required for Breeze cookies / relative /api).
+#
+# Trust Coolify's proxy hop so X-Forwarded-For reflects the real client, then
+# reverse_proxy to breeze-api. The API separately trusts only this gateway's
+# pinned /32 (TRUSTED_PROXY_CIDRS) — do not broaden that to RFC1918 ranges.
+{
+	auto_https off
+	servers {
+		trusted_proxies static {$CADDY_TRUSTED_PROXIES:10.0.1.0/24}
+		client_ip_headers {$CADDY_CLIENT_IP_HEADERS:X-Forwarded-For X-Real-IP}
+	}
+}
+
+:80 {
+	encode gzip
+
+	# NU-branded customer entry → static page (links to real Breeze /quick).
+	# Do not invent session codes here; codes come from Quick Support only.
+	handle_path /remote-support* {
+		root * /srv/remote-support
+		try_files {path} /index.html
+		file_server
+	}
+
+	# API + health (prefer path matchers on reverse_proxy)
+	reverse_proxy /api* breeze-api:3001
+	reverse_proxy /health breeze-api:3001
+	# Public enrollment short-links + MCP invite landings (NOT under /api)
+	reverse_proxy /s* breeze-api:3001
+	reverse_proxy /i* breeze-api:3001
+
+	# Web UI (includes live /quick Quick Support portal)
+	reverse_proxy breeze-web:4321
+}

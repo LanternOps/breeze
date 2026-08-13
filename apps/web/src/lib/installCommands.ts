@@ -39,7 +39,7 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   const unixCmd =
     `f="$(mktemp)" && ` +
     `{ curl -fsSL --connect-timeout 10 -o "$f" "${apiUrl}/api/v1/agents/install.sh" && head -n1 "$f" | grep -q '^#!' || ` +
-    `{ echo "[ERROR] Could not fetch the Breeze installer from ${apiUrl} — verify this machine has network access to your Breeze server." >&2; false; }; } && ` +
+    `{ echo "[ERROR] Could not fetch the Nodes Unlimited installer from ${apiUrl} — verify this machine has network access to your Nodes Unlimited server." >&2; false; }; } && ` +
     `sudo bash "$f" --server "${apiUrl}" --token "${token}"${unixSecretFlag}`;
 
   // The MZ-magic check is the Windows analog of the unix shebang check: a
@@ -49,11 +49,11 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   // $LASTEXITCODE throws cover agent steps that DO run but fail, since
   // native exe exit codes do not trip $ErrorActionPreference.
   const winSecretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
-  const winThrow = (step: string) => `if($LASTEXITCODE){throw "Breeze: ${step} failed (exit code $LASTEXITCODE)"}`;
+  const winThrow = (step: string) => `if($LASTEXITCODE){throw "Nodes Unlimited: ${step} failed (exit code $LASTEXITCODE)"}`;
   const winMzCheck =
     `$b=[IO.File]::ReadAllBytes("$pwd\\breeze-agent.exe"); ` +
     `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
-    `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
+    `{throw "Nodes Unlimited: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
     `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; ` +

@@ -1,7 +1,7 @@
 {
-  "productName": "Breeze Viewer",
+  "productName": "NU Viewer",
   "version": "0.13.14",
-  "identifier": "com.breeze.viewer",
+  "identifier": "com.nodesunlimited.viewer",
   "build": {
     "beforeBuildCommand": "pnpm build",
     "beforeDevCommand": "pnpm dev",
@@ -14,7 +14,7 @@
     },
     "windows": [
       {
-        "title": "Breeze Remote Desktop",
+        "title": "NU Remote Desktop",
         "width": 500,
         "height": 340,
         "resizable": false,
@@ -44,7 +44,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5RTExMzM0MEQ1ODA3QUQKUldTdEIxZ05OQlBoT1dOK1hYQ1F0Sys0ckppTnZWV0RUUEF0aEZtYXgzMlB6RXRXaUNBMTkwbXAK",
       "endpoints": [
-        "https://github.com/LanternOps/breeze/releases/latest/download/latest.json"
+        "https://rmm.nodesunlimited.com/viewer-updates/latest.json"
       ]
     }
   }

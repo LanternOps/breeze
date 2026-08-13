@@ -990,6 +990,13 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "variables": {
+      "button": "Variabili",
+      "insertTitle": "Inserisci una variabile",
+      "empty": "Ancora nessuna variabile.",
+      "secretUnavailable": "Segreto: una versione futura lo passerà come variabile d'ambiente.",
+      "unknown": "Non esiste alcuna variabile per {{keys}}: i dispositivi selezionati falliranno finché non la crei."
     }
   },
   "scriptList": {
