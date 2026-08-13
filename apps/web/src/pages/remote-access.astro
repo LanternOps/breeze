@@ -1,0 +1,15 @@
+---
+// Public, unauthenticated end-user landing page for remote support sessions.
+// The one-time code in the URL is the only credential, so this page must render
+// for a logged-out stranger — deliberately NO auth guard.
+//
+// Canonical customer-facing URL. `/quick` 301s here (see quick.astro) and the
+// NU-branded `/remote-support` landing 301s here at the gateway, so there is a
+// single entry point for "I need help" rather than three.
+import AuthLayout from '../layouts/AuthLayout.astro';
+import QuickLandingPage from '../components/quick/QuickLandingPage';
+---
+
+<AuthLayout title="Remote Access">
+  <QuickLandingPage client:load />
+</AuthLayout>

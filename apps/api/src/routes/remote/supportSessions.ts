@@ -123,7 +123,9 @@ supportSessionRoutes.post(
       code: formatSupportCode(code),
       codeExpiresAt: session.codeExpiresAt,
       hardExpiresAt: session.hardExpiresAt,
-      landingUrl: `${webBase}/quick?code=${code}`,
+      // Canonical customer-facing entry point. /quick still 301s here with the
+      // query preserved, so links shared before the rename keep working.
+      landingUrl: `${webBase}/remote-access?code=${code}`,
     }, 201);
   },
 );

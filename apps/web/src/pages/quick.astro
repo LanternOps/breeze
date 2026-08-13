@@ -1,11 +1,11 @@
 ---
-// Public, unauthenticated end-user landing page for Quick Support. The one-time
-// code in the URL is the only credential, so this page must render for a
-// logged-out stranger — deliberately NO auth guard.
-import AuthLayout from '../layouts/AuthLayout.astro';
-import QuickLandingPage from '../components/quick/QuickLandingPage';
+// Legacy Quick Support URL. The page itself now lives at /remote-access — this
+// route is kept permanently because codes already handed to customers, and any
+// link a technician shared before the rename, point here.
+//
+// 301 (not 302): the move is permanent and we want search engines to
+// consolidate on /remote-access. The query string carries the one-time code and
+// MUST be preserved — dropping it lands the customer on an empty code form.
+const url = new URL(Astro.request.url);
+return Astro.redirect(`/remote-access${url.search}`, 301);
 ---
-
-<AuthLayout title="Quick Support">
-  <QuickLandingPage client:load />
-</AuthLayout>
