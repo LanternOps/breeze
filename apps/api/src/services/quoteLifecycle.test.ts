@@ -387,7 +387,8 @@ describe('sendQuote email delivery status', () => {
   it('reports no_billing_contact (and sends nothing) when the org has no billing email', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
     // No billingContact → the email branch short-circuits before the
-    // portalBranding read, straight to the final re-select.
+    // portalBranding read, straight to the outcome marker and the re-select.
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
 
     const result = await sendQuote('q1', actor);
@@ -401,6 +402,7 @@ describe('sendQuote email delivery status', () => {
   it('reports send_failed when the email provider throws (send still commits)', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
     queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     sendEmailMock.mockRejectedValue(new Error('smtp down'));
 
@@ -414,6 +416,7 @@ describe('sendQuote email delivery status', () => {
   it('reports pdf_render_failed (and never calls the email transport) when building the attachment throws', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
     queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     vi.mocked(renderQuotePdf).mockRejectedValueOnce(new Error('pdfkit blew up'));
 
@@ -423,6 +426,34 @@ describe('sendQuote email delivery status', () => {
     expect(result.emailReason).toBe('pdf_render_failed');
     expect(sendEmailMock).not.toHaveBeenCalled(); // never reached the transport
     expect(result.quote.status).toBe('sent'); // the send itself still commits
+  });
+
+  // #3502: a direct send that fails delivery must leave a marker, or the detail
+  // page shows "Sent" with no banner and the customer silently got nothing.
+  it('persists send_email_reason so a failed direct send raises the banner', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', sendEmailReason: 'send_failed' }]);
+    sendEmailMock.mockRejectedValue(new Error('smtp down'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailReason).toBe('send_failed');
+    // The write itself, not just the returned row: the banner reads the column.
+    expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(true);
+  });
+
+  it('writes no outcome marker when the send succeeds (the claim already cleared it)', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(result.emailReason).toBeUndefined();
+    expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(false);
   });
 
   it('reports emailed:true with no reason on a successful send', async () => {

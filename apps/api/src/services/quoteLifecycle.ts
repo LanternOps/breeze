@@ -231,6 +231,25 @@ export async function sendQuote(
     quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts,
   });
 
+  // Persist THIS attempt's outcome, matching resendQuote and the scheduled-send
+  // worker: without it a direct send whose PDF render or transport failed is
+  // marked sent with send_email_reason NULL, so the detail page's "no email was
+  // delivered" banner never fires and nobody learns the customer got nothing.
+  // The draft→sent claim above already cleared the column, so only a failure
+  // needs writing back.
+  //
+  // Bookkeeping only, and it runs AFTER the email has left: a throw here would
+  // surface as "could not send" for a message the customer already has, and the
+  // tech's natural next move is to send it a second time. Swallow it instead.
+  if (emailReason) {
+    try {
+      await db.update(quotes).set({ sendEmailReason: emailReason, updatedAt: new Date() }).where(eq(quotes.id, id));
+    } catch (err) {
+      console.error(`[quoteLifecycle] send delivered for quote ${id} but persisting its outcome failed:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   return { quote: updated!, emailed, emailReason, acceptUrl };
 }
@@ -290,14 +309,12 @@ interface DeliverQuoteEmailInput {
  * Best effort by contract: every failure is swallowed into an `emailReason` so
  * the caller's transaction still commits.
  *
- * Callers differ in what they do with that reason, and the difference is
- * user-visible: resendQuote and the scheduled-send worker
- * (jobs/quoteSendQueue.ts) PERSIST it to quotes.send_email_reason, which is
- * what raises the detail page's "no email was delivered" banner. The direct
- * sendQuote path returns it in the response only — so a failed immediate send
- * (MCP, bulk-send, a body-less POST /send) leaves send_email_reason NULL and
- * shows no banner. That gap predates this function and is NOT fixed here; do
- * not assume symmetry when debugging a missing banner.
+ * All three callers persist that reason to quotes.send_email_reason, which is
+ * what raises the detail page's "no email was delivered" banner: sendQuote,
+ * resendQuote, and the scheduled-send worker (jobs/quoteSendQueue.ts). Keep it
+ * that way when adding a fourth. A caller that only returns the reason marks
+ * the quote sent with the column NULL, so the banner never fires and nobody
+ * learns the customer received nothing (#3502).
  */
 async function deliverQuoteEmail(
   { quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts }: DeliverQuoteEmailInput,
