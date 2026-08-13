@@ -293,6 +293,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     //   lifecycleRoutes               → me
     //   lifecycleAdminRoutes          → admin
     //   m365CallbackRoute             → c2c
+    //   tenantVariableRoutes          → tenant-variables
     // If this list changes, open the new sub-router, resolve its top-level
     // segments by hand, and add them to RESERVED_ROUTE_NAMESPACES.
     const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].map((m) => m[1]).sort();
@@ -303,6 +304,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
       'lifecycleAdminRoutes',
       'lifecycleRoutes',
       'm365CallbackRoute',
+      'tenantVariableRoutes',
       'ticketFormRoutes',
       'ticketResponseTemplateRoutes',
     ]);
@@ -311,6 +313,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
   it.each([
     'billing',
     'support',
+    'tenant-variables',
     'ticket-forms',
     'ticket-response-templates',
   ])('reserves and rejects root-mounted sub-router namespace %s', (namespace) => {

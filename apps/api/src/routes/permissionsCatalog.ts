@@ -33,7 +33,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
   ai_sessions: 'AI Sessions',
-  approvals: 'Approvals'
+  approvals: 'Approvals',
+  variables: 'Variables'
 };
 
 const ACTION_LABELS: Record<string, string> = {

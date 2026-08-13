@@ -85,6 +85,7 @@ export * from './deploymentInvites';
 export * from './emailVerificationTokens';
 export * from './manifestSigningKeys';
 export * from './refreshTokenFamilies';
+export * from './tenantVariables';
 export * from './tickets';
 export * from './ticketConfig';
 export * from './ticketResponseTemplates';
