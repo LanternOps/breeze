@@ -1,0 +1,101 @@
+{
+  "assetCheckout": {
+    "expectedReturnDate": "Beklenen dönüş tarihi",
+    "notes": "Notlar (isteğe bağlı)",
+    "notesPlaceholder": "Teslim alma veya teslimat ayrıntılarını ekleyin",
+    "requesting": "Talep eden: {{assetName}}",
+    "submit": "Ödeme isteğinde bulun",
+    "submitting": "İstek gönderiliyor...",
+    "title": "Varlık ödemesi",
+    "validation": {
+      "expectedReturnDate": "Beklenen bir dönüş tarihi seçin"
+    }
+  },
+  "assetHistory": {
+    "actions": {
+      "check-in": "giriş yapın",
+      "check-out": "kontrol et"
+    },
+    "description": "Son giriş ve çıkış etkinliği",
+    "title": "Varlık geçmişi"
+  },
+  "branding": {
+    "defaultName": "Breeze Portal"
+  },
+  "customerDeviceList": {
+    "deviceCount": "{{count}} cihaz hesabınıza bağlı",
+    "deviceCount_one": "{{count}} cihaz hesabınıza bağlı",
+    "deviceCount_other": "{{count}} cihaz hesabınıza bağlı",
+    "title": "Cihazlarım"
+  },
+  "deviceStatus": {
+    "lastSeen": "Son görülme {{lastSeen}}",
+    "status": {
+      "maintenance": "bakım",
+      "offline": "çevrimdışı",
+      "online": "çevrimiçi"
+    },
+    "unknown": "Bilinmiyor"
+  },
+  "header": {
+    "customerPortal": "Müşteri Portalı",
+    "profile": "Profili",
+    "signOut": "Oturumu kapat"
+  },
+  "login": {
+    "email": "E-posta",
+    "emailPlaceholder": "siz@şirket.com",
+    "forgotPassword": "Şifrenizi mi unuttunuz?",
+    "lookup": "Arama",
+    "needHelp": "Yardıma mı ihtiyacınız var?",
+    "organization": "Organizasyon",
+    "organizationPlaceholder": "Acme Corp veya ORG-123",
+    "password": "Şifre",
+    "passwordPlaceholder": "Şifrenizi girin",
+    "signingIn": "Oturum açılıyor...",
+    "submit": "Oturum aç",
+    "validation": {
+      "email": "Geçerli bir e-posta adresi girin",
+      "organization": "Kuruluşunuzun adını veya kodunu girin",
+      "passwordLength": "Şifre en az 8 karakterden oluşmalıdır"
+    }
+  },
+  "passwordReset": {
+    "confirm": {
+      "code": "Kodu sıfırla",
+      "codePlaceholder": "123456",
+      "confirmPassword": "Şifreyi onayla",
+      "confirmPasswordPlaceholder": "Yeni şifrenizi tekrar girin",
+      "newPassword": "Yeni şifre",
+      "newPasswordPlaceholder": "Yeni bir şifre girin",
+      "resetting": "Şifre sıfırlanıyor...",
+      "submit": "Şifreyi sıfırla"
+    },
+    "email": "E-posta",
+    "emailPlaceholder": "siz@sirket.com",
+    "rememberedPassword": "Şifrenizi hatırladınız mı?",
+    "request": {
+      "sending": "Sıfırlama e-postası gönderiliyor...",
+      "submit": "Sıfırlama bağlantısını gönder"
+    },
+    "signIn": "Oturum aç",
+    "validation": {
+      "code": "6 haneli sıfırlama kodunu girin",
+      "email": "Geçerli bir e-posta adresi girin",
+      "passwordLength": "Şifre en az 8 karakterden oluşmalıdır",
+      "passwordsMatch": "Şifreler eşleşmiyor"
+    }
+  },
+  "sidebar": {
+    "collapse": "Portalda gezinmeyi daralt",
+    "expand": "Portalda gezinmeyi genişletin",
+    "items": {
+      "assetCheckout": "Varlık Ödemesi",
+      "helpCenter": "Yardım Merkezi",
+      "myDevices": "Cihazlarım",
+      "overview": "Genel Bakış",
+      "supportTickets": "Destek Biletleri"
+    },
+    "navigation": "Portalda Gezinme"
+  }
+}

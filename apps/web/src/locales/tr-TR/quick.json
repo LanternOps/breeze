@@ -1,0 +1,81 @@
+{
+  "page": {
+    "title": "Bir destek oturumu başlatın",
+    "intro": "Bu bilgisayarda size yardımcı olan biri sizden bu sayfayı açmanızı istedi. Programı kendiniz indirip çalıştırana kadar hiçbir şey olmaz."
+  },
+  "branding": {
+    "title": "{{partner}} Hızlı Destek",
+    "subtitle": "{{partner}} adresinden yardım alıyorsunuz. Programı kendiniz indirip çalıştırana kadar hiçbir şey olmaz."
+  },
+  "steps": {
+    "one": {
+      "title": "Teknisyeninizin size verdiği kodu girin",
+      "body": "Kod 9 rakamdan oluşur. Yalnızca birkaç dakika çalışır."
+    },
+    "two": {
+      "title": "Destek uygulamasını indirin",
+      "body": "Aşağıdaki düğme, kodunuzu zaten bilen küçük bir programı kaydeder."
+    },
+    "three": {
+      "title": "Çalıştırın ve Windows istemini onaylayın",
+      "body": "Az önce kaydettiğiniz dosyayı açın ve çalışmasına izin verin. Tek yapman gereken bu."
+    }
+  },
+  "code": {
+    "heading": "Size verilen kodu girin",
+    "help": "Size yardımcı olan kişi 234-567-892 gibi 9 rakamdan oluşan bir kodu okuyacaktır. Çizgiler önemli değil.",
+    "label": "Destek kodu",
+    "placeholder": "234-567-892",
+    "submit": "Devam et",
+    "formatError": "Bu henüz tam bir kod değil. Bir kodun 9 karakteri vardır, örneğin 234-567-892."
+  },
+  "checking": "Bu kod kontrol ediliyor…",
+  "invalid": {
+    "title": "Bu kod artık çalışmıyor",
+    "body": "Destek kodu oluşturulduktan kısa bir süre sonra çalışmayı durdurur ve yalnızca bir kez kullanılabilir. Size yardımcı olan kişiden yeni kodu okumasını isteyin, ardından kodu yukarıya yazın."
+  },
+  "checkFailed": {
+    "title": "Kod kontrol edilemedi",
+    "body": "İnternet bağlantısı kesilmiş olabilir. Bağlantınızı kontrol edin ve kodu tekrar deneyin.",
+    "retry": "Tekrar deneyin"
+  },
+  "rateLimited": {
+    "title": "Çok fazla deneme",
+    "body": "Bir kodu çok fazla denediniz. Lütfen bir süre bekleyip tekrar deneyin.",
+    "retry": "Tekrar deneyin"
+  },
+  "ready": {
+    "title": "Kodunuz çalışıyor",
+    "codeIntro": "Kodunuz {{code}}."
+  },
+  "mobile": {
+    "title": "Yardıma ihtiyacı olan Windows bilgisayarda bu sayfayı açın",
+    "body": "Bu telefon veya tablet, size yardımcı olan kişiyle paylaşılamaz. Sorunun olduğu Windows bilgisayarına gidin ve bu sayfayı orada açın.",
+    "downloadHidden": "Bu cihaza indirilecek hiçbir şey yok."
+  },
+  "download": {
+    "windows": "Windows için indirin",
+    "manualFallback": "İndirme işleminde bir kod istenirse şunu girin: {{code}}",
+    "hintEdge": "Microsoft Edge dosyanın çok sık indirilmediğini söyleyebilir. Kaydetmeyi tamamlamak için Sakla'yı ve ardından Yine de Sakla'yı seçin.",
+    "hintChrome": "Google Chrome pencerenin alt kısmında dosya hakkında bir uyarı gösterebilir. Kaydetmeyi tamamlamak için Tut'u seçin.",
+    "hintGeneric": "Tarayıcınız dosyayı saklamayı isteyip istemediğinizi sorarsa saklamayı seçin.",
+    "windowsOnly": "Destek programı bugün yalnızca Windows bilgisayarlar için mevcuttur.",
+    "macosLabel": "macOS (Mac bilgisayarlar)",
+    "macosBadge": "Çok yakında",
+    "macosBody": "Program henüz Mac bilgisayarlar için hazır değil. Size yardım eden kişiye bunun yerine ne yapmanız gerektiğini sorun.",
+    "macosPrimaryTitle": "Destek programı henüz Mac bilgisayarlar için hazır değil",
+    "macosPrimaryBody": "Size yardımcı olan kişiye bunun yerine ne yapmanız gerektiğini sorun veya bu sayfayı yardıma ihtiyacı olan Windows bilgisayarda açın."
+  },
+  "windowsPrompt": {
+    "title": "Windows çalıştırılmadan önce size soracak",
+    "body": "Dosyayı açtığınızda, Windows, çalışmasına izin vermek isteyip istemediğinizi soran bir istem gösterir. Dosya dijital olarak imzalanmıştır, dolayısıyla bilgi istemi bir yayıncının adını verir: {{publisher}} şeklinde olmalıdır. Yayıncının bilinmediğini söylüyorsa veya beklemediğiniz birinin adını veriyorsa, istemi kapatın ve devam etmek yerine size yardım eden kişiyi arayın.",
+    "publisher": "Breeze yayıncısı"
+  },
+  "trust": {
+    "title": "Program ne yapar?",
+    "seeScreen": "Oturum devam ederken size yardımcı olan kişi ekranınızı görebilir.",
+    "temporary": "Program bir kez çalışır ve ardından kendini kaldırır. Bu bilgisayarda hiçbir şey yüklü kalmıyor.",
+    "stopAnyTime": "Program penceresini kapatarak istediğiniz zaman paylaşımı durdurabilirsiniz.",
+    "onlyIfExpected": "Bunu beklemiyorsanız çalıştırmayın. Bu sayfayı kapatın ve normalde görüştüğünüz destek personeliyle iletişime geçin."
+  }
+}

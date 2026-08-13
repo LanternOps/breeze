@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
-const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const;
 
 function catalog(locale: string, namespace: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(localesDir, locale, `${namespace}.json`), 'utf8'));
@@ -28,6 +28,7 @@ describe('product terminology quality', () => {
       'fr-CA': 'Commutateur',
       'de-DE': 'Netzwerk-Switch',
       'it-IT': 'Switch',
+      'tr-TR': 'Ağ anahtarı',
     } as const;
 
     for (const locale of translatedLocales) {
@@ -44,6 +45,7 @@ describe('product terminology quality', () => {
       'fr-CA': [/\bpostuler\b/i, /\bsubventions?\b/i, /test de fumée/i, /oscilloire/i],
       'de-DE': [/\bHauptschalter\b/i, /\bKernschalter\b/i],
       'it-IT': [/\bpotrài\b/i],
+      'tr-TR': [],
     } as const;
 
     for (const locale of translatedLocales) {

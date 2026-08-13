@@ -1,0 +1,714 @@
+{
+  "assetDetailModal": {
+    "actions": {
+      "connect": "Bağlan",
+      "connecting": "Bağlanıyor...",
+      "deleteAsset": "Öğeyi Sil",
+      "deleting": "Siliniyor...",
+      "enabling": "Etkinleştiriliyor...",
+      "linkAsset": "Bağlantı varlığı",
+      "linking": "Bağlanıyor...",
+      "resetType": "Otomatik algılamaya sıfırla",
+      "unlink": "Bağlantıyı kaldır",
+      "working": "Çalışıyorum..."
+    },
+    "assetInfoTitle": "Varlık Bilgisi",
+    "confirmDelete": "Bulunan \"{{name}}\" varlığı silinsin mi?",
+    "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
+    "deleteDescription": "Bu varlığı keşif sonuçlarından kaldırın.",
+    "detailsUnavailableDescription": "Bu cihazın kaydını yükleyemedik. Kaldırılmış olabilir veya erişiminiz olmayabilir.",
+    "detailsUnavailableTitle": "Ayrıntılar mevcut değil",
+    "deviceDetailsTitle": "Cihaz ayrıntıları",
+    "errors": {
+      "createAllowlist": "İzin verilenler listesi girişi oluşturulamadı",
+      "createProxyTunnel": "Proxy tüneli oluşturulamadı",
+      "createTunnel": "Tünel oluşturulamadı",
+      "delete": "Öğe silinemedi",
+      "generic": "Bir hata oluştu",
+      "link": "Varlık bağlanamadı",
+      "resetType": "Tür sıfırlanamadı",
+      "saveInfo": "Varlık bilgileri kaydedilemedi",
+      "selectDeviceToLink": "Bağlanacak cihazı seçin.",
+      "unlink": "Öğenin bağlantısı kaldırılamadı"
+    },
+    "fields": {
+      "assetType": "Varlık Türü",
+      "displayName": "Görünen Ad",
+      "notesDescription": "Notlar / Açıklama",
+      "osFingerprint": "İşletim Sistemi Parmak İzi",
+      "ping": "Ping",
+      "tags": "Etiketler (virgülle ayrılmış)"
+    },
+    "lastSeen": "Son görülme {{time}}",
+    "loadingDetails": "Cihaz ayrıntıları yükleniyor…",
+    "messages": {
+      "linked": "Öğe bağlantılı. Artık onaylandı olarak işaretlendi.",
+      "linkedToDevice": "Varlık {{device}} ile bağlantılı. Artık onaylandı olarak işaretlendi.",
+      "unlinked": "Cihazın bağlantısı kesildi."
+    },
+    "networkDetailsTitle": "Ağ Ayrıntıları",
+    "noOpenPorts": "Açık bağlantı noktası algılanmadı.",
+    "noSnmpData": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP araştırılmamış olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
+    "openPorts": "Açık Bağlantı Noktaları",
+    "options": {
+      "selectManagedDevice": "Yönetilen bir cihaz seçin"
+    },
+    "placeholders": {
+      "displayName": "ör. Ana Anahtar",
+      "notes": "ör. Dolap A, 2. katta yer almaktadır",
+      "tags": "ör. kritik, kat-2, ağ iletişimi"
+    },
+    "proxy": {
+      "manageOnDevicePage": "Ağ cihazı sayfasında proxy erişimini yönetin",
+      "title": "Proxy Erişimi"
+    },
+    "snmpDataTitle": "SNMP Veri",
+    "snmpFields": {
+      "systemName": "Sistem Adı",
+      "objectId": "Nesne Kimliği"
+    },
+    "sameDeviceAs": "{{name}} ile aynı cihaz"
+  },
+  "assetMonitoringSection": {
+    "actions": {
+      "addUpdate": "Ekleme / Güncelleme İzleme",
+      "disableActive": "Aktif İzlemeyi Devre Dışı Bırak",
+      "disabling": "Devre dışı bırakılıyor...",
+      "enable": "İzlemeyi Etkinleştir",
+      "open": "Açık İzleme"
+    },
+    "activeChecks": "{{active}}/{{total}} ağ kontrolleri etkin",
+    "errors": {
+      "disable": "İzleme devre dışı bırakılamadı",
+      "loadMonitors": "Ağ monitörleri yüklenemedi",
+      "loadStatus": "İzleme durumu yüklenemedi"
+    },
+    "loading": "İzleme durumu yükleniyor...",
+    "monitorTypes": {
+      "icmp_ping": "ICMP Ping'i",
+      "tcp_port": "TCP Bağlantı Noktası",
+      "http_check": "HTTP Kontrolü",
+      "dns_check": "DNS Kontrol et"
+    },
+    "networkMonitorsTitle": "Ağ Monitörleri ({{count}})",
+    "noChecks": "Yapılandırılmış ağ kontrolü yok",
+    "snmpSummary": "{{version}} · her {{seconds}}s",
+    "snmpTitle": "SNMP Cihaz Monitörü",
+    "state": {
+      "active": "Aktif",
+      "configuredPaused": "Yapılandırıldı (Duraklatıldı)",
+      "paused": "Duraklatıldı",
+      "notConfigured": "Yapılandırılmadı"
+    },
+    "title": "İzleme",
+    "lastPolled": "• son anket {{time}}"
+  },
+  "discoveredAssetList": {
+    "actions": {
+      "approve": "Onayla",
+      "approveSelected": "Seçileni onayla ({{count}})",
+      "approving": "Onaylanıyor...",
+      "clearAll": "Tümünü temizle",
+      "clearSelection": "Seçimi temizle",
+      "deselectAllVisible": "Tüm görünürlerin seçimini kaldır",
+      "dismiss": "Kapat",
+      "dismissSelected": "Seçileni reddet ({{count}})",
+      "dismissing": "Kapatılıyor...",
+      "selectAllVisible": "Görünenlerin tümünü seç",
+      "selectAllVisibleAssets": "Tüm görünür varlıkları seç",
+      "selectAsset": "Varlık seçin {{asset}}",
+      "viewDetails": "Ayrıntıları görüntüle"
+    },
+    "columns": {
+      "approval": "Onay",
+      "host": "Sunucu",
+      "lastSeen": "Son Görülme"
+    },
+    "description": "Ortamınızda tespit edilen varlıkları inceleyin.",
+    "empty": "Henüz hiçbir öğe keşfedilmedi.",
+    "emptyFiltered": "Mevcut filtrelerle eşleşen öğe yok.",
+    "errors": {
+      "approve": "Varlık onaylanamadı",
+      "bulkApprove": "Seçilen varlıklar onaylanamadı",
+      "bulkDismiss": "Seçilen öğeler kapatılamadı",
+      "dismiss": "Öğe kapatılamadı",
+      "fetch": "Keşfedilen öğeler getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "filters": {
+      "profile": "Profil",
+      "subnet": "Alt ağ"
+    },
+    "loading": "Keşfedilen varlıklar yükleniyor...",
+    "monitored": "İzlendi",
+    "title": "Keşfedilen Varlıklar",
+    "tryAgain": "Tekrar deneyin",
+    "sameDeviceAs": "{{name}} ile aynı cihaz"
+  },
+  "discoveryJobList": {
+    "actions": {
+      "assets": "Varlıklar",
+      "cancelJob": "İşi iptal et",
+      "clearAll": "Tümünü temizle",
+      "clearFilter": "Filtreyi temizle",
+      "viewDiscoveredAssets": "Keşfedilen varlıkları görüntüleyin"
+    },
+    "columns": {
+      "duration": "Süre",
+      "finished": "Bitti",
+      "hostsDiscovered": "Toplantı sahipleri keşfedildi",
+      "newAssets": "Yeni varlıklar",
+      "profile": "Profil",
+      "progress": "İlerleme",
+      "scheduled": "Planlandı",
+      "started": "Başlatıldı"
+    },
+    "description": "Çalışan ve planlanmış taramaları izleyin.",
+    "empty": "Henüz keşif işi yok.",
+    "emptyForProfile": "Bu profil için henüz iş yok.",
+    "errors": {
+      "cancel": "İş iptal edilemedi",
+      "fetch": "Keşif işleri getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "filteredByProfile": "Profile göre filtrelendi:",
+    "filters": {
+      "subnet": "Alt ağ"
+    },
+    "loading": "Keşif işleri yükleniyor...",
+    "status": {
+      "scheduled": "Planlandı",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi",
+      "pending": "Beklemede"
+    },
+    "title": "Keşif İşleri",
+    "tryAgain": "Tekrar deneyin",
+    "unknownProfile": "Bilinmeyen profil"
+  },
+  "discoveryPage": {
+    "actions": {
+      "newProfile": "Yeni Profil"
+    },
+    "allOrgs": {
+      "description": "Ağ keşfinin kapsamı tek bir kuruluş, site ve aracıyla sınırlıdır. Keşfedilen varlıkları, profilleri, tarama işlerini ve topolojisini görüntülemek için kapsam değiştiricide bir kuruluş seçin."
+    },
+    "confirmDeleteProfile": "\"{{name}}\" profili silinsin mi? Bu aynı zamanda ilgili tüm tarama işlerini de kaldıracaktır.",
+    "description": "Keşif profillerini yapılandırın, taramaları izleyin ve ağ varlıklarını yönetin.",
+    "errors": {
+      "deleteProfile": "Profil silinemedi",
+      "fetchProfiles": "Keşif profilleri getirilemedi",
+      "generic": "Bir hata oluştu",
+      "loadProfileDetails": "Profil ayrıntıları yüklenemedi",
+      "loadProfileDetailsHttp": "Profil ayrıntıları yüklenemedi (HTTP {{status}})",
+      "profileDeletedRefresh": "Bu profil silinmiş olabilir. Lütfen sayfayı yenileyin.",
+      "profileDetailsUnavailable": "Profil ayrıntısı uç noktası kullanılamıyor. SNMP kimlik bilgileri yüklenmeyebilir.",
+      "runProfile": "\"{{name}}\" keşif profili çalıştırılamadı",
+      "saveProfile": "Profil kaydedilemedi",
+      "selectSite": "Lütfen bu keşif profili için bir site seçin.",
+      "snmpAuthPassphrase": "SNMPv3 kimlik doğrulama parolası gerekli.",
+      "snmpUsername": "SNMPv3 kullanıcı adı gerekli."
+    },
+    "modal": {
+      "closeAria": "Profil ayarları modunu kapat",
+      "createProfile": "Profil Oluştur",
+      "creating": "Oluşturuluyor...",
+      "description": "Ağ kapsamını, tarama yöntemlerini ve zamanlama ayarlarını yapılandırın.",
+      "editTitle": "Discovery Profilini Düzenle",
+      "newTitle": "Yeni Keşif Profili",
+      "updateProfile": "Profili Güncelle",
+      "updating": "Güncelleniyor..."
+    },
+    "relative": {
+      "daysAgo": "{{count}}d önce",
+      "hoursAgo": "{{count}}h önce",
+      "justNow": "az önce",
+      "minutesAgo": "{{count}}m önce",
+      "monthsAgo": "{{count}}ay önce"
+    },
+    "schedule": {
+      "cron": "Cron programı",
+      "cronValue": "Cron: {{cron}}",
+      "daily": "Her gün {{time}} saatinde",
+      "everyHours": "Her {{count}} saatte bir",
+      "everyMinutes": "Her {{count}} dakikada bir",
+      "interval": "Aralık programı",
+      "manual": "Kılavuz",
+      "monthly": "Aylık olarak {{day}} tarihinde {{time}} saatinde",
+      "weekly": "Haftalık olarak {{day}} tarihinde {{time}} saatinde"
+    },
+    "tabs": {
+      "assets": "Varlıklar",
+      "changes": "Değişiklikler",
+      "jobs": "İş İlanları",
+      "profiles": "Profiller",
+      "topology": "Topoloji"
+    },
+    "title": "Ağ Keşfi",
+    "toasts": {
+      "scanQueued": "\"{{name}}\" için keşif taraması sıraya alındı"
+    },
+    "days": {
+      "monday": "Pazartesi",
+      "tuesday": "Salı",
+      "wednesday": "Çarşamba",
+      "thursday": "Perşembe",
+      "friday": "Cuma",
+      "saturday": "Cumartesi",
+      "sunday": "Pazar"
+    }
+  },
+  "discoveryProfileForm": {
+    "alerting": {
+      "alertOnChanged": "Değiştirilen cihazlar",
+      "alertOnDisappeared": "Kaybolan cihazlar",
+      "alertOnNew": "Yeni cihazlar",
+      "description": "Bu alt ağda yeni veya değiştirilmiş cihazlar algılandığında uyarı verir.",
+      "enable": "Ağ uyarısını etkinleştir",
+      "title": "Ağ Uyarısı"
+    },
+    "cadence": {
+      "daily": "Günlük",
+      "hourly": "Saatlik",
+      "interval": "Özel aralık",
+      "monthly": "Aylık",
+      "weekly": "Haftalık"
+    },
+    "days": {
+      "monday": "Pazartesi",
+      "tuesday": "Salı",
+      "wednesday": "Çarşamba",
+      "thursday": "Perşembe",
+      "friday": "Cuma",
+      "saturday": "Cumartesi",
+      "sunday": "Pazar"
+    },
+    "fields": {
+      "authPassphrase": "Kimlik doğrulama parolası",
+      "authProtocol": "Kimlik doğrulama protokolü",
+      "community": "Topluluk dizesi",
+      "dayOfMonth": "Ayın günü",
+      "dayOfWeek": "Haftanın günü",
+      "methods": "Keşif yöntemleri",
+      "port": "Bağlantı noktası",
+      "privacyPassphrase": "Gizlilik parolası",
+      "privacyProtocol": "Gizlilik protokolü",
+      "profileName": "Profil adı",
+      "repeatEvery": "Her birini tekrarla",
+      "repeatEveryMinutes": "Her (dakikada bir) tekrarla",
+      "retainChangeLog": "Değişiklik günlüğünü sakla (gün)",
+      "retries": "Yeniden denemeler",
+      "scheduleCadence": "Tempoyu programlayın",
+      "snmpVersion": "SNMP sürümü",
+      "subnets": "Taranacak alt ağlar",
+      "time": "Saat",
+      "timeout": "Zaman Aşımı (ms)",
+      "timezone": "Saat Dilimi",
+      "username": "Kullanıcı adı"
+    },
+    "options": {
+      "everyHours": "Her {{count}} saatte bir",
+      "selectSite": "Bir site seçin..."
+    },
+    "placeholders": {
+      "profileName": "Karargah taraması",
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+    },
+    "profileDetails": {
+      "description": "Ağ kapsamını ve keşif yöntemlerini tanımlayın.",
+      "title": "Profil Detayları"
+    },
+    "schedule": {
+      "description": "Keşif işlerinin ne zaman çalışması gerektiğini ayarlayın.",
+      "title": "Program"
+    },
+    "snmp": {
+      "description": "SNMP keşif araştırmaları için kullanılan kimlik bilgileri.",
+      "title": "SNMP Ayarlar"
+    },
+    "subnetsHelp": "CIDR aralıklarını virgülle veya yeni satırlarla ayırarak girin.",
+    "validation": {
+      "invalidCidr": "\"{{value}}\": geçerli bir CIDR aralığı veya IP adresi değil",
+      "octet": "\"{{value}}\": sekizli değeri 255'i aşıyor",
+      "prefix": "\"{{value}}\": önek uzunluğu 0–32 olmalıdır",
+      "subnetRequired": "En az bir alt ağ veya IP adresi gerekli."
+    },
+    "actions": {
+      "saveProfile": "Profili Kaydet"
+    },
+    "methods": {
+      "ping": "ICMP Ping'i",
+      "arp": "ARP Taraması",
+      "snmp": "SNMP Sonda",
+      "portScan": "TCP Bağlantı Noktası Taraması"
+    }
+  },
+  "discoveryProfileList": {
+    "actions": {
+      "deleteProfile": "Profili sil",
+      "editProfile": "Profili düzenle",
+      "runNow": "Şimdi çalıştır",
+      "runProfile": "Çalıştır {{name}}",
+      "running": "Koşuyor...",
+      "runningProfile": "Çalışıyor {{name}}",
+      "viewJobs": "İşleri görüntüle"
+    },
+    "columns": {
+      "methods": "Yöntemler",
+      "profile": "Profil",
+      "schedule": "Program",
+      "subnets": "Alt ağlar"
+    },
+    "configuredCount": "{{count}} profilleri yapılandırıldı",
+    "empty": "Henüz keşif profili yok. Taramaya başlamak için ilk profilinizi oluşturun.",
+    "lastRun": "Son çalıştırma {{time}}",
+    "loading": "Keşif profilleri yükleniyor...",
+    "nextRun": "Sonraki: {{time}}",
+    "notRunYet": "Henüz çalıştırılmadı",
+    "scheduleHint": "Programlar otomatik olarak veya isteğe bağlı olarak çalıştırılır",
+    "status": {
+      "active": "Aktif",
+      "paused": "Duraklatıldı",
+      "draft": "Taslak",
+      "error": "Hata"
+    },
+    "title": "Keşif Profilleri",
+    "tryAgain": "Tekrar deneyin"
+  },
+  "enableMonitoringForm": {
+    "actions": {
+      "addNetworkMonitor": "Ağ İzleyicisi Ekle",
+      "enableSnmp": "SNMP İzlemeyi Etkinleştir",
+      "enabling": "Etkinleştiriliyor..."
+    },
+    "description": "İzleme, SNMP yoklamayı ve ağ kontrollerini destekler Ping/TCP/HTTP/DNS . İkisinden birini veya her ikisini de yapılandırabilirsiniz.",
+    "errors": {
+      "communityRequired": "SNMP v1/v2c için topluluk dizesi gereklidir",
+      "enable": "İzleme etkinleştirilemedi",
+      "generic": "Bir hata oluştu",
+      "loadTemplates": "Şablonlar yüklenemedi",
+      "usernameRequired": "SNMP v3 için kullanıcı adı gereklidir"
+    },
+    "fields": {
+      "authPassword": "Kimlik Doğrulama Şifresi",
+      "authProtocol": "Kimlik Doğrulama Protokolü",
+      "community": "Topluluk Dizini",
+      "pollingInterval": "Yoklama Aralığı (saniye)",
+      "privacyPassword": "Gizlilik Şifresi",
+      "privacyProtocol": "Gizlilik Protokolü",
+      "snmpVersion": "SNMP Sürüm",
+      "template": "Şablon",
+      "username": "Kullanıcı adı"
+    },
+    "networkChecksDescription": "Bu varlık için ping, TCP, HTTP veya DNS monitörleri ekleyin.",
+    "networkChecksTitle": "Ağ Kontrolleri",
+    "noTemplate": "Şablon yok",
+    "placeholders": {
+      "community": "herkese açık"
+    },
+    "snmpTitle": "SNMP Cihaz İzleme"
+  },
+  "networkBaselinesPanel": {
+    "actions": {
+      "changes": "Değişiklikler",
+      "create": "Temel Oluştur",
+      "creating": "Oluşturuluyor...",
+      "runNow": "Şimdi çalıştır",
+      "saveSettings": "Temel Ayarlarını Kaydet",
+      "viewChanges": "Değişiklikleri görüntüle"
+    },
+    "alertLabels": {
+      "changed": "Cihaz değiştirildi",
+      "disappeared": "Cihaz kayboldu",
+      "newDevice": "Yeni cihaz",
+      "rogue": "Hileli cihaz"
+    },
+    "alertNames": {
+      "changed": "değiştirildi",
+      "gone": "gitti",
+      "new": "yeni",
+      "rogue": "haydut"
+    },
+    "alertsSummary": "Uyarılar: {{alerts}}",
+    "columns": {
+      "knownDevices": "Bilinen Cihazlar",
+      "lastScan": "Son Tarama",
+      "schedule": "Program",
+      "subnet": "Alt ağ"
+    },
+    "deleteDialog": {
+      "confirm": "Taban Çizgisini Sil",
+      "message": "{{subnet}} temel çizgisini silmek istediğinizden emin misiniz? İlgili değişiklik etkinlikleri de silinecektir. Bu eylem geri alınamaz.",
+      "title": "Ağ Taban Çizgisini Sil"
+    },
+    "empty": "Henüz ağ temeli yok. Sürekli değişiklik algılamayı etkinleştirmek için bir tane oluşturun.",
+    "errors": {
+      "create": "Temel oluşturulamadı",
+      "delete": "Taban çizgisi silinemedi",
+      "load": "Ağ taban çizgileri yüklenemedi",
+      "run": "Temel tarama tetiklenemedi",
+      "save": "Temel kaydedilemedi",
+      "update": "Taban çizgisi güncellenemedi"
+    },
+    "everyHoursShort": "Her {{count}}h",
+    "fields": {
+      "alertSettings": "Uyarı Ayarları",
+      "enableScheduledScans": "Zamanlanmış taramaları etkinleştir",
+      "scanInterval": "Tarama Aralığı (saat)",
+      "subnetCidr": "Alt ağ (CIDR)"
+    },
+    "form": {
+      "createDescription": "Planlanmış keşif karşılaştırmaları için bir alt ağ temeli oluşturun.",
+      "createTitle": "Temel Oluştur",
+      "editDescription": "Tarama ritmini ve uyarı davranışını güncelleyin.",
+      "editTitle": "Temel Çizgiyi Düzenle",
+      "immutableHint": "Site ve alt ağ oluşturulduktan sonra değiştirilemez."
+    },
+    "loading": "Ağ taban çizgileri yükleniyor...",
+    "messages": {
+      "created": "Temel oluşturuldu.",
+      "deleted": "Temel çizgi silindi {{subnet}}.",
+      "scanQueued": "Tarama sıraya alındı.",
+      "scanQueuedWithId": "Tarama sıraya alındı ​​({{id}}).",
+      "updated": "Temel ayarlar güncellendi."
+    },
+    "next": "Sonraki: {{time}}",
+    "options": {
+      "selectSite": "Siteyi seçin"
+    },
+    "paused": "Duraklatıldı",
+    "permissionManage": "İzin kontrolü başarısızlığından sonra mutasyona uğratma eylemleri devre dışı bırakılır. `devices:write` gerektirir.",
+    "placeholders": {
+      "subnet": "192.168.1.0/24"
+    },
+    "title": "Ağ Taban Hatları",
+    "validation": {
+      "cidr": "Alt ağ CIDR biçiminde olmalıdır (örnek: 192.168.1.0/24).",
+      "interval": "Tarama aralığı 1 ila 168 saat arasında olmalıdır.",
+      "selectSite": "Kaydetmeden önce bir site seçin."
+    },
+    "configuredCount": "{{count}} temeller yapılandırıldı"
+  },
+  "networkChangeDetailModal": {
+    "acknowledgeTitle": "Onaylama Etkinliği",
+    "actions": {
+      "acknowledge": "Teşekkür ederim",
+      "acknowledging": "Teşekkür ediyorum...",
+      "linkDevice": "Bağlantı Cihazı",
+      "linking": "Bağlantı oluşturuluyor..."
+    },
+    "alreadyAcknowledged": "Bu etkinlik zaten onaylandı.",
+    "currentState": "Mevcut Durum",
+    "errors": {
+      "acknowledge": "Etkinlik onaylanamadı",
+      "linkDevice": "Cihaz bağlanamadı",
+      "selectDeviceBeforeLinking": "Bağlamadan önce bir cihaz seçin."
+    },
+    "eventDetailsTitle": "Etkinlik Detayları",
+    "fields": {
+      "acknowledgedAt": "Onaylandı",
+      "alertId": "Uyarı Kimliği",
+      "assetType": "Varlık Türü",
+      "linkedDevice": "Bağlantılı Cihaz",
+      "subnet": "Alt ağ"
+    },
+    "linkManagedDeviceTitle": "Bağlantıyla Yönetilen Cihaz",
+    "noNotes": "Kaydedilmiş not yok.",
+    "notLinked": "Bağlantılı değil",
+    "notesTitle": "Notlar",
+    "options": {
+      "selectDevice": "Cihazı seçin"
+    },
+    "permissionAcknowledge": "İzin denetimi başarısız olduktan sonra gizlendi. `alerts:acknowledge` gerektirir.",
+    "permissionLinkDevice": "İzin denetimi başarısız olduktan sonra gizlendi. `devices:write` gerektirir.",
+    "placeholders": {
+      "ackNotes": "İsteğe bağlı teşekkür notları"
+    },
+    "previousState": "Önceki Durum",
+    "status": {
+      "acknowledged": "Onaylandı",
+      "unacknowledged": "Onaylanmadı"
+    },
+    "summary": "IP {{ip}} • MAC {{mac}} • Algılandı {{detected}}"
+  },
+  "networkChangesPanel": {
+    "actions": {
+      "ack": "Teşekkürler",
+      "acknowledgeSelected": "Seçileni Onayla",
+      "acknowledging": "Teşekkür ediyorum...",
+      "details": "Ayrıntılar",
+      "goToProfiles": "Profillere Git",
+      "link": "Bağlantı",
+      "resetFilters": "Filtreleri sıfırla"
+    },
+    "columns": {
+      "detected": "Algılandı",
+      "event": "Etkinlik",
+      "linkedDevice": "Bağlantılı Cihaz"
+    },
+    "description": "Keşif profillerindeki ağ değişikliği olaylarını inceleyin ve önceliklendirin.",
+    "empty": {
+      "alertingDisabled": "Keşif taramaları, keşif profilinde Uyarı etkinleştirilene kadar değişiklikleri kaydetmez.",
+      "enableAlerting": "Uyarıyı Etkinleştir",
+      "filtered": "Seçilen filtrelerle eşleşen değişiklik olayı yok.",
+      "noEventsTitle": "Henüz kaydedilen değişiklik olayı yok.",
+      "noProfilesDescription": "Ağ değişikliği etkinlikleri, keşif profilleri tarafından oluşturulur. Bir profil oluşturun ve yeni, değiştirilmiş veya kaybolan cihazları kaydetmek için Uyarı'yı ​​etkinleştirin.",
+      "noProfilesTitle": "Değişiklikleri izlemeye başlamak için bir ağ keşif profili oluşturun.",
+      "profileAlertingDisabled": "“{{profile}}” üzerindeki keşif taramaları, söz konusu profilde Uyarı etkinleştirilene kadar değişiklikleri kaydetmez.\nAğ değişikliklerini izlemeye başlamak için profil ayarlarında (Profiller sekmesi) ",
+      "enableAlertingSuffix": "."
+    },
+    "errors": {
+      "acknowledgeEvent": "Etkinlik onaylanamadı",
+      "acknowledgeSelected": "Seçilen etkinlikler onaylanamadı",
+      "linkDevice": "Cihaz bağlanamadı",
+      "loadChanges": "Ağ değişiklikleri yüklenemedi",
+      "loadDevices": "Cihazlar yüklenemedi",
+      "loadMetadata": "Ağ meta verileri yüklenemedi",
+      "loadProfileFilters": "Profil filtreleri yüklenemedi"
+    },
+    "eventsLoaded": "{{count}} olaylar yüklendi",
+    "fields": {
+      "acknowledged": "Onaylandı",
+      "eventType": "Etkinlik Türü",
+      "profile": "Profil",
+      "since": "O zamandan beri"
+    },
+    "loading": "Ağ değişiklikleri yükleniyor...",
+    "messages": {
+      "acknowledgedCount": "{{count}} olay(lar) onaylandı.",
+      "deviceLinked": "Cihaz bağlandı.",
+      "eventAcknowledged": "Etkinlik onaylandı."
+    },
+    "noMac": "MAC yok",
+    "notLinked": "Bağlantılı değil",
+    "options": {
+      "allProfiles": "Tüm profiller",
+      "allSites": "Tüm siteler",
+      "allTypes": "Tüm türler"
+    },
+    "permissionAcknowledge": "İzin kontrolü başarısızlığından sonra devre dışı bırakılan eylemleri onaylayın. `alerts:acknowledge` gerektirir.",
+    "permissionLink": "İzin kontrolü başarısızlığından sonra cihaz bağlantısı devre dışı bırakıldı. `devices:write` gerektirir.",
+    "placeholders": {
+      "bulkNotes": "İsteğe bağlı toplu onay notları"
+    },
+    "selectedUnacknowledged": "{{count}} onaylanmamış etkinlik(ler) seçildi",
+    "status": {
+      "acknowledged": "Onaylandı",
+      "unacknowledged": "Onaylanmadı"
+    },
+    "title": "Ağ Değişiklikleri",
+    "unknownHost": "Bilinmeyen sunucu"
+  },
+  "networkEvents": {
+    "type": {
+      "device_changed": "Değiştirildi",
+      "device_disappeared": "Kayboldu",
+      "new_device": "Yeni cihaz",
+      "rogue_device": "Sahtekar"
+    }
+  },
+  "networkTopologyMap": {
+    "actions": {
+      "addPlaceholderTitle": "{{role}} yer tutucusu ekleyin",
+      "autoArrange": "Otomatik düzenleme",
+      "clearSelection": "Seçimi temizle",
+      "collapse": "Daralt",
+      "confirmDelete": "Silmeyi onaylıyor musunuz?",
+      "confirmDeleteConnection": "Bağlantıyı silmeyi onayla",
+      "confirmDeleteNode": "Düğümün silinmesini onaylayın",
+      "deleteConnection": "Bağlantıyı sil",
+      "deleteNode": "Düğümü sil",
+      "doneEditing": "Düzenleme tamamlandı",
+      "editMap": "Haritayı düzenle",
+      "exitFullScreenTitle": "Tam ekrandan çık (Esc)",
+      "expand": "Genişlet",
+      "expandTitle": "Haritayı tam ekrana genişlet",
+      "fit": "Uygun",
+      "fitTitle": "Görüntülemek için haritanın tamamını sığdırın",
+      "selectSingleSiteTitle": "Manuel düğüm eklemek için tek bir site seçin",
+      "viewDetails": "Ayrıntıları görüntüle"
+    },
+    "addNodeAria": "Düğüm ekle:",
+    "addNodeLabel": "Düğüm ekle",
+    "adjacencyNote": "Bağlantı hatları yalnızca gerçek bitişikliğin ölçüldüğü yerlerde görünür (LLDP/CDP/SNMP). Henüz hiçbiri toplanmadığından varlıklar, çıkarılan bağlantılar olmadan alt ağa göre gruplandırılır.",
+    "allDevices": "Tüm cihazlar ({{count}})",
+    "canvasAriaEmpty": "Ağ topolojisi haritası: henüz hiçbir cihaz keşfedilmedi.",
+    "canvasAriaWithDevices": "Ağ topoloji haritası: {{count}} cihaz{{suffix}}. Klavyeli her cihazı incelemek için aşağıdaki cihaz listesini kullanın.",
+    "confidence": "{{confidence}} güven",
+    "connectHint": "Bağlanmak için başka bir düğüme dokunun",
+    "connection": "Bağlantı",
+    "edgeMethods": {
+      "fdb": "Köprü FDB",
+      "manual": "Manuel",
+      "lldp": "LLDP",
+      "cdp": "CDP"
+    },
+    "editHint": "Düzenlemek için sürükleyin · bağlamak için iki düğüme dokunun",
+    "empty": {
+      "description": "Topoloji haritasını doldurmak için bir ağ bulma taraması çalıştırın.",
+      "title": "Henüz keşfedilen öğe yok"
+    },
+    "errors": {
+      "addNode": "Düğüm eklenemedi",
+      "addNodeSentence": "Düğüm eklenemedi.",
+      "connectNodes": "Düğümlere bağlanılamadı",
+      "connectNodesSentence": "Düğümlere bağlanılamadı.",
+      "deleteConnection": "Bağlantı silinemedi",
+      "deleteConnectionSentence": "Bağlantı silinemedi.",
+      "deleteNode": "Düğüm silinemedi",
+      "deleteNodeSentence": "Düğüm silinemedi.",
+      "fetch": "Topoloji getirilemedi",
+      "generic": "Bir hata oluştu",
+      "savePosition": "Düğüm konumu kaydedilemedi"
+    },
+    "handMapped": "Elle haritalandırılmış",
+    "legend": {
+      "lldpCdp": "LLDP/CDP",
+      "title": "Efsane"
+    },
+    "loading": "Topoloji yükleniyor...",
+    "manualBadge": "Kılavuz",
+    "measuredAdjacency": "Ölçülen yakınlık",
+    "measuredNotEditable": "Taramayla ölçülmüştür — düzenlenemez",
+    "messages": {
+      "connectionAdded": "Bağlantı eklendi",
+      "connectionRemoved": "Bağlantı kaldırıldı",
+      "layoutSaved": "Düzen kaydedildi",
+      "nodeAdded": "Düğüm eklendi",
+      "nodeRemoved": "Düğüm kaldırıldı"
+    },
+    "title": "Ağ Topolojisi",
+    "tryAgain": "Tekrar deneyin",
+    "vlan": "VLAN {{vlan}}",
+    "escToCancel": "· İptal etmek için Esc"
+  },
+  "proxyConnect": {
+    "title": "{{target}} için vekil",
+    "throughAgent": "Temsilci aracılığıyla",
+    "connect": "Bağlan",
+    "allowSelfSigned": "Kendinden imzalı sertifikaya izin ver (yazıcılar, iLO/IPMI, anahtarlar için ortaktır)"
+  },
+  "assetTypes": {
+    "workstation": "İş İstasyonu",
+    "server": "Sunucu",
+    "printer": "Yazıcı",
+    "router": "Yönlendirici",
+    "switch": "Ağ anahtarı",
+    "firewall": "Güvenlik Duvarı",
+    "accessPoint": "Erişim Noktası",
+    "phone": "Telefon",
+    "iot": "Nesnelerin İnterneti",
+    "camera": "Kamera",
+    "nas": "NAS",
+    "unknown": "Bilinmiyor",
+    "patchPanel": "Bağlantı Paneli",
+    "other": "Diğer"
+  },
+  "approvalStatus": {
+    "pending": "Beklemede",
+    "approved": "Onaylandı",
+    "dismissed": "Görevden alındı"
+  }
+}

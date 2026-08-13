@@ -1,0 +1,874 @@
+{
+  "analytics": {
+    "analyticsPage": {
+      "actions": {
+        "refresh": "Yenile",
+        "retry": "Tekrar dene"
+      },
+      "alertSeverity": {
+        "acknowledged": "Onaylandı",
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "dashboardOptions": {
+        "capacity": "Kapasite Planlama",
+        "operations": "İşlemlere Genel Bakış",
+        "sla": "SLA Uyumluluk"
+      },
+      "dateRanges": {
+        "customRange": "Özel aralık",
+        "last24Hours": "Son 24 saat",
+        "last30Days": "Son 30 gün",
+        "last7Days": "Son 7 gün"
+      },
+      "errors": {
+        "failedToLoadAnalytics": "Analiz verileri yüklenemedi",
+        "unableToLoad": "Yüklenemiyor: {{sources}}"
+      },
+      "lastUpdated": "Güncellendi {{time}}",
+      "subtitle": "Filonuz ve hizmetleriniz hakkında bilgiler",
+      "title": "Analitik",
+      "trend": {
+        "operationalHealth": "Operasyonel sağlık"
+      },
+      "widgets": {
+        "alertTable": {
+          "count": "Sayım",
+          "severity": "Önem",
+          "title": "Uyarı İstatistikleri"
+        },
+        "capacity": {
+          "title": "Kapasite Tahmini"
+        },
+        "complianceGauge": {
+          "policiesEvaluated": "{{count}} politikaları değerlendirildi",
+          "title": "Politika Uyumluluğu"
+        },
+        "osBreakdown": {
+          "subtitle": "Yönetilen cihazların paylaşımı",
+          "title": "İşletim Sistemi Dağıtımı"
+        },
+        "performance": {
+          "cpu": "CPU",
+          "memory": "Bellek",
+          "subtitle": "CPU ve bellek kullanımı",
+          "title": "Performans Trendi"
+        },
+        "remoteSessions": {
+          "label": "Aralıktaki oturumlar",
+          "title": "Uzaktan Oturumlar"
+        },
+        "uptime": {
+          "label": "Filonun çalışma süresi",
+          "title": "Çalışma Süresi"
+        }
+      }
+    },
+    "capacityForecast": {
+      "actual": "Gerçek",
+      "critical": "Kritik",
+      "criticalValue": "Kritik {{value}}{{unit}}",
+      "current": "Güncel",
+      "description": "Son kullanıma dayalı kapasite projeksiyonu",
+      "trend": "Trend",
+      "warnValue": "Uyarı {{value}}{{unit}}",
+      "warning": "Uyarı"
+    },
+    "chartWidget": {
+      "noData": "Veri yok"
+    },
+    "dashboardGrid": {
+      "drag": "Sürükle",
+      "errors": {
+        "failedToLoadDashboard": "Kontrol paneli yüklenemedi"
+      },
+      "retry": "Tekrar dene"
+    },
+    "executiveSummary": {
+      "alertSummary": "Uyarı Özeti",
+      "critical": "Kritik",
+      "criticalAndWarningAlerts": "Kritik ve uyarı uyarıları",
+      "deviceOverview": "Cihaza Genel Bakış",
+      "fleetAvailabilitySummary": "Filo kullanılabilirliği özeti",
+      "last12Weeks": "Son 12 hafta",
+      "offline": "Çevrimdışı",
+      "online": "Çevrimiçi",
+      "operationalHealth": "Operasyonel sağlık",
+      "totalDevices": "Toplam cihaz",
+      "uptime": "Çalışma Süresi",
+      "warnings": "Uyarılar",
+      "weeklyTrend": "Haftalık trend"
+    },
+    "gaugeWidget": {
+      "criticalValue": "Kritik {{value}}",
+      "warnValue": "Uyarı {{value}}"
+    },
+    "queryBuilder": {
+      "aggregations": {
+        "average": "Ortalama",
+        "maximum": "Maksimum",
+        "minimum": "Minimum",
+        "p95": "P95",
+        "sum": "Toplam"
+      },
+      "description": "Gösterge tablonuz için ölçümleri ve toplamayı yapılandırın",
+      "errors": {
+        "failedToExecuteQuery": "Sorgu yürütülemedi",
+        "noDevicesSelected": "Sorgu için seçili cihaz yok"
+      },
+      "labels": {
+        "aggregation": "Toplama",
+        "endDate": "Bitiş tarihi",
+        "metricName": "Metrik adı",
+        "metricType": "Metrik türü",
+        "startDate": "Başlangıç tarihi",
+        "timeRange": "Zaman aralığı"
+      },
+      "metricNames": {
+        "activeDevices": "Aktif Cihazlar",
+        "automationRuns": "Otomasyon Çalıştırmaları",
+        "cpuUtilization": "CPU Kullanımı",
+        "diskUsage": "Disk Kullanımı",
+        "incidentCount": "Olay Sayımı",
+        "loginVolume": "Giriş Hacmi",
+        "memoryUtilization": "Bellek Kullanımı",
+        "mfaAdoption": "MFA'nın Kabulü",
+        "networkThroughput": "Ağ Verimi",
+        "patchCompliance": "Yama Uyumluluğu",
+        "remoteSessions": "Uzaktan Oturumlar",
+        "responseTime": "Yanıt Süresi",
+        "slaCompliance": "SLA Uyumluluk",
+        "threatAlerts": "Tehdit Uyarıları",
+        "uptime": "Çalışma Süresi",
+        "vulnerabilityScore": "Güvenlik Açığı Puanı"
+      },
+      "metricTypes": {
+        "availability": "Kullanılabilirlik",
+        "performance": "Performans",
+        "security": "Güvenlik",
+        "usage": "Kullanım"
+      },
+      "runQuery": "Sorguyu Çalıştır",
+      "running": "Koşuyor...",
+      "timeRanges": {
+        "customRange": "Özel aralık",
+        "last1Hour": "Son 1 saat",
+        "last24Hours": "Son 24 saat",
+        "last30Days": "Son 30 gün",
+        "last7Days": "Son 7 gün"
+      },
+      "title": "Sorgu Oluşturucu"
+    },
+    "slaComplianceCard": {
+      "defaultPeriodLabel": "Son 30 gün",
+      "downtime": "Kesinti {{value}}",
+      "incidents": "{{count}} olaylar",
+      "status": {
+        "atRisk": "Risk altında",
+        "breach": "İhlal",
+        "compliant": "Uyumlu"
+      },
+      "targetUptime": "%{{target}} kesintisiz çalışma süresini hedefleyin",
+      "title": "SLA Uyumluluk"
+    },
+    "tableWidget": {
+      "filterPlaceholder": "Filtre",
+      "noMatchingRecords": "Eşleşen kayıt yok"
+    },
+    "widgetRenderer": {
+      "unsupportedWidget": "Desteklenmeyen widget"
+    }
+  },
+  "reports": {
+    "dashboardWidgets": {
+      "accessDenied": "Bu kontrol paneli verilerini görüntüleme izniniz yok.",
+      "activeAlerts": "Aktif Uyarılar",
+      "averages": "Ortalamalar",
+      "complianceScore": "Uyumluluk Puanı",
+      "cpu": "CPU",
+      "criticalCount": "{{count}} kritik",
+      "disk": "Disk",
+      "errors": {
+        "loadDashboardData": "Kontrol paneli verileri yüklenemedi"
+      },
+      "issueCount": "{{count}} sorunu",
+      "issueCount_one": "{{count}} sorunu",
+      "issueCount_other": "{{count}} sorunlar",
+      "lastUpdated": "Son güncelleme: {{time}}",
+      "memory": "Bellek",
+      "onlinePercent": "{{percent}} çevrimiçi",
+      "refresh": "Yenile",
+      "retry": "Tekrar dene",
+      "topCpuUsage": "En İyi CPU Kullanımı",
+      "topDiskUsage": "En İyi Disk Kullanımı",
+      "topMemoryUsage": "En Yüksek Bellek Kullanımı",
+      "totalDevices": "Toplam Cihaz Sayısı"
+    },
+    "postureOptions": {
+      "requireBackupCoverage": "Yedekleme kapsamı gerektir",
+      "requireBackupCoverageHelp": "İsteğe bağlı olduğunda yedekleme, tarafsız kanıt olarak görünür kalır ve bir öneri oluşturmaz.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "reportBuilderPage": {
+      "configurationTitle": "Rapor Yapılandırması",
+      "description": "Kaydetmeden tek seferlik bir rapor oluşturun.",
+      "errors": {
+        "exportFailed": "Dışa aktarma başarısız oldu. Lütfen tekrar deneyin.",
+        "generatePreview": "Önizleme oluşturulamadı",
+        "generateReportPreview": "Rapor önizlemesi oluşturulamadı"
+      },
+      "title": "Geçici Rapor Oluşturucu"
+    },
+    "reportEditPage": {
+      "backToReports": "Raporlara Geri Dön",
+      "description": "\"{{name}}\" için yapılandırmayı güncelleyin.",
+      "errors": {
+        "fetchReport": "Rapor getirilemedi",
+        "generic": "Bir hata oluştu"
+      },
+      "loading": "Rapor yükleniyor...",
+      "notFound": "Rapor bulunamadı",
+      "reportsBreadcrumb": "Raporlar",
+      "title": "Raporu Düzenle"
+    },
+    "reportPreview": {
+      "charts": {
+        "alertsBySeverity": "Önem Derecesine Göre Uyarılar",
+        "avgCpu": "Ortalama CPU",
+        "avgDisk": "Ortalama Disk",
+        "avgMemory": "Ortalama Bellek",
+        "complianceIssues": "Uyumluluk Sorunları",
+        "complianceScore": "Uyumluluk Puanı",
+        "offline": "Çevrimdışı",
+        "online": "Çevrimiçi",
+        "topAlertingRules": "En Önemli Uyarı Kuralları",
+        "topCpuConsumers": "En İyi CPU Tüketicileri",
+        "totalDevices": "Toplam Cihaz Sayısı"
+      },
+      "emptyDescription": "Rapor ayarlarınızı yapılandırın ve verileri görmek için Önizleme'ye tıklayın.",
+      "emptyTitle": "Önizleme mevcut değil",
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "generated": "Oluşturuldu {{date}}",
+      "generatedWithRecords": "{{date}} - {{count}} kayıt oluşturuldu",
+      "generating": "Rapor önizlemesi oluşturuluyor...",
+      "noDataMatches": "Mevcut filtrelerle eşleşen veri yok.",
+      "pagination": {
+        "page": "Sayfa {{current}} / {{total}}",
+        "showing": "{{start}} ila {{end}} / {{total}} kayıt gösteriliyor"
+      },
+      "refresh": "Yenile",
+      "reportTypes": {
+        "alert_summary": "Uyarı Özeti",
+        "compliance": "Uyumluluk Raporu",
+        "device_inventory": "Cihaz Envanteri",
+        "executive_summary": "Yönetici Özeti",
+        "performance": "Performans Raporu",
+        "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
+        "software_inventory": "Yazılım Envanteri"
+      },
+      "tryAgain": "Tekrar deneyin",
+      "values": {
+        "no": "Hayır",
+        "yes": "Evet"
+      },
+      "viewModes": {
+        "chart": "Grafik",
+        "table": "Masa"
+      }
+    },
+    "reportsList": {
+      "actions": {
+        "delete": "Sil",
+        "edit": "Düzenle",
+        "generateNow": "Şimdi oluştur"
+      },
+      "adhocReport": "Özel Rapor",
+      "confirmDelete": "\"{{name}}\" öğesini silmek istediğinizden emin misiniz?",
+      "createReport": "Rapor Oluştur",
+      "description": "Altyapınız için raporlar oluşturun ve planlayın.",
+      "download": "İndir",
+      "emailRecipients": "E-posta alıcıları",
+      "emptyReportsDescription": "Başlamak için ilk raporunuzu oluşturun.",
+      "emptyReportsTitle": "Henüz rapor yok",
+      "emptyRunsDescription": "Burada görmek için bir rapor oluşturun.",
+      "emptyRunsTitle": "Yakın zamanda çalıştırma yok",
+      "errors": {
+        "deleteReport": "Rapor silinemedi",
+        "downloadFailed": "İndirme başarısız oldu",
+        "fetchReports": "Raporlar getirilemedi",
+        "generateReport": "Rapor oluşturulamadı",
+        "generic": "Bir hata oluştu"
+      },
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "loading": "Raporlar yükleniyor...",
+      "never": "Hiçbir zaman",
+      "newReport": "Yeni Rapor",
+      "nextOccurrence": "Sonraki: {{next}}",
+      "reportTypes": {
+        "alert_summary": "Uyarı Özeti",
+        "compliance": "Uyumluluk Raporu",
+        "device_inventory": "Cihaz Envanteri",
+        "executive_summary": "Yönetici Özeti",
+        "performance": "Performans Raporu",
+        "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
+        "software_inventory": "Yazılım Envanteri"
+      },
+      "runsTable": {
+        "actions": "Eylemler",
+        "completed": "Tamamlandı",
+        "report": "Rapor Et",
+        "started": "Başlatıldı",
+        "status": "Durum"
+      },
+      "schedules": {
+        "daily": "Günlük",
+        "monthly": "Aylık",
+        "one_time": "Tek seferlik",
+        "weekly": "Haftalık"
+      },
+      "status": {
+        "completed": "tamamlandı",
+        "failed": "başarısız oldu",
+        "pending": "beklemede",
+        "running": "çalışıyor"
+      },
+      "table": {
+        "actions": "Eylemler",
+        "format": "Biçimi",
+        "lastGenerated": "Son Oluşturulan",
+        "name": "İsim",
+        "schedule": "Program",
+        "type": "Tür"
+      },
+      "tabs": {
+        "recentRuns": "Son Çalıştırmalar",
+        "savedReports": "Kayıtlı Raporlar"
+      },
+      "templates": "Şablonlar",
+      "title": "Raporlar",
+      "tryAgain": "Tekrar deneyin",
+      "unknownReport": "Bilinmeyen Rapor"
+    },
+    "reportBuilder": {
+      "actions": {
+        "cancel": "İptal",
+        "generateReport": "Rapor oluştur",
+        "preview": "Önizleme",
+        "saveReport": "Raporu kaydet",
+        "updateReport": "Raporu güncelle"
+      },
+      "addCondition": "Koşul ekle",
+      "addRecipient": "Alıcı ekle",
+      "aggregation": "Toplama",
+      "aggregationField": "Toplama alanı",
+      "aggregationOptions": {
+        "avg": "Ortalama",
+        "count": "Sayım",
+        "sum": "Toplam"
+      },
+      "availableFields": "Mevcut alanlar",
+      "chart": {
+        "notEnoughData": "Grafik oluşturmak için yeterli veri yok.",
+        "pieChartPreview": "Pasta grafiği önizlemesi"
+      },
+      "chartTypes": {
+        "bar": "Bar",
+        "line": "Hat",
+        "pie": "Pasta",
+        "table": "Masa"
+      },
+      "dataSource": {
+        "activity": {
+          "includeSystem": {
+            "label": "Sistem hesaplarını dahil et"
+          },
+          "region": {
+            "label": "Bölge",
+            "options": {
+              "all": "Tüm bölgeler",
+              "apac": "Asya Pasifik",
+              "emea": "EMEA",
+              "na": "Kuzey Amerika"
+            }
+          },
+          "source": {
+            "label": "Etkinlik kaynağı",
+            "options": {
+              "admin": "Yönetici işlemleri",
+              "api": "API etkinliği",
+              "auth": "Kimlik Doğrulaması",
+              "system": "Sistem olayları"
+            }
+          },
+          "timeWindow": {
+            "label": "Zaman penceresi",
+            "options": {
+              "last_24h": "Son 24 saat",
+              "last_30d": "Son 30 gün",
+              "last_7d": "Son 7 gün"
+            }
+          }
+        },
+        "alerts": {
+          "severity": {
+            "label": "Önem",
+            "options": {
+              "all": "Tüm önem dereceleri",
+              "critical": "Kritik",
+              "high": "Yüksek",
+              "low": "Düşük",
+              "medium": "Orta"
+            }
+          },
+          "source": {
+            "label": "Uyarı kaynağı",
+            "options": {
+              "all": "Tüm kaynaklar",
+              "monitoring": "İzleme",
+              "operations": "İşlemler",
+              "security": "Güvenlik"
+            }
+          },
+          "status": {
+            "label": "Uyarı durumu",
+            "options": {
+              "acknowledged": "Onaylandı",
+              "all": "Tüm durumlar",
+              "open": "Aç",
+              "resolved": "Çözüldü"
+            }
+          },
+          "timeWindow": {
+            "label": "Zaman penceresi",
+            "options": {
+              "last_24h": "Son 24 saat",
+              "last_30d": "Son 30 gün",
+              "last_7d": "Son 7 gün"
+            }
+          }
+        },
+        "compliance": {
+          "includeExceptions": {
+            "label": "İstisnaları dahil et"
+          },
+          "policySet": {
+            "label": "Politika seti",
+            "options": {
+              "cis": "CIS Benchmarks",
+              "custom": "Özel politikalar",
+              "hipaa": "HIPAA",
+              "iso27001": "ISO 27001"
+            }
+          },
+          "scope": {
+            "label": "Kapsam kapsamı",
+            "options": {
+              "all_devices": "Tüm cihazlar",
+              "by_group": "Cihaz grubuna göre",
+              "by_site": "Siteye göre"
+            }
+          },
+          "scoring": {
+            "label": "Puanlama yöntemi",
+            "options": {
+              "pass_fail": "Başarılı / başarısız",
+              "weighted": "Ağırlıklı puanlama"
+            }
+          }
+        },
+        "devices": {
+          "includeInactive": {
+            "label": "Etkin olmayan cihazları dahil et"
+          },
+          "inventorySource": {
+            "label": "Envanter kaynağı",
+            "options": {
+              "agent": "Temsilci bildirdi",
+              "cmdb": "CMDB içe aktarma",
+              "combined": "Birleştirilmiş kaynaklar"
+            }
+          },
+          "ownership": {
+            "label": "Mülkiyet",
+            "options": {
+              "all": "Tüm cihazlar",
+              "managed": "Yönetilen cihazlar",
+              "unmanaged": "Yönetilmeyen cihazlar"
+            }
+          },
+          "platform": {
+            "label": "Platform",
+            "options": {
+              "all": "Tüm platformlar",
+              "linux": "Linux",
+              "macos": "macOS",
+              "windows": "Windows"
+            }
+          },
+          "scope": {
+            "label": "Cihaz kapsamı",
+            "options": {
+              "all_devices": "Tüm cihazlar",
+              "by_site": "Siteye göre",
+              "by_tag": "Etikete göre"
+            }
+          }
+        },
+        "patches": {
+          "approval": {
+            "label": "Onay durumu",
+            "options": {
+              "approved": "Onaylandı",
+              "deployed": "Dağıtıldı",
+              "pending": "Onay bekleniyor"
+            }
+          },
+          "catalog": {
+            "label": "Yama kataloğu",
+            "options": {
+              "firmware": "Firmware ve BIOS",
+              "os_updates": "İşletim sistemi güncellemeleri",
+              "third_party": "Üçüncü taraf uygulamalar"
+            }
+          },
+          "priority": {
+            "label": "Öncelik",
+            "options": {
+              "critical": "Kritik",
+              "important": "Önemli",
+              "routine": "Rutin"
+            }
+          },
+          "vendor": {
+            "label": "Satıcı",
+            "options": {
+              "all": "Tüm satıcılar",
+              "apple": "Apple",
+              "linux": "Linux",
+              "microsoft": "Microsoft"
+            }
+          }
+        }
+      },
+      "dataSourceSummary": "{{label}}: {{value}}",
+      "dayOfMonth": "Ayın günü",
+      "dayOfWeek": "Haftanın günü",
+      "deviceFilterDescription": "Bu raporun kapsamını aşağıdaki filtreyle eşleşen cihazları kapsayacak şekilde belirleyin.",
+      "emailDistributionList": "E-posta dağıtım listesi",
+      "errors": {
+        "generatePreview": "Önizleme oluşturulamadı",
+        "generic": "Bir hata oluştu",
+        "loadLivePreview": "Canlı önizleme yüklenemedi",
+        "reportNameRequired": "Rapor adı gerekli.",
+        "saveReport": "Rapor kaydedilemedi",
+        "selectExportFormat": "En az bir dışa aktarma formatı seçin.",
+        "templateNameRequired": "Şablon adı gerekli.",
+        "validEmail": "Geçerli bir e-posta adresi girin."
+      },
+      "exportFormats": {
+        "csv": {
+          "description": "Virgülle ayrılmış değerler",
+          "label": "CSV"
+        },
+        "excel": {
+          "description": "Elektronik tablo çalışma kitabı",
+          "label": "Excel"
+        },
+        "pdf": {
+          "description": "Biçimlendirilmiş belge",
+          "label": "PDF"
+        }
+      },
+      "exportFormatsTitle": "Dışa aktarma formatları",
+      "fields": {
+        "activity": {
+          "action": "Eylem",
+          "duration_seconds": "Süre (sn)",
+          "ip_address": "IP adresi",
+          "location": "Konum",
+          "resource": "Kaynak",
+          "result": "Sonuç",
+          "target": "Hedef",
+          "timestamp": "Zaman Damgası",
+          "user": "Kullanıcı"
+        },
+        "alerts": {
+          "alert_id": "Uyarı Kimliği",
+          "device": "Cihaz",
+          "duration_minutes": "Süre (dak)",
+          "resolved_at": "Çözümlenme tarihi:",
+          "rule": "Kural",
+          "severity": "Önem",
+          "source": "Kaynak",
+          "status": "Durum",
+          "triggered_at": "Tetiklenme zamanı"
+        },
+        "compliance": {
+          "control_family": "Kontrol ailesi",
+          "device_count": "Cihazlar",
+          "exception_count": "İstisnalar",
+          "last_audit": "Son denetim",
+          "policy": "Politika",
+          "score": "Puan",
+          "status": "Durum"
+        },
+        "devices": {
+          "cpu": "CPU kullanımı",
+          "disk_usage": "Disk kullanımı",
+          "hostname": "Ana Bilgisayar Adı",
+          "last_seen": "Son görülme",
+          "memory": "Bellek kullanımı",
+          "os": "İşletim Sistemi",
+          "owner": "Sahip",
+          "patch_level": "Yama düzeyi",
+          "serial": "Seri",
+          "site": "Sitesi",
+          "status": "Durum"
+        },
+        "patches": {
+          "approved_at": "Onaylanma tarihi:",
+          "device_count": "Cihazlar",
+          "missing_count": "Eksik",
+          "patch_id": "Yama Kimliği",
+          "release_date": "Yayın tarihi",
+          "severity": "Önem",
+          "status": "Durum",
+          "title": "Başlık",
+          "vendor": "Satıcı"
+        }
+      },
+      "fieldsShared": {
+        "reportName": "Rapor adı",
+        "saveAsTemplate": "Şablon olarak kaydet",
+        "templateName": "Şablon adı"
+      },
+      "filterModes": {
+        "deviceFilter": "Cihaz Filtresi",
+        "recordFilters": "Kayıt Filtreleri"
+      },
+      "filterOperators": {
+        "contains": "İçerir",
+        "gt": "Büyüktür",
+        "is": "",
+        "is_not": "Değil",
+        "lt": "Daha az"
+      },
+      "groupBy": "Gruplama ölçütü",
+      "groupedMetric": {
+        "avg": "Ort. {{field}}",
+        "count": "Sayım",
+        "sum": "Toplam {{field}}",
+        "value": "Değer"
+      },
+      "livePreview": {
+        "description": "Siz raporu yapılandırdıkça güncellenir.",
+        "loading": "Canlı önizleme yükleniyor...",
+        "noData": "Geçerli yapılandırma için önizleme verisi yok.",
+        "previewRows": "Satırları önizleyin",
+        "title": "Canlı önizleme",
+        "untitledReport": "Başlıksız rapor"
+      },
+      "logic": {
+        "and": "VE",
+        "or": "VEYA"
+      },
+      "noFieldsSelected": "Henüz hiçbir alan seçilmedi.",
+      "noFilters": "Henüz filtre yok. İlk koşulunuzu ekleyin.",
+      "noGrouping": "Gruplandırma yok",
+      "noNumericFields": "Sayısal alan yok",
+      "placeholders": {
+        "email": "isim@şirket.com",
+        "reportName": "Aylık Güvenliğe Genel Bakış",
+        "templateName": "Üç Aylık Uyumluluk Paketi",
+        "value": "Değer"
+      },
+      "previewTable": {
+        "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
+      },
+      "reportTypes": {
+        "activity": {
+          "description": "Kullanıcı, yönetici ve sistem etkinliği kayıtları",
+          "label": "Etkinlik"
+        },
+        "alerts": {
+          "description": "Uyarı hacmi, önem derecesi ve yanıt performansı",
+          "label": "Uyarılar"
+        },
+        "compliance": {
+          "description": "Denetime hazırlık ve politika uyumu görünürlüğü",
+          "label": "Uyumluluk"
+        },
+        "devices": {
+          "description": "Yönetilen uç noktalarda envanter ve sağlık durumu",
+          "label": "Cihazlar"
+        },
+        "patches": {
+          "description": "Yama hazırlığı, dağıtım durumu ve kullanıma sunma",
+          "label": "Yamalar"
+        }
+      },
+      "runTime": "Çalıştırma zamanı",
+      "schedule": "Program",
+      "scheduleDetail": {
+        "day": "Gün {{date}}",
+        "everyDay": "Her gün"
+      },
+      "scheduleOptions": {
+        "daily": {
+          "label": "Günlük"
+        },
+        "monthly": {
+          "label": "Aylık"
+        },
+        "weekly": {
+          "label": "Haftalık"
+        }
+      },
+      "sections": {
+        "chartType": {
+          "description": "Raporun nasıl görselleştirileceğini seçin.",
+          "title": "Grafik türü"
+        },
+        "columns": {
+          "description": "Alanları seçin ve yeniden sıralamak için sürükleyin.",
+          "title": "Sütunlar ve alanlar"
+        },
+        "dataSource": {
+          "description": "Bu rapor türü için veri kümesini yapılandırın.",
+          "title": "Veri kaynağı"
+        },
+        "delivery": {
+          "description": "Tempoyu, formatları ve alıcıları ayarlayın.",
+          "title": "Program ve teslimat"
+        },
+        "filters": {
+          "description": "Rapor verilerini kayıtlara veya cihaz özelliklerine göre filtreleyin.",
+          "title": "Filtreler"
+        },
+        "grouping": {
+          "description": "Verileri sayımlar, toplamlar veya ortalamalarla özetleyin.",
+          "title": "Gruplandırma ve toplama"
+        },
+        "reportDetails": {
+          "description": "Rapora bir ad verin ve şablon olup olmayacağına karar verin.",
+          "title": "Rapor ayrıntıları"
+        },
+        "reportType": {
+          "description": "Oluşturduğunuz rapor türünü seçin.",
+          "title": "Rapor türü"
+        }
+      },
+      "selectedFields": "Seçilen alanlar",
+      "values": {
+        "enabled": "Etkin",
+        "off": "Kapalı",
+        "on": "Açık"
+      },
+      "weekDays": {
+        "friday": "Cuma",
+        "monday": "Pazartesi",
+        "saturday": "Cumartesi",
+        "sunday": "Pazar",
+        "thursday": "Perşembe",
+        "tuesday": "Salı",
+        "wednesday": "Çarşamba"
+      },
+      "where": "Nerede"
+    },
+    "reportTemplates": {
+      "blankConfigurationDescription": "Bir raporu sıfırdan yapılandırın veya boş bir yapılandırmayla başlayın.",
+      "createCustomTemplate": "Özel Şablon Oluştur",
+      "custom": "Özel",
+      "description": "Seçilen şablonlardan başlayın ve yayınlamadan önce ayrıntıları uyarlayın.",
+      "errors": {
+        "createReport": "Rapor oluşturulamadı",
+        "fetchTemplates": "Rapor şablonları getirilemedi",
+        "loadTemplates": "Şablonlar yüklenemiyor"
+      },
+      "formats": {
+        "csv": "CSV",
+        "excel": "Excel",
+        "pdf": "PDF"
+      },
+      "last30Days": "son 30 gün",
+      "previewAlt": "{{name}} önizleme",
+      "reportTypes": {
+        "activity": "Etkinlik",
+        "alert_summary": "Uyarı Özeti",
+        "alerts": "Uyarılar",
+        "compliance": "Uyumluluk Raporu",
+        "device_inventory": "Cihaz Envanteri",
+        "devices": "Cihazlar",
+        "executive_summary": "Yönetici Özeti",
+        "patches": "Yamalar",
+        "performance": "Performans Raporu",
+        "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
+        "software_inventory": "Yazılım Envanteri"
+      },
+      "schedules": {
+        "daily": "Günlük",
+        "monthly": "Aylık",
+        "one_time": "Tek seferlik",
+        "weekly": "Haftalık"
+      },
+      "spec": {
+        "cadence": "Ritim",
+        "defaultRange": "Varsayılan aralık",
+        "format": "Biçimi"
+      },
+      "success": {
+        "created": "\"{{name}}\" oluşturuldu. Raporlar listesinden oluşturun."
+      },
+      "syncing": "Şablonlar senkronize ediliyor...",
+      "template": "Şablon",
+      "templates": {
+        "alert_summary": {
+          "description": "En önemli uyarılar, önem derecesi eğilimleri ve yanıt iş yükü.",
+          "name": "Uyarı Özeti Raporu"
+        },
+        "billing_usage": {
+          "description": "Lisans kullanımı, kullanım katmanları ve ters ibraz özetleri.",
+          "name": "Faturalandırma/Kullanım Raporu"
+        },
+        "device_health": {
+          "description": "Cihaz durumu puanlamasıyla CPU, bellek ve çalışma süresi eğilimleri.",
+          "name": "Cihaz Sağlık Raporu"
+        },
+        "executive_summary": {
+          "description": "Liderliğe yönelik üst düzey KPI'lar, risk duruşu ve stratejik eğilimler.",
+          "name": "Yönetici Özeti"
+        },
+        "patch_compliance": {
+          "description": "Yama kapsamı, gecikmiş güncellemeler ve düzeltme durumu.",
+          "name": "Yama Uyumluluk Raporu"
+        },
+        "security_compliance_posture": {
+          "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
+          "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
+        },
+        "sla_compliance": {
+          "description": "SLA uyum, ihlal riski ve yanıt zaman çizelgeleri.",
+          "name": "SLA Uyumluluk Raporu"
+        },
+        "technician_activity": {
+          "description": "Bilet hacmi, cihaz dokunuşları ve çözünürlük hızı.",
+          "name": "Teknisyen Faaliyet Raporu"
+        }
+      },
+      "title": "Rapor Şablonları",
+      "useTemplate": "Şablonu kullan",
+      "useTemplateTitle": "{{name}} kullanın"
+    }
+  }
+}

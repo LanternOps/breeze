@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
-const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const;
+const translatedLocales = ['pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const;
 type TranslatedLocale = (typeof translatedLocales)[number];
 
 // Per-namespace count caps for exact-English duplicates that survived review
@@ -58,7 +58,7 @@ const namespaceDuplicateBaselines = {
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
-    'settings.json': 111,
+    'settings.json': 112,
     'tickets.json': 13,
     'vulnerabilities.json': 13,
   },
@@ -108,7 +108,7 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 60,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
-    'settings.json': 114,
+    'settings.json': 115,
     'tickets.json': 13,
     'vulnerabilities.json': 16,
   },
@@ -165,7 +165,7 @@ const namespaceDuplicateBaselines = {
     // in French.
     // +3: tenant variables page — "Variables", "Description" and "Secret"
     // are spelled identically in French.
-    'settings.json': 149,
+    'settings.json': 150,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -216,7 +216,7 @@ const namespaceDuplicateBaselines = {
     // in French.
     // +3: tenant variables page — "Variables", "Description" and "Secret"
     // are spelled identically in French.
-    'settings.json': 154,
+    'settings.json': 155,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },
@@ -261,7 +261,7 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 54,
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
-    'settings.json': 166,
+    'settings.json': 167,
     'tickets.json': 13,
     'vulnerabilities.json': 20,
   },
@@ -298,9 +298,33 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
     'security.json': 163,
-    'settings.json': 155,
+    'settings.json': 156,
     'tickets.json': 6,
     'vulnerabilities.json': 17,
+  },
+  'tr-TR': {
+    'admin.json': 14,
+    'ai.json': 1,
+    'alerts.json': 25,
+    'auth.json': 14,
+    'backup.json': 25,
+    'billing.json': 16,
+    'common.json': 48,
+    'devices.json': 77,
+    'discovery.json': 9,
+    'integrations.json': 22,
+    'patches.json': 11,
+    'peripherals.json': 4,
+    'policies.json': 115,
+    'portal.json': 2,
+    'quick.json': 1,
+    'remote.json': 4,
+    'reports.json': 31,
+    'scripts.json': 38,
+    'security.json': 86,
+    'settings.json': 64,
+    'tickets.json': 11,
+    'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
 

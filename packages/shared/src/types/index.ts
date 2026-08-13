@@ -14,7 +14,7 @@ export type OrgType = 'customer' | 'internal';
 // `offboarding` (#2774): terminal-intent drain state — users locked out, agents
 // kept authenticated (self_uninstall-only) until drained, then auto-`churned`.
 export type OrgStatus = 'active' | 'suspended' | 'trial' | 'churned' | 'offboarding';
-export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE' | 'it-IT';
+export type SupportedLocale = 'en' | 'pt-BR' | 'es-419' | 'fr-FR' | 'fr-CA' | 'de-DE' | 'it-IT' | 'tr-TR';
 
 export interface Partner {
   id: string;

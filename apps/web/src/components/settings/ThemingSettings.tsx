@@ -59,6 +59,7 @@ const localeOptions = [
   { value: 'fr-CA' as const, labelKey: 'language.frCALabel', defaultLabel: 'Français (Canada)', descriptionKey: 'language.frCADescription', defaultDescription: 'French (Canada)' },
   { value: 'de-DE' as const, labelKey: 'language.deDELabel', defaultLabel: 'Deutsch (Deutschland)', descriptionKey: 'language.deDEDescription', defaultDescription: 'German (Germany)' },
   { value: 'it-IT' as const, labelKey: 'language.itITLabel', defaultLabel: 'Italiano (Italia)', descriptionKey: 'language.itITDescription', defaultDescription: 'Italian (Italy)' },
+  { value: 'tr-TR' as const, labelKey: 'language.trTRLabel', defaultLabel: 'Türkçe (Türkiye)', descriptionKey: 'language.trTRDescription', defaultDescription: 'Turkish (Türkiye)' },
 ];
 
 /**

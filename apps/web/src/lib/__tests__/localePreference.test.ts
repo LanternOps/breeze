@@ -25,11 +25,11 @@ describe('locale preference', () => {
   });
 
   it('exposes exactly the supported locales', () => {
-    expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']);
+    expect(LOCALE_OPTIONS).toEqual(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR']);
   });
 
   it('validates locales', () => {
-    for (const locale of ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT']) {
+    for (const locale of ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR']) {
       expect(isValidLocale(locale)).toBe(true);
       expect(normalizeLocale(locale)).toBe(locale);
     }
@@ -45,6 +45,7 @@ describe('locale preference', () => {
     ['fr-BE', 'fr-FR'],
     ['de-AT', 'de-DE'],
     ['it-CH', 'it-IT'],
+    ['tr', 'tr-TR'],
   ] as const)('maps browser locale %s to %s', (browserLocale, expected) => {
     vi.stubGlobal('navigator', { languages: [browserLocale], language: browserLocale });
     expect(detectBrowserLocale()).toBe(expected);
