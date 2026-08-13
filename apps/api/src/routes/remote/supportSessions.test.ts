@@ -151,7 +151,7 @@ describe('POST /support-sessions', () => {
     // The stored hash must be the sha256 of the RAW code we handed the tech.
     const raw = body.code.replace(/-/g, '');
     expect((insertedValues[0] as { codeHash: string }).codeHash).toBe(hashSupportCode(raw));
-    expect(body.landingUrl).toBe(`https://us.2breeze.app/quick?code=${raw}`);
+    expect(body.landingUrl).toBe(`https://us.2breeze.app/remote-access?code=${raw}`);
     expect((insertedValues[0] as { orgId: string }).orgId).toBe('qs-org');
   });
 

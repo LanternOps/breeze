@@ -71,6 +71,8 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/settings/profile')).toBe('self');
     expect(getRouteScope('/admin/quarantined')).toBe('platform');
     expect(getRouteScope('/login')).toBe('auth');
+    expect(getRouteScope('/quick')).toBe('auth');
+    expect(getRouteScope('/remote-access')).toBe('auth');
   });
 
   it('returns null for routes outside the registry', () => {
