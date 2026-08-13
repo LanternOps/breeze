@@ -121,8 +121,35 @@ func WriteScriptFile(content, scriptType string) (string, error) {
 		perm = 0700 // Executable on Unix
 	}
 
+	payload := []byte(content)
+
+	// Windows PowerShell 5.1 (the in-box powershell.exe, still the default on
+	// every supported Windows release) decodes a .ps1 with NO byte-order mark as
+	// ANSI/Windows-1252, not UTF-8. Any multi-byte UTF-8 character therefore
+	// arrives as mojibake, and the damage is not cosmetic: an em dash (U+2014,
+	// UTF-8 E2 80 94) decodes to â€" whose final byte 0x94 is CP1252 RIGHT
+	// DOUBLE QUOTATION MARK. Inside a double-quoted string that injected quote
+	// breaks quote pairing, and every subsequent string literal in the file
+	// parses shifted by one — the script dies at ParseException having executed
+	// nothing, with empty stdout AND empty stderr from the caller's point of
+	// view.
+	//
+	// Observed live 2026-08-13: three NU Windows scripts failed with
+	// "Array index expression is missing or not valid" pointing at a plainly
+	// valid Write-Output line, solely because a comment 20 lines earlier
+	// contained an em dash. It reads as a broken script or a blocked
+	// ExecutionPolicy; it is neither.
+	//
+	// A UTF-8 BOM makes PowerShell 5.1 decode as UTF-8. PowerShell 7+, pwsh and
+	// every non-Windows shell already default to UTF-8 and tolerate the BOM, so
+	// this is scoped to .ps1 rather than applied to every script type — a BOM on
+	// a #! script would break the shebang.
+	if strings.EqualFold(ext, ".ps1") {
+		payload = append([]byte{0xEF, 0xBB, 0xBF}, payload...)
+	}
+
 	// Write the script content
-	if err := os.WriteFile(scriptPath, []byte(content), perm); err != nil {
+	if err := os.WriteFile(scriptPath, payload, perm); err != nil {
 		return "", fmt.Errorf("failed to write script file: %w", err)
 	}
 

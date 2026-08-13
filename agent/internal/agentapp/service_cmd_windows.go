@@ -58,8 +58,8 @@ var serviceInstallCmd = &cobra.Command{
 		defer m.Disconnect()
 
 		s, err := m.CreateService(windowsServiceName, serviceExePath, mgr.Config{
-			DisplayName:  "Breeze RMM Agent",
-			Description:  "Breeze Remote Monitoring and Management Agent",
+			DisplayName:  "NU Agent",
+			Description:  "Nodes Unlimited Remote Monitoring and Management Agent",
 			StartType:    mgr.StartAutomatic,
 			ErrorControl: mgr.ErrorNormal,
 		}, "run")

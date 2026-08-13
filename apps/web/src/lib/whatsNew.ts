@@ -27,4 +27,16 @@ export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
   },
+  {
+    version: '0.104.1',
+    date: '2026-08-13',
+    title: 'Nodes Unlimited branding, working agent installs, and a trusted update chain',
+    highlights: [
+      'Agents are now NU Agent throughout — service names, installer text and system service descriptions.',
+      'Fixed the crash that stopped agents starting on Apple Silicon (M-series) Macs entirely.',
+      'The server now serves our own signed agent builds instead of upstream ones.',
+      'Added native Windows on ARM agent builds, which were previously unavailable.',
+      'New Linux endpoint support, verified end-to-end from enrollment through remote script execution.',
+    ],
+  },
 ];

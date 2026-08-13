@@ -19,6 +19,7 @@ set -euo pipefail
 CN="${CN:-NU Agent Signing}"
 OUT_DIR="${OUT_DIR:-$HOME/.nu-agent-signing}"
 DAYS="${DAYS:-3650}"
+P12_PASS="${P12_PASS:-nu-agent-signing}"
 
 if security find-certificate -c "$CN" >/dev/null 2>&1; then
   echo "identity '$CN' already exists in the login keychain — reusing it."
@@ -52,14 +53,23 @@ EOF
 openssl req -x509 -newkey rsa:2048 -nodes -days "$DAYS" \
   -keyout nu-signing.key -out nu-signing.crt -config openssl.cnf
 
+# -keypbe/-certpbe/-macalg pin the LEGACY PKCS#12 algorithms. Modern OpenSSL and
+# LibreSSL default to AES-256-CBC + SHA-2, which macOS's Security framework
+# cannot read: `security import` fails with
+#   "MAC verification failed during PKCS12 import (wrong password?)"
+# — misleading, because the password is fine and the algorithm is the problem.
 openssl pkcs12 -export -inkey nu-signing.key -in nu-signing.crt \
-  -name "$CN" -out nu-signing.p12 -passout pass:
+  -name "$CN" -out nu-signing.p12 -passout "pass:$P12_PASS" \
+  -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
 
 chmod 600 nu-signing.key nu-signing.p12
 
 echo "==> importing into the login keychain"
+# A NON-EMPTY password is required: `security import` fails an empty-password
+# PKCS#12 with "MAC verification failed ... (wrong password?)" even though the
+# password is correct. The .p12 never leaves this 0700 directory.
 security import nu-signing.p12 -k "$HOME/Library/Keychains/login.keychain-db" \
-  -P "" -T /usr/bin/codesign -T /usr/bin/productsign
+  -P "$P12_PASS" -T /usr/bin/codesign -T /usr/bin/productsign
 
 # Trust it for code signing so codesign will use it without prompting.
 echo "==> marking the certificate as trusted (may prompt for your login password)"

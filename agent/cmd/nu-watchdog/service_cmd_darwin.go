@@ -55,7 +55,7 @@ const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Manage the Breeze Watchdog system service (launchd)",
+		Short: "Manage the NU Watchdog system service (launchd)",
 	}
 	cmd.AddCommand(serviceInstallCmd())
 	cmd.AddCommand(serviceUninstallCmd())
@@ -84,7 +84,7 @@ func serviceInstallCmd() *cobra.Command {
 				if stopErr := exec.Command("launchctl", "unload", watchdogPlistDst).Run(); stopErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 				} else {
-					fmt.Println("Stopped existing Breeze Watchdog service.")
+					fmt.Println("Stopped existing NU Watchdog service.")
 				}
 			}
 
@@ -126,7 +126,7 @@ func serviceInstallCmd() *cobra.Command {
 				}
 			}
 
-			fmt.Println("Breeze Watchdog service installed and started.")
+			fmt.Println("NU Watchdog service installed and started.")
 			return nil
 		},
 	}
@@ -164,7 +164,7 @@ func serviceUninstallCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", watchdogBinaryPath, err)
 			}
 
-			fmt.Println("Breeze Watchdog service uninstalled.")
+			fmt.Println("NU Watchdog service uninstalled.")
 			return nil
 		},
 	}
@@ -199,7 +199,7 @@ func serviceStartCmd() *cobra.Command {
 				}
 			}
 
-			fmt.Println("Breeze Watchdog service started.")
+			fmt.Println("NU Watchdog service started.")
 			return nil
 		},
 	}
@@ -228,7 +228,7 @@ func serviceStopCmd() *cobra.Command {
 				}
 			}
 
-			fmt.Println("Breeze Watchdog service stopped.")
+			fmt.Println("NU Watchdog service stopped.")
 			return nil
 		},
 	}

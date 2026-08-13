@@ -1,0 +1,45 @@
+# NU Agent Linux test endpoints.
+#
+#   ./build.sh                 # stage binaries + build the image
+#   docker compose up -d
+#   docker compose exec linux-endpoint nu-enroll
+#
+# Two services so you can prove the RMM handles more than one device and tell
+# them apart in the console. Bring up only what you need:
+#   docker compose up -d linux-endpoint
+name: nu-agent-linux-test
+
+x-endpoint: &endpoint
+  image: nu-agent-linux-test:latest
+  build:
+    context: .
+    dockerfile: Dockerfile
+  # systemd needs to create cgroups, mount, and manage units. Everything here is
+  # confined to a throwaway container; nothing is mounted from the host.
+  privileged: true
+  # cgroupns stays at the default (private) so systemd gets its own cgroup2 root
+  # to write into. Forcing `cgroup: host` hands it the host hierarchy, where it
+  # does not own the tree it is trying to manage.
+  tmpfs:
+    - /run
+    - /run/lock
+    - /tmp
+  # Default bridge networking already gives outbound internet, which is all the
+  # agent needs to reach the RMM. No ports are published — nothing listens.
+  environment:
+    NU_SERVER: ${NU_SERVER:-https://rmm.nodesunlimited.com}
+    NU_ENROLLMENT_KEY: ${NU_ENROLLMENT_KEY:-}
+    NU_ENROLLMENT_SECRET: ${NU_ENROLLMENT_SECRET:-}
+  stop_grace_period: 30s
+
+services:
+  linux-endpoint:
+    <<: *endpoint
+    hostname: nu-linux-test-01
+    container_name: nu-linux-test-01
+
+  linux-endpoint-2:
+    <<: *endpoint
+    hostname: nu-linux-test-02
+    container_name: nu-linux-test-02
+    profiles: [ "two" ]
