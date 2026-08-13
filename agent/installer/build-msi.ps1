@@ -27,7 +27,17 @@
     [string]$UserHelperExePath = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath = ""
+    [string]$OutputPath = "",
+
+    # MSI platform. "x64" (default) is native on Intel/AMD Windows — nearly
+    # every business PC — and runs on ARM64 Windows through the OS's built-in
+    # x64 emulation. "arm64" builds a NATIVE ARM64 package (wix -arch arm64):
+    # no emulation overhead on Surface-class ARM devices. Windows refuses to
+    # install an arm64 MSI on an x64 machine, so x64 stays the safe default
+    # everywhere the architecture is unknown.
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("x64", "arm64")]
+    [string]$Arch = "x64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,17 +48,21 @@ $taskXmlPath = Join-Path $repoRoot "service\\windows\\nu-agent-user-task.xml"
 $installUserHelperScriptPath = Join-Path $repoRoot "scripts\\install\\install-windows.ps1"
 $removeUserHelperScriptPath = Join-Path $PSScriptRoot "remove-windows-task.ps1"
 
+# Go's GOARCH spelling for the exe filenames (amd64/arm64) vs MSI platform
+# spelling (x64/arm64).
+$goArch = if ($Arch -eq "x64") { "amd64" } else { "arm64" }
+
 if ([string]::IsNullOrWhiteSpace($AgentExePath)) {
-    $AgentExePath = Join-Path $repoRoot "nu-agent-windows-amd64.exe"
+    $AgentExePath = Join-Path $repoRoot "nu-agent-windows-$goArch.exe"
 }
 if ([string]::IsNullOrWhiteSpace($BackupExePath)) {
-    $BackupExePath = Join-Path $repoRoot "nu-backup-windows-amd64.exe"
+    $BackupExePath = Join-Path $repoRoot "nu-backup-windows-$goArch.exe"
 }
 if ([string]::IsNullOrWhiteSpace($WatchdogExePath)) {
-    $WatchdogExePath = Join-Path $repoRoot "nu-watchdog-windows-amd64.exe"
+    $WatchdogExePath = Join-Path $repoRoot "nu-watchdog-windows-$goArch.exe"
 }
 if ([string]::IsNullOrWhiteSpace($UserHelperExePath)) {
-    $UserHelperExePath = Join-Path $repoRoot "nu-user-helper-windows-amd64.exe"
+    $UserHelperExePath = Join-Path $repoRoot "nu-user-helper-windows-$goArch.exe"
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "..\\dist\\nu-agent.msi"
@@ -120,7 +134,7 @@ else {
 $wixArgs = @(
     "build",
     "$installerPath",
-    "-arch", "x64",
+    "-arch", $Arch,
     "-d", "Version=$msiVersion",
     "-d", "ProductName=$editionProductName",
     "-d", "UpgradeCode=$editionUpgradeCode",

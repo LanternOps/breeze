@@ -32,6 +32,7 @@ import {
 import {
   buildMacosInstallerZip,
   fetchRegularMsi,
+  fetchArm64Msi,
   assertMacosInstallerPkgsReachable,
   fetchMacosInstallerAppZip,
   serveWindowsBootstrapMsi,
@@ -411,7 +412,7 @@ export interface MintChildEnrollmentKeyInput {
   /** Display name suffix for the child key. */
   nameSuffix?: string;
   /** Optional installer platform to persist on the row. */
-  installerPlatform?: "windows" | "macos" | null;
+  installerPlatform?: "windows" | "windows-arm64" | "macos" | null;
 }
 
 export interface MintChildEnrollmentKeyResult {
@@ -568,7 +569,7 @@ const installerQuerySchema = z.object({
 });
 
 const installerLinkSchema = z.object({
-  platform: z.enum(["windows", "macos"]),
+  platform: z.enum(["windows", "windows-arm64", "macos"]),
   count: z.number().int().min(1).max(100000).optional(),
   ttlMinutes: z.number().int().min(1).max(MAX_TTL_MINUTES).optional(),
 }).strict();
@@ -1405,9 +1406,9 @@ enrollmentKeyRoutes.get(
     const { count: childMaxUsage = 1, ttlMinutes: childTtlMinutes } =
       c.req.valid("query");
 
-    if (platform !== "windows" && platform !== "macos") {
+    if (platform !== "windows" && platform !== "windows-arm64" && platform !== "macos") {
       return c.json(
-        { error: 'Invalid platform. Must be "windows" or "macos".' },
+        { error: 'Invalid platform. Must be "windows", "windows-arm64" or "macos".' },
         400,
       );
     }
@@ -1628,7 +1629,7 @@ enrollmentKeyRoutes.get(
     // No per-customer signing, no child key here; the bootstrap endpoint
     // mints the child key lazily on consume (mirrors the macOS path above).
     // ----------------------------------------------------------------
-    if (platform === "windows") {
+    if (platform === "windows" || platform === "windows-arm64") {
       // Encode the filename host BEFORE issuing a bootstrap token, so a URL
       // that can never enroll (non-https, host not expressible in a Windows
       // filename) fails loudly with the reason instead of serving an MSI
@@ -1665,7 +1666,15 @@ enrollmentKeyRoutes.get(
 
       let msi: Buffer;
       try {
-        msi = await fetchRegularMsi();
+        if (platform === "windows-arm64") {
+          const arm = await fetchArm64Msi();
+          if (!arm) {
+            return c.json({ error: "Native arm64 MSI is not staged on this server; use the windows (x64) installer — it runs on ARM64 via OS emulation." }, 404);
+          }
+          msi = arm;
+        } else {
+          msi = await fetchRegularMsi();
+        }
       } catch (err) {
         console.error("[installer] failed to fetch signed MSI:", err);
         captureException(err, c);
@@ -2263,7 +2272,7 @@ export async function checkInstallerSignSpend(
 async function serveInstaller(
   c: Context,
   keyRow: typeof enrollmentKeys.$inferSelect,
-  platform: "windows" | "macos",
+  platform: "windows" | "windows-arm64" | "macos",
   rawToken: string,
   cleanupOnFailure = false,
   signSpendBucketChecked = false,
@@ -2350,7 +2359,7 @@ async function serveInstaller(
   // fetch the static signed MSI, and embed the token in the filename.
   // No per-customer signing and no child key created here.
   // ----------------------------------------------------------------
-  if (platform === "windows") {
+  if (platform === "windows" || platform === "windows-arm64") {
     // Encode the filename host BEFORE issuing a bootstrap token, so a URL
     // that can never enroll (non-https, host not expressible in a Windows
     // filename) fails loudly with the reason instead of serving an MSI
@@ -2403,7 +2412,15 @@ async function serveInstaller(
 
     let msi: Buffer;
     try {
-      msi = await fetchRegularMsi();
+      if (platform === "windows-arm64") {
+        const arm = await fetchArm64Msi();
+        if (!arm) {
+          return c.json({ error: "Native arm64 MSI is not staged on this server; use the windows (x64) installer — it runs on ARM64 via OS emulation." }, 404);
+        }
+        msi = arm;
+      } else {
+        msi = await fetchRegularMsi();
+      }
     } catch (err) {
       console.error("[public-download] Failed to fetch MSI:", err);
       captureException(err, c);
@@ -2598,9 +2615,9 @@ publicEnrollmentRoutes.get(
     const platform = c.req.param("platform");
     const { h } = c.req.valid("query");
 
-    if (platform !== "windows" && platform !== "macos") {
+    if (platform !== "windows" && platform !== "windows-arm64" && platform !== "macos") {
       return c.json(
-        { error: 'Invalid platform. Must be "windows" or "macos".' },
+        { error: 'Invalid platform. Must be "windows", "windows-arm64" or "macos".' },
         400,
       );
     }

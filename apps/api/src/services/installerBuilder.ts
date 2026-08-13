@@ -50,7 +50,16 @@ if errorlevel 1 (
 
 set "SCRIPT_DIR=%~dp0"
 set "ENROLLMENT_JSON=%SCRIPT_DIR%enrollment.json"
+
+REM Pick the native MSI for this machine. ARM64 Windows reports
+REM PROCESSOR_ARCHITECTURE=ARM64 (in a native shell); if a native arm64
+REM package was bundled, prefer it -- otherwise the x64 package still works
+REM there through the OS's built-in emulation. Plain x64 machines always get
+REM the x64 package (Windows refuses cross-arch MSI installs).
 set "MSI_PATH=%SCRIPT_DIR%breeze-agent.msi"
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
+    if exist "%SCRIPT_DIR%breeze-agent-arm64.msi" set "MSI_PATH=%SCRIPT_DIR%breeze-agent-arm64.msi"
+)
 
 if not exist "%ENROLLMENT_JSON%" (
     echo Error: enrollment.json not found
@@ -83,7 +92,11 @@ for /f "usebackq tokens=1,* delims=:" %%a in (\`type "%ENROLLMENT_JSON%"\`) do (
 )
 
 set ENROLLMENT_KEY="${enrollmentKey}"
-set ENROLL_CMD="%ProgramFiles%\\Breeze\\breeze-agent.exe" enroll "%ENROLLMENT_KEY%" --server "%SERVER_URL%"
+REM The NU packages install nu-agent.exe; upstream packages installed
+REM breeze-agent.exe. Accept either so this wrapper works with both.
+set "AGENT_EXE=%ProgramFiles%\\Breeze\\nu-agent.exe"
+if not exist "%AGENT_EXE%" set "AGENT_EXE=%ProgramFiles%\\Breeze\\breeze-agent.exe"
+set ENROLL_CMD="%AGENT_EXE%" enroll "%ENROLLMENT_KEY%" --server "%SERVER_URL%"
 if defined ENROLLMENT_SECRET if not "%ENROLLMENT_SECRET%"=="" (
     set ENROLL_CMD=%ENROLL_CMD% --enrollment-secret "%ENROLLMENT_SECRET%"
 )
@@ -113,7 +126,11 @@ interface WindowsZipValues {
 
 export async function buildWindowsInstallerZip(
   msiBuffer: Buffer,
-  values: WindowsZipValues
+  values: WindowsZipValues,
+  // Optional NATIVE arm64 MSI. When present it ships alongside the x64 one
+  // and install.bat selects it on ARM64 Windows (PROCESSOR_ARCHITECTURE);
+  // when absent, ARM devices fall back to the x64 MSI under OS emulation.
+  arm64MsiBuffer?: Buffer | null
 ): Promise<Buffer> {
   assertValidEnrollmentKey(values.enrollmentKey);
   return new Promise((resolve, reject) => {
@@ -125,6 +142,9 @@ export async function buildWindowsInstallerZip(
     archive.on('error', reject);
 
     archive.append(msiBuffer, { name: 'breeze-agent.msi' });
+    if (arm64MsiBuffer) {
+      archive.append(arm64MsiBuffer, { name: 'breeze-agent-arm64.msi' });
+    }
 
     const enrollmentJson = JSON.stringify(
       {
@@ -300,6 +320,22 @@ export async function fetchRegularMsi(): Promise<Buffer> {
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   return readFile(join(binaryDir, 'breeze-agent.msi'));
+}
+
+/**
+ * Optional NATIVE arm64 MSI (local binary source only — upstream's GitHub
+ * releases never shipped one). Returns null when the file isn't staged, in
+ * which case ARM64 Windows devices install the x64 MSI under OS emulation.
+ */
+export async function fetchArm64Msi(): Promise<Buffer | null> {
+  if (getBinarySource() === 'github') return null;
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  try {
+    return await readFile(join(binaryDir, 'breeze-agent-arm64.msi'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 /**

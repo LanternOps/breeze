@@ -128,28 +128,28 @@ jobs:
       #    in the fleet, so this build upgrades existing installs in place.
       #    SelfHost is a different UpgradeCode lineage — using it would leave
       #    two parallel installs instead of an upgrade.
-      #  * arm64: build-msi.ps1 hardcodes `-arch x64` in its wix args and
-      #    exposes no architecture parameter, so per policy (never guess extra
-      #    script params) we ship x64 only. The arm64 exes are still built
-      #    above so the gap is only in packaging.
-      #    TODO(arm64): add an -Arch param to build-msi.ps1 (wix -arch arm64 +
-      #    arm64 exe paths), then invoke it a second time here for
-      #    dist/nu-agent-arm64.msi.
-      - name: Build x64 MSI
+      #  * Both architectures are packaged: x64 (native on Intel/AMD, emulated
+      #    on ARM64 Windows) and a NATIVE arm64 MSI (build-msi.ps1 -Arch).
+      #    Windows refuses cross-arch MSI installs, so the two never collide.
+      - name: Build x64 + arm64 MSIs
         shell: pwsh
         env:
           AGENT_VERSION: ${{ steps.version.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & pwsh -File agent/installer/build-msi.ps1 `
-            -Version $env:AGENT_VERSION `
-            -AgentExePath      (Resolve-Path 'agent/bin/nu-agent-windows-amd64.exe') `
-            -BackupExePath     (Resolve-Path 'agent/bin/nu-backup-windows-amd64.exe') `
-            -WatchdogExePath   (Resolve-Path 'agent/bin/nu-watchdog-windows-amd64.exe') `
-            -UserHelperExePath (Resolve-Path 'agent/bin/nu-user-helper-windows-amd64.exe') `
-            -OutputPath        (Join-Path $PWD 'dist/nu-agent-x64.msi')
-          if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 failed with exit code $LASTEXITCODE" }
+          foreach ($arch in @('x64', 'arm64')) {
+            $goArch = if ($arch -eq 'x64') { 'amd64' } else { 'arm64' }
+            & pwsh -File agent/installer/build-msi.ps1 `
+              -Version $env:AGENT_VERSION `
+              -Arch $arch `
+              -AgentExePath      (Resolve-Path "agent/bin/nu-agent-windows-$goArch.exe") `
+              -BackupExePath     (Resolve-Path "agent/bin/nu-backup-windows-$goArch.exe") `
+              -WatchdogExePath   (Resolve-Path "agent/bin/nu-watchdog-windows-$goArch.exe") `
+              -UserHelperExePath (Resolve-Path "agent/bin/nu-user-helper-windows-$goArch.exe") `
+              -OutputPath        (Join-Path $PWD "dist/nu-agent-$arch.msi")
+            if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 ($arch) failed with exit code $LASTEXITCODE" }
+          }
 
       # Shipped UNSIGNED by policy (no Apple/Authenticode blocker for the NU
       # fleet); release.yml's azure signing steps are intentionally absent.
