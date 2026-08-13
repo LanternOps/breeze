@@ -22,6 +22,7 @@ import { quoteImages } from '../../db/schema/quotes';
 import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
+import { getQuoteRecipients } from '../../services/quoteLifecycle';
 import {
   renderContractBlocksForClient,
   loadContractPdfInputs,
@@ -113,7 +114,23 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // carry `authoring`.
     const authoring = await loadContractBlockAuthoring(detail.blocks);
     const blocksForEditor = attachContractAuthoring(blocks, authoring);
-    return c.json({ data: { ...detail, blocks: blocksForEditor, branding } });
+    // Who this quote actually went to. Written at send but, until now, only ever
+    // read by the portal's signer-authorization check — so the tech who sent it
+    // had no way to see the addresses. Empty on drafts and on legacy sends that
+    // predate quote_recipients.
+    const recipients = await getQuoteRecipients(id);
+    // Strip the accept-token identity before it leaves the API. getQuote reads
+    // the whole `quotes` row, but these four columns are classified
+    // excludedSensitive in CORE_TENANT_EXPORT_POLICY (they are the material
+    // that reproduces a live accept credential) — shipping them to every
+    // quotes:read holder would hand exactly the users we deliberately deny the
+    // share-link endpoint everything except the signing key.
+    const {
+      acceptTokenJti: _jti, acceptTokenIssuedAt: _iat,
+      acceptTokenExpiresAt: _exp, acceptTokenKid: _kid,
+      ...quoteForClient
+    } = detail.quote;
+    return c.json({ data: { ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, recipients } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

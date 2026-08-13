@@ -27,7 +27,12 @@ vi.mock('../../services/permissions', async (importActual) => {
 // Stub the services the route file imports so mounting it never touches the DB.
 vi.mock('../../services/quoteLifecycle', () => ({
   sendQuote: vi.fn(async () => ({ quote: { id: 'q1', status: 'sent' }, emailed: false, acceptUrl: 'http://x/quote/t' })),
+  resendQuote: vi.fn(async () => ({ quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true, acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false })),
+  getQuoteShareLink: vi.fn(async () => ({ acceptUrl: 'http://x/quote/t', origin: 'reproduced', reissued: false, recipients: ['ap@customer.example'], orgId: 'org1' })),
+  getQuoteRecipients: vi.fn(async () => []),
 }));
+// The two new routes audit-log; the writer is fire-and-forget and DB-backed.
+vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/quoteService', () => ({ getQuote: vi.fn() }));
 vi.mock('../../jobs/quoteSendQueue', () => ({
   scheduleQuoteSend: vi.fn(),
@@ -349,5 +354,107 @@ describe('GET /:id/contract-file/:blockId', () => {
 
     const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/contract-file/${BLOCK_ID}`, { method: 'GET' });
     expect(res.status).toBe(404);
+  });
+});
+
+
+/**
+ * Re-send + share link are quotes:send, NOT quotes:read: each hands the
+ * customer a live accept credential. A tech with read-only access must not be
+ * able to pull the link out of the UI.
+ */
+describe('POST /:id/resend', () => {
+  const PERMS = ['quotes:read', 'quotes:write', 'quotes:send'];
+
+  it('403s a quotes:read + quotes:write user without quotes:send', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write']).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  it('403s a wrong scope (organization) even with quotes:send', async () => {
+    const res = await appWith('organization', ['quotes:send']).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  it('passes the gate and forwards the composer body', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: ['buyer@customer.example'], message: 'bumping this' }),
+    });
+    expect(res.status).toBe(200);
+    expect(vi.mocked(resendQuote)).toHaveBeenCalledWith(QUOTE_ID, expect.anything(), {
+      to: ['buyer@customer.example'], cc: undefined, subject: undefined,
+      includePdf: undefined, message: 'bumping this',
+    });
+  });
+
+  it('400s an invalid recipient email', async () => {
+    const res = await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to: ['not-an-email'] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // The server swallows delivery failures, so the request still 200s. The
+  // audit record is the only durable trace that nothing actually went out.
+  it('audit-logs result:failure when no email was delivered', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    vi.mocked(resendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: false,
+      emailReason: 'no_billing_contact', acceptUrl: 'http://x/quote/t',
+      origin: 'reproduced', reissued: false,
+    } as never);
+    await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.resend', result: 'failure',
+    }));
+  });
+
+  // `origin` is what distinguishes "the customer's old link still works" from
+  // "their old link is dead" — a bare reissued boolean cannot, and the audit
+  // trail is where that distinction has to survive.
+  it('records the link origin so a reissue is forensically distinguishable', async () => {
+    const { resendQuote } = await import('../../services/quoteLifecycle');
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    vi.mocked(resendQuote).mockResolvedValueOnce({
+      quote: { id: 'q1', orgId: 'org1', status: 'sent' }, emailed: true,
+      acceptUrl: 'http://x/quote/t', origin: 'minted_key_unavailable', reissued: true,
+    } as never);
+    await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ reissued: true, linkOrigin: 'minted_key_unavailable' }),
+    }));
+  });
+
+  it('audit-logs the re-send with its delivery outcome', async () => {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    await appWith('partner', PERMS).request(`/${QUOTE_ID}/resend`, { method: 'POST' });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.resend', resourceType: 'quote', resourceId: QUOTE_ID, orgId: 'org1', result: 'success',
+    }));
+  });
+});
+
+describe('GET /:id/share-link', () => {
+  it('403s a quotes:read holder — the link is a credential, not a read', async () => {
+    const res = await appWith('partner', ['quotes:read', 'quotes:write']).request(`/${QUOTE_ID}/share-link`);
+    expect(res.status).toBe(403);
+  });
+
+  it('returns the link + recipients for a quotes:send holder, and audits it', async () => {
+    const { writeRouteAudit } = await import('../../services/auditEvents');
+    const res = await appWith('partner', ['quotes:send']).request(`/${QUOTE_ID}/share-link`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({
+      acceptUrl: 'http://x/quote/t', reissued: false, recipients: ['ap@customer.example'],
+    });
+    expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'quote.share_link_viewed', resourceId: QUOTE_ID, orgId: 'org1',
+    }));
   });
 });
