@@ -1,6 +1,6 @@
 [Unit]
-Description=Breeze RMM User Session Helper
-Documentation=https://docs.breeze.io/agent/user-helper
+Description=NU Agent User Session Helper (Nodes Unlimited RMM)
+Documentation=https://github.com/breeze-rmm/breeze
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -17,7 +17,14 @@ PrivateNetwork=true
 NoNewPrivileges=true
 ProtectHome=read-only
 ReadOnlyPaths=/
-ReadWritePaths=/var/run/nodesunlimited /tmp
+# MUST stay /var/run/breeze. This is the IPC socket directory the agent actually
+# creates and the helper actually connects to — see internal/ipc/auth_linux.go,
+# the nu-watchdog unit, service/tmpfiles.d, and RuntimeDirectory=breeze in
+# nu-agent.service. A branding pass rewrote this one path to
+# /var/run/nodesunlimited; because this unit is ProtectSystem=strict, a
+# ReadWritePaths entry pointing at a nonexistent directory fails sandbox setup
+# and the helper never starts at all.
+ReadWritePaths=/var/run/breeze /tmp
 
 [Install]
 WantedBy=graphical-session.target

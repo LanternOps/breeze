@@ -13,14 +13,14 @@ ExecStart=/usr/local/bin/nu-agent start
 WorkingDirectory=/etc/nodesunlimited
 Restart=on-failure
 
-# RuntimeDirectory makes systemd create /run/nodesunlimited (root:root 0770) before
+# RuntimeDirectory makes systemd create /run/breeze (root:root 0770) before
 # every ExecStart. /run is tmpfs and wiped on reboot; this guarantees the IPC
 # socket directory exists at boot WITHOUT depending on the tmpfiles.d snippet
 # being present (issue #1297 / regression of #502). The running agent's broker
 # relaxes the directory to 0755 (world-traversable) at runtime so the per-user
 # helper can traverse it to the socket; the socket itself is 0660 and gated by
 # peer-credential + binary-path verification.
-# RuntimeDirectoryPreserve=yes keeps /run/nodesunlimited across a single unit's
+# RuntimeDirectoryPreserve=yes keeps /run/breeze across a single unit's
 # stop/restart so a restart of this unit does NOT remove the directory out from
 # under a still-running, still-hardened nu-watchdog (which binds it via
 # ReadWritePaths and would otherwise wedge at 226/NAMESPACE).

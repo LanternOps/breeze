@@ -31,7 +31,7 @@ const (
 
 // Embedded user-helper unit
 const linuxUserUnit = `[Unit]
-Description=Breeze RMM User Helper
+Description=NU Agent User Helper (Nodes Unlimited RMM)
 Documentation=https://github.com/breeze-rmm/breeze
 After=graphical-session.target
 
@@ -47,7 +47,7 @@ WantedBy=default.target
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage the Breeze Agent system service (systemd)",
+	Short: "Manage the NU Agent system service (systemd)",
 }
 
 var withUserHelper bool
@@ -149,7 +149,7 @@ var serviceInstallCmd = &cobra.Command{
 			if stopErr := exec.Command("systemctl", "stop", linuxServiceName).Run(); stopErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 			} else {
-				fmt.Println("Stopped existing Breeze Agent service.")
+				fmt.Println("Stopped existing NU Agent service.")
 			}
 		}
 
@@ -221,7 +221,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		fmt.Println()
-		fmt.Println("Breeze Agent service installed and enabled.")
+		fmt.Println("NU Agent service installed and enabled.")
 
 		// Show contextual next steps based on enrollment and service state.
 		existingCfg, _ := config.Load(cfgFile)
@@ -317,7 +317,7 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", linuxBinaryPath, err)
 		}
 
-		fmt.Println("Breeze Agent service uninstalled.")
+		fmt.Println("NU Agent service uninstalled.")
 		fmt.Printf("Config at %s was preserved.\n", linuxConfigDir)
 		fmt.Printf("To remove config: sudo rm -rf %s\n", linuxConfigDir)
 		return nil
@@ -364,7 +364,7 @@ var serviceStartCmd = &cobra.Command{
 			return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 		}
 
-		fmt.Println("Breeze Agent service started and enabled for auto-start.")
+		fmt.Println("NU Agent service started and enabled for auto-start.")
 		fmt.Println("Logs: journalctl -u nu-agent -f")
 		return nil
 	},
@@ -383,7 +383,7 @@ var serviceStopCmd = &cobra.Command{
 			return fmt.Errorf("failed to stop service: %s", strings.TrimSpace(string(out)))
 		}
 
-		fmt.Println("Breeze Agent service stopped.")
+		fmt.Println("NU Agent service stopped.")
 		return nil
 	},
 }

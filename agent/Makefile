@@ -1,11 +1,18 @@
 .PHONY: build build-agent build-desktop-helper build-backup build-all build-all-agent build-all-desktop-helper build-all-backup build-windows-user-helper build-winres build-windows-msi clean test install install-service uninstall-service dev-push dev-push-helper build-watchdog build-watchdog-linux build-watchdog-darwin build-watchdog-windows dev-push-watchdog dev-push-both
 
-# MUST stay >= the version the control plane reports, or the server sees our
-# build as out of date and pushes an "upgrade" to stock 0.104.0 — which
-# reinstalls the upstream binary that segfaults on Apple Silicon M5, undoing the
-# CGO fix below on every device. Observed live 2026-08-13: a 0.5.0 build enrolled
-# and was immediately ordered to upgrade, landing the device in "updating".
-VERSION ?= 0.104.0-nu1
+# MUST equal the version the control plane serves (BREEZE_VERSION / the VERSION
+# file in the binaries volume). Anything the server considers newer makes it
+# order an upgrade on every heartbeat.
+#
+# Do NOT re-add a `-nu1`-style suffix. That is a semver PRERELEASE, which sorts
+# BELOW the plain version — `0.104.0-nu1` < `0.104.0` — so it produces exactly
+# the upgrade loop it was meant to prevent. Observed live 2026-08-13: a
+# 0.104.0-nu1 agent enrolled fine, was immediately ordered to upgrade, and sat
+# in "updating" re-requesting once a minute forever. Use build metadata
+# (`0.104.0+nu1`, ignored for precedence) or a real version bump instead — and
+# if you bump, stage matching binaries first or the stale-volume guard in
+# binarySync falls back to pulling upstream from GitHub.
+VERSION ?= 0.104.0
 # Local-dev targets intentionally keep plain LDFLAGS (self-host by
 # construction — no hostpolicy ldflags are ever injected here). Release
 # builds go through agent/scripts/build-edition.sh instead, which adds the
@@ -63,6 +70,15 @@ build-darwin:
 
 build-windows: build-windows-user-helper
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o bin/nu-agent-windows-amd64.exe ./cmd/nu-agent
+
+# Windows on ARM. Windows 11 ARM can emulate x64, so the amd64 binary above will
+# run there — but under emulation, which costs CPU on exactly the low-power
+# machines that ship as ARM. Build native as well and let the installer pick.
+build-windows-arm64: build-windows-user-helper-arm64
+	GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -o bin/nu-agent-windows-arm64.exe ./cmd/nu-agent
+
+build-windows-user-helper-arm64:
+	GOOS=windows GOARCH=arm64 go build -ldflags "-X main.version=$(VERSION) -H windowsgui" -o bin/nu-user-helper-windows-arm64.exe ./cmd/nu-user-helper
 
 # build-windows-user-helper builds ./cmd/nu-user-helper as a GUI-subsystem
 # PE binary so the scheduled task that launches the user-helper at user logon

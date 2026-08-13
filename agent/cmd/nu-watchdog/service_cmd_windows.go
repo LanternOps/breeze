@@ -18,7 +18,7 @@ const windowsWatchdogServiceName = "BreezeWatchdog"
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Manage the Breeze Watchdog Windows service",
+		Short: "Manage the NU Watchdog Windows service",
 	}
 	cmd.AddCommand(serviceInstallCmd())
 	cmd.AddCommand(serviceUninstallCmd())
@@ -50,7 +50,7 @@ func serviceInstallCmd() *cobra.Command {
 
 			s, err := m.CreateService(windowsWatchdogServiceName, serviceExePath, mgr.Config{
 				DisplayName:  "Breeze RMM Watchdog",
-				Description:  "Breeze Agent Watchdog - monitors and recovers the agent process",
+				Description:  "NU Agent Watchdog - monitors and recovers the agent process",
 				StartType:    mgr.StartAutomatic,
 				ErrorControl: mgr.ErrorNormal,
 			}, "run")

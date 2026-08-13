@@ -19,7 +19,7 @@ const (
 )
 
 const watchdogUnit = `[Unit]
-Description=Breeze RMM Agent Watchdog
+Description=NU Agent Watchdog (Nodes Unlimited RMM)
 Documentation=https://github.com/breeze-rmm/breeze
 After=nu-agent.service
 Wants=network-online.target
@@ -70,7 +70,7 @@ WantedBy=multi-user.target
 func serviceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Manage the Breeze Watchdog system service (systemd)",
+		Short: "Manage the NU Watchdog system service (systemd)",
 	}
 	cmd.AddCommand(serviceInstallCmd())
 	cmd.AddCommand(serviceUninstallCmd())
@@ -99,7 +99,7 @@ func serviceInstallCmd() *cobra.Command {
 				if stopErr := exec.Command("systemctl", "stop", watchdogServiceName).Run(); stopErr != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to stop existing service: %v\n", stopErr)
 				} else {
-					fmt.Println("Stopped existing Breeze Watchdog service.")
+					fmt.Println("Stopped existing NU Watchdog service.")
 				}
 			}
 
@@ -140,7 +140,7 @@ func serviceInstallCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "Warning: failed to enable service: %s\n", strings.TrimSpace(string(out)))
 			}
 
-			fmt.Println("Breeze Watchdog service installed and enabled.")
+			fmt.Println("NU Watchdog service installed and enabled.")
 			fmt.Println("Start with: sudo nu-watchdog service start")
 			return nil
 		},
@@ -181,7 +181,7 @@ func serviceUninstallCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "Warning: failed to remove %s: %v\n", watchdogBinaryPath, err)
 			}
 
-			fmt.Println("Breeze Watchdog service uninstalled.")
+			fmt.Println("NU Watchdog service uninstalled.")
 			return nil
 		},
 	}
@@ -205,7 +205,7 @@ func serviceStartCmd() *cobra.Command {
 				return fmt.Errorf("failed to start service: %s", strings.TrimSpace(string(out)))
 			}
 
-			fmt.Println("Breeze Watchdog service started.")
+			fmt.Println("NU Watchdog service started.")
 			fmt.Println("Logs: journalctl -u nu-watchdog -f")
 			return nil
 		},
@@ -226,7 +226,7 @@ func serviceStopCmd() *cobra.Command {
 				return fmt.Errorf("failed to stop service: %s", strings.TrimSpace(string(out)))
 			}
 
-			fmt.Println("Breeze Watchdog service stopped.")
+			fmt.Println("NU Watchdog service stopped.")
 			return nil
 		},
 	}

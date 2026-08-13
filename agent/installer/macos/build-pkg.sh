@@ -47,11 +47,6 @@ for b in "${BINARIES[@]}"; do
   install -m 0755 "bin/$b-darwin-$ARCH" "$STAGE/root/usr/local/bin/$b"
 done
 
-# Strip extended attributes (quarantine, provenance, resource forks). Left in
-# place, pkgbuild materialises them as AppleDouble "._name" siblings that ship
-# inside the payload and land in /usr/local/bin on the customer's machine.
-xattr -cr "$STAGE/root" 2>/dev/null || true
-
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> signing binaries as '$SIGN_IDENTITY'"
   for b in "${BINARIES[@]}"; do
@@ -63,6 +58,28 @@ else
   echo "    macOS will drop TCC permissions on every agent update."
 fi
 
+# Strip extended attributes LAST — after signing, never before. codesign writes
+# its own xattrs, so stripping first accomplishes nothing.
+#
+# KNOWN COSMETIC ISSUE, do not burn time re-fixing it: the built pkg still
+# contains AppleDouble "._name" siblings, which install into /usr/local/bin.
+# They are inert metadata files, ignored by launchd and by the agent.
+#
+# The cause is com.apple.provenance (macOS 14+), which pkgbuild materialises as
+# AppleDouble. It is PROTECTED — `xattr -c` cannot remove it — and macOS re-adds
+# it to every newly created file, including a plain `cat >` copy. Verified
+# 2026-08-13: strip-before-sign, strip-after-sign, and COPYFILE_DISABLE=1 on
+# pkgbuild ALL still produce them. Eliminating them needs a payload root on a
+# filesystem without xattr support (e.g. a purpose-built disk image), which is
+# not worth it for inert files.
+#
+# Left in place, pkgbuild materialises them as AppleDouble "._name" siblings
+# that ship inside the payload and land in /usr/local/bin on the customer's
+# machine. Stripping before codesign does not work: codesign writes its own
+# xattrs, so the "._" files come back. Safe to do after signing because a
+# Mach-O signature lives INSIDE the binary, not in an extended attribute.
+xattr -cr "$STAGE/root" 2>/dev/null || true
+
 cp "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$STAGE/scripts/" 2>/dev/null || {
   mkdir -p "$STAGE/scripts"
   cp "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$STAGE/scripts/"
@@ -73,7 +90,7 @@ mkdir -p "$OUT_DIR"
 PKG="$OUT_DIR/nu-agent-$ARCH.pkg"
 
 echo "==> pkgbuild $PKG"
-pkgbuild \
+COPYFILE_DISABLE=1 COPYFILE_DISABLE=1 pkgbuild \
   --root "$STAGE/root" \
   --scripts "$STAGE/scripts" \
   --identifier "$IDENTIFIER" \
