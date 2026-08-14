@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "En Linux, haz que el archivo descargado sea ejecutable (chmod +x) y ábrelo una vez. Eso registra el visor y, a partir de entonces, las sesiones se abren automáticamente.",
+      "linuxFuse": "Si se cierra sin abrir ninguna ventana, necesita FUSE 2: instala libfuse2t64 (Debian 13 / Ubuntu 24.04+) o libfuse2 en versiones anteriores, o ejecútalo con --appimage-extract-and-run.",
       "title": "¿No se abrió el visor?",
       "viewerDescription": "Si el visor se abrió, puedes descartar esto. Si no, descárgalo abajo.",
       "vncDescription": "Abre la sesión VNC en tu navegador."

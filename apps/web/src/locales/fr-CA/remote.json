@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "Sous Linux, rendez le fichier téléchargé exécutable (chmod +x) et lancez-le une fois. Cela enregistre la visionneuse ; les sessions s'ouvriront ensuite automatiquement.",
+      "linuxFuse": "S'il se ferme sans ouvrir de fenêtre, il lui faut FUSE 2 : installez libfuse2t64 (Debian 13 / Ubuntu 24.04+) ou libfuse2 sur les versions antérieures, ou lancez-le avec --appimage-extract-and-run.",
       "title": "La visionneuse ne s'est pas ouverte ?",
       "viewerDescription": "Si la visionneuse s'est ouverte, vous pouvez ignorer ce message. Sinon, téléchargez-la ci-dessous.",
       "vncDescription": "Ouvrez plutôt la session VNC dans votre navigateur."

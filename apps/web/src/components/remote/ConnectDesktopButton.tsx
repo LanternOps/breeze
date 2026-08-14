@@ -610,9 +610,21 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
                         saying so, downloading looks like it did nothing and this
                         same card reappears on every attempt (issue #2614). */}
                     {downloadInfo.os === 'linux' && (
-                      <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-                        {t('connectDesktopButton.fallback.linuxFirstRun')}
-                      </p>
+                      <>
+                        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                          {t('connectDesktopButton.fallback.linuxFirstRun')}
+                        </p>
+                        {/* The AppImage mounts itself with FUSE 2, which current
+                            Debian/Ubuntu no longer ship by default. Worse, the
+                            package was renamed by the t64 transition, so the
+                            widely-quoted `apt install libfuse2` looks wrong when
+                            apt answers "selecting 'libfuse2t64' instead". Without
+                            naming the real package the run above just exits with
+                            no window and the user is stuck (issue #3415). */}
+                        <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+                          {t('connectDesktopButton.fallback.linuxFuse')}
+                        </p>
+                      </>
                     )}
                     <div className="mt-2.5 flex items-center gap-3">
                       <a
