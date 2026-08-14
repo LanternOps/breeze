@@ -276,12 +276,15 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Quote block input (add_block/update_block). Required: blockType (\'heading\'|\'rich_text\'|\'image\'|' +
-              '\'line_items\'|\'contract\') plus a matching content object — heading: {text, level? (1-3)}; rich_text: ' +
-              '{html}; image: {imageId (quote image UUID), caption?, width?}; line_items: {label?}; contract: ' +
-              '{templateId (contract template UUID), templateVersionId (must be a PUBLISHED version of that ' +
-              'template, visible to the quote\'s org/partner — otherwise rejected with INVALID_CONTRACT_TEMPLATE), ' +
-              'variableValues? (manual fill-ins keyed by variable name), label?}. update_block must restate the ' +
-              'existing blockType (the type itself cannot change).',
+              '\'line_items\'|\'contract\'|\'table\'|\'callout\') plus a matching content object — heading: {text, ' +
+              'level? (1-3)}; rich_text: {html}; image: {imageId (quote image UUID), caption?, width?}; line_items: ' +
+              '{label?}; contract: {templateId (contract template UUID), templateVersionId (must be a PUBLISHED ' +
+              'version of that template, visible to the quote\'s org/partner — otherwise rejected with ' +
+              'INVALID_CONTRACT_TEMPLATE), variableValues? (manual fill-ins keyed by variable name), label?}; ' +
+              'table: {columns (1-8, each {label, align?, weight?}), rows (1-100, each {cells: string[] matching ' +
+              'columns.length}), caption?, zebra?, headerStyle? (\'accent\'|\'plain\')}; callout: {variant ' +
+              '(\'info\'|\'accent\'|\'warn\'), title?, html}. update_block must restate the existing blockType ' +
+              '(the type itself cannot change).',
           },
           line: {
             type: 'object',
