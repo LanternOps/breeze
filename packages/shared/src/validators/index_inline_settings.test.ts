@@ -405,6 +405,48 @@ describe('monitoringInlineSettingsSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  // #3491/#3492: a saved watch loads back from the DB with nulls in the three
+  // nullable columns, and the editor posts them straight back. Rejecting null
+  // made an existing policy impossible to re-save once any watch had an unset
+  // field — the reported error named exactly these three paths.
+  it('should accept a saved watch round-tripped with null optional fields', () => {
+    const result = monitoringInlineSettingsSchema.safeParse({
+      watches: [
+        {
+          watchType: 'service',
+          name: 'wuauserv',
+          displayName: null,
+          cpuThresholdPercent: null,
+          memoryThresholdMb: null,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // Preserved as null rather than coerced: the write path stores `?? null`
+      // and the agent delivery check is `!= null`, so both spellings behave
+      // identically downstream.
+      const watch = result.data.watches[0];
+      expect(watch?.displayName).toBeNull();
+      expect(watch?.cpuThresholdPercent).toBeNull();
+      expect(watch?.memoryThresholdMb).toBeNull();
+    }
+  });
+
+  it('should still reject a wrong-typed threshold, not just anything non-number', () => {
+    expect(
+      monitoringInlineSettingsSchema.safeParse({
+        watches: [{ watchType: 'process', name: 'nginx', cpuThresholdPercent: 'high' }],
+      }).success
+    ).toBe(false);
+    // and the range check survives the nullable change
+    expect(
+      monitoringInlineSettingsSchema.safeParse({
+        watches: [{ watchType: 'process', name: 'nginx', cpuThresholdPercent: 101 }],
+      }).success
+    ).toBe(false);
+  });
+
   it('should reject checkIntervalSeconds below 10', () => {
     expect(
       monitoringInlineSettingsSchema.safeParse({ checkIntervalSeconds: 9 }).success
