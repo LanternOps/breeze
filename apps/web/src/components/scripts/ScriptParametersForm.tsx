@@ -61,15 +61,21 @@ export default function ScriptParametersForm({
   const { t } = useTranslation('scripts');
   const runtimeParams = runtimeParameters(parameters);
   const boundParams = parameters.filter(isBoundParameter);
-  // Nothing to ask for: a script whose parameters are ALL bound needs no run-time
-  // step at all. The gate is deliberately on the runtime count, not on
-  // `parameters.length` — otherwise a fully-bound script would open an
-  // input-less form the operator can only click through.
-  if (runtimeParams.length === 0) return null;
+  // VISIBILITY is gated on the whole parameter list; PROMPTING is gated on the
+  // runtime subset. These are deliberately different questions: a script whose
+  // parameters are ALL bound asks the operator for nothing, but it still
+  // injects values into a script about to run on customer machines, so the
+  // contract must be on screen. Only `parameters.length === 0` renders nothing.
+  if (parameters.length === 0) return null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="script-parameters">
       <h3 className="text-sm font-semibold">{t('scriptParametersForm.title')}</h3>
+      {runtimeParams.length === 0 && (
+        <p className="text-xs text-muted-foreground" data-testid="script-parameters-all-supplied">
+          {t('scriptParametersForm.allSupplied')}
+        </p>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         {runtimeParams.map(param => (
           <div key={param.name} className="space-y-1">

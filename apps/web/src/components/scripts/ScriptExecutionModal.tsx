@@ -74,12 +74,10 @@ export default function ScriptExecutionModal({
     return new Set(filterPreview.devices.map(d => d.id));
   }, [showAdvancedFilter, filterPreview]);
 
-  // Runtime parameters only (#3409 PR3): a bound parameter is resolved per
-  // target device by the server, so it is neither prompted for nor seeded — a
-  // value supplied for one is ignored and reported in `ignoredParameters`.
-  const runtimeParams = useMemo(() => runtimeParameters(script.parameters), [script.parameters]);
-
-  // Initialize parameters with defaults
+  // Initialize parameters with defaults. Runtime parameters only (#3409 PR3):
+  // a bound parameter is resolved per target device by the server, so it is
+  // neither prompted for nor seeded — a value supplied for one is ignored and
+  // reported in `ignoredParameters`.
   useEffect(() => {
     if (script.parameters) {
       const defaults: Record<string, string | number | boolean> = {};
@@ -258,9 +256,11 @@ export default function ScriptExecutionModal({
             </p>
           </div>
 
-          {/* Parameters — gated on the RUNTIME count: an all-bound script has
-              nothing to ask for, so the section would be an empty shell. */}
-          {runtimeParams.length > 0 && script.parameters && (
+          {/* Parameters — shown whenever the script HAS parameters, bound or
+              not. The form prompts only for the runtime ones; an all-bound
+              script still shows its read-only chips so the operator can see
+              what will be injected into a run on customer machines. */}
+          {script.parameters && script.parameters.length > 0 && (
             <ScriptParametersForm
               parameters={script.parameters}
               values={parameters}

@@ -170,10 +170,37 @@ describe('ScriptParametersForm rendering', () => {
     );
   });
 
-  it('renders nothing when every parameter is bound — there is nothing to ask for', () => {
+  it('still shows the section when every parameter is bound — the operator must see what gets injected', () => {
     const { container } = render(
       <ScriptParametersForm parameters={[boundVariable]} values={{}} onChange={vi.fn()} />
     );
+
+    expect(screen.getByText('Parameters')).toBeInTheDocument();
+    expect(screen.getByTestId('script-bound-parameter-api_key')).toHaveTextContent(
+      'Supplied automatically from variable vendor_token'
+    );
+    // Visible, but nothing to prompt for: no control anywhere in the form, and
+    // an explicit note so the empty-looking section is not read as a bug.
+    expect(screen.getByTestId('script-parameters-all-supplied')).toBeInTheDocument();
+    expect(container.querySelector('input')).toBeNull();
+    expect(container.querySelector('select')).toBeNull();
+  });
+
+  it('renders nothing when the script has no parameters at all', () => {
+    const { container } = render(
+      <ScriptParametersForm parameters={[]} values={{}} onChange={vi.fn()} />
+    );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('does not show the all-supplied note when there is a runtime parameter to fill', () => {
+    render(
+      <ScriptParametersForm
+        parameters={[{ name: 'message', type: 'string' }, boundVariable]}
+        values={{}}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('script-parameters-all-supplied')).toBeNull();
   });
 });

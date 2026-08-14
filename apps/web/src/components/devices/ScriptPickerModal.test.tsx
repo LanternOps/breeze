@@ -282,18 +282,29 @@ describe('ScriptPickerModal sourced parameters (#3409 PR3)', () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse(SCRIPTS_DATA));
   });
 
-  it('counts only runtime parameters in the list badge', async () => {
+  it('counts only runtime parameters in the prompt badge and names the injected ones separately', async () => {
     render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Mixed Params')).toBeDefined());
 
+    // "param(s)" stays the number the operator will be ASKED for; the injected
+    // ones get their own badge so neither fact is over- or under-reported.
     const mixedRow = screen.getByText('Mixed Params').closest('button') as HTMLElement;
     expect(mixedRow).toHaveTextContent('1 param(s)');
-    // A fully-bound script asks for nothing, so it carries no badge at all.
+    expect(mixedRow).toHaveTextContent('1 auto-supplied');
+
+    // A fully-bound script asks for nothing, so it carries no prompt badge —
+    // but it must not look parameterless either.
     const allBoundRow = screen.getByText('All Bound').closest('button') as HTMLElement;
     expect(allBoundRow).not.toHaveTextContent('param(s)');
+    expect(allBoundRow).toHaveTextContent('1 auto-supplied');
+
+    // A script with no parameters at all carries neither badge.
+    const noneRow = screen.getByText('No Params').closest('button') as HTMLElement;
+    expect(noneRow).not.toHaveTextContent('param(s)');
+    expect(noneRow).not.toHaveTextContent('auto-supplied');
   });
 
-  it('runs a fully-bound script immediately instead of opening an input-less step', async () => {
+  it('opens the params step for a fully-bound script and shows the injected contract', async () => {
     const onSelect = vi.fn();
     const onClose = vi.fn();
     render(<ScriptPickerModal isOpen onClose={onClose} onSelect={onSelect} />);
@@ -301,9 +312,46 @@ describe('ScriptPickerModal sourced parameters (#3409 PR3)', () => {
 
     fireEvent.click(screen.getByText('All Bound'));
 
-    expect(screen.queryByText('Configure Parameters')).toBeNull();
+    // The step is reachable, shows the chips, and fires nothing on its own.
+    expect(screen.getByText('Configure Parameters')).toBeDefined();
+    expect(screen.getByTestId('script-bound-parameter-org')).toHaveTextContent(
+      'Supplied automatically from org.name'
+    );
+    expect(screen.getByTestId('script-parameters-all-supplied')).toBeDefined();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('lets a fully-bound script be run from the params step with an empty parameters map', async () => {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    render(<ScriptPickerModal isOpen onClose={onClose} onSelect={onSelect} />);
+    await waitFor(() => expect(screen.getByText('All Bound')).toBeDefined());
+
+    fireEvent.click(screen.getByText('All Bound'));
+    // Nothing to fill in — the operator must still be able to continue.
+    fireEvent.click(screen.getByText('Run Script'));
+
+    expect(screen.queryByText(/is required/)).toBeNull();
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'p4' }),
+      'system',
+      {},
+      undefined
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('still runs a parameterless script immediately, with no params step', async () => {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    render(<ScriptPickerModal isOpen onClose={onClose} onSelect={onSelect} />);
+    await waitFor(() => expect(screen.getByText('No Params')).toBeDefined());
+
+    fireEvent.click(screen.getByText('No Params'));
+
+    expect(screen.queryByText('Configure Parameters')).toBeNull();
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p1' }),
       'system',
       undefined,
       undefined

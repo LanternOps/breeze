@@ -1073,6 +1073,7 @@
     },
     "title": "Parámetros",
     "selectPlaceholder": "Seleccionar...",
+    "allSupplied": "Todos los parámetros se proporcionan automáticamente: no hay nada que completar.",
     "suppliedBy": {
       "tenantVariable": "Se completa automáticamente desde la variable {{key}}",
       "deviceCustomField": "Se completa automáticamente desde el campo personalizado del dispositivo {{key}}",

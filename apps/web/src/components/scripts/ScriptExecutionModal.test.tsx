@@ -61,10 +61,35 @@ describe('ScriptExecutionModal sourced parameters (#3409 PR3)', () => {
     expect(chip.querySelector('input')).toBeNull();
   });
 
-  it('hides the parameters section entirely when every parameter is bound', () => {
+  it('shows the parameters section as read-only chips when every parameter is bound', () => {
     renderModal([
       { name: 'org', type: 'string', required: true, source: 'builtin', builtinKey: 'org.name' },
     ]);
+
+    // The operator is about to run this on customer machines — the injected
+    // contract must be visible even though there is nothing to fill in.
+    expect(screen.getByText('Parameters')).toBeInTheDocument();
+    const chip = screen.getByTestId('script-bound-parameter-org');
+    expect(chip).toHaveTextContent('Supplied automatically from org.name');
+    expect(chip.querySelector('input')).toBeNull();
+    expect(screen.getByTestId('script-parameters-all-supplied')).toBeInTheDocument();
+  });
+
+  it('executes a fully-bound script and submits an empty parameters map', async () => {
+    const { onExecute } = renderModal([
+      { name: 'org', type: 'string', required: true, source: 'builtin', builtinKey: 'org.name' },
+      { name: 'api_key', type: 'string', required: true, defaultValue: 'fallback', source: 'tenantVariable', variableKey: 'vendor_token' },
+    ]);
+
+    await execute();
+
+    await waitFor(() => expect(onExecute).toHaveBeenCalledTimes(1));
+    expect(onExecute.mock.calls[0][2]).toEqual({});
+    expect(screen.queryByText(/is required/)).toBeNull();
+  });
+
+  it('renders no parameters section when the script has no parameters at all', () => {
+    renderModal([]);
 
     expect(screen.queryByText('Parameters')).toBeNull();
   });

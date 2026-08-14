@@ -1073,6 +1073,7 @@
     },
     "title": "Parameters",
     "selectPlaceholder": "Select...",
+    "allSupplied": "Every parameter is supplied automatically — there is nothing to fill in.",
     "suppliedBy": {
       "tenantVariable": "Supplied automatically from variable {{key}}",
       "deviceCustomField": "Supplied automatically from device custom field {{key}}",
