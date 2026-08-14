@@ -36,7 +36,7 @@ vi.mock('../routes/agents/helpers', () => ({
     a === 'amd64' || a === 'arm64' ? a : a === 'x86_64' ? 'amd64' : a == null ? null : null,
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { executeCommand } from './commandQueue';
@@ -119,6 +119,24 @@ describe('query_agent_versions check_upgrades — pin-aware target (#2124)', () 
     expect(result.latestVersion).toBe('0.90.0'); // global latest still reported for context
     // Devices on global-latest 0.90.0 are "outdated" relative to the 0.80.0 holdback pin.
     expect(result.totalOutdated).toBe(3);
+  });
+
+  it('resolves the pin in a real system context: runOutsideDbContext wraps withSystemDbAccessContext wraps the resolver (#3516 class)', async () => {
+    // The bug: a bare withSystemDbAccessContext short-circuits under the ambient
+    // org context makeHandler re-enters per tool call, so the partner-axis pin is
+    // invisible. Assert the fix's nesting by invocation order — and note that on
+    // the pre-fix code runOutsideDbContext was never called here at all.
+    mockSelectSequence([[{ version: '0.90.0' }], [{ currentVersion: '0.90.0', count: 1 }]]);
+    await tool.handler({ action: 'check_upgrades' }, makeAuth());
+
+    expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalled();
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalled();
+    const outsideOrder = vi.mocked(runOutsideDbContext).mock.invocationCallOrder[0]!;
+    const systemOrder = vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder[0]!;
+    const resolverOrder = vi.mocked(getOrgAgentUpdateConfig).mock.invocationCallOrder[0]!;
+    // outer-to-inner: runOutsideDbContext -> withSystemDbAccessContext -> resolver
+    expect(outsideOrder).toBeLessThan(systemOrder);
+    expect(systemOrder).toBeLessThan(resolverOrder);
   });
 
   it('a multi-org (non-org-scoped) caller is told pins are not reflected', async () => {

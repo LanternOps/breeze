@@ -7,7 +7,7 @@
  * - trigger_agent_restart (Tier 3): Ask the watchdog to restart a wedged/silent agent
  */
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, agentVersions } from '../db/schema';
 import { eq, ne, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -123,7 +123,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         let note: string | undefined;
         if (auth.orgId) {
           try {
-            const cfg = await withSystemDbAccessContext(() => getOrgAgentUpdateConfig(auth.orgId!));
+            const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(auth.orgId!)));
             if (cfg.pins.agent) {
               effectiveTarget = cfg.pins.agent;
               pinned = true;
@@ -278,7 +278,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             // same pattern the heartbeat and aiAgent use. Isolate per org so one
             // org's resolver failure doesn't abort the whole batch.
             try {
-              const cfg = await withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId));
+              const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId)));
               pinByOrg.set(d.orgId, cfg.pins.agent);
             } catch {
               failedOrgs.add(d.orgId);
