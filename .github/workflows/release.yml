@@ -535,9 +535,12 @@ jobs:
 
   build-macos-agent:
     name: Sign macOS Agent Binary
+    # Also runs on workflow_dispatch: build-macos-installer-app needs this job, so
+    # leaving it tag-only would skip the installer/DMG build too and make the
+    # dispatch path silently produce nothing.
     if: >-
-      github.ref_type == 'tag'
-      && startsWith(github.ref, 'refs/tags/v')
+      github.event_name == 'workflow_dispatch'
+      || (github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: macos-latest
     needs: [build-agent]
     steps:
@@ -891,10 +894,18 @@ jobs:
     name: Build macOS Installer App
     needs: [build-macos-agent]
     runs-on: macos-latest
+    # Tag pushes build a release. workflow_dispatch is also allowed so a signed +
+    # notarized DMG can be produced from a branch WITHOUT cutting a release — the
+    # workflow already exposes a `skip_release` input for exactly this, and
+    # notarization is the one thing that cannot be verified on a dev machine
+    # (the Apple credentials live only in Actions secrets). ENABLE_MACOS_SIGNING
+    # still gates both paths, so this cannot emit unsigned artifacts.
     if: >-
       vars.ENABLE_MACOS_SIGNING == 'true'
-      && github.ref_type == 'tag'
-      && startsWith(github.ref, 'refs/tags/v')
+      && (
+        github.event_name == 'workflow_dispatch'
+        || (github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v'))
+      )
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
