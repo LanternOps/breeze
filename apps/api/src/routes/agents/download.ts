@@ -774,22 +774,29 @@ if [[ "\$OS" == "darwin" ]]; then
     ENROLL_ARGS+=(--device-role "\$BREEZE_DEVICE_ROLE")
   fi
 
-  if ! "\$INSTALL_DIR/\$BINARY_NAME" "\${ENROLL_ARGS[@]}"; then
+  # The NU branded macOS pkg installs the binary as nu-agent; upstream installed
+  # breeze-agent. Prefer nu-agent, fall back to breeze-agent so enrollment works
+  # with either package.
+  AGENT_BIN="\$INSTALL_DIR/nu-agent"
+  [[ -x "\$AGENT_BIN" ]] || AGENT_BIN="\$INSTALL_DIR/\$BINARY_NAME"
+  if ! "\$AGENT_BIN" "\${ENROLL_ARGS[@]}"; then
     fatal "Enrollment failed. Check the server URL and that the enrollment token is valid and not expired (plus the enrollment secret, if your server requires one)."
   fi
   success "Agent enrolled successfully"
 
   # Restart the service so it picks up the new enrollment config. Surface a
   # failure instead of swallowing it — otherwise an enrolled device that never
-  # starts looks like a success to the operator.
-  if ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+  # starts looks like a success to the operator. The NU build's launchd label is
+  # com.nodesunlimited.agent; upstream was com.breeze.agent — try both.
+  if ! launchctl kickstart -k system/com.nodesunlimited.agent 2>/dev/null \
+     && ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
     warn "Could not restart the agent service automatically; it will start on next login or reboot."
   fi
 
   echo ""
   success "Breeze agent installation complete!"
   info "The device should appear in your Breeze dashboard within 60 seconds."
-  info "  Check status:  sudo launchctl list | grep breeze"
+  info "  Check status:  sudo launchctl list | grep -Ei 'nodesunlimited|breeze'"
   info "  View logs:     tail -f /Library/Logs/Breeze/agent.log"
   exit 0
 fi

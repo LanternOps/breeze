@@ -235,12 +235,18 @@ ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
 
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
+# The NU branded pkg installs the binary as nu-agent; upstream packages installed
+# breeze-agent. Prefer nu-agent, fall back to breeze-agent so this works with both.
+AGENT_BIN="/usr/local/bin/nu-agent"
+[ -x "$AGENT_BIN" ] || AGENT_BIN="/usr/local/bin/breeze-agent"
+sudo "$AGENT_BIN" enroll "\${ENROLL_ARGS[@]}"
 
 # Restart the service so it picks up the new enrollment config. Surface a failure
 # rather than swallowing it — a silent kickstart failure leaves an enrolled
-# device that never checks in, with the user told everything succeeded.
-if ! sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
+# device that never checks in, with the user told everything succeeded. The NU
+# build's launchd label is com.nodesunlimited.agent; upstream was com.breeze.agent.
+if ! sudo launchctl kickstart -k system/com.nodesunlimited.agent 2>/dev/null \
+   && ! sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
   echo "Note: could not restart the agent service automatically; it will start on next login or reboot."
 fi
 

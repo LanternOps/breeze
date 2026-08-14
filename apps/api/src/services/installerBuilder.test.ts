@@ -235,7 +235,10 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
     expect(script).toContain('#!/bin/bash');
-    expect(script).toContain('breeze-agent enroll');
+    // Enrolls via the branded nu-agent binary, falling back to breeze-agent for
+    // older packages (the pkg installs /usr/local/bin/nu-agent).
+    expect(script).toContain('/usr/local/bin/nu-agent');
+    expect(script).toMatch(/"\$AGENT_BIN" enroll/);
     expect(script).toContain('enrollment.json');
   });
 
