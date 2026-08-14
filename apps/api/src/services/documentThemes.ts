@@ -40,18 +40,32 @@ export interface PdfThemeFonts {
 //   - unbundled: running from src/services (e.g. ts-node/tsx/vitest without
 //                going through the dist bundle), so assets live two levels
 //                up (../../assets/fonts).
-// If none of the three exist (e.g. a unit-test process with no fonts vendored
-// at all), fall back to the cwd-based path anyway so registerThemeFonts still
-// throws its loud per-file error instead of resolving to a nonsense path.
+// __dirname is only defined under CJS — the production tsup build, and
+// vitest (CJS-transpiled). Integration boot runs `tsx src/index.ts` in real
+// ESM, where __dirname doesn't exist at all (not even as undefined — it's an
+// unbound identifier), so it must be guarded rather than referenced directly.
+// Deliberately not import.meta.dirname: that's ESM-only and would break the
+// CJS tsup build. Under ESM/tsx the cwd candidate is correct anyway (dev
+// servers run from apps/api), so dropping the __dirname candidates there
+// loses nothing.
+// If none of the candidates exist (e.g. a unit-test process with no fonts
+// vendored at all), fall back to the cwd-based path anyway so
+// registerThemeFonts still throws its loud per-file error instead of
+// resolving to a nonsense path.
 const FONT_DIR = resolveFontDir();
 
 function resolveFontDir(): string {
-  const [cwdCandidate, ...rest] = [
-    path.resolve(process.cwd(), 'assets/fonts'),
-    path.resolve(__dirname, '../assets/fonts'), // bundled dist layout
-    path.resolve(__dirname, '../../assets/fonts'), // unbundled src layout
+  const cwdCandidate = path.resolve(process.cwd(), 'assets/fonts');
+  const moduleDir = typeof __dirname !== 'undefined' ? __dirname : null;
+  const candidates = [
+    cwdCandidate,
+    ...(moduleDir
+      ? [
+          path.resolve(moduleDir, '../assets/fonts'), // bundled dist layout
+          path.resolve(moduleDir, '../../assets/fonts'), // unbundled src layout
+        ]
+      : []),
   ];
-  const candidates = [cwdCandidate, ...rest];
   return candidates.find((dir) => fs.existsSync(dir)) ?? cwdCandidate;
 }
 
