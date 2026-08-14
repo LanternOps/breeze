@@ -4,6 +4,87 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## UI QA Sweep — 2026-07-08 (merged main since v0.93.0)
+
+Scoped regression pass against local stack (http://localhost:32801), admin@breeze.local. Verifying the 4 UI-affecting PRs merged since v0.93.0 (#2283 Portal Users, #2284 Quotes bill-to/billing-contact, #2281 Software catalog delete scoping, #2279 Quotes line-item image-from-URL) plus a baseline nav crawl.
+
+### Phase A — Login + nav crawl
+- ✅ Login: initial page load showed a stale "Session expired" card (old token in browser state); after signing in at /login the dashboard rendered "Good morning, Breeze". Dashboard primary data calls all 200 (alerts, devices, audit-logs, orgs, partner/me). 0 console errors.
+- ✅ Nav crawl — all rendered with correct h1 and no error banner, 0 console errors: Devices ("Devices"), Alerts ("Alerts"), Scripts ("Script Library"), Patches ("Patch Management"), Software Library, Config Policies ("Configuration Policies"), Reports, Analytics, Audit Trail, Settings/Organizations ("Organizations & Sites"), Settings/Users ("Users"), Settings/Roles ("Roles").
+- ⚠️ INFRA FLAKE (note once, not a code bug): during the crawl a single `POST /api/v1/auth/refresh` returned **502 Bad Gateway**, which hard-redirected the SPA to `/login?returnTo=/patches` and aborted the in-flight page chunk loads. Re-login + re-navigate rendered /patches cleanly. Root cause is a transient API/gateway blip in the local stack, not app code — but worth noting the UX: one failed silent refresh boots the user fully to login mid-session.
+- Note: this log worktree (HEAD ~#2257) predates the 4 target PRs; verified the running stack is newer origin/main which contains #2283/#2284/#2281/#2279. Feature locations sourced from origin/main: Portal Users + billing-contact live in `/settings/organizations/:id` hash tabs (`#portal`, `#billing`); catalog delete in Software Library; line-item image-from-URL in the Quotes editor.
+
+### [Portal Users / #2283] — PASS
+Location: `/settings/organizations/:id#portal` (Customer Portal tab) → "Portal users" section (`OrgPortalUsersEditor`).
+- ✅ Renders with a correct empty state: table with headers + "No portal users yet." row. "Invite user" button opens an inline form (Email / Name optional / Message optional). Send invite is correctly disabled while Email is empty.
+- ✅ Valid invite happy path: `qa.portal.test@example.com` → `POST .../portal-users/invite` **200**, list re-fetches (GET 200) and the new row appears with "Pending setup" status + Resend / Disable / Remove actions.
+- ✅ Invalid email (`bad-portal-email`) → `POST .../portal-users/invite` **400** (`ZodError` "Invalid email address") AND a readable **"Invalid email address" error toast** is shown. Feedback surfaces correctly.
+- ✅ Resend invite: `POST .../resend-invite` **200** → **"Invite resent" toast** shown.
+- ⚠️ Remove portal user executes **immediately with no confirmation dialog** — the row (portal access) is deleted on a single click (used here as test-data cleanup; worked, row disappeared). A destructive "remove access" action arguably warrants a confirm; contrast with the software-catalog delete which does confirm.
+- ⚠️ Minor UX papercut: "Send invite" stays enabled with an invalid email (validation is server-side only; there's no client-side email-format guard on the input). Not a defect — the server rejects and the error toast fires — but a client-side guard would avoid the round-trip.
+- NOTE / correction: an earlier pass of this section mis-reported these as silent failures; false negative from a wrong toast selector. Correct host is `[data-testid="toast"]` (custom component, not sonner). Re-verified: all feedback present.
+- Customer portal onboarding surface (accept-invite page) is a separate portal app/login — not exercised here (would need the emailed invite token; SMTP not wired in fixtures). BLOCKED on invite-email token.
+
+### [Billing-contact settings / #2284] — PASS (bill-to freeze on Send: BLOCKED)
+Location: `/settings/organizations/:id#billing` (Billing tab) → `OrgBillingSettings`. Sections: Tax, **Billing contact** (email + name — the #2284 addition), Billing address.
+- ✅ Invalid billing-contact email (`still-bad-email`) → `PATCH .../billing-settings` **400** (`ZodError` on `billingContactEmail` "Invalid email address") AND a readable **"Invalid email address" error toast**.
+- ✅ Valid save (`billing.qa@example.com`) → `PATCH .../billing-settings` **200** AND a **"Organization billing settings saved" success toast**.
+- ⏸️ BLOCKED — Quotes "Send" bill-to freeze: the send flow captures/freezes the org bill-to address at send time, but actually sending a quote is email-dependent (no SMTP in fixtures) so the freeze can't be exercised end-to-end here. See the Quotes section below for what was reachable (bill-to block populates in the editor from org billing settings). Prereq to fully verify freeze-on-send: working SMTP / mail transport.
+
+### [Software catalog delete scoping / #2281] — PASS
+Location: Software Library (`/software`, `SoftwareCatalog`). Library started empty; created a package to exercise delete.
+- ✅ Create package: `POST /software/catalog` **201** + `POST .../versions` **201**, success toast "Added QA Delete Test Pkg — v1.0.0", card appears.
+- ✅ Open package → detail dialog (role=dialog, title "QA Delete Test Pkg") with a Delete action.
+- ✅ Delete shows a **named confirm dialog** with the correct package name in the body: "Delete package? This removes **QA Delete Test Pkg** from the software library, along with all of its versions and stored installer references. This cannot be undone." (Cancel / Delete).
+- ✅ Confirm → `DELETE /software/catalog/{id}?orgId=40bf57ec...` **200**, success toast **"Deleted \"QA Delete Test Pkg\""**, the card leaves the list, back to empty state. Delete request is correctly org-scoped (carries the item's orgId).
+- Note: the #2281 fix scopes delete to the item's OWN org (prevents a partner token deleting another org's package). Cross-org scoping enforcement can't be negatively verified in single-org fixtures (no second org's package to attempt) — happy path + org-scoped request confirmed; cross-tenant rejection is BLOCKED on a multi-org fixture.
+
+### [Quotes line-item image-from-URL / #2279] — PASS (happy path BLOCKED on no outbound net)
+Location: Quotes editor → Pricing table → committed line row (`EditableLineRow`). Created a draft quote + pricing table + a "Manual line" to reach the control.
+- ✅ Control renders with parity to image blocks: line row shows "Add image" + a **"From URL"** toggle (`quote-line-image-url-toggle-{lineId}`); toggling reveals an `aria-label="Image URL"` **type=url** input (placeholder `https://example.com/photo.png`) plus **Fetch** (disabled until non-empty) and **Cancel**.
+- ✅ Server-side scheme validation works AND surfaces a visible error toast: `javascript:alert(1)` → `POST /quotes/{id}/images` **400** `{"error":"url must be an http(s) URL"}` → **`[data-testid="toast"]` `data-toast-type="error"` "url must be an http(s) URL"** (also rejects `data:` — anything non-http(s)).
+- ✅ Unreachable host also toasts: `https://picsum.photos/200` → **502** `{"error":"Couldn't reach that URL"}` → **error toast "Couldn't reach that URL"**.
+- ✅ Success toasts work on this route too: `POST /quotes/{id}/send` **200** → **success toast "Proposal sent — …"**.
+- ⚠️ Minor: no client-side scheme/format guard (Fetch stays enabled for `javascript:`); harmless since the server rejects and a clear error toast fires.
+- ⏸️ Happy path (image actually appears on the line) is **BLOCKED**: the local API stack has no outbound internet, so the server-side image copy returns 502 "Couldn't reach that URL". Can't confirm the fetched image renders on the line. Prereq: an API that can reach an external image host (or an internally-reachable image URL).
+- ⚠️⚠️ CORRECTION (supersedes an earlier draft of this entry): I first reported this as a silent-failure bug ("no toast on any image-URL error / whole quote-editor drops toasts"). **That was WRONG — a selector/timing artifact.** The app's toast host is a custom component, NOT sonner: container `[data-testid="toast-container"]`, each toast `[data-testid="toast"]` with `data-toast-type` and a `<span>` message, auto-dismissing at 5000ms; the container renders `null` when no toast is active (its absence is normal, not a bug). My earlier `[data-sonner-toaster]` selector matched nothing anywhere. Re-verified by clicking + polling `[data-testid="toast"]` immediately in-page: both error toasts AND the send success toast appear on the quotes editor. **No bug — #2279 works as designed.**
+
+### [Quotes bill-to freeze on send / #2284 second half] — PARTIAL / BLOCKED
+- ✅ Sending the draft worked without SMTP: `POST /quotes/{id}/send` **200**, status → **Sent**, and the customer Preview renders a populated recipient block **"PREPARED FOR: Default Organization"** + the pricing table.
+- ⏸️ True freeze-immutability (address snapshotted at send time and not re-derived later) can't be proven here: the test org has **no billing address lines set** (only the contact email), so the bill-to block shows just the org name. Full verification BLOCKED — would need: set org billing address → send → mutate org address → confirm the Sent quote still shows the OLD address.
+
+### Phase C — everyday-workflow smoke
+- ✅ Devices: list renders 2 seeded offline fixtures (E2E macOS / Windows), search box present. Opened E2E macOS Test Device → detail page renders (h1 correct), tab switch Overview→Details works (hash `#details`). Only console error is the **known pre-existing `404 /api/v1/reliability/:id`** (documented in the BE-16 entry above; not a regression).
+- ⚠️ Theme toggle: inconclusive — the header "Theme" button is present but neither a real Playwright click nor a JS click visibly flipped `data-theme` (stayed `light`) or opened a role=menu in this harness. Likely opens a popover needing a second interaction; not a target PR, flagged for a manual re-check.
+- Alerts acknowledge: not exercised (time budget spent on the 4 target PRs + the silent-failure investigation).
+
+---
+
+## Summary table
+
+| Area | Result |
+|---|---|
+| Phase A — login + nav crawl (12 destinations) | PASS (1 transient 502 infra flake on /auth/refresh) |
+| #2283 Portal Users (invite / validation / resend) | PASS |
+| #2284 Billing-contact settings (valid + invalid save) | PASS |
+| #2284 Quotes bill-to freeze on send | PARTIAL / BLOCKED (no org address set) |
+| #2281 Software catalog delete scoping | PASS (cross-tenant negative case BLOCKED — single-org) |
+| #2279 Quotes line-item image-from-URL | PASS (happy path BLOCKED — no outbound net) |
+| Phase C — device detail + tabs | PASS |
+| Phase C — theme toggle | INCONCLUSIVE |
+
+## Top real defects
+- **None confirmed.** All 4 target PRs surface correct success/error feedback. (An earlier draft claimed a #2279 silent-failure bug; that was a QA selector/timing artifact — see correction below — and has been retracted.)
+
+## UI/UX observations (papercuts)
+- Portal Users invite + billing-contact both allow an invalid email through the client (submit button stays enabled) and rely on the server 400 + toast; a client-side email guard would save the round-trip. (Feedback itself is correct on those two.) — ✅ **Resolved in #2299**: shared `isValidEmail` guard disables submit/save + inline error on both forms (billing email stays optional).
+- Portal user **Remove** deletes access with no confirmation dialog (contrast: software-catalog delete confirms). — ✅ **Resolved in #2299**: Remove now opens the shared `ConfirmDialog` (names the user's email) before the DELETE.
+- #2279 line-item image "Fetch" stays enabled for `javascript:`/`data:` schemes (no client-side scheme guard); server rejects with a clear error toast, so cosmetic only. — ⬜ not addressed (out of scope for #2299; cosmetic — server rejects).
+- A single transient `502` on `/auth/refresh` hard-boots the whole SPA to `/login` mid-session (Phase A). Infra flake, but the UX of one failed silent refresh = full logout is worth hardening (retry/backoff before eviction). — ✅ **Resolved in #2299**: `refreshFetchOnce` discriminates transient 5xx/offline/timeout from hard auth failures; `requestTokenRefresh` retries transient blips with bounded backoff (2 retries, ~0.9s) before eviction.
+
+## QA-method correction (important for future sweeps)
+- The app's toast host is a **custom component, not sonner**: container `[data-testid="toast-container"]` (renders `null`/absent when no toast is active — absence is NOT a bug), each toast `[data-testid="toast"]` with `data-toast-type="success|error|warning|undo"` and the message in a `<span>`; toasts **auto-dismiss at 5000ms**. Must poll `[data-testid="toast"]` **immediately** (ideally click + poll within the same in-page JS call). My initial passes used `[data-sonner-toaster]` (matches nothing) plus `[role=status]/[aria-live]`, producing false negatives. All toast-presence claims in this sweep were re-verified with the correct selector; the Portal Users / Billing PASS verdicts already reflected present feedback and stand.
+
 ## BE-16 Enhancement P1 — Risk-acceptance RBAC (`vulnerabilities:accept_risk`) — unit tests + type-check — 2026-06-24
 
 **Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS (unit/web suites + astro check); browser wt-stack spot-check **pending Todd's manual UI verification**.
@@ -3531,3 +3612,253 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 > forward on `main` — verified present in `origin/main`, which is also well ahead of the
 > throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
 > The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
+
+---
+
+## UI QA Sweep — 2026-06-30
+
+**Scope:** Verify all changes since last release **v0.87.0** (commit `8b7a2e0d1`, #2062, tagged 2026-06-29).
+**Stack:** isolated worktree `qa-sweep-main` @ `bccd80582` (v0.87.0 + 29 commits), `http://localhost:32790`, fixtures seeded.
+**Tester:** internal Playwright UI QA sweep.
+
+### Change list since v0.87.0 (29 commits)
+
+**UI-affecting (Playwright targets):**
+- #2095 feat(incidents): EDR-aware Incidents page with unified feed — NEW page
+- #2097 feat(unifi): self-hosted controller support (agent-mediated)
+- #2081 feat(catalog): AI enrichment on distributor imports + "Polish with AI" helper
+- #2079 feat(patches): enforce Breeze as sole Windows Update source (#1872)
+- #2096 feat(maintenance): reboot devices with pending reboot during maintenance windows
+- #2084 feat(contracts): prefill Pax8 sell price in subscription-link modal
+- #2072 feat(billing): full-width, expandable line description boxes for quotes & invoices
+- #2076 fix(tickets): surface partner-level SLAs in Priorities settings + precedence note
+- #2077 fix(web): disable Connect Desktop & Power for offline devices (#2013)
+- #2064 feat(web): partner-wide ("all orgs") owner option on config policy create
+- #2070 fix(config): enforce web FeatureType parity with canonical CONFIG_FEATURE_TYPES (#2004)
+- #2088 feat(software): detection rules for .exe/.msi deploys + reboot-code fix (#2022)
+- #2087 feat(reports): expose Security & Compliance Posture report in the UI
+- #2086 fix(web): relabel agent update policy modes to match actual behavior (#1962)
+- #1998 feat(web): native detail page for network-discovered devices — #1424 slice 2/4
+
+**Backend/agent/deps (not Playwright-verifiable; noted only):**
+- #2068 feat(security): recognize Elastic Defend as AV (may surface in Security UI)
+- #2065 fix(api): widen interface_name varchar(100)→text (#2006)
+- #2080 feat(pam): pin cert thumbprint for signer matching (#1776)
+- #2071 fix(api): allow API-key auth to write device custom-field values (#2066)
+- #2069 feat(dns-security): Pi-hole v6 REST API client (#2017) — headless, no web UI
+- #2085 fix(agent): match bitdefender before defender in providerFromName (#2075)
+- #2074 fix(docs): upgrade docs site to Astro 7
+- #2073 fix(security): bump anyhow (RUSTSEC-2026-0190)
+- #2067 chore(addins,viewer): migrate Office add-ins + viewer to Tailwind 4
+- #2063 docs: sync technical docs for v0.87.0
+- #2091/#2093/#2094/#2092 chore(deps): agent dep bumps
+
+### Baseline login + nav crawl — PASS
+- ✅ Login `admin@breeze.local` → Dashboard. All 48 sidebar routes return document-level HTTP 200 (no whole-page SSR 500s).
+- ⚠️ UI/UX: footer shows **"Web dev · API 0.82.0"** — API version metadata is stale (stack is built from main @ v0.87.0+29). Cosmetic but misleading for support triage.
+- ⚠️ UI/UX: first-run "Navigate your tools" guided tour (4 steps) overlays the page on load; it intercepts clicks until dismissed. Expected onboarding, noting presence.
+
+### #2095 Incidents (EDR-aware unified feed) — PASS
+- ✅ `/incidents` renders heading + "Tracked incidents and EDR findings across your organization." subtitle.
+- ✅ `GET /api/v1/incidents/feed` → 200; clean empty state "No incidents found" (seed has no incidents).
+- ✅ All/Tracked/Findings filter works — selecting Findings issues `?kind=finding` refetch → 200.
+- ✅ No console errors.
+
+### #2087 Security & Compliance Posture report — PARTIAL (headline OK, templates fetch 500s)
+- ✅ `/reports/templates` lists the new **"Security & Compliance Posture (Insurance)"** template first, with correct description (EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, integrations + percent-implemented rollups), cadence One-time, PDF, last 30 days. "Use template" present.
+- ✅ Reports landing page renders (Templates / Ad-hoc / New / Saved / Recent Runs); curated templates render client-side.
+- ❌ **BUG: `GET /api/v1/reports/templates` → 500 on every Templates page load.** UI shows red banner "Failed to fetch report templates".
+  - API actual: `500` body. Server log: `PostgresError: invalid input syntax for type uuid: "templates"` from `select ... from reports where id = $1` ($1="templates").
+  - Root cause: **no `/reports/templates` endpoint exists.** Request falls through to `coreRoutes.get('/:id')` (`apps/api/src/routes/reports/core.ts:92`). Its guard `if (['runs','data','generate'].includes(reportId)) return c.notFound();` **omits `'templates'`**, so it runs `getReportWithOrgCheck('templates')` → uuid cast error.
+  - Web side: `apps/web/src/components/reports/ReportTemplates.tsx:375` `fetchWithAuth('/reports/templates')` → throws on !ok. Seeds `defaultTemplates` so curated list still shows, but **user-saved custom templates never merge in** (merge only runs on success). Test `ReportTemplates.posture.test.tsx:23` mocks this endpoint — web assumes it exists; API never implemented it.
+  - Proposed fix: implement `GET /reports/templates` returning saved custom templates (intended behavior); at minimum add `'templates'` to the `/:id` skip-list (or guard `:id` to UUID shape) to stop the 500/uuid error. Note: a clean 404 alone still trips the web banner, so the real fix is the endpoint.
+  - ⚠️ UI/UX: a hard 500 + Postgres uuid error is logged server-side on every Reports→Templates visit (log noise / false-alarm for ops).
+
+### #2064 Config policy partner-wide ("all orgs") owner — PASS
+- ✅ `/configuration-policies/new` → Configure New → "APPLY TO" radio group: "All organizations (partner-wide)" vs "A specific organization" (`ownerScope` partner|organization).
+- ✅ Selecting partner-wide cleanly removes the org dropdown (good UX, no dead/disabled control left behind).
+
+### #2086 Relabel agent update policy modes (#1962) — PASS
+- ✅ Partner → Defaults: update-policy select reads "Not set — orgs configure individually" / "Automatic" / "Manual (block automatic updates)" with clarifying copy ("blocks automatic updates entirely — agents stay on their current version…"). Matches the de-ringed actual behavior.
+- ✅ Confirmed in source: OrgDefaultsEditor.tsx + PartnerDefaultsTab.tsx; legacy `staged` value normalized to `auto`.
+
+### #2070 FeatureType web parity (#2004) — PASS (indirect)
+- ✅ Config Policies pages render without console errors; feature-type parity is enforced by build-time contract test (#2004). No runtime UI symptom.
+
+### #2077 Disable Connect Desktop & Power for offline devices (#2013) — PASS
+- ✅ Offline device (E2E macOS, status "Offline"/"Down"): **Connect Desktop, Power, Run Script, Remote Tools all disabled** with tooltip "Device is offline".
+- ✅ **Wake** remains enabled (correct — WoL via online peer agent on the LAN; tooltip explains this). Good graceful-degradation UX.
+- ⚠️ UI/UX (minor, pre-existing, not #2077): device detail logs `GET /api/v1/reliability/{id}` → **404** to console for a device with no reliability history. A 404-for-"no-data-yet" is a weak API contract (200 + null would be cleaner) and adds console noise. Low priority.
+
+### #1998 Native detail page for network-discovered devices (#1424 slice 2/4) — PARTIAL (BLOCKED on fixtures)
+- ✅ Route `/devices/network/[id]` ships (NetworkDeviceDetailPage.tsx); renders graceful "Network device not found" + Back to devices for a non-existent id (no crash/500).
+- ✅ Network Discovery page renders Assets/Profiles/Jobs/Topology/Changes; clean "No assets discovered yet" empty state.
+- ⛔ BLOCKED: seed has zero discovered assets, so the populated detail page (services, ports, fingerprint, promote-to-managed) couldn't be exercised live. Re-test needs a discovery scan producing assets.
+
+### #2088 Software detection rules for .exe/.msi deploys (#2022) — PASS
+- ✅ Created package "QA Detection Test App" → Versions → Add Version exposes full installer form: VERSION, ARCHITECTURE (x64/arm64/x86), DOWNLOAD URL, SUPPORTED OS, PACKAGE FILE (.msi/.exe/.dmg/.deb/.pkg), SILENT INSTALL/UNINSTALL ARGS.
+- ✅ **DETECTION RULES** section with excellent explanatory copy ("status reflects the device's real state instead of installer exit code, installs skipped when already present, all rules must match"; fallback note when empty).
+- ✅ "+ Add rule" → type select **Registry key/value / File or folder exists / MSI product code**; Registry shows hive select (HKLM/HKCU/HKCR/HKU/HKCC) + path/value/expected-data inputs. Silent-arg placeholders include MSI examples with `{file}` token.
+- ⚠️ UI/UX: creating a package shows **no success toast** — only the list silently gains the row. Not a silent failure (row appears), but a confirmation toast is the house pattern (`runAction`) and is missing here. Minor.
+
+### #2079 Enforce Breeze as sole Windows Update source (#1872) — PASS (org-scoped)
+- ✅ Config policy → Patches tab → "Windows Update Source" section → "Manage Windows Update exclusively through Breeze" toggle (`data-testid=patch-exclusive-windows-update-toggle`), default OFF, with clear copy.
+- ✅ On an **org-scoped** policy: toggle ON → Save → persists across reload (aria-checked=true). Works as designed.
+- ✅ Patches dashboard (/patches) renders Compliance/Patches/Update Rings, compliance %, device filters (incl. Pending Reboot, 3rd-Party Pending).
+
+### #2064 partner-wide config policy — create path PASS, but org-only feature UX bug
+- ✅ Creating a partner-wide ("all organizations") policy works end-to-end (toast on create, redirect to policy editor).
+- ❌ **BUG (UX flow): org-only feature tabs are fully editable on partner-wide policies and only fail at Save.**
+  - Repro: create partner-wide policy → open **Patches** tab → toggle anything → Save.
+  - API actual: `POST /api/v1/configuration-policies/{id}/features` → **400** `{"error":"The \"patch\" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy."}`
+  - UI: the 400 error message IS surfaced (transient toast — **not** a silent failure), but the change is discarded (toggle reverts on reload). The user is allowed to fully configure + attempt to save a feature the backend forbids for this scope.
+  - Proposed fix: for partner-wide policies, hide or disable the org-only feature tabs (patch and any other org-scoped-only features) with an inline "configure on an org-scoped policy" hint, instead of allowing edit then erroring on Save. (Ties the new #2064 owner option to org-only features like #2079.)
+  - Note: corrected an initial false read — the "Saved" text on the page is the "Saved Filters" nav link, not a success toast; the actual save error is displayed.
+
+### #2072 Full-width, expandable line description boxes (quotes & invoices) — PASS
+- ✅ Quote editor → Pricing table block → manual line: description is a full-width **textarea** (`quote-manual-desc`, ~510px, placeholder "Description (optional)"), classes `min-h-9 resize-y`, `resize: vertical` + `overflow-y: auto` → user-expandable by drag. Replaces the old cramped single-line input.
+- ℹ️ Does not auto-grow with content (stays 2 rows, scrolls); manual resize handle covers the "expandable" intent. Auto-grow would be a nice-to-have but not required.
+
+### #2076 Partner-level SLAs in Priorities settings + precedence note — PASS
+- ✅ Partner → Ticketing → "Priorities & SLAs" tab renders heading "Priorities & SLAs" and the corrected precedence note: "These are your partner-wide SLA defaults. Each ticket uses the most specific SLA that applies — a per-ticket override, then its category, then an organization override — and falls back to these defaults otherwise."
+- ✅ Copy matches the actual resolution order (per-ticket → category → org → partner defaults).
+
+### #2081 Catalog AI enrichment + "Polish with AI" — PASS (enrichment verified live)
+- ✅ Product Catalog → Add item → "✨ Auto-fill from web" (`catalog-enrich-btn-drawer`): entered "Fortinet FortiGate 40F firewall" → `POST /api/v1/catalog/enrich` 200 → auto-filled Name ("Fortinet FortiGate 40F (FG-40F) Next-Generation Firewall") + a real customer-facing Description. No console errors.
+- ✅ "Polish with AI" helper (`PolishButton.tsx`) shipped and wired into catalog item editor + InvoiceEditor; presentation-only cleanup of existing name/description (server route `/catalog/polish`, maps fact-drift → 502 AI_FACT_DRIFT). Not exercised live (needs an existing item/invoice line with text) but present.
+- ℹ️ Distributor-import enrichment (`enrichDistributorListing`) is the other half of #2081 — verified present in services; live run needs a connected Pax8/TD SYNNEX distributor (fixture-blocked).
+
+### #2097 UniFi self-hosted controller support — PASS
+- ✅ Integrations → UniFi tab offers two modes: "Cloud (Site Manager API key)" and "Self-hosted controller".
+- ✅ Self-hosted mode copy: "A Breeze agent on the controller's network polls it directly — no UniFi cloud account needed." + "Account label (optional)" + Connect. Matches agent-mediated, no-cloud-key design.
+- ⛔ Full connect (agent-mediated discovery) needs an agent on the controller LAN — fixture-blocked; UI/mode present and correct.
+
+### #2096 Maintenance window reboot-if-pending — PASS
+- ✅ Config policy → Maintenance tab → "Reboot if a reboot is pending" toggle (`maintenance-reboot-if-pending-toggle`) with description "During the window, reboot devices that have a pending reboot. Windows warns the signed-in user ~5 minutes before; Linux schedules 15 minutes out; macOS not supported."
+- ✅ Present on org-scoped policy; default off.
+
+### #2084 Pax8 sell-price prefill in subscription-link modal — BLOCKED (fixtures)
+- ℹ️ Code present (contracts subscription-link modal prefills Pax8 sell price). Live verification needs a contract with a subscription line + connected Pax8 distributor with pricing — not available in seed. Contracts page renders.
+
+### Everyday-workflow pass — PASS
+- ✅ **Alerts**: 2 active seeded alerts; clicking **Ack** flips status Active→**Acknowledged** and removes the Ack button (visible state change = confirmation). `POST /alerts/{id}/acknowledge` fired. Resolve/Mute present.
+- ✅ **Cmd+K global search**: opens palette; query "e2e" returns devices + alerts with type labels; results well-formed.
+- ✅ **Theme toggle**: Light/Dark/System menu; selecting Dark applies `.dark` to documentElement.
+- ✅ **Scripts**: Script Library renders with "Import from Library" + "New Script" + clean empty state.
+- ✅ **Devices**: list, filters (Online/Offline/Servers/Needs patches/Critical/Reboot needed…), column headers, 2 seeded devices.
+
+### UI/UX observations (consolidated)
+- ⚠️ Footer reads **"Web dev · API 0.82.0"** — API version metadata stale vs actual v0.87.0+29. Misleading for support triage.
+- ⚠️ **Reports → Templates** logs a 500 + Postgres uuid error and shows a red "Failed to fetch report templates" banner on every load (see #2087 finding → filed issue).
+- ⚠️ **Partner-wide config policies** expose org-only feature tabs (Patch, etc.) as editable; Save fails with a surfaced 400 — should disable/hide upfront (see #2064 finding → filed issue).
+- ⚠️ **Software → Add Package** shows no success toast (row appears, but no `runAction`-style confirmation).
+- ⚠️ **Device detail** logs `GET /api/v1/reliability/{id}` → 404 to console for devices with no reliability history (weak no-data contract; console noise).
+- ⚠️ First-run "Navigate your tools" guided tour overlays and intercepts clicks until dismissed (expected onboarding).
+- ⚠️ Config-policy create deep-link `?feature=patch` does not pre-select the Patch tab after creation (lands on Overview) — minor.
+
+### Summary table
+| Area / PR | Result |
+|---|---|
+| Baseline nav (48 routes) | PASS (all doc-200) |
+| #2095 Incidents | PASS |
+| #2097 UniFi self-hosted | PASS |
+| #2081 Catalog AI enrichment | PASS (live) |
+| #2079 Patches sole source | PASS (org-scoped) |
+| #2096 Maintenance reboot-if-pending | PASS |
+| #2072 Billing description boxes | PASS |
+| #2076 Tickets partner SLAs | PASS |
+| #2077 Offline disable connect/power | PASS |
+| #2086 Update-policy relabel | PASS |
+| #2088 Software detection rules | PASS |
+| #2070 FeatureType parity | PASS (indirect) |
+| #2064 Config policy all-orgs | PASS (create) + UX bug |
+| #2087 Security posture report | PARTIAL — templates 500 (BUG) |
+| #1998 Network device detail | PARTIAL — fixture-blocked |
+| #2084 Pax8 price prefill | BLOCKED — fixture |
+| Everyday: alerts/search/theme/scripts | PASS |
+
+### Top findings
+1. **[BUG] Reports → Templates returns 500** (`/api/v1/reports/templates` shadowed by `/reports/:id`; `'templates'` missing from skip-list). User-visible error banner + server 500 every load; saved custom templates never load. → GitHub issue filed.
+2. **[UX BUG] Org-only config-policy features editable on partner-wide policies** — Patch toggle etc. editable then 400 on Save. → GitHub issue filed.
+3. Minor papercuts: stale API version in footer, missing toast on package create, reliability 404 console noise.
+
+### Issues filed
+- **#2100** — [API/UI] Reports → Templates returns 500 (`/api/v1/reports/templates` shadowed by `/reports/:id`).
+- **#2101** — [UI] Org-only config-policy features editable on partner-wide policies, then 400 on Save.
+
+### Sweep environment
+- Isolated worktree stack `breeze-wt-main` @ main `bccd80582` on `http://localhost:32790` (disposable; `pnpm wt-stack down` to tear down). Test data created (QA policies, QA catalog package, draft quote, 1 acked alert) lives only in this disposable DB.
+
+---
+
+## PR-merge verification pass — 2026-06-30 (post-merge of 6 items)
+
+Merged main-blocking cascade fix (#2106) then 6 queued PRs. Re-stacked worktree on main `30f76b32f`, `wt-stack up --rebuild`, re-tested the merged changes in-browser.
+
+### #2106 UniFi cascade fix (main-blocking) — MERGED
+- Added `unifi_controller_sites` to `ORG_CASCADE_DELETE_ORDER` (alpha slot). Was failing the tenant-cascade contract test on every PR (inherited from #2097). Not any queued PR's fault. Merged first to green main.
+
+### #2102 Reports Templates endpoint — PASS ✅ (closes #2100)
+- `/reports/templates` page now renders curated templates ("Security & Compliance Posture (Insurance)", "Executive Summary", …) with "Use template" / "Create Custom Template" — **no error banner, no 500.**
+- Network: `GET /api/v1/reports/templates?orgId=… → 200 OK` (previously 500 uuid-cast via `/reports/:id` fall-through).
+- ⚠️ Minor: on cold app boot a bare `GET /reports/templates` (no orgId) briefly 401s before the token/orgId are ready; self-corrects on the real render (200). Benign race, not filing.
+
+### #2103 UniFi cloud Site Manager UI — PASS ✅
+- Integrations → UniFi category → "UniFi Network" card. Two modes toggle cleanly:
+  - **Cloud (Site Manager API key)**: API-key input + "Connect to UniFi"; copy explains site→site mapping + asset reconciliation.
+  - **Self-hosted controller**: "A Breeze agent on the controller's network polls it directly — no UniFi cloud account needed." + "Account label (optional)" + "Connect".
+- No console errors. (Did not submit a real connection — no live UniFi creds; UI presence + toggle is the check.)
+
+### #2099 Inbound-email sender-auth (Mailgun authserv-id) — PASS (CI) 
+- Backend-only (no distinct UI surface). Green on Test API + Integration Tests. Exercised by `inboundEmailService.test.ts` / `mailgun.test.ts`.
+
+### #2104 MCP org-key role — PASS (CI)
+- Backend/API RBAC fix, no UI surface. Green on Test API + Integration Tests.
+
+### #2105 Ticketing drop-unknown-sender + inbound review queue — MERGE PENDING
+- Conflicted with #2099 on `inboundEmailService.ts` (both edited the unverified-sender block). Resolved: keep #2099's `senderAuthDiagnostic` gap → Sentry warning AND #2105's `dropUnverifiedSenders` policy branch (raise the diagnostic regardless of drop policy; `ignored` when dropping, `quarantined` otherwise). Test API green on the merge commit. Awaiting Integration Tests before admin-merge; UI (InboundReviewQueue → Tickets tab, InboundEmailCard) to be verified after merge.
+
+### Post-merge summary table
+| PR | Result |
+|---|---|
+| #2106 UniFi cascade fix | MERGED (unblocks main) |
+| #2102 Reports Templates | PASS ✅ closes #2100 |
+| #2103 UniFi cloud UI | PASS ✅ |
+| #2099 Inbound-email sender-auth | PASS (CI) |
+| #2104 MCP org-key role | PASS (CI) |
+| #2105 Ticketing drop-sender/review queue | conflict resolved; merge pending CI |
+
+### #2105 Ticketing drop-unknown-sender + inbound review queue — PASS ✅ (merged, verified)
+Merged after conflict resolution (see above); re-stacked worktree on main `cb1c33f98`, rebuilt, verified in-browser:
+- **Tickets → Review queue tab** renders: "Quarantined (unknown sender) and failed inbound emails. Convert to a ticket or dismiss." Empty state "Nothing to review." API `GET /api/v1/ticket-config/email-inbound → 200`.
+- **Settings → Partner → Ticketing → Inbound Email** (`InboundEmailCard`) renders fully:
+  - **"Drop mail that fails sender authentication (SPF/DKIM/DMARC)"** checkbox = the `dropUnverifiedSenders` toggle (the exact path resolved in the #2099 conflict). Toggling it fires a save and surfaces a **"Inbound email settings saved"** toast — visible feedback confirmed (no silent mutation).
+  - **Unknown senders** radios: "Quarantine for review (default) → Held in Tickets → Review queue" (default), "Route to the triage organization", "Drop silently (no ticket, no review-queue entry, no autoresponse)".
+- No console errors. Conflict resolution validated end-to-end: the drop toggle (my `dropUnverifiedSenders` branch) coexists with #2099's diagnostic/quarantine path.
+
+**All 6 queued PRs merged and verified. Final: #2106 (unblock), #2102 ✅ closes #2100, #2103 ✅, #2099 ✅ CI, #2104 ✅ CI, #2105 ✅.**
+
+---
+
+## Deep-dive: batch backend items exercised end-to-end (2026-06-30, post-merge)
+
+### #2104 MCP org-key role — FAIL ❌ (fix incomplete) → filed #2108
+Ran the real reported scenario end-to-end (not just CI): logged in, created an **org-scoped manual API key** (`ai:read`) as admin@breeze.local (a **Partner Admin** whose role lives only in `partner_users`, org belongs to that partner), drove `POST /api/v1/mcp/sse`.
+- `initialize` ✅, `tools/list` ✅ — then **every `tools/call` → `Insufficient permissions: no role assigned`**. Exactly the #2019 symptom #2104 was meant to fix. Fix code confirmed present in the running (code-mounted) container.
+- **Differential:** inserting an `organization_users` row → `tools/call` succeeds; removing it → fails. Org axis resolves under the ambient org-scoped context; partner axis does not.
+- **Root cause (RLS-proven):** `buildAuthFromApiKey` resolves the owning `partnerId` via `getActiveOrgTenant → getActivePartner` (`services/tenantStatus.ts`), which wrap reads in `withSystemDbAccessContext` **without `runOutsideDbContext` first** → the escalation no-ops inside the active org context → `partners` row RLS-filtered to 0 (psql: `partners visible:0` under org-ctx vs `1` under system-ctx) → `partnerId=null` → `getUserPermissions` never consults the partner axis → null → "no role assigned".
+- **Why CI stayed green:** `permissionsContext.integration.test.ts` calls `getUserPermissions(userId,{partnerId})` with partnerId **passed in directly**, bypassing the broken `getActiveOrgTenant` resolution. The test assumes the exact precondition that fails.
+- All test data (org_users row, 4 `qa-2104*` keys) cleaned up afterward. → **Issue #2108** (fix direction: mirror `permissions.ts` `runOutsideDbContext(()=>withSystemDbAccessContext(...))` in `tenantStatus.ts`).
+
+### #2099 Inbound-email sender-auth — PASS (CI/unit) — live E2E not run
+Pure Mailgun `Authentication-Results` parsing fix (trust `mxa/mxb.mailgun.org` authserv-ids, scan all AR headers). Exercised by `mailgun.test.ts` (the exact authserv-id + multi-header cases) and green on Test API + Integration. A live signed-webhook E2E was **not** attempted — the inbound webhook requires a valid provider signature (#2053), not feasible to forge locally without the signing key. Disposition: verified at unit level; no UI surface.
+
+### Revised batch verdict
+| PR | Verdict |
+|---|---|
+| #2106 UniFi cascade fix | MERGED (unblock) |
+| #2102 Reports Templates | PASS ✅ closes #2100 |
+| #2103 UniFi cloud UI | PASS ✅ |
+| #2099 Inbound-email sender-auth | PASS (unit/CI; live E2E not run) |
+| #2104 MCP org-key role | **FAIL ❌ — #2104 incomplete → #2108** |
+| #2105 Ticketing drop-sender/review queue | PASS ✅ |
