@@ -925,13 +925,22 @@ export const monitoringInlineSettingsSchema = z.object({
   watches: z.array(z.object({
     watchType: z.enum(['service', 'process']),
     name: z.string().min(1).max(255),
-    displayName: z.string().max(255).optional(),
+    // These three are the only watch columns without NOT NULL
+    // (config_policy_monitoring_watches.display_name / cpu_threshold_percent /
+    // memory_threshold_mb). The write path stores an unset value as `?? null`
+    // and the read path returns that null verbatim, so the editor loads a saved
+    // watch carrying nulls and posts them straight back. `.optional()` alone
+    // rejected them, which made an existing policy impossible to re-save once
+    // any watch had an unset field (#3491, #3492). Keep in sync with the
+    // columns, same as updateDeviceSchema.displayName above. Consumers already
+    // treat null and undefined alike (`!= null` in agents/helpers.ts).
+    displayName: z.string().max(255).nullable().optional(),
     enabled: z.boolean().default(true),
     alertOnStop: z.boolean().default(true),
     alertAfterConsecutiveFailures: z.number().int().min(1).max(100).default(2),
     alertSeverity: z.enum(['critical', 'high', 'medium', 'low', 'info']).default('high'),
-    cpuThresholdPercent: z.number().min(0).max(100).optional(),
-    memoryThresholdMb: z.number().min(0).optional(),
+    cpuThresholdPercent: z.number().min(0).max(100).nullable().optional(),
+    memoryThresholdMb: z.number().min(0).nullable().optional(),
     thresholdDurationSeconds: z.number().int().min(0).max(86400).default(300),
     autoRestart: z.boolean().default(false),
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
