@@ -199,7 +199,7 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
   'agents/heartbeat.ts': {
     paths: ['/api/v1/agents/agent-1/heartbeat', '/api/v1/agents/agent-1/monitoring-results'],
     globalMaxSize: 1 * MB,
-    note: 'INTENTIONALLY capped at the 1MB default — the route-level 5MB is the looser of the two and never applies. Agent ingest stays tight on purpose; raising it is a deliberate capacity/DoS decision, not a bugfix.',
+    note: 'KNOWN GAP (#3516), not a decision on record: the route declares 5MB but this gate caps it at 1MB. Do NOT relabel this "intentional" without a capacity/DoS decision written down somewhere.',
   },
   'agents/inventory.ts': {
     paths: [
@@ -210,12 +210,12 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
       '/api/v1/agents/agent-1/warranty-info',
     ],
     globalMaxSize: 1 * MB,
-    note: 'INTENTIONALLY capped at the 1MB default — same reasoning as heartbeat.',
+    note: 'KNOWN GAP (#3516): the route declares 5MB but this gate caps it at 1MB, so a >1MB software inventory (Linux dpkg/rpm hosts run 2-4k packages against a 5000-item collector limit and a 10000-item server schema) 413s. The agent discards the send error and 413 is not retryable, so inventory silently goes stale. Not an intentional cap — see the issue.',
   },
   'agents/connections.ts': {
     paths: ['/api/v1/agents/agent-1/connections'],
     globalMaxSize: 1 * MB,
-    note: 'INTENTIONALLY capped at the 1MB default — same reasoning as heartbeat.',
+    note: 'KNOWN GAP (#3516): declares 5MB, capped at 1MB by this gate — same shape as heartbeat/inventory.',
   },
   'agents/logs.ts': {
     paths: ['/api/v1/agents/agent-1/logs'],
@@ -245,7 +245,10 @@ function filesRegisteringBodyLimit(dir: string, root: string): string[] {
     } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
       const rel = relative(root, full);
       if (SCAN_EXEMPT.has(rel)) continue;
-      if (/\bbodyLimit\(\s*\{/.test(readFileSync(full, 'utf8'))) {
+      // Deliberately loose: `bodyLimit(opts)` and `bodyLimit(make(5 * MB))`
+      // must be caught too, not just an inline object literal. Over-inclusion
+      // fails loudly and is the correct bias for a drift guard.
+      if (/\bbodyLimit\(/.test(readFileSync(full, 'utf8'))) {
         found.push(rel.startsWith('routes/') ? rel.slice('routes/'.length) : rel);
       }
     }
