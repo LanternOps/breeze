@@ -306,7 +306,9 @@
       "time": "Horário",
       "timeout": "Tempo limite (ms)",
       "timezone": "Fuso horário",
-      "username": "Nome de usuário"
+      "username": "Nome de usuário",
+      "excludeIps": "Excluir endereços IP",
+      "portRanges": "Intervalos de portas a verificar"
     },
     "options": {
       "everyHours": "A cada {{count}} horas",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Varredura da matriz",
-      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Defina o escopo da rede e os métodos de descoberta.",
@@ -333,7 +337,11 @@
       "invalidCidr": "\"{{value}}\": não é um intervalo CIDR nem endereço IP válido",
       "octet": "\"{{value}}\": o valor do octeto excede 255",
       "prefix": "\"{{value}}\": o tamanho do prefixo deve ser de 0 a 32",
-      "subnetRequired": "É necessário informar pelo menos uma sub-rede ou um endereço IP."
+      "subnetRequired": "É necessário informar pelo menos uma sub-rede ou um endereço IP.",
+      "invalidPortRange": "\"{{value}}\": não é uma porta nem um intervalo de portas válido (por exemplo 443 ou 1000-2000)",
+      "portOutOfRange": "\"{{value}}\": as portas devem estar entre 1 e 65535",
+      "invalidExcludeIp": "\"{{value}}\": não é um endereço IPv4 válido",
+      "excludeIpCidr": "\"{{value}}\": intervalos CIDR não são aceitos — informe cada endereço IP separadamente"
     },
     "actions": {
       "saveProfile": "Salvar perfil"
@@ -343,7 +351,9 @@
       "arp": "Varredura ARP",
       "snmp": "Sondagem SNMP",
       "portScan": "Varredura de portas TCP"
-    }
+    },
+    "excludeIpsHelp": "Endereços IPv4 exatos a ignorar, separados por vírgulas ou quebras de linha. Intervalos CIDR não são aceitos aqui: o agente compara as exclusões endereço a endereço. Deixe em branco para verificar todos os endereços das sub-redes acima.",
+    "portRangesHelp": "Portas individuais e intervalos, separados por vírgulas — por exemplo 22,80,443,1000-2000. Cada porta deve estar entre 1 e 65535. Deixe em branco para usar o conjunto padrão restrito de 11 portas (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Use 1-65535 para uma varredura completa; é minuciosa, porém muito lenta e bem mais intrusiva."
   },
   "discoveryProfileList": {
     "actions": {

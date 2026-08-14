@@ -14,9 +14,9 @@ macOS gates access to the screen, input events, and protected files behind per-a
 
 | Permission | Binary | Used For | How to Grant |
 |---|---|---|---|
-| **Full Disk Access** | `/usr/local/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | System data collection, backup features | MDM PPPC profile (zero-touch) or manual System Settings grant |
-| **Accessibility** | `/usr/local/bin/breeze-agent`, `/usr/local/bin/breeze-desktop-helper` | Remote input (mouse and keyboard) during remote desktop sessions | MDM PPPC profile (zero-touch) or manual System Settings grant |
-| **Screen Recording** | `/usr/local/bin/breeze-desktop-helper` | Remote desktop screen capture | **User approval only.** MDM cannot pre-grant it -- a PPPC profile can only allow standard (non-admin) users to approve it themselves, via the `ScreenCapture` service's `AllowStandardUserToSetSystemService` authorization (macOS 11+) |
+| **Full Disk Access** | `/usr/local/bin/nu-agent`, `/usr/local/bin/nu-desktop-helper` | System data collection, backup features | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Accessibility** | `/usr/local/bin/nu-agent`, `/usr/local/bin/nu-desktop-helper` | Remote input (mouse and keyboard) during remote desktop sessions | MDM PPPC profile (zero-touch) or manual System Settings grant |
+| **Screen Recording** | `/usr/local/bin/nu-desktop-helper` | Remote desktop screen capture | **User approval only.** MDM cannot pre-grant it -- a PPPC profile can only allow standard (non-admin) users to approve it themselves, via the `ScreenCapture` service's `AllowStandardUserToSetSystemService` authorization (macOS 11+) |
 
 <Aside type="note">
   Apple does not permit MDM to silently grant Screen Recording. The best available automation is the `AllowStandardUserToSetSystemService` key, which lets a logged-in standard user click **Allow** without needing admin credentials. The end user still has to approve the prompt once.
@@ -45,7 +45,7 @@ The following profile is ready to import into your MDM (most consoles accept a r
       <key>PayloadType</key>
       <string>com.apple.TCC.configuration-profile-policy</string>
       <key>PayloadIdentifier</key>
-      <string>com.breezermm.pppc.privacy</string>
+      <string>com.nodesunlimited.pppc.privacy</string>
       <key>PayloadUUID</key>
       <string>7D3F2A91-5B4C-4E8D-9A16-C2E7F0B83D54</string>
       <key>PayloadVersion</key>
@@ -58,21 +58,21 @@ The following profile is ready to import into your MDM (most consoles accept a r
         <array>
           <dict>
             <key>Identifier</key>
-            <string>/usr/local/bin/breeze-agent</string>
+            <string>/usr/local/bin/nu-agent</string>
             <key>IdentifierType</key>
             <string>path</string>
             <key>CodeRequirement</key>
-            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <string>(identifier "nu-agent-darwin-arm64" or identifier "nu-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = 2JSWDUQ64Z</string>
             <key>Allowed</key>
             <true/>
           </dict>
           <dict>
             <key>Identifier</key>
-            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <string>/usr/local/bin/nu-desktop-helper</string>
             <key>IdentifierType</key>
             <string>path</string>
             <key>CodeRequirement</key>
-            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <string>(identifier "nu-desktop-helper-darwin-arm64" or identifier "nu-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = 2JSWDUQ64Z</string>
             <key>Allowed</key>
             <true/>
           </dict>
@@ -81,21 +81,21 @@ The following profile is ready to import into your MDM (most consoles accept a r
         <array>
           <dict>
             <key>Identifier</key>
-            <string>/usr/local/bin/breeze-agent</string>
+            <string>/usr/local/bin/nu-agent</string>
             <key>IdentifierType</key>
             <string>path</string>
             <key>CodeRequirement</key>
-            <string>(identifier "breeze-agent-darwin-arm64" or identifier "breeze-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <string>(identifier "nu-agent-darwin-arm64" or identifier "nu-agent-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = 2JSWDUQ64Z</string>
             <key>Allowed</key>
             <true/>
           </dict>
           <dict>
             <key>Identifier</key>
-            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <string>/usr/local/bin/nu-desktop-helper</string>
             <key>IdentifierType</key>
             <string>path</string>
             <key>CodeRequirement</key>
-            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <string>(identifier "nu-desktop-helper-darwin-arm64" or identifier "nu-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = 2JSWDUQ64Z</string>
             <key>Allowed</key>
             <true/>
           </dict>
@@ -104,11 +104,11 @@ The following profile is ready to import into your MDM (most consoles accept a r
         <array>
           <dict>
             <key>Identifier</key>
-            <string>/usr/local/bin/breeze-desktop-helper</string>
+            <string>/usr/local/bin/nu-desktop-helper</string>
             <key>IdentifierType</key>
             <string>path</string>
             <key>CodeRequirement</key>
-            <string>(identifier "breeze-desktop-helper-darwin-arm64" or identifier "breeze-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = D8W6N2JYMA</string>
+            <string>(identifier "nu-desktop-helper-darwin-arm64" or identifier "nu-desktop-helper-darwin-amd64") and anchor apple generic and certificate leaf[subject.OU] = 2JSWDUQ64Z</string>
             <key>Authorization</key>
             <string>AllowStandardUserToSetSystemService</string>
           </dict>
@@ -121,7 +121,7 @@ The following profile is ready to import into your MDM (most consoles accept a r
   <key>PayloadDisplayName</key>
   <string>Breeze RMM - macOS Privacy Permissions</string>
   <key>PayloadIdentifier</key>
-  <string>com.breezermm.pppc</string>
+  <string>com.nodesunlimited.pppc</string>
   <key>PayloadScope</key>
   <string>System</string>
   <key>PayloadType</key>
@@ -137,9 +137,9 @@ The following profile is ready to import into your MDM (most consoles accept a r
 The code requirements match both the Apple Silicon (`-darwin-arm64`) and Intel (`-darwin-amd64`) builds, so a single profile covers a mixed fleet. You can verify the signing identity of an installed binary at any time:
 
 ```bash
-codesign -dvvv /usr/local/bin/breeze-agent 2>&1 | grep -E '^Identifier|TeamIdentifier'
-# Identifier=breeze-agent-darwin-arm64
-# TeamIdentifier=D8W6N2JYMA
+codesign -dvvv /usr/local/bin/nu-agent 2>&1 | grep -E '^Identifier|TeamIdentifier'
+# Identifier=nu-agent-darwin-arm64
+# TeamIdentifier=2JSWDUQ64Z
 ```
 
 <Aside type="tip">
@@ -156,18 +156,18 @@ Without an MDM, grant the permissions on the device under **System Settings > Pr
 
 <Steps>
 
-1. **Full Disk Access** -- open **Privacy & Security > Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> in the file picker, and add `/usr/local/bin/breeze-agent` and `/usr/local/bin/breeze-desktop-helper`.
+1. **Full Disk Access** -- open **Privacy & Security > Full Disk Access**, click **+**, press <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> in the file picker, and add `/usr/local/bin/nu-agent` and `/usr/local/bin/nu-desktop-helper`.
 
 2. **Accessibility** -- open **Privacy & Security > Accessibility** and add the same two binaries.
 
-3. **Screen Recording** -- open **Privacy & Security > Screen & System Audio Recording** (labeled **Screen Recording** on macOS 12-14) and enable `breeze-desktop-helper`. If the helper has already attempted a capture, it appears in the list automatically; otherwise the first remote desktop connection triggers the standard macOS approval prompt.
+3. **Screen Recording** -- open **Privacy & Security > Screen & System Audio Recording** (labeled **Screen Recording** on macOS 12-14) and enable `nu-desktop-helper`. If the helper has already attempted a capture, it appears in the list automatically; otherwise the first remote desktop connection triggers the standard macOS approval prompt.
 
 </Steps>
 
 Changes to Full Disk Access take effect after the agent service restarts:
 
 ```bash
-sudo launchctl kickstart -k system/com.breeze.agent
+sudo launchctl kickstart -k system/com.nodesunlimited.agent
 ```
 
 ## Troubleshooting
@@ -176,13 +176,13 @@ sudo launchctl kickstart -k system/com.breeze.agent
 TCC grants are keyed to the binary's code-signing identity, not just its path. Official Breeze binaries are Developer ID signed with a stable identity, so grants survive updates. If a grant stops applying after an update, check that the binary is still properly signed:
 
 ```bash
-codesign -dvvv /usr/local/bin/breeze-agent
+codesign -dvvv /usr/local/bin/nu-agent
 ```
 
-Expect `Authority=Developer ID Application: LanternOps LLC (D8W6N2JYMA)` and `TeamIdentifier=D8W6N2JYMA`. An ad-hoc or unsigned binary -- typical of a manual or development build -- gets a new identity on every build, so macOS treats each update as a brand-new app and drops the grant. Reinstall an official signed release, or re-grant after each build for development installs.
+Expect `Authority=Developer ID Application: LanternOps LLC (2JSWDUQ64Z)` and `TeamIdentifier=2JSWDUQ64Z`. An ad-hoc or unsigned binary -- typical of a manual or development build -- gets a new identity on every build, so macOS treats each update as a brand-new app and drops the grant. Reinstall an official signed release, or re-grant after each build for development installs.
 
 **The PPPC profile is installed but permissions are not granted.**
-Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary: `codesign -d -r- /usr/local/bin/breeze-agent` prints the designated requirement to compare against.
+Confirm the profile arrived through MDM (`profiles list` should show it under a device channel). PPPC payloads are ignored when the profile is installed manually. Also verify the code requirement matches the installed binary: `codesign -d -r- /usr/local/bin/nu-agent` prints the designated requirement to compare against.
 
 **Remote desktop connects but shows a black screen.**
-Screen Recording has not been approved for `breeze-desktop-helper`. This permission always requires a one-time user approval -- see the table above.
+Screen Recording has not been approved for `nu-desktop-helper`. This permission always requires a one-time user approval -- see the table above.

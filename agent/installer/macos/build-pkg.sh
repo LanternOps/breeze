@@ -29,6 +29,7 @@ VERSION="${VERSION:-0.104.0-nu1}"
 IDENTIFIER="${IDENTIFIER:-com.nodesunlimited.agent}"
 OUT_DIR="${OUT_DIR:-$AGENT_DIR/dist}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+INSTALLER_SIGN_IDENTITY="${INSTALLER_SIGN_IDENTITY:-}"
 
 BINARIES=(nu-agent nu-watchdog nu-desktop-helper nu-backup)
 
@@ -39,6 +40,27 @@ for b in "${BINARIES[@]}"; do
     go build -ldflags "-X main.version=$VERSION" -o "bin/$b-darwin-$ARCH" "./cmd/$b"
 done
 
+# Sign the binaries IN bin/ — not just the staging copies. build-dmg.sh ships
+# bin/<name>-darwin-<arch> verbatim as the agent self-update / component
+# download artifacts, so signing only the pkg staging copies left every
+# published raw binary ad-hoc (and therefore un-notarizable).
+# A Mach-O signature lives inside the file, so the later `install` into the pkg
+# staging root carries it through.
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  echo "==> signing binaries as '$SIGN_IDENTITY'"
+  # --options runtime (hardened runtime) and a secure --timestamp are BOTH
+  # mandatory for notarization. Do not weaken either. set -e makes any failure
+  # here abort the build loudly.
+  for b in "${BINARIES[@]}"; do
+    codesign --force --options runtime --timestamp \
+      --sign "$SIGN_IDENTITY" "bin/$b-darwin-$ARCH"
+  done
+else
+  echo "==> WARNING: no SIGN_IDENTITY — binaries are ad-hoc signed." >&2
+  echo "    macOS will drop TCC permissions on every agent update," >&2
+  echo "    and notarization will reject these artifacts." >&2
+fi
+
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/root/usr/local/bin"
@@ -46,17 +68,6 @@ mkdir -p "$STAGE/root/usr/local/bin"
 for b in "${BINARIES[@]}"; do
   install -m 0755 "bin/$b-darwin-$ARCH" "$STAGE/root/usr/local/bin/$b"
 done
-
-if [[ -n "$SIGN_IDENTITY" ]]; then
-  echo "==> signing binaries as '$SIGN_IDENTITY'"
-  for b in "${BINARIES[@]}"; do
-    codesign --force --options runtime --timestamp=none \
-      --sign "$SIGN_IDENTITY" "$STAGE/root/usr/local/bin/$b"
-  done
-else
-  echo "==> WARNING: no SIGN_IDENTITY — binaries are ad-hoc signed."
-  echo "    macOS will drop TCC permissions on every agent update."
-fi
 
 # Strip extended attributes LAST — after signing, never before. codesign writes
 # its own xattrs, so stripping first accomplishes nothing.
@@ -98,14 +109,23 @@ COPYFILE_DISABLE=1 COPYFILE_DISABLE=1 pkgbuild \
   --install-location / \
   "$PKG"
 
-if [[ -n "$SIGN_IDENTITY" ]]; then
-  INSTALLER_IDENTITY="${INSTALLER_SIGN_IDENTITY:-$SIGN_IDENTITY}"
-  if productsign --sign "$INSTALLER_IDENTITY" "$PKG" "$PKG.signed" 2>/dev/null; then
-    mv "$PKG.signed" "$PKG"
-    echo "==> package signed as '$INSTALLER_IDENTITY'"
-  else
-    echo "==> note: productsign skipped (needs an installer-type identity); payload is still signed"
+# productsign REQUIRES a "Developer ID Installer" certificate. Falling back to
+# the Application identity here can only fail, so we do not fall back: if an
+# installer identity was resolved we sign and any failure is fatal; if none was
+# resolved we degrade gracefully (unsigned dev build) with a loud warning.
+if [[ -n "$INSTALLER_SIGN_IDENTITY" ]]; then
+  echo "==> productsign as '$INSTALLER_SIGN_IDENTITY'"
+  if ! productsign --sign "$INSTALLER_SIGN_IDENTITY" "$PKG" "$PKG.signed"; then
+    echo "ERROR: productsign failed with identity '$INSTALLER_SIGN_IDENTITY'." >&2
+    echo "       The pkg would ship UNSIGNED and fail notarization. Aborting." >&2
+    rm -f "$PKG.signed"
+    exit 1
   fi
+  mv "$PKG.signed" "$PKG"
+  echo "==> package signed as '$INSTALLER_SIGN_IDENTITY'"
+else
+  echo "==> WARNING: no INSTALLER_SIGN_IDENTITY — .pkg is UNSIGNED." >&2
+  echo "    This build is NOT notarization-ready (dev-only)." >&2
 fi
 
 echo

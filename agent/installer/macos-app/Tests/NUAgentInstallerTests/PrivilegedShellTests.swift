@@ -1,5 +1,5 @@
 import XCTest
-@testable import BreezeInstaller
+@testable import NUAgentInstaller
 
 final class PrivilegedShellTests: XCTestCase {
     private let marker = "__BREEZE_INSTALLER_EXIT_STATUS__"

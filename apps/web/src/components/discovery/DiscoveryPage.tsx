@@ -49,6 +49,8 @@ type ApiDiscoveryProfile = {
   name: string;
   siteId: string;
   subnets: string[];
+  excludeIps?: string[] | null;
+  portRanges?: string[] | null;
   methods: string[];
   schedule?: ApiDiscoverySchedule;
   snmpCommunities?: string[];
@@ -431,6 +433,9 @@ export default function DiscoveryPage() {
       name: editingProfile.name,
       siteId: editingProfile.siteId ?? '',
       subnets: editingProfile.subnets ?? [],
+      excludeIps: editingProfile.excludeIps ?? [],
+      // port_ranges is a nullable jsonb column; older profiles hold null.
+      portRanges: Array.isArray(editingProfile.portRanges) ? editingProfile.portRanges : [],
       methods: editingProfile.methods ?? [],
       schedule: scheduleToForm(editingProfile.schedule),
       snmp,
@@ -482,6 +487,13 @@ export default function DiscoveryPage() {
       const payload = {
         name: values.name,
         subnets: values.subnets,
+        // Blank inputs must reproduce the API's own defaults byte for byte so
+        // existing profiles keep behaving exactly as they do today:
+        // exclude_ips defaults to [] and port_ranges to null on create
+        // (apps/api/src/routes/discovery.ts:543,545). Sending them explicitly
+        // also makes the values clearable on edit.
+        excludeIps: values.excludeIps,
+        portRanges: values.portRanges.length > 0 ? values.portRanges : null,
         methods: values.methods,
         schedule: formScheduleToApi(values.schedule),
         siteId: values.siteId,

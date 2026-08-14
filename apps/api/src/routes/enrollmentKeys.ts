@@ -37,7 +37,7 @@ import {
   fetchMacosInstallerAppZip,
   serveWindowsBootstrapMsi,
 } from "../services/installerBuilder";
-import { renameAppInZip } from "../services/installerAppZip";
+import { stampInstallerAppZip } from "../services/installerAppZip";
 import {
   InstallerFilenameHostError,
   macosBundleApiHost,
@@ -1544,36 +1544,14 @@ enrollmentKeyRoutes.get(
           throw err;
         }
 
-        // The bootstrap token is carried in TWO places, by design:
-        //   1. the app bundle's own filename — `Breeze Installer [TOKEN@host].app`
-        //   2. a sibling `Breeze Installer.bootstrap.json`
-        // The Swift installer prefers the JSON (FilenameTokenParser.load), but
-        // macOS App Translocation (Gatekeeper path randomization) copies ONLY
-        // the .app bundle to a read-only randomized path when a quarantined app
-        // is launched in place — stranding the sibling JSON and breaking the
-        // install ("This installer needs its original filename", #2544). The
-        // token lives INSIDE the bundle name, so it travels through
-        // translocation and the filename fallback keeps the installer working.
-        // Keeping the JSON preserves the clean, translocation-free read for the
-        // common case (app moved to /Applications, quarantine cleared, etc.).
-        const newAppName = `Breeze Installer [${issued.token}@${bundleApiHost}].app`;
-        const bootstrapPayloadName = "Breeze Installer.bootstrap.json";
-
+        // Token stamping (bundle filename + sibling bootstrap.json) lives in
+        // stampInstallerAppZip — see that helper for why BOTH carriers exist
+        // (macOS App Translocation strands the sibling JSON, #2544).
         let renamedZip: Buffer | undefined;
         try {
-          renamedZip = await renameAppInZip(appZip, {
-            oldAppName: "Breeze Installer.app",
-            newAppName,
-            extraFiles: [
-              {
-                path: bootstrapPayloadName,
-                data: JSON.stringify({
-                  token: issued.token,
-                  apiHost: bundleApiHost,
-                }),
-                mode: 0o600,
-              },
-            ],
+          renamedZip = await stampInstallerAppZip(appZip, {
+            token: issued.token,
+            apiHost: bundleApiHost,
           });
         } catch (err) {
           console.error(
@@ -2481,21 +2459,10 @@ async function serveInstaller(
         throw err;
       }
 
-      const newAppName = `Breeze Installer [${issued.token}@${bundleApiHost}].app`;
       try {
-        const renamedZip = await renameAppInZip(appZip, {
-          oldAppName: "Breeze Installer.app",
-          newAppName,
-          extraFiles: [
-            {
-              path: "Breeze Installer.bootstrap.json",
-              data: JSON.stringify({
-                token: issued.token,
-                apiHost: bundleApiHost,
-              }),
-              mode: 0o600,
-            },
-          ],
+        const renamedZip = await stampInstallerAppZip(appZip, {
+          token: issued.token,
+          apiHost: bundleApiHost,
         });
 
         createAuditLogAsync({

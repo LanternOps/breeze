@@ -306,7 +306,9 @@
       "time": "Ora",
       "timeout": "Timeout (ms)",
       "timezone": "Fuso orario",
-      "username": "Nome utente"
+      "username": "Nome utente",
+      "excludeIps": "Escludi indirizzi IP",
+      "portRanges": "Intervalli di porte da analizzare"
     },
     "options": {
       "everyHours": "Ogni {{count}} ore",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Scansione sede centrale",
-      "subnets": "10.0.0.0/24\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Definisci l'ambito di rete e i metodi di rilevamento.",
@@ -333,7 +337,11 @@
       "invalidCidr": "\"{{value}}\": intervallo CIDR o indirizzo IP non valido",
       "octet": "\"{{value}}\": il valore dell'ottetto supera 255",
       "prefix": "\"{{value}}\": la lunghezza del prefisso deve essere compresa tra 0 e 32",
-      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP."
+      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP.",
+      "invalidPortRange": "\"{{value}}\": non è una porta o un intervallo di porte valido (ad esempio 443 o 1000-2000)",
+      "portOutOfRange": "\"{{value}}\": le porte devono essere comprese tra 1 e 65535",
+      "invalidExcludeIp": "\"{{value}}\": non è un indirizzo IPv4 valido",
+      "excludeIpCidr": "\"{{value}}\": gli intervalli CIDR non sono supportati — elenca ogni indirizzo IP separatamente"
     },
     "actions": {
       "saveProfile": "Salva profilo"
@@ -343,7 +351,9 @@
       "arp": "Scansione ARP",
       "snmp": "Sonda SNMP",
       "portScan": "Scansione porte TCP"
-    }
+    },
+    "excludeIpsHelp": "Indirizzi IPv4 esatti da ignorare, separati da virgole o a capo. Gli intervalli CIDR non sono supportati qui: l’agente confronta le esclusioni indirizzo per indirizzo. Lascia vuoto per analizzare tutti gli indirizzi delle subnet indicate sopra.",
+    "portRangesHelp": "Singole porte e intervalli, separati da virgole, ad esempio 22,80,443,1000-2000. Ogni porta deve essere compresa tra 1 e 65535. Lascia vuoto per usare l’insieme predefinito ristretto di 11 porte (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Usa 1-65535 per una scansione completa: è esaustiva, ma molto lenta e decisamente più invasiva."
   },
   "discoveryProfileList": {
     "actions": {

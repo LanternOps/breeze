@@ -16,7 +16,7 @@ async function buildFixtureZip(appName: string): Promise<Buffer> {
     archive.on("error", reject);
 
     archive.append("fake-binary", {
-      name: `${appName}/Contents/MacOS/BreezeInstaller`,
+      name: `${appName}/Contents/MacOS/NUAgentInstaller`,
       mode: 0o755,
     });
     archive.append("<plist/>", { name: `${appName}/Contents/Info.plist` });
@@ -48,32 +48,32 @@ async function listEntries(zipBuf: Buffer): Promise<string[]> {
 
 describe("renameAppInZip", () => {
   it("renames the app directory in every entry path", async () => {
-    const input = await buildFixtureZip("Breeze Installer.app");
+    const input = await buildFixtureZip("Nodes Unlimited Installer.app");
     const out = await renameAppInZip(input, {
-      oldAppName: "Breeze Installer.app",
-      newAppName: "Breeze Installer [A7K2XQ@us.2breeze.app].app",
+      oldAppName: "Nodes Unlimited Installer.app",
+      newAppName: "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app",
     });
     const entries = await listEntries(out);
     expect(entries).toEqual([
-      "Breeze Installer [A7K2XQ@us.2breeze.app].app/Contents/Info.plist",
-      "Breeze Installer [A7K2XQ@us.2breeze.app].app/Contents/MacOS/BreezeInstaller",
-      "Breeze Installer [A7K2XQ@us.2breeze.app].app/Contents/Resources/breeze-agent-amd64.pkg",
-      "Breeze Installer [A7K2XQ@us.2breeze.app].app/Contents/Resources/breeze-agent-arm64.pkg",
-      "Breeze Installer [A7K2XQ@us.2breeze.app].app/Contents/_CodeSignature/CodeResources",
+      "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app/Contents/Info.plist",
+      "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app/Contents/MacOS/NUAgentInstaller",
+      "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app/Contents/Resources/breeze-agent-amd64.pkg",
+      "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app/Contents/Resources/breeze-agent-arm64.pkg",
+      "Nodes Unlimited Installer [A7K2XQ@us.2breeze.app].app/Contents/_CodeSignature/CodeResources",
     ]);
   });
 
   it("preserves entry contents byte-for-byte", async () => {
-    const input = await buildFixtureZip("Breeze Installer.app");
+    const input = await buildFixtureZip("Nodes Unlimited Installer.app");
     const out = await renameAppInZip(input, {
-      oldAppName: "Breeze Installer.app",
-      newAppName: "Breeze Installer [BBBBBB@host.local].app",
+      oldAppName: "Nodes Unlimited Installer.app",
+      newAppName: "Nodes Unlimited Installer [BBBBBB@host.local].app",
     });
     const tmp = join(tmpdir(), `installer-zip-content-${Date.now()}.zip`);
     await writeFile(tmp, out);
     const z = new StreamZip.async({ file: tmp });
     const data = await z.entryData(
-      "Breeze Installer [BBBBBB@host.local].app/Contents/Info.plist",
+      "Nodes Unlimited Installer [BBBBBB@host.local].app/Contents/Info.plist",
     );
     await z.close();
     await unlink(tmp);
@@ -81,14 +81,14 @@ describe("renameAppInZip", () => {
   });
 
   it("preserves Unix permissions (regression: zero-byte .app from mode=0)", async () => {
-    // Source fixture sets BreezeInstaller as 0o755 (executable). Before the
+    // Source fixture sets NUAgentInstaller as 0o755 (executable). Before the
     // fix, the rewriter passed the raw zip external-attributes uint32 directly
     // to archiver, which masks down to 0o000 — directories became unreadable
     // and the user saw an empty / "zero-byte" .app on extraction.
-    const input = await buildFixtureZip("Breeze Installer.app");
+    const input = await buildFixtureZip("Nodes Unlimited Installer.app");
     const out = await renameAppInZip(input, {
-      oldAppName: "Breeze Installer.app",
-      newAppName: "Breeze Installer [PERMS01@host.local].app",
+      oldAppName: "Nodes Unlimited Installer.app",
+      newAppName: "Nodes Unlimited Installer [PERMS01@host.local].app",
     });
     const tmp = join(tmpdir(), `installer-zip-perms-${Date.now()}.zip`);
     await writeFile(tmp, out);
@@ -97,13 +97,13 @@ describe("renameAppInZip", () => {
       const entries = await z.entries();
       const binary =
         entries[
-          "Breeze Installer [PERMS01@host.local].app/Contents/MacOS/BreezeInstaller"
+          "Nodes Unlimited Installer [PERMS01@host.local].app/Contents/MacOS/NUAgentInstaller"
         ];
-      expect(binary, "BreezeInstaller entry must exist").toBeTruthy();
+      expect(binary, "NUAgentInstaller entry must exist").toBeTruthy();
       const binaryMode = (binary!.attr >>> 16) & 0o777;
       expect(
         binaryMode & 0o100,
-        "BreezeInstaller must remain executable (owner-x bit)",
+        "NUAgentInstaller must remain executable (owner-x bit)",
       ).not.toBe(0);
       await z.close();
     } finally {
@@ -112,13 +112,13 @@ describe("renameAppInZip", () => {
   });
 
   it("adds sibling bootstrap payload files without renaming the app to a token", async () => {
-    const input = await buildFixtureZip("Breeze Installer.app");
+    const input = await buildFixtureZip("Nodes Unlimited Installer.app");
     const out = await renameAppInZip(input, {
-      oldAppName: "Breeze Installer.app",
-      newAppName: "Breeze Installer.app",
+      oldAppName: "Nodes Unlimited Installer.app",
+      newAppName: "Nodes Unlimited Installer.app",
       extraFiles: [
         {
-          path: "Breeze Installer.bootstrap.json",
+          path: "Nodes Unlimited Installer.bootstrap.json",
           data: '{"token":"ABC1234567","apiHost":"api.example.com"}',
           mode: 0o600,
         },
@@ -129,11 +129,11 @@ describe("renameAppInZip", () => {
     try {
       const z = new StreamZip.async({ file: tmp });
       const entries = await z.entries();
-      expect(entries["Breeze Installer.bootstrap.json"]).toBeTruthy();
+      expect(entries["Nodes Unlimited Installer.bootstrap.json"]).toBeTruthy();
       expect(
-        entries["Breeze Installer [ABC1234567@api.example.com].app"],
+        entries["Nodes Unlimited Installer [ABC1234567@api.example.com].app"],
       ).toBeUndefined();
-      const data = await z.entryData("Breeze Installer.bootstrap.json");
+      const data = await z.entryData("Nodes Unlimited Installer.bootstrap.json");
       expect(data.toString("utf8")).toContain("ABC1234567");
       await z.close();
     } finally {
@@ -145,8 +145,8 @@ describe("renameAppInZip", () => {
     const input = await buildFixtureZip("Different.app");
     await expect(
       renameAppInZip(input, {
-        oldAppName: "Breeze Installer.app",
-        newAppName: "Breeze Installer [A7K2XQ@x.example].app",
+        oldAppName: "Nodes Unlimited Installer.app",
+        newAppName: "Nodes Unlimited Installer [A7K2XQ@x.example].app",
       }),
     ).rejects.toThrow(/no entries matched/i);
   });

@@ -6,8 +6,8 @@ enum Architecture: String {
 
     var pkgResourceName: String {
         switch self {
-        case .arm64: return "breeze-agent-arm64.pkg"
-        case .amd64: return "breeze-agent-amd64.pkg"
+        case .arm64: return "nu-agent-arm64.pkg"
+        case .amd64: return "nu-agent-amd64.pkg"
         }
     }
 

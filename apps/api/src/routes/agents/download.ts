@@ -40,8 +40,10 @@ interface ComponentDownloadConfig {
 // breeze-{component}-{os}-{arch}[.exe] — the shape shared by agent, watchdog,
 // backup, and user-helper (helper uses its own HELPER_FILENAMES lookup instead).
 function perArchFilename(component: string) {
-  return (os: string, arch: string) =>
-    `breeze-${component}-${os}-${arch}${os === 'windows' ? '.exe' : ''}`;
+  return (os: string, arch: string) => {
+    const prefix = os === 'darwin' ? 'nu' : 'breeze';
+    return `${prefix}-${component}-${os}-${arch}${os === 'windows' ? '.exe' : ''}`;
+  };
 }
 
 function registerComponentDownloadRoute(config: ComponentDownloadConfig): void {
@@ -189,7 +191,7 @@ downloadRoutes.get('/download/:os/:arch/pkg', async (c) => {
     return c.json({ error: 'Invalid architecture', message: `Supported values: amd64, arm64. Got: ${arch}` }, 400);
   }
 
-  const filename = `breeze-agent-darwin-${arch}.pkg`;
+  const filename = `nu-agent-darwin-${arch}.pkg`;
 
   // GitHub redirect mode — no local packages needed
   if (getBinarySource() === 'github') {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
+import { Filter, Info, Signal, CheckCircle2, XCircle, Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
@@ -13,6 +13,8 @@ import {
   type DiscoveredAssetTypeSource,
 } from './networkTypes';
 import { asList } from '@/lib/asList';
+import { toCsv } from '@/lib/csvExport';
+import { downloadBlob } from '@/lib/downloadBlob';
 
 // Re-exported so existing consumers importing it from './DiscoveredAssetList'
 // keep working; the canonical declaration now lives in ./networkTypes.
@@ -45,6 +47,7 @@ export type DiscoveredAsset = {
   approvalStatus: DiscoveredAssetApprovalStatus;
   isOnline: boolean;
   manufacturer: string;
+  firstSeen?: string;
   lastSeen?: string;
   openPorts?: OpenPortEntry[];
   osFingerprint?: string;
@@ -90,6 +93,7 @@ export type ApiDiscoveryAsset = {
   profileSubnets?: string[] | null;
   notes?: string | null;
   tags?: string[] | null;
+  firstSeenAt?: string | null;
   lastSeenAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -170,6 +174,7 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     approvalStatus: asset.approvalStatus ?? 'pending',
     isOnline: asset.isOnline ?? false,
     manufacturer: asset.manufacturer ?? '—',
+    firstSeen: asset.firstSeenAt ?? asset.createdAt,
     lastSeen: asset.lastSeenAt ?? asset.updatedAt ?? asset.createdAt,
     openPorts: normalizeOpenPorts(asset.openPorts),
     osFingerprint: asset.osFingerprint ?? undefined,
@@ -436,6 +441,45 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
     }
   };
 
+  /**
+   * Export the currently filtered (visible) rows as CSV, for stakeholder
+   * hand-off and pricing/quoting. Cells go through the shared `toCsv`, which
+   * neutralizes spreadsheet-formula injection (`=`/`+`/`-`/`@`) — load-bearing
+   * here because hostname/manufacturer are attacker-influenced network data.
+   *
+   * Scope note: the list fetches `/discovery/assets` unpaginated, so this is the
+   * full filtered set the user sees — no hidden pages.
+   */
+  const handleExportCsv = () => {
+    const header = [
+      t('discoveredAssetList.export.columns.ip', { defaultValue: 'IP Address' }),
+      t('discoveredAssetList.export.columns.mac', { defaultValue: 'MAC Address' }),
+      t('discoveredAssetList.export.columns.hostname', { defaultValue: 'Hostname' }),
+      t('discoveredAssetList.export.columns.vendor', { defaultValue: 'Vendor' }),
+      t('discoveredAssetList.export.columns.type', { defaultValue: 'Asset Type' }),
+      t('discoveredAssetList.export.columns.os', { defaultValue: 'OS Guess' }),
+      t('discoveredAssetList.export.columns.openPorts', { defaultValue: 'Open Ports' }),
+      t('discoveredAssetList.export.columns.firstSeen', { defaultValue: 'First Seen' }),
+      t('discoveredAssetList.export.columns.lastSeen', { defaultValue: 'Last Seen' }),
+    ];
+    const rows = filteredAssets.map(asset => [
+      asset.ip,
+      asset.mac,
+      asset.hostname,
+      asset.manufacturer,
+      t(/* i18n-dynamic */ typeConfig[asset.type].labelKey),
+      asset.osFingerprint ?? '',
+      (asset.openPorts ?? [])
+        .map(p => (p.service ? `${p.port}/${p.service}` : String(p.port)))
+        .join('; '),
+      asset.firstSeen ? formatLastSeen(asset.firstSeen, timezone) : '',
+      asset.lastSeen ? formatLastSeen(asset.lastSeen, timezone) : '',
+    ]);
+    const csv = toCsv(header, rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    downloadBlob(blob, `discovered-assets-${new Date().toISOString().slice(0, 10)}.csv`);
+  };
+
   if (loading && assets.length === 0) {
     return (
       <div className="flex items-center justify-center rounded-lg border bg-card p-10 shadow-xs">
@@ -689,6 +733,15 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
           className="h-8 rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
         >
           {bulkActing ? t('discoveredAssetList.actions.dismissing') : t('discoveredAssetList.actions.dismissSelected', { count: selectedCount })}
+        </button>
+        <button
+          type="button"
+          onClick={handleExportCsv}
+          disabled={filteredAssets.length === 0}
+          className="ml-auto flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {t('discoveredAssetList.actions.exportCsv', { defaultValue: 'Export CSV' })}
         </button>
       </div>
 

@@ -215,7 +215,11 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 		}, time.Since(start).Milliseconds())
 	}
 
-	req.Header.Set("User-Agent", "BreezeRMM-Monitor/1.0")
+	// Generic, unversioned UA: this request goes to arbitrary customer-supplied
+	// URLs, so the product and its version must not be advertised to third
+	// parties (an attacker controlling a monitored endpoint would otherwise
+	// learn an RMM agent runs on that network).
+	req.Header.Set("User-Agent", "NodesUnlimited-Monitor")
 
 	reqStart := time.Now()
 	resp, err := client.Do(req)

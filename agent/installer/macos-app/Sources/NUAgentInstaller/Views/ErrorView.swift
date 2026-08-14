@@ -1,4 +1,4 @@
-// agent/installer/macos-app/Sources/BreezeInstaller/Views/ErrorView.swift
+// agent/installer/macos-app/Sources/NUAgentInstaller/Views/ErrorView.swift
 import SwiftUI
 
 struct ErrorView: View {

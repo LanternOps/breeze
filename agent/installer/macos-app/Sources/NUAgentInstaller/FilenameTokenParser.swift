@@ -2,9 +2,9 @@ import Foundation
 
 /// Loads the bootstrap token + API host from the installer zip payload.
 ///
-/// The token is delivered in two places: a sibling `Breeze Installer.bootstrap.json`
+/// The token is delivered in two places: a sibling `Nodes Unlimited Installer.bootstrap.json`
 /// (preferred — clean parse, no token in the visible bundle name) and the app
-/// bundle's own filename `Breeze Installer [TOKEN@host].app` (fallback). The
+/// bundle's own filename `Nodes Unlimited Installer [TOKEN@host].app` (fallback). The
 /// filename copy is NOT redundant: macOS App Translocation copies only the .app
 /// bundle to a randomized read-only path when a quarantined app is launched in
 /// place, stranding the sibling JSON. The bundle name travels with the app, so
@@ -21,7 +21,7 @@ enum FilenameTokenParser {
 
     private static let pattern = #"\[([A-Z0-9]{10})@([a-zA-Z0-9.\-]+)\]"#
     private static let hostPattern = #"^[a-zA-Z0-9.\-]+$"#
-    private static let payloadFileName = "Breeze Installer.bootstrap.json"
+    private static let payloadFileName = "Nodes Unlimited Installer.bootstrap.json"
 
     private struct Payload: Decodable {
         let token: String

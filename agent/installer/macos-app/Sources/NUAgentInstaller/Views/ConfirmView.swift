@@ -1,4 +1,4 @@
-// agent/installer/macos-app/Sources/BreezeInstaller/Views/ConfirmView.swift
+// agent/installer/macos-app/Sources/NUAgentInstaller/Views/ConfirmView.swift
 import SwiftUI
 
 struct ConfirmView: View {

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9061F9"/>
+      <stop offset="40%" stop-color="#7C3AED"/>
+      <stop offset="100%" stop-color="#4C1D95"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#2E1065" flood-opacity="0.38"/>
+    </filter>
+    <clipPath id="tileclip">
+      <rect x="112" y="112" width="800" height="800" rx="190" ry="190"/>
+    </clipPath>
+  </defs>
+
+  <g filter="url(#drop)">
+    <rect x="112" y="112" width="800" height="800" rx="190" ry="190" fill="url(#tile)"/>
+  </g>
+  <g clip-path="url(#tileclip)">
+    <rect x="112" y="112" width="800" height="800" fill="url(#sheen)"/>
+  </g>
+
+  <g transform="translate(512, 508) scale(1.02)" fill="none" stroke="#FFFFFF" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M-175,170 L-175,-170 L75,-170 L75,170" />
+    <path d="M125,-170 L125,80 C125,145 165,170 215,170 C265,170 305,145 305,80 L305,-170" />
+  </g>
+
+  <g fill="#FFFFFF">
+    <circle cx="256" cy="256" r="12" opacity="0.85"/>
+    <circle cx="768" cy="256" r="9" opacity="0.65"/>
+    <circle cx="768" cy="768" r="12" opacity="0.85"/>
+    <circle cx="256" cy="768" r="9" opacity="0.65"/>
+    <line x1="256" y1="256" x2="768" y2="256" stroke="#FFFFFF" stroke-width="3" opacity="0.25"/>
+    <line x1="768" y1="256" x2="768" y2="768" stroke="#FFFFFF" stroke-width="3" opacity="0.25"/>
+    <line x1="768" y1="768" x2="256" y2="768" stroke="#FFFFFF" stroke-width="3" opacity="0.25"/>
+    <line x1="256" y1="768" x2="256" y2="256" stroke="#FFFFFF" stroke-width="3" opacity="0.25"/>
+  </g>
+</svg>

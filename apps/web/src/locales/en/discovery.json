@@ -306,7 +306,9 @@
       "time": "Time",
       "timeout": "Timeout (ms)",
       "timezone": "Timezone",
-      "username": "Username"
+      "username": "Username",
+      "excludeIps": "Exclude IP addresses",
+      "portRanges": "Port ranges to scan"
     },
     "options": {
       "everyHours": "Every {{count}} hours",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Headquarters scan",
-      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Define the network scope and discovery methods.",
@@ -333,7 +337,11 @@
       "invalidCidr": "\"{{value}}\": not a valid CIDR range or IP address",
       "octet": "\"{{value}}\": octet value exceeds 255",
       "prefix": "\"{{value}}\": prefix length must be 0–32",
-      "subnetRequired": "At least one subnet or IP address is required."
+      "subnetRequired": "At least one subnet or IP address is required.",
+      "invalidPortRange": "\"{{value}}\": not a valid port or port range (for example 443 or 1000-2000)",
+      "portOutOfRange": "\"{{value}}\": ports must be between 1 and 65535",
+      "invalidExcludeIp": "\"{{value}}\": not a valid IPv4 address",
+      "excludeIpCidr": "\"{{value}}\": CIDR ranges are not supported — list each IP address separately"
     },
     "actions": {
       "saveProfile": "Save Profile"
@@ -343,7 +351,9 @@
       "arp": "ARP Sweep",
       "snmp": "SNMP Probe",
       "portScan": "TCP Port Scan"
-    }
+    },
+    "excludeIpsHelp": "Exact IPv4 addresses to skip, separated by commas or new lines. CIDR ranges are not supported here — the agent matches exclusions address by address. Leave empty to scan every address in the subnets above.",
+    "portRangesHelp": "Individual ports and ranges, separated by commas — for example 22,80,443,1000-2000. Each port must be between 1 and 65535. Leave empty to fall back to the narrow 11-port default (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Use 1-65535 for a full sweep; this is thorough but very slow and far more intrusive."
   },
   "discoveryProfileList": {
     "actions": {

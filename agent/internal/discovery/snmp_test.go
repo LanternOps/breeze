@@ -138,6 +138,92 @@ func TestSnmpToString(t *testing.T) {
 	}
 }
 
+func TestSnmpToUptimeSeconds(t *testing.T) {
+	uptime := func(v uint64) *uint64 { return &v }
+
+	tests := []struct {
+		name string
+		pdu  gosnmp.SnmpPDU
+		want *uint64
+	}{
+		{
+			// gosnmp's usual representation for TimeTicks.
+			name: "timeticks_uint32",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: uint32(123456)},
+			want: uptime(1234), // 123456 hundredths = 1234.56s, truncated
+		},
+		{
+			name: "timeticks_uint",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: uint(100)},
+			want: uptime(1),
+		},
+		{
+			name: "timeticks_uint64",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: uint64(8640000)},
+			want: uptime(86400), // exactly one day
+		},
+		{
+			name: "timeticks_int",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: 250},
+			want: uptime(2),
+		},
+		{
+			name: "sub_second_truncates_to_zero",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: uint32(99)},
+			want: uptime(0),
+		},
+		{
+			name: "zero_ticks",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: uint32(0)},
+			want: uptime(0),
+		},
+		{
+			name: "nil_value_leaves_unset",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.TimeTicks, Value: nil},
+			want: nil,
+		},
+		{
+			name: "no_such_object_leaves_unset",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.NoSuchObject, Value: nil},
+			want: nil,
+		},
+		{
+			name: "string_value_does_not_panic",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.OctetString, Value: "12 days, 3:04:05.00"},
+			want: nil,
+		},
+		{
+			name: "byte_slice_value_does_not_panic",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.OctetString, Value: []byte{0x01, 0x02}},
+			want: nil,
+		},
+		{
+			name: "negative_int_rejected",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.Integer, Value: -100},
+			want: nil,
+		},
+		{
+			name: "float_value_does_not_panic",
+			pdu:  gosnmp.SnmpPDU{Type: gosnmp.OpaqueFloat, Value: float32(1.5)},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := snmpToUptimeSeconds(tt.pdu)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Fatalf("snmpToUptimeSeconds() = %d, want nil (unset)", *got)
+			case tt.want != nil && got == nil:
+				t.Fatalf("snmpToUptimeSeconds() = nil, want %d", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Fatalf("snmpToUptimeSeconds() = %d, want %d", *got, *tt.want)
+			}
+		})
+	}
+}
+
 func TestSNMPInfoStruct(t *testing.T) {
 	info := SNMPInfo{
 		SysDescr:    "Test System",

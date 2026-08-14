@@ -162,14 +162,14 @@ describe("releaseArtifactManifest", () => {
   it("rejects digest mismatches for the selected asset", async () => {
     const asset = Buffer.from("original-app-zip");
     const signed = makeSignedManifest({
-      assetName: "Breeze Installer.app.zip",
+      assetName: "Nodes Unlimited Installer.app.zip",
       assetBuffer: asset,
     });
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
 
     await expect(
       verifyReleaseArtifactBuffer({
-        assetName: "Breeze Installer.app.zip",
+        assetName: "Nodes Unlimited Installer.app.zip",
         assetBuffer: Buffer.from("tampered-app-zip"),
         manifestBytes: signed.manifest,
         signatureBytes: signed.signature,

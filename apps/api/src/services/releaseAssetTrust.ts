@@ -66,7 +66,7 @@ const SELF_HOST_UNSIGNED_MSI_ASSET_NAME = 'breeze-agent.msi';
 
 // Raw darwin Mach-O binaries carry Developer ID + notarization even though
 // they ship inside the .pkg (see release.yml DARWIN_BINARY_RE).
-const DARWIN_BINARY_RE = /^breeze-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$/;
+const DARWIN_BINARY_RE = /^(breeze|nu)-(agent|backup|desktop-helper|watchdog)-darwin-(amd64|arm64)$/;
 
 // "-unsigned" immediately before the extension chain (or at the end for
 // extensionless darwin/linux binaries): breeze-agent-windows-amd64-unsigned.exe,

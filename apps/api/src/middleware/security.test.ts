@@ -219,21 +219,28 @@ describe('securityMiddleware', () => {
 
   describe('connect-src tightening (LOW-H3)', () => {
     it('production CSP does NOT include open ws:/wss: wildcards', async () => {
+      const prevPublicApiUrl = process.env.PUBLIC_API_URL;
+      process.env.PUBLIC_API_URL = 'https://rmm.example.test';
       const app = createApp({ nodeEnv: 'production' });
       const res = await app.request('/test');
       const csp = res.headers.get('Content-Security-Policy');
       // Must NOT contain the bare scheme allowlists that permit any host.
       expect(csp).not.toMatch(/connect-src[^;]*\bws:(?!\/)/);
       expect(csp).not.toMatch(/connect-src[^;]*\bwss:(?!\/)/);
-      // Must restrict to explicit host(s).
-      expect(csp).toMatch(/connect-src 'self' wss:\/\//);
+      // Must restrict to explicit host(s) derived from our own public URL.
+      expect(csp).toMatch(/connect-src 'self' wss:\/\/rmm\.example\.test/);
+      if (prevPublicApiUrl === undefined) delete process.env.PUBLIC_API_URL;
+      else process.env.PUBLIC_API_URL = prevPublicApiUrl;
     });
 
-    it('production CSP defaults to wss://*.2breeze.app when no env override', async () => {
+    it('production CSP falls back to self only — never a vendor domain (#leak)', async () => {
       const app = createApp({ nodeEnv: 'production', cspConnectHosts: '' });
       const res = await app.request('/test');
       const csp = res.headers.get('Content-Security-Policy');
-      expect(csp).toContain("connect-src 'self' wss://*.2breeze.app");
+      // An unset env var must NOT make the deployment advertise someone
+      // else's domain in a security header.
+      expect(csp).toContain("connect-src 'self'");
+      expect(csp).not.toContain('2breeze.app');
     });
 
     it('production CSP honors CSP_CONNECT_HOSTS allowlist', async () => {

@@ -91,6 +91,7 @@ vi.mock("../services/installerBuilder", () => ({
 
 vi.mock("../services/installerAppZip", () => ({
   renameAppInZip: vi.fn(async (buf: Buffer) => buf),
+  stampInstallerAppZip: vi.fn(async (buf: Buffer) => buf),
 }));
 
 vi.mock("../services/rate-limit", () => ({
@@ -150,7 +151,10 @@ import {
 import { db, withSystemDbAccessContext } from "../db";
 import { createAuditLogAsync } from "../services/auditService";
 import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
-import { renameAppInZip } from "../services/installerAppZip";
+import {
+  renameAppInZip,
+  stampInstallerAppZip,
+} from "../services/installerAppZip";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
 
 /**
@@ -2093,7 +2097,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     );
 
     // renameAppInZip returns a renamed buffer
-    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+    vi.mocked(stampInstallerAppZip).mockResolvedValueOnce(
       Buffer.from("renamed-app-zip"),
     );
 
@@ -2114,22 +2118,9 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     // The token must ride in BOTH the bundle filename (survives macOS App
     // Translocation, which strands sibling files) AND the sibling JSON (clean
     // read for the non-translocated case). See #2544.
-    expect(vi.mocked(renameAppInZip)).toHaveBeenCalledWith(
+    expect(vi.mocked(stampInstallerAppZip)).toHaveBeenCalledWith(
       Buffer.from("fixture-app-zip"),
-      expect.objectContaining({
-        oldAppName: "Breeze Installer.app",
-        newAppName: "Breeze Installer [ABC1234567@api.example.com].app",
-        extraFiles: [
-          {
-            path: "Breeze Installer.bootstrap.json",
-            data: JSON.stringify({
-              token: "ABC1234567",
-              apiHost: "api.example.com",
-            }),
-            mode: 0o600,
-          },
-        ],
-      }),
+      { token: "ABC1234567", apiHost: "api.example.com" },
     );
   });
 
@@ -2147,7 +2138,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     vi.mocked(fetchMacosInstallerAppZip).mockResolvedValueOnce(
       Buffer.from("fixture-app-zip"),
     );
-    vi.mocked(renameAppInZip).mockResolvedValueOnce(
+    vi.mocked(stampInstallerAppZip).mockResolvedValueOnce(
       Buffer.from("renamed-app-zip"),
     );
 
@@ -2202,7 +2193,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
       "breeze-agent-macos.zip",
     );
     // The app-bundle path must NOT have been called
-    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(vi.mocked(stampInstallerAppZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });
 
@@ -2288,7 +2279,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     expect(res.headers.get("Content-Disposition")).toContain(
       "breeze-agent-macos.zip",
     );
-    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(vi.mocked(stampInstallerAppZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });
 
@@ -2339,7 +2330,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
       "breeze-agent-macos.zip",
     );
     expect(vi.mocked(fetchMacosInstallerAppZip)).not.toHaveBeenCalled();
-    expect(vi.mocked(renameAppInZip)).not.toHaveBeenCalled();
+    expect(vi.mocked(stampInstallerAppZip)).not.toHaveBeenCalled();
     expect(issueSpy).not.toHaveBeenCalled();
   });
 });

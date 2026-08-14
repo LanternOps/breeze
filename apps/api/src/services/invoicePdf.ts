@@ -544,9 +544,9 @@ export async function sendInvoiceEmail(invoiceId: string, actor: InvoiceActor): 
     await emailService.sendEmail({
       to: recipient,
       // MSP-branded envelope, mirroring the quote send path: display name
-      // "<Partner> via Breeze" on the platform address (SPF/DKIM stays
+      // "<Partner> via Nodes Unlimited" on the platform address (SPF/DKIM stays
       // aligned), replies routed to the MSP's billing inbox.
-      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Breeze`) : undefined,
+      from: partner?.name ? emailService.fromWithDisplayName(`${partner.name} via Nodes Unlimited`) : undefined,
       replyTo: partner?.billingEmail?.trim() || undefined,
       subject: template.subject,
       html: template.html,

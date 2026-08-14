@@ -306,7 +306,9 @@
       "time": "Zeit",
       "timeout": "Timeout (ms)",
       "timezone": "Zeitzone",
-      "username": "Benutzername"
+      "username": "Benutzername",
+      "excludeIps": "IP-Adressen ausschließen",
+      "portRanges": "Zu scannende Portbereiche"
     },
     "options": {
       "everyHours": "Alle {{count}} Stunden",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Scan des Hauptquartiers",
-      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Definieren Sie den Netzwerkbereich und die Erkennungsmethoden.",
@@ -333,7 +337,11 @@
       "invalidCidr": "„{{value}}“: kein gültiger CIDR-Bereich oder keine gültige IP-Adresse",
       "octet": "„{{value}}“: Oktettwert überschreitet 255",
       "prefix": "„{{value}}“: Die Präfixlänge muss 0–32 betragen",
-      "subnetRequired": "Es ist mindestens ein Subnetz oder eine IP-Adresse erforderlich."
+      "subnetRequired": "Es ist mindestens ein Subnetz oder eine IP-Adresse erforderlich.",
+      "invalidPortRange": "„{{value}}“: kein gültiger Port und kein gültiger Portbereich (zum Beispiel 443 oder 1000-2000)",
+      "portOutOfRange": "„{{value}}“: Ports müssen zwischen 1 und 65535 liegen",
+      "invalidExcludeIp": "„{{value}}“: keine gültige IPv4-Adresse",
+      "excludeIpCidr": "„{{value}}“: CIDR-Bereiche werden nicht unterstützt – bitte jede IP-Adresse einzeln angeben"
     },
     "actions": {
       "saveProfile": "Profil speichern"
@@ -343,7 +351,9 @@
       "arp": "ARP Sweep",
       "snmp": "SNMP Sonde",
       "portScan": "TCP Port-Scan"
-    }
+    },
+    "excludeIpsHelp": "Exakte IPv4-Adressen, die übersprungen werden sollen, getrennt durch Kommas oder Zeilenumbrüche. CIDR-Bereiche werden hier nicht unterstützt – der Agent gleicht Ausschlüsse Adresse für Adresse ab. Leer lassen, um alle Adressen in den obigen Subnetzen zu scannen.",
+    "portRangesHelp": "Einzelne Ports und Bereiche, getrennt durch Kommas – zum Beispiel 22,80,443,1000-2000. Jeder Port muss zwischen 1 und 65535 liegen. Leer lassen, um auf die schmale Standardliste mit 11 Ports zurückzufallen (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Verwenden Sie 1-65535 für einen vollständigen Scan; dieser ist gründlich, aber sehr langsam und deutlich störender."
   },
   "discoveryProfileList": {
     "actions": {

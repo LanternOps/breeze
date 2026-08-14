@@ -1,10 +1,12 @@
-// agent/installer/macos-app/Sources/BreezeInstaller/InstallerApp.swift
+// agent/installer/macos-app/Sources/NUAgentInstaller/InstallerApp.swift
 import SwiftUI
 
 enum InstallState {
     case loading
+    case moveToApplications
     case confirm(payload: BootstrapClient.Payload)
     case installing
+    case permissions(orgName: String)
     case done(orgName: String)
     case error(message: String, recoverable: Bool)
 }
@@ -18,6 +20,51 @@ final class InstallController: ObservableObject {
     private var payload: BootstrapClient.Payload?
 
     func start() {
+        // Running straight off the read-only DMG (or from Downloads)? Offer to
+        // move into /Applications first, so the drag step is effectively the
+        // trigger and Gatekeeper app-translocation is avoided.
+        let path = Bundle.main.bundleURL.path
+        if !path.hasPrefix("/Applications/") {
+            state = .moveToApplications
+            return
+        }
+        Task { await self.bootstrap() }
+    }
+
+    func moveToApplicationsAndRelaunch() {
+        let fm = FileManager.default
+        let src = Bundle.main.bundleURL
+        let dst = URL(fileURLWithPath: "/Applications").appendingPathComponent(src.lastPathComponent)
+        do {
+            if fm.fileExists(atPath: dst.path) {
+                try fm.removeItem(at: dst)
+            }
+            try fm.copyItem(at: src, to: dst)
+            let config = NSWorkspace.OpenConfiguration()
+            config.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: dst, configuration: config) { _, _ in
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+        } catch {
+            state = .error(
+                message: "Couldn't copy to Applications (\(error.localizedDescription)). Please drag the installer into the Applications folder manually, then open it from there.",
+                recoverable: false
+            )
+        }
+    }
+
+    func continueWithoutMoving() {
+        // This is a managed corporate device. Even if the user declines the
+        // explicit move, relocate the app into /Applications best-effort (silent)
+        // so it lands in the managed location, then proceed with the install.
+        let fm = FileManager.default
+        let src = Bundle.main.bundleURL
+        if !src.path.hasPrefix("/Applications/") {
+            let dst = URL(fileURLWithPath: "/Applications").appendingPathComponent(src.lastPathComponent)
+            // Only attempt a copy off the DMG/read-only volume; ignore failures.
+            try? fm.removeItem(at: dst)
+            try? fm.copyItem(at: src, to: dst)
+        }
         Task { await self.bootstrap() }
     }
 
@@ -27,7 +74,7 @@ final class InstallController: ObservableObject {
             parsed = try FilenameTokenParser.load(bundleURL: Bundle.main.bundleURL)
         } catch {
             state = .error(
-                message: "This installer needs its original filename. Please re-download from your Breeze web console.",
+                message: "This installer needs its original filename. Please re-download from your Nodes Unlimited console.",
                 recoverable: false
             )
             return
@@ -51,6 +98,12 @@ final class InstallController: ObservableObject {
         guard let payload else { return }
         state = .installing
         Task { await self.runInstall(payload: payload) }
+    }
+
+    func finishPermissions() {
+        if case .permissions(let orgName) = state {
+            state = .done(orgName: orgName)
+        }
     }
 
     func retry() {
@@ -81,7 +134,7 @@ final class InstallController: ObservableObject {
                 enrollmentSecret: payload.enrollmentSecret,
                 siteId: payload.siteId
             )
-            state = .done(orgName: payload.orgName)
+            state = .permissions(orgName: payload.orgName)
         } catch let err as Installer.Error {
             state = .error(message: err.errorDescription ?? "Install failed", recoverable: true)
         } catch {
@@ -91,13 +144,13 @@ final class InstallController: ObservableObject {
 }
 
 @main
-struct BreezeInstallerApp: App {
+struct NUAgentInstallerApp: App {
     @StateObject private var controller = InstallController()
 
     var body: some Scene {
         WindowGroup("NODES UNLIMITED AGENT Installer") {
             RootView(controller: controller)
-                .frame(width: 480, height: 320)
+                .frame(width: 520, height: 440)
                 .onAppear { controller.start() }
         }
         .windowResizability(.contentSize)
@@ -112,10 +165,17 @@ struct RootView: View {
             switch controller.state {
             case .loading:
                 LoadingView()
+            case .moveToApplications:
+                MoveToApplicationsView(
+                    onMove: controller.moveToApplicationsAndRelaunch,
+                    onSkip: controller.continueWithoutMoving
+                )
             case .confirm(let payload):
                 ConfirmView(payload: payload, onInstall: controller.confirmInstall)
             case .installing:
                 InstallingView()
+            case .permissions(let orgName):
+                PermissionsView(orgName: orgName, onFinish: controller.finishPermissions)
             case .done(let orgName):
                 DoneView(orgName: orgName)
             case .error(let message, let recoverable):

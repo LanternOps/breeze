@@ -1,4 +1,4 @@
-// agent/installer/macos-app/Sources/BreezeInstaller/Views/InstallingView.swift
+// agent/installer/macos-app/Sources/NUAgentInstaller/Views/InstallingView.swift
 import SwiftUI
 
 struct InstallingView: View {

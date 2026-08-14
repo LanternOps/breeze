@@ -942,7 +942,7 @@ jobs:
           agent/installer/macos-app/build-app-bundle.sh \
             --pkg-amd64 installer-pkgs/breeze-agent-darwin-amd64.pkg \
             --pkg-arm64 installer-pkgs/breeze-agent-darwin-arm64.pkg \
-            --output "build/Breeze Installer.app"
+            --output "build/Nodes Unlimited Installer.app"
 
       - name: Sign .app
         env:
@@ -951,8 +951,8 @@ jobs:
           codesign --force --options runtime \
             --entitlements agent/installer/macos-app/entitlements.plist \
             --sign "$APPLE_SIGNING_IDENTITY" --timestamp \
-            --deep "build/Breeze Installer.app"
-          codesign --verify --verbose=2 "build/Breeze Installer.app"
+            --deep "build/Nodes Unlimited Installer.app"
+          codesign --verify --verbose=2 "build/Nodes Unlimited Installer.app"
 
       - name: Notarize + staple
         env:
@@ -960,24 +960,24 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          ditto -c -k --keepParent "build/Breeze Installer.app" build/installer-notarize.zip
+          ditto -c -k --keepParent "build/Nodes Unlimited Installer.app" build/installer-notarize.zip
           scripts/release/notarize-submit.sh build/installer-notarize.zip
-          xcrun stapler staple "build/Breeze Installer.app"
-          xcrun stapler validate "build/Breeze Installer.app"
-          spctl -a -t exec -vv "build/Breeze Installer.app"
+          xcrun stapler staple "build/Nodes Unlimited Installer.app"
+          xcrun stapler validate "build/Nodes Unlimited Installer.app"
+          spctl -a -t exec -vv "build/Nodes Unlimited Installer.app"
 
       - name: Package for release
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "build/Breeze Installer.app" \
-            "build/Breeze Installer.app.zip"
+            "build/Nodes Unlimited Installer.app" \
+            "build/Nodes Unlimited Installer.app.zip"
           ls -lh build/
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: breeze-installer-app
-          path: build/Breeze Installer.app.zip
+          path: build/Nodes Unlimited Installer.app.zip
           retention-days: 30
 
       - name: Cleanup keychain

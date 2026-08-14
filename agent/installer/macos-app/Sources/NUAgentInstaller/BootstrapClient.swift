@@ -20,7 +20,7 @@ struct BootstrapClient {
             case .network(let e):
                 return "Network error: \(e.localizedDescription)"
             case .http(let status, _) where status == 404:
-                return "This installer link has expired or already been used. Please re-download from your Breeze web console."
+                return "This installer link has expired or already been used. Please re-download from your Nodes Unlimited console."
             case .http(let status, let body):
                 return "Server error (\(status)): \(body.prefix(200))"
             case .decoding:
@@ -42,7 +42,7 @@ struct BootstrapClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 30
-        req.setValue("BreezeInstaller/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("NUAgentInstaller/1.0", forHTTPHeaderField: "User-Agent")
         req.setValue(token, forHTTPHeaderField: "X-Breeze-Bootstrap-Token")
 
         let (data, response): (Data, URLResponse)

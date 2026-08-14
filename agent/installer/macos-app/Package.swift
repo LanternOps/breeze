@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "BreezeInstaller",
+    name: "NUAgentInstaller",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "BreezeInstaller", targets: ["BreezeInstaller"]),
+        .executable(name: "NUAgentInstaller", targets: ["NUAgentInstaller"]),
     ],
     targets: [
         .executableTarget(
-            name: "BreezeInstaller",
-            path: "Sources/BreezeInstaller"
+            name: "NUAgentInstaller",
+            path: "Sources/NUAgentInstaller"
         ),
         .testTarget(
-            name: "BreezeInstallerTests",
-            dependencies: ["BreezeInstaller"],
-            path: "Tests/BreezeInstallerTests"
+            name: "NUAgentInstallerTests",
+            dependencies: ["NUAgentInstaller"],
+            path: "Tests/NUAgentInstallerTests"
         ),
     ]
 )

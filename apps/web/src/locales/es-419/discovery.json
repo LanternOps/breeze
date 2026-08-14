@@ -306,7 +306,9 @@
       "time": "Tiempo",
       "timeout": "Tiempo de espera (ms)",
       "timezone": "Zona horaria",
-      "username": "Nombre de usuario"
+      "username": "Nombre de usuario",
+      "excludeIps": "Excluir direcciones IP",
+      "portRanges": "Rangos de puertos a escanear"
     },
     "options": {
       "everyHours": "Cada {{count}} horas",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Escaneo de la sede",
-      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Definir el alcance de la red y los métodos de descubrimiento.",
@@ -333,7 +337,11 @@
       "invalidCidr": "\"{{value}}\": no es un rango CIDR ni una dirección IP válidos",
       "octet": "\"{{value}}\": el valor del octeto supera 255",
       "prefix": "\"{{value}}\": la longitud del prefijo debe ser de 0 a 32",
-      "subnetRequired": "Se requiere al menos una subred o dirección IP."
+      "subnetRequired": "Se requiere al menos una subred o dirección IP.",
+      "invalidPortRange": "«{{value}}»: no es un puerto ni un rango de puertos válido (por ejemplo 443 o 1000-2000)",
+      "portOutOfRange": "«{{value}}»: los puertos deben estar entre 1 y 65535",
+      "invalidExcludeIp": "«{{value}}»: no es una dirección IPv4 válida",
+      "excludeIpCidr": "«{{value}}»: no se admiten rangos CIDR; indique cada dirección IP por separado"
     },
     "actions": {
       "saveProfile": "Guardar perfil"
@@ -343,7 +351,9 @@
       "arp": "ARP barrido",
       "snmp": "Sonda SNMP",
       "portScan": "TCP Escaneo de puertos"
-    }
+    },
+    "excludeIpsHelp": "Direcciones IPv4 exactas que se omitirán, separadas por comas o saltos de línea. Aquí no se admiten rangos CIDR: el agente compara las exclusiones dirección por dirección. Déjelo vacío para escanear todas las direcciones de las subredes anteriores.",
+    "portRangesHelp": "Puertos individuales y rangos, separados por comas; por ejemplo 22,80,443,1000-2000. Cada puerto debe estar entre 1 y 65535. Déjelo vacío para usar el conjunto predeterminado reducido de 11 puertos (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Use 1-65535 para un barrido completo; es exhaustivo, pero muy lento y mucho más intrusivo."
   },
   "discoveryProfileList": {
     "actions": {

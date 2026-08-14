@@ -12,6 +12,10 @@ import {
   getGithubReleaseArtifactManifestUrl,
   getGithubReleaseRepository,
 } from './binarySource';
+import {
+  INSTALLER_APP_ZIP_NAME,
+  LEGACY_INSTALLER_APP_ZIP_NAME,
+} from './installerAppNaming';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { assertGithubFetchableEdition } from './releaseAssetTrust';
 import {
@@ -378,7 +382,7 @@ export async function assertMacosInstallerPkgsReachable(): Promise<void> {
 }
 
 /**
- * Fetches the notarized Breeze Installer.app.zip from the GitHub release.
+ * Fetches the notarized Nodes Unlimited Installer.app.zip from the GitHub release.
  * Returns null if the asset is not available (e.g. first release after
  * Plan B merged but before the next tag is cut). Caller falls back to
  * the legacy install.sh zip in that case.
@@ -391,7 +395,7 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
     if (!resp.ok) throw new Error(`Failed to fetch installer app zip: ${resp.status}`);
     const buffer = Buffer.from(await resp.arrayBuffer());
     const verified = await verifyGithubReleaseArtifactBuffer({
-      assetName: 'Breeze Installer.app.zip',
+      assetName: INSTALLER_APP_ZIP_NAME,
       assetBuffer: buffer,
       manifestUrl: getGithubReleaseArtifactManifestUrl(),
       signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
@@ -401,20 +405,21 @@ export async function fetchMacosInstallerAppZip(): Promise<Buffer | null> {
     });
     if (verified) {
       assertGithubFetchableEdition({
-        assetName: 'Breeze Installer.app.zip',
+        assetName: INSTALLER_APP_ZIP_NAME,
         edition: verified.edition,
       });
     }
     return buffer;
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  const path = join(binaryDir, 'Breeze Installer.app.zip');
-  try {
-    return await readFile(path);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
+  for (const name of [INSTALLER_APP_ZIP_NAME, LEGACY_INSTALLER_APP_ZIP_NAME]) {
+    try {
+      return await readFile(join(binaryDir, name));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
+  return null;
 }
 
 /**
@@ -441,7 +446,7 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
   }
   const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
   try {
-    await stat(join(binaryDir, 'Breeze Installer.app.zip'));
+    await stat(join(binaryDir, INSTALLER_APP_ZIP_NAME));
     return true;
   } catch (err) {
     console.warn('[installer] probeMacosInstallerApp: filesystem stat failed, treating as unavailable', {

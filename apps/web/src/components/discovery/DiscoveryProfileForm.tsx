@@ -45,6 +45,20 @@ export type DiscoveryProfileFormValues = {
   name: string;
   siteId: string;
   subnets: string[];
+  /**
+   * Exact IPv4 addresses to skip. The agent matches these by exact string
+   * against each expanded target (agent/internal/discovery/scanner.go:292), so
+   * CIDR notation is deliberately NOT accepted here — it would silently
+   * exclude nothing.
+   */
+  excludeIps: string[];
+  /**
+   * Port specs, one token per entry (e.g. ['22', '80', '1000-2000']). The
+   * agent parses each entry with parsePortRanges
+   * (agent/internal/discovery/scanner.go:310): comma-separated ports and
+   * hyphenated ranges, each port 1-65535.
+   */
+  portRanges: string[];
   methods: string[];
   schedule: DiscoverySchedule;
   snmp: SnmpSettings;
@@ -72,6 +86,12 @@ const methodOptions = [
   { id: 'snmp', labelKey: 'discoveryProfileForm.methods.snmp' },
   { id: 'port_scan', labelKey: 'discoveryProfileForm.methods.portScan' }
 ];
+
+const PORT_SCAN_WARNING_ID = 'discovery-port-scan-warning';
+const PORT_RANGES_HELP_ID = 'discovery-port-ranges-help';
+const PORT_RANGES_ERROR_ID = 'discovery-port-ranges-error';
+const EXCLUDE_IPS_HELP_ID = 'discovery-exclude-ips-help';
+const EXCLUDE_IPS_ERROR_ID = 'discovery-exclude-ips-error';
 
 const dayOptions = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const hourlyIntervalOptions = [1, 2, 3, 4, 6, 8, 12, 24];
@@ -109,10 +129,80 @@ function validateSubnets(text: string, t: TFunction): string[] {
   return errors;
 }
 
+/** Splits a comma/newline separated textarea into trimmed, non-empty tokens. */
+function splitTokens(text: string): string[] {
+  return text
+    .split(/\n|,/)
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+const PORT_REGEX = /^\d{1,5}$/;
+const PORT_RANGE_REGEX = /^(\d{1,5})-(\d{1,5})$/;
+
+/** Mirrors the agent's parsePort bounds (scanner.go:353-364): 1-65535 inclusive. */
+function isValidPort(value: string): boolean {
+  if (!PORT_REGEX.test(value)) return false;
+  const port = Number(value);
+  return port >= 1 && port <= 65535;
+}
+
+/**
+ * Validates against the exact syntax the agent accepts in parsePortRanges
+ * (agent/internal/discovery/scanner.go:310): bare ports and `start-end`
+ * ranges. Reversed ranges (`443-80`) are accepted because the agent swaps
+ * the bounds rather than erroring.
+ */
+function validatePortRanges(text: string, t: TFunction): string[] {
+  const errors: string[] = [];
+  for (const token of splitTokens(text)) {
+    const rangeMatch = PORT_RANGE_REGEX.exec(token);
+    if (rangeMatch) {
+      if (!isValidPort(rangeMatch[1]) || !isValidPort(rangeMatch[2])) {
+        errors.push(t('discoveryProfileForm.validation.portOutOfRange', { value: token }));
+      }
+      continue;
+    }
+    if (PORT_REGEX.test(token)) {
+      if (!isValidPort(token)) {
+        errors.push(t('discoveryProfileForm.validation.portOutOfRange', { value: token }));
+      }
+      continue;
+    }
+    errors.push(t('discoveryProfileForm.validation.invalidPortRange', { value: token }));
+  }
+  return errors;
+}
+
+/**
+ * The agent excludes targets by exact IPv4 string match
+ * (agent/internal/discovery/scanner.go:292), so only bare addresses are
+ * accepted — a CIDR here would match no target and silently scan everything.
+ */
+function validateExcludeIps(text: string, t: TFunction): string[] {
+  const errors: string[] = [];
+  for (const token of splitTokens(text)) {
+    if (CIDR_REGEX.test(token)) {
+      errors.push(t('discoveryProfileForm.validation.excludeIpCidr', { value: token }));
+      continue;
+    }
+    if (!IP_REGEX.test(token)) {
+      errors.push(t('discoveryProfileForm.validation.invalidExcludeIp', { value: token }));
+      continue;
+    }
+    if (token.split('.').map(Number).some(octet => octet > 255)) {
+      errors.push(t('discoveryProfileForm.validation.octet', { value: token }));
+    }
+  }
+  return errors;
+}
+
 const defaultValues: DiscoveryProfileFormValues = {
   name: '',
   siteId: '',
   subnets: [],
+  excludeIps: [],
+  portRanges: [],
   methods: ['ping', 'snmp'],
   schedule: {
     cadence: 'daily',
@@ -151,17 +241,26 @@ export default function DiscoveryProfileForm({
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
   const [subnetsText, setSubnetsText] = useState((initialValues?.subnets ?? []).join('\n'));
   const [subnetErrors, setSubnetErrors] = useState<string[]>([]);
+  const [excludeIpsText, setExcludeIpsText] = useState((initialValues?.excludeIps ?? []).join('\n'));
+  const [excludeIpErrors, setExcludeIpErrors] = useState<string[]>([]);
+  const [portRangesText, setPortRangesText] = useState((initialValues?.portRanges ?? []).join(', '));
+  const [portRangeErrors, setPortRangeErrors] = useState<string[]>([]);
   const isSnmpEnabled = formValues.methods.includes('snmp');
+  const isPortScanEnabled = formValues.methods.includes('port_scan');
   const resolvedSubmitLabel = submitLabel ?? t('discoveryProfileForm.actions.saveProfile');
 
   useEffect(() => {
     setSubnetErrors([]);
+    setExcludeIpErrors([]);
+    setPortRangeErrors([]);
     if (initialValues) {
       setFormValues({
         ...initialValues,
         alertSettings: initialValues.alertSettings ?? defaultAlertSettings
       });
       setSubnetsText(initialValues.subnets.join('\n'));
+      setExcludeIpsText((initialValues.excludeIps ?? []).join('\n'));
+      setPortRangesText((initialValues.portRanges ?? []).join(', '));
       return;
     }
 
@@ -169,6 +268,8 @@ export default function DiscoveryProfileForm({
     const autoSiteId = sites.length === 1 ? sites[0].id : '';
     setFormValues({ ...defaultValues, siteId: autoSiteId });
     setSubnetsText('');
+    setExcludeIpsText('');
+    setPortRangesText('');
   }, [initialValues, sites]);
 
   const handleToggleMethod = (method: string) => {
@@ -200,15 +301,37 @@ export default function DiscoveryProfileForm({
       return;
     }
 
+    const excludeIpIssues = validateExcludeIps(excludeIpsText, t);
+    setExcludeIpErrors(excludeIpIssues);
+
+    // Validated even when the input is hidden (port_scan deselected): the text
+    // is retained in state and would otherwise be persisted unchecked.
+    const portRangeIssues = validatePortRanges(portRangesText, t);
+    setPortRangeErrors(portRangeIssues);
+
+    if (excludeIpIssues.length > 0 || portRangeIssues.length > 0) return;
+
     onSubmit?.({
       ...formValues,
-      subnets
+      subnets,
+      excludeIps: splitTokens(excludeIpsText),
+      portRanges: splitTokens(portRangesText)
     });
   };
 
   const handleSubnetsChange = useCallback((value: string) => {
     setSubnetsText(value);
     setSubnetErrors([]);
+  }, []);
+
+  const handleExcludeIpsChange = useCallback((value: string) => {
+    setExcludeIpsText(value);
+    setExcludeIpErrors([]);
+  }, []);
+
+  const handlePortRangesChange = useCallback((value: string) => {
+    setPortRangesText(value);
+    setPortRangeErrors([]);
   }, []);
 
   return (
@@ -289,6 +412,33 @@ export default function DiscoveryProfileForm({
               </div>
             )}
           </div>
+          <div className="md:col-span-2">
+            <label htmlFor="discovery-exclude-ips" className="text-sm font-medium">
+              {t('discoveryProfileForm.fields.excludeIps')}
+            </label>
+            <textarea
+              id="discovery-exclude-ips"
+              data-testid="discovery-exclude-ips"
+              value={excludeIpsText}
+              onChange={event => handleExcludeIpsChange(event.target.value)}
+              placeholder={t('discoveryProfileForm.placeholders.excludeIps')}
+              aria-describedby={
+                excludeIpErrors.length > 0
+                  ? `${EXCLUDE_IPS_HELP_ID} ${EXCLUDE_IPS_ERROR_ID}`
+                  : EXCLUDE_IPS_HELP_ID
+              }
+              aria-invalid={excludeIpErrors.length > 0 || undefined}
+              className={`mt-2 h-20 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${excludeIpErrors.length > 0 ? 'border-destructive' : ''}`}
+            />
+            <p id={EXCLUDE_IPS_HELP_ID} className="mt-2 text-xs text-muted-foreground">
+              {t('discoveryProfileForm.excludeIpsHelp')}
+            </p>
+            <div id={EXCLUDE_IPS_ERROR_ID} role="alert" className="mt-1 space-y-0.5">
+              {excludeIpErrors.map((err, i) => (
+                <p key={i} className="text-xs text-destructive">{err}</p>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="mt-6">
@@ -303,12 +453,66 @@ export default function DiscoveryProfileForm({
                   type="checkbox"
                   checked={formValues.methods.includes(option.id)}
                   onChange={() => handleToggleMethod(option.id)}
+                  aria-describedby={
+                    option.id === 'port_scan' && isPortScanEnabled ? PORT_SCAN_WARNING_ID : undefined
+                  }
                   className="h-4 w-4 rounded border-border"
                 />
                 {t(/* i18n-dynamic */ option.labelKey)}
               </label>
             ))}
           </div>
+
+          {isPortScanEnabled && (
+            <div
+              id={PORT_SCAN_WARNING_ID}
+              role="note"
+              aria-labelledby={`${PORT_SCAN_WARNING_ID}-title`}
+              data-testid="discovery-port-scan-warning"
+              className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
+            >
+              <p id={`${PORT_SCAN_WARNING_ID}-title`} className="font-semibold">
+                {/* Non-color severity cue: the word "Caution" carries the meaning, not the amber styling. */}
+                {t('discoveryProfileForm.portScanWarning.title')}
+              </p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                <li>{t('discoveryProfileForm.portScanWarning.maintenanceWindow')}</li>
+                <li>{t('discoveryProfileForm.portScanWarning.excludeIps')}</li>
+                <li>{t('discoveryProfileForm.portScanWarning.portRanges')}</li>
+              </ul>
+            </div>
+          )}
+
+          {isPortScanEnabled && (
+            <div className="mt-4" data-testid="discovery-port-ranges-field">
+              <label htmlFor="discovery-port-ranges" className="text-sm font-medium">
+                {t('discoveryProfileForm.fields.portRanges')}
+              </label>
+              <input
+                id="discovery-port-ranges"
+                data-testid="discovery-port-ranges"
+                type="text"
+                value={portRangesText}
+                onChange={event => handlePortRangesChange(event.target.value)}
+                placeholder={t('discoveryProfileForm.placeholders.portRanges')}
+                aria-describedby={
+                  portRangeErrors.length > 0
+                    ? `${PORT_RANGES_HELP_ID} ${PORT_RANGES_ERROR_ID}`
+                    : PORT_RANGES_HELP_ID
+                }
+                aria-invalid={portRangeErrors.length > 0 || undefined}
+                className={`mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring ${portRangeErrors.length > 0 ? 'border-destructive' : ''}`}
+              />
+              <p id={PORT_RANGES_HELP_ID} className="mt-2 text-xs text-muted-foreground">
+                {t('discoveryProfileForm.portRangesHelp')}
+              </p>
+              <div id={PORT_RANGES_ERROR_ID} role="alert" className="mt-1 space-y-0.5">
+                {portRangeErrors.map((err, i) => (
+                  <p key={i} className="text-xs text-destructive">{err}</p>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

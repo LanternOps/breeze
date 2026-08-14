@@ -95,7 +95,7 @@ export function getGithubBackupUrl(os: string, arch: string): string {
 }
 
 export function getGithubAgentPkgUrl(os: string, arch: string): string {
-  const filename = `breeze-agent-${os}-${arch}.pkg`;
+  const filename = `nu-agent-${os}-${arch}.pkg`;
   return githubAssetDownloadUrl(filename);
 }
 
@@ -145,11 +145,11 @@ export function getGithubHelperUrl(os: string): string {
 }
 
 /**
- * URL of the notarized Breeze Installer.app.zip for the current release.
+ * URL of the notarized Nodes Unlimited Installer.app.zip for the current release.
  * Asset is uploaded by the build-macos-installer-app job in release.yml.
  */
 export function getGithubInstallerAppUrl(): string {
   // GitHub Releases auto-rewrites spaces in attached asset filenames to dots,
-  // so the on-disk artifact "Breeze Installer.app.zip" is served at this URL.
-  return githubAssetDownloadUrl('Breeze.Installer.app.zip');
+  // so the on-disk artifact "Nodes Unlimited Installer.app.zip" is served at this URL with spaces replaced by dots.
+  return githubAssetDownloadUrl('Nodes.Unlimited.Installer.app.zip');
 }

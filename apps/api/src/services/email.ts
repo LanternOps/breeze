@@ -193,7 +193,7 @@ export class EmailService {
   /**
    * The default sender with a custom display name — keeps the envelope address
    * (so SPF/DKIM alignment is untouched) while showing e.g.
-   * `"Acme MSP via Breeze" <no-reply@2breeze.app>` in the customer's inbox.
+   * `"Acme MSP via Nodes Unlimited" <no-reply@2breeze.app>` in the customer's inbox.
    * The display name is stripped of header-breaking characters; falls back to
    * the plain default sender when nothing usable survives.
    */
@@ -690,11 +690,11 @@ export function supportFooter(explicit: string | undefined, prefix: string): str
 
 function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
-  const subject = 'Reset your Breeze password';
-  const preheader = 'Use the link below to set a new Breeze password.';
+  const subject = 'Reset your Nodes Unlimited password';
+  const preheader = 'Use the link below to set a new Nodes Unlimited password.';
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">A password reset was requested for your Breeze account. Use the button below to set a new one.</p>
+      <p style="${BODY_PARA}">A password reset was requested for your Nodes Unlimited account. Use the button below to set a new one.</p>
       ${renderButton('Reset password', params.resetUrl)}
       <p style="${MUTED_PARA}">If you did not request this, you can safely ignore this email.</p>
   `;
@@ -709,7 +709,7 @@ function buildPasswordResetTemplate(params: PasswordResetEmailParams): EmailTemp
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    'A password reset was requested for your Breeze account.',
+    'A password reset was requested for your Nodes Unlimited account.',
     `Reset your password: ${params.resetUrl}`,
     'If you did not request this, you can safely ignore this email.',
     support ? `Need help? Contact ${support}.` : null,
@@ -748,13 +748,13 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
-  const subject = 'Verify your email for Breeze RMM';
-  const preheader = 'Confirm your email address to finish setting up Breeze.';
+  const subject = 'Verify your email for Nodes Unlimited';
+  const preheader = 'Confirm your email address to finish setting up Nodes Unlimited.';
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">Welcome to Breeze. Please confirm your email address so we can finish setting up your account.</p>
+      <p style="${BODY_PARA}">Welcome to Nodes Unlimited. Please confirm your email address so we can finish setting up your account.</p>
       ${renderButton('Verify email', params.verificationUrl)}
-      <p style="${MUTED_PARA}">This link expires in 24 hours. If you did not sign up for Breeze, you can safely ignore this email.</p>
+      <p style="${MUTED_PARA}">This link expires in 24 hours. If you did not sign up for Nodes Unlimited, you can safely ignore this email.</p>
   `;
   const html = renderLayout({
     title: subject,
@@ -767,9 +767,9 @@ function buildVerificationTemplate(params: VerificationEmailParams): EmailTempla
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    'Welcome to Breeze. Please confirm your email address so we can finish setting up your account.',
+    'Welcome to Nodes Unlimited. Please confirm your email address so we can finish setting up your account.',
     `Verify your email: ${params.verificationUrl}`,
-    'This link expires in 24 hours. If you did not sign up for Breeze, you can safely ignore this email.',
+    'This link expires in 24 hours. If you did not sign up for Nodes Unlimited, you can safely ignore this email.',
     support ? `Need help? Contact ${support}.` : null,
   ]
     .filter(Boolean)
@@ -787,17 +787,17 @@ function buildSignupAttemptOnExistingAccountTemplate(
   params: SignupAttemptOnExistingAccountEmailParams,
 ): EmailTemplate {
   const name = params.name?.trim() || 'there';
-  const subject = 'A Breeze sign-up was attempted with your email';
-  const preheader = 'You already have a Breeze account — no new account was created.';
+  const subject = 'A Nodes Unlimited sign-up was attempted with your email';
+  const preheader = 'You already have a Nodes Unlimited account — no new account was created.';
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.</p>
+      <p style="${BODY_PARA}">Someone tried to create a Nodes Unlimited account with this address. You already have one — sign in, or reset your password if you've forgotten it.</p>
       <p style="${MUTED_PARA}">No new account was created and no action is required. If this wasn't you, you can safely ignore this email.</p>
   `;
   const html = renderLayout({
     title: subject,
     preheader,
-    heading: 'You already have a Breeze account',
+    heading: 'You already have a Nodes Unlimited account',
     body,
     footer: supportFooter(params.supportEmail, 'Need help? Contact'),
   });
@@ -805,7 +805,7 @@ function buildSignupAttemptOnExistingAccountTemplate(
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    "Someone tried to create a Breeze account with this address. You already have one — sign in, or reset your password if you've forgotten it.",
+    "Someone tried to create a Nodes Unlimited account with this address. You already have one — sign in, or reset your password if you've forgotten it.",
     "No new account was created and no action is required. If this wasn't you, you can safely ignore this email.",
     support ? `Need help? Contact ${support}.` : null,
   ]
@@ -820,16 +820,16 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const inviter = params.inviterName?.trim() || 'A teammate';
   const orgName = params.orgName?.trim();
   const subject = orgName
-    ? `${inviter} invited you to ${orgName} on Breeze`
-    : `${inviter} invited you to Breeze`;
+    ? `${inviter} invited you to ${orgName} on Nodes Unlimited`
+    : `${inviter} invited you to Nodes Unlimited`;
   const preheader = orgName
-    ? `Accept your invitation to ${orgName} on Breeze.`
-    : 'Accept your invitation to Breeze.';
+    ? `Accept your invitation to ${orgName} on Nodes Unlimited.`
+    : 'Accept your invitation to Nodes Unlimited.';
   const heading = orgName ? `Join ${orgName}` : 'You are invited';
 
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">${escapeHtml(inviter)} invited you${orgName ? ` to ${escapeHtml(orgName)}` : ''} on Breeze.</p>
+      <p style="${BODY_PARA}">${escapeHtml(inviter)} invited you${orgName ? ` to ${escapeHtml(orgName)}` : ''} on Nodes Unlimited.</p>
       ${renderButton('Accept invitation', params.inviteUrl)}
       <p style="${MUTED_PARA}">This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.</p>
   `;
@@ -845,7 +845,7 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    `${inviter} invited you${orgName ? ` to ${orgName}` : ''} on Breeze.`,
+    `${inviter} invited you${orgName ? ` to ${orgName}` : ''} on Nodes Unlimited.`,
     `Accept invitation: ${params.inviteUrl}`,
     "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
     support ? `Questions? Contact ${support}.` : null,
@@ -931,7 +931,7 @@ function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): E
       ${params.dashboardUrl ? renderButton('View details', params.dashboardUrl) : ''}
   `;
 
-  const orgSupport = params.orgName ? `${params.orgName} support` : 'Breeze support';
+  const orgSupport = params.orgName ? `${params.orgName} support` : 'Nodes Unlimited support';
   const html = renderLayout({
     title: params.alertName,
     preheader,
@@ -955,11 +955,11 @@ function buildAlertNotificationTemplate(params: AlertNotificationEmailParams): E
 
 function buildAccountLockedTemplate(params: AccountLockedEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
-  const subject = 'Your Breeze account was temporarily locked';
+  const subject = 'Your Nodes Unlimited account was temporarily locked';
   const preheader = `We locked sign-ins for ${params.lockoutMinutes} minutes after repeated failed attempts.`;
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">We blocked sign-ins to your Breeze account after 5 unsuccessful attempts. You can try again in ${params.lockoutMinutes} minutes, or reset your password using the button below.</p>
+      <p style="${BODY_PARA}">We blocked sign-ins to your Nodes Unlimited account after 5 unsuccessful attempts. You can try again in ${params.lockoutMinutes} minutes, or reset your password using the button below.</p>
       ${renderButton('Reset password', params.resetUrl)}
       <p style="${MUTED_PARA}"><strong>If this wasn't you</strong>, someone may be trying to guess your password. Reset your password immediately and review recent activity. If MFA isn't already enabled on your account, turn it on after you sign back in.</p>
   `;
@@ -974,7 +974,7 @@ function buildAccountLockedTemplate(params: AccountLockedEmailParams): EmailTemp
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    `We blocked sign-ins to your Breeze account after 5 unsuccessful attempts. Try again in ${params.lockoutMinutes} minutes, or reset your password.`,
+    `We blocked sign-ins to your Nodes Unlimited account after 5 unsuccessful attempts. Try again in ${params.lockoutMinutes} minutes, or reset your password.`,
     `Reset your password: ${params.resetUrl}`,
     "If this wasn't you, someone may be trying to guess your password. Reset your password immediately and review recent activity.",
     support ? `Need help? Contact ${support}.` : null,
@@ -993,11 +993,11 @@ function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTempla
   // it is confirmed. Say exactly that so the owner of the abandoned mailbox can
   // act while they still control the account.
   if (params.pending) {
-    const subject = 'Email change requested on your Breeze account';
+    const subject = 'Email change requested on your Nodes Unlimited account';
     const preheader = `A change to ${params.newEmail} was requested. Your email has not changed yet.`;
     const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">Someone requested to change your Breeze account email to <strong>${escapeHtml(params.newEmail)}</strong>. We sent a verification link to that address. <strong>Your email will not change until that link is confirmed</strong>, and this address stays in control of the account until then.</p>
+      <p style="${BODY_PARA}">Someone requested to change your Nodes Unlimited account email to <strong>${escapeHtml(params.newEmail)}</strong>. We sent a verification link to that address. <strong>Your email will not change until that link is confirmed</strong>, and this address stays in control of the account until then.</p>
       <p style="${MUTED_PARA}"><strong>If you did not request this change</strong>, no action is required to keep your current email — but your account may be compromised, so change your password and contact support to secure it.</p>
     `;
     const html = renderLayout({
@@ -1011,7 +1011,7 @@ function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTempla
     const support = getSupportEmail(params.supportEmail);
     const text = [
       `Hi ${name},`,
-      `Someone requested to change your Breeze account email to ${params.newEmail}. We sent a verification link to that address.`,
+      `Someone requested to change your Nodes Unlimited account email to ${params.newEmail}. We sent a verification link to that address.`,
       'Your email will not change until that link is confirmed, and this address stays in control of the account until then.',
       'If you did not request this change, no action is required to keep your current email, but your account may be compromised — change your password and contact support to secure it.',
       support ? `Contact ${support}.` : null,
@@ -1022,11 +1022,11 @@ function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTempla
     return { subject, html, text };
   }
 
-  const subject = 'Your Breeze account email was changed';
-  const preheader = `The email on your Breeze account was changed to ${params.newEmail}.`;
+  const subject = 'Your Nodes Unlimited account email was changed';
+  const preheader = `The email on your Nodes Unlimited account was changed to ${params.newEmail}.`;
   const body = `
       <p style="${BODY_PARA}">Hi ${escapeHtml(name)},</p>
-      <p style="${BODY_PARA}">Your Breeze account email was changed to <strong>${escapeHtml(params.newEmail)}</strong>.</p>
+      <p style="${BODY_PARA}">Your Nodes Unlimited account email was changed to <strong>${escapeHtml(params.newEmail)}</strong>.</p>
       <p style="${MUTED_PARA}"><strong>If you did not make this change</strong>, your account may be compromised. Contact support immediately to secure it.</p>
   `;
   const html = renderLayout({
@@ -1040,7 +1040,7 @@ function buildEmailChangedTemplate(params: EmailChangedEmailParams): EmailTempla
   const support = getSupportEmail(params.supportEmail);
   const text = [
     `Hi ${name},`,
-    `Your Breeze account email was changed to ${params.newEmail}.`,
+    `Your Nodes Unlimited account email was changed to ${params.newEmail}.`,
     'If you did not make this change, your account may be compromised. Contact support immediately to secure it.',
     support ? `Contact ${support}.` : null,
   ]

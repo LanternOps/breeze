@@ -306,7 +306,9 @@
       "time": "Temps",
       "timeout": "Temps mort (ms)",
       "timezone": "Fuse horaire",
-      "username": "Nom d’utilisateur"
+      "username": "Nom d’utilisateur",
+      "excludeIps": "Exclure des adresses IP",
+      "portRanges": "Plages de ports à analyser"
     },
     "options": {
       "everyHours": "Toutes les {{count}} heures",
@@ -314,7 +316,9 @@
     },
     "placeholders": {
       "profileName": "Scan du quartier général",
-      "subnets": "10.0.0.0/24\\n10.0.1.0/24"
+      "subnets": "10.0.0.0/24\\n10.0.1.0/24",
+      "excludeIps": "10.0.0.5\n10.0.0.6",
+      "portRanges": "22,80,443,1000-2000"
     },
     "profileDetails": {
       "description": "Définissez le périmètre du réseau et les méthodes de découverte.",
@@ -333,7 +337,11 @@
       "invalidCidr": "« {{value}} » : pas une portée CIDR valide ni une adresse IP",
       "octet": "« {{value}} » : la valeur de l’octet dépasse 255",
       "prefix": "« {{value}} » : longueur de préfixe doit être de 0 à 32",
-      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise."
+      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise.",
+      "invalidPortRange": "« {{value}} » : port ou plage de ports non valide (par exemple 443 ou 1000-2000)",
+      "portOutOfRange": "« {{value}} » : les ports doivent être compris entre 1 et 65535",
+      "invalidExcludeIp": "« {{value}} » : adresse IPv4 non valide",
+      "excludeIpCidr": "« {{value}} » : les plages CIDR ne sont pas prises en charge — indiquez chaque adresse IP séparément"
     },
     "actions": {
       "saveProfile": "Enregistrer le profil"
@@ -343,7 +351,9 @@
       "arp": "Analyse ARP",
       "snmp": "Interrogation SNMP",
       "portScan": "Analyse des ports TCP"
-    }
+    },
+    "excludeIpsHelp": "Adresses IPv4 exactes à ignorer, séparées par des virgules ou des sauts de ligne. Les plages CIDR ne sont pas prises en charge ici : l’agent compare les exclusions adresse par adresse. Laissez vide pour analyser toutes les adresses des sous-réseaux ci-dessus.",
+    "portRangesHelp": "Ports individuels et plages, séparés par des virgules — par exemple 22,80,443,1000-2000. Chaque port doit être compris entre 1 et 65535. Laissez vide pour revenir à la liste par défaut restreinte de 11 ports (22, 80, 443, 445, 3389, 161, 139, 135, 5985, 5986, 9100). Utilisez 1-65535 pour un balayage complet; c’est exhaustif, mais très lent et beaucoup plus intrusif."
   },
   "discoveryProfileList": {
     "actions": {

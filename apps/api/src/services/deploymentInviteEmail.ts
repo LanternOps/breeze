@@ -43,14 +43,14 @@ function sanitizeCustomMessage(raw: string | undefined): string {
 export function buildDeploymentInviteEmail(
   input: DeploymentInviteEmailInput,
 ): DeploymentInviteEmailTemplate {
-  const subject = `${input.orgName} wants to install Breeze on your device`;
+  const subject = `${input.orgName} wants to install Nodes Unlimited on your device`;
   const preheader = 'Quick install (under 60 seconds). Mac, Windows, or Linux supported.';
   const safeMsg = sanitizeCustomMessage(input.customMessage);
 
   const textLines = [
     'Hi,',
     '',
-    `${input.adminEmail} from ${input.orgName} is asking you to install Breeze, a monitoring tool that keeps your device secure and performant.`,
+    `${input.adminEmail} from ${input.orgName} is asking you to install Nodes Unlimited, a monitoring tool that keeps your device secure and performant.`,
     '',
     `Install: ${input.installUrl}`,
     '',
@@ -63,7 +63,7 @@ export function buildDeploymentInviteEmail(
     '',
     "If you weren't expecting this, reply to this email and we'll help.",
     '',
-    `Sent on behalf of ${input.orgName} by Breeze.`,
+    `Sent on behalf of ${input.orgName} by Nodes Unlimited.`,
   );
   const text = textLines.join('\n');
 
@@ -75,19 +75,19 @@ export function buildDeploymentInviteEmail(
 
   const body = `
       <p style="margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;">Hi,</p>
-      <p style="margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;"><strong>${safeAdmin}</strong> from <strong>${safeOrg}</strong> is asking you to install <strong>Breeze</strong>, a monitoring tool that keeps your device secure and performant.</p>
-      ${renderButton('Install Breeze', input.installUrl)}
+      <p style="margin: 0 0 12px; font-size: 15px; line-height: 1.55; color: #1f2937;"><strong>${safeAdmin}</strong> from <strong>${safeOrg}</strong> is asking you to install <strong>Nodes Unlimited</strong>, a monitoring tool that keeps your device secure and performant.</p>
+      ${renderButton('Install Nodes Unlimited', input.installUrl)}
       <p style="margin: 16px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;">The install takes under 60 seconds and detects your operating system automatically. Mac, Windows, and Linux are supported. Your device password will be required.</p>
       ${messageBlock}
       <p style="margin: 12px 0 0; font-size: 13px; line-height: 1.55; color: #6b7280;">If you weren't expecting this, reply to this email and we'll help.</p>
   `;
 
   const html = renderLayout({
-    title: 'Install Breeze',
+    title: 'Install Nodes Unlimited',
     preheader,
-    heading: 'Install Breeze',
+    heading: 'Install Nodes Unlimited',
     body,
-    footer: `Sent on behalf of ${input.orgName} by Breeze.`,
+    footer: `Sent on behalf of ${input.orgName} by Nodes Unlimited.`,
   });
 
   return { subject, html, text };

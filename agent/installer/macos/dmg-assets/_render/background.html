@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1280px; height:760px; }
+  body {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+    overflow: hidden;
+    background: #ffffff;
+  }
+  .stage { position:absolute; inset:0; border-radius:24px; overflow:hidden; }
+  /* Left instructions panel */
+  .left-panel {
+    position:absolute; top:0; left:0; width:470px; height:100%;
+    background: linear-gradient(160deg, #4c1d95 0%, #5b21b6 40%, #7c3aed 100%);
+    color:#fff;
+    padding:62px 48px 48px 56px;
+  }
+  /* Galaxy layer: soft nebula glows + starfield, kept faint so text stays readable */
+  .galaxy {
+    position:absolute; inset:0; pointer-events:none; overflow:hidden;
+  }
+  .galaxy .nebula {
+    position:absolute; inset:0;
+    background:
+      radial-gradient(ellipse 420px 300px at 15% 8%,  rgba(196,181,253,0.16) 0%, transparent 70%),
+      radial-gradient(ellipse 360px 260px at 90% 55%, rgba(167,139,250,0.14) 0%, transparent 70%),
+      radial-gradient(ellipse 300px 380px at 40% 95%, rgba(233,213,255,0.10) 0%, transparent 70%);
+  }
+  .galaxy svg { position:absolute; inset:0; width:100%; height:100%; }
+  .left-panel > *:not(.galaxy) { position:relative; z-index:1; }
+  .left-panel .logo-row {
+    display:flex; align-items:center; gap:18px; margin-bottom:44px;
+  }
+  .left-panel .logo-row .icon {
+    width:56px; height:56px; border-radius:14px;
+    background: #ffffff url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAT4AAAEyCAYAAABj+rxLAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAylpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDEwLjAtYzAwMCA3OS5kMjBlNDY2MzAsIDIwMjUvMTIvMDktMDI6MTE6MjMgICAgICAgICI+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wLyIgeG1sbnM6eG1wTU09Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8iIHhtbG5zOnN0UmVmPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvc1R5cGUvUmVzb3VyY2VSZWYjIiB4bXA6Q3JlYXRvclRvb2w9IkFkb2JlIFBob3Rvc2hvcCAyNy41IChNYWNpbnRvc2gpIiB4bXBNTTpJbnN0YW5jZUlEPSJ4bXAuaWlkOjNDQTcwNjA3MkVFQTExRjE5NzU2OEI1Rjk1Qjc4MUIyIiB4bXBNTTpEb2N1bWVudElEPSJ4bXAuZGlkOjNDQTcwNjA4MkVFQTExRjE5NzU2OEI1Rjk1Qjc4MUIyIj4gPHhtcE1NOkRlcml2ZWRGcm9tIHN0UmVmOmluc3RhbmNlSUQ9InhtcC5paWQ6M0NBNzA2MDUyRUVBMTFGMTk3NTY4QjVGOTVCNzgxQjIiIHN0UmVmOmRvY3VtZW50SUQ9InhtcC5kaWQ6M0NBNzA2MDYyRUVBMTFGMTk3NTY4QjVGOTVCNzgxQjIiLz4gPC9yZGY6RGVzY3JpcHRpb24+IDwvcmRmOlJERj4gPC94OnhtcG1ldGE+IDw/eHBhY2tldCBlbmQ9InIiPz6PTlPQAAASHUlEQVR4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') no-repeat center/70%;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.20);
+  }
+  .left-panel .logo-row .brand {
+    font-size:22px; font-weight:700; letter-spacing:1.5px; line-height:1.1;
+  }
+  .left-panel .logo-row .brand small {
+    display:block; font-size:11px; font-weight:500; letter-spacing:2.5px; opacity:0.75; margin-top:4px;
+  }
+  .left-panel h1 {
+    font-size:26px; font-weight:700; margin-bottom:22px; letter-spacing:0.3px;
+  }
+  .left-panel .steps {
+    display:flex; flex-direction:column; gap:16px;
+  }
+  .left-panel .step {
+    display:flex; gap:14px; align-items:flex-start;
+  }
+  .left-panel .step .num {
+    flex:0 0 28px; width:28px; height:28px; border-radius:50%;
+    background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.35);
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px; font-weight:700; margin-top:1px;
+  }
+  .left-panel .step .text {
+    font-size:15px; line-height:1.45; opacity:0.92;
+  }
+  .left-panel .step .text strong {
+    font-weight:600; opacity:1; display:block; margin-bottom:2px;
+  }
+  .left-panel .step .sublist {
+    margin:6px 0 0 16px; display:flex; flex-direction:column; gap:4px;
+    font-size:14px; line-height:1.4;
+  }
+  .left-panel .notice {
+    margin-top:34px;
+    padding:16px 18px; border-radius:10px;
+    background:rgba(255,255,255,0.10); border:1px solid rgba(255,255,255,0.18);
+    font-size:13px; line-height:1.5; opacity:0.85;
+  }
+  .left-panel .notice strong { opacity:1; }
+
+  /* Right install area */
+  .right-area {
+    position:absolute; top:0; left:470px; right:0; bottom:0;
+    background: linear-gradient(180deg, #ffffff 0%, #f8f6ff 70%, #f1ecff 100%);
+  }
+  .right-area .install-title {
+    position:absolute; top:88px; left:0; right:0; text-align:center;
+    font-size:24px; font-weight:600; color:#2e1065; letter-spacing:0.3px;
+  }
+  .drag-arrow {
+    position:absolute; top:197px; left:330px; width:150px; height:36px;
+  }
+  .drag-arrow svg { width:100%; height:100%; }
+  .right-area .install-subtitle {
+    position:absolute; top:124px; left:0; right:0; text-align:center;
+    font-size:16px; color:#6b7280;
+  }
+  /* plus + arrow between the real Finder icons (installer ~720,215 / Applications ~1030,215) */
+  .drag-plus {
+    position:absolute; top:148px; left:350px; width:110px; text-align:center;
+    font-size:34px; font-weight:700; color:#7c3aed;
+  }
+  /* Capability grid: icon + title + subtitle tiles, 3 cols */
+  .features {
+    position:absolute; top:338px; left:60px; right:60px; text-align:center;
+  }
+  .features-title {
+    font-size:19px; font-weight:700; color:#1f1147; margin-bottom:16px;
+  }
+  .features-grid {
+    display:grid; grid-template-columns:repeat(3, 1fr); gap:10px 12px;
+  }
+  .feat {
+    display:flex; align-items:center; gap:12px; text-align:left;
+    background:rgba(124,58,237,0.05);
+    border:1px solid rgba(124,58,237,0.16);
+    border-radius:10px; padding:10px 12px;
+  }
+  .feat .fico {
+    flex:0 0 40px; width:40px; height:40px; border-radius:9px;
+    background:rgba(124,58,237,0.10);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .feat .fico svg { width:24px; height:24px; stroke:#6d28d9; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  .feat .ftxt .ft { font-size:14.5px; font-weight:700; color:#1f1147; line-height:1.2; }
+  .feat .ftxt .fs { font-size:12px; color:#6b7280; line-height:1.25; margin-top:2px; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="left-panel">
+      <div class="galaxy">
+        <div class="nebula"></div>
+        <svg viewBox="0 0 470 760" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+          <g fill="#ffffff">
+            <circle cx="34" cy="38" r="1.4" opacity="0.55"/>
+            <circle cx="128" cy="22" r="1.0" opacity="0.35"/>
+            <circle cx="236" cy="46" r="1.8" opacity="0.65"/>
+            <circle cx="332" cy="18" r="1.1" opacity="0.40"/>
+            <circle cx="428" cy="52" r="1.5" opacity="0.55"/>
+            <circle cx="66" cy="120" r="1.0" opacity="0.30"/>
+            <circle cx="398" cy="128" r="2.0" opacity="0.70"/>
+            <circle cx="300" cy="132" r="0.9" opacity="0.28"/>
+            <circle cx="442" cy="196" r="1.2" opacity="0.45"/>
+            <circle cx="30" cy="242" r="1.6" opacity="0.50"/>
+            <circle cx="446" cy="288" r="1.0" opacity="0.35"/>
+            <circle cx="418" cy="352" r="1.7" opacity="0.60"/>
+            <circle cx="24" cy="368" r="0.9" opacity="0.30"/>
+            <circle cx="448" cy="430" r="1.3" opacity="0.45"/>
+            <circle cx="36" cy="470" r="1.1" opacity="0.35"/>
+            <circle cx="430" cy="512" r="0.9" opacity="0.30"/>
+            <circle cx="60" cy="540" r="1.5" opacity="0.50"/>
+            <circle cx="240" cy="536" r="1.0" opacity="0.32"/>
+            <circle cx="330" cy="552" r="1.8" opacity="0.60"/>
+            <circle cx="440" cy="586" r="1.2" opacity="0.40"/>
+            <circle cx="150" cy="716" r="1.6" opacity="0.55"/>
+            <circle cx="70" cy="742" r="1.0" opacity="0.32"/>
+            <circle cx="260" cy="728" r="1.2" opacity="0.42"/>
+            <circle cx="356" cy="752" r="2.0" opacity="0.68"/>
+            <circle cx="424" cy="700" r="0.9" opacity="0.28"/>
+            <circle cx="40" cy="806" r="1.4" opacity="0.50"/>
+            <circle cx="180" cy="820" r="1.0" opacity="0.33"/>
+            <circle cx="298" cy="838" r="1.5" opacity="0.52"/>
+            <circle cx="404" cy="812" r="1.1" opacity="0.36"/>
+            <circle cx="120" cy="878" r="1.8" opacity="0.60"/>
+            <circle cx="236" cy="892" r="1.0" opacity="0.30"/>
+            <circle cx="352" cy="884" r="1.3" opacity="0.45"/>
+            <circle cx="440" cy="864" r="1.6" opacity="0.55"/>
+            <circle cx="86" cy="640" r="1.2" opacity="0.40"/>
+            <circle cx="410" cy="646" r="1.4" opacity="0.48"/>
+            <circle cx="196" cy="150" r="1.1" opacity="0.38"/>
+            <circle cx="88" cy="196" r="1.4" opacity="0.50"/>
+            <circle cx="262" cy="286" r="1.0" opacity="0.30"/>
+            <circle cx="360" cy="238" r="1.6" opacity="0.55"/>
+            <circle cx="204" cy="402" r="1.2" opacity="0.42"/>
+            <circle cx="316" cy="452" r="0.9" opacity="0.28"/>
+            <circle cx="120" cy="586" r="1.5" opacity="0.52"/>
+            <circle cx="212" cy="662" r="1.0" opacity="0.34"/>
+            <circle cx="330" cy="778" r="1.3" opacity="0.44"/>
+          </g>
+          <!-- a few brighter accent stars with soft glow -->
+          <g fill="#ffffff">
+            <circle cx="390" cy="90" r="4.5" opacity="0.10"/>
+            <circle cx="390" cy="90" r="1.9" opacity="0.85"/>
+            <circle cx="52" cy="330" r="4.0" opacity="0.09"/>
+            <circle cx="52" cy="330" r="1.7" opacity="0.80"/>
+            <circle cx="300" cy="640" r="5.0" opacity="0.10"/>
+            <circle cx="300" cy="640" r="2.1" opacity="0.85"/>
+            <circle cx="150" cy="80" r="3.6" opacity="0.08"/>
+            <circle cx="150" cy="80" r="1.5" opacity="0.75"/>
+            <circle cx="430" cy="770" r="4.2" opacity="0.09"/>
+            <circle cx="430" cy="770" r="1.8" opacity="0.80"/>
+          </g>
+        </svg>
+      </div>
+      <div class="logo-row">
+        <div class="icon"></div>
+        <div class="brand">NODES UNLIMITED<small>A DBA OF BLOOMING BRANDS INC.</small></div>
+      </div>
+
+      <h1>Set up your Mac</h1>
+
+      <div class="steps">
+        <div class="step">
+          <div class="num">1</div>
+          <div class="text">
+            <strong>Install the agent</strong>
+            Drag the installer into your Applications folder, then open it.
+          </div>
+        </div>
+        <div class="step">
+          <div class="num">2</div>
+          <div class="text">
+            <strong>Allow remote support</strong>
+            When asked, enter your Mac password so the agent can install system services.
+          </div>
+        </div>
+        <div class="step">
+          <div class="num">3</div>
+          <div class="text">
+            <strong>Grant permissions if prompts disappear</strong>
+            If a permission window closes too quickly:
+            <ul class="sublist">
+              <li>Open System Settings → Privacy &amp; Security</li>
+              <li>Go to Full Disk Access, Screen Recording, and Accessibility</li>
+              <li>Add <b>NODES UNLIMITED AGENT</b> and <b>NUAgentInstaller</b></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="notice">
+        <strong>Need help?</strong><br>
+        www.nodesunlimited.com<br>
+        support@nodesunlimited.com<br>
+        Toll: 1 888 898 8008<br>
+        Local: 1 978 888 7688
+      </div>
+    </div>
+
+    <div class="right-area">
+      <div class="install-title">Install Nodes Unlimited Agent</div>
+      <div class="install-subtitle">Drag the installer below into the Applications folder</div>
+
+      <!-- Arrow between the real Finder icons (installer at 720,460 → Applications at 1030,460).
+           right-area starts at x=470, so left offset = 800-470 = 330. -->
+      <div class="drag-plus">+</div>
+      <div class="drag-arrow">
+        <svg viewBox="0 0 150 36" preserveAspectRatio="none">
+          <line x1="8" y1="18" x2="128" y2="18" stroke="#7c3aed" stroke-width="6" stroke-linecap="round"/>
+          <polygon points="128,6 148,18 128,30" fill="#7c3aed"/>
+        </svg>
+      </div>
+
+      <!-- Capability disclosure: what this agent enables once installed -->
+      <div class="features">
+        <div class="features-title">Your IT Team&rsquo;s Key Capabilities with This Agent</div>
+        <div class="features-grid">
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-5 3 10 2-5h7"/></svg></div>
+            <div class="ftxt"><div class="ft">Health Check</div><div class="fs">System &amp; health monitoring</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></div>
+            <div class="ftxt"><div class="ft">Inventory</div><div class="fs">Hardware &amp; software inventory</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></div>
+            <div class="ftxt"><div class="ft">Patches</div><div class="fs">Patch &amp; update management</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M5 19c2-6 5-11 9-14 2.5-1.9 5-2 5-2s-.1 2.5-2 5c-3 4-8 7-14 9z" transform="translate(1,1) scale(0.85)"/><path d="M6 15l3 3"/></svg></div>
+            <div class="ftxt"><div class="ft">Software</div><div class="fs">Software deployment</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
+            <div class="ftxt"><div class="ft">Remote</div><div class="fs">Remote desktop control</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></div>
+            <div class="ftxt"><div class="ft">Viewing</div><div class="fs">Screen viewing, incl. unattended</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
+            <div class="ftxt"><div class="ft">Terminal</div><div class="fs">Remote terminal &amp; scripts</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M13 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13 3v6h6"/></svg></div>
+            <div class="ftxt"><div class="ft">Files</div><div class="fs">File access &amp; transfer</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M6 18a4 4 0 0 1 0-8 6 6 0 0 1 11.5-1.5A4.5 4.5 0 0 1 18 18z"/><path d="M12 13v5M9.5 15.5L12 13l2.5 2.5"/></svg></div>
+            <div class="ftxt"><div class="ft">Backup</div><div class="fs">Backup &amp; recovery</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg></div>
+            <div class="ftxt"><div class="ft">Alerts</div><div class="fs">Alerts &amp; diagnostics</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></div>
+            <div class="ftxt"><div class="ft">Compliance</div><div class="fs">Security &amp; compliance checks</div></div></div>
+          <div class="feat"><div class="fico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 5V3M12 21v-2M5 12H3M21 12h-2M6.5 6.5L5 5M19 19l-1.5-1.5M17.5 6.5L19 5M5 19l1.5-1.5"/></svg></div>
+            <div class="ftxt"><div class="ft">Automation</div><div class="fs">Automation &amp; maintenance</div></div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

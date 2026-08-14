@@ -94,7 +94,7 @@ func querySNMPv2c(target, community string, timeout time.Duration) *SNMPInfo {
 	}
 	defer snmp.Conn.Close()
 
-	response, err := snmp.Get([]string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.2.0", "1.3.6.1.2.1.1.5.0"})
+	response, err := snmp.Get([]string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.2.0", "1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.3.0"})
 	if err != nil || response == nil {
 		return nil
 	}
@@ -108,6 +108,8 @@ func querySNMPv2c(target, community string, timeout time.Duration) *SNMPInfo {
 			info.SysObjectID = snmpToString(variable)
 		case ".1.3.6.1.2.1.1.5.0":
 			info.SysName = snmpToString(variable)
+		case ".1.3.6.1.2.1.1.3.0":
+			info.UptimeSeconds = snmpToUptimeSeconds(variable)
 		}
 	}
 
@@ -139,7 +141,7 @@ func querySNMPv3(target, username string, timeout time.Duration) *SNMPInfo {
 	}
 	defer gs.Conn.Close()
 
-	response, err := gs.Get([]string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.2.0", "1.3.6.1.2.1.1.5.0"})
+	response, err := gs.Get([]string{"1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.2.0", "1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.3.0"})
 	if err != nil || response == nil {
 		return nil
 	}
@@ -153,6 +155,8 @@ func querySNMPv3(target, username string, timeout time.Duration) *SNMPInfo {
 			info.SysObjectID = snmpToString(variable)
 		case ".1.3.6.1.2.1.1.5.0":
 			info.SysName = snmpToString(variable)
+		case ".1.3.6.1.2.1.1.3.0":
+			info.UptimeSeconds = snmpToUptimeSeconds(variable)
 		}
 	}
 
@@ -215,4 +219,45 @@ func snmpToString(variable gosnmp.SnmpPDU) string {
 	default:
 		return gosnmp.ToBigInt(value).String()
 	}
+}
+
+// snmpToUptimeSeconds converts a sysUpTime (1.3.6.1.2.1.1.3.0) PDU into whole
+// seconds. SNMP reports sysUpTime as TimeTicks — hundredths of a second since
+// boot — and gosnmp surfaces that as one of several unsigned integer types
+// depending on the wire encoding, so the value is type-switched rather than
+// cast. A missing, nil, negative, or unexpectedly typed value returns nil so
+// that a device omitting sysUpTime simply leaves uptime unset instead of
+// failing the whole SNMP probe.
+func snmpToUptimeSeconds(variable gosnmp.SnmpPDU) *uint64 {
+	if variable.Value == nil {
+		return nil
+	}
+	var ticks uint64
+	switch value := variable.Value.(type) {
+	case uint32:
+		ticks = uint64(value)
+	case uint64:
+		ticks = value
+	case uint:
+		ticks = uint64(value)
+	case int:
+		if value < 0 {
+			return nil
+		}
+		ticks = uint64(value)
+	case int32:
+		if value < 0 {
+			return nil
+		}
+		ticks = uint64(value)
+	case int64:
+		if value < 0 {
+			return nil
+		}
+		ticks = uint64(value)
+	default:
+		return nil
+	}
+	seconds := ticks / 100
+	return &seconds
 }

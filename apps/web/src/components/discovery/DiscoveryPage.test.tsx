@@ -38,13 +38,22 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn()
 }));
 
+// The real form is exercised in DiscoveryProfileForm.test.tsx. Here it is
+// stubbed down to a single button that hands DiscoveryPage a values object, so
+// the tests can assert how those values are mapped onto the API payload.
+let stubFormValues: Record<string, unknown> = {};
+
 vi.mock('./DiscoveryProfileForm', () => ({
   defaultAlertSettings: {
     enabled: false,
     severity: 'warning',
     channels: []
   },
-  default: () => null
+  default: ({ onSubmit }: { onSubmit?: (values: Record<string, unknown>) => void }) => (
+    <button type="button" onClick={() => onSubmit?.(stubFormValues)}>
+      stub-submit-profile
+    </button>
+  )
 }));
 
 vi.mock('./DiscoveryJobList', () => ({
@@ -342,6 +351,85 @@ describe('DiscoveryPage', () => {
 
     expect(screen.queryByTestId('org-required-state')).not.toBeInTheDocument();
     expect(screen.queryByText('Assets tab')).not.toBeInTheDocument();
+  });
+
+  describe('profile payload for excludeIps / portRanges', () => {
+    const baseFormValues = {
+      name: 'HQ sweep',
+      siteId: 'site-1',
+      subnets: ['10.0.0.0/24'],
+      excludeIps: [] as string[],
+      portRanges: [] as string[],
+      methods: ['ping'],
+      schedule: {
+        cadence: 'daily',
+        intervalHours: 1,
+        intervalMinutes: 60,
+        time: '02:00',
+        dayOfWeek: 'Monday',
+        dayOfMonth: '1',
+        timezone: 'UTC'
+      },
+      snmp: {
+        version: 'v2c',
+        community: 'public',
+        port: 161,
+        timeout: 2000,
+        retries: 1,
+        username: '',
+        authProtocol: 'sha',
+        authPassphrase: '',
+        privacyProtocol: 'aes',
+        privacyPassphrase: ''
+      },
+      alertSettings: {
+        enabled: false,
+        alertOnNew: true,
+        alertOnDisappeared: true,
+        alertOnChanged: true,
+        changeRetentionDays: 90
+      }
+    };
+
+    async function submitProfile(values: Record<string, unknown>) {
+      stubFormValues = values;
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+      render(<DiscoveryPage />);
+      fireEvent.click(await screen.findByRole('button', { name: 'New Profile' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'stub-submit-profile' }));
+
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledWith(
+          '/discovery/profiles',
+          expect.objectContaining({ method: 'POST' })
+        );
+      });
+
+      const call = fetchWithAuthMock.mock.calls.find(
+        ([url, init]) => url === '/discovery/profiles' && (init as RequestInit)?.method === 'POST'
+      )!;
+      return JSON.parse((call[1] as RequestInit).body as string);
+    }
+
+    it('sends the values through under the field names the API route expects', async () => {
+      const body = await submitProfile({
+        ...baseFormValues,
+        methods: ['ping', 'port_scan'],
+        excludeIps: ['10.0.0.5', '10.0.0.6'],
+        portRanges: ['1-65535']
+      });
+
+      expect(body.excludeIps).toEqual(['10.0.0.5', '10.0.0.6']);
+      expect(body.portRanges).toEqual(['1-65535']);
+    });
+
+    it('reproduces the API defaults ([] and null) when both fields are blank', async () => {
+      const body = await submitProfile(baseFormValues);
+
+      expect(body.excludeIps).toEqual([]);
+      expect(body.portRanges).toBeNull();
+    });
   });
 });
 import '@/lib/i18n';

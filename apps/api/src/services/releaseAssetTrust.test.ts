@@ -28,7 +28,7 @@ describe('releaseAssetTrust', () => {
     ['breeze-viewer-windows.msi', PLATFORM_TRUST_WINDOWS],
     ['breeze-agent-darwin-arm64.pkg', PLATFORM_TRUST_MACOS],
     ['breeze-helper-macos.dmg', PLATFORM_TRUST_MACOS],
-    ['Breeze Installer.app.zip', PLATFORM_TRUST_MACOS],
+    ['Nodes Unlimited Installer.app.zip', PLATFORM_TRUST_MACOS],
     ['Breeze.Installer.app.zip', PLATFORM_TRUST_MACOS],
     ['breeze-agent-darwin-amd64', PLATFORM_TRUST_MACOS],
     ['breeze-watchdog-darwin-arm64', PLATFORM_TRUST_MACOS],

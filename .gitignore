@@ -100,6 +100,12 @@ target/
 !apps/helper/src-tauri/icons/**/*.png
 !apps/docs/src/assets/screenshots/**/*.png
 !docs/superpowers/spikes/astro7-baseline/*.png
+# macOS installer brand assets are deliverables, not stray screenshots:
+# the DMG background ships inside the .dmg and the icon render source is
+# how AppIcon.icns is regenerated. Without these the global *.png above
+# silently drops them from the commit and a fresh clone builds unbranded.
+!agent/installer/macos/dmg-assets/*.png
+!agent/installer/macos-app/Resources/**/*.png
 .worktrees/
 
 # Monitoring secrets (keep .gitkeep only)

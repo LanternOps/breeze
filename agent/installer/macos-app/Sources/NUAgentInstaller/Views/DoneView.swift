@@ -1,4 +1,4 @@
-// agent/installer/macos-app/Sources/BreezeInstaller/Views/DoneView.swift
+// agent/installer/macos-app/Sources/NUAgentInstaller/Views/DoneView.swift
 import SwiftUI
 
 struct DoneView: View {

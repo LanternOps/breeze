@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # agent/installer/macos-app/build-app-bundle.sh
 #
-# Assembles Breeze Installer.app from the SPM-built executable.
-# Produces a universal (arm64 + x86_64) .app bundle.
+# Assembles the universal Nodes Unlimited Installer.app from the SPM-built
+# executable and per-architecture .pkg payloads.
 #
 # Usage:
 #   ./build-app-bundle.sh \
 #     --pkg-amd64 /path/to/nu-agent-darwin-amd64.pkg \
 #     --pkg-arm64 /path/to/nu-agent-darwin-arm64.pkg \
-#     --output    /path/to/output/Breeze\ Installer.app
+#     --output    /path/to/output/Nodes\ Unlimited\ Installer.app
 #
-# Requires Swift 5.9+ toolchain and macOS 13+ SDK (matches Package.swift target).
+# Optional:
+#   SIGN_IDENTITY="Developer ID Application: BLOOMING BRANDS INC" ./build-app-bundle.sh ...
+#
+# Requires Swift 5.9+ toolchain and macOS 13+ SDK.
 set -euo pipefail
 
 PKG_AMD64=""
@@ -33,9 +36,6 @@ for f in "$PKG_AMD64" "$PKG_ARM64"; do
     [[ -f "$f" ]] || { echo "Missing PKG: $f" >&2; exit 1; }
 done
 
-# Resolve to absolute paths BEFORE we `cd` — these args are typically
-# relative to the original CWD (e.g. installer-pkgs/...) and would break
-# after switching into the script directory.
 abspath() {
     local p="$1"
     if [[ "$p" = /* ]]; then
@@ -51,14 +51,14 @@ OUTPUT="$(abspath "$OUTPUT")"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "-> Building universal binary..."
+echo "-> Building universal NUAgentInstaller binary..."
 swift build -c release --arch arm64
 swift build -c release --arch x86_64
-ARM_BIN=".build/arm64-apple-macosx/release/BreezeInstaller"
-X86_BIN=".build/x86_64-apple-macosx/release/BreezeInstaller"
+ARM_BIN=".build/arm64-apple-macosx/release/NUAgentInstaller"
+X86_BIN=".build/x86_64-apple-macosx/release/NUAgentInstaller"
 [[ -f "$ARM_BIN" && -f "$X86_BIN" ]] || { echo "SPM build did not produce expected binaries" >&2; exit 1; }
 
-UNIVERSAL_BIN="$(mktemp -d)/BreezeInstaller"
+UNIVERSAL_BIN="$(mktemp -d)/NUAgentInstaller"
 lipo -create "$ARM_BIN" "$X86_BIN" -output "$UNIVERSAL_BIN"
 file "$UNIVERSAL_BIN"
 
@@ -67,8 +67,8 @@ rm -rf "$OUTPUT"
 mkdir -p "$OUTPUT/Contents/MacOS"
 mkdir -p "$OUTPUT/Contents/Resources"
 
-cp "$UNIVERSAL_BIN" "$OUTPUT/Contents/MacOS/BreezeInstaller"
-chmod 755 "$OUTPUT/Contents/MacOS/BreezeInstaller"
+cp "$UNIVERSAL_BIN" "$OUTPUT/Contents/MacOS/NUAgentInstaller"
+chmod 755 "$OUTPUT/Contents/MacOS/NUAgentInstaller"
 
 cp Resources/Info.plist "$OUTPUT/Contents/Info.plist"
 if [[ -f Resources/AppIcon.icns ]]; then
@@ -80,6 +80,15 @@ cp "$PKG_ARM64" "$OUTPUT/Contents/Resources/nu-agent-arm64.pkg"
 
 echo "-> .app bundle assembled:"
 ls -la "$OUTPUT/Contents/"
-echo "Done. Sign + notarize with the CI workflow or manually:"
-echo "    codesign --force --options runtime --entitlements entitlements.plist \\"
-echo "      --sign \"Developer ID Application: ...\" --timestamp \"$OUTPUT\""
+
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    echo "-> Signing .app with '$SIGN_IDENTITY'"
+    codesign --force --options runtime --entitlements entitlements.plist \
+      --sign "$SIGN_IDENTITY" --timestamp "$OUTPUT"
+    codesign --verify --verbose "$OUTPUT"
+else
+    echo "WARNING: no SIGN_IDENTITY — .app is ad-hoc signed."
+fi
+
+echo "Done: $OUTPUT"

@@ -35,6 +35,10 @@ type SNMPInfo struct {
 	SysDescr    string `json:"sysDescr"`
 	SysObjectID string `json:"sysObjectId"`
 	SysName     string `json:"sysName"`
+	// UptimeSeconds is sysUpTime (1.3.6.1.2.1.1.3.0) converted from TimeTicks
+	// (hundredths of a second) to whole seconds. It is nil when the device did
+	// not return sysUpTime or returned an unusable value.
+	UptimeSeconds *uint64 `json:"uptimeSeconds,omitempty"`
 }
 
 // DiscoveredHost represents a device found during discovery.

@@ -3,10 +3,16 @@ import StreamZip from "node-stream-zip";
 import { writeFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  INSTALLER_APP_NAME,
+  INSTALLER_BOOTSTRAP_PAYLOAD_NAME,
+  LEGACY_INSTALLER_APP_NAME,
+  stampedInstallerAppName,
+} from "./installerAppNaming";
 
 export interface RenameAppInZipOpts {
-  oldAppName: string; // e.g. "Breeze Installer.app"
-  newAppName: string; // e.g. "Breeze Installer [A7K2XQ@us.2breeze.app].app"
+  oldAppName: string; // e.g. "Nodes Unlimited Installer.app"
+  newAppName: string; // e.g. "Nodes Unlimited Installer [A7K2XQ@rmm.example].app"
   extraFiles?: Array<{
     path: string;
     data: Buffer | string;
@@ -88,5 +94,50 @@ export async function renameAppInZip(
     return Buffer.concat(chunks);
   } finally {
     await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Stamps a macOS installer zip with its enrollment token.
+ *
+ * The token is carried in TWO places by design:
+ *   1. the app bundle's own filename — `Nodes Unlimited Installer [TOKEN@host].app`
+ *   2. a sibling `Nodes Unlimited Installer.bootstrap.json`
+ * The Swift installer prefers the JSON (FilenameTokenParser.load), but macOS
+ * App Translocation copies ONLY the .app bundle to a randomized read-only path
+ * when a quarantined app is launched in place — stranding the sibling JSON
+ * (#2544). The bundle name travels through translocation, so the filename
+ * fallback keeps the install working.
+ *
+ * Accepts a zip whose bundle carries either the current Nodes Unlimited name or
+ * the pre-rebrand "Breeze Installer.app" name, so a release cut on either side
+ * of the rebrand still yields a stamped (never silently unstamped) installer.
+ */
+export async function stampInstallerAppZip(
+  sourceZip: Buffer,
+  opts: { token: string; apiHost: string },
+): Promise<Buffer> {
+  const newAppName = stampedInstallerAppName(opts.token, opts.apiHost);
+  const extraFiles = [
+    {
+      path: INSTALLER_BOOTSTRAP_PAYLOAD_NAME,
+      data: JSON.stringify({ token: opts.token, apiHost: opts.apiHost }),
+      mode: 0o600,
+    },
+  ];
+  try {
+    return await renameAppInZip(sourceZip, {
+      oldAppName: INSTALLER_APP_NAME,
+      newAppName,
+      extraFiles,
+    });
+  } catch (err) {
+    // Pre-rebrand release asset — retry with the legacy bundle name rather
+    // than falling through to an unstamped installer.
+    return await renameAppInZip(sourceZip, {
+      oldAppName: LEGACY_INSTALLER_APP_NAME,
+      newAppName,
+      extraFiles,
+    });
   }
 }

@@ -142,6 +142,21 @@ interface SecurityMiddlewareOptions {
  * In non-production: keeps `ws: wss:` open so localhost / docker dev origins
  * keep working.
  */
+/**
+ * Websocket origins derived from this deployment's own public URL. Returns an
+ * empty list when no public URL is configured, which yields a `'self'`-only
+ * connect-src rather than trusting a third-party host.
+ */
+function deriveSelfWsHosts(): string[] {
+  const publicUrl = process.env.PUBLIC_API_URL || process.env.API_URL || '';
+  try {
+    const { host, protocol } = new URL(publicUrl);
+    return [`${protocol === 'http:' ? 'ws' : 'wss'}://${host}`];
+  } catch {
+    return [];
+  }
+}
+
 function buildConnectSrc(
   nodeEnv: string | undefined,
   cspConnectHosts: string | undefined,
@@ -154,8 +169,13 @@ function buildConnectSrc(
     .split(',')
     .map((h) => h.trim())
     .filter((h) => h.length > 0);
-  const hosts = configured.length > 0 ? configured : ['wss://*.2breeze.app'];
-  return `connect-src 'self' ${hosts.join(' ')}`;
+  // No vendor-domain fallback: an unset env var must not make every
+  // deployment advertise someone else's domain in a security header. Derive
+  // from our own public URL, else emit 'self' only.
+  const hosts = configured.length > 0 ? configured : deriveSelfWsHosts();
+  return hosts.length > 0
+    ? `connect-src 'self' ${hosts.join(' ')}`
+    : "connect-src 'self'";
 }
 
 export function securityMiddleware(options?: SecurityMiddlewareOptions): MiddlewareHandler {

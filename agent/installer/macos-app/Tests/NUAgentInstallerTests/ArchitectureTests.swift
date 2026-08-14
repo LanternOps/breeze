@@ -1,5 +1,5 @@
 import XCTest
-@testable import BreezeInstaller
+@testable import NUAgentInstaller
 
 final class ArchitectureTests: XCTestCase {
     func testMapsArm64() {

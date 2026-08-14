@@ -46,7 +46,7 @@ struct Installer {
             enrollArgs += ["--site-id", Installer.shellEscape(site)]
         }
         let enrollCmd = enrollArgs.joined(separator: " ")
-        let command = "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && /usr/local/bin/breeze-agent enroll \(enrollCmd)"
+        let command = "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && /usr/local/bin/nu-agent enroll \(enrollCmd)"
         let prompt = "Nodes Unlimited Agent needs to install the agent and configure system services."
 
         do {
