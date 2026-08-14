@@ -80,6 +80,12 @@ While editing a quote, the line-item picker includes a **Search distributor** ta
 
 This is distinct from the [catalog-level import workflow](/features/product-catalog/#importing-from-distributor-catalogs): that builds your standing price list, while the quote-level search pulls a product directly into an open quote.
 
+### Contract Blocks
+
+A quote can embed one or more **contract blocks** — the actual agreement the customer is signing, right alongside the pricing. Each block draws from a [contract template](/features/contracts/#contract-templates) (authored rich text) or an uploaded document, and renders into the generated quote PDF: authored templates as formatted text, uploaded documents with their own pages preserved.
+
+Contract text can carry `{{variable}}` placeholders. Some resolve **automatically** from the quote — the customer's name and address, your company details, totals, and effective/expiry dates — while others you fill in per quote. This lets one template serve every customer without hand-editing the wording each time.
+
 ## Deposits
 
 You can require a customer to pay a **deposit** when they accept a quote, with the rest invoiced afterward. Choose one of two ways to set the deposit amount:
@@ -99,6 +105,7 @@ When a customer accepts a quote, Breeze turns it into the documents that bill it
 
 - **One-time lines** become an **invoice** (with the deposit due first, if one was set).
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
+- If the quote embedded a **contract block**, acceptance freezes an **executed copy** of that agreement — its exact wording with every variable resolved — and links it to the recurring billing contract. This executed record is permanent: later edits to the source template never change what the customer accepted.
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
 
@@ -109,6 +116,8 @@ If the accepted quote contains **Pax8-backed** catalog items, acceptance also **
 2. Review the one-time and recurring totals and the deposit summary.
 3. **Send** the quote to the customer for review and acceptance.
 </Steps>
+
+If the quote embeds a [contract block](#contract-blocks), **Send is blocked until every declared variable has a value** — you cannot ship an agreement with an unfilled `{{placeholder}}`. Breeze lists any unresolved variables so you can fill them in (or correct the quote details that feed them) before sending.
 
 The **Send** dialog accepts an optional **personal message**. When you add one, it renders in the email above the accept link, so you can add a short note to the customer without leaving the quote. Leave it blank to send the standard email.
 

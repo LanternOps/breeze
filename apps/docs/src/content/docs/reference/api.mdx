@@ -1131,6 +1131,84 @@ Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `res
 |---|---|---|
 | `GET` | `/partner/dashboard` | Partner dashboard data |
 
+## Partner Export API
+
+The Partner Export API is a dedicated, read-only surface for pulling a partner's entire estate — organizations, sites, devices, inventory, configuration, and backup settings — into an external system (data warehouse, BI tool, or your own portal). It is **separate from the main JWT/API-key surface above**: it uses its own credentials, its own scopes, and its own pagination model.
+
+### Authentication
+
+Every request authenticates with a **partner service-principal key** in the `X-API-Key` header. These keys are prefixed `brz_sp_` and are distinct from the `brz_` dashboard keys used elsewhere:
+
+```bash
+curl -H "X-API-Key: brz_sp_..." \
+  "https://breeze.yourdomain.com/api/v1/partner-api/devices"
+```
+
+Keys carry a fixed set of read scopes and an optional source-IP allowlist. See [Partner Service Principals](/reference/api-keys/#partner-service-principals) for how to create principals and issue keys.
+
+### Resources
+
+All resources live under the base path `GET /api/v1/partner-api/<resource>` and return the same paged envelope. Thirteen read resources are available:
+
+| Resource | Scope required |
+|---|---|
+| `/organizations` | `organizations:read` |
+| `/sites` | `sites:read` |
+| `/devices` | `devices:read` |
+| `/device-inventory` | `inventory:read` |
+| `/device-software` | `inventory:read` |
+| `/device-relationships` | `inventory:read` |
+| `/configuration-policies` | `configuration:read` |
+| `/configuration-assignments` | `configuration:read` |
+| `/scripts` | `scripts:read` |
+| `/automations` | `configuration:read` |
+| `/backup-configurations` | `backup-configuration:read` |
+| `/custom-fields` | `custom-fields:read` |
+| `/custom-field-values` | `custom-fields:read` |
+
+### Query parameters
+
+| Parameter | Description |
+|---|---|
+| `orgId` | Restrict results to a single organization the key can access. |
+| `siteId` | Restrict to a single site. Accepted only on the device resources (`devices`, `device-inventory`, `device-software`, `device-relationships`). |
+| `updatedSince` | ISO-8601 timestamp. Its **presence switches the export from a full snapshot to an incremental (watermark) sync** — only records changed at or after this instant are returned. |
+| `cursor` | Opaque signed token returned as `nextCursor` on the previous page. Cursors are tamper-evident and **expire 24 hours** after issue; request a fresh page if one expires. |
+| `limit` | Page size. Default **100**, maximum **500**. |
+
+### Response envelope
+
+Every resource returns the same shape:
+
+```json
+{
+  "schemaVersion": "1",
+  "snapshotAt": "2026-07-18T12:00:00Z",
+  "data": [ ... ],
+  "nextCursor": "eyJ...",
+  "hasMore": true
+}
+```
+
+`snapshotAt` pins the point-in-time the page was read as of. When `hasMore` is `true`, `nextCursor` carries the token for the next page; when `false`, `nextCursor` is `null` and you have reached the end of the current snapshot.
+
+### Rate limiting
+
+Each key is independently rate-limited on a **rolling hourly window**. Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers. Exceeding the limit returns `429` with a `Retry-After` header (seconds until the window resets).
+
+### Scopes
+
+A key is minted with one or more of these eight read scopes; a request to a resource whose scope the key lacks returns `403`:
+
+- `organizations:read`
+- `sites:read`
+- `devices:read`
+- `inventory:read`
+- `configuration:read`
+- `scripts:read`
+- `backup-configuration:read`
+- `custom-fields:read`
+
 ## Search
 
 | Method | Path | Description |

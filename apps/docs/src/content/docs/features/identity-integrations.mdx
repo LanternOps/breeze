@@ -152,7 +152,9 @@ Removing an individual permission is different from removing tenant-wide consent
 
 ## After connecting
 
-Once a sub-tab shows **Connected**, technicians work with the directory through the in-app AI assistant rather than through this Integrations page. Read-only lookups (user details, group memberships, security posture, Microsoft 365 sign-in activity) run automatically; anything that changes an account is gated behind a human approval step with a mandatory reason and a full audit trail. The two providers are **not** at parity — Google Workspace exposes a much broader mutating action set than Microsoft 365.
+Once a sub-tab shows **Connected**, technicians work with the directory through the in-app AI assistant rather than through this Integrations page. Read-only lookups (user details, group memberships, security posture, Microsoft 365 sign-in activity, Intune-managed devices, tenant and license/SKU inventory, and SharePoint sites) run automatically; anything that changes an account is gated behind a human approval step with a mandatory reason and a full audit trail. The two providers are **not** at parity — Google Workspace exposes a much broader mutating action set than Microsoft 365.
+
+The read-only Microsoft 365 queries are also reachable from external AI clients through the [MCP server](/features/mcp-server/#microsoft-365-tools) — the same live-tenant lookups exposed as [Microsoft 365 AI tools](/features/ai/#microsoft-365-ai-tools) in the built-in assistant.
 
 For the complete list of what you can view and do — including guided offboarding, the security-drift report, and the read-vs-mutating tiers — see the [Identity Console](/features/identity-console/).
 

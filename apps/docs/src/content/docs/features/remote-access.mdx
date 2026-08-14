@@ -23,6 +23,8 @@ If WebRTC negotiation fails even with TURN (e.g., TURN is misconfigured or unrea
 
 Remote Desktop streams the device's screen to your browser and forwards your mouse and keyboard input back to the device in real time, giving you full interactive control as if you were physically present at the machine.
 
+**Supported platforms:** Windows, macOS, and Linux (X11).
+
 ### Starting a desktop session
 
 <Steps>
@@ -86,7 +88,9 @@ The `list_sessions` command returns available user sessions by merging the WTS s
 
 The same session broker architecture extends to macOS and Linux. When the agent runs as a LaunchDaemon (macOS) or systemd service (Linux), it has no display access. The agent detects this via the `IsHeadless` flag (checked by `hasConsole()` on Unix).
 
-In headless mode, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper handles screen capture using platform-native APIs (Core Graphics on macOS, X11/Wayland on Linux).
+In headless mode on **macOS**, all desktop and screenshot commands are routed through IPC to the Breeze Helper process running in the user's desktop session, rather than attempting direct screen capture which would silently fail. The Helper captures the screen using Core Graphics.
+
+On **Linux**, the agent captures the active X11 display directly for remote desktop and screenshots — no Helper hand-off is required. Wayland screen mirroring is not yet supported: on a pure Wayland session a remote desktop request returns an "unsupported" error. (A Wayland desktop running an Xwayland compatibility layer still exposes an X11 display the agent can capture.)
 
 <Aside>
   If no Helper process is connected when a remote desktop session is requested in headless mode, the agent returns an error immediately rather than streaming zero frames.

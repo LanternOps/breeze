@@ -301,6 +301,19 @@ Tools are the primary way AI clients interact with Breeze. Each tool maps to one
   Tier classification is **action-level**, not tool-level. For example, `manage_alerts` is Tier 1 for list/get, but Tier 2 for acknowledge/resolve. The MCP server resolves the effective tier at runtime for each specific action.
 </Aside>
 
+### Microsoft 365 tools
+
+Read-only queries against a customer's connected Microsoft 365 tenant. These tools are only advertised when the organization has [Microsoft 365 Graph read](/features/identity-integrations/) enabled; they return live tenant data and never write back to Microsoft 365.
+
+| Tool | Tier | Description |
+|---|---|---|
+| `m365_query_users` | 1 | List or look up Entra ID (Azure AD) users. |
+| `m365_query_signins` | 1 | Query recent Entra ID sign-in activity (up to the last 168 hours). Requires the tenant to have Entra ID P1 or P2. |
+| `m365_query_intune_devices` | 1 | List or look up Intune-managed devices with compliance and sync detail. |
+| `m365_query_groups` | 1 | List groups, look up a group, or list a group's members. |
+| `m365_query_org` | 1 | Read the tenant's organization profile or its license (SKU) inventory. |
+| `m365_query_sites` | 1 | Search SharePoint sites or look one up by id. |
+
 ---
 
 ## Available resources

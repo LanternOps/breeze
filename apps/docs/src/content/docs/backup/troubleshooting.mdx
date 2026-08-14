@@ -51,6 +51,19 @@ If a manual backup request cannot be queued at all, Breeze now marks the job **F
 
 ---
 
+## Job marked Failed with "Backup stalled"
+
+**Symptom:** A backup job that had been **Running** is auto-marked **Failed** with an error like "Backup stalled: no progress reported."
+
+**Cause:** The agent stopped sending progress updates partway through the run — commonly because the device went to sleep, lost its network connection, or the run was otherwise interrupted. To keep the job history accurate, Breeze fails a job that has gone silent rather than leaving it stuck in **Running**.
+
+**Fix:**
+1. Confirm the device is online and the agent is running.
+2. Re-run the backup. Interrupted **file** backups resume from the last checkpoint rather than starting over, so a retry after a transient outage picks up where it left off.
+3. If stalls recur, check for power/sleep settings or an unreliable network link on the device during the backup window.
+
+---
+
 ## Snapshot browse returns empty
 
 **Symptom:** A snapshot exists but the file browser shows no contents.

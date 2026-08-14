@@ -43,6 +43,17 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 
 Per-device and per-seat lines can be scoped to a specific **site** so you bill only the devices or seats at that location. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
 
+## Contract Templates
+
+Contract templates are reusable legal documents — the actual agreement wording (master services agreement, statement of work, terms and conditions) that a customer signs, as opposed to the billing lines above. You can author a template as rich text directly in Breeze or upload a prepared PDF.
+
+Templates are **versioned**. You edit freely while a version is a **draft**; when you **publish** it, that version is frozen and can no longer be changed. Publishing a new version starts a fresh draft, so improving a template never rewrites the wording of agreements already sent. When a template is embedded in a quote (see [Quotes → Contract Blocks](/features/quotes/#contract-blocks)), the quote pins the exact published version, so the customer always sees the wording that was in effect when they received it.
+
+A template can be owned two ways:
+
+- **Partner-wide** — created once and available across all of your customer organizations. Partner-wide templates show an **"All orgs"** badge and require partner-level permission to create or edit.
+- **Organization-scoped** — owned by a single customer organization, visible only within that org.
+
 ## Creating a Contract
 
 <Steps>

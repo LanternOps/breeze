@@ -199,6 +199,59 @@ Every mutation is recorded in the audit log (`service_principal.create`, `servic
 
 ---
 
+## Partner Service Principals
+
+The Service Principals above are **organization-scoped** and drive the standard REST API. **Partner service principals** are a separate, partner-owned identity that powers the read-only [Partner Export API](/reference/api/#partner-export-api) -- the surface an MSP uses to pull its entire estate (across every customer organization) into a warehouse, BI tool, or in-house portal.
+
+A partner service principal owns one or more scoped keys that authenticate with the `X-API-Key` header. These keys are prefixed **`brz_sp_`** and are distinct from the `brz_` keys used by the standard API. They cannot call the standard REST API, and standard `brz_` keys cannot call the Partner Export API.
+
+### Creating a principal
+
+A principal is created against a partner with:
+
+| Field | Description |
+|---|---|
+| **Scopes** | One or more of the eight read scopes below. Defaults to all eight. |
+| **Expiry** | Optional. When set, the principal (and all its keys) stop authenticating after this instant. |
+| **Source-IP allowlist** | Optional list of CIDRs. When present, requests are only accepted from a matching client IP -- and if the allowlist is set, a request whose IP can't be resolved is refused. |
+
+### Issuing a key
+
+A principal can hold multiple keys. Each issued key takes:
+
+| Field | Description |
+|---|---|
+| **Name** | Human-readable label for the key. |
+| **Expiry** | Optional per-key expiration. |
+| **Rate limit** | Per-key ceiling on requests per rolling hour (default 600). |
+
+<Aside type="caution">
+  The raw key is returned **exactly once** at issue time and is never retrievable afterward. Store it in your secrets manager immediately.
+</Aside>
+
+### Rotating a key
+
+Rotating a key issues a replacement that inherits the predecessor's name, expiry, and rate limit, and **immediately revokes the predecessor -- there is no grace window** where both are valid. Update your integration with the new key before rotating.
+
+### Read scopes
+
+Partner service-principal keys carry one or more of these eight read scopes. Each gates the matching [Partner Export API resources](/reference/api/#resources):
+
+- `organizations:read`
+- `sites:read`
+- `devices:read`
+- `inventory:read`
+- `configuration:read`
+- `scripts:read`
+- `backup-configuration:read`
+- `custom-fields:read`
+
+<Aside>
+  Managing partner service principals and their keys requires a **partner-scoped** user session with the organization-management permission and a completed MFA challenge. A partner service-principal key can never reach its own management surface.
+</Aside>
+
+---
+
 ## Enrollment Keys
 
 Enrollment keys are purpose-built tokens for agent onboarding. They are tied to an organization (and optionally a site) and enforce both a time-to-live (TTL) and a maximum usage count to limit exposure.

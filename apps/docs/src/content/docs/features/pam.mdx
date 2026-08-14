@@ -151,6 +151,10 @@ The flagship PAM flow turns a standard Windows UAC consent prompt into a governe
   The approver is always a separate identity from the requester. A user can't approve their own elevation, and an AI agent or Helper session can't sign off on the action it proposed -- approval requires a human with the right permission, confirmed with MFA.
 </Aside>
 
+<Aside type="note">
+  On Windows, the elevation consent dialog shown on the device is drawn on the **secure desktop** — the same isolated desktop Windows itself uses for standard UAC prompts. Because it lives there, other software running in the user's normal session cannot read it, capture it, inject clicks into it, or otherwise spoof or automate the approval.
+</Aside>
+
 ---
 
 ## How Just-in-Time Admin Works

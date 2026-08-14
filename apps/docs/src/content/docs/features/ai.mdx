@@ -26,7 +26,7 @@ The AI Risk Engine categorises every AI tool into one of four tiers that control
 
 | Tier | Execution | Examples |
 |---|---|---|
-| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation` |
+| **Tier 1** | Auto-execute (read-only, no approval) | `query_devices`, `analyze_metrics`, `get_security_posture`, `get_active_users`, `file_operations` (list/read), `disk_cleanup` (preview), `propose_action_plan`, `list_configuration_policies`, `get_effective_configuration`, `preview_configuration_change`, `get_configuration_policy`, `configuration_policy_compliance`, `manage_processes` (list), `get_service_monitoring_status`, `query_monitors`, `query_backups`, `get_backup_status`, `browse_snapshots`, `get_incident_timeline`, `generate_incident_report`, `list_playbooks`, `get_playbook_history`, `get_vulnerability_report`, `get_device_vulnerabilities`, `search_documentation`, `m365_query_users`, `m365_query_signins`, `m365_query_intune_devices`, `m365_query_groups`, `m365_query_org`, `m365_query_sites` |
 | **Tier 2** | Auto-execute + audit logged | `manage_alerts` acknowledge/resolve actions, `manage_services` list action, `set_device_context`, `resolve_device_context`, `apply_configuration_policy`, `remove_configuration_policy_assignment`, `manage_configuration_policy` (activate/deactivate), `create_incident`, `collect_evidence` |
 | **Tier 3** | Requires human approval before execution | `execute_command`, `run_script`, `disk_cleanup` (execute), `network_discovery`, `security_scan` (quarantine/remove/restore), `file_operations` (write/delete/mkdir/rename), `manage_configuration_policy` (create/update/delete), `manage_processes` (kill), `manage_monitors` (create/update/delete), `trigger_backup`, `restore_snapshot`, `execute_containment`, `execute_playbook`, `remediate_vulnerability` |
 | **Tier 4** | Blocked — never executed | Cross-org operations |
@@ -296,6 +296,23 @@ The AI assistant can query, manage, and operate backups across your fleet. These
 | `restore_snapshot` | 3 | Restore data from a snapshot to a device (requires approval) |
 
 See [Device Backup](/features/device-backup/) for configuration details.
+
+---
+
+## Microsoft 365 AI Tools
+
+When an organization has [Microsoft 365 Graph read](/features/identity-integrations/#customer-graph-read-recommended-for-read-only-inventory) connected, the AI assistant can answer questions about that customer's Microsoft 365 tenant directly. All six tools are **read-only** and pull **live** data from the connected tenant — nothing is written back to Microsoft 365. They only appear in a session when Microsoft 365 Graph read is enabled for the organization.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `m365_query_users` | 1 | List or look up Entra ID (Azure AD) users — display name, UPN, mail, account status, department |
+| `m365_query_signins` | 1 | Query recent Entra ID sign-in activity, optionally for one user (up to the last 168 hours). Requires the tenant to have Entra ID P1 or P2 |
+| `m365_query_intune_devices` | 1 | List or look up Intune-managed devices — OS, compliance state, last sync, owner |
+| `m365_query_groups` | 1 | List groups, look up a group, or list a group's members |
+| `m365_query_org` | 1 | Read the tenant's organization profile or its assigned/consumed license (SKU) inventory |
+| `m365_query_sites` | 1 | Search SharePoint sites or look one up by id |
+
+These tools are exposed in both the built-in assistant and to external AI clients through the [MCP Server](/features/mcp-server/#microsoft-365-tools). See [Identity Integrations](/features/identity-integrations/) for how a customer administrator grants the read-only Graph consent.
 
 ---
 

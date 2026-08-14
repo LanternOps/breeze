@@ -360,7 +360,10 @@
       "pattern": "agent/internal/backup/**",
       "docs": [
         "backup/overview.mdx",
-        "security/backup.mdx"
+        "security/backup.mdx",
+        "backup/policies.mdx",
+        "backup/monitoring.mdx",
+        "backup/troubleshooting.mdx"
       ]
     },
     {
@@ -400,7 +403,8 @@
     {
       "pattern": "apps/api/src/jobs/staleCommandReaper.ts",
       "docs": [
-        "agents/commands.mdx"
+        "agents/commands.mdx",
+        "backup/monitoring.mdx"
       ]
     },
     {
@@ -954,7 +958,9 @@
       "pattern": "apps/api/src/services/aiToolsM365.ts",
       "docs": [
         "features/identity-console.mdx",
-        "features/ai.mdx"
+        "features/ai.mdx",
+        "features/mcp-server.mdx",
+        "features/identity-integrations.mdx"
       ]
     },
     {
@@ -1986,6 +1992,68 @@
       "pattern": "apps/web/src/components/devices/DeviceList.tsx",
       "docs": [
         "features/devices.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerApi/**",
+      "docs": [
+        "reference/api.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerServicePrincipals.ts",
+      "docs": [
+        "reference/api-keys.mdx",
+        "reference/partner-management.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/middleware/partnerApiAuth.ts",
+      "docs": [
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/env.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/m365/readActions.ts",
+      "docs": [
+        "features/ai.mdx",
+        "features/mcp-server.mdx",
+        "features/identity-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/templates.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplate*.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/quoteAcceptService.ts",
+      "docs": [
+        "features/quotes.mdx",
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/userhelper/pam_dialog_*windows.go",
+      "docs": [
+        "features/pam.mdx",
+        "security/pam.mdx"
       ]
     }
   ]

@@ -32,8 +32,10 @@ At the top of the dashboard, summary cards show:
 
 A live feed of the latest backup activity. Each job card shows:
 - Device name and configuration
-- Status: **Completed** (green), **Running** (blue), **Failed** (red), **Queued** (gray), **Canceled**
+- Status: **Completed** (green), **Running** (blue), **Failed** (red), **Queued** (gray), **Canceled**, **Stalled**
 - Start time, duration, and data size
+
+While a job is **Running**, the card shows live progress — files transferred so far and the current transfer speed — updated as the agent reports in. If the agent stops reporting progress mid-run, the card shows a **Stalled** badge so you can spot a wedged job before it is auto-failed.
 
 Click **View all** to see the full job history with filters for status, device, and date range.
 
@@ -95,11 +97,22 @@ Backup and restore jobs move through these statuses:
 |--------|---------|
 | **Pending / Queued** | Created and waiting to be dispatched to the agent |
 | **Running** | Actively in progress on the device |
+| **Stalled** | Running, but the agent has stopped reporting progress. Shown as a warning badge; if progress does not resume, the job is auto-failed (see below) |
 | **Completed** | Finished successfully; a snapshot was created |
 | **Failed** | Encountered an error (check the error details) |
 | **Canceled** | Explicitly stopped by a user before completion |
 
 Jobs are triggered either **automatically** by a policy schedule, **manually** via the Run Backup button, or as part of a **restore** operation.
+
+### Automatic failure of stuck jobs
+
+A job never stays **Running** forever. Breeze marks a job **Failed** with an explanatory error — rather than leaving it stuck — when any of these happen:
+
+- **No progress for 15 minutes** — an agent that was reporting progress goes silent.
+- **The device goes offline mid-run** — after a short grace period to cover a reboot.
+- **A 24-hour ceiling** — a hard upper bound for older agents that don't report incremental progress.
+
+The recorded error explains which condition tripped, so the job history stays accurate instead of showing a perpetual **Running**. If a genuine success report arrives late — for example, the job actually finished right as it was being failed — Breeze reconciles the job back to **Completed** so its snapshot isn't stranded.
 
 <Aside type="caution">
   Only jobs in the **Running** or **Queued** status can be canceled. Canceling a running job stops the operation, but data already transferred to the storage target remains.

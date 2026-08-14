@@ -42,6 +42,7 @@ In production, Breeze runs request handlers as an unprivileged, row-level-securi
 | Variable | Default | Required | Description |
 |---|---|---|---|
 | `JWT_SECRET` | — | Yes | JWT signing key (min 32 chars). Generate: `openssl rand -base64 64` |
+| `PARTNER_API_CURSOR_SIGNING_KEY` | — | Yes (prod) | Dedicated key that signs the pagination cursors returned by the [Partner Export API](/reference/api/#partner-export-api). Must be **canonical (standard) base64** — not base64url or hex — decoding to at least 32 bytes, and must differ from `JWT_SECRET`. Generate: `openssl rand -base64 32`. The API refuses to start in production without it. |
 | `AGENT_ENROLLMENT_SECRET` | — | Yes | Shared secret for agent enrollment. Generate: `openssl rand -hex 32` |
 | `APP_ENCRYPTION_KEY` | — | Yes | AES encryption key for sensitive data at rest |
 | `MFA_ENCRYPTION_KEY` | — | Yes | Encryption key for MFA secrets |

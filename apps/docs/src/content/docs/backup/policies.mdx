@@ -76,6 +76,10 @@ The default mode. Specify which paths to include and exclude:
 
 On Windows, file backups automatically use Volume Shadow Copy (VSS) to capture application-consistent snapshots of open files.
 
+File backups are **incremental by default**. The first run for a destination uploads everything; after that, each run uploads only files that changed, while unchanged files are referenced from the previous snapshot instead of being re-uploaded. Even so, every snapshot restores as a complete, point-in-time copy of the selected paths — there are no separate "full" and "incremental" restore chains to manage.
+
+If a run is interrupted — a reboot, a Volume Shadow Copy event, or a lost connection — the next attempt **resumes from the last checkpoint** rather than starting the whole set over, so large data sets don't lose progress to a single hiccup.
+
 ### Hyper-V Backup
 
 Targets Hyper-V virtual machines. Uses **all-by-default targeting** — newly discovered VMs are automatically included on the next scheduled run. You can configure exclude lists to skip specific VMs.

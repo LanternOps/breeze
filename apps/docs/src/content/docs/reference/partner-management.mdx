@@ -307,6 +307,10 @@ Partner admins can invite users via the user management endpoints. Invited users
 
 ## API Reference
 
+### Programmatic access
+
+To read a partner's estate programmatically -- every customer organization, its sites, devices, inventory, configuration, and backup settings -- use the read-only [Partner Export API](/reference/api/#partner-export-api). It authenticates with dedicated **partner service principal** keys rather than a user session; see [Partner Service Principals](/reference/api-keys/#partner-service-principals) for how to create a principal, issue and rotate keys, and scope them.
+
 ### Self-Registration
 
 | Method | Path | Auth | Description |
