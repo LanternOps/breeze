@@ -238,16 +238,17 @@ export async function sendQuote(
   // The draft→sent claim above already cleared the column, so only a failure
   // needs writing back.
   //
-  // Bookkeeping only, and it runs AFTER the email has left: a throw here would
-  // surface as "could not send" for a message the customer already has, and the
-  // tech's natural next move is to send it a second time. Swallow it instead.
+  // Deliberately NOT wrapped in try/catch. This runs inside the request-wide
+  // transaction opened by withDbAccessContext, so a statement error here leaves
+  // that transaction aborted: catching the rejection would not roll back to a
+  // savepoint, the re-select below would fail with "current transaction is
+  // aborted" anyway, and the whole draft→sent claim would roll back regardless.
+  // A catch would only hide where it started. Failing here is atomic with the
+  // status flip, which is the honest outcome — the email having already left is
+  // a pre-existing property of sending inside the request transaction, not
+  // something this write introduces.
   if (emailReason) {
-    try {
-      await db.update(quotes).set({ sendEmailReason: emailReason, updatedAt: new Date() }).where(eq(quotes.id, id));
-    } catch (err) {
-      console.error(`[quoteLifecycle] send delivered for quote ${id} but persisting its outcome failed:`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
-    }
+    await db.update(quotes).set({ sendEmailReason: emailReason, updatedAt: new Date() }).where(eq(quotes.id, id));
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);

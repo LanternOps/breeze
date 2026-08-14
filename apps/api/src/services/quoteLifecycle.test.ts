@@ -444,7 +444,7 @@ describe('sendQuote email delivery status', () => {
     expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(true);
   });
 
-  it('writes no outcome marker when the send succeeds (the claim already cleared it)', async () => {
+  it('writes exactly one sendEmailReason on a successful send: the claim clearing it', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
     queueResult([]); // portalBranding — none configured
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
@@ -453,7 +453,13 @@ describe('sendQuote email delivery status', () => {
 
     expect(result.emailed).toBe(true);
     expect(result.emailReason).toBeUndefined();
-    expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(false);
+    // Exactly one `.set()` carries sendEmailReason (the draft→sent claim, which
+    // clears it) — a successful send must not add a second bookkeeping write.
+    // Asserting the COUNT rather than the absence of a value: a stray
+    // `{ sendEmailReason: null }` update would slip past a value-only check.
+    const reasonWrites = setCalls.filter((p) => 'sendEmailReason' in p);
+    expect(reasonWrites).toHaveLength(1);
+    expect(reasonWrites[0]?.sendEmailReason).toBeNull();
   });
 
   it('reports emailed:true with no reason on a successful send', async () => {
