@@ -94,4 +94,45 @@ describe('PartnerCompanyTab', () => {
     fireEvent.change(textarea, { target: { value: 'Cheers,\nAcme' } });
     expect(onEmailSignatureChange).toHaveBeenCalledWith('Cheers,\nAcme');
   });
+
+  // #3430 — the Website field previously accepted any string, including
+  // javascript:/data: URIs, with no client-side feedback at all.
+  describe('website scheme validation', () => {
+    it('shows no error for an empty or valid website', () => {
+      renderTab({ contact: {} });
+      expect(screen.queryByTestId('contact-website-error')).toBeNull();
+    });
+
+    it.each(['https://acme.com', 'http://acme.com', 'https://acme.com/a?b=1'])(
+      'accepts %s without an error',
+      (value) => {
+        renderTab({ contact: { website: value } });
+        expect(screen.queryByTestId('contact-website-error')).toBeNull();
+      }
+    );
+
+    it.each([
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd',
+      'acme.com',
+    ])('flags %j as invalid', (value) => {
+      renderTab({ contact: { website: value } });
+      const err = screen.getByTestId('contact-website-error');
+      expect(err.textContent).toContain('http:// or https://');
+      const input = screen.getByLabelText('Website') as HTMLInputElement;
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toBe('contact-website-error');
+    });
+
+    it('still reports the typed value back to the parent so it is not silently stripped', () => {
+      const { onContactChange } = renderTab({ contact: {} });
+      const input = screen.getByLabelText('Website');
+      fireEvent.change(input, { target: { value: 'javascript:alert(1)' } });
+      expect(onContactChange).toHaveBeenCalledWith(
+        expect.objectContaining({ website: 'javascript:alert(1)' })
+      );
+    });
+  });
 });

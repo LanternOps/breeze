@@ -28,7 +28,7 @@ import { captureException } from '../services/sentry';
 import { encryptColumnValueForWrite } from '../services/encryptedColumnRegistry';
 import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/compat';
 import { escapeLike } from '../utils/sql';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, httpUrlValue, httpUrlField } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
@@ -464,10 +464,10 @@ const dayScheduleSchema = z.object({
 
 const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
 
-/**
- * A partner-settings URL restricted to http/https.
- *
- * These fields split into two risk classes and both land here:
+/*
+ * The partner-settings URL fields below are restricted to http/https by the
+ * shared `httpUrlValue`/`httpUrlField` helpers (`@breeze/shared`). They split
+ * into two risk classes and both land on the same guard:
  *  - values rendered as links (contact.website → branded PDFs, invoices, email
  *    footers), where `javascript:`/`data:text/html,…` is stored XSS against the
  *    partner's own customers;
@@ -475,36 +475,13 @@ const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'i
  *    Elasticsearch endpoint), where `file://` and friends are an SSRF/scheme-
  *    confusion problem rather than an XSS one.
  *
- * All four were plain `z.string()` and persisted whatever was sent on a 200.
  * None has a legitimate custom-scheme use — unlike the remote-access launcher
  * template further down this file, which deliberately allows `rustdesk:` and
  * similar and therefore keeps its own wider allowlist.
  *
- * Empty string is accepted so a field can be cleared.
+ * The helpers used to live here; they moved to the shared package (#3430) so
+ * the web form and the billing-settings schema enforce the identical rule.
  */
-function httpUrlValue(label: string) {
-  return z
-    .string()
-    .max(2000)
-    .refine(
-      (v) => {
-        if (v === '') return true;
-        let parsed: URL;
-        try {
-          parsed = new URL(v);
-        } catch {
-          return false;
-        }
-        return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-      },
-      `${label} must be a full http:// or https:// URL`,
-    );
-}
-
-/** Optional/clearable form of {@link httpUrlValue}, for standalone fields. */
-function httpUrlField(label: string) {
-  return httpUrlValue(label).optional().or(z.literal(''));
-}
 
 const partnerSettingsSchema = z.object({
   // Partner tz is the canonical default for every downstream tz field (#1318),

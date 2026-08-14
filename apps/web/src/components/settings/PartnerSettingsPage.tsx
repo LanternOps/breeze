@@ -47,7 +47,7 @@ import type {
   InheritableRemoteAccessSettings,
   IpAllowlistStatus
 } from '@breeze/shared';
-import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
+import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
@@ -373,6 +373,14 @@ export default function PartnerSettingsPage() {
     const mw = defaultsData.maintenanceWindow;
     if (typeof mw === 'string' && mw.trim() !== '' && !isValidMaintenanceWindow(mw)) {
       setError(MAINTENANCE_WINDOW_ERROR_MESSAGE);
+      return;
+    }
+
+    // Same shape for the company Website (#3430): the server rejects any scheme
+    // outside http/https, so block the round-trip here and say why. The field is
+    // clearable, hence the non-empty guard.
+    if (contactWebsite.trim() !== '' && !isHttpUrl(contactWebsite.trim())) {
+      setError(httpUrlErrorMessage('Website'));
       return;
     }
 
