@@ -35,6 +35,12 @@ vi.mock('../db/schema/patches', () => ({
   },
 }));
 vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
+// Cut the audit helper's transitive pull on the full schema barrel (#3543).
+// Audit-fan-out behaviour is covered by aiToolsPolicyPrereqs.softwarePolicyAudit.test.ts.
+vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
+  auditSoftwarePolicyToolEvent: vi.fn(),
+  summarizeEnforcementChange: vi.fn(() => ({})),
+}));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
 vi.mock('../db/schema/backup', () => ({ backupConfigs: {} }));
 

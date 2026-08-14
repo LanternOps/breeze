@@ -8,7 +8,20 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../jobs/softwareComplianceWorker', () => ({ scheduleSoftwareComplianceCheck: vi.fn() }));
 vi.mock('../jobs/softwareRemediationWorker', () => ({ scheduleSoftwareRemediation: vi.fn(async () => 1) }));
-vi.mock('./softwarePolicyService', () => ({ normalizeSoftwarePolicyRules: vi.fn((r: any) => r) }));
+vi.mock('./softwarePolicyService', async (orig) => {
+  // evaluateSoftwarePolicyArming is pure — keep the REAL gate so these fixtures
+  // have to be genuinely armed (#3543) rather than passing against a stub.
+  const actual = await orig<typeof import('./softwarePolicyService')>();
+  return {
+    normalizeSoftwarePolicyRules: vi.fn((r: any) => r),
+    evaluateSoftwarePolicyArming: actual.evaluateSoftwarePolicyArming,
+    recordSoftwarePolicyAudit: vi.fn(async () => {}),
+  };
+});
+vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
+  auditSoftwarePolicyToolEvent: vi.fn(),
+  summarizeEnforcementChange: vi.fn(() => ({})),
+}));
 
 import { db } from '../db';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
@@ -38,6 +51,17 @@ function isDeviceResolverSelect(cols: unknown): boolean {
     Object.keys(cols as object).length === 2
   );
 }
+/** A policy armed for uninstall: non-audit mode + enforceMode + autoUninstall (#3543). */
+const ARMED_POLICY = {
+  id: 'pol-1',
+  name: 'Policy',
+  mode: 'blocklist',
+  orgId: 'org-1',
+  partnerId: null,
+  enforceMode: true,
+  remediationOptions: { autoUninstall: true },
+};
+
 /** Generic chainable query mock that resolves to `result`. */
 function chain(result: unknown): any {
   const p: any = Promise.resolve(result);
@@ -142,7 +166,7 @@ describe('remediate_software_violation — site narrowing of the org-wide fallba
       }
       if (cols === undefined) {
         // policy lookup: db.select().from(softwarePolicies)...
-        return chain([{ id: 'pol-1', name: 'Policy', mode: 'blocklist' }]);
+        return chain([ARMED_POLICY]);
       }
       violationScanRan = true; // org-wide violation enumeration must not run
       return chain([{ deviceId: 'd-siteB' }]);
@@ -159,7 +183,7 @@ describe('remediate_software_violation — site narrowing of the org-wide fallba
   it('unrestricted caller remediates via the fallback enumeration normally (no regression)', async () => {
     mockDb.select.mockImplementation((cols?: unknown) => {
       if (cols === undefined) {
-        return chain([{ id: 'pol-1', name: 'Policy', mode: 'blocklist' }]);
+        return chain([ARMED_POLICY]);
       }
       return chain([{ deviceId: 'd1' }]);
     });

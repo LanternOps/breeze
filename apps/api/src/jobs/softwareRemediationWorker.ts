@@ -6,7 +6,7 @@ import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
-import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import { evaluateSoftwarePolicyArming, recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
 import { captureException } from '../services/sentry';
 
 const { db } = dbModule;
@@ -30,13 +30,45 @@ const SOFTWARE_REMEDIATION_QUEUE = 'software-remediation';
 const DEFAULT_REMEDIATION_COOLDOWN_MINUTES = 120;
 const IN_FLIGHT_LOOKBACK_MINUTES = 24 * 60;
 
+/**
+ * How a remediation job was produced (#3543).
+ *
+ * - `auto`   — the compliance evaluator queued it because the policy is armed.
+ *              The worker re-verifies arming before uninstalling anything.
+ * - `manual` — an operator explicitly requested it through the MFA-gated,
+ *              permission-gated `POST /software-policies/:id/remediate` route.
+ *              `enforceMode`/`autoUninstall` authorise UNATTENDED remediation
+ *              ("Enforce (auto-remediate)" in the UI), so they do not gate a
+ *              deliberate human action — forcing an admin to arm automatic
+ *              fleet-wide remediation just to run one reviewed uninstall would
+ *              be strictly more dangerous than the click they asked for.
+ *
+ * Anything else — including a job enqueued before this field existed — is
+ * treated as `auto` and therefore gated. Provenance fails closed.
+ */
+export type SoftwareRemediationTrigger = 'auto' | 'manual';
+
 type RemediateDeviceJobData = {
   type: 'remediate-device';
   policyId: string;
   deviceId: string;
+  /** Absent on jobs enqueued before #3543; read via readTrigger (fails closed). */
+  trigger?: SoftwareRemediationTrigger;
+  /** User id behind a `manual` trigger, for the audit trail. */
+  requestedByUserId?: string | null;
 };
 
 type SoftwareRemediationJobData = RemediateDeviceJobData;
+
+/**
+ * Job data is untrusted input: BullMQ payloads live in Redis and carry no
+ * authentication of their own. Only the exact literal 'manual' skips the arming
+ * gate, and the worker records a loud audit event when it does, so a forged
+ * override is at least always visible in the forensic trail.
+ */
+function readTrigger(data: RemediateDeviceJobData): SoftwareRemediationTrigger {
+  return data.trigger === 'manual' ? 'manual' : 'auto';
+}
 
 let softwareRemediationQueue: Queue<SoftwareRemediationJobData> | null = null;
 let softwareRemediationWorker: Worker<SoftwareRemediationJobData> | null = null;
@@ -90,7 +122,9 @@ async function readInFlightUninstallKeys(
   return keys;
 }
 
-async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
+/** Exported for tests — the arming gate (#3543) is the last hop before an
+ *  uninstall reaches a real machine and must be directly exercisable. */
+export async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
   policyId: string;
   deviceId: string;
   commandsQueued: number;
@@ -103,6 +137,8 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
       partnerId: softwarePolicies.partnerId,
       name: softwarePolicies.name,
       isActive: softwarePolicies.isActive,
+      mode: softwarePolicies.mode,
+      enforceMode: softwarePolicies.enforceMode,
       remediationOptions: softwarePolicies.remediationOptions,
     })
     .from(softwarePolicies)
@@ -146,6 +182,71 @@ async function processRemediateDevice(data: RemediateDeviceJobData): Promise<{
   }
 
   const auditOrgId = policy.orgId ?? deviceRow?.orgId ?? null;
+
+  // Arming re-check (#3543, incident #3381). This worker is the last hop before
+  // `software_uninstall` commands reach real machines, and until now it
+  // uninstalled whatever it was handed — the gate existed only in the compliance
+  // evaluator that produces `auto` jobs. Re-checking here means a policy
+  // disarmed AFTER a job was enqueued (or a stale/replayed/hand-enqueued job)
+  // can no longer uninstall anything.
+  //
+  // Note on the BullMQ jobId (`software-remediation-<policy>-<device>`): an auto
+  // and a manual job for the same pair share a key and can dedupe into each
+  // other. That cannot produce a wrong gate outcome — auto jobs are only ever
+  // produced for armed policies, so on an unarmed policy every job is manual,
+  // and on an armed policy both triggers pass the gate anyway.
+  const trigger = readTrigger(data);
+  const arming = evaluateSoftwarePolicyArming(policy);
+  if (trigger === 'manual') {
+    // Explicit human action: allowed regardless of arming, but never silent.
+    if (!arming.armed) {
+      fireAudit({
+        orgId: auditOrgId,
+        partnerId: policy.partnerId,
+        policyId: policy.id,
+        deviceId: data.deviceId,
+        action: 'remediation_manual_override',
+        actor: 'user',
+        actorId: data.requestedByUserId ?? null,
+        details: {
+          policyName: policy.name,
+          reason: arming.reason,
+          mode: policy.mode,
+          enforceMode: policy.enforceMode,
+        },
+      });
+      recordSoftwareRemediationDecision('manual_override');
+    }
+  } else if (!arming.armed) {
+    console.warn('[SoftwareRemediationWorker] Policy is not armed for uninstall, skipping remediation', {
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      reason: arming.reason,
+    });
+    fireAudit({
+      orgId: auditOrgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: 'remediation_skipped_unarmed',
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        reason: arming.reason,
+        mode: policy.mode,
+        enforceMode: policy.enforceMode,
+        trigger,
+      },
+    });
+    recordSoftwareRemediationDecision('policy_not_armed');
+
+    return {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+      commandsQueued: 0,
+      errors: 0,
+    };
+  }
 
   const [compliance] = await db
     .select()
@@ -414,8 +515,12 @@ export async function shutdownSoftwareRemediationWorker(): Promise<void> {
 
 export async function scheduleSoftwareRemediation(
   policyId: string,
-  deviceIds: string[]
+  deviceIds: string[],
+  // Defaults to the gated path: a caller that says nothing gets `auto`, so a
+  // new producer cannot accidentally inherit the manual override (#3543).
+  options: { trigger?: SoftwareRemediationTrigger; requestedByUserId?: string | null } = {}
 ): Promise<number> {
+  const trigger: SoftwareRemediationTrigger = options.trigger === 'manual' ? 'manual' : 'auto';
   const uniqueDeviceIds = Array.from(new Set(deviceIds.filter((id) => typeof id === 'string' && id.length > 0)));
   if (uniqueDeviceIds.length === 0) {
     return 0;
@@ -443,6 +548,8 @@ export async function scheduleSoftwareRemediation(
         type: 'remediate-device',
         policyId,
         deviceId,
+        trigger,
+        requestedByUserId: trigger === 'manual' ? (options.requestedByUserId ?? null) : null,
       },
       {
         jobId,

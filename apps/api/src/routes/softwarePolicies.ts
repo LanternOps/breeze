@@ -813,7 +813,15 @@ softwarePoliciesRoutes.post(
 
     let queued: number;
     try {
-      queued = await scheduleSoftwareRemediation(policy.id, targetDeviceIds);
+      // `trigger: 'manual'` is stamped server-side, never taken from the request
+      // body — it is what exempts this job from the worker's arming re-check
+      // (#3543). This route is already behind the execute permission, MFA, and
+      // tenant/site filtering, and `enforceMode`/`autoUninstall` authorise
+      // UNATTENDED remediation rather than a deliberate operator action.
+      queued = await scheduleSoftwareRemediation(policy.id, targetDeviceIds, {
+        trigger: 'manual',
+        requestedByUserId: auth.user.id,
+      });
     } catch (error) {
       console.error(`[softwarePolicies] Failed to schedule remediation for policy ${id}:`, error);
       captureException(error);

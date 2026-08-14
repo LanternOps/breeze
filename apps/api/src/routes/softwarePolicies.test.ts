@@ -399,6 +399,27 @@ describe('POST /:id/remediate — site scope', () => {
     const targeted = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1];
     expect(targeted).toEqual(expect.arrayContaining([DEVICE_ALLOWED, DEVICE_DENIED]));
   });
+
+  // #3543: the worker re-checks the policy's uninstall arming and skips jobs it
+  // did not authorise. This route stays an explicit operator override, so it
+  // must stamp `trigger: 'manual'` — server-side, never from the request body —
+  // together with the requester's id for the audit trail.
+  it('stamps the manual trigger and the requesting user, ignoring any body-supplied trigger', async () => {
+    setAuth();
+    mockPolicyLookup();
+    mockViolationsSelect([{ deviceId: DEVICE_ALLOWED }]);
+
+    const res = await app.request(`/software-policies/${POLICY_ID}/remediate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // A caller trying to steer the trigger must have no effect either way.
+      body: JSON.stringify({ trigger: 'auto', requestedByUserId: 'someone-else' }),
+    });
+
+    expect(res.status).toBe(200);
+    const options = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![2];
+    expect(options).toEqual({ trigger: 'manual', requestedByUserId: 'user-123' });
+  });
 });
 
 // ───────────────── POST /:id/check — authorization scope ─────────────────
