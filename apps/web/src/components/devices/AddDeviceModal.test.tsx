@@ -148,7 +148,7 @@ describe('AddDeviceModal', () => {
   it('switches platform when platform buttons are clicked', () => {
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
-    const macosButton = screen.getByText('macOS (.zip)');
+    const macosButton = screen.getByText('macOS (.dmg)');
     fireEvent.click(macosButton);
 
     expect(macosButton.className).toContain('bg-primary');

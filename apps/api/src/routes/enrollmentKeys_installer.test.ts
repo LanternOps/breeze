@@ -70,6 +70,16 @@ vi.mock('../services/installerBuilder', () => ({
   assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   // Plan C — returns null so macOS tests fall through to the legacy pkg path.
   fetchMacosInstallerAppZip: vi.fn(async () => null),
+  // DMG path — default null so existing macOS tests keep their behavior.
+  fetchMacosInstallerDmg: vi.fn(async () => null),
+  serveMacosBootstrapDmg: vi.fn((c: any, args: { dmg: Buffer; token: string; apiHost: string }) => {
+    const filename = `Nodes Unlimited Agent [${args.token}@${args.apiHost}].dmg`;
+    c.header('Content-Type', 'application/octet-stream');
+    c.header('Content-Disposition', `attachment; filename="${filename}"`);
+    c.header('Content-Length', String(args.dmg.length));
+    c.header('Cache-Control', 'no-store');
+    return c.body(args.dmg);
+  }),
   // Windows bootstrap path — serves static MSI with token in the filename.
   serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
     const filename = `Breeze Agent (${args.token}@${args.apiHost}).msi`;
@@ -126,6 +136,7 @@ import { db } from '../db';
 import { createAuditLogAsync } from '../services/auditService';
 import { rateLimiter } from '../services/rate-limit';
 import { issueBootstrapTokenForKey } from '../services/installerBootstrapTokenIssuance';
+import { fetchMacosInstallerDmg } from '../services/installerBuilder';
 
 const ORG_ID = 'org-111';
 const KEY_ID = '11111111-1111-1111-1111-111111111111';
@@ -465,6 +476,82 @@ describe('enrollment key routes — installer download', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toBe('application/zip');
       expect(res.headers.get('Content-Disposition')).toContain('breeze-agent-macos.zip');
+    });
+
+    // ---- macOS DMG (preferred) + its fallback chain ----
+    it('serves the notarized DMG with the token in the filename when the asset exists', async () => {
+      vi.mocked(fetchMacosInstallerDmg).mockResolvedValueOnce(
+        Buffer.from('notarized-dmg-bytes'),
+      );
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
+      expect(res.headers.get('Content-Disposition')).toBe(
+        'attachment; filename="Nodes Unlimited Agent [ABCDE12345@breeze.example.com].dmg"',
+      );
+      // Bootstrap token is minted as a capacity token, exactly like the zip path.
+      expect(issueBootstrapTokenForKey).toHaveBeenCalledWith(
+        expect.objectContaining({ usageKind: 'capacity', maxUsage: 1 }),
+      );
+      // No child enrollment key here — the bootstrap endpoint mints it lazily.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the existing zip path (200, never 500) when the DMG asset is missing', async () => {
+      // fetchMacosInstallerDmg default mock resolves null = asset not published.
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/zip');
+      expect(res.headers.get('Content-Disposition')).not.toContain('.dmg');
+    });
+
+    it('falls back to the zip path when the DMG fetch THROWS (asset outage)', async () => {
+      vi.mocked(fetchMacosInstallerDmg).mockRejectedValueOnce(
+        new Error('GitHub 502'),
+      );
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/installer/macos`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/zip');
+    });
+
+    it('honors ?legacy=1 — never reaches the DMG path', async () => {
+      mockSelectFromWhereLimit([makeEnrollmentKey()]);
+      mockInsertValuesReturning([
+        makeEnrollmentKey({ id: 'child-key-id', name: 'Test Key (installer)', maxUsage: 1 }),
+      ]);
+
+      const res = await app.request(
+        `/enrollment-keys/${KEY_ID}/installer/macos?legacy=1`,
+        { method: 'GET', headers: { Authorization: 'Bearer token' } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/zip');
+      expect(fetchMacosInstallerDmg).not.toHaveBeenCalled();
     });
 
     it('creates child key with maxUsage=1 by default (macos)', async () => {

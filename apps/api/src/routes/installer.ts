@@ -117,7 +117,42 @@ export const installerRoutes = new Hono<{ Bindings: HttpBindings }>();
  * transaction for RLS context injection), while ensuring a redemption is
  * never counted without a usable child key.
  */
-async function redeemBootstrapToken(c: Context, token: string) {
+/**
+ * OPTIONAL terms-of-use acceptance reported by the installer, recorded on the
+ * token row for audit. Every field is optional and nothing gates on them —
+ * an older installer that posts only `token` must keep enrolling.
+ */
+export interface TermsAcceptance {
+  acceptedTerms?: boolean;
+  acceptedTermsAt?: Date;
+  termsUrl?: string;
+}
+
+/**
+ * Extracts the three optional terms fields from an untrusted JSON body.
+ * Anything malformed (wrong type, unparseable timestamp, absurdly long URL) is
+ * dropped rather than rejected: this is an audit annotation on a device-
+ * enrollment hot path, and a bad annotation must never block an install.
+ */
+export function parseTermsAcceptance(body: unknown): TermsAcceptance {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const out: TermsAcceptance = {};
+  if (typeof b.acceptedTerms === "boolean") out.acceptedTerms = b.acceptedTerms;
+  if (typeof b.acceptedTermsAt === "string") {
+    const parsed = new Date(b.acceptedTermsAt);
+    if (!Number.isNaN(parsed.getTime())) out.acceptedTermsAt = parsed;
+  }
+  if (typeof b.termsUrl === "string" && b.termsUrl.length > 0 && b.termsUrl.length <= 2048) {
+    out.termsUrl = b.termsUrl;
+  }
+  return out;
+}
+
+async function redeemBootstrapToken(
+  c: Context,
+  token: string,
+  terms: TermsAcceptance = {},
+) {
   if (!BOOTSTRAP_TOKEN_PATTERN.test(token)) {
     return c.json({ error: "invalid token" }, 400);
   }
@@ -234,6 +269,16 @@ async function redeemBootstrapToken(c: Context, token: string) {
         consumedCount: sql`${installerBootstrapTokens.consumedCount} + 1`,
         consumedAt: new Date(),
         consumedFromIp: ip === "unknown" ? null : ip,
+        // Additive audit annotation — only written when the installer reported
+        // it, so a re-redemption by an older installer never erases what a
+        // newer one recorded.
+        ...(terms.acceptedTerms !== undefined
+          ? { acceptedTerms: terms.acceptedTerms }
+          : {}),
+        ...(terms.acceptedTermsAt !== undefined
+          ? { acceptedTermsAt: terms.acceptedTermsAt }
+          : {}),
+        ...(terms.termsUrl !== undefined ? { termsUrl: terms.termsUrl } : {}),
       })
       .where(
         and(
@@ -307,19 +352,20 @@ async function redeemBootstrapToken(c: Context, token: string) {
 
 installerRoutes.post("/bootstrap", async (c) => {
   let token = c.req.header("x-breeze-bootstrap-token") ?? "";
-  if (
-    !token &&
+  // Read the JSON body once, even when the token came in via header: newer
+  // installers send the token in the header AND the optional terms-acceptance
+  // fields in the body. `c.req.json()` can only be consumed once.
+  const body =
     (c.req.header("content-type") ?? "").includes("application/json")
-  ) {
-    const body = (await c.req.json().catch(() => null)) as {
-      token?: unknown;
-    } | null;
+      ? ((await c.req.json().catch(() => null)) as Record<string, unknown> | null)
+      : null;
+  if (!token) {
     token = typeof body?.token === "string" ? body.token : "";
   }
   if (!token) {
     return c.json({ error: "missing token" }, 400);
   }
-  return redeemBootstrapToken(c, token);
+  return redeemBootstrapToken(c, token, parseTermsAcceptance(body));
 });
 
 installerRoutes.get("/bootstrap/:token", async (c) => {

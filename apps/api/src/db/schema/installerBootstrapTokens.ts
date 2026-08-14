@@ -3,6 +3,7 @@ import {
   uuid,
   text,
   integer,
+  boolean,
   timestamp,
   index,
 } from "drizzle-orm/pg-core";
@@ -99,6 +100,16 @@ export const installerBootstrapTokens = pgTable(
      * so a new mint path cannot inherit a meaning by omission.
      */
     usageKind: text("usage_kind").notNull().default("legacy_unknown"),
+    /**
+     * Installer terms-of-use acceptance, reported OPTIONALLY by the installer
+     * at POST /installer/bootstrap. All three are nullable and additive:
+     * older installers (and the Windows MSI flow) omit them, so NULL means
+     * "not reported", never "declined". Audit trail only — nothing gates on
+     * them, so an old installer keeps enrolling.
+     */
+    acceptedTerms: boolean("accepted_terms"),
+    acceptedTermsAt: timestamp("accepted_terms_at", { withTimezone: true }),
+    termsUrl: text("terms_url"),
   },
   (t) => ({
     expiresIdx: index("idx_installer_bootstrap_tokens_expires").on(t.expiresAt),

@@ -34,3 +34,25 @@ export const LEGACY_INSTALLER_APP_NAME = 'Breeze Installer.app';
 export function stampedInstallerAppName(token: string, apiHost: string): string {
   return `Nodes Unlimited Installer [${token}@${apiHost}].app`;
 }
+
+/**
+ * The notarized DMG asset name produced by release.yml (no token stamp).
+ * Attached to the GitHub release under this on-disk name.
+ */
+export const INSTALLER_DMG_NAME = 'Nodes Unlimited Agent.dmg';
+
+/**
+ * `Nodes Unlimited Agent [TOKEN@host].dmg`
+ *
+ * CONTRACT with the macOS installer app, which parses its enrollment token out
+ * of the DMG's own download filename. Square brackets, exactly one space before
+ * `[`, `.dmg` extension. `token` must match `^[A-Z0-9]{10}$` and `apiHost` must
+ * be a bare https host with no port (macosBundleApiHost()).
+ *
+ * Unlike the Windows MSI (which uses PARENTHESES because MSI's Formatted-field
+ * engine eats `[...]`), nothing rewrites the DMG filename between download and
+ * mount, so the bracket form is safe here.
+ */
+export function stampedInstallerDmgName(token: string, apiHost: string): string {
+  return `Nodes Unlimited Agent [${token}@${apiHost}].dmg`;
+}

@@ -795,7 +795,7 @@ export default function AddDeviceModal({
                       >
                         {p === "windows"
                           ? t("addDeviceModal.windowsMsi")
-                          : t("addDeviceModal.macosZip")}
+                          : t("addDeviceModal.macosDmg")}
                       </button>
                     ))}
                   </div>

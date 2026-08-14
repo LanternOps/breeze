@@ -14,7 +14,9 @@ import {
 } from './binarySource';
 import {
   INSTALLER_APP_ZIP_NAME,
+  INSTALLER_DMG_NAME,
   LEGACY_INSTALLER_APP_ZIP_NAME,
+  stampedInstallerDmgName,
 } from './installerAppNaming';
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { assertGithubFetchableEdition } from './releaseAssetTrust';
@@ -496,4 +498,101 @@ export function serveWindowsBootstrapMsi(
   c.header('Content-Length', String(args.msi.length));
   c.header('Cache-Control', 'no-store');
   return c.body(args.msi as unknown as ArrayBuffer);
+}
+
+// --- macOS DMG (notarized, byte-identical, token in the download filename) ---
+
+/**
+ * URL of the notarized `Nodes Unlimited Agent.dmg` for the current release.
+ *
+ * Derived from the installer-app asset URL so the release base (repo, tag,
+ * `latest` handling) has exactly one definition in binarySource.ts. GitHub
+ * rewrites spaces in attached asset filenames to dots, hence the dotted form.
+ */
+function githubInstallerDmgUrl(): string {
+  return getGithubInstallerAppUrl().replace(
+    /[^/]+$/,
+    'Nodes.Unlimited.Agent.dmg',
+  );
+}
+
+/**
+ * Fetches the notarized `Nodes Unlimited Agent.dmg` from the GitHub release
+ * (or `AGENT_BINARY_DIR` in local mode). Mirrors fetchMacosInstallerAppZip.
+ *
+ * Returns null when the asset is not published yet, so callers fall back to the
+ * existing stamped-zip / legacy paths instead of failing the download.
+ */
+export async function fetchMacosInstallerDmg(): Promise<Buffer | null> {
+  if (getBinarySource() === 'github') {
+    const url = githubInstallerDmgUrl();
+    const resp = await fetch(url, { redirect: 'follow' });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw new Error(`Failed to fetch installer dmg: ${resp.status}`);
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const verified = await verifyGithubReleaseArtifactBuffer({
+      assetName: INSTALLER_DMG_NAME,
+      assetBuffer: buffer,
+      manifestUrl: getGithubReleaseArtifactManifestUrl(),
+      signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+      expectedRepository: getGithubReleaseRepository(),
+      expectedRelease: getGithubExpectedReleaseTag(),
+      expectedPlatformTrust: 'macos-developer-id-notarization-required',
+    });
+    if (verified) {
+      assertGithubFetchableEdition({
+        assetName: INSTALLER_DMG_NAME,
+        edition: verified.edition,
+      });
+    }
+    return buffer;
+  }
+  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
+  try {
+    return await readFile(join(binaryDir, INSTALLER_DMG_NAME));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Token form the macOS installer app parses out of the DMG filename. */
+const MACOS_BOOTSTRAP_TOKEN_PATTERN = /^[A-Z0-9]{10}$/;
+/** Bare https host, no port — what macosBundleApiHost() produces. */
+const MACOS_BUNDLE_HOST_PATTERN = /^[A-Za-z0-9.-]+$/;
+
+/**
+ * Serves the static, notarized DMG with the bootstrap token embedded in the
+ * download filename — the macOS analogue of serveWindowsBootstrapMsi.
+ *
+ * The DMG bytes are streamed COMPLETELY UNTOUCHED: re-writing a DMG invalidates
+ * its Apple notarization/stapled ticket, so every customer shares one file hash
+ * and Gatekeeper passes. The token therefore rides only in the filename, which
+ * the installer app parses on first launch.
+ *
+ * `token` and `apiHost` are re-validated here (defense in depth, mirroring the
+ * Windows host guard): a stray quote, slash, or `:` in either would break out of
+ * the quoted Content-Disposition filename or produce a name the client parser
+ * cannot match, silently yielding an installer that never enrolls.
+ */
+export function serveMacosBootstrapDmg(
+  c: Context,
+  args: { dmg: Buffer; token: string; apiHost: string },
+): Response {
+  if (!MACOS_BOOTSTRAP_TOKEN_PATTERN.test(args.token)) {
+    throw new InstallerFilenameHostError(
+      `bootstrap token is not safe for a macOS installer filename`,
+    );
+  }
+  if (!MACOS_BUNDLE_HOST_PATTERN.test(args.apiHost)) {
+    throw new InstallerFilenameHostError(
+      `apiHost "${args.apiHost}" is not safe for a macOS installer filename`,
+    );
+  }
+  const filename = stampedInstallerDmgName(args.token, args.apiHost);
+  c.header('Content-Type', 'application/octet-stream');
+  c.header('Content-Disposition', `attachment; filename="${filename}"`);
+  c.header('Content-Length', String(args.dmg.length));
+  c.header('Cache-Control', 'no-store');
+  return c.body(args.dmg as unknown as ArrayBuffer);
 }

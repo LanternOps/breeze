@@ -35,7 +35,9 @@ import {
   fetchArm64Msi,
   assertMacosInstallerPkgsReachable,
   fetchMacosInstallerAppZip,
+  fetchMacosInstallerDmg,
   serveWindowsBootstrapMsi,
+  serveMacosBootstrapDmg,
 } from "../services/installerBuilder";
 import { stampInstallerAppZip } from "../services/installerAppZip";
 import {
@@ -1512,6 +1514,82 @@ enrollmentKeyRoutes.get(
       } else if (!bundleApiHost) {
         macosLegacyFallbackReason = "nonstandard-host";
       }
+      // ---- Preferred: notarized DMG, token in the download filename ----
+      // Byte-identical for every customer (notarization survives), mirroring
+      // the Windows static-MSI pattern. Everything below — stamped app zip and
+      // legacy install.sh zip — stays intact as the fallback chain: an absent
+      // or unreachable DMG asset must degrade, never 500.
+      if (!macosLegacyFallbackReason && bundleApiHost) {
+        let dmg: Buffer | null = null;
+        try {
+          dmg = await fetchMacosInstallerDmg();
+        } catch (err) {
+          console.error(
+            "[installer] DMG fetch failed, falling back to installer-app zip",
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+          captureException(err, c);
+        }
+
+        if (dmg) {
+          // Mint the bootstrap token exactly as the app-zip path does.
+          let issued;
+          try {
+            issued = await issueBootstrapTokenForKey({
+              parentEnrollmentKeyId: parentKey.id,
+              createdByUserId: auth.user.id,
+              usageKind: "capacity",
+              maxUsage: childMaxUsage,
+              ttlMinutes: childTtlMinutes,
+            });
+          } catch (err) {
+            if (err instanceof BootstrapTokenIssuanceError) {
+              if (err.code === "parent_not_found")
+                return c.json({ error: err.message }, 404);
+              return c.json({ error: err.message }, 410);
+            }
+            throw err;
+          }
+
+          try {
+            // Build the response BEFORE the audit write — serveMacosBootstrapDmg
+            // throws on an unsafe token/host, and the audit trail must not
+            // record a download that never happened.
+            const response = serveMacosBootstrapDmg(c, {
+              dmg,
+              token: issued.token,
+              apiHost: bundleApiHost,
+            });
+
+            writeEnrollmentKeyAudit(c, auth, {
+              orgId: parentKey.orgId,
+              action: "enrollment_key.installer_download",
+              keyId: parentKey.id,
+              keyName: parentKey.name,
+              details: {
+                platform,
+                mode: "dmg",
+                tokenId: issued.id,
+                count: childMaxUsage,
+              },
+            });
+
+            return response;
+          } catch (err) {
+            console.error(
+              "[installer] DMG serve failed, falling back to installer-app zip",
+              {
+                parentKeyId: parentKey.id,
+                tokenId: issued.id, // orphaned token — expires normally
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+            captureException(err, c);
+            // Fall through to the app-zip / legacy paths — do NOT return.
+          }
+        }
+      }
+
       const appZip = macosLegacyFallbackReason
         ? null
         : await fetchMacosInstallerAppZip();
@@ -2438,6 +2516,80 @@ async function serveInstaller(
   // ----------------------------------------------------------------
   {
     const bundleApiHost = macosBundleApiHost(serverUrl);
+
+    // ---- Preferred: notarized DMG with the token in the download filename ----
+    // Same fallback discipline as the authenticated route: an absent or
+    // unreachable DMG asset degrades to the stamped app zip, then to the
+    // legacy install.sh zip below.
+    if (bundleApiHost) {
+      let dmg: Buffer | null = null;
+      try {
+        dmg = await fetchMacosInstallerDmg();
+      } catch (err) {
+        console.error(
+          "[public-download] DMG fetch failed, falling back to installer-app zip:",
+          err instanceof Error ? err.message : err,
+        );
+        captureException(err, c);
+      }
+
+      if (dmg) {
+        let issued;
+        try {
+          issued = await issueBootstrapTokenForKey({
+            parentEnrollmentKeyId: keyRow.id,
+            createdByUserId: keyRow.createdBy ?? null,
+            usageKind: "per_download",
+            maxUsage: 1,
+            ttlMinutes: installerLinkRemainingTtlMinutes(linkExpiresAt),
+            installerPlatform: "macos",
+          });
+        } catch (err) {
+          if (err instanceof BootstrapTokenIssuanceError) {
+            if (err.code === "parent_not_found")
+              return c.json({ error: err.message }, 404);
+            return c.json({ error: err.message }, 410);
+          }
+          throw err;
+        }
+
+        try {
+          const response = serveMacosBootstrapDmg(c, {
+            dmg,
+            token: issued.token,
+            apiHost: bundleApiHost,
+          });
+
+          createAuditLogAsync({
+            orgId: keyRow.orgId,
+            actorId: ANONYMOUS_ACTOR_ID,
+            action: "enrollment_key.public_download",
+            resourceType: "enrollment_key",
+            resourceId: keyRow.id,
+            resourceName: keyRow.name,
+            details: {
+              platform,
+              ip,
+              signed: false,
+              mode: "dmg",
+              tokenId: issued.id,
+            },
+            ipAddress: ip,
+            userAgent: c.req.header("user-agent"),
+            result: "success",
+          });
+
+          return response;
+        } catch (err) {
+          console.error(
+            "[public-download] DMG serve failed, falling back to installer-app zip:",
+            err instanceof Error ? err.message : err,
+          );
+          captureException(err, c);
+        }
+      }
+    }
+
     const appZip = bundleApiHost ? await fetchMacosInstallerAppZip() : null;
     if (appZip && bundleApiHost) {
       let issued;

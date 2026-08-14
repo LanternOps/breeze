@@ -1131,3 +1131,128 @@ describe("POST /api/v1/installer/bootstrap/cancel (#2764)", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("POST /api/v1/installer/bootstrap — terms acceptance (optional, additive)", () => {
+  /**
+   * Stages a redeemable token and returns the captured `.set()` payload of the
+   * consume UPDATE, which is where the terms columns are persisted.
+   */
+  async function redeemWithBody(body: Record<string, unknown> | null, headers: Record<string, string> = {}) {
+    const tokenRow = {
+      id: "terms-token",
+      token: "TTTTTTTTTT",
+      orgId: "terms-org",
+      parentEnrollmentKeyId: "terms-parent-key",
+      siteId: "terms-site",
+      maxUsage: 1,
+      consumedCount: 0,
+      createdBy: "terms-user",
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: () => Promise.resolve([tokenRow]) }) }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{
+              id: "terms-parent-key",
+              name: "Terms parent",
+              orgId: "terms-org",
+              siteId: "terms-site",
+              keySecretHash: null,
+              expiresAt: new Date(Date.now() + 60_000),
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => Promise.resolve([{ id: "terms-org", name: "Terms Org" }]) }),
+        }),
+      } as any);
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: () => ({
+        returning: () => Promise.resolve([{ id: "terms-child-key" }]),
+      }),
+    } as any);
+
+    const setSpy = vi.fn(() => ({
+      where: () => ({
+        returning: () => Promise.resolve([{ ...tokenRow, consumedCount: 1 }]),
+      }),
+    }));
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    const res = await makeApp().request("/api/v1/installer/bootstrap", {
+      method: "POST",
+      headers: body
+        ? { "Content-Type": "application/json", ...headers }
+        : headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { res, setSpy };
+  }
+
+  it("persists acceptedTerms / acceptedTermsAt / termsUrl when the installer reports them", async () => {
+    const at = "2026-08-14T12:34:56.000Z";
+    const { res, setSpy } = await redeemWithBody({
+      token: "TTTTTTTTTT",
+      acceptedTerms: true,
+      acceptedTermsAt: at,
+      termsUrl: "https://nodesunlimited.example.com/terms",
+    });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        acceptedTerms: true,
+        acceptedTermsAt: new Date(at),
+        termsUrl: "https://nodesunlimited.example.com/terms",
+      }),
+    );
+  });
+
+  it("reads the terms fields from the body even when the token came in via header", async () => {
+    const { res, setSpy } = await redeemWithBody(
+      { acceptedTerms: true, termsUrl: "https://example.com/tos" },
+      { "X-Breeze-Bootstrap-Token": "TTTTTTTTTT" },
+    );
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ acceptedTerms: true, termsUrl: "https://example.com/tos" }),
+    );
+  });
+
+  it("still redeems for an OLDER installer that sends no terms fields at all", async () => {
+    const { res, setSpy } = await redeemWithBody(null, {
+      "X-Breeze-Bootstrap-Token": "TTTTTTTTTT",
+    });
+
+    expect(res.status).toBe(200);
+    const payload = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("acceptedTerms");
+    expect(payload).not.toHaveProperty("acceptedTermsAt");
+    expect(payload).not.toHaveProperty("termsUrl");
+  });
+
+  it("drops malformed terms values rather than failing the enrollment", async () => {
+    const { res, setSpy } = await redeemWithBody({
+      token: "TTTTTTTTTT",
+      acceptedTerms: "yes",
+      acceptedTermsAt: "not-a-date",
+      termsUrl: 42,
+    });
+
+    expect(res.status).toBe(200);
+    const payload = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("acceptedTerms");
+    expect(payload).not.toHaveProperty("acceptedTermsAt");
+    expect(payload).not.toHaveProperty("termsUrl");
+  });
+});
