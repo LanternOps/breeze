@@ -16,7 +16,22 @@ type AvailablePatch struct {
 	ReleaseDate    string // ISO 8601 date
 	UpdateType     string // "software", "driver", or "feature"
 	EulaAccepted   bool
+	// Scope records the install scope the patch was discovered at, for
+	// providers that can distinguish one (currently winget:
+	// PatchScopeMachine vs PatchScopeUser). Empty means the provider has no
+	// scope concept and the platform should treat the patch as machine-wide.
+	Scope string
 }
+
+// Install scopes reported in AvailablePatch.Scope.
+const (
+	// PatchScopeMachine is a machine-wide (all users) install, discoverable
+	// and remediable from the SYSTEM agent process.
+	PatchScopeMachine = "machine"
+	// PatchScopeUser is a per-user install, only visible from inside the
+	// interactive user's session (#2727).
+	PatchScopeUser = "user"
+)
 
 // InstalledPatch describes an update that is already installed.
 type InstalledPatch struct {
