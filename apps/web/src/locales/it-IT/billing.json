@@ -1698,7 +1698,7 @@
       "description": "Valuta, imposte, numerazione e termini applicati a nuovi preventivi e fatture per tutti i clienti.",
       "documentPageSize": "Formato pagina",
       "documentPageSizeA4": "A4",
-      "documentPageSizeLetter": "Letter",
+      "documentPageSizeLetter": "Lettera",
       "documentTheme": "Tema documento",
       "documentThemeClassic": "Classico",
       "documentThemeCondensed": "Condensato",

@@ -1698,7 +1698,7 @@
       "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
       "documentPageSize": "Seitengröße",
       "documentPageSizeA4": "A4",
-      "documentPageSizeLetter": "Letter",
+      "documentPageSizeLetter": "US-Letter",
       "documentTheme": "Dokumentdesign",
       "documentThemeClassic": "Klassisch",
       "documentThemeCondensed": "Kompakt",
