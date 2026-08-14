@@ -246,12 +246,19 @@ describe('no location.hash reads in useState initializers (apps/web/src)', () =>
   // reviewed allowlist module — nothing would otherwise stop someone silencing a
   // real violation with CI still green. Pin the count at zero: adding the first
   // legitimate exemption must be a deliberate, reviewed bump of this number.
+  // Explicit timeout: these whole-tree cases read (and, below, TS-parse) every
+  // file under apps/web/src, so their runtime scales with the repo and is
+  // dominated by scheduler delay when the full 560-file suite runs them in
+  // parallel. Vitest's 5s default is a latent tripwire that any sizeable PR
+  // eventually trips for reasons that have nothing to do with the guard it
+  // enforces. BOTH cases need it — the parsing one below is the more expensive
+  // of the two, so a timeout on this one alone leaves the real tripwire armed.
   it('nobody has silenced a violation with hash-usestate-exempt (expected: 0)', () => {
     const exempted = files.filter((file) =>
       /hash-usestate-exempt/i.test(readFileSync(file, 'utf8')),
     );
     expect(exempted).toEqual([]);
-  });
+  }, 60_000);
 
   it('every hash-derived initial state goes through useHashState/useHashTab', () => {
     const all: string[] = [];
@@ -273,5 +280,5 @@ describe('no location.hash reads in useState initializers (apps/web/src)', () =>
             `"// hash-usestate-exempt: <reason>" for a genuinely client-only component.`
         : undefined
     ).toEqual([]);
-  });
+  }, 60_000);
 });

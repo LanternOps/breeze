@@ -23,7 +23,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.25.12'
+  GO_VERSION: '1.26.6'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -157,6 +157,16 @@ jobs:
 
       - name: Type-check legacy extension adapter
         run: pnpm --filter @breeze/extension-api typecheck
+
+      # ee/workspace's own unit + typecheck coverage (424 tests). The
+      # apps/api typecheck step below separately covers the server code
+      # through the static built-in-extension import; this covers the rest
+      # (web/, __tests__/) that apps/api's tsconfig doesn't reach.
+      - name: Test workspace (ee)
+        run: pnpm --filter @breeze/ext-workspace test
+
+      - name: Type-check workspace (ee)
+        run: pnpm --filter @breeze/ext-workspace typecheck
 
       - name: Run API tests
         run: pnpm test --filter=@breeze/api
@@ -1728,6 +1738,144 @@ jobs:
         # within a shard still run sequentially (fileParallelism: false).
         run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
 
+      # ee/workspace's integration suite expects its own tables
+      # (workspace_sources, workspace_file_index, ...) to already exist on
+      # this DB — it has no self-provisioning of its own. Those tables are
+      # created by loadBuiltinExtensions() (apps/api/src/extensions/
+      # builtinExtensions.ts), which — unlike core migrations — runs ONLY at
+      # actual `apps/api` server boot (src/index.ts), never inside the
+      # vitest integration suite's globalSetup (which calls core
+      # autoMigrate() only; see src/db/autoMigrate.ts's planMigrations,
+      # which reads the LEGACY extensions/ dir, not the built-in registry).
+      # Boot the real server once, against this shard's already
+      # core-migrated :5433 DB, wait for its "loaded built-in" line, then
+      # stop it — the same `tsx src/index.ts` boot Task 4 of the ee-merge
+      # plan verified applies workspace's migrations (idempotently on
+      # repeat boots). Shard 1 only: a single-DB schema prerequisite for the
+      # step below, not a sharded suite in itself.
+      - name: Boot API once to apply built-in extension migrations (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          BREEZE_APP_DB_PASSWORD: breeze_test
+          POSTGRES_PASSWORD: breeze_test
+          REDIS_URL: redis://localhost:6380
+          JWT_SECRET: ci-smoke-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          APP_ENCRYPTION_KEY: ci-smoke-Xz9Lm3Kp7Wn2Qr5Tv8Yb0Hd4Fg6Jc1Ae3
+          MFA_ENCRYPTION_KEY: ci-smoke-Nm4Rp8Ws2Kv6Tq0Yh3Bd7Fg1Jc5Le9Ax2
+          AGENT_ENROLLMENT_SECRET: ci-smoke-agent-enrollment-secret-value
+          NODE_ENV: test
+          AUTO_MIGRATE: 'true'
+          API_PORT: '3199'
+          # Built-in extensions are OFF by default per deployment; this step
+          # exists only to apply workspace's migrations, so it must opt in.
+          # The shard DB is the pgvector-capable docker-compose.test.yml
+          # postgres, so `CREATE EXTENSION vector` succeeds here.
+          BREEZE_WORKSPACE_ENABLED: 'true'
+        run: |
+          # The fatal boot sentinel. A BARE `CRITICAL` is not usable as one:
+          # non-fatal worker-init messages also print `[CRITICAL]` and can race
+          # into this same log, which would fail the step on a boot that
+          # actually succeeded. Only `index.ts`'s startup-failure line means
+          # "boot died".
+          FATAL='\[CRITICAL\] API startup failed'
+          # Launch in its own process group (setsid) so the group can be
+          # killed as a unit below. `pnpm exec` execs a shell wrapper around
+          # `tsx`, which in turn is a node process running a child worker —
+          # SIGTERM sent to just $! (pnpm exec's PID) is not guaranteed to
+          # propagate to the actual tsx/node descendants, so a "killed" boot
+          # can leave a fully-booted API (schedulers, reconciler, ...)
+          # running into the next step against this same DB shard: a flake
+          # generator. `kill -- -"$PGID"` below sends to the whole group.
+          #
+          # $! is the setsid PID, which is NOT reliably the new group's ID
+          # (setsid may fork), so the group records its own ID from inside:
+          # the inner shell IS the group leader, and `$$` is therefore the
+          # pgid. Everything below kills by that recorded value.
+          setsid bash -c 'echo $$ > /tmp/ee-boot.pgid; exec pnpm --filter=@breeze/api exec tsx src/index.ts' > /tmp/ee-workspace-boot.log 2>&1 &
+          BOOT_PID=$!
+          if ! timeout 180 bash -c "until grep -qE 'loaded built-in \"workspace\"|$FATAL' /tmp/ee-workspace-boot.log 2>/dev/null; do sleep 1; done"; then
+            echo "Timed out waiting for the built-in extension boot line:"
+            cat /tmp/ee-workspace-boot.log
+            kill -- "-$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")" 2>/dev/null || true
+            exit 1
+          fi
+          if grep -q "$FATAL" /tmp/ee-workspace-boot.log; then
+            echo "API boot failed before loading built-in extensions:"
+            cat /tmp/ee-workspace-boot.log
+            kill -- "-$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")" 2>/dev/null || true
+            exit 1
+          fi
+          PGID="$(cat /tmp/ee-boot.pgid 2>/dev/null || echo "$BOOT_PID")"
+          # Guarded like the two failure branches above: under this step's
+          # default `bash -e`, an unguarded `kill` on an already-exited
+          # group (e.g. the process crashed on its own between logging the
+          # built-in load line and this kill) would abort the step on a bare
+          # "process not found" with no log content, making a correct
+          # migration load look like an unexplained CI failure. Dump the log
+          # so it's diagnosable either way — and then decide: an already-dead
+          # group that ALSO logged the fatal sentinel is a genuine boot
+          # failure that merely happened to log the built-in line first, and
+          # must fail the step rather than be waved through.
+          if ! kill -- "-$PGID" 2>/dev/null; then
+            echo "API process group had already exited after logging the built-in load line — dumping its output:"
+            cat /tmp/ee-workspace-boot.log
+            if grep -q "$FATAL" /tmp/ee-workspace-boot.log; then
+              echo "The API logged the built-in load line and then FAILED startup — the schema this step is"
+              echo "supposed to guarantee may be incomplete, so the workspace integration suite below would"
+              echo "fail confusingly. Failing here instead."
+              exit 1
+            fi
+            echo "::warning::API exited on its own after loading built-in extensions (no startup failure logged); migrations were applied, continuing."
+          fi
+          # Bound the wait for graceful shutdown instead of an unbounded
+          # `wait "$BOOT_PID"`, which could otherwise eat the whole job
+          # ceiling if the process ignores SIGTERM or hangs mid-shutdown.
+          # Poll the GROUP, not $BOOT_PID: the leader (pnpm's wrapper) can
+          # exit seconds before the node/tsx descendants finish shutting
+          # down, and watching only the leader cuts the grace period short
+          # (observed on the first live run of this step). Count only
+          # NON-ZOMBIE members: `kill -0` "succeeds" against a zombie, but a
+          # zombie is dead — unreaped only because its parent died with it —
+          # and cannot touch the DB. The step's shell cannot reap
+          # grandchildren; init does so asynchronously after SIGKILL, so a
+          # zombie-only group must be treated as gone, not as a survivor
+          # (also observed live: `[node]`/`[esbuild] <defunct>` tripping a
+          # naive `kill -0 -- -PGID` assert).
+          live_in_group() {
+            ps -eo pgid=,stat= | awk -v p="$PGID" '$1 == p && $2 !~ /^Z/' | wc -l
+          }
+          for _ in $(seq 1 30); do
+            [ "$(live_in_group)" -gt 0 ] || break
+            sleep 1
+          done
+          kill -9 -- "-$PGID" 2>/dev/null || true
+          wait "$BOOT_PID" 2>/dev/null || true
+          # Fail CLOSED on a genuinely surviving process group — but give
+          # SIGKILL a moment to land before judging (delivery is async).
+          for _ in $(seq 1 10); do
+            [ "$(live_in_group)" -gt 0 ] || break
+            sleep 1
+          done
+          if [ "$(live_in_group)" -gt 0 ]; then
+            echo "API process group $PGID survived SIGTERM and SIGKILL. A live API would keep writing to"
+            echo "this step's DB shard and poison the workspace integration suite that runs next."
+            ps -eo pid,pgid,stat,cmd | awk -v pgid="$PGID" '$2 == pgid' || true
+            exit 1
+          fi
+
+      - name: Integration-test workspace (ee)
+        if: matrix.shard == 1
+        env:
+          DATABASE_URL: postgresql://breeze_test:breeze_test@localhost:5433/breeze_test
+          DATABASE_URL_APP: postgresql://breeze_app:breeze_test@localhost:5433/breeze_test
+          # Set for the same reason as the boot step above: should any part of
+          # this suite boot the host or consult the built-in enable flag, it
+          # must see the extension it is testing as enabled.
+          BREEZE_WORKSPACE_ENABLED: 'true'
+        run: pnpm --filter @breeze/ext-workspace test:integration
+
       # Dedicated exact-role enforcement runner. The general integration config
       # excludes it because this suite manages a temporary BYPASSRLS role and
       # must not inherit the shared TRUNCATE hooks. The preceding suite has
@@ -1832,7 +1980,13 @@ jobs:
           BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
-          POSTGRES_IMAGE_REF=postgres:16-alpine
+          # Mirrors .env.example's default. This stack deliberately leaves
+          # BREEZE_WORKSPACE_ENABLED unset, so it exercises the DEFAULT-OFF
+          # built-in path end to end (no workspace migrations, no pgvector
+          # requirement); the image is pgvector-capable anyway so that a
+          # self-hoster who later flips the flag needs no database swap, which
+          # is exactly the shape .env.example ships.
+          POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
           REDIS_IMAGE_REF=redis:7-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           # Required in production by config/validate.ts (#625) — without

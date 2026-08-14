@@ -47,7 +47,7 @@ import type {
   InheritableRemoteAccessSettings,
   IpAllowlistStatus
 } from '@breeze/shared';
-import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE } from '@breeze/shared';
+import { isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
@@ -376,6 +376,14 @@ export default function PartnerSettingsPage() {
       return;
     }
 
+    // Same shape for the company Website (#3430): the server rejects any scheme
+    // outside http/https, so block the round-trip here and say why. The field is
+    // clearable, hence the non-empty guard.
+    if (contactWebsite.trim() !== '' && !isHttpUrl(contactWebsite.trim())) {
+      setError(httpUrlErrorMessage('Website'));
+      return;
+    }
+
     setSaving(true);
     setError(undefined);
 
@@ -389,7 +397,10 @@ export default function PartnerSettingsPage() {
         name: contactName || undefined,
         email: contactEmail || undefined,
         phone: contactPhone || undefined,
-        website: contactWebsite || undefined
+        // Trimmed to match the predicate the guard above applied — sending the
+        // untrimmed value made a whitespace-only entry pass the client check
+        // and then fail server-side with no inline error to explain it.
+        website: contactWebsite.trim() || undefined
       },
       address: {
         street1: address.street1 || undefined,

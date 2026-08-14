@@ -40,9 +40,12 @@ affected devices before updating them.
 
 ## Migrate a device
 
-Migration is an in-place reinstall with the self-host edition. The device's
-enrollment, identity, and history are preserved — the agent keeps its existing
-configuration and does not re-enroll.
+On macOS and Linux, migration is an in-place reinstall with the self-host
+edition: the device's enrollment, identity, and history are preserved — the
+agent keeps its existing configuration and does not re-enroll. On Windows, the
+two MSI editions carry different product identities and **refuse to install
+over each other**, so the hosted MSI must be uninstalled first (back up the
+agent's configuration to keep the device's identity — see step 2).
 
 <Steps>
 
@@ -50,11 +53,18 @@ configuration and does not re-enroll.
    installer download from **Devices → Add Device** in your dashboard. Anything
    your server hands out is the self-host edition.
 
-2. Run it on the affected device, over the existing installation:
+2. Install it on the affected device:
 
-   - **Windows** — run the MSI. It upgrades the existing installation in place
-     and keeps the agent's configuration.
-   - **macOS / Linux** — run the install script, or replace the binary and run
+   - **Windows** — the self-host MSI will not upgrade a hosted-edition install
+     in place (the installer blocks with *"A different edition of the Breeze
+     Agent is already installed."*). To migrate while keeping the device's
+     enrollment: first back up `C:\ProgramData\Breeze\agent.yaml` and
+     `C:\ProgramData\Breeze\secrets.yaml` (uninstalling removes them), then
+     uninstall the hosted agent MSI, install the self-host MSI, restore the two
+     files, and restart the **Breeze Agent** service. If you skip the backup,
+     the agent re-enrolls as a new device record instead.
+   - **macOS / Linux** — run the install script over the existing
+     installation, or replace the binary and run
      `breeze-agent service install`, which reinstalls the binary and restarts
      the service without re-enrolling. See
      [Agent Installation](/agents/installation/) for the full commands.
@@ -65,9 +75,11 @@ configuration and does not re-enroll.
 </Steps>
 
 <Aside type="note">
-Do **not** uninstall the agent, decommission the device, or re-enroll with a
-new enrollment key first — none of that is needed, and re-enrolling is only
-appropriate when you intentionally want a new device record.
+On **macOS and Linux**, do not uninstall the agent, decommission the device, or
+re-enroll with a new enrollment key — none of that is needed. On **Windows**,
+uninstalling the hosted MSI is required, but back up the configuration files
+first as described above; re-enrolling is only appropriate when you
+intentionally want a new device record.
 </Aside>
 
 ## Verify

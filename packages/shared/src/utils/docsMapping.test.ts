@@ -33,6 +33,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/edr-integrations/');
     });
 
+    it('/fleet maps to fleet hygiene docs', () => {
+      const result = getDocsForPath('/fleet');
+      expect(result.label).toBe('Fleet Hygiene Findings');
+      expect(result.url).toContain('/features/fleet-hygiene/');
+    });
+
     it('/scripts maps to scripts docs', () => {
       const result = getDocsForPath('/scripts');
       expect(result.label).toBe('Scripts');

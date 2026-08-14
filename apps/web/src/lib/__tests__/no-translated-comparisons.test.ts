@@ -148,6 +148,9 @@ describe('no equality comparison against a translated string', () => {
     ).toBe(true);
   });
 
+  // Explicit timeout — see the note in no-hash-in-usestate.test.ts: a
+  // whole-tree TS parse under full-suite parallelism routinely exceeds
+  // vitest's 5s default, independently of what this guard is checking.
   it('finds no value compared against an i18n lookup', () => {
     const offenders: string[] = [];
 
@@ -172,5 +175,5 @@ describe('no equality comparison against a translated string', () => {
             '\nCompare against the machine literal instead; translate only what you render.'
         : undefined,
     ).toEqual([]);
-  });
+  }, 60_000);
 });

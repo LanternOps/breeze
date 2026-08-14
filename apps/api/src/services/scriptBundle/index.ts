@@ -22,8 +22,9 @@
  *   bundle's identity.
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { findVariableTokens } from '@breeze/shared';
 import { db } from '../../db';
-import { scripts, scriptTags, scriptToTags, scriptVersions } from '../../db/schema';
+import { scripts, scriptTags, scriptToTags, scriptVersions, tenantVariables } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   isScriptScopeError,
@@ -33,6 +34,7 @@ import {
   type ScriptScopeError,
   type ScriptWriteAuth
 } from '../scriptWrite';
+import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   SCRIPT_BUNDLE_VERSION,
   bundleScriptEntrySchema,
@@ -41,6 +43,80 @@ import {
   type ScriptBundleEntry,
   type ScriptBundleEnvelope
 } from './schema';
+
+/**
+ * Save-time `{{var.<secret>}}` rejection (#3409 PR2) — shared by POST/PUT
+ * `/scripts` (routes/scripts.ts) and `importBundle` below, both of which
+ * already resolve ownership through `resolveScriptCreateScope` (the single
+ * tenancy chokepoint per the module docblock). Reusing its output here rather
+ * than re-deriving tenancy is deliberate: two independent notions of "which
+ * tenant does this script belong to" is exactly the kind of divergence that
+ * chokepoint exists to prevent (#3263 review).
+ *
+ * A `{{var.<key>}}` reference to an UNKNOWN key is explicitly ALLOWED — a
+ * tech may legitimately write the script before creating the variable, and
+ * the dispatch path (Task 4) already fails that device loudly per device.
+ * Only a token that resolves to an `is_secret = true` row is rejected: PR 2
+ * has no delivery channel for secrets (the `BREEZE_VAR_*` / `secretEnv`
+ * channel is PR 4), so textual substitution of one into script content would
+ * be a permanent leak the moment a script referencing it dispatched.
+ *
+ * Org-owned scope (`scope.orgId` set): resolved through the exact same
+ * org-over-partner-precedence snapshot dispatch itself will use
+ * (`loadTenantVariableScope` / `resolveForOrg`), so this agrees with what
+ * dispatch will actually see for this script's org.
+ *
+ * Partner-wide scope (`scope.orgId` null, `scope.partnerId` set): there is no
+ * single org to resolve against — a partner-wide script fans out to every org
+ * under the partner, and EACH of those re-runs this same secret check per
+ * device at dispatch time (Task 4), so a per-org override is still caught
+ * there regardless of what this save-time gate decides. This gate only needs
+ * to catch the common case — the partner's OWN partner-wide variable
+ * definition — so it queries `tenant_variables` directly for
+ * `org_id IS NULL AND partner_id = <caller's partner>` rather than going
+ * through the resolver, which requires a concrete org to attribute
+ * partner-wide rows to.
+ *
+ * A scope with neither an orgId nor a partnerId (an untenanted system-scope
+ * script — only reachable from `POST /scripts`, never from a bundle import;
+ * see `unownedScopeError` below) has no tenant variables to check against.
+ */
+export async function findSecretVariableReferences(
+  scope: ScriptCreateScope,
+  content: string
+): Promise<string[]> {
+  const keys = findVariableTokens(content);
+  if (keys.length === 0) return [];
+
+  if (scope.orgId) {
+    const variableScope = await loadTenantVariableScope([scope.orgId]);
+    const resolved = resolveForOrg(variableScope, scope.orgId);
+    return keys.filter((key) => resolved.get(key)?.isSecret === true);
+  }
+
+  if (scope.partnerId) {
+    const rows = await db
+      .select({ key: tenantVariables.key, isSecret: tenantVariables.isSecret })
+      .from(tenantVariables)
+      .where(
+        and(
+          isNull(tenantVariables.orgId),
+          eq(tenantVariables.partnerId, scope.partnerId),
+          inArray(tenantVariables.key, keys)
+        )
+      );
+    const secretKeys = new Set(rows.filter((r) => r.isSecret).map((r) => r.key));
+    return keys.filter((key) => secretKeys.has(key));
+  }
+
+  return [];
+}
+
+/** User-facing 400 message for {@link findSecretVariableReferences}'s non-empty result. Names only KEYS, never a value. */
+export function describeSecretVariableRejection(offendingKeys: string[]): string {
+  const tokens = offendingKeys.map((key) => `{{var.${key}}}`).join(', ');
+  return `Script content references secret variable(s): ${tokens}. Secret variables cannot be substituted into script content.`;
+}
 
 export type BundleAuth = ScriptWriteAuth & Pick<AuthContext, 'user'>;
 export type BundleImportMode = 'skip' | 'rename' | 'new-version';
@@ -350,6 +426,16 @@ export async function importBundle(
     }
     const entry = parsed.entry;
     try {
+      // Save-time secret-variable rejection (#3409 PR2) — see
+      // findSecretVariableReferences's docblock. Per-entry, like every other
+      // bundle-import failure mode: one script referencing a secret must not
+      // sink the rest of the bundle.
+      const secretRefs = await findSecretVariableReferences(scope, entry.content);
+      if (secretRefs.length > 0) {
+        result.errors.push({ index, name: entry.name, error: describeSecretVariableRejection(secretRefs) });
+        continue;
+      }
+
       const existing = await findExistingByName(scope, entry.name);
 
       if (existing && options.mode === 'skip') {

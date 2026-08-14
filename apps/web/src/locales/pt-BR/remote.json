@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "No Linux, torne o arquivo baixado executável (chmod +x) e execute-o uma vez. Isso registra o visualizador, e as sessões passam a abrir automaticamente.",
+      "linuxFuse": "Se ele encerrar sem abrir nenhuma janela, é porque falta o FUSE 2: instale libfuse2t64 (Debian 13 / Ubuntu 24.04+) ou libfuse2 em versões anteriores, ou execute-o com --appimage-extract-and-run.",
       "title": "O visualizador não abriu?",
       "viewerDescription": "Se o visualizador abriu, você pode dispensar este aviso. Caso contrário, baixe-o abaixo.",
       "vncDescription": "Abra a sessão VNC no seu navegador."

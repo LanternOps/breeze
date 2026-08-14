@@ -125,6 +125,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'scripts', action: 'delete', description: 'Delete scripts' },
   { resource: 'scripts', action: 'execute', description: 'Execute scripts on devices' },
 
+  // Tenant variables (#3409)
+  { resource: 'variables', action: 'read', description: 'View tenant variable definitions' },
+  { resource: 'variables', action: 'manage', description: 'Create, edit, and delete tenant variables' },
+
   // Alerts
   { resource: 'alerts', action: 'read', description: 'View alerts' },
   { resource: 'alerts', action: 'write', description: 'Create and edit alert rules' },
@@ -289,7 +293,10 @@ export const SYSTEM_ROLES = [
       'audit:read',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
-      'approvals:decide'
+      'approvals:decide',
+      // Tenant variables (#3409): managing the definitions is an admin task;
+      // running a script that USES one only needs scripts:execute.
+      'variables:read', 'variables:manage'
     ]
   },
   {
@@ -304,7 +311,10 @@ export const SYSTEM_ROLES = [
       'reports:read', 'reports:write',
       'sites:read',
       'topology:read', 'topology:write',
-      'remote:access'
+      'remote:access',
+      // Read-only: a technician writing a script needs to know which variable
+      // keys exist, but not to create or rotate them.
+      'variables:read'
     ]
   },
   {

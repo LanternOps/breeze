@@ -64,7 +64,8 @@
     "sectionBackup": "Sauvegarde",
     "sectionReporting": "Reportage",
     "sectionSettings": "Paramètres",
-    "sectionExtensions": "Modules d'extension"
+    "sectionExtensions": "Modules d'extension",
+    "variables": "Variables"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

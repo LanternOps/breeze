@@ -48,6 +48,10 @@ export type QuoteServiceErrorCode =
   // marker has been lost.
   | 'RESPONSE_CONSUMED'
   | 'QUOTE_EXPIRED'
+  // Share-link resolution lost a race and could not reproduce the winner's
+  // token either (quoteLifecycle.resolveAcceptUrl). Retryable: returning an
+  // unrecorded credential instead would leave a live link nobody can revoke.
+  | 'LINK_RACE'
   | 'NOT_CONVERTED'
   | 'REORDER_IDS_MISMATCH'
   // Line-move validation codes (moveLineToBlock): a bundle child can't be moved

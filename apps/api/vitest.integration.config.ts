@@ -237,6 +237,14 @@ export default defineConfig({
       // guards the two-query split — a mocked unit test cannot catch the
       // collapsed LEFT JOIN LATERAL form that reads never-scanned as clean.
       'src/services/managementPostureReport.integration.test.ts',
+      // Co-located real-DB integration test for the DISABLED built-in
+      // extension's table-existence probe. The unit suite drives that path
+      // entirely through injected ports, so the port's own SQL is stubbed in
+      // every one of those tests — and its first version passed all of them
+      // while failing against a live server ("malformed array literal"),
+      // aborting boot for any deployment that had ever enabled the built-in.
+      // This runs the real query against real Postgres.
+      'src/extensions/builtinTableProbe.integration.test.ts',
     ],
     exclude: [
       // Uses fresh request-pool modules and manages its own temporary role;

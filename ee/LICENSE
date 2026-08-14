@@ -1,0 +1,27 @@
+The Breeze Commercial License (the "Commercial License")
+Copyright (c) 2026 LanternOps, Inc.
+
+With regard to the Breeze Software:
+
+This software and associated documentation files (the "Software") may only be
+used in production, if you (and any entity that you represent) have agreed to,
+and are in compliance with, a commercial agreement with LanternOps, Inc., or
+other agreements governing the use of the Software, and otherwise have a valid
+license for the correct number of users, devices, or endpoints.
+
+Subject to the foregoing sentence, you are free to modify this Software and
+publish patches to the Software. You agree that LanternOps, Inc. and/or its
+licensors (as applicable) retain all right, title and interest in and to all
+such modifications and/or patches, and all such modifications and/or patches
+may only be used, copied, modified, displayed, distributed, or otherwise
+exploited with a valid commercial license for the Software. You may not copy,
+modify, create derivative works of, publicly display, publicly perform,
+sublicense or distribute this Software except as expressly permitted above.
+
+Any use of the Software outside of a valid commercial agreement is strictly
+prohibited. For clarity, the Software outside of the "ee" directory is
+licensed under AGPL-3.0 as described in the repository root LICENSE file.
+
+This Commercial License applies only to the part of this Software that is in
+the "ee" directory. The full text of this Commercial License shall be included
+in all copies or substantial portions of the Software covered by it.

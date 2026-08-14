@@ -116,4 +116,65 @@ describe('PartnerBillingSettings', () => {
       expect(body.billingAddressLine1).toBeNull();
     });
   });
+
+  // #3430 — this form PATCHes the FULL payload, so a legacy scheme-less
+  // billingWebsite would 400 an unrelated edit with only a toast naming the
+  // wire field. The inline guard points at the offending field first.
+  describe('billingWebsite scheme guard', () => {
+    const loaded = (billingWebsite: string | null) => json({
+      currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
+      invoiceTermsDays: 30, invoiceFooter: null, billingWebsite,
+    });
+
+    it('flags a legacy scheme-less value loaded from the server and blocks the save', async () => {
+      fetchMock.mockResolvedValue(loaded('acme.test'));
+      render(<PartnerBillingSettings />);
+      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+
+      expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
+      const input = screen.getByTestId('partner-billing-website');
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+      expect(input.getAttribute('aria-describedby')).toBe('pb-website-error');
+
+      const saveBtn = screen.getByTestId('partner-billing-save') as HTMLButtonElement;
+      expect(saveBtn.disabled).toBe(true);
+      fireEvent.click(saveBtn);
+      await waitFor(() => {
+        const patch = fetchMock.mock.calls.find((c) => (c[1] as RequestInit)?.method === 'PATCH');
+        expect(patch).toBeFalsy();
+      });
+    });
+
+    it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd'])(
+      'flags %j typed into the field',
+      async (value) => {
+        fetchMock.mockResolvedValue(loaded(null));
+        render(<PartnerBillingSettings />);
+        await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByTestId('partner-billing-website'), { target: { value } });
+        expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
+        expect((screen.getByTestId('partner-billing-save') as HTMLButtonElement).disabled).toBe(true);
+      },
+    );
+
+    it('clears the error and re-enables the save once corrected', async () => {
+      fetchMock.mockResolvedValue(loaded('acme.test'));
+      render(<PartnerBillingSettings />);
+      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+      expect(screen.getByTestId('partner-billing-website-error')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId('partner-billing-website'), { target: { value: 'https://acme.test' } });
+      expect(screen.queryByTestId('partner-billing-website-error')).toBeNull();
+      expect((screen.getByTestId('partner-billing-save') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('does not flag an empty website', async () => {
+      fetchMock.mockResolvedValue(loaded(null));
+      render(<PartnerBillingSettings />);
+      await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+      expect(screen.queryByTestId('partner-billing-website-error')).toBeNull();
+      expect((screen.getByTestId('partner-billing-save') as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
 });

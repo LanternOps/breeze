@@ -517,7 +517,13 @@ describe('migration filename conventions', () => {
           dangling.map((entry) => `  - ${entry}`).join('\n') +
           `\n\nA migration was renamed or deleted without sweeping its references.`,
     ).toEqual([]);
-  });
+    // Explicit timeout: this case reads every .ts file under apps/api/src, so
+    // its runtime scales with the repo and is dominated by scheduler delay when
+    // the full 1,342-file suite runs it in parallel. Vitest's 5s default is a
+    // latent tripwire — and one that matters more here than most, because a
+    // flaky version of this guard is indistinguishable from the renamed-
+    // migration ENOENT it exists to move out of Integration Tests.
+  }, 60_000);
 });
 
 describe('core migration ordering', () => {

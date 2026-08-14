@@ -61,6 +61,42 @@ describe('partnerBillingSettingsSchema', () => {
     expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 10000 }).success).toBe(false);
     expect(partnerBillingSettingsSchema.safeParse({ ...base, defaultMarkupPercent: 12.345 }).success).toBe(false); // multipleOf 0.01
   });
+
+  // #3430 — billingWebsite was a bare z.string() while the twin field on
+  // partner settings (contact.website) was already http/https-only. It is
+  // snapshotted onto every issued invoice/quote and rendered in branded PDFs
+  // and the customer portal, so it gets the same guard.
+  describe('billingWebsite scheme validation', () => {
+    const base = { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 };
+
+    it.each(['https://acme.com', 'http://acme.com', 'https://acme.com/support?a=1', ''])(
+      'accepts %j',
+      (billingWebsite) => {
+        expect(partnerBillingSettingsSchema.safeParse({ ...base, billingWebsite }).success).toBe(true);
+      }
+    );
+
+    it('accepts null and undefined (field is clearable/optional)', () => {
+      expect(partnerBillingSettingsSchema.safeParse({ ...base, billingWebsite: null }).success).toBe(true);
+      expect(partnerBillingSettingsSchema.safeParse({ ...base }).success).toBe(true);
+    });
+
+    it.each([
+      'javascript:alert(1)',
+      'JavaScript:alert(document.cookie)',
+      'data:text/html,<script>alert(1)</script>',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd',
+      'acme.com',
+    ])('rejects %j', (billingWebsite) => {
+      expect(partnerBillingSettingsSchema.safeParse({ ...base, billingWebsite }).success).toBe(false);
+    });
+
+    it('keeps the 255-char cap', () => {
+      const long = `https://acme.com/${'a'.repeat(300)}`;
+      expect(partnerBillingSettingsSchema.safeParse({ ...base, billingWebsite: long }).success).toBe(false);
+    });
+  });
 });
 
 
@@ -68,13 +104,27 @@ describe('partnerBillingSettingsSchema — contact fields', () => {
   it('accepts the new seller contact + T&C fields', () => {
     const parsed = partnerBillingSettingsSchema.parse({
       currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
-      billingCompanyName: 'Acme MSP LLC', billingPhone: '+1 555 0100', billingWebsite: 'acme.test',
+      billingCompanyName: 'Acme MSP LLC', billingPhone: '+1 555 0100', billingWebsite: 'https://acme.test',
       billingAddressLine1: '1 Main St', billingAddressCity: 'Austin', billingAddressRegion: 'TX',
       billingAddressPostalCode: '78701', billingAddressCountry: 'US',
       billingTermsAndConditions: 'Net 30. Late fee 1.5%/mo.',
     });
     expect(parsed.billingCompanyName).toBe('Acme MSP LLC');
     expect(parsed.billingAddressCountry).toBe('US');
+    expect(parsed.billingWebsite).toBe('https://acme.test');
+  });
+
+  // Behaviour change from #3430, called out explicitly: a scheme-less hostname
+  // is no longer accepted on write. This matches the already-shipped rule on
+  // the twin `contact.website` field (PATCH /partners/me) rather than silently
+  // guessing a scheme. Existing stored values still READ back fine; only a
+  // re-save of the billing profile requires correcting the field.
+  it('rejects a scheme-less hostname rather than assuming https', () => {
+    const result = partnerBillingSettingsSchema.safeParse({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      billingWebsite: 'acme.test',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects a 3-letter country code', () => {

@@ -6,6 +6,8 @@ vi.mock('../db', () => ({
 }));
 
 import {
+  columnAad,
+  encryptColumnValueForWrite,
   reencryptRegisteredSecrets,
   transformEncryptedColumnValue,
 } from './encryptedColumnRegistry';
@@ -201,5 +203,101 @@ describe('encryptedColumnRegistry', () => {
     expect(stats.changed).toBe(1);
     expect(stats.updated).toBe(0);
     expect(executor.execute).toHaveBeenCalledTimes(3);
+  });
+
+  describe('row-bound AAD (#3409)', () => {
+    const rowSpec = {
+      table: 'tenant_variables',
+      column: 'value',
+      kind: 'text' as const,
+      aadBinding: 'row' as const,
+      description: 'test',
+    };
+
+    it('columnAad appends the row id for row-bound specs only', () => {
+      expect(columnAad(rowSpec, 'row-1')).toBe('tenant_variables.value:row-1');
+      expect(columnAad({ ...rowSpec, aadBinding: 'column' }, 'row-1')).toBe('tenant_variables.value');
+      expect(columnAad({ table: 'webhooks', column: 'secret', kind: 'text', description: 't' })).toBe('webhooks.secret');
+    });
+
+    it('refuses to derive an AAD for a row-bound spec without a row id', () => {
+      expect(() => columnAad(rowSpec)).toThrow(/row id/i);
+      expect(() => transformEncryptedColumnValue(rowSpec, 'plaintext')).toThrow(/row id/i);
+    });
+
+    it('encryptColumnValueForWrite refuses registered row-bound columns', () => {
+      // Sealing without the row id would produce a value nothing can decrypt.
+      expect(() => encryptColumnValueForWrite('tenant_variables', 'value', 'plaintext')).toThrow(/row id/i);
+    });
+
+    it('binds the ciphertext to its row: another row id cannot decrypt it', () => {
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+
+      const sealed = transformEncryptedColumnValue(rowSpec, 'super-secret', 'row-1') as string;
+      expect(sealed).toMatch(/^enc:v3:current:/);
+      expect(decryptSecret(sealed, { aad: columnAad(rowSpec, 'row-1') })).toBe('super-secret');
+      expect(() => decryptSecret(sealed, { aad: columnAad(rowSpec, 'row-2') })).toThrow();
+    });
+
+    it('applies the binding without ENABLE_AAD_V3 — the flag day only governs pre-existing v2 columns', () => {
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+      });
+      delete process.env.ENABLE_AAD_V3;
+
+      const sealed = transformEncryptedColumnValue(rowSpec, 'super-secret', 'row-1') as string;
+      expect(sealed).toMatch(/^enc:v3:/);
+
+      // A column-bound spec in the same configuration stays v2.
+      const columnBound = transformEncryptedColumnValue(
+        { table: 'webhooks', column: 'secret', kind: 'text', description: 'test' },
+        'super-secret',
+      ) as string;
+      expect(columnBound).toMatch(/^enc:v2:/);
+    });
+
+    it('the rotation walker rebuilds the row binding instead of corrupting it', async () => {
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'old-key-material',
+        APP_ENCRYPTION_KEY_ID: 'old',
+      });
+      const rowId = '11111111-1111-1111-1111-111111111111';
+      const sealedUnderOldKey = transformEncryptedColumnValue(rowSpec, 'super-secret', rowId) as string;
+
+      setEncryptionEnv({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+        APP_ENCRYPTION_KEYRING: JSON.stringify({ old: 'old-key-material', current: 'current-key-material' }),
+      });
+
+      const updates: unknown[] = [];
+      const executor = {
+        execute: vi.fn(async (query: unknown) => {
+          const call = executor.execute.mock.calls.length;
+          if (call === 1) return [{ present: true }];
+          if (call === 2) return [{ id: rowId, value: sealedUnderOldKey }];
+          if (call === 3) {
+            updates.push(query);
+            return [];
+          }
+          return [];
+        }),
+      };
+
+      const stats = await reencryptRegisteredSecrets({
+        dryRun: false,
+        executor,
+        registry: [rowSpec],
+        logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      expect(stats.errors).toEqual([]);
+      expect(stats.updated).toBe(1);
+      expect(updates).toHaveLength(1);
+    });
   });
 });

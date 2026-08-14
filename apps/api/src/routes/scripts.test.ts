@@ -14,6 +14,14 @@ const EXECUTION_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 // Mock all services
 vi.mock('../services', () => ({}));
 
+const { executeScriptOnDevicesMock } = vi.hoisted(() => ({
+  executeScriptOnDevicesMock: vi.fn(),
+}));
+
+vi.mock('../services/scriptExecution', () => ({
+  executeScriptOnDevices: executeScriptOnDevicesMock,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
   writeRouteAudit: vi.fn()
@@ -54,7 +62,7 @@ vi.mock('../db/schema', () => ({
   scriptExecutionBatches: {},
   devices: {},
   deviceCommands: {},
-  organizations: {},
+  organizations: { id: 'o.id', partnerId: 'o.partnerId' },
   patchPolicies: {},
   configPolicyComplianceRules: {},
   configPolicyFeatureLinks: {},
@@ -67,6 +75,17 @@ vi.mock('../db/schema', () => ({
   softwarePolicies: {},
   sensitiveDataPolicies: {},
   peripheralPolicies: {},
+  // tenantVariableResolution.ts's scope query (#3409 PR2, via
+  // findSecretVariableReferences) joins these two.
+  tenantVariables: {
+    id: 'tv.id',
+    key: 'tv.key',
+    value: 'tv.value',
+    isSecret: 'tv.isSecret',
+    version: 'tv.version',
+    orgId: 'tv.orgId',
+    partnerId: 'tv.partnerId'
+  },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] }
 }));
 
@@ -335,6 +354,129 @@ describe('scripts routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.version).toBe(2);
+  });
+
+  // -------------------------------------------------------------------
+  // Save-time {{var.<secret>}} rejection (#3409 PR2)
+  // -------------------------------------------------------------------
+  // The default auth mock is org scope, orgId ORG_ID — findSecretVariableReferences
+  // resolves through loadTenantVariableScope([ORG_ID]) / resolveForOrg, which
+  // issues db.select({...}).from(organizations).innerJoin(tenantVariables, ...).where(...).
+  function mockTenantVariableScopeRows(rows: unknown[]): void {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(rows)
+        })
+      })
+    } as any);
+  }
+
+  describe('save-time {{var.<secret>}} rejection', () => {
+    it('400s a script whose content references a secret variable (create)', async () => {
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Uses secret',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo {{var.s1_token}}'
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe(
+        'Script content references secret variable(s): {{var.s1_token}}. Secret variables cannot be substituted into script content.'
+      );
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    });
+
+    it('accepts a script referencing a non-secret variable (create)', async () => {
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 'repo_url', value: 'https://dl.example', isSecret: false, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Uses non-secret var', orgId: ORG_ID }])
+        })
+      } as any);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Uses non-secret var',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'curl {{var.repo_url}}'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    // The non-obvious half of the rule: a key with no matching row at all
+    // (not yet created, or simply never defined) must NOT block — a tech may
+    // legitimately write the script before creating the variable, and the
+    // dispatch path fails that device loudly per #3409's fail-loud contract.
+    it('accepts a script referencing an UNKNOWN variable key — warn-only, not a block (create)', async () => {
+      mockTenantVariableScopeRows([]); // no tenant_variables rows at all
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Uses unknown var', orgId: ORG_ID }])
+        })
+      } as any);
+
+      const res = await app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'Uses unknown var',
+          osTypes: ['linux'],
+          language: 'bash',
+          content: 'echo {{var.not_yet_created}}'
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('400s an UPDATE whose new content references a secret variable, and never writes it', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: SCRIPT_ID_1,
+              name: 'Existing',
+              content: 'echo hi',
+              version: 1,
+              isSystem: false,
+              orgId: ORG_ID
+            }])
+          })
+        })
+      } as any);
+      mockTenantVariableScopeRows([
+        { id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }
+      ]);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ content: 'echo {{var.s1_token}}' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('s1_token');
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
   });
 
   it('should prevent deleting scripts with active executions', async () => {
@@ -768,6 +910,32 @@ describe('scripts routes', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a nested-object parameter value on execute (#3409 PR2 Task 7 — one script-parameter schema)', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters: { nested: { bad: true } }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a parameter key the agent could not turn into an env var name on execute', async () => {
+    const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters: { 'has space': 'v' }
+      })
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it('should reject unsupported runAs override on execute', async () => {
     const res = await app.request(`/scripts/${SCRIPT_ID_1}/execute`, {
       method: 'POST',
@@ -779,6 +947,123 @@ describe('scripts routes', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+
+  // #3409 PR2 gave executeScriptOnDevices a per-device failure channel. The
+  // service reports ok:true even when every device failed (the REQUEST was
+  // valid), so without these branches the route answered 201
+  // {status:'queued', executions:[]} and the UI toasted success for a run that
+  // dispatched to nobody.
+  describe('per-device dispatch failures on execute', () => {
+    const executeBody = (deviceIds: string[]) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ deviceIds }),
+    });
+
+    it('returns 422 and writes no audit when every device failed to dispatch', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: null,
+        batchIds: [],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [],
+        failures: [{
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          code: 'unresolved_variables',
+          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
+        }],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody(['11111111-1111-1111-1111-111111111111']),
+      );
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toContain('no value set for {{var.api_key}}');
+      expect(body.failures).toHaveLength(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('returns 201 with failures alongside executions on a partial failure', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: 'batch-1',
+        batchIds: ['batch-1'],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 2,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [{
+          executionId: 'exec-1',
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandId: 'cmd-1',
+        }],
+        failures: [{
+          deviceId: '22222222-2222-2222-2222-222222222222',
+          code: 'unresolved_variables',
+          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
+        }],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody([
+          '11111111-1111-1111-1111-111111111111',
+          '22222222-2222-2222-2222-222222222222',
+        ]),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.executions).toHaveLength(1);
+      expect(body.failures).toHaveLength(1);
+      expect(body.failures[0].deviceId).toBe('22222222-2222-2222-2222-222222222222');
+    });
+
+    it('omits failures entirely on a clean run', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: null,
+        batchIds: [],
+        scriptId: SCRIPT_ID_1,
+        script: { id: SCRIPT_ID_1, name: 'Script One' },
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [{
+          executionId: 'exec-1',
+          deviceId: '11111111-1111-1111-1111-111111111111',
+          commandId: 'cmd-1',
+        }],
+        failures: [],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: ORG_ID,
+      });
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeBody(['11111111-1111-1111-1111-111111111111']),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.failures).toBeUndefined();
+    });
   });
 
   // ── Task 7: List union (org ∪ partner-wide ∪ system) ─────────────────────

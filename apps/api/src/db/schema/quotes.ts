@@ -87,6 +87,16 @@ export const quotes = pgTable('quotes', {
   sendEmailReason: text('send_email_reason').$type<SendQuoteEmailReason>(),
   firstViewedAt: timestamp('first_viewed_at'),
   viewedAt: timestamp('viewed_at'),
+  // Identity of the accept token minted at send. NOT the token itself — these
+  // are the non-secret claim parts (jti/iat/exp) plus the signing kid, enough to
+  // reproduce the exact same JWT via regenerateQuoteAcceptToken *given the
+  // signing key*. That is what lets a re-send or "copy share link" hand out the
+  // SAME url the customer already has, without a bearer credential at rest.
+  // NULL on drafts and on quotes sent before this shipped (those mint fresh).
+  acceptTokenJti: varchar('accept_token_jti', { length: 128 }),
+  acceptTokenIssuedAt: timestamp('accept_token_issued_at', { withTimezone: true }),
+  acceptTokenExpiresAt: timestamp('accept_token_expires_at', { withTimezone: true }),
+  acceptTokenKid: varchar('accept_token_kid', { length: 128 }),
   publicTokenVersion: integer('public_token_version').notNull().default(0),
   publicResponseJti: varchar('public_response_jti', { length: 128 }),
   publicResponseConsumedAt: timestamp('public_response_consumed_at', { withTimezone: true }),

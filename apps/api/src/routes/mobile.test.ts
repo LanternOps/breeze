@@ -1358,6 +1358,38 @@ describe('mobile routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
+    it('rejects a nested-object parameter value (#3409 PR2 Task 7 — one script-parameter schema)', async () => {
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '11111111-1111-1111-1111-111111111111',
+          parameters: { nested: { bad: true } }
+        })
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts string/number/boolean parameter values', async () => {
+      vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '11111111-1111-1111-1111-111111111111',
+          parameters: { s: 'a', n: 3, b: true }
+        })
+      });
+
+      // Not 400: the request clears schema validation and proceeds to the
+      // (mocked-empty) device lookup, same as the existing 404 case below.
+      expect(res.status).not.toBe(400);
+    });
+
     it('requires scripts.execute for run_script actions before device lookup', async () => {
       vi.mocked(db.select).mockReturnValue(mockSelectLimitChain([]) as any);
 
@@ -1468,6 +1500,41 @@ describe('mobile routes', () => {
       expect(res.status).toBe(409);
       const body = await res.json();
       expect(body.error).toBe('All target devices are in a maintenance window with script execution suppressed');
+      expect(writeRouteAuditMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 422 with the per-device reason when the only device failed to dispatch', async () => {
+      // #3409 PR2 gave executeScriptOnDevices a per-device failure channel: a
+      // device can now fail (e.g. an unresolved {{var.*}} token) while the
+      // call still reports ok:true with executions:[] and failures:[...].
+      // This route indexed executions[0] unconditionally, so that combination
+      // threw a TypeError and turned a user-fixable problem into a 500.
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        scriptId: '22222222-2222-2222-2222-222222222222',
+        executions: [],
+        failures: [{
+          deviceId: '11111111-2222-4333-8444-555555555555',
+          code: 'unresolved_variables',
+          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
+        }],
+      });
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'run_script', scriptId: '22222222-2222-2222-2222-222222222222' })
+      });
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toBe('Unresolved tenant variable(s): no value set for {{var.api_key}}');
+      // Nothing ran, so no success audit.
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
 

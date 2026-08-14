@@ -69,6 +69,32 @@ describe('billing settings routes', () => {
     expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
   });
 
+  // #3430 — billingWebsite is snapshotted onto issued invoices/quotes and
+  // rendered in branded PDFs and the customer portal, so a dangerous scheme
+  // must be rejected at the boundary rather than persisted on a 200.
+  it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd'])(
+    'PATCH /partner/billing-settings rejects billingWebsite %j (→ 400, no service call)',
+    async (billingWebsite) => {
+      const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+        currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, billingWebsite
+      }));
+      expect(res.status).toBe(400);
+      expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+    }
+  );
+
+  it('PATCH /partner/billing-settings accepts an https billingWebsite', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      billingWebsite: 'https://acme.example.com'
+    }));
+    expect(res.status).toBe(200);
+    expect(svc.updatePartnerBillingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ billingWebsite: 'https://acme.example.com' }),
+      expect.objectContaining({ partnerId: 'p1' })
+    );
+  });
+
   it('PATCH /orgs/:orgId/billing-settings updates org config', async () => {
     (svc.updateOrgBillingSettings as any).mockResolvedValue({ id: ORG_ID, taxExempt: true, taxRate: null });
     const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({

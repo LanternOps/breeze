@@ -31,8 +31,14 @@ jobs:
     timeout-minutes: 10
 
     services:
+      # pgvector-enabled image, though this job no longer NEEDS it: built-in
+      # extensions load only when their enable flag is set, and this job
+      # leaves BREEZE_WORKSPACE_ENABLED unset, so ee/workspace/migrations/
+      # *.sql (CREATE EXTENSION vector) never runs. Kept to match the image
+      # .env.example ships, so the boot proved here is the one self-hosters
+      # run — a stock postgres:16-alpine would boot identically.
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: breeze
           POSTGRES_PASSWORD: breeze
@@ -72,6 +78,14 @@ jobs:
 
       - name: Build API
         run: pnpm --filter=@breeze/api build
+
+      # NOTE: no `ee/workspace` web build here, deliberately. Built-in
+      # extensions are OFF unless the deployment sets their enable flag, and
+      # this job leaves BREEZE_WORKSPACE_ENABLED unset — so it proves the
+      # DEFAULT-OFF boot from a plain checkout: no built-in migrations, no
+      # dist/web requirement (which is what used to force a build:web step
+      # here), and no pgvector dependency. Flag-ON coverage lives in the
+      # integration shard-1 boot step in ci.yml.
 
       - name: Stage a fake local agent binary
         env:

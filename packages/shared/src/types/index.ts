@@ -777,6 +777,12 @@ export * from './billing-enums';
 export * from './pax8-enums';
 
 // ============================================
+// Tenant Variables (#3409)
+// ============================================
+
+export * from './tenantVariables';
+
+// ============================================
 // Vulnerability fleet-triage SSOT
 // ============================================
 

@@ -8,7 +8,7 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-All Breeze release binaries — the agent, the native viewer, and the Helper tray app — are code-signed to establish authenticity and prevent tampering warnings from operating system gatekeepers and endpoint security tools.
+Breeze release binaries are code-signed to establish authenticity and prevent tampering warnings from operating system gatekeepers and endpoint security tools — with one deliberate exception: as of v0.105.0, the **Windows agent artifacts in the public release are published unsigned**, as self-host edition signing inputs, so self-hosters can sign them under their own certificate (see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/)). All macOS artifacts, and the Windows Viewer and Helper installers, remain signed by Breeze.
 
 ---
 
@@ -25,11 +25,11 @@ Unsigned binaries trigger security warnings on both Windows and macOS that block
 
 ## Signed Artifacts
 
-The CI/CD release pipeline signs the following artifacts:
+The CI/CD release pipeline produces the following artifacts:
 
 | Artifact | Platform | Format | Signing Method |
 |----------|----------|--------|----------------|
-| Breeze Agent | Windows | `.exe`, `.msi` | Azure Artifact Signing (formerly Trusted Signing) |
+| Breeze Agent | Windows | `.exe`, `.msi` | **Unsigned in the public release** (self-host edition signing inputs — sign them yourself, see below) |
 | Breeze Agent | macOS | `.pkg`, binary | Apple Developer ID + notarization |
 | Breeze Viewer | Windows | `.exe`, `.msi` | Azure Artifact Signing (formerly Trusted Signing) |
 | Breeze Viewer | macOS | `.app`, `.dmg` | Apple Developer ID + notarization |
@@ -40,29 +40,31 @@ The CI/CD release pipeline signs the following artifacts:
 
 ## Windows Code Signing
 
-Windows binaries are signed using **Azure Artifact Signing** (formerly Azure Trusted Signing). The signing happens in the GitHub Actions release workflow.
+The Windows **Viewer and Helper** installers are signed using **Azure Artifact Signing** (formerly Azure Trusted Signing). The signing happens in the GitHub Actions release workflow.
 
-### How it works
+The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no longer Authenticode-signed by the public pipeline — they are published unsigned as the exact pre-signing build outputs, so a deployment can sign them under its own certificate. An unsigned agent MSI will trip SmartScreen unless you sign it; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for the supported signing path.
+
+### How it works (Viewer and Helper)
 
 <Steps>
 
-1. The release workflow rebuilds the resource-stamped Windows binaries (agent, backup, watchdog, user-helper) and signs each with the `azure/artifact-signing-action`, authenticating via an OIDC federated credential (no stored client secret).
+1. The release workflow signs each binary with the `azure/artifact-signing-action`, authenticating via an OIDC federated credential (no stored client secret).
 
 2. Each binary is signed and RFC 3161-timestamped against the Azure Artifact Signing endpoint; the certificates are short-lived and HSM-backed — the private key never exists outside Azure.
 
-3. The MSI installer is built from the signed binaries with the WiX CLI, then signed as a separate step.
+3. The workflow verifies every signature with `Get-AuthenticodeSignature` before upload (tolerating `UnknownError`, which means "signed, root not yet cached locally").
 
-4. The workflow verifies every signature with `Get-AuthenticodeSignature` before upload (tolerating `UnknownError`, which means "signed, root not yet cached locally").
-
-5. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
+4. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
 
 </Steps>
 
-### WiX MSI Packaging
+### WiX MSI Packaging and Editions
 
 The Windows agent MSI is built with the WiX CLI (v7; the `breeze.wxs`
 authoring schema is the v4 namespace — the two version numbers are
-unrelated). The MSI bundles the signed agent binary, configures the Windows service, and sets appropriate file permissions. The MSI itself is then signed as a separate step.
+unrelated). The MSI bundles the agent binary, configures the Windows service, and sets appropriate file permissions.
+
+The MSI carries a **per-edition product identity**: the public release builds the self-host edition ("Breeze Agent (Self-Hosted)", with its own UpgradeCode), distinct from the hosted edition used by Breeze's SaaS. The two editions refuse to install over each other on the same machine — the installer blocks with *"A different edition of the Breeze Agent is already installed."* See the [MSI product identity appendix](/deploy/sign-your-own-packages/#msi-product-identity) for details, and [Self-Host Migration](/agents/self-host-migration/) for moving a fleet between editions.
 
 <Aside>
   Azure Artifact Signing keys are HSM-backed and never exportable, meeting the CA/Browser Forum hardware requirements for publicly trusted code signing. Certificates are short-lived and rotated automatically — there is nothing to renew.
@@ -124,7 +126,9 @@ Gatekeeper reputation accrues on a stable hash. See
 # Check digital signature on a binary
 Get-AuthenticodeSignature "C:\Program Files\Breeze\breeze-agent.exe"
 
-# Expected: Status = Valid, SignerCertificate shows LanternOps
+# Viewer/Helper installs: Status = Valid, SignerCertificate shows LanternOps.
+# Agent installed from the public (unsigned) release: Status = NotSigned — expected.
+# Agent installed from your own signing repo: SignerCertificate shows YOUR certificate.
 ```
 
 ### macOS

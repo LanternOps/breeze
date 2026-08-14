@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
 import { db } from '../db';
 import { devices, scriptExecutions, scripts } from '../db/schema';
@@ -13,6 +14,12 @@ import {
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { captureException } from './sentry';
+import {
+  describeVariableFailure,
+  resolveForOrg,
+  substituteTenantVariables,
+  type TenantVariableScope,
+} from './tenantVariableResolution';
 
 /**
  * Single seam through which every script reaches a device (#3409 PR 0).
@@ -41,6 +48,11 @@ export type DispatchScriptInput = {
   targetSessionId?: number;
   batchId?: string | null;
   requireOnline?: boolean;
+  // A snapshot preloaded ONCE per fan-out by the caller (#3409 PR2 Task 4) —
+  // see tenantVariableResolution.ts. Required only when `source.kind ===
+  // 'saved'` and the script content actually contains a {{var.*}} token; the
+  // common token-free path never needs one.
+  variableScope?: TenantVariableScope;
 };
 
 export type DispatchScriptResult =
@@ -56,7 +68,21 @@ export type DispatchScriptResult =
       deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent';
       executedAt: Date | null;
     }
-  | { ok: false; code: 'device_decommissioned' | 'device_offline' | 'os_mismatch' | 'org_mismatch' | 'insert_failed'; error: string };
+  | {
+      ok: false;
+      code:
+        | 'device_decommissioned'
+        | 'device_offline'
+        | 'os_mismatch'
+        | 'org_mismatch'
+        | 'insert_failed'
+        // A {{var.*}} token in the script content had no resolvable value (or
+        // resolved to a secret) for this device's org. Per-device — Task 4
+        // (#3409 PR2) is what actually produces this code; this task only
+        // gives the fan-out a channel to carry it without aborting the batch.
+        | 'unresolved_variables';
+      error: string;
+    };
 
 export async function dispatchScriptToDevice(input: DispatchScriptInput): Promise<DispatchScriptResult> {
   const { device, source } = input;
@@ -108,10 +134,32 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
 
   const parameters = input.parameters ?? {};
   const language = source.kind === 'saved' ? source.script.language : source.language;
-  const content = source.kind === 'saved' ? source.script.content : source.content;
+  let content = source.kind === 'saved' ? source.script.content : source.content;
   const runAs = input.runAs ?? (source.kind === 'saved' ? source.script.runAs : 'system');
   const timeoutSeconds = input.timeoutSeconds ?? (source.kind === 'saved' ? source.script.timeoutSeconds : 300);
   const payloadScriptId = source.kind === 'saved' ? source.script.id : source.provenance;
+
+  // #3409 PR2 Task 4: resolve {{var.*}} tokens for this device's org before
+  // anything else happens with `content`. `hasVariableTokens` comes first so
+  // the common token-free path does no work at all — no scope lookup, no
+  // substitution pass. `{kind:'raw'}` is deliberately skipped: an ad-hoc
+  // execute_command has no declaring script, so nothing could have been
+  // validated at save time (routes/scripts.ts's secret-token rejection only
+  // runs against a saved script's content) — its tokens pass through
+  // verbatim. This sits BEFORE the script_executions insert below so a
+  // failed device leaves no orphan 'pending' row for the caller's per-device
+  // failure channel (scriptExecution.ts) to clean up.
+  if (source.kind === 'saved' && hasVariableTokens(content)) {
+    if (!input.variableScope) {
+      throw new Error('variableScope is required to dispatch a script containing {{var.*}} tokens');
+    }
+    const outcome = substituteTenantVariables(content, resolveForOrg(input.variableScope, device.orgId));
+    const failure = describeVariableFailure(outcome);
+    if (failure) {
+      return { ok: false, code: 'unresolved_variables', error: failure };
+    }
+    content = outcome.content;
+  }
 
   let executionId: string | null = null;
   if (source.kind === 'saved') {
@@ -183,7 +231,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       ...(input.batchId ? { batchId: input.batchId } : {}),
       language,
       content,
-      parameters,
+      // #3409 PR2 Task 7: canonicalize to strings ONCE, here, at the single
+      // dispatch chokepoint — the agent's wire type is `map[string]string`
+      // (agent/internal/executor/executor.go:39) and silently drops any
+      // non-string value (agent/internal/heartbeat/handlers_script.go:37-43).
+      // Every ingress (route, mobile, automation, AI tools, script builder,
+      // remediation suggestions) funnels through here, so this is the one
+      // place that guarantees the wire form regardless of caller.
+      parameters: canonicalizeScriptParameters(parameters as Record<string, string | number | boolean>),
       timeoutSeconds,
       runAs,
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),

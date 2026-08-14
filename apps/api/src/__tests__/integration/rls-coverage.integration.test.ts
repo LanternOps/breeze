@@ -407,6 +407,18 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // ticketing domain (ticket_categories / ticket_response_templates are
   // partner-axis-only).
   'ticket_forms',
+  // tenant_variables (#3409): a variable is org-owned (org_id set, partner_id
+  // NULL) OR partner-wide (partner_id set, org_id NULL) — XOR-enforced by
+  // tenant_variables_one_owner_chk. Created dual-axis from day one in
+  // 2026-08-11-tenant-variables. Org auto-discovery asserts the org branch;
+  // this entry asserts the breeze_has_partner_access branch of
+  // tenant_variables_isolation. The table carries a SECOND, SELECT-only policy
+  // (tenant_variables_partner_wide_select) widening reads of the caller's own
+  // partner-wide rows to org sessions — additive, and deliberately kept
+  // separate so the all-four-commands assertion still lands on the dual-axis
+  // policy. Functional forge proof:
+  // tenantVariablesPartnerRls.integration.test.ts.
+  'tenant_variables',
   // backup_profiles (spec 2026-07-13): a backup selection profile ("what to
   // protect" for a device class) is org-scoped (org_id set, partner_id NULL)
   // OR partner-wide (partner_id set, org_id NULL — define "Server" once for

@@ -31,7 +31,7 @@ Webhooks let you push real-time event notifications from Breeze to any external 
    }
    ```
 
-3. The API validates the URL (must be HTTPS, must not resolve to private/loopback address space), encrypts the secret, and returns the new webhook:
+3. The API validates the URL against the SSRF safety rules (see [URL Safety Validation](#url-safety-validation) — HTTPS to a publicly routable address on hosted Breeze; self-hosted deployments may also target private addresses), encrypts the secret, and returns the new webhook:
 
    ```json
    {
@@ -470,7 +470,7 @@ Content-Type: application/json
 | `failed` | Webhook has been marked as failed (can be set manually or by the system) |
 
 <Aside>
-  When you update the `url` field, the new URL goes through the same SSRF safety validation (HTTPS required, no private/loopback IPs, DNS resolution check) as during creation.
+  When you update the `url` field, the new URL goes through the same SSRF safety validation (see [URL Safety Validation](#url-safety-validation)) as during creation.
 </Aside>
 
 ---
@@ -491,12 +491,14 @@ DELETE /webhooks/:id
 
 Breeze validates webhook URLs at both creation time and delivery time to prevent SSRF (Server-Side Request Forgery) attacks.
 
-**At creation and update time**, the API performs synchronous validation including DNS resolution:
+**At creation and update time**, the API performs synchronous validation including DNS resolution. On hosted Breeze:
 
 - URL must use HTTPS
 - Hostname must not be `localhost`, `*.localhost`, or `*.local`
 - IP addresses must not be private, loopback, or link-local (covers RFC 1918, RFC 6598, RFC 5737, and IPv6 equivalents)
 - DNS resolution is performed to catch hostnames that resolve to blocked address ranges
+
+**Self-hosted deployments** (`IS_HOSTED=false`) may point webhooks at private RFC 1918/ULA addresses on their own network — an on-prem SIEM or ticketing system, for example — and plain `http://` is permitted **only** when the target resolves to such a private address. Public destinations still require HTTPS, and cloud-metadata, loopback, and link-local addresses are blocked in every configuration.
 
 **At delivery time**, the worker re-validates the URL before every delivery attempt. If the URL has become unsafe (e.g., DNS now resolves to a private IP), the delivery fails immediately without making an HTTP request.
 
@@ -528,7 +530,7 @@ All webhook routes require authentication via the `authMiddleware` and are scope
 | `id` | UUID | Primary key |
 | `org_id` | UUID | Organization this webhook belongs to |
 | `name` | varchar(255) | Display name |
-| `url` | text | Destination URL (must be HTTPS); encrypted at rest using AES. GET responses strip any credentials embedded in the URL (HTTP basic-auth userinfo and signed query tokens) before returning it. |
+| `url` | text | Destination URL (HTTPS; self-hosted deployments may use HTTP to private addresses); encrypted at rest using AES. GET responses strip any credentials embedded in the URL (HTTP basic-auth userinfo and signed query tokens) before returning it. |
 | `secret` | text | Encrypted HMAC signing secret (AES-256-GCM) |
 | `events` | text[] | Array of subscribed event type strings |
 | `headers` | JSONB | Custom headers sent with each delivery |
@@ -566,7 +568,7 @@ All webhook routes require authentication via the `authMiddleware` and are scope
 ## Troubleshooting
 
 **"Invalid webhook URL" error when creating a webhook.**
-The URL must use HTTPS and must not resolve to a private, loopback, or link-local IP address. Hostnames like `localhost`, `*.localhost`, and `*.local` are also blocked. If the hostname cannot be resolved via DNS, creation will fail.
+On hosted Breeze, the URL must use HTTPS and must not resolve to a private, loopback, or link-local IP address (on self-hosted deployments, private RFC 1918/ULA targets are allowed — see [URL Safety Validation](#url-safety-validation)). Hostnames like `localhost`, `*.localhost`, and `*.local` are always blocked. If the hostname cannot be resolved via DNS, creation will fail.
 
 **Webhook is not receiving events.**
 Check the webhook status -- if it is `paused` or `failed`, deliveries are not processed. Verify that the `events` array includes the event types you expect. Use `POST /webhooks/:id/test` to confirm the endpoint is reachable.
@@ -578,7 +580,7 @@ The worker retries failed deliveries using exponential backoff. Check the `nextA
 Ensure you are computing the HMAC over the correct input: the raw `X-Breeze-Signature-Timestamp` header value, followed by a dot (`.`), followed by the raw request body. Use the `X-Breeze-Signature-Timestamp` header (not `X-Breeze-Timestamp`) as the timestamp component. The signature uses SHA-256 and is hex-encoded.
 
 **"Unsafe webhook URL" error during delivery.**
-The worker re-validates the URL before each delivery attempt. If your DNS records have changed and the hostname now resolves to a private IP range, deliveries will fail. Update the webhook URL to point to a publicly routable address.
+The worker re-validates the URL before each delivery attempt. On hosted Breeze, if your DNS records have changed and the hostname now resolves to a private IP range, deliveries will fail — update the webhook URL to point to a publicly routable address. On self-hosted deployments, private targets are deliverable; only metadata/loopback/link-local resolutions fail.
 
 **"Only failed deliveries can be retried" error.**
 The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `retrying`, or already `delivered` cannot be retried through this endpoint.

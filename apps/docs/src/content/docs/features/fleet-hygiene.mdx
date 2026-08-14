@@ -1,0 +1,72 @@
+---
+title: Fleet Hygiene Findings
+description: Surface cross-device patterns as single fleet findings and remediate every affected device from one run, with per-device outcomes.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Fleet Hygiene turns per-device noise into fleet-wide signal. Instead of raising one alert per device, Breeze groups related device signals into a single **finding** — "CPU spike pattern on 7 devices", "Low reliability: 12 devices below 50" — and lets you fix the whole population with **one remediation run**, tracking the outcome on every device individually.
+
+The findings feed lives on the **Fleet** page (`/fleet`), under the fleet stat cards: *"Cross-device patterns worth one action instead of many."*
+
+---
+
+## Finding Types
+
+Breeze currently detects three kinds of systemic defect. The fleet is re-scanned roughly every 10 minutes.
+
+| Finding type | What it detects | Severity |
+|---|---|---|
+| **Metric anomaly** | Open metric anomalies grouped by metric and anomaly type. A single device spiking is not a fleet pattern — a finding opens only when **2 or more devices** show the same anomaly. | Critical when the strongest anomaly is severe; Warning otherwise |
+| **Log correlation** | An active log correlation rule matching across devices; the finding lists the devices the rule flagged. | Inherited from the correlation rule |
+| **Reliability offenders** | One org-wide finding listing every device whose [reliability score](/features/reliability/) has dropped below 50. | Error if any device is below 25; Warning otherwise |
+
+Quick Support (ephemeral) devices and decommissioned devices are never counted — they aren't hygiene offenders, and nothing can be remediated on them.
+
+## Finding Lifecycle
+
+A finding is **Open** when first detected. From there:
+
+- **Acknowledge** — mark it as seen; it stays in the default feed view.
+- **Dismiss** — suppress it (a dismissal note is required). Dismissed findings stop updating but remain visible under the *Dismissed* filter.
+- **Reopen** — return an acknowledged or dismissed finding to Open.
+- **Resolved** — automatic only. When the underlying signal clears (anomalies close, the correlation deactivates, reliability recovers), the finding resolves itself on the next scan. You cannot resolve a finding by hand, and a resolved finding never reopens — if the pattern recurs, a **new** finding is created so each episode keeps its own history.
+
+While a finding is open, each scan keeps it current: devices join and leave the affected list, and the severity, title, and device count refresh as the pattern evolves. A dismissed finding still auto-resolves when its source clears — dismissal suppresses a finding, it doesn't pin it open.
+
+## Remediating a Finding
+
+Remediation requires the device-execute permission and a fresh **MFA check** — it is the one action in this feature that re-prompts for MFA.
+
+<Steps>
+1. **Open the finding** from the Fleet Findings feed. The drawer shows the summary, evidence, the affected-devices table, and the finding's remediation history.
+
+2. **Click "Remediate across N devices"** and pick one of three fixes:
+   - **Run a script** — choose a script from your library and fill its parameters. Devices whose OS can't run the script are automatically excluded.
+   - **Restart a service** — restart one named service on every selected device.
+   - **Reboot devices** — restarts happen immediately on dispatch; active sessions end and unsaved work is lost.
+
+3. **Choose the targets.** Every affected device is pre-selected; deselect any you want to leave alone.
+
+4. **Confirm.** The run is created and dispatched in the background; the result step lists how many devices were targeted and which were skipped (with reasons), and links to live progress.
+
+5. **Watch the run.** The progress panel refreshes every few seconds, showing each device as Pending → Queued → Succeeded / Failed / Skipped, and the run itself as Queued / Running / Partial / Succeeded / Failed.
+</Steps>
+
+### How targets are validated
+
+Targets are re-validated **at dispatch time**, not when you click — so a device that was decommissioned, left the finding, or moved out of your site access between click and dispatch is skipped rather than acted on. Offline devices are skipped, not queued indefinitely. A run times out after 30 minutes; still-pending devices are marked failed with a timeout reason.
+
+Skip reasons you may see per device: *Site not accessible to you*, *No longer affected by this finding*, *Device is decommissioned*, *Timed out after 30 minutes*, *Never dispatched — queueing failed*, or `unreachable` (the device was not online at dispatch time).
+
+Every remediation run — and every acknowledge/dismiss/reopen — is recorded in the [audit log](/reference/audit-logs/).
+
+## Scope and Access
+
+- **Findings are per-organization.** Partner-scope users see findings across all their organizations in one feed (each row shows its organization); filtering by organization narrows the view. There is no cross-org merging — the "all orgs" view is a union.
+- **Site-restricted technicians** see only findings with at least one device in their sites, with device counts computed from their in-scope devices; findings entirely outside their scope are hidden.
+- Viewing findings requires device-read permission; acknowledging/dismissing requires device-write; remediation requires device-execute plus MFA.
+
+<Aside type="note">
+Fleet findings can be disabled per organization via the organization's fleet settings (they are enabled by default). The AI assistant can also read the findings feed through its `get_fleet_findings` tool.
+</Aside>

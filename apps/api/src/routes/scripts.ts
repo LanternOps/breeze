@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { exitCodeSeverityMappingSchema } from '@breeze/shared';
+import { exitCodeSeverityMappingSchema, scriptParametersSchema } from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { db } from '../db';
@@ -28,7 +28,12 @@ import {
   insertScriptRow,
   isScriptScopeError,
   resolveScriptCreateScope,
+  type ScriptCreateScope,
 } from '../services/scriptWrite';
+import {
+  describeSecretVariableRejection,
+  findSecretVariableReferences,
+} from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
 
 export const scriptRoutes = new Hono();
@@ -270,7 +275,12 @@ export const executeScriptSchema = z
     deviceIds: z.array(z.string().guid()).min(1).max(500, {
       message: 'Cannot target more than 500 devices in a single script execution',
     }),
-    parameters: z.record(z.string(), z.any()).refine(
+    // #3409 PR2 Task 7: the ONE script-parameter schema (@breeze/shared) —
+    // accepts string/number/boolean values, canonicalized to strings once at
+    // dispatch (scriptDispatch.ts). The 64KB cap is kept ON TOP of the
+    // schema's own count/length caps: it bounds the raw JSON body size this
+    // route ever accepts, independent of the canonicalized wire form.
+    parameters: scriptParametersSchema.refine(
       (val) => JSON.stringify(val).length <= 65536,
       { message: 'Object too large (max 64KB)' }
     ).optional(),
@@ -585,6 +595,13 @@ scriptRoutes.post(
       return c.json({ error: scope.error }, scope.status);
     }
 
+    // Save-time {{var.<secret>}} rejection (#3409 PR2). An UNKNOWN key is
+    // allowed — see findSecretVariableReferences's docblock.
+    const secretRefs = await findSecretVariableReferences(scope, data.content);
+    if (secretRefs.length > 0) {
+      return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+    }
+
     const script = await insertScriptRow(auth, scope, data, {
       requestedIsSystem: data.isSystem
     });
@@ -644,6 +661,13 @@ scriptRoutes.put(
 
     // Build updates object
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+    // The owning tenant to validate {{var.*}} content against (#3409 PR2,
+    // below) — defaults to the script's current scope and is overwritten by
+    // the re-scope block when `availability` moves it, so the check always
+    // runs against where the script will actually LIVE after this request,
+    // not where it lived before.
+    let effectiveScope: ScriptCreateScope = { orgId: script.orgId, partnerId: script.partnerId };
 
     // Re-scope on edit (issue #1734). Only applied when `availability` is sent;
     // a plain content/metadata edit never touches org/partner. System scripts
@@ -728,6 +752,7 @@ scriptRoutes.put(
 
       updates.orgId = target.orgId;
       updates.partnerId = target.partnerId;
+      effectiveScope = target;
     }
 
     if (data.name !== undefined) updates.name = data.name;
@@ -742,6 +767,13 @@ scriptRoutes.put(
 
     // Increment version if content changes
     if (data.content !== undefined && data.content !== script.content) {
+      // Save-time {{var.<secret>}} rejection (#3409 PR2), against the
+      // EFFECTIVE (post-rescope) scope. An UNKNOWN key is allowed — see
+      // findSecretVariableReferences's docblock.
+      const secretRefs = await findSecretVariableReferences(effectiveScope, data.content);
+      if (secretRefs.length > 0) {
+        return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
+      }
       updates.content = data.content;
       updates.version = script.version + 1;
     }
@@ -896,6 +928,20 @@ scriptRoutes.post(
       }, result.status);
     }
 
+    // Every target device failed to dispatch (#3409 PR2's per-device failure
+    // channel — e.g. an unresolved or secret {{var.*}} token). The service
+    // still reports ok:true because the request itself was valid, but nothing
+    // was queued, so returning 201 {status:'queued', executions:[]} would show
+    // the caller a success toast for a run that dispatched to no one. Returned
+    // before the audit, matching the maintenance-suppressed path above: an
+    // error return does not write a `script.execute` success record.
+    if (result.executions.length === 0 && result.failures.length > 0) {
+      return c.json({
+        error: `Script could not be dispatched to any target device: ${result.failures[0]!.error}`,
+        failures: result.failures,
+      }, 422);
+    }
+
     writeRouteAudit(c, {
       orgId: result.auditOrgId,
       action: 'script.execute',
@@ -921,6 +967,10 @@ scriptRoutes.post(
         ? result.maintenanceSuppressedDeviceIds
         : undefined,
       executions: result.executions,
+      // Partial failure: some devices dispatched, others didn't (the
+      // all-failed case returned 422 above). Omitted when empty so the
+      // common clean-run response shape is unchanged.
+      failures: result.failures.length > 0 ? result.failures : undefined,
       status: result.status,
     }, 201);
   }

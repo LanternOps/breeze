@@ -28,6 +28,23 @@ while IFS= read -r id; do
     echo "ALLOWLISTED $id — reviewed exception, see scripts/security/govulncheck-allowlist.txt"
   else
     echo "FAIL $id — symbol-level vulnerability not in the allowlist" >&2
+    # Print the call trace, not just the id. Without this the log proves only
+    # THAT something is reachable, so any later claim about WHICH agent path
+    # reaches it has to be re-derived by hand — and source reading is a weaker
+    # instrument than govulncheck's own symbol analysis, so that re-derivation
+    # can fail to confirm a real finding.
+    #
+    # trace[0] is the VULNERABLE symbol; the LAST element is the frame in our
+    # own code that reaches it. Both halves matter: the first says what is
+    # broken, the last says which agent path exposes us to it.
+    jq -r --arg id "$id" \
+      'select(.finding != null) | .finding
+       | select(.osv == $id) | select(.trace[0].function != null)
+       | (.trace[0] | "\(.package // .module).\(.function)") as $vuln
+       | (.trace[-1]) as $ours
+       | "     \($vuln)  <-  \($ours.package // $ours.module).\($ours.function)"
+         + ($ours.position | if . then " (\(.filename):\(.line))" else "" end)' \
+      "$out_file" | sort -u >&2
     fail=1
   fi
 done <<<"$found"

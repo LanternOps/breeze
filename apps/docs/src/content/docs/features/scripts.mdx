@@ -54,7 +54,7 @@ A **script bundle** is a versioned JSON file that carries whole script libraries
 **Import:** click **Import bundle** and upload either:
 
 - a `.json` bundle exported from Breeze, or
-- loose script files (`.ps1`, `.sh`, `.py`, `.bat`) — the browser converts them into a bundle, inferring the language and OS types from each file extension and the script name from the filename.
+- loose script files (`.ps1`, `.sh`, `.py`, `.bat`, `.cmd`) — the browser converts them into a bundle, inferring the language and OS types from each file extension and the script name from the filename.
 
 The preview shows each script as **New** or **Name conflict**; for conflicts choose to skip, import under a new name, or add the bundle's content as a new version of the existing script. Imports default to the current organization; partner users with full org access can instead import partner-wide ("all organizations").
 
@@ -88,7 +88,7 @@ Bundle format (v1):
 }
 ```
 
-Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, and `parameters` at 64&nbsp;KB.
+Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
 

@@ -46,6 +46,7 @@ import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -341,6 +342,7 @@ import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { loadSourceExtensions } from './extensions/loader';
+import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
 import { createOrgInstalledReader } from './extensions/orgInstallGate';
@@ -988,6 +990,7 @@ api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', tenantVariableRoutes);
 api.route('/orgs', orgRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
@@ -1954,6 +1957,14 @@ async function bootstrap(): Promise<void> {
   }
 
   await loadSourceExtensions(extensionContributionRegistry);
+
+  // Built-in (first-party, statically imported) extensions: same staged v1
+  // pipeline as signed bundles, no artifact verification. Any failure aborts
+  // boot — built-ins are required code, not optional deployments.
+  await loadBuiltinExtensions({
+    registry: extensionContributionRegistry,
+    stateStore: extensionStateStore,
+  });
 
   // Reconcile SIGNED runtime-extension bundles declared in extensions.yaml. Core
   // + legacy-extension migrations already ran (initializeDatabaseForStartup

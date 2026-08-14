@@ -45,6 +45,15 @@ export function buildSellerSnapshot(partner: PartnerContactFields | null | undef
     },
     phone: partner?.billingPhone ?? null,
     email: partner?.billingEmail ?? null,
+    // DO NOT LINKIFY `website` downstream without adding an output-side scheme
+    // filter first (#3430). Writes are http/https-only as of #3430, but:
+    //  - rows predating that guard may still hold any string, and
+    //  - this snapshot is frozen into `invoices.seller_snapshot` /
+    //    `quotes.seller_snapshot` (immutable jsonb, never re-validated on read),
+    //    so a later scrub of `partners.billing_website` will NOT reach documents
+    //    already issued.
+    // Every current render site (quotePdf, invoicePdf, the web + portal document
+    // views) emits this as plain text, which is what keeps legacy values inert.
     website: partner?.billingWebsite ?? null,
   };
 }
