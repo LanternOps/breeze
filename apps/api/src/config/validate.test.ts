@@ -220,10 +220,15 @@ describe('validateConfig', () => {
 
     it('requires APP_ENCRYPTION_KEY_ID when write-action tools are enabled', () => {
       // Tools-enabled boot also validates the full actions executor descriptor
-      // (Task 4's validateM365CustomerGraphActionsRuntimeConfigAtBoot, which
-      // runs before the new key-id check) — supply a complete, valid
-      // descriptor here so this test isolates the APP_ENCRYPTION_KEY_ID rule
-      // rather than tripping the earlier descriptor check.
+      // (Task 4's validateM365CustomerGraphActionsRuntimeConfigAtBoot) — supply
+      // a complete, valid descriptor here so this test isolates the
+      // APP_ENCRYPTION_KEY_ID rule rather than tripping the descriptor check.
+      //
+      // Since #3374 the key-id rule lives in the schema superRefine, so it now
+      // fires during safeParse — BEFORE the descriptor validator rather than
+      // after it. The descriptor below is therefore no longer load-bearing for
+      // this assertion; it is kept so the test still fails for the RIGHT reason
+      // if the rule ever moves back to a post-parse position.
       const dir = mkdtempSync(join(tmpdir(), 'breeze-m365-actions-boot-'));
       const signingJwkFile = join(dir, 'signing.jwk');
       writeFileSync(signingJwkFile, JSON.stringify({
@@ -2529,6 +2534,19 @@ describe('envSchema ↔ direct env reads contract (#3374)', () => {
     expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
   });
 
+  // Scope of the guard, stated precisely so nobody over-trusts it: it scans the
+  // BODIES of those two functions for a literal `env.KEY`. It does NOT see keys
+  // reached indirectly — `validateConfig()` passes `env` wholesale into the
+  // three `*RuntimeConfigAtBoot` validators, which read ~23 further keys
+  // (M365_GRAPH_ACTIONS_EXECUTOR_URL, M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID, …)
+  // that are deliberately lazily parsed and deliberately absent from AppConfig.
+  // Nor does it see `const e = env; e.FOO` or a destructured read. It is a guard
+  // against the specific drift #3374 fixed, not a proof of absence.
+  it('does not see keys reached indirectly (documents the scan boundary)', () => {
+    expect(undeclaredEnvReads('{ helper(env); }', [])).toEqual([]);
+    expect(undeclaredEnvReads('{ const e = env; return e.SNEAKY; }', [])).toEqual([]);
+  });
+
   // Guards the detector itself: a broken matcher would report [] forever and
   // the suite above would pass vacuously.
   it('detects an undeclared read (and ignores a declared one)', () => {
@@ -2545,6 +2563,102 @@ describe('envSchema ↔ direct env reads contract (#3374)', () => {
     expect(body).toContain('return 2;');
     expect(body).not.toContain('after');
   });
+});
+
+// ---------------------------------------------------------------------------
+// The two boolean typo-guards added with #3374. Both keys were previously
+// undeclared, so neither rule could exist at all; without these tests the
+// guards can be deleted with the whole suite still green.
+//
+// Same class as AGENT_AUTO_PROMOTE / ABUSE_SIGNALS_ENABLED below: the runtime
+// readers (services/clientIp.ts isTruthy, writeActionRuntimeConfig.ts
+// flagEnabled) treat ANY unrecognized value as OFF, so a typo silently disables
+// the feature the operator believed they had enabled.
+// ---------------------------------------------------------------------------
+
+describe('TRUST_CF_CONNECTING_IP boolean guard (#3374)', () => {
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'TRUE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, TRUST_CF_CONNECTING_IP: value }, () => {
+        expect(validateConfig().TRUST_CF_CONNECTING_IP).toBe(value);
+      });
+    },
+  );
+
+  // Both compose files inject the key unconditionally (`${VAR:-}` in
+  // docker-compose.yml, `${VAR:-true}` in deploy/docker-compose.prod.yml), so ""
+  // is what a large share of stacks actually pass. Refusing boot on it would
+  // break every one of them.
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, TRUST_CF_CONNECTING_IP: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['ture', 'enabled', 'y', 'TRUE!'])(
+    'refuses boot on %j, which the runtime would silently read as OFF',
+    (value) => {
+      withEnv({ ...validEnv, TRUST_CF_CONNECTING_IP: value }, () => {
+        expect(() => validateConfig()).toThrow(/TRUST_CF_CONNECTING_IP/);
+      });
+    },
+  );
+});
+
+describe('M365_GRAPH_ACTIONS_TOOLS_ENABLED boolean guard (#3374)', () => {
+  // Only the FALSY spellings are exercised for the accept case: a truthy value
+  // additionally requires APP_ENCRYPTION_KEY_ID and a full executor descriptor,
+  // which would test the pairing rule instead of the format guard. The truthy
+  // path is covered by the pairing test near the top of this file.
+  it.each(['false', '0', 'no', 'off', 'FALSE', ' off '])(
+    'accepts the recognized falsy boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, M365_GRAPH_ACTIONS_TOOLS_ENABLED: value }, () => {
+        expect(validateConfig().M365_GRAPH_ACTIONS_TOOLS_ENABLED).toBe(value);
+      });
+    },
+  );
+
+  it.each(['', '   '])('treats a compose-injected empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, M365_GRAPH_ACTIONS_TOOLS_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['ture', 'enabled', 'y'])(
+    'refuses boot on %j, which would silently leave the Tier-3 tools dark',
+    (value) => {
+      withEnv({ ...validEnv, M365_GRAPH_ACTIONS_TOOLS_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/M365_GRAPH_ACTIONS_TOOLS_ENABLED/);
+      });
+    },
+  );
+
+  // The pairing rule now runs during safeParse, so it fires even with NO
+  // executor descriptor configured at all — previously the descriptor validator
+  // threw first and this exact combination reported a different key. Also pins
+  // that a whitespace-only key id does not satisfy the requirement (`.trim()`);
+  // APP_ENCRYPTION_KEY_ID carries no .min(1) of its own to catch that.
+  it.each(['', '   '])(
+    'requires a non-blank APP_ENCRYPTION_KEY_ID (%j) even with no descriptor configured',
+    (keyId) => {
+      withEnv({ ...validEnv, M365_GRAPH_ACTIONS_TOOLS_ENABLED: 'true' }, () => {
+        withoutEnv(
+          [
+            'M365_GRAPH_ACTIONS_EXECUTOR_URL',
+            'M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID',
+            'M365_GRAPH_ACTIONS_TOOLS_ORG_IDS',
+          ],
+          () => {
+            withEnv({ APP_ENCRYPTION_KEY_ID: keyId }, () => {
+              expect(() => validateConfig()).toThrow(/APP_ENCRYPTION_KEY_ID/);
+            });
+          },
+        );
+      });
+    },
+  );
 });
 
 // `isConfigInitialized()` gates ipAllowlistMode()'s pre-boot fallback. Its unit

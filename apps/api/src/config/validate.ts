@@ -1642,7 +1642,9 @@ const envSchema = envObjectSchema
     // typo on a Cloudflare-fronted deploy silently resolves every client IP from
     // X-Forwarded-For instead of the edge IP — rate limits, audit logs and
     // partner IP allowlists all key off the wrong address. Empty/unset is
-    // allowed: both compose files inject `${TRUST_CF_CONNECTING_IP:-}`.
+    // allowed: both compose files inject the key unconditionally
+    // (`${TRUST_CF_CONNECTING_IP:-}` in docker-compose.yml, `${…:-true}` in
+    // deploy/docker-compose.prod.yml), so "" is what many stacks actually pass.
     const trustCfRaw = (data.TRUST_CF_CONNECTING_IP ?? '').trim().toLowerCase();
     if (trustCfRaw && !boolValues.has(trustCfRaw)) {
       ctx.addIssue({
@@ -1744,7 +1746,15 @@ export type AppConfig = z.infer<typeof envSchema>;
  * no validation, no default and no place in the contract above — was closed by
  * issue #3374. The last three offenders (`M365_GRAPH_ACTIONS_TOOLS_ENABLED`,
  * `APP_ENCRYPTION_KEY_ID`, `TRUST_CF_CONNECTING_IP`) are now declared, and the
- * `undeclaredEnvReads()` contract test in validate.test.ts fails CI on a new one.
+ * `undeclaredEnvReads()` contract test in validate.test.ts fails CI on a new
+ * `env.KEY` read written INLINE in either function.
+ *
+ * That guard is deliberately narrow, so don't read it as "undeclared env reads
+ * are now impossible here". Keys reached INDIRECTLY are out of its scope and
+ * remain undeclared on purpose: `validateConfig()` hands the whole `env` to the
+ * three `validateM365*RuntimeConfigAtBoot()` validators, which parse roughly two
+ * dozen executor/descriptor keys lazily and keep them out of `AppConfig`
+ * entirely.
  */
 export const ENV_SCHEMA_KEYS: readonly string[] = Object.freeze(
   Object.keys(envObjectSchema.shape),
