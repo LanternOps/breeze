@@ -1504,7 +1504,7 @@ func (h *Heartbeat) Start() {
 						go func() {
 							defer observability.Recoverer("heartbeat.bootPerformance")
 							log.Info("detected recent boot, collecting boot performance")
-							metrics, err := h.bootCol.Collect()
+							metrics, err := collectors.Guard("bootPerformance", h.bootCol.Collect)
 							if err != nil {
 								log.Error("failed to collect boot performance", "error", err.Error())
 								return
@@ -2039,7 +2039,7 @@ func (h *Heartbeat) sendAppleWarrantyInfo() {
 }
 
 func (h *Heartbeat) sendSoftwareInventory() {
-	software, err := h.softwareCol.Collect()
+	software, err := collectors.Guard("software", h.softwareCol.Collect)
 	if err != nil {
 		log.Error("failed to collect software inventory", "error", err.Error())
 		return
@@ -2087,7 +2087,7 @@ func (h *Heartbeat) sendNetworkInventory() {
 	payload := map[string]any{"adapters": adapters}
 	vpnLabel := "vpns skipped"
 	if h.vpnCol != nil {
-		if detected, vErr := h.vpnCol.Collect(); vErr != nil {
+		if detected, vErr := collectors.Guard("vpn", h.vpnCol.Collect); vErr != nil {
 			log.Warn("failed to collect VPN presence", "error", vErr.Error())
 		} else {
 			if detected == nil {
@@ -3005,8 +3005,10 @@ func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []
 }
 
 func (h *Heartbeat) collectPatchInventoryFromCollectors() ([]map[string]any, []map[string]any, error) {
-	patches, collectErr := h.patchCol.Collect()
-	installedPatches, installedErr := h.patchCol.CollectInstalled(90 * 24 * time.Hour)
+	patches, collectErr := collectors.Guard("patches", h.patchCol.Collect)
+	installedPatches, installedErr := collectors.Guard("installedPatches", func() ([]collectors.InstalledPatchInfo, error) {
+		return h.patchCol.CollectInstalled(90 * 24 * time.Hour)
+	})
 
 	pendingItems := make([]map[string]any, len(patches))
 	for i, patch := range patches {
@@ -3120,7 +3122,7 @@ func (h *Heartbeat) mapPatchSeverity(severity string) string {
 }
 
 func (h *Heartbeat) sendConnectionsInventory() {
-	connections, err := h.connectionsCol.Collect()
+	connections, err := collectors.Guard("connections", h.connectionsCol.Collect)
 	if err != nil {
 		log.Error("failed to collect connections", "error", err.Error())
 		return
@@ -3149,7 +3151,7 @@ func (h *Heartbeat) sendConnectionsInventory() {
 }
 
 func (h *Heartbeat) sendEventLogs() {
-	events, err := h.eventLogCol.Collect()
+	events, err := collectors.Guard("eventLogs", h.eventLogCol.Collect)
 	if err != nil {
 		log.Error("failed to collect event logs", "error", err.Error())
 		return
@@ -3237,7 +3239,7 @@ func (h *Heartbeat) sendSessionInventory() {
 		return
 	}
 
-	sessions, err := h.sessionCol.Collect()
+	sessions, err := collectors.Guard("sessions", h.sessionCol.Collect)
 	if err != nil {
 		log.Warn("failed to collect sessions", "error", err.Error())
 		return
@@ -3295,7 +3297,7 @@ func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
 		return
 	}
 
-	metrics, err := h.reliabilityCol.Collect()
+	metrics, err := collectors.Guard("reliability", h.reliabilityCol.Collect)
 	if err != nil {
 		log.Error("failed to collect reliability metrics", "error", err.Error())
 		return
@@ -3756,7 +3758,7 @@ func (h *Heartbeat) sendHeartbeat() {
 		return
 	}
 
-	metrics, err := h.metricsCol.Collect()
+	metrics, err := collectors.Guard("metrics", h.metricsCol.Collect)
 	metricsAvailable := true
 	if err != nil {
 		log.Error("failed to collect metrics", "error", err.Error())

@@ -7,7 +7,6 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
@@ -135,7 +134,10 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	c.collectDiskActivity(metrics, elapsed)
 
 	// Network — aggregate totals (backward-compatible)
-	netIO, err := net.IOCounters(false)
+	netIO, err := safeNetIOCounters(false)
+	if err != nil {
+		logNetIOPanic(false, err)
+	}
 	if err == nil && len(netIO) > 0 {
 		currentIn := netIO[0].BytesRecv
 		currentOut := netIO[0].BytesSent
@@ -156,7 +158,10 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	}
 
 	// Network — per-interface bandwidth
-	perIface, err := net.IOCounters(true)
+	perIface, err := safeNetIOCounters(true)
+	if err != nil {
+		logNetIOPanic(true, err)
+	}
 	if err == nil {
 		hasHistory := !c.lastTime.IsZero() && elapsed > 1 && elapsed < 300
 		seen := make(map[string]bool)
