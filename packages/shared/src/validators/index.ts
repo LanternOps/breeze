@@ -1026,6 +1026,7 @@ export * from './scriptParameters';
 
 export * from './tickets';
 export * from './ticketForms';
+export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';

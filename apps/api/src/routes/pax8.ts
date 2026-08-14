@@ -1,6 +1,7 @@
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -91,7 +92,7 @@ const subscriptionQuerySchema = z.object({
   partnerId: z.string().guid().optional(),
   integrationId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
-  unmappedOnly: z.coerce.boolean().optional(),
+  unmappedOnly: optionalQueryBoolean,
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
 

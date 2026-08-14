@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalQueryBoolean } from './queryParams';
 
 export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
@@ -45,9 +46,9 @@ export const listTimeEntriesQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
-  running: z.coerce.boolean().optional(),
+  running: optionalQueryBoolean,
   billingStatus: billingStatusSchema.optional(),
-  approved: z.coerce.boolean().optional(),
+  approved: optionalQueryBoolean,
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0)
 });

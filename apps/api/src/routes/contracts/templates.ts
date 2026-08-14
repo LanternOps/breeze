@@ -8,6 +8,7 @@ import {
   createContractTemplateSchema,
   updateContractTemplateSchema,
   createTemplateVersionSchema,
+  optionalQueryBoolean,
 } from '@breeze/shared';
 import {
   listTemplates,
@@ -36,7 +37,7 @@ const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMIS
 
 const idParam = z.object({ id: z.string().guid() });
 const versionIdParam = idParam.extend({ versionId: z.string().guid() });
-const listQuery = z.object({ includeArchived: z.coerce.boolean().optional() });
+const listQuery = z.object({ includeArchived: optionalQueryBoolean });
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 

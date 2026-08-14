@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -24,7 +25,7 @@ const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMIS
 const idParam = z.object({ id: z.string().guid() });
 const listQuery = z.object({
   contractId: z.string().guid().optional(),
-  unattached: z.coerce.boolean().optional(),
+  unattached: optionalQueryBoolean,
 });
 const linkBody = z.object({ contractId: z.string().guid() });
 
