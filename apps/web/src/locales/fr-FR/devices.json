@@ -2229,6 +2229,7 @@
     },
     "generalCategory": "Généralités",
     "paramCount": "{{count}} paramètre(s)",
+    "boundParamCount": "{{count}} automatique(s)",
     "runAs": {
       "system": "Exécuter sous : Système",
       "user": "Exécuter en tant que : utilisateur connecté"

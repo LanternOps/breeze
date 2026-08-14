@@ -24,6 +24,8 @@ vi.mock('./scriptDispatch', () => ({
     executionId: 'exec-1',
     delivered: false,
     executedAt: null,
+    // Required on the success arm since #3409 PR3 — the fan-out unions it.
+    ignoredParameters: [],
   }),
 }));
 
@@ -262,9 +264,9 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-c', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' })
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null });
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] });
 
     const result = await executeScriptOnDevices({
       scriptId: 'script-1',
@@ -290,7 +292,7 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-b', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
 
     await executeScriptOnDevices({
@@ -325,7 +327,7 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
         baseDevice({ id: 'device-b', orgId: 'org-b' }),
       ]) as any);
     vi.mocked(dispatchScriptToDevice)
-      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] })
       .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
 
     const result = await executeScriptOnDevices({
@@ -346,6 +348,87 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
     expect(updateCalls).toHaveLength(2);
     const devicesFailedSetCall = updateCalls[0]!.value.set.mock.calls[0][0];
     expect(devicesFailedSetCall).toHaveProperty('devicesFailed');
+  });
+});
+
+describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  it('unions the per-device ignored keys and de-duplicates them', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    // Definitions belong to the SCRIPT, so in practice every device reports
+    // the same set — the caller must still see each key exactly once, and a
+    // key only one device reported must not be dropped.
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key', 'site_code'] })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key'] });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      parameters: { api_key: 'caller-supplied', site_code: 'caller-supplied' },
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ignoredParameters).toEqual(['api_key', 'site_code']);
+  });
+
+  it('is an empty array when no bound key was supplied', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-a', orgId: 'org-b' })]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: [] });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The SERVICE always reports the field; it is the ROUTE that omits it from
+    // the wire when empty (see scripts.test.ts / mobile.test.ts).
+    expect(result.ignoredParameters).toEqual([]);
+  });
+
+  it('still reports keys from the devices that dispatched when another device failed', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      // The failure arm of DispatchScriptResult carries no ignored keys, so a
+      // failed device contributes nothing — the surviving device is what keeps
+      // the warning alive for the run.
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_parameters', error: 'Unresolved script parameter(s): no value for required parameter(s) "region"' })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-b', executionId: 'exec-b', delivered: false, deliveryOutcome: 'no_agent', executedAt: null, ignoredParameters: ['api_key'] });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      parameters: { api_key: 'caller-supplied' },
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ignoredParameters).toEqual(['api_key']);
+    expect(result.failures).toHaveLength(1);
   });
 });
 
@@ -397,6 +480,49 @@ describe('executeScriptOnDevices — tenant variable scope preload (#3409 PR2 Ta
     // Called with an EMPTY org list, which loadTenantVariableScope
     // short-circuits without querying — no escape from the request
     // transaction, no second connection.
+    const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
+    expect(orgIds).toEqual([]);
+  });
+
+  // #3409 PR3 P1 — the gap that makes the extended gate load-bearing. The
+  // content here is deliberately TOKEN-FREE: with the old
+  // `hasVariableTokens(script.content)` gate this run passes `[]`, dispatch
+  // then resolves the binding against an EMPTY scope, and the device fails
+  // with "no value set" for a variable that exists.
+  //
+  // MUTATION-VERIFIED: forcing `scriptNeedsVariableScope` to `false` fails
+  // this test and the sibling `aiToolsScripts` / `automationRuntime` gate
+  // tests, and nothing else.
+  it('loads a scope for a token-free script whose PARAMETERS bind a tenant variable', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([
+        baseScript({
+          orgId: 'org-a',
+          content: 'echo hi',
+          parameters: [{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' }],
+        }),
+      ]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-a' })]) as any);
+
+    await executeScriptOnDevices({ scriptId: 'script-1', deviceIds: ['device-1'], auth: multiOrgAuth });
+
+    const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
+    expect(orgIds).toEqual(['org-a']);
+  });
+
+  it('does NOT load a scope for a token-free script whose parameters are all runtime', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([
+        baseScript({
+          orgId: 'org-a',
+          content: 'echo hi',
+          parameters: [{ name: 'level', type: 'string', source: 'runtime' }],
+        }),
+      ]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-a' })]) as any);
+
+    await executeScriptOnDevices({ scriptId: 'script-1', deviceIds: ['device-1'], auth: multiOrgAuth });
+
     const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
     expect(orgIds).toEqual([]);
   });

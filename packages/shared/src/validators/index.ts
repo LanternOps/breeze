@@ -1019,6 +1019,7 @@ export * from './ai';
 export * from './tenantVariables';
 export * from './variableTokens';
 export * from './scriptParameters';
+export * from './scriptParameterDefinitions';
 
 // ============================================
 // Ticket Validators

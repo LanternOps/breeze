@@ -2229,6 +2229,7 @@
     },
     "generalCategory": "General",
     "paramCount": "{{count}} param(s)",
+    "boundParamCount": "{{count}} auto-supplied",
     "runAs": {
       "system": "Run as: System",
       "user": "Run as: Logged-in user"

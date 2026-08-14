@@ -10,10 +10,10 @@
  *   `isSystem` are not part of the schema; Zod object parsing strips unknown
  *   keys, so their presence in an uploaded file cannot carry through to the
  *   import path (the #633 hole in a new costume — never read the field).
- * - `parameters` is bounded at intake (size + depth). The route-level
- *   `createScriptSchema` types it `z.any()` and the 64KB cap at
- *   `routes/scripts.ts` is execute-time only; a bundle must not deliver an
- *   arbitrary attacker-authored jsonb blob into storage.
+ * - `parameters` is bounded at intake (size + depth) BEFORE being parsed as
+ *   real parameter definitions (#3409 PR3). A bundle must not deliver an
+ *   arbitrary attacker-authored jsonb blob into storage, and must not be able
+ *   to store a definition shape that `POST /scripts` would reject.
  * - An `exitCodeSeverityMapping` that maps every exit code to `null` is
  *   rejected: it would ship a SYSTEM-level script pre-configured never to
  *   raise an alert, neutering the after-the-fact abuse detection.
@@ -24,7 +24,7 @@
  * across instances and would leak the source tenant's identifiers.
  */
 import { z } from 'zod';
-import { exitCodeSeverityMappingSchema } from '@breeze/shared';
+import { exitCodeSeverityMappingSchema, scriptParameterDefinitionsSchema } from '@breeze/shared';
 
 export const SCRIPT_BUNDLE_VERSION = 1;
 /** Server-side cap on scripts per bundle. */
@@ -107,7 +107,13 @@ export const bundleScriptEntrySchema = z.object({
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).min(1),
   language: z.enum(['powershell', 'bash', 'python', 'cmd']),
   content: z.string().min(1).max(MAX_BUNDLE_CONTENT_LENGTH),
-  parameters: boundedParametersSchema.optional(),
+  // Size/depth first (so an oversized blob still reports "too large" rather
+  // than 64 array-shape errors), THEN the real definition schema (#3409 PR3).
+  // The importer writes straight into `scripts.parameters`, which is now
+  // typed `ScriptParameterDefinition[]` — validating only size and depth here
+  // would let a bundle put a shape into that column that `POST /scripts` and
+  // `PUT /scripts/:id` both reject.
+  parameters: boundedParametersSchema.pipe(scriptParameterDefinitionsSchema).nullish(),
   // Same bounds as createScriptSchema (agent executor clamps at 1 hour).
   timeoutSeconds: z.number().int().min(1).max(3600).default(300),
   runAs: z.enum(['system', 'user', 'elevated']).default('system'),

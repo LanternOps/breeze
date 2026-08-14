@@ -916,7 +916,9 @@
       "timeoutSeconds": "Tiempo de espera (segundos)",
       "runAs": "Ejecutar como",
       "exitCode": "código de salida",
-      "severity": "Gravedad"
+      "severity": "Gravedad",
+      "source": "Origen",
+      "fallbackValue": "Valor de reserva"
     },
     "placeholders": {
       "name": "Borrar archivos temporales",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "Aún no hay parámetros. Los parámetros permiten a los usuarios proporcionar valores en tiempo de ejecución; haga referencia a ellos en su secuencia de comandos como",
       "emptyMiddle": "(PowerShell/Bash) o",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Origen del parámetro {{index}}"
     },
     "execution": {
       "timeoutHint": "El script se elimina después de esta duración. Los 300 segundos (5 min) predeterminados son adecuados para la mayoría de las tareas. Máximo 3600s (1 hora).",
@@ -997,6 +1000,22 @@
       "empty": "Aún no hay variables.",
       "secretUnavailable": "Secreto: una versión posterior lo entregará como variable de entorno.",
       "unknown": "No existe ninguna variable para {{keys}}: los dispositivos seleccionados fallarán hasta que la crees."
+    },
+    "parameterSources": {
+      "runtime": "Se pregunta al ejecutar",
+      "tenantVariable": "Desde una variable",
+      "deviceCustomField": "Desde un campo personalizado del dispositivo",
+      "builtin": "Desde una propiedad del dispositivo"
+    },
+    "parameterBinding": {
+      "variableLabel": "Clave de la variable",
+      "variablePlaceholder": "p.ej. vendor_token",
+      "fieldLabel": "Clave del campo personalizado",
+      "fieldPlaceholder": "p.ej. asset_tag",
+      "builtinLabel": "Propiedad",
+      "chooseTitle": "Elegir una variable",
+      "secretRejected": "\"{{key}}\" es secreta: se rechazará el guardado. Elige una variable que no sea secreta.",
+      "hint": "Se resuelve para cada dispositivo de destino al ejecutar el script: nadie tiene que indicarlo."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,13 @@
       "number": "El parámetro \"{{name}}\" debe ser un número válido"
     },
     "title": "Parámetros",
-    "selectPlaceholder": "Seleccionar..."
+    "selectPlaceholder": "Seleccionar...",
+    "allSupplied": "Todos los parámetros se proporcionan automáticamente: no hay nada que completar.",
+    "suppliedBy": {
+      "tenantVariable": "Se completa automáticamente desde la variable {{key}}",
+      "deviceCustomField": "Se completa automáticamente desde el campo personalizado del dispositivo {{key}}",
+      "builtin": "Se completa automáticamente desde {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {

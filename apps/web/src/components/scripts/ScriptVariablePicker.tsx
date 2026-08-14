@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
-import { Braces } from 'lucide-react';
+import { type RefObject } from 'react';
 import type { EditorProps } from '@monaco-editor/react';
 import { variableToken } from '@breeze/shared';
-import { useTranslation } from 'react-i18next';
 import type { TenantVariableEntry } from '@/lib/tenantVariableTokens';
+import TenantVariableMenu from './TenantVariableMenu';
 
 /** The live editor handed to `onMount` — the same type ScriptForm's ref holds. */
 export type ScriptEditorInstance = Parameters<NonNullable<EditorProps['onMount']>>[0];
@@ -27,6 +26,11 @@ export interface ScriptVariablePickerProps {
  * "Variables" menu for the script editor: inserts a `{{var.<key>}}` token at
  * the caret.
  *
+ * The menu itself lives in `TenantVariableMenu` — shared with the PR3
+ * parameter-binding key picker, which needs the same rows (and the same
+ * disabled-secret rule) but stores a bare key. This component is only the
+ * Monaco insertion half.
+ *
  * Insertion goes through `executeEdits` at the live selection rather than
  * string-slicing the content, so it lands where the cursor is (and replaces a
  * selection) inside a Monaco model — `VariableInput`'s `setSelectionRange`
@@ -38,39 +42,8 @@ export default function ScriptVariablePicker({
   content,
   onInsert,
 }: ScriptVariablePickerProps) {
-  const { t } = useTranslation('scripts');
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (e: PointerEvent) => {
-      if (
-        !menuRef.current?.contains(e.target as Node) &&
-        !triggerRef.current?.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', onPointer, true);
-    document.addEventListener('keydown', onKey, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointer, true);
-      document.removeEventListener('keydown', onKey, true);
-    };
-  }, [open]);
-
   const insert = (key: string) => {
     const token = variableToken(key);
-    setOpen(false);
     const editor = editorRef.current;
     if (!editor) {
       // Monaco hasn't mounted (or failed to load) — append rather than drop the
@@ -97,58 +70,5 @@ export default function ScriptVariablePicker({
     editor.focus();
   };
 
-  return (
-    <div className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={t('scriptForm.variables.insertTitle')}
-        className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition hover:bg-muted"
-      >
-        <Braces className="h-3.5 w-3.5" />
-        {t('scriptForm.variables.button')}
-      </button>
-
-      {open && (
-        <div
-          ref={menuRef}
-          role="menu"
-          className="absolute right-0 z-50 mt-1 max-h-72 w-72 overflow-y-auto rounded-md border bg-card p-1 shadow-lg"
-        >
-          {variables.length === 0 ? (
-            <p className="px-2 py-2 text-xs text-muted-foreground">
-              {t('scriptForm.variables.empty')}
-            </p>
-          ) : (
-            variables.map(v => (
-              <button
-                key={v.key}
-                type="button"
-                role="menuitem"
-                disabled={v.isSecret}
-                aria-disabled={v.isSecret || undefined}
-                onClick={() => insert(v.key)}
-                className="w-full rounded px-2 py-1.5 text-left hover:bg-muted focus:bg-muted focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:bg-transparent"
-              >
-                <span className="block truncate text-sm text-foreground">
-                  {v.description || v.key}
-                </span>
-                <span className="block truncate font-mono text-[11px] text-muted-foreground">
-                  {variableToken(v.key)}
-                </span>
-                {v.isSecret && (
-                  <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-500">
-                    {t('scriptForm.variables.secretUnavailable')}
-                  </span>
-                )}
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
+  return <TenantVariableMenu variables={variables} onSelect={insert} />;
 }

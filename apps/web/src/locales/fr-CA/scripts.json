@@ -916,7 +916,9 @@
       "timeoutSeconds": "Délai d’expiration (secondes)",
       "runAs": "Exécuter en tant que",
       "exitCode": "Code de sortie",
-      "severity": "Gravité"
+      "severity": "Gravité",
+      "source": "Provenance",
+      "fallbackValue": "Valeur de repli"
     },
     "placeholders": {
       "name": "Nettoyer les fichiers temporaires",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",
       "emptyMiddle": "(PowerShell/Bash) ou",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Provenance du paramètre {{index}}"
     },
     "execution": {
       "timeoutHint": "Le script est arrêté après cette durée. La valeur par défaut 300s (5 min) convient à la plupart des tâches. Maximum 3600s (1 heure).",
@@ -997,6 +1000,22 @@
       "empty": "Aucune variable pour l'instant.",
       "secretUnavailable": "Secret — une version ultérieure la transmettra comme variable d'environnement.",
       "unknown": "Aucune variable ne correspond à {{keys}} — les appareils ciblés échoueront tant qu'elle n'existe pas."
+    },
+    "parameterSources": {
+      "runtime": "Demandé à l’exécution",
+      "tenantVariable": "À partir d’une variable",
+      "deviceCustomField": "À partir d’un champ personnalisé de l’appareil",
+      "builtin": "À partir d’une propriété de l’appareil"
+    },
+    "parameterBinding": {
+      "variableLabel": "Clé de la variable",
+      "variablePlaceholder": "p. ex. vendor_token",
+      "fieldLabel": "Clé du champ personnalisé",
+      "fieldPlaceholder": "p. ex. asset_tag",
+      "builtinLabel": "Propriété",
+      "chooseTitle": "Choisir une variable",
+      "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",
+      "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,13 @@
       "number": "Le paramètre \"{{name}}\" doit être un nombre valide"
     },
     "title": "Paramètres",
-    "selectPlaceholder": "Sélectionner..."
+    "selectPlaceholder": "Sélectionner...",
+    "allSupplied": "Tous les paramètres sont fournis automatiquement — il n'y a rien à saisir.",
+    "suppliedBy": {
+      "tenantVariable": "Fourni automatiquement par la variable {{key}}",
+      "deviceCustomField": "Fourni automatiquement par le champ personnalisé de l’appareil {{key}}",
+      "builtin": "Fourni automatiquement par {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {

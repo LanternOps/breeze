@@ -391,3 +391,53 @@ describe('run_script keeps per-device failures isolated in the shared results ac
     });
   });
 });
+
+// #3409 PR3 P1 — the scope-preload gate must look past the content.
+//
+// Every fixture here is TOKEN-FREE on purpose: under the old
+// `hasVariableTokens(script.content)` gate the AI run_script path passes `[]`
+// to loadTenantVariableScope, dispatch then resolves the binding against an
+// EMPTY scope, and the device fails with "no value set" for a variable that
+// exists. Asserting the loaded org list — not merely that the loader was
+// called — is what makes these non-vacuous.
+//
+// MUTATION-VERIFIED: forcing `scriptNeedsVariableScope` to return `false`
+// fails the first test below (plus the scriptExecution / automationRuntime
+// siblings) and nothing else.
+describe('run_script variable-scope preload gate (#3409 PR3 P1)', () => {
+  const scriptRow = (parameters: unknown) => ({
+    id: SCRIPT_ID,
+    orgId: ORG_B,
+    partnerId: null,
+    language: 'powershell',
+    content: 'echo hi', // no {{var.*}} token
+    parameters,
+    timeoutSeconds: 60,
+    runAs: 'system',
+  });
+  const deviceRow = { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' };
+
+  it('loads the org scope for a token-free script whose PARAMETERS bind a tenant variable', async () => {
+    mockDb(scriptRow([{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' }]), deviceRow);
+
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+
+    expect(loadTenantVariableScope).toHaveBeenCalledWith([ORG_B]);
+  });
+
+  it('passes the empty org list when the script needs no scope at all', async () => {
+    mockDb(scriptRow([{ name: 'level', type: 'string', source: 'runtime' }]), deviceRow);
+
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+
+    expect(loadTenantVariableScope).toHaveBeenCalledWith([]);
+  });
+
+  it('still loads for a content token, with no parameter definitions at all', async () => {
+    mockDb({ ...scriptRow(null), content: 'curl {{var.repo_url}}' }, deviceRow);
+
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+
+    expect(loadTenantVariableScope).toHaveBeenCalledWith([ORG_B]);
+  });
+});

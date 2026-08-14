@@ -2229,6 +2229,7 @@
     },
     "generalCategory": "Allgemein",
     "paramCount": "{{count}} Parameter",
+    "boundParamCount": "{{count}} automatisch",
     "runAs": {
       "system": "Ausführen als: System",
       "user": "Ausführen als: Angemeldeter Benutzer"
