@@ -433,16 +433,20 @@ describe('monitoringInlineSettingsSchema', () => {
     }
   });
 
-  it('should still reject a wrong-typed threshold, not just anything non-number', () => {
+  // Covers all three widened fields, not just one: nullable must not become
+  // "accepts anything". Type and range checks have to survive the change.
+  it.each([
+    ['displayName wrong type', { displayName: 42 }],
+    ['displayName too long', { displayName: 'x'.repeat(256) }],
+    ['cpuThresholdPercent wrong type', { cpuThresholdPercent: 'high' }],
+    ['cpuThresholdPercent above max', { cpuThresholdPercent: 101 }],
+    ['cpuThresholdPercent below min', { cpuThresholdPercent: -1 }],
+    ['memoryThresholdMb wrong type', { memoryThresholdMb: 'lots' }],
+    ['memoryThresholdMb below min', { memoryThresholdMb: -1 }],
+  ])('still rejects %s after the nullable widening', (_label, patch) => {
     expect(
       monitoringInlineSettingsSchema.safeParse({
-        watches: [{ watchType: 'process', name: 'nginx', cpuThresholdPercent: 'high' }],
-      }).success
-    ).toBe(false);
-    // and the range check survives the nullable change
-    expect(
-      monitoringInlineSettingsSchema.safeParse({
-        watches: [{ watchType: 'process', name: 'nginx', cpuThresholdPercent: 101 }],
+        watches: [{ watchType: 'process', name: 'nginx', ...patch }],
       }).success
     ).toBe(false);
   });
