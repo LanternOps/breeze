@@ -89,18 +89,9 @@
     position:absolute; top:88px; left:0; right:0; text-align:center;
     font-size:24px; font-weight:600; color:#2e1065; letter-spacing:0.3px;
   }
-  .drag-arrow {
-    position:absolute; top:197px; left:330px; width:150px; height:36px;
-  }
-  .drag-arrow svg { width:100%; height:100%; }
   .right-area .install-subtitle {
     position:absolute; top:124px; left:0; right:0; text-align:center;
     font-size:16px; color:#6b7280;
-  }
-  /* plus + arrow between the real Finder icons (installer ~720,215 / Applications ~1030,215) */
-  .drag-plus {
-    position:absolute; top:148px; left:350px; width:110px; text-align:center;
-    font-size:34px; font-weight:700; color:#7c3aed;
   }
   /* Capability grid: icon + title + subtitle tiles, 3 cols */
   .features {
@@ -207,7 +198,7 @@
           <div class="num">1</div>
           <div class="text">
             <strong>Install the agent</strong>
-            Drag the installer into your Applications folder, then open it.
+            Double-click the installer, then follow the on-screen steps.
           </div>
         </div>
         <div class="step">
@@ -242,17 +233,7 @@
 
     <div class="right-area">
       <div class="install-title">Install Nodes Unlimited Agent</div>
-      <div class="install-subtitle">Drag the installer below into the Applications folder</div>
-
-      <!-- Arrow between the real Finder icons (installer at 720,460 → Applications at 1030,460).
-           right-area starts at x=470, so left offset = 800-470 = 330. -->
-      <div class="drag-plus">+</div>
-      <div class="drag-arrow">
-        <svg viewBox="0 0 150 36" preserveAspectRatio="none">
-          <line x1="8" y1="18" x2="128" y2="18" stroke="#7c3aed" stroke-width="6" stroke-linecap="round"/>
-          <polygon points="128,6 148,18 128,30" fill="#7c3aed"/>
-        </svg>
-      </div>
+      <div class="install-subtitle">Double-click the installer below to begin</div>
 
       <!-- Capability disclosure: what this agent enables once installed -->
       <div class="features">

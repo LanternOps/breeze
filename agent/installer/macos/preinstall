@@ -1,6 +1,10 @@
 #!/bin/bash
 # NODES UNLIMITED AGENT macOS .pkg preinstall script
 # Stops the existing agent service before files are replaced.
+#
+# !! THIS FILE IS NOT THE ONE THAT SHIPS. !!
+# build-pkg.sh packages agent/installer/macos/scripts/preinstall. See the same
+# note at the top of the sibling postinstall.
 
 # Stop watchdog
 launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null || true

@@ -8,6 +8,14 @@
 # used for first installs and for repairs.
 set -u
 
+# RustDesk is deliberately NOT stopped here. On an upgrade the payload replaces
+# /Applications/RustDesk.app while a session may be live; macOS keeps the running
+# process on its already-open inodes, so it carries on with the old bundle and
+# nobody gets disconnected. Booting out com.carriez.RustDesk_service would kill
+# the exact remote session a tech might be installing THROUGH. The consequence is
+# that the new bundle and the relay config postinstall writes take effect on the
+# next RustDesk restart (or reboot), not immediately.
+
 launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null || true
 launchctl bootout system/com.nodesunlimited.agent 2>/dev/null || true
 

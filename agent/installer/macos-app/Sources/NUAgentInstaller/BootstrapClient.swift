@@ -29,13 +29,35 @@ struct BootstrapClient {
         }
     }
 
+    /// Record of the user ticking the terms checkbox on the token screen. Sent to
+    /// the server so consent is auditable — this is a managed-device install on
+    /// customer hardware, so "who agreed, and when" has to be recorded somewhere
+    /// other than the installer's own memory.
+    struct TermsAcceptance: Encodable {
+        let acceptedTerms: Bool
+        let acceptedTermsAt: String
+        let termsUrl: String
+
+        static let termsUrlString = "https://nodesunlimited.com/terms-of-service"
+
+        static func now() -> TermsAcceptance {
+            let fmt = ISO8601DateFormatter()
+            fmt.formatOptions = [.withInternetDateTime]
+            return TermsAcceptance(
+                acceptedTerms: true,
+                acceptedTermsAt: fmt.string(from: Date()),
+                termsUrl: termsUrlString
+            )
+        }
+    }
+
     let session: URLSession
 
     init(session: URLSession = .shared) {
         self.session = session
     }
 
-    func fetch(token: String, apiHost: String) async throws -> Payload {
+    func fetch(token: String, apiHost: String, terms: TermsAcceptance? = nil) async throws -> Payload {
         guard let url = URL(string: "https://\(apiHost)/api/v1/installer/bootstrap") else {
             throw Error.http(status: 0, body: "constructed URL is invalid")
         }
@@ -44,6 +66,14 @@ struct BootstrapClient {
         req.timeoutInterval = 30
         req.setValue("NUAgentInstaller/1.0", forHTTPHeaderField: "User-Agent")
         req.setValue(token, forHTTPHeaderField: "X-Breeze-Bootstrap-Token")
+
+        // The server treats these as optional, so an older installer that sends no
+        // body keeps working. Encoding failure must not block an install — the
+        // token header is what actually authenticates the request.
+        if let terms, let body = try? JSONEncoder().encode(terms) {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = body
+        }
 
         let (data, response): (Data, URLResponse)
         do {

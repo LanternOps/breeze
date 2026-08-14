@@ -980,6 +980,46 @@ jobs:
           path: build/Nodes Unlimited Installer.app.zip
           retention-days: 30
 
+      # The .app above is already signed, notarized and stapled. build-dmg.sh runs
+      # in package-only mode so it does NOT rebuild or re-sign it — re-signing a
+      # stapled bundle strips the ticket.
+      - name: Build DMG
+        run: |
+          brew list create-dmg >/dev/null 2>&1 || brew install create-dmg
+          chmod +x agent/installer/macos/build-dmg.sh
+          NU_DMG_PREBUILT_APP="$PWD/build/Nodes Unlimited Installer.app" \
+          NU_AGENT_ARTIFACT_DIR="$PWD/build/dmg" \
+          NU_AGENT_VERSION="${GITHUB_REF_NAME#v}" \
+          NOTARIZE=0 \
+            agent/installer/macos/build-dmg.sh
+
+      - name: Sign + notarize + staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          DMG="build/dmg/Nodes Unlimited Agent.dmg"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$DMG"
+          scripts/release/notarize-submit.sh "$DMG"
+          xcrun stapler staple "$DMG"
+
+      # Release gate: walks the finished DMG recursively and fails the build on any
+      # unsigned, un-hardened or un-notarized artifact. Discovery-based, so anything
+      # added to the payload later (RustDesk included) is covered automatically.
+      - name: Verify signing + notarization of everything in the DMG
+        run: |
+          chmod +x agent/installer/macos/verify-dmg-signing.sh
+          agent/installer/macos/verify-dmg-signing.sh "build/dmg/Nodes Unlimited Agent.dmg"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: nu-agent-macos-dmg
+          path: build/dmg/Nodes Unlimited Agent.dmg
+          retention-days: 30
+
       - name: Cleanup keychain
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

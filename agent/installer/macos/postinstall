@@ -1,6 +1,15 @@
 #!/bin/bash
 # NODES UNLIMITED AGENT macOS .pkg postinstall script
 # Runs as root after the installer places files on disk.
+#
+# !! THIS FILE IS NOT THE ONE THAT SHIPS. !!
+# build-pkg.sh packages agent/installer/macos/scripts/postinstall — this sibling
+# copy is not referenced by any build. It is richer (breeze group setup, explicit
+# launchctl bootstrap) and Go comments cite it as the reference for the breeze
+# group, so it is kept, but edits made here do NOT reach a customer machine.
+# The RustDesk relay configuration added 2026-08-14 lives in scripts/postinstall
+# only; it was deliberately not duplicated here rather than forked into two
+# copies that will drift. Reconciling the two scripts is worth doing separately.
 
 set -e
 

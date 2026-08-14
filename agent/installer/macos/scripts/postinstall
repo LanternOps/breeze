@@ -25,5 +25,159 @@ if ! "$AGENT" service install --with-user-helper >/dev/null 2>&1; then
   }
 fi
 
+# ---------------------------------------------------------------------------
+# RustDesk: point it at the Nodes Unlimited self-hosted relay
+# ---------------------------------------------------------------------------
+#
+# ##########################################################################
+# ## DEPLOYMENT VALUES — THESE MUST BE FILLED IN BEFORE SHIPPING A BUILD  ##
+# ##########################################################################
+#
+# These two placeholders are substituted at BUILD time by build-pkg.sh from the
+# environment (NU_RUSTDESK_RELAY_HOST / NU_RUSTDESK_PUBLIC_KEY). They cannot be
+# read from the environment at INSTALL time — a .pkg postinstall runs under
+# `installer` with no access to whatever shell built it.
+#
+#   __NU_RUSTDESK_RENDEZVOUS__   hbbs / ID server as host:port  (default :21116)
+#   __NU_RUSTDESK_RELAY__        hbbr / relay server as host:port (default :21117)
+#   __NU_RUSTDESK_PUBLIC_KEY__   the relay's Ed25519 PUBLIC key, base64 — the
+#                                `id_ed25519.pub` hbbs generates in its data dir.
+#                                Public key only; the private id_ed25519 must
+#                                never appear in an installer.
+#
+# The real values live in agent/installer/macos/.env, which is GITIGNORED,
+# because this repository is public and CLAUDE.md forbids committing infra IPs
+# and hostnames to it.
+#
+# Key names below were verified against the pinned RustDesk 1.4.9 binary rather
+# than taken on trust: custom-rendezvous-server, relay-server and key all appear
+# as option keys in liblibrustdesk.dylib. api-server is intentionally not set —
+# the rustdesk-api domain is not published.
+#
+# If they are still placeholders at install time we log loudly and leave
+# RustDesk's config untouched. We deliberately do NOT fail the install: the
+# agent itself is fully functional without remote access, and an unconfigured
+# RustDesk simply falls back to the PUBLIC rustdesk.com relay — which is a
+# privacy problem, not a broken machine, so it warrants a loud warning rather
+# than a failed rollout on a lab box that must not be disrupted.
+RD_RENDEZVOUS="__NU_RUSTDESK_RENDEZVOUS__"
+RD_RELAY="__NU_RUSTDESK_RELAY__"
+RD_PUBLIC_KEY="__NU_RUSTDESK_PUBLIC_KEY__"
+
+RD_PREF_SUBPATH="Library/Preferences/com.carriez.RustDesk"
+
+# rd_write_config <config-dir> — merge custom-rendezvous-server and key into the
+# [options] table of RustDesk2.toml, preserving every other setting already
+# there. On macOS this TOML file is the supported way to pre-seed a custom
+# server; the Windows executable-filename-encoding trick has no macOS analogue.
+rd_write_config() {
+  rd_dir="$1"
+  rd_toml="$rd_dir/RustDesk2.toml"
+
+  mkdir -p "$rd_dir" 2>/dev/null || return 1
+
+  if [ ! -f "$rd_toml" ]; then
+    # RustDesk writes TOML strings single-quoted; match that. All values are
+    # host:port / base64 shaped and cannot contain a single quote.
+    {
+      echo "[options]"
+      echo "custom-rendezvous-server = '$RD_RENDEZVOUS'"
+      echo "relay-server = '$RD_RELAY'"
+      echo "key = '$RD_PUBLIC_KEY'"
+    } > "$rd_toml" || return 1
+    return 0
+  fi
+
+  # Existing config: rewrite only our two keys inside [options], append them to
+  # that table if absent, and create the table if the file has none. Anything
+  # the user or a previous install set (theme, audio device, ...) survives.
+  awk -v rz="$RD_RENDEZVOUS" -v relay="$RD_RELAY" -v key="$RD_PUBLIC_KEY" '
+    function emit_ours() {
+      if (!wrote_rz)    { print "custom-rendezvous-server = \047" rz "\047"; wrote_rz    = 1 }
+      if (!wrote_relay) { print "relay-server = \047" relay "\047";          wrote_relay = 1 }
+      if (!wrote_key)   { print "key = \047" key "\047";                     wrote_key   = 1 }
+    }
+    /^[[:space:]]*\[/ {
+      # Leaving the [options] table: flush anything we have not written yet.
+      if (in_options) { emit_ours(); in_options = 0 }
+      if ($0 ~ /^[[:space:]]*\[options\][[:space:]]*$/) { in_options = 1; seen_options = 1 }
+      print; next
+    }
+    in_options && /^[[:space:]]*custom-rendezvous-server[[:space:]]*=/ {
+      print "custom-rendezvous-server = \047" rz "\047"; wrote_rz = 1; next
+    }
+    in_options && /^[[:space:]]*relay-server[[:space:]]*=/ {
+      print "relay-server = \047" relay "\047"; wrote_relay = 1; next
+    }
+    in_options && /^[[:space:]]*key[[:space:]]*=/ {
+      print "key = \047" key "\047"; wrote_key = 1; next
+    }
+    { print }
+    END {
+      if (in_options) { emit_ours() }
+      else if (!seen_options) { print ""; print "[options]"; emit_ours() }
+    }
+  ' "$rd_toml" > "$rd_toml.nu-tmp" 2>/dev/null || { rm -f "$rd_toml.nu-tmp"; return 1; }
+
+  mv "$rd_toml.nu-tmp" "$rd_toml" || { rm -f "$rd_toml.nu-tmp"; return 1; }
+  return 0
+}
+
+configure_rustdesk() {
+  if [ ! -d /Applications/RustDesk.app ]; then
+    echo "NU Agent: RustDesk not present, skipping relay configuration"
+    return 0
+  fi
+
+  case "$RD_RENDEZVOUS" in
+    __NU_RUSTDESK_RENDEZVOUS__|"")
+      echo "NU Agent: WARNING - RustDesk relay host was never configured in this build." >&2
+      echo "NU Agent: RustDesk will fall back to the PUBLIC rustdesk.com relay. Populate" >&2
+      echo "NU Agent: agent/installer/macos/.env before running build-pkg.sh." >&2
+      return 0
+      ;;
+  esac
+  case "$RD_PUBLIC_KEY" in
+    __NU_RUSTDESK_PUBLIC_KEY__|"")
+      echo "NU Agent: WARNING - RustDesk relay public key was never configured in this build." >&2
+      echo "NU Agent: Refusing to point RustDesk at $RD_RENDEZVOUS without its key -" >&2
+      echo "NU Agent: an empty key disables relay authentication. Leaving config untouched." >&2
+      return 0
+      ;;
+  esac
+
+  # The RustDesk background service runs as root, so its config lives in root's
+  # home. This is the one that matters for unattended access.
+  if rd_write_config "/var/root/$RD_PREF_SUBPATH"; then
+    echo "NU Agent: RustDesk service config points at $RD_RENDEZVOUS (relay $RD_RELAY)"
+  else
+    echo "NU Agent: WARNING - could not write the root RustDesk config" >&2
+  fi
+
+  # The GUI app runs as the console user and reads its OWN copy, so seed every
+  # human account too. Without this the tech sees the public relay in the UI
+  # even though the service is talking to ours.
+  for rd_home in /Users/*; do
+    [ -d "$rd_home" ] || continue
+    case "$rd_home" in /Users/Shared|/Users/Guest) continue ;; esac
+
+    rd_user=$(stat -f %Su "$rd_home" 2>/dev/null) || continue
+    [ -n "$rd_user" ] || continue
+    rd_uid=$(id -u "$rd_user" 2>/dev/null) || continue
+    # macOS gives human accounts UIDs from 500 up; below that are service accounts.
+    [ "$rd_uid" -ge 500 ] 2>/dev/null || continue
+
+    if rd_write_config "$rd_home/$RD_PREF_SUBPATH"; then
+      # Created as root — hand ownership back or the GUI app cannot rewrite it.
+      chown -R "$rd_user" "$rd_home/$RD_PREF_SUBPATH" 2>/dev/null || true
+      echo "NU Agent: RustDesk config seeded for $rd_user"
+    else
+      echo "NU Agent: WARNING - could not write the RustDesk config for $rd_user" >&2
+    fi
+  done
+}
+
+configure_rustdesk
+
 echo "NU Agent installed. Enrollment runs next if this was launched from install.sh."
 exit 0

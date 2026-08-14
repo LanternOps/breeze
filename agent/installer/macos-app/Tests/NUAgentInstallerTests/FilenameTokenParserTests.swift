@@ -87,6 +87,54 @@ final class FilenameTokenParserTests: XCTestCase {
         ))
     }
 
+    func testResolveFallsBackToBackingDmgFileName() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // No sibling payload, no token in the bundle name — only the DMG has it.
+        let appURL = dir.appendingPathComponent("Nodes Unlimited Installer.app")
+        try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+
+        let result = FilenameTokenParser.resolve(
+            bundleURL: appURL,
+            dmgFileName: "Nodes Unlimited Agent [A7K2XQMN4P@us.2breeze.app].dmg"
+        )
+        XCTAssertEqual(result?.token, "A7K2XQMN4P")
+        XCTAssertEqual(result?.apiHost, "us.2breeze.app")
+    }
+
+    func testResolvePrefersBundleSourcesOverDmgFileName() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let appURL = dir.appendingPathComponent("Nodes Unlimited Installer [BBBBBBBBBB@bundle.example].app")
+        try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+
+        let result = FilenameTokenParser.resolve(
+            bundleURL: appURL,
+            dmgFileName: "Nodes Unlimited Agent [DDDDDDDDDD@dmg.example].dmg"
+        )
+        XCTAssertEqual(result?.token, "BBBBBBBBBB")
+        XCTAssertEqual(result?.apiHost, "bundle.example")
+    }
+
+    func testResolveReturnsNilWhenNothingFound() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let appURL = dir.appendingPathComponent("Nodes Unlimited Installer.app")
+        try FileManager.default.createDirectory(at: appURL, withIntermediateDirectories: true)
+
+        XCTAssertNil(FilenameTokenParser.resolve(bundleURL: appURL, dmgFileName: nil))
+        XCTAssertNil(FilenameTokenParser.resolve(bundleURL: appURL, dmgFileName: "Nodes Unlimited Agent.dmg"))
+    }
+
     func testAcceptsCustomHostForSelfHosters() throws {
         let result = try FilenameTokenParser.parse(
             bundleName: "Nodes Unlimited Installer [A7K2XQMN4P@rmm.acme.example].app"

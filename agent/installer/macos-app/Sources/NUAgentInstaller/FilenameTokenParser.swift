@@ -43,6 +43,18 @@ enum FilenameTokenParser {
         return try parse(bundleName: bundleURL.lastPathComponent)
     }
 
+    /// Non-throwing resolution used by the UI: bootstrap.json → app bundle name
+    /// → backing DMG filename → nil. `nil` is a normal outcome (the user pastes
+    /// the token by hand), not an error.
+    static func resolve(
+        bundleURL: URL,
+        dmgFileName: @autoclosure () -> String? = DmgTokenLocator.backingDmgFileName()
+    ) -> Result? {
+        if let result = try? load(bundleURL: bundleURL) { return result }
+        if let name = dmgFileName(), let result = try? parse(bundleName: name) { return result }
+        return nil
+    }
+
     static func parse(bundleName: String) throws -> Result {
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(

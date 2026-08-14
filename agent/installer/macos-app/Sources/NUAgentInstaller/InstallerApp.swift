@@ -4,6 +4,7 @@ import SwiftUI
 enum InstallState {
     case loading
     case moveToApplications
+    case tokenEntry(prefill: String?, apiHost: String?)
     case confirm(payload: BootstrapClient.Payload)
     case installing
     case permissions(orgName: String)
@@ -68,23 +69,48 @@ final class InstallController: ObservableObject {
         Task { await self.bootstrap() }
     }
 
+    /// Host used when the token was pasted by hand and no host was discovered.
+    static func defaultApiHost() -> String? {
+        guard let host = Bundle.main.object(forInfoDictionaryKey: "NUDefaultApiHost") as? String,
+              !host.isEmpty
+        else { return nil }
+        return host
+    }
+
     private func bootstrap() async {
-        let parsed: FilenameTokenParser.Result
-        do {
-            parsed = try FilenameTokenParser.load(bundleURL: Bundle.main.bundleURL)
-        } catch {
+        // bootstrap.json → app bundle name → backing DMG filename → ask the user.
+        let parsed = FilenameTokenParser.resolve(bundleURL: Bundle.main.bundleURL)
+        token = parsed?.token
+        apiHost = parsed?.apiHost
+        state = .tokenEntry(prefill: parsed?.token, apiHost: parsed?.apiHost)
+    }
+
+    /// Called from TokenEntryView once the token is valid and terms accepted.
+    func submitToken(_ enteredToken: String, apiHost hostHint: String?) {
+        let host = hostHint ?? apiHost ?? Self.defaultApiHost()
+        guard let host else {
             state = .error(
-                message: "This installer needs its original filename. Please re-download from your Nodes Unlimited console.",
+                message: "No Nodes Unlimited server was configured for this installer. Please re-download from your Nodes Unlimited console.",
                 recoverable: false
             )
             return
         }
-        token = parsed.token
-        apiHost = parsed.apiHost
+        token = enteredToken
+        apiHost = host
+        state = .loading
+        Task { await self.fetchBootstrap(token: enteredToken, apiHost: host) }
+    }
 
+    private func fetchBootstrap(token enteredToken: String, apiHost host: String) async {
         let client = BootstrapClient()
         do {
-            let p = try await client.fetch(token: parsed.token, apiHost: parsed.apiHost)
+            // TokenEntryView only enables Next once the terms checkbox is ticked, so
+            // reaching this call IS the acceptance — stamp it and send it for audit.
+            let p = try await client.fetch(
+                token: enteredToken,
+                apiHost: host,
+                terms: .now()
+            )
             payload = p
             state = .confirm(payload: p)
         } catch let err as BootstrapClient.Error {
@@ -170,6 +196,10 @@ struct RootView: View {
                     onMove: controller.moveToApplicationsAndRelaunch,
                     onSkip: controller.continueWithoutMoving
                 )
+            case .tokenEntry(let prefill, let apiHost):
+                TokenEntryView(prefill: prefill) { entered in
+                    controller.submitToken(entered, apiHost: apiHost)
+                }
             case .confirm(let payload):
                 ConfirmView(payload: payload, onInstall: controller.confirmInstall)
             case .installing:

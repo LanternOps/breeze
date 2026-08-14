@@ -67,6 +67,24 @@ fi
 mkdir -p "$OUT"
 
 # ---------------------------------------------------------------------------
+# Package-only mode
+# ---------------------------------------------------------------------------
+# CI already builds, signs, notarizes and staples "Nodes Unlimited Installer.app"
+# in an earlier step. Re-running steps 1-3 there would rebuild the pkgs (needing
+# the Go toolchain) and re-sign an already-notarized bundle, which strips the
+# stapled ticket. Point NU_DMG_PREBUILT_APP at that bundle to skip straight to
+# DMG assembly and keep this script the single source of truth for DMG layout.
+PREBUILT_APP="${NU_DMG_PREBUILT_APP:-}"
+if [[ -n "$PREBUILT_APP" ]]; then
+    [[ -d "$PREBUILT_APP" ]] || { echo "ERROR: NU_DMG_PREBUILT_APP is not a directory: $PREBUILT_APP" >&2; exit 1; }
+    APP_NAME="$(basename "$PREBUILT_APP")"
+    APP_OUT="$PREBUILT_APP"
+    echo "==> package-only mode: using prebuilt $APP_OUT"
+fi
+
+if [[ -z "$PREBUILT_APP" ]]; then
+
+# ---------------------------------------------------------------------------
 # 1. Build per-arch pkg installers
 # ---------------------------------------------------------------------------
 echo "==> building pkgs VERSION=$VERSION"
@@ -75,9 +93,15 @@ for arch in arm64 amd64; do
         cd "$SCRIPT_DIR"
         # Application identity signs the payload binaries; Installer identity
         # signs the .pkg via productsign. They are NOT interchangeable.
+        # RustDesk relay config is consumed by build-pkg.sh, which bakes it into
+        # the postinstall. Forward it explicitly — the subshell does not inherit
+        # what is not named here, and a silently dropped value ships an installer
+        # that points RustDesk at the PUBLIC rustdesk.com relay instead of ours.
         VERSION="$VERSION" \
         SIGN_IDENTITY="$SIGN_IDENTITY" \
         INSTALLER_SIGN_IDENTITY="$INSTALLER_SIGN_IDENTITY" \
+        NU_RUSTDESK_RELAY_HOST="${NU_RUSTDESK_RELAY_HOST:-}" \
+        NU_RUSTDESK_PUBLIC_KEY="${NU_RUSTDESK_PUBLIC_KEY:-}" \
             ./build-pkg.sh "$arch"
     )
 done
@@ -121,6 +145,8 @@ for bin in nu-agent nu-watchdog nu-desktop-helper nu-backup; do
     done
 done
 
+fi  # end of "not package-only mode"
+
 # ---------------------------------------------------------------------------
 # 4. Build DMG with create-dmg
 # ---------------------------------------------------------------------------
@@ -133,16 +159,19 @@ mkdir -p "$DMG_TMP/dmgroot"
 cp -a "$APP_OUT" "$DMG_TMP/dmgroot/$APP_NAME"
 
 # Window/icon layout is tuned to the 1280x760 background image.
-# Icons are centered in the right (white) half: its center is x=875, y=215.
+# The DMG carries ONE icon — the installer — centered in the right (white) half at
+# x=875, y=215. There is deliberately no --app-drop-link: no Applications folder
+# alias and no drag arrow. The installer relocates itself into /Applications and
+# relaunches on first run (InstallerApp.swift), which is what actually avoids
+# Gatekeeper app translocation, so the drag step was never load-bearing.
 create-dmg \
     --volname "Nodes Unlimited Agent" \
     --background "$SCRIPT_DIR/dmg-assets/background.png" \
     --window-size 1280 760 \
     --window-pos 200 120 \
     --icon-size 110 \
-    --icon "$APP_NAME" 720 215 \
+    --icon "$APP_NAME" 875 215 \
     --hide-extension "$APP_NAME" \
-    --app-drop-link 1030 215 \
     --volicon "$MACOS_APP_DIR/Resources/AppIcon.icns" \
     --format UDZO \
     --overwrite \
@@ -173,14 +202,18 @@ if [[ "$NOTARIZE" == "1" && -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE
     fi
     xcrun stapler staple "$DMG_OUT"
 
-    echo "==> notarizing .app zip"
-    xcrun notarytool submit "$ZIP_OUT" \
-        --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-        --wait --timeout 30m --output-format json > "$OUT/notarization-zip.json"
-    if ! python3 -c "import json,sys; d=json.load(open('$OUT/notarization-zip.json')); sys.exit(0 if d.get('status')=='Accepted' else 1)"; then
-        echo "ERROR: .app zip notarization failed" >&2
-        cat "$OUT/notarization-zip.json" >&2
-        exit 1
+    # In package-only mode the .app arrives already notarized and stapled from an
+    # earlier CI step, and no .app zip is produced here — nothing left to submit.
+    if [[ -z "$PREBUILT_APP" ]]; then
+        echo "==> notarizing .app zip"
+        xcrun notarytool submit "$ZIP_OUT" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m --output-format json > "$OUT/notarization-zip.json"
+        if ! python3 -c "import json,sys; d=json.load(open('$OUT/notarization-zip.json')); sys.exit(0 if d.get('status')=='Accepted' else 1)"; then
+            echo "ERROR: .app zip notarization failed" >&2
+            cat "$OUT/notarization-zip.json" >&2
+            exit 1
+        fi
     fi
     NOTARIZED=1
 else
