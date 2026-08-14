@@ -3531,3 +3531,95 @@ tests never exercised the real browser payloads** — worth a validator/UI-contr
 > forward on `main` — verified present in `origin/main`, which is also well ahead of the
 > throwaway branch (Zod-4 migration, contract auto-renew, quotes + portal Caddy routes).
 > The QA branch was discarded; only this log + `UI_IMPROVEMENTS.md` + the checklist were salvaged.
+
+## UI QA Sweep — 2026-07-07
+
+**Scope:** Post-`v0.92.0` delta (`v0.92.0..origin/main`, HEAD `7aec8cd35`). Stack: `breeze-wt-main-3` @ `http://localhost:32785`, rebuilt on latest code, migration `2026-07-06-device-recovery-keys` applied. Login `admin@breeze.local`.
+
+UI-affecting PRs under test: #2272 (Vulnerabilities tab), #2260 (Software single-step + EDR), #2264/#2265 (Quotes image-from-URL + Polish AI), #2058 (recovery-key escrow), #2266 (reliability), #2254 (native consent — mostly agent).
+
+### Baseline login + nav crawl — PASS
+- ✅ Login (pre-filled admin creds) → Dashboard renders, title "Dashboard | Breeze RMM", 0 console errors.
+- ✅ 48 nav destinations present incl. `/vulnerabilities`, `/software`, `/security`, `/billing/quotes`, `/software-inventory`.
+
+### UI/UX observations (running)
+
+### #2272 Device Vulnerabilities tab (posture header + software groups) — PASS
+- ✅ Posture header tiles render with correct counts: Open 1 · Critical 1 · High/Med/Low 0 · Unscored 0 · KEV 1 · Patch-ready 1 (matches seeded single finding).
+- ✅ Software-grouped front door: row "Acme Reader · 1 CVEs · 1 findings · 1 patch-ready · Critical · [Remediate all]".
+- ✅ Drill-down: "Show findings" → CVE table (CVE / SEVERITY / STATUS / CVSS / RISK / KEV / ACTIONS): CVE-2025-E2E-0001, Patch available, Critical, Open, 9.8, risk 100, KEV Yes; per-finding Remediate / Accept risk / Mitigate present. Toggle flips to "Hide findings".
+- ✅ Status filter (Open/Accepted/Mitigated/Patched/All) present.
+- ✅ Empty state (macOS device, 0 findings): all-zero header + "No open vulnerabilities detected on this device."
+- ✅ 0 console errors across both devices.
+- Note: seed data is thin (1 finding, 1 group) — grouping logic exercised but not at scale; unit/integration tests cover the aggregation depth.
+
+### #2260 Software single-step Add Package + installer URL variables — PARTIAL (1 real bug)
+- ✅ Single-step "Add software package" modal renders: Package (Name/Vendor/Category chips), First version (Version/Architecture x64·arm64·x86), SOURCE toggle (Download URL / Upload file), SUPPORTED OS (Win/mac/Linux), Silent install args, Advanced options, Create package. "Create the package and its first deployable version in one step." ✅
+- ✅ Installer-URL variables: "Insert variable" picker opens with built-in tokens grouped ORGANIZATION/SITE/DEVICE ({{org.name}}, {{org.id}}, {{site.name}}, {{site.id}}, {{device.hostname}}). Hint "Use variables like {{org.name}} — resolved per organization at deploy time." Two pickers (Source URL + Silent args). ✅
+- ❌ **BUG (medium): custom-field variables never load — 400 on `/custom-fields?limit=200`.** `AddPackageModal.tsx:78` and `SoftwareVersionManager.tsx:149` fetch `/custom-fields?limit=200`, but the route caps `limit` at `.max(100)` (`apps/api/src/routes/customFields.ts:51` → `z.coerce.number().int().positive().max(100)`). Every request 400s. Impact: any partner/org custom fields are silently absent from the "Insert variable" picker (built-in tokens still appear — fetch is `try/catch`-guarded, so it degrades quietly) AND a 400 logs to console on every modal open / version-manager mount. The modal advertises variable substitution, so missing custom-field tokens is a real functional gap. Fix: callers use `limit=100`, or raise route max. Two call sites.
+- ⚠️ BLOCKED: built-in EDR listing UI (Huntress/S1 branding, readiness pill, BuiltinPackageDetail, preselect deploy) — no EDR integration connected in this fixture (empty library). Needs Huntress/S1 connected to exercise. Not faked.
+
+### Infra note (not a code bug)
+- ⚠️ After `wt-stack up --rebuild`, `/notifications` and `/time-entries/running` returned intermittent **502** through Caddy (stale API upstream IP post-build, per known pattern). `docker restart caddy` cleared them (all endpoints → 401 unauth = API reachable). CAVEAT: restarting caddy on a wt-stack **reassigns the ephemeral host port** (32785 → 32798); `.breeze-stack.json` auto-updates. Prefer not to `docker restart` caddy mid-session.
+
+### #2264 Quotes — add image from URL (server-side copy) — PASS
+- ✅ Segmented toggle "Upload file / From URL" in the Add-image panel; URL input (placeholder `https://example.com/photo.png`); submit label flips "Upload & add image" → "Fetch & add image"; disabled while URL empty.
+- ✅ Happy path: fetched a real public PNG (raw.githubusercontent) → server-side copy stored in `quote_images` (mime=image/png sniffed, byte_size=9208 = actual bytes, sha256 recorded) → rendered as IMAGE block via authed blob loader (`alt="Quote image"`). Not a hotlink — bytes copied in.
+- ✅ SSRF guard: `http://169.254.169.254/latest/meta-data/` → API 502 → runAction toast **"Couldn't reach that URL"**, no block added, panel stays open for retry. Error path surfaces (NOT a silent failure).
+- ⚠️ UI/UX: React console warning "changing an uncontrolled input to be controlled" on the URL field (imageUrl state inits undefined). Cosmetic — fix by initializing `imageUrl: ''`.
+
+### #2265 Quotes — Polish-with-AI advisory fact-guard — PASS
+- ✅ Polish button (`polish-btn-*`) present on manual line entry when name/desc non-empty; live AI call succeeds (ANTHROPIC_API_KEY configured).
+- ✅ Fact-guard is **advisory, not blocking**: polished "dell 24in monitor 1920x1080 60hz hdmi" → name "24-Inch Monitor" + spec-list description; because a token changed, the preview opened with the amber banner (`polish-fact-warning-*`): "⚠️ Double-check the details before applying… Added (verify these are real): 24in". Apply changes / Cancel both available — NOT a 502/hard block (this is the exact regression #2265 fixed for distributor lines).
+- ✅ runAction wraps the call; genuine failures would toast. Cancelled without applying (no data mutation).
+- Note: also spotted bonus feature "✨ Auto-fill from web" (catalog enrichment) on manual lines — part of the catalogEnrichmentService delta; not core to the tested PRs, rendered fine.
+
+### #2058 BitLocker/FileVault recovery-key escrow UI — PASS (reveal sub-flow BLOCKED by fixtures)
+- ✅ Encryption Status page (`/security/encryption`): new **escrow-state filter** (All escrow states / Key escrowed / Key missing) + new **RECOVERY KEY** column in the device table. Summary tiles (BitLocker/FileVault/LUKS/None) render. Both seed devices unencrypted → RECOVERY KEY "-". 0 console errors.
+- ✅ Device → Security tab: `RecoveryKeysPanel` renders ("Recovery Keys" + **Collect now** / **Rotate key** actions; empty state "No recovery keys escrowed.").
+- ✅ "Collect now" on the offline Windows device → runAction toast **"Key collection queued"** (visible feedback; command queued gracefully, not silent).
+- ⚠️ BLOCKED: reveal/copy of an actual escrowed key + the "Key escrowed" filtered view — `device_recovery_keys` is empty (0 rows) and no encrypted devices in the fixture. Reveal-key decryption path untested via UI (covered by `recoveryKeys.test.ts` + RLS integration test). Re-test needs a device with an escrowed key.
+- Migration `2026-07-06-device-recovery-keys` applied; `device_recovery_keys` table present with RLS.
+
+### #2266 Reliability event-loop hardening — PASS (surface) / #2254 native consent — agent-side (no web surface)
+- ✅ #2266: Device Overview reliability card renders — Score 100, Trend Stable, 30d uptime 100.0%, MTBF —, "Ask AI about reliability", full score-factor breakdown (Uptime 30/30, Crashes 25/25, Hangs 15/15, Service failures 15/15, Hardware errors…), "Updated Jul 6 08:00 PM". Projected-history read path works; 0 console errors. Event-loop hardening itself is backend/non-UI-observable (covered by reliabilityWorker + projection integration tests).
+- ℹ️ #2254: native remote-session consent is delivered by the on-device native helper (agent Go code) — no MSP-web surface. `/remote` (Start Terminal / File Transfer / Session History) renders cleanly, 0 console errors. Web consent-fallback is advertise-gated partner config, not exercisable without an online consenting agent. Agent-side verification out of scope for a web Playwright sweep.
+
+### Everyday-workflow page crawl — PASS (1 pre-existing dev-only warning)
+Each page: renders, primary heading present, no error state, console-error check.
+- ✅ Alerts, Scripts (Script Library), Reports, Partner Settings, Integrations, Invoices — all render, 0 console errors.
+- ⚠️ Patches (`/patches`): renders fine ("Patch Management") but logs a **React hydration mismatch** (client renders an extra tab button vs SSR). `PatchesPage.tsx` is NOT in the v0.92.0→HEAD delta → **pre-existing, not a regression from this release**; dev-mode-only (React silently regenerates the subtree in prod). Noted, not filed against this release.
+
+### UI/UX observations (summary)
+- React "uncontrolled→controlled input" warning on the quote image-URL field (`imageUrl` inits undefined) — #2264, cosmetic.
+- Pre-existing hydration mismatch on Patches tabs (dev-only).
+- Restarting Caddy on a wt-stack reassigns the ephemeral host port (session gotcha, not product).
+
+## Summary — 2026-07-07 sweep
+
+| Area / PR | Result |
+|---|---|
+| Baseline login + nav crawl | PASS |
+| #2272 Vulnerabilities tab reshape | PASS |
+| #2260 Software single-step + URL vars | PARTIAL — 1 bug (custom-fields limit=200 → 400); EDR listing BLOCKED (no integration) |
+| #2264 Quotes image-from-URL | PASS (happy + SSRF + validation) |
+| #2265 Quotes Polish-with-AI fact-guard | PASS (advisory banner fires) |
+| #2058 Recovery-key escrow UI | PASS (reveal sub-flow BLOCKED — no escrowed keys) |
+| #2266 Reliability card | PASS (surface) |
+| #2254 Native consent | Agent-side, no web surface |
+| Everyday-workflow crawl | PASS (1 pre-existing dev-only hydration warning) |
+
+**Top finding:** #2260's variable picker requests `/custom-fields?limit=200` but the route caps `limit` at 100 → 400 on every Add Package modal open + Software Version Manager mount. Custom-field variables silently never load (built-in tokens still work; guarded try/catch). 2 call sites. → GitHub issue filed: #2276.
+
+### Security note — #2264 image-from-URL SSRF (automated review flag → FALSE POSITIVE)
+Automated security review flagged `lifecycle.ts` image-from-URL as HIGH SSRF. Verified against code + live test — not exploitable:
+- Fetch routes through `fetchRemoteImage` → `safeFetch` (`services/urlSafety.ts`), the audited SSRF chokepoint (Huntress/Pax8/SSO/webhooks share it), called in strict mode (no `allowPrivateNetwork`).
+- `safeFetch`: resolves all DNS results, blocks private/loopback/link-local/169.254 metadata/CGNAT/0.0.0.0/multicast/TEST-NET (v4 + v6 incl. IPv4-mapped hex-pair bypass), **pins the connection to the validated public IP** (rebinding defense), follows **no redirects** (and `fetchRemoteImage` rejects non-2xx), 8s timeout, cert validation on, Host derived from URL.
+- Content-Type ignored; mime by magic-byte sniff + 5 MB cap.
+- Live-verified in this sweep: `http://169.254.169.254/latest/meta-data/` → 502 "Couldn't reach that URL", no image stored.
+No code change.
+
+### #2276 fix — RETEST PASS (PR #2277)
+- Clamped both callers (`AddPackageModal.tsx`, `SoftwareVersionManager.tsx`) `/custom-fields?limit=200` → `limit=100` (route max).
+- Live retest: Add Package modal → `GET /custom-fields?limit=100 → 200 OK`, 0 console errors (was 400). `AddPackageModal.test.tsx` green.
+- Branch `fix/software-custom-fields-limit-2276` → PR #2277, base main. Awaiting CI + admin merge before release tag.
