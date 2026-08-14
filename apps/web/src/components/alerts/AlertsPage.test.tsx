@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AlertsPage from './AlertsPage';
@@ -21,10 +21,18 @@ vi.mock('../filters/DeviceFilterBar', () => ({
 }));
 
 // Pin the org-scope selectors so the page doesn't try to read a real store.
+// `mockCurrentOrgId` is mutable so a test can simulate an org switch (a rerender
+// re-runs the selector and picks up the new value); it resets to 'org-1' before
+// every test via the file-level beforeEach below.
+let mockCurrentOrgId: string | null = 'org-1';
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { orgScope: string; currentOrgId: string | null }) => unknown) =>
-    selector({ orgScope: 'current', currentOrgId: 'org-1' })
+    selector({ orgScope: 'current', currentOrgId: mockCurrentOrgId })
 }));
+
+beforeEach(() => {
+  mockCurrentOrgId = 'org-1';
+});
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -369,6 +377,143 @@ describe('AlertsPage — acknowledge in-flight feedback', () => {
       'href',
       '/devices/device-1#anomalies/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     );
+  });
+});
+
+describe('AlertsPage — empty state distinguishes no-devices from a healthy fleet', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const emptyStateMock = (devices: unknown[]) =>
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: devices }));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+  it('shows an install-your-first-device prompt (not "fleet is healthy") when there are zero devices', async () => {
+    emptyStateMock([]);
+    render(<AlertsPage />);
+
+    // With no devices enrolled, "all clear / your fleet is healthy" would be a
+    // false health signal — the page must instead point at enrollment.
+    expect(await screen.findByText('No devices reporting yet')).toBeInTheDocument();
+    const installLink = screen.getByRole('link', { name: /Install your first device/i });
+    expect(installLink).toHaveAttribute('href', '/devices#add-device');
+    expect(screen.queryByText('No active alerts. Your fleet is healthy.')).not.toBeInTheDocument();
+  });
+
+  it('shows the healthy "all clear" state when at least one device is reporting but no alerts exist', async () => {
+    emptyStateMock([{ id: 'device-1', hostname: 'SRV-01' }]);
+    render(<AlertsPage />);
+
+    expect(await screen.findByText('No active alerts. Your fleet is healthy.')).toBeInTheDocument();
+    expect(screen.queryByText('No devices reporting yet')).not.toBeInTheDocument();
+  });
+
+  it('makes NO health claim while the devices request is still pending, then resolves to no-devices', async () => {
+    const devicesDeferred = deferred<Response>();
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return devicesDeferred.promise; // stays pending
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    // Alerts have resolved empty, but devices are still in flight. The neutral
+    // device-status spinner must be showing (targeted by test id so it can't be
+    // confused with the initial "Loading alerts" spinner), and neither the
+    // "no devices" prompt nor the false "fleet is healthy" claim may appear.
+    expect(await screen.findByTestId('alerts-device-status-loading')).toBeInTheDocument();
+    expect(screen.queryByText('No devices reporting yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('No active alerts. Your fleet is healthy.')).not.toBeInTheDocument();
+
+    // Devices come back empty -> now the enrollment prompt is correct.
+    devicesDeferred.resolve(makeJsonResponse({ data: [] }));
+    expect(await screen.findByText('No devices reporting yet')).toBeInTheDocument();
+  });
+
+  it('shows a neutral "device status unavailable" state (never a health claim) when the devices request fails', async () => {
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ error: 'boom' }, false, 500));
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    render(<AlertsPage />);
+
+    // A failed devices fetch means we can prove neither "no devices" NOR
+    // "fleet is healthy" — the page must state only the fact it has (no active
+    // alerts) and flag the unknown device status.
+    expect(await screen.findByText("We couldn't load your device status. Refresh to try again.")).toBeInTheDocument();
+    expect(screen.queryByText('No devices reporting yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('No active alerts. Your fleet is healthy.')).not.toBeInTheDocument();
+  });
+
+  it('drops a superseded devices response even on switch-back to the same org (A->B->A, the ABA case)', async () => {
+    // The hard case a value/org-id guard cannot catch: a slow FIRST org-A
+    // request resolving AFTER a newer org-A request. Only a monotonic per-fetch
+    // token distinguishes them, so the stale one must be dropped.
+    const staleA1 = deferred<Response>();
+    let devicesCall = 0;
+    fetchMock.mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if ((url === '/alerts' || url.startsWith('/alerts?')) && method === 'GET') {
+        return Promise.resolve(makeJsonResponse({ data: [] }));
+      }
+      if (url === '/devices' && method === 'GET') {
+        devicesCall += 1;
+        if (devicesCall === 1) return staleA1.promise;                              // A1: slow, resolves last
+        if (devicesCall === 2) return Promise.resolve(makeJsonResponse({ data: [] })); // B: empty
+        return Promise.resolve(makeJsonResponse({ data: [{ id: 'a-1', hostname: 'A-SRV' }] })); // A2: has a device
+      }
+      return Promise.resolve(makeJsonResponse({ error: `unexpected ${method} ${url}` }, false, 404));
+    });
+
+    mockCurrentOrgId = 'org-A';
+    const { rerender } = render(<AlertsPage />);
+    expect(await screen.findByTestId('alerts-device-status-loading')).toBeInTheDocument(); // A1 pending
+
+    mockCurrentOrgId = 'org-B';
+    rerender(<AlertsPage />);
+    expect(await screen.findByText('No devices reporting yet')).toBeInTheDocument(); // B empty
+
+    mockCurrentOrgId = 'org-A';
+    rerender(<AlertsPage />);
+    // A2 has a device -> healthy is the correct, current state.
+    expect(await screen.findByText('No active alerts. Your fleet is healthy.')).toBeInTheDocument();
+
+    // A1 (the original, superseded request) now resolves carrying ZERO devices.
+    // Its org id still matches ('org-A'), so a value guard would wrongly commit
+    // it and flip the page to "No devices reporting yet". The generation token
+    // must drop it, leaving A2's healthy state intact.
+    await act(async () => {
+      staleA1.resolve(makeJsonResponse({ data: [] }));
+      await Promise.resolve();
+    });
+    expect(screen.getByText('No active alerts. Your fleet is healthy.')).toBeInTheDocument();
+    expect(screen.queryByText('No devices reporting yet')).not.toBeInTheDocument();
   });
 });
 

@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { CheckCircle, Settings2 } from 'lucide-react';
+import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import SuppressAlertDialog from './SuppressAlertDialog';
@@ -52,6 +52,13 @@ export default function AlertsPage() {
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
+  // Tracked separately from `loading` (which only follows the alerts fetch):
+  // fetchDevices runs in parallel, so the empty state must not make ANY health
+  // claim until the device list resolves. 'success' with zero devices is the
+  // only state that shows the enrollment prompt; while 'loading' we show a
+  // neutral spinner (no false "healthy" flash), and 'error' falls through to
+  // the neutral all-clear rather than fabricating a zero-device claim.
+  const [deviceStatus, setDeviceStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [detailOpen, setDetailOpen] = useState(false);
@@ -81,7 +88,18 @@ export default function AlertsPage() {
   const isFleetView = !currentOrgId && allOrgs;
   const alertCorrelationDisabled = mlFlags.isDisabled('ml.alert_correlation.enabled');
 
+  // Monotonic per-fetch request tokens. Each invocation claims a new id at the
+  // start (synchronously, so there is no render/effect timing window), and only
+  // commits its result if it is still the latest invocation of that fetch. This
+  // drops any superseded response — an org switch, an A->B->A switch-back, or a
+  // slower earlier same-scope refetch — so a stale response can never overwrite
+  // newer state (which would leak a previous org's device names into this scope
+  // and mis-drive the empty state).
+  const alertsFetchId = useRef(0);
+  const devicesFetchId = useRef(0);
+
   const fetchAlerts = useCallback(async () => {
+    const fetchId = ++alertsFetchId.current;
     try {
       setLoading(true);
       setError(undefined);
@@ -90,6 +108,7 @@ export default function AlertsPage() {
       // option — filtering happens client-side in AlertList, whose "All Status"
       // view excludes dismissed so they only show when explicitly selected.
       const response = await fetchWithAuth('/alerts?status=active,acknowledged,resolved,suppressed,dismissed');
+      if (fetchId !== alertsFetchId.current) return; // superseded by a newer fetch; drop
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -98,20 +117,28 @@ export default function AlertsPage() {
         throw new Error(t('alertsPage.failedToFetchAlerts'));
       }
       const data = await response.json();
+      if (fetchId !== alertsFetchId.current) return;
       const raw: Record<string, unknown>[] = asList(data, 'alerts');
       setAlerts(normalizeAlertRows(raw, t('alertsPage.unknownDevice')));
     } catch (err) {
+      if (fetchId !== alertsFetchId.current) return;
       setError(err instanceof Error ? err.message : t('alertsPage.genericError'));
     } finally {
-      setLoading(false);
+      if (fetchId === alertsFetchId.current) setLoading(false);
     }
   }, [currentOrgId, t]);
 
   const fetchDevices = useCallback(async () => {
+    const fetchId = ++devicesFetchId.current;
+    // Reset on every (re)fetch — e.g. an org switch — so a stale device list
+    // from the previous scope can't drive the empty-state classification.
+    setDeviceStatus('loading');
     try {
       const response = await fetchWithAuth('/devices');
+      if (fetchId !== devicesFetchId.current) return; // superseded by a newer fetch; drop
       if (response.ok) {
         const data = await response.json();
+        if (fetchId !== devicesFetchId.current) return;
         const raw: Record<string, unknown>[] = asList(data, 'devices');
         setDevices(
           raw.map((d) => ({
@@ -119,9 +146,15 @@ export default function AlertsPage() {
             name: String(d.displayName ?? d.hostname ?? d.name ?? t('alertsPage.unknownDevice')),
           }))
         );
+        setDeviceStatus('success');
+      } else {
+        // A non-OK devices response must NOT let us claim "no devices".
+        setDeviceStatus('error');
       }
     } catch (err) {
+      if (fetchId !== devicesFetchId.current) return;
       console.error('Failed to fetch devices:', err);
+      setDeviceStatus('error');
     }
   }, [currentOrgId, t]);
 
@@ -139,6 +172,9 @@ export default function AlertsPage() {
   }, []);
 
   useEffect(() => {
+    // fetchAlerts/fetchDevices change identity when currentOrgId changes, so
+    // this re-runs on org switch; each fetch's monotonic token drops any
+    // superseded in-flight response.
     fetchAlerts();
     fetchDevices();
   }, [fetchAlerts, fetchDevices]);
@@ -507,7 +543,45 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {alerts.length === 0 ? (
+      {alerts.length === 0 && deviceStatus === 'success' && devices.length === 0 ? (
+        // No devices are enrolled yet, so "all clear" would be a false health
+        // signal. Point the user at enrolling their first device instead.
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-muted p-4 mb-4">
+            <HardDriveDownload className="h-8 w-8 text-muted-foreground" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">{t('alertsPage.noDevicesTitle')}</h2>
+          <p className="text-sm text-muted-foreground max-w-sm mb-4">
+            {t('alertsPage.noDevicesInstallAgentToSeeAlerts')}
+          </p>
+          <a
+            href="/devices#add-device"
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition"
+          >
+            <HardDriveDownload className="h-4 w-4" />
+            {t('alertsPage.installYourFirstDevice')}
+          </a>
+        </div>
+      ) : alerts.length === 0 && deviceStatus === 'loading' ? (
+        // Device status not yet known — show a neutral spinner rather than
+        // flashing either "no devices" or "your fleet is healthy".
+        <div className="flex items-center justify-center py-16" data-testid="alerts-device-status-loading">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      ) : alerts.length === 0 && deviceStatus === 'error' ? (
+        // The devices request failed, so we cannot prove the fleet is empty OR
+        // healthy. State the one fact we have (no active alerts) and flag the
+        // unknown device status instead of asserting all-clear.
+        <div className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="rounded-full bg-muted p-4 mb-4">
+            <HardDriveDownload className="h-8 w-8 text-muted-foreground" />
+          </div>
+          <h2 className="text-lg font-semibold text-foreground mb-1">{t('alertsPage.noActiveAlerts')}</h2>
+          <p className="text-sm text-muted-foreground max-w-sm">
+            {t('alertsPage.deviceStatusUnavailable')}
+          </p>
+        </div>
+      ) : alerts.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="rounded-full bg-success/10 p-4 mb-4">
             <CheckCircle className="h-8 w-8 text-success" />
