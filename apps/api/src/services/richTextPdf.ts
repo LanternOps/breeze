@@ -399,3 +399,137 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
   // quotePdf block-type branch uses (e.g. `y = doc.y + 8` after a heading).
   return y + gapBefore;
 }
+
+// ---------------------------------------------------------------------------
+// Measurement: same layout math as the draw loop above (:334-397), minus the
+// drawing. Kept as a SEPARATE walk (not "draw with a no-op sink") because the
+// draw loop leans on pdfkit's own `continued: true` line-wrapping, which has
+// no read-only counterpart — so measurement re-derives line counts itself via
+// per-run `widthOfString` + a greedy fill, mirroring what pdfkit's continued
+// mode does. Any change to the draw loop's line-fill behavior must be mirrored
+// here by hand.
+// ---------------------------------------------------------------------------
+
+/** doc._font / doc._fontSize aren't part of pdfkit's public TS surface, but
+ *  they're exactly what doc.font()/doc.fontSize() mutate — save/restore them
+ *  directly so measuring never leaks a font change into the caller's doc. */
+interface PdfDocFontState {
+  _font: unknown;
+  _fontSize: number;
+}
+
+function saveFontState(doc: PDFKit.PDFDocument): PdfDocFontState {
+  const d = doc as unknown as PdfDocFontState;
+  return { _font: d._font, _fontSize: d._fontSize };
+}
+
+function restoreFontState(doc: PDFKit.PDFDocument, saved: PdfDocFontState): void {
+  const d = doc as unknown as PdfDocFontState;
+  d._font = saved._font;
+  d._fontSize = saved._fontSize;
+}
+
+/** Greedy line-fill over a run sequence, mirroring pdfkit's own continued-text
+ *  wrapping: walk words in source order, measuring each word at ITS run's
+ *  actual font (so a bold run's wider glyphs wrap sooner than a regular run's
+ *  would), and break to a new line whenever the running line width would
+ *  exceed `width`. `\n` inside a run's text (from `<br>`) forces a hard break.
+ *  Mutates doc.font/fontSize as it measures — caller is responsible for
+ *  save/restore. */
+function countWrappedLines(doc: PDFKit.PDFDocument, runs: RichTextRun[], width: number, fontSize: number, fonts: BodyFonts, forceBold: boolean): number {
+  let lines = 1;
+  let lineWidth = 0;
+  for (const run of runs) {
+    const font = fontFor(fonts, forceBold || run.bold, run.italic);
+    doc.font(font).fontSize(fontSize);
+    const segments = run.text.split('\n');
+    segments.forEach((segment, segIndex) => {
+      if (segIndex > 0) {
+        // <br> — always a hard line break, matching pdfkit's own '\n' handling.
+        lines += 1;
+        lineWidth = 0;
+      }
+      if (!segment.length) return;
+      // Keep whitespace as its own token (so its width counts toward the
+      // current line) but never let a line START with one after a wrap.
+      const tokens = segment.split(/(\s+)/).filter((t) => t.length > 0);
+      for (const token of tokens) {
+        const isWhitespace = token.trim().length === 0;
+        const tokenWidth = doc.widthOfString(token);
+        if (lineWidth > 0 && lineWidth + tokenWidth > width) {
+          if (isWhitespace) continue; // drop trailing/would-be-leading space at a wrap point
+          lines += 1;
+          lineWidth = 0;
+        }
+        lineWidth += tokenWidth;
+      }
+    });
+  }
+  return lines;
+}
+
+/** Measures one block's height using the same per-run font selection, gutter,
+ *  and indent math as the draw loop, but via countWrappedLines instead of an
+ *  actual pdfkit draw. Returns the block's own height (excluding spacingAfter —
+ *  callers accumulate that separately, matching renderRichTextIntoPdf). */
+function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextBlock, width: number, fonts: BodyFonts): number {
+  const style = styleFor(block.kind);
+  const isLi = block.kind === 'li';
+  const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
+  let gutter = 0;
+  if (isLi) {
+    doc.font(fonts.regular).fontSize(style.fontSize);
+    gutter = Math.max(BULLET_INDENT, Math.ceil(doc.widthOfString(prefix)) + 4);
+  }
+  const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
+  const textWidth = width - indent;
+
+  const runs = block.runs.length ? block.runs : [{ text: '', bold: false, italic: false, underline: false }];
+  const lines = countWrappedLines(doc, runs, textWidth, style.fontSize, fonts, style.forceBold);
+
+  doc.font(fonts.regular).fontSize(style.fontSize);
+  // includeGap=true matches doc.heightOfString's own line-height convention
+  // (the draw loop's prior single-font blockHeight approximation used
+  // heightOfString), so per-run measurement stays comparable to it.
+  return lines * doc.currentLineHeight(true);
+}
+
+/** Height the given sanitized inline/block HTML would occupy at `width`,
+ *  measured PER-RUN at the font each run will actually draw in (bold/italic
+ *  switches included) — no drawing, doc font state saved/restored. */
+export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: number, fonts?: BodyFonts): number {
+  const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
+  const saved = saveFontState(doc);
+  try {
+    const blocks = parseRichText(html);
+    let total = 0;
+    let gapBefore = 0;
+    for (const block of blocks) {
+      const style = styleFor(block.kind);
+      total += gapBefore + measureBlockHeight(doc, block, width, bodyFonts);
+      gapBefore = style.spacingAfter;
+    }
+    // Trailing gap, matching renderRichTextIntoPdf's `return y + gapBefore`.
+    return blocks.length ? total + gapBefore : 0;
+  } finally {
+    restoreFontState(doc, saved);
+  }
+}
+
+/** Same per-run measurement for a single inline-runs string (table cells):
+ *  no block splitting — the whole string is one line-wrapped run sequence at
+ *  a single caller-supplied font size. */
+export function measureInlineRuns(doc: PDFKit.PDFDocument, html: string, width: number, fontSize: number, fonts?: BodyFonts): number {
+  const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
+  const saved = saveFontState(doc);
+  try {
+    if (!html || !html.trim()) return 0;
+    const runs = extractRuns(tokenize(html), BASE_CTX);
+    const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
+    const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, false);
+    doc.font(bodyFonts.regular).fontSize(fontSize);
+    return lines * doc.currentLineHeight(true);
+  } finally {
+    restoreFontState(doc, saved);
+  }
+}

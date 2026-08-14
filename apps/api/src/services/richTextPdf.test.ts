@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import PDFDocument from 'pdfkit';
-import { parseRichText, renderRichTextIntoPdf } from './richTextPdf';
+import { parseRichText, renderRichTextIntoPdf, measureRichText, measureInlineRuns } from './richTextPdf';
 
 describe('parseRichText', () => {
   it('splits paragraphs and inline formatting runs', () => {
@@ -177,5 +177,99 @@ describe('renderRichTextIntoPdf', () => {
     // y=200 — the renderer must call ensureRoom often enough (and reserve
     // enough per block) for at least one page break to actually fire.
     expect(pageAdds).toBeGreaterThan(0);
+  });
+});
+
+describe('measureRichText', () => {
+  // Long enough, at a narrow width, that bold's wider glyphs push it onto more
+  // wrapped lines than the same text would take set in the regular face.
+  const LONG_TEXT =
+    'The quick brown fox jumps over the lazy dog and then keeps running through the proposal terms section without stopping for quite a while.';
+  const NARROW_WIDTH = 160;
+
+  it('measures a bold-heavy string at its actual (wider) bold glyphs — taller-or-equal vs a flattened single-font measurement', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const boldHtml = `<p><strong>${LONG_TEXT}</strong></p>`;
+
+    const perRunHeight = measureRichText(doc, boldHtml, NARROW_WIDTH);
+
+    // Flattened single-font measurement: same text, same width, but measured
+    // in the regular (narrower) face — what a naive "ignore run fonts" measurer
+    // would produce.
+    doc.font('Helvetica').fontSize(11);
+    const flattenedHeight = doc.heightOfString(LONG_TEXT, { width: NARROW_WIDTH });
+
+    expect(perRunHeight).toBeGreaterThanOrEqual(flattenedHeight);
+  });
+
+  it('is deterministic across repeated calls', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const html = `<p>plain <strong>bold</strong> and <em>italic</em> text mixed together for measurement.</p>`;
+
+    const first = measureRichText(doc, html, 250);
+    const second = measureRichText(doc, html, 250);
+
+    expect(first).toBe(second);
+  });
+
+  it('restores the doc font state (font name + size) after measuring', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica').fontSize(9);
+    const before = doc as unknown as { _font: { name: string }; _fontSize: number };
+    const beforeFontName = before._font.name;
+    const beforeFontSize = before._fontSize;
+
+    measureRichText(doc, `<p><strong>${LONG_TEXT}</strong></p>`, NARROW_WIDTH);
+
+    const after = doc as unknown as { _font: { name: string }; _fontSize: number };
+    expect(after._font.name).toBe(beforeFontName);
+    expect(after._fontSize).toBe(beforeFontSize);
+  });
+
+  it('returns 0 for empty/whitespace input', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    expect(measureRichText(doc, '', 300)).toBe(0);
+  });
+});
+
+describe('measureInlineRuns', () => {
+  const LONG_TEXT =
+    'The quick brown fox jumps over the lazy dog and then keeps running through the proposal terms section without stopping for quite a while.';
+  const NARROW_WIDTH = 140;
+
+  it('measures a bold-heavy inline-runs string taller-or-equal vs a flattened single-font measurement at narrow width', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const boldHtml = `<strong>${LONG_TEXT}</strong>`;
+
+    const perRunHeight = measureInlineRuns(doc, boldHtml, NARROW_WIDTH, 10);
+
+    doc.font('Helvetica').fontSize(10);
+    const flattenedHeight = doc.heightOfString(LONG_TEXT, { width: NARROW_WIDTH });
+
+    expect(perRunHeight).toBeGreaterThanOrEqual(flattenedHeight);
+  });
+
+  it('is deterministic across repeated calls', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const html = 'plain <strong>bold</strong> and <em>italic</em> text for a table cell.';
+
+    const first = measureInlineRuns(doc, html, 200, 10);
+    const second = measureInlineRuns(doc, html, 200, 10);
+
+    expect(first).toBe(second);
+  });
+
+  it('restores the doc font state (font name + size) after measuring', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica').fontSize(9);
+    const before = doc as unknown as { _font: { name: string }; _fontSize: number };
+    const beforeFontName = before._font.name;
+    const beforeFontSize = before._fontSize;
+
+    measureInlineRuns(doc, `<strong>${LONG_TEXT}</strong>`, NARROW_WIDTH, 10);
+
+    const after = doc as unknown as { _font: { name: string }; _fontSize: number };
+    expect(after._font.name).toBe(beforeFontName);
+    expect(after._fontSize).toBe(beforeFontSize);
   });
 });
