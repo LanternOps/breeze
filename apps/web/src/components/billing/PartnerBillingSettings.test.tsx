@@ -117,6 +117,33 @@ describe('PartnerBillingSettings', () => {
     });
   });
 
+  it('loads and shows the current document theme and page size, and PATCHes changes', async () => {
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+        invoiceFooter: null, documentTheme: 'condensed', documentPageSize: 'letter',
+      });
+    });
+    render(<PartnerBillingSettings />);
+    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+
+    expect((screen.getByTestId('partner-billing-document-theme') as HTMLSelectElement).value).toBe('condensed');
+    expect((screen.getByTestId('partner-billing-document-page-size') as HTMLSelectElement).value).toBe('letter');
+
+    fireEvent.change(screen.getByTestId('partner-billing-document-theme'), { target: { value: 'classic' } });
+    fireEvent.change(screen.getByTestId('partner-billing-document-page-size'), { target: { value: 'a4' } });
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(patch).toBeTruthy();
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
+        documentTheme: 'classic', documentPageSize: 'a4',
+      });
+    });
+  });
+
   // #3430 — this form PATCHes the FULL payload, so a legacy scheme-less
   // billingWebsite would 400 an unrelated edit with only a toast naming the
   // wire field. The inline guard points at the offending field first.

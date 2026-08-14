@@ -452,6 +452,7 @@ export async function updatePartnerBillingSettings(
     invoiceTermsDays: number; defaultMarkupPercent?: number | null; autoTaxHardware?: boolean;
     catalogAiStyle?: string | null;
     invoiceFooter?: string | null;
+    documentTheme?: 'classic' | 'condensed'; documentPageSize?: 'letter' | 'a4';
     billingCompanyName?: string | null; billingPhone?: string | null; billingWebsite?: string | null;
     billingAddressLine1?: string | null; billingAddressLine2?: string | null; billingAddressCity?: string | null;
     billingAddressRegion?: string | null; billingAddressPostalCode?: string | null; billingAddressCountry?: string | null;
@@ -475,6 +476,8 @@ export async function updatePartnerBillingSettings(
   if (patch.autoTaxHardware !== undefined) set.autoTaxHardware = patch.autoTaxHardware;
   if (patch.catalogAiStyle !== undefined) set.catalogAiStyle = patch.catalogAiStyle?.trim() || null;
   if (patch.invoiceFooter !== undefined) set.invoiceFooter = patch.invoiceFooter;
+  if (patch.documentTheme !== undefined) set.documentTheme = patch.documentTheme;
+  if (patch.documentPageSize !== undefined) set.documentPageSize = patch.documentPageSize;
   for (const key of [
     'billingCompanyName', 'billingPhone', 'billingWebsite', 'billingAddressLine1', 'billingAddressLine2',
     'billingAddressCity', 'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry',
@@ -487,6 +490,7 @@ export async function updatePartnerBillingSettings(
     invoiceNumberPrefix: partners.invoiceNumberPrefix, invoiceTermsDays: partners.invoiceTermsDays,
     defaultMarkupPercent: partners.defaultMarkupPercent, autoTaxHardware: partners.autoTaxHardware,
     catalogAiStyle: partners.catalogAiStyle, invoiceFooter: partners.invoiceFooter,
+    documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
   });
   if (!row) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
   return row;

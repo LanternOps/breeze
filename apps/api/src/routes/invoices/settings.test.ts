@@ -95,6 +95,41 @@ describe('billing settings routes', () => {
     );
   });
 
+  it('PATCH /partner/billing-settings persists documentTheme and documentPageSize', async () => {
+    (svc.updatePartnerBillingSettings as any).mockResolvedValue({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    });
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      documentTheme: 'condensed', documentPageSize: 'letter'
+    }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.data.documentTheme).toBe('condensed');
+    expect(data.data.documentPageSize).toBe('letter');
+    expect(svc.updatePartnerBillingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ documentTheme: 'condensed', documentPageSize: 'letter' }),
+      expect.objectContaining({ partnerId: 'p1' })
+    );
+  });
+
+  it('PATCH /partner/billing-settings rejects an invalid documentTheme (→ 400, no service call)', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentTheme: 'garish'
+    }));
+    expect(res.status).toBe(400);
+    expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /partner/billing-settings rejects an invalid documentPageSize (→ 400, no service call)', async () => {
+    const res = await invoiceSettingsRoutes.request('/partner/billing-settings', jsonBody({
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentPageSize: 'legal'
+    }));
+    expect(res.status).toBe(400);
+    expect(svc.updatePartnerBillingSettings).not.toHaveBeenCalled();
+  });
+
   it('PATCH /orgs/:orgId/billing-settings updates org config', async () => {
     (svc.updateOrgBillingSettings as any).mockResolvedValue({ id: ORG_ID, taxExempt: true, taxRate: null });
     const res = await invoiceSettingsRoutes.request(`/orgs/${ORG_ID}/billing-settings`, jsonBody({
