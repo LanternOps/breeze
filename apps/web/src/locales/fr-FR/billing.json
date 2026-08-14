@@ -517,7 +517,9 @@
         "image": "Image",
         "pricingTable": "Tableau de prix",
         "richText": "Texte enrichi",
-        "contract": "Contrat"
+        "contract": "Contrat",
+        "table": "Tableau",
+        "callout": "Encadré"
       },
       "bulk": {
         "applied_one": "{{count}} ligne mise à jour.",
@@ -728,7 +730,22 @@
         "taxTitle": "Taxe par ligne. L'en-tête Total taxe fait foi et peut différer d'un centime par arrondi.",
         "taxable": "Taxable",
         "total": "Total",
-        "unitPrice": "Prix unitaire"
+        "unitPrice": "Prix unitaire",
+        "columnLabelPlaceholder": "Intitulé de colonne",
+        "columnAlignAria": "Alignement de la colonne",
+        "alignLeft": "Gauche",
+        "alignCenter": "Centre",
+        "alignRight": "Droite",
+        "removeColumn": "Supprimer la colonne",
+        "addColumn": "Ajouter une colonne",
+        "removeRow": "Supprimer la ligne",
+        "addRow": "Ajouter une ligne",
+        "cellAria": "Ligne {{row}}, colonne {{column}}",
+        "captionPlaceholder": "Légende (facultatif)",
+        "zebra": "Lignes zébrées",
+        "headerStyle": "Style d'en-tête",
+        "headerStylePlain": "Simple",
+        "headerStyleAccent": "Accentué"
       },
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Lignes"
+      },
+      "callout": {
+        "variantLabel": "Style de bloc",
+        "variantInfo": "Information",
+        "variantAccent": "Accentué",
+        "variantWarn": "Avertissement",
+        "titlePlaceholder": "Titre (facultatif)",
+        "bodyAria": "Texte de l'encadré"
       }
     },
     "actions": {

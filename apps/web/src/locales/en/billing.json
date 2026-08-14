@@ -517,7 +517,9 @@
         "image": "Image",
         "pricingTable": "Pricing table",
         "richText": "Rich text",
-        "contract": "Contract"
+        "contract": "Contract",
+        "table": "Table",
+        "callout": "Callout"
       },
       "bulk": {
         "applied_one": "Updated {{count}} line.",
@@ -728,7 +730,22 @@
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
         "total": "Total",
-        "unitPrice": "Unit price"
+        "unitPrice": "Unit price",
+        "columnLabelPlaceholder": "Column label",
+        "columnAlignAria": "Column alignment",
+        "alignLeft": "Left",
+        "alignCenter": "Center",
+        "alignRight": "Right",
+        "removeColumn": "Remove column",
+        "addColumn": "Add column",
+        "removeRow": "Remove row",
+        "addRow": "Add row",
+        "cellAria": "Row {{row}}, column {{column}}",
+        "captionPlaceholder": "Caption (optional)",
+        "zebra": "Zebra stripes",
+        "headerStyle": "Header style",
+        "headerStylePlain": "Plain",
+        "headerStyleAccent": "Accent"
       },
       "terms": {
         "placeholder": "Payment terms, warranty clauses, etc.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Line items"
+      },
+      "callout": {
+        "variantLabel": "Style",
+        "variantInfo": "Info",
+        "variantAccent": "Accent",
+        "variantWarn": "Warning",
+        "titlePlaceholder": "Title (optional)",
+        "bodyAria": "Callout text"
       }
     },
     "actions": {

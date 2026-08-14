@@ -517,7 +517,9 @@
         "image": "Imagen",
         "pricingTable": "tabla de precios",
         "richText": "Texto enriquecido",
-        "contract": "Contrato"
+        "contract": "Contrato",
+        "table": "Tabla",
+        "callout": "Recuadro"
       },
       "bulk": {
         "applied_one": "Se actualizó {{count}} línea.",
@@ -728,7 +730,22 @@
         "taxTitle": "Impuesto por línea. El encabezado Total de impuestos es determinante y puede diferir en un centavo redondeado.",
         "taxable": "Imponible",
         "total": "Total",
-        "unitPrice": "Precio unitario"
+        "unitPrice": "Precio unitario",
+        "columnLabelPlaceholder": "Etiqueta de columna",
+        "columnAlignAria": "Alineación de columna",
+        "alignLeft": "Izquierda",
+        "alignCenter": "Centro",
+        "alignRight": "Derecha",
+        "removeColumn": "Quitar columna",
+        "addColumn": "Agregar columna",
+        "removeRow": "Quitar fila",
+        "addRow": "Agregar fila",
+        "cellAria": "Fila {{row}}, columna {{column}}",
+        "captionPlaceholder": "Leyenda (opcional)",
+        "zebra": "Filas alternadas",
+        "headerStyle": "Estilo de encabezado",
+        "headerStylePlain": "Simple",
+        "headerStyleAccent": "Acento"
       },
       "terms": {
         "placeholder": "Condiciones de pago, cláusulas de garantía, etc.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Líneas"
+      },
+      "callout": {
+        "variantLabel": "Estilo",
+        "variantInfo": "Información",
+        "variantAccent": "Acento",
+        "variantWarn": "Advertencia",
+        "titlePlaceholder": "Título (opcional)",
+        "bodyAria": "Texto del recuadro"
       }
     },
     "actions": {

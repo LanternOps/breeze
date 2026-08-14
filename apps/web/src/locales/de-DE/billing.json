@@ -517,7 +517,9 @@
         "image": "Bild",
         "pricingTable": "Preistabelle",
         "richText": "Rich-Text",
-        "contract": "Vertrag"
+        "contract": "Vertrag",
+        "table": "Tabelle",
+        "callout": "Hinweisbox"
       },
       "bulk": {
         "applied_one": "{{count}} Position aktualisiert.",
@@ -728,7 +730,22 @@
         "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
         "taxable": "Steuerpflichtig",
         "total": "Insgesamt",
-        "unitPrice": "Stückpreis"
+        "unitPrice": "Stückpreis",
+        "columnLabelPlaceholder": "Spaltenbeschriftung",
+        "columnAlignAria": "Spaltenausrichtung",
+        "alignLeft": "Links",
+        "alignCenter": "Zentriert",
+        "alignRight": "Rechts",
+        "removeColumn": "Spalte entfernen",
+        "addColumn": "Spalte hinzufügen",
+        "removeRow": "Zeile entfernen",
+        "addRow": "Zeile hinzufügen",
+        "cellAria": "Zeile {{row}}, Spalte {{column}}",
+        "captionPlaceholder": "Beschriftung (optional)",
+        "zebra": "Zebrastreifen",
+        "headerStyle": "Kopfzeilenstil",
+        "headerStylePlain": "Einfach",
+        "headerStyleAccent": "Akzent"
       },
       "terms": {
         "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Positionen"
+      },
+      "callout": {
+        "variantLabel": "Stil",
+        "variantInfo": "Hinweis",
+        "variantAccent": "Akzent",
+        "variantWarn": "Warnung",
+        "titlePlaceholder": "Titel (optional)",
+        "bodyAria": "Hinweistext"
       }
     },
     "actions": {

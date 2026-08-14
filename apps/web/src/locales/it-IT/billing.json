@@ -517,7 +517,9 @@
         "image": "Immagine",
         "pricingTable": "Tabella prezzi",
         "richText": "Testo formattato",
-        "contract": "Contratto"
+        "contract": "Contratto",
+        "table": "Tabella",
+        "callout": "Riquadro"
       },
       "catalog": {
         "addSome": "Aggiungine alcuni nel Catalogo prodotti",
@@ -699,7 +701,22 @@
         "unitPrice": "Prezzo unitario",
         "collapsedSummary": "{{count}} righe · {{amount}}",
         "collapsedSummary_one": "{{count}} riga · {{amount}}",
-        "collapsedSummary_other": "{{count}} righe · {{amount}}"
+        "collapsedSummary_other": "{{count}} righe · {{amount}}",
+        "columnLabelPlaceholder": "Etichetta colonna",
+        "columnAlignAria": "Allineamento colonna",
+        "alignLeft": "Sinistra",
+        "alignCenter": "Centro",
+        "alignRight": "Destra",
+        "removeColumn": "Rimuovi colonna",
+        "addColumn": "Aggiungi colonna",
+        "removeRow": "Rimuovi riga",
+        "addRow": "Aggiungi riga",
+        "cellAria": "Riga {{row}}, colonna {{column}}",
+        "captionPlaceholder": "Didascalia (facoltativa)",
+        "zebra": "Righe alternate",
+        "headerStyle": "Stile intestazione",
+        "headerStylePlain": "Semplice",
+        "headerStyleAccent": "Accento"
       },
       "terms": {
         "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Righe"
+      },
+      "callout": {
+        "variantLabel": "Stile",
+        "variantInfo": "Informazione",
+        "variantAccent": "Accento",
+        "variantWarn": "Avviso",
+        "titlePlaceholder": "Titolo (facoltativo)",
+        "bodyAria": "Testo del riquadro"
       }
     },
     "actions": {

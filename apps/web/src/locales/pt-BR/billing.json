@@ -517,7 +517,9 @@
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
         "richText": "Texto rico",
-        "contract": "Contrato"
+        "contract": "Contrato",
+        "table": "Tabela",
+        "callout": "Destaque"
       },
       "bulk": {
         "applied_one": "{{count}} linha atualizada.",
@@ -728,7 +730,22 @@
         "taxTitle": "Imposto por linha. O total de imposto do cabeçalho é autoritativo e pode diferir por um centavo de arredondamento.",
         "taxable": "Tributável",
         "total": "Total",
-        "unitPrice": "Preço unitário"
+        "unitPrice": "Preço unitário",
+        "columnLabelPlaceholder": "Rótulo da coluna",
+        "columnAlignAria": "Alinhamento da coluna",
+        "alignLeft": "Esquerda",
+        "alignCenter": "Centro",
+        "alignRight": "Direita",
+        "removeColumn": "Remover coluna",
+        "addColumn": "Adicionar coluna",
+        "removeRow": "Remover linha",
+        "addRow": "Adicionar linha",
+        "cellAria": "Linha {{row}}, coluna {{column}}",
+        "captionPlaceholder": "Legenda (opcional)",
+        "zebra": "Linhas alternadas",
+        "headerStyle": "Estilo do cabeçalho",
+        "headerStylePlain": "Simples",
+        "headerStyleAccent": "Destaque"
       },
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
@@ -798,6 +815,14 @@
       },
       "unsavedField": {
         "lines": "Itens"
+      },
+      "callout": {
+        "variantLabel": "Estilo",
+        "variantInfo": "Informação",
+        "variantAccent": "Destaque",
+        "variantWarn": "Aviso",
+        "titlePlaceholder": "Título (opcional)",
+        "bodyAria": "Texto do destaque"
       }
     },
     "actions": {
