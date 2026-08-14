@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
+import { isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -93,8 +94,17 @@ export default function PartnerBillingSettings() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // #3430 — billingWebsite is now http/https-only server-side. This form PATCHes
+  // the FULL payload, so a legacy scheme-less value loaded at :79 would 400 an
+  // otherwise-unrelated edit (tax rate, invoice prefix) with only a toast naming
+  // the wire field. Flagging it inline points at the field that actually needs
+  // fixing, before the round-trip.
+  const websiteTrimmed = website.trim();
+  const websiteInvalid = websiteTrimmed !== '' && !isHttpUrl(websiteTrimmed);
+
   const save = useCallback(async () => {
     if (saving) return;
+    if (websiteInvalid) return;
     setSaving(true);
     try {
       const pct = taxPercent.trim();
@@ -135,7 +145,7 @@ export default function PartnerBillingSettings() {
     } finally {
       setSaving(false);
     }
-  }, [saving, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, aiStyle, footer,
+  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, aiStyle, footer,
       companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
@@ -275,8 +285,15 @@ export default function PartnerBillingSettings() {
               id="pb-website" type="text" value={website}
               onChange={(e) => setWebsite(e.target.value)}
               data-testid="partner-billing-website"
+              aria-invalid={websiteInvalid || undefined}
+              aria-describedby={websiteInvalid ? 'pb-website-error' : undefined}
               className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
             />
+            {websiteInvalid && (
+              <p id="pb-website-error" data-testid="partner-billing-website-error" className="mt-1 text-sm text-destructive">
+                {httpUrlErrorMessage(t('partnerBillingSettings.company.website'))}
+              </p>
+            )}
           </div>
         </div>
         <div className="mt-4">
@@ -349,7 +366,7 @@ export default function PartnerBillingSettings() {
 
       <div className="flex justify-end">
         <button
-          type="button" onClick={() => void save()} disabled={saving}
+          type="button" onClick={() => void save()} disabled={saving || websiteInvalid}
           data-testid="partner-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
