@@ -451,7 +451,83 @@ Remote-access providers are configured per partner under **Settings → Remote**
 
 ---
 
+## Linux viewer (AppImage)
+
+The Linux build of the Breeze Viewer ships as a single AppImage, `breeze-viewer-linux.AppImage`. Unlike the Windows MSI and the macOS DMG it is not installed — you download it, mark it executable, and run it once so it can register itself as the handler for `breeze://` links. Until that first run, choosing **Connect Desktop** in the console has nothing to hand the session to, and the download card reappears on every attempt.
+
+<Steps>
+
+1. Mark the download executable:
+
+   ```bash
+   chmod +x ~/Downloads/breeze-viewer-linux.AppImage
+   ```
+
+2. Run it once. A small "Breeze Viewer is ready" window confirms it launched and registered the `breeze://` scheme. You can close that window — the console reopens the viewer when a session starts.
+
+   ```bash
+   ~/Downloads/breeze-viewer-linux.AppImage
+   ```
+
+3. Confirm the scheme is claimed:
+
+   ```bash
+   xdg-mime query default x-scheme-handler/breeze
+   # → breeze-viewer.desktop
+   ```
+
+</Steps>
+
+Keep the AppImage at a stable path. The registration records the absolute path it was run from, so moving or deleting the file after the first run leaves `breeze://` pointing at a file that no longer exists — run it again from the new location to refresh the entry.
+
+### FUSE 2 is required
+
+The AppImage runtime mounts itself with FUSE 2 at launch. On a distribution that no longer ships FUSE 2 by default, the AppImage exits immediately with a message about `libfuse.so.2`, `dlopen`, or `fusermount`, and no window ever appears.
+
+The package that provides it was renamed as part of Debian's 64-bit `time_t` (`t64`) transition, which is why the familiar package name no longer resolves on current releases:
+
+| Distribution | Package to install |
+|---|---|
+| Debian 13 (trixie) and newer, Ubuntu 24.04 LTS and newer | `libfuse2t64` |
+| Debian 12 and older, Ubuntu 22.04 and older | `libfuse2` |
+| Fedora / RHEL | `fuse-libs` |
+| Arch | `fuse2` |
+| openSUSE | `libfuse2` (plus `fuse` for `fusermount`) |
+
+```bash
+# Debian 13 / Ubuntu 24.04+
+sudo apt install libfuse2t64
+```
+
+`sudo apt install libfuse2` also works on those releases — apt reports `Note, selecting 'libfuse2t64' instead of 'libfuse2'` and installs the renamed package. That message is informational, not an error.
+
+### Running without FUSE
+
+If you cannot install FUSE 2 — a hardened host, a container, or a policy that forbids the `fuse` kernel module — the AppImage can unpack itself to a temporary directory and run from there instead of mounting:
+
+```bash
+~/Downloads/breeze-viewer-linux.AppImage --appimage-extract-and-run
+```
+
+This works for a one-off session but is not a substitute for the first run above: the `Exec=` line written into the desktop entry does not carry the flag, so `breeze://` links launched from the console still take the FUSE path. To make the fallback permanent, set it in the environment the desktop session inherits:
+
+```bash
+# e.g. in ~/.profile
+export APPIMAGE_EXTRACT_AND_RUN=1
+```
+
+Extract-and-run unpacks the whole bundle on every launch, so sessions start noticeably slower and each launch writes to `$TMPDIR`. Installing FUSE 2 is the better outcome where it is allowed.
+
+### Viewer launches but no window appears
+
+If the process shows up in `ps` but nothing is drawn, FUSE is working and the problem is the desktop stack, not packaging — typically a host GTK module or `gvfs` build that is incompatible with the bundled runtime. Run the AppImage from a terminal and read the messages: `Failed to load module` and `undefined symbol` lines name the offending host library. Starting with a clean environment (`env -i DISPLAY=$DISPLAY HOME=$HOME ~/Downloads/breeze-viewer-linux.AppImage`) confirms whether a host module is being injected.
+
+---
+
 ## Troubleshooting
+
+**Linux viewer does nothing when run.**
+The AppImage needs FUSE 2 to mount itself. On Debian 13 / Ubuntu 24.04+ the package is `libfuse2t64`, not `libfuse2`. See [Linux viewer (AppImage)](#linux-viewer-appimage) for the per-distribution package names and the `--appimage-extract-and-run` fallback.
 
 **Session stuck in `connecting`.**
 WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:

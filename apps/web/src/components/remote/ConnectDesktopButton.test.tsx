@@ -289,6 +289,25 @@ describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
     expect(screen.getByRole('link', { name: /download for linux/i })).toBeInTheDocument();
   });
 
+  it('names libfuse2t64 for Linux users whose AppImage exits with no window', async () => {
+    // Debian 13 / Ubuntu 24.04+ renamed libfuse2 to libfuse2t64 in the t64
+    // transition. Telling the user only "chmod +x and run it" leaves them at a
+    // silent exit with nothing to search for (issue #3415), and the widely
+    // quoted `apt install libfuse2` prints a "selecting libfuse2t64 instead"
+    // note that reads like a failure.
+    downloadMock.mockReturnValue({
+      os: 'linux',
+      label: 'Linux',
+      url: 'https://example.test/breeze-viewer-linux.AppImage',
+      filename: 'breeze-viewer-linux.AppImage',
+    });
+
+    await reachFallbackCard();
+
+    expect(screen.getByText(/libfuse2t64/i)).toBeInTheDocument();
+    expect(screen.getByText(/--appimage-extract-and-run/i)).toBeInTheDocument();
+  });
+
   it('omits the Linux first-run hint on other platforms', async () => {
     downloadMock.mockReturnValue({
       os: 'macos',
@@ -301,6 +320,7 @@ describe('ConnectDesktopButton — viewer-not-installed fallback card', () => {
 
     expect(screen.getByRole('link', { name: /download for macos/i })).toBeInTheDocument();
     expect(screen.queryByText(/chmod \+x/i)).toBeNull();
+    expect(screen.queryByText(/libfuse2t64/i)).toBeNull();
   });
 
   it('renders the restored fallback copy, not the humanized key placeholders', async () => {

@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "On Linux, make the download executable (chmod +x) and run it once. That registers the viewer, so sessions open automatically from then on.",
+      "linuxFuse": "If it exits without opening a window, it needs FUSE 2: install libfuse2t64 (Debian 13 / Ubuntu 24.04+) or libfuse2 on older releases, or run it with --appimage-extract-and-run.",
       "title": "Viewer didn't open?",
       "viewerDescription": "If the viewer opened, you can dismiss this. Otherwise, download it below.",
       "vncDescription": "Open the VNC session in your browser instead."
