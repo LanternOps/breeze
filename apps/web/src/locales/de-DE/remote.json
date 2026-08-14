@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "Machen Sie die heruntergeladene Datei unter Linux ausführbar (chmod +x) und starten Sie sie einmal. Damit wird der Viewer registriert und Sitzungen öffnen sich danach automatisch.",
+      "linuxFuse": "Wenn sie sich ohne Fenster beendet, fehlt FUSE 2: Installieren Sie libfuse2t64 (Debian 13 / Ubuntu 24.04+) bzw. libfuse2 auf älteren Versionen, oder starten Sie sie mit --appimage-extract-and-run.",
       "title": "Viewer nicht geöffnet?",
       "viewerDescription": "Wenn sich der Viewer geöffnet hat, können Sie dies schließen. Andernfalls laden Sie ihn unten herunter.",
       "vncDescription": "Öffnen Sie die VNC-Sitzung stattdessen im Browser."

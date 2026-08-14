@@ -65,15 +65,34 @@ const { dispatchScriptToDevice, waitForCommandResult, contextFlags } = mocks;
 
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: mocks.dispatchScriptToDevice }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: mocks.waitForCommandResult }));
+// #3409 PR2 Task 4: the real loadTenantVariableScope issues a
+// .select().from().innerJoin().where() chain this file's db.select mock
+// (below, `mockDb`) doesn't shape — and its own coverage lives in
+// tenantVariableResolution.test.ts. Stub it so the per-device preload this
+// task adds doesn't require reshaping every mockDb() call site here.
+vi.mock('./tenantVariableResolution', () => ({
+  loadTenantVariableScope: vi.fn().mockResolvedValue({ orgIds: new Set() }),
+}));
 
 vi.mock('../db', () => ({
+  // Real `runOutsideDbContext` is `dbContextStorage.exit(fn)` — an
+  // AsyncLocalStorage exit, which stays in effect for `fn`'s ENTIRE async
+  // continuation (every await inside it), not just until its first
+  // microtask boundary. A plain synchronous try/finally around a
+  // promise-returning `fn()` would restore the flag the instant `fn()`
+  // returns a pending promise, well before an internal `await` (e.g. the
+  // #3409 PR2 Task 4 variable-scope preload ahead of dispatch) actually
+  // resolves — under-representing how long the real escape stays active.
+  // Awaiting a promise result before restoring the flag models that
+  // correctly.
   runOutsideDbContext: vi.fn((fn: () => unknown) => {
     mocks.contextFlags.runOutside = true;
-    try {
-      return fn();
-    } finally {
-      mocks.contextFlags.runOutside = false;
+    const result = fn();
+    if (result instanceof Promise) {
+      return result.finally(() => { mocks.contextFlags.runOutside = false; });
     }
+    mocks.contextFlags.runOutside = false;
+    return result;
   }),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
@@ -90,6 +109,7 @@ vi.mock('../db', () => ({
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, scripts } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
@@ -298,6 +318,28 @@ describe('run_script escapes the ambient transaction for dispatch + poll (#3409 
     const dispatchOrder = dispatchScriptToDevice.mock.invocationCallOrder[0]!;
     const waitOrder = waitForCommandResult.mock.invocationCallOrder[0]!;
     expect(waitOrder).toBeGreaterThan(dispatchOrder);
+  });
+
+  it('preloads the variable scope inside the same escape, and forwards it to dispatch (#3409 PR2 Task 4)', async () => {
+    const scope = { orgIds: new Set([ORG_B]) };
+    vi.mocked(loadTenantVariableScope).mockResolvedValueOnce(scope as any);
+    // Content MUST carry a {{var.*}} token — the preload is gated on it, so a
+    // token-free fixture would assert nothing.
+    const scriptRow = { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo {{var.repo_url}}', timeoutSeconds: 60, runAs: 'system' };
+    const deviceRow = { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' };
+    mockDb(scriptRow, deviceRow);
+
+    await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] }, makeAuth());
+
+    expect(loadTenantVariableScope).toHaveBeenCalledWith([ORG_B]);
+    expect(dispatchScriptToDevice).toHaveBeenCalledWith(
+      expect.objectContaining({ variableScope: scope }),
+    );
+    // The preload must run BEFORE dispatch, nested in the same escape — not
+    // a second independent context.
+    const preloadOrder = vi.mocked(loadTenantVariableScope).mock.invocationCallOrder[0]!;
+    const dispatchOrder = dispatchScriptToDevice.mock.invocationCallOrder[0]!;
+    expect(preloadOrder).toBeLessThan(dispatchOrder);
   });
 });
 

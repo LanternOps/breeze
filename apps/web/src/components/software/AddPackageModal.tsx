@@ -17,6 +17,7 @@ import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
+import { useTenantVariables } from "@/lib/tenantVariableTokens";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type Architecture = "x64" | "arm64" | "x86";
@@ -90,6 +91,8 @@ export default function AddPackageModal({
   const [saving, setSaving] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
+  // Tenant variables (#3409) — offered as `{{var.<key>}}` in the same picker.
+  const tenantVariables = useTenantVariables(open);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
   // a retry continues from the version step instead of creating a duplicate.
@@ -174,8 +177,16 @@ export default function AddPackageModal({
     () => new Set(customFields.map((f) => f.fieldKey)),
     [customFields],
   );
+  const knownVariableKeys = useMemo(
+    () => new Set(tenantVariables.map((v) => v.key)),
+    [tenantVariables],
+  );
   const tokenErrors = useMemo(() => {
-    const opts = { requireKnownCustomKeys: knownKeys.size > 0 };
+    const opts = {
+      requireKnownCustomKeys: knownKeys.size > 0,
+      variableKeys: knownVariableKeys,
+      requireKnownVariableKeys: knownVariableKeys.size > 0,
+    };
     return [
       form.downloadUrl,
       form.silentInstallArgs,
@@ -186,6 +197,7 @@ export default function AddPackageModal({
     form.silentInstallArgs,
     form.silentUninstallArgs,
     knownKeys,
+    knownVariableKeys,
   ]);
   const hasSource =
     form.source === "url" ? form.downloadUrl.trim() !== "" : form.file != null;
@@ -591,6 +603,7 @@ export default function AddPackageModal({
                       "policies:software.addPackageModal.httpsExampleComPackageV100",
                     )}
                     customFields={customFields}
+                    tenantVariables={tenantVariables}
                   />
                   <p className="mt-1 text-xs text-muted-foreground">
                     {i18n.t(
@@ -674,6 +687,7 @@ export default function AddPackageModal({
                     "policies:software.addPackageModal.eGMsiexecIFileQnNorestart",
                   )}
                   customFields={customFields}
+                  tenantVariables={tenantVariables}
                 />
               </div>
             </div>
@@ -713,6 +727,7 @@ export default function AddPackageModal({
                         "policies:software.addPackageModal.eGMsiexecXFileQnNorestart",
                       )}
                       customFields={customFields}
+                      tenantVariables={tenantVariables}
                     />
                   </div>
                 </div>

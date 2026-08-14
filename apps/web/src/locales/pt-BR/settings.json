@@ -3300,5 +3300,56 @@
       "messageSuffix": " O login passará a exigir apenas a senha, será solicitada a configuração da MFA novamente e as sessões ativas serão encerradas.",
       "confirm": "Redefinir MFA"
     }
+  },
+  "tenantVariablesPage": {
+    "title": "Variáveis",
+    "description": "Defina um valor uma única vez — um token de site de fornecedor, a URL de um repositório interno — e faça referência a ele nos scripts em vez de fixá-lo para cada cliente.",
+    "loading": "Carregando variáveis…",
+    "actions": {
+      "add": "Nova variável",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "edit": "Editar variável",
+      "delete": "Excluir variável",
+      "confirmDelete": "Confirmar"
+    },
+    "fields": {
+      "key": "Chave",
+      "keyHint": "Letras minúsculas, dígitos e sublinhados. Os scripts fazem referência à variável por esse nome.",
+      "keyImmutable": "A chave não pode ser alterada: os scripts fazem referência a ela pelo nome.",
+      "value": "Valor",
+      "valueKeepHint": "Deixe em branco para manter o valor armazenado.",
+      "description": "Descrição",
+      "scope": "Aplica-se a",
+      "isSecret": "Secreto",
+      "isSecretHint": "Nunca mais é exibido após salvar e é entregue aos scripts como variável de ambiente."
+    },
+    "editor": {
+      "newTitle": "Nova variável",
+      "editTitle": "Editar variável",
+      "scopeLegend": "Aplica-se a",
+      "allOrgs": "Todas as organizações",
+      "allOrgsHint": "Disponível para todos os clientes que você gerencia.",
+      "thisOrg": "Esta organização"
+    },
+    "issues": {
+      "key": "Informe uma chave com letras minúsculas, dígitos e sublinhados, começando por uma letra.",
+      "value": "Informe um valor.",
+      "unsecret": "Informe um novo valor para deixar de tratar esta variável como secreta.",
+      "org": "Selecione uma organização antes de criar uma variável no escopo da organização."
+    },
+    "empty": {
+      "title": "Nenhuma variável ainda",
+      "description": "Crie uma para parar de colar o mesmo token nos scripts de cada cliente."
+    },
+    "errors": {
+      "load": "Não foi possível carregar as variáveis."
+    },
+    "toasts": {
+      "saved": "Variável salva",
+      "saveFailed": "Não foi possível salvar a variável",
+      "deleted": "Variável excluída",
+      "deleteFailed": "Não foi possível excluir a variável"
+    }
   }
 }

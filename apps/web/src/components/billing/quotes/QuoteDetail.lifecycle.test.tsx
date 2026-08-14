@@ -26,7 +26,10 @@ vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const ORG_ID = 'aa0e43c8-1111-2222-3333-444455556666';
 
-function detailWith(overrides: Partial<QuoteDetailData['quote']>): QuoteDetailData {
+function detailWith(
+  overrides: Partial<QuoteDetailData['quote']>,
+  detailOverrides: Partial<QuoteDetailData> = {},
+): QuoteDetailData {
   return {
     quote: {
       id: 'q-1', quoteNumber: 'Q-1', partnerId: 'p-1', orgId: ORG_ID, siteId: null, status: 'draft',
@@ -40,6 +43,7 @@ function detailWith(overrides: Partial<QuoteDetailData['quote']>): QuoteDetailDa
     },
     blocks: [],
     lines: [],
+    ...detailOverrides,
   };
 }
 
@@ -121,5 +125,38 @@ describe('QuoteDetail — converted-invoice link', () => {
     render(<QuoteDetail detail={detailWith({ status: 'accepted', acceptedAt: '2026-06-04T00:00:00Z' })} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
     expect(screen.queryByTestId('quote-view-invoice')).not.toBeInTheDocument();
+  });
+});
+
+
+/**
+ * Who the quote went to. The addresses were recorded at send from the very
+ * first release, but only the portal's authorization check ever read them — the
+ * tech who sent the proposal had no way to see them anywhere in the UI.
+ */
+describe('QuoteDetail — recipients', () => {
+  it('lists the addresses a sent quote went to', async () => {
+    render(<QuoteDetail
+      detail={detailWith(
+        { status: 'sent', sentAt: '2026-06-02T10:00:00Z' },
+        { recipients: ['ap@acme.example', 'cfo@acme.example'] },
+      )}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail-recipients')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-detail-recipients')).toHaveTextContent('ap@acme.example, cfo@acme.example');
+  });
+
+  it('renders nothing when the payload carries no recipients (unknown, not "sent to nobody")', async () => {
+    render(<QuoteDetail detail={detailWith({ status: 'sent', sentAt: '2026-06-02T10:00:00Z' })} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail-lifecycle')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-detail-recipients')).not.toBeInTheDocument();
+  });
+
+  // Gated on sentAt, not on the array: a cloned draft can inherit nothing, but
+  // a stale payload must never caption a draft with "Sent to …".
+  it('renders nothing on a draft, which has been sent to no one yet', () => {
+    render(<QuoteDetail detail={detailWith({ status: 'draft' }, { recipients: ['ap@acme.example'] })} />);
+    expect(screen.queryByTestId('quote-detail-recipients')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-detail-lifecycle')).not.toBeInTheDocument();
   });
 });

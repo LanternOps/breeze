@@ -27,12 +27,23 @@ vi.mock('./scriptDispatch', () => ({
   }),
 }));
 
+// #3409 PR2 Task 4: the resolver itself is fully covered (with a real DB
+// mock shape) in tenantVariableResolution.test.ts. Here it's stubbed so this
+// suite can assert the CALLER's contract — preloaded once per fan-out,
+// passed through to every dispatch call — without needing the
+// runOutsideDbContext/withSystemDbAccessContext wrappers the real resolver
+// requires from '../db' (this file's '../db' mock doesn't provide them).
+vi.mock('./tenantVariableResolution', () => ({
+  loadTenantVariableScope: vi.fn().mockResolvedValue({ orgIds: new Set() }),
+}));
+
 // Real permissions module is fine; canAccessSite is only consulted when
 // allowedSiteIds is set, which these tests don't exercise.
 
 import { db } from '../db';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 import { executeScriptOnDevices } from './scriptExecution';
 
 // db.select() is used twice per call: first the script (.limit chain), then the
@@ -232,6 +243,185 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
 
     // Final status update covers both created batches.
     expect(db.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Task 3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+  });
+
+  it('records a per-device failure and still dispatches the remaining devices', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+        baseDevice({ id: 'device-c', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' })
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-c', executionId: 'exec-c', delivered: false, deliveryOutcome: 'no_agent', executedAt: null });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b', 'device-c'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.executions.map((e) => e.deviceId)).toEqual(['device-a', 'device-c']);
+    expect(result.failures).toEqual([
+      { deviceId: 'device-b', code: 'unresolved_variables', error: expect.any(String) },
+    ]);
+    // Still targeted all three — the failure didn't truncate the fan-out.
+    expect(result.devicesTargeted).toBe(3);
+  });
+
+  it('writes a failed script_executions row for the failed device, not nothing', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
+
+    await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    // db.insert always returns the same mocked chain object (mockReturnValue,
+    // not mockReturnValueOnce), so both the batch insert and the failed-row
+    // insert record their `.values(...)` call on that ONE shared mock fn —
+    // index into ITS call history, not `db.insert`'s. Call 0 is the batch
+    // insert (from batch creation above the dispatch loop); call 1 is the
+    // failed execution row.
+    const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
+    const failedRowValues = insertChain.values.mock.calls[1][0];
+    expect(failedRowValues).toMatchObject({
+      scriptId: 'script-1',
+      deviceId: 'device-b',
+      orgId: 'org-b',
+      status: 'failed',
+      errorMessage: expect.any(String),
+      completedAt: expect.any(Date),
+    });
+  });
+
+  it('counts a per-device failure toward the batch devicesFailed, not devicesTargeted', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+    vi.mocked(dispatchScriptToDevice)
+      .mockResolvedValueOnce({ ok: true, commandId: 'cmd-a', executionId: 'exec-a', delivered: false, deliveryOutcome: 'no_agent', executedAt: null })
+      .mockResolvedValueOnce({ ok: false, code: 'unresolved_variables', error: 'Could not resolve variable(s): repo_url' });
+
+    const result = await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // devicesTargeted was set once at batch-creation time (both devices were
+    // targeted) and must not be decremented by a later per-device failure.
+    expect(result.devicesTargeted).toBe(2);
+
+    // db.update calls: one devicesFailed increment for the failed device's
+    // batch, plus the final batch-status update.
+    const updateCalls = vi.mocked(db.update).mock.results;
+    expect(updateCalls).toHaveLength(2);
+    const devicesFailedSetCall = updateCalls[0]!.value.set.mock.calls[0][0];
+    expect(devicesFailedSetCall).toHaveProperty('devicesFailed');
+  });
+});
+
+describe('executeScriptOnDevices — tenant variable scope preload (#3409 PR2 Task 4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.insert).mockReturnValue(insertReturning([{ id: 'inserted-1' }]) as any);
+    vi.mocked(db.update).mockReturnValue(updateChain() as any);
+    vi.mocked(loadTenantVariableScope).mockResolvedValue({ orgIds: new Set() } as any);
+  });
+
+  it('preloads the scope ONCE for the whole fan-out, not once per device', async () => {
+    vi.mocked(db.select)
+      // Content MUST carry a token — the preload is gated on it, so a
+      // token-free fixture would make this assertion vacuous.
+      .mockReturnValueOnce(scriptSelectChain([
+        baseScript({ orgId: null, isSystem: true, content: 'curl {{var.repo_url}}' }),
+      ]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-1', orgId: 'org-a' }),
+        baseDevice({ id: 'device-2', orgId: 'org-a' }),
+        baseDevice({ id: 'device-3', orgId: 'org-b' }),
+      ]) as any);
+
+    await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-1', 'device-2', 'device-3'],
+      auth: multiOrgAuth,
+    });
+
+    expect(loadTenantVariableScope).toHaveBeenCalledTimes(1);
+    // De-duplicated org set, order-insensitive.
+    const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
+    expect(new Set(orgIds)).toEqual(new Set(['org-a', 'org-b']));
+  });
+
+  // Without this gate every script run — the overwhelming majority of which
+  // reference no variable — would escape the request transaction and take a
+  // second connection to build a snapshot nothing consults.
+  it('does not load a variable scope for a script with no {{var.*}} token', async () => {
+    vi.mocked(loadTenantVariableScope).mockResolvedValue({ orgIds: new Set() } as any);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-a', content: 'echo hi' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-a' })]) as any);
+
+    await executeScriptOnDevices({ scriptId: 'script-1', deviceIds: ['device-1'], auth: multiOrgAuth });
+
+    // Called with an EMPTY org list, which loadTenantVariableScope
+    // short-circuits without querying — no escape from the request
+    // transaction, no second connection.
+    const [orgIds] = vi.mocked(loadTenantVariableScope).mock.calls[0]!;
+    expect(orgIds).toEqual([]);
+  });
+
+  it('passes the preloaded scope through to every device dispatch call', async () => {
+    const scope = { orgIds: new Set(['org-b']) };
+    vi.mocked(loadTenantVariableScope).mockResolvedValue(scope as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
+      .mockReturnValueOnce(devicesSelectChain([
+        baseDevice({ id: 'device-a', orgId: 'org-b' }),
+        baseDevice({ id: 'device-b', orgId: 'org-b' }),
+      ]) as any);
+
+    await executeScriptOnDevices({
+      scriptId: 'script-1',
+      deviceIds: ['device-a', 'device-b'],
+      auth: multiOrgAuth,
+    });
+
+    const dispatchCalls = vi.mocked(dispatchScriptToDevice).mock.calls;
+    expect(dispatchCalls).toHaveLength(2);
+    for (const call of dispatchCalls) {
+      expect(call[0].variableScope).toBe(scope);
+    }
   });
 });
 

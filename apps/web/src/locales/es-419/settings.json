@@ -3300,5 +3300,56 @@
     "tDSYNNEXPriceFileSyncCouldNotBeQueued": "No se pudo poner en cola la sincronización del Archivo de precios TD SYNNEX.",
     "tDSYNNEXPriceFileSearchFailed": "Falló la búsqueda del Archivo de precios TD SYNNEX.",
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Falló la búsqueda del Archivo de precios TD SYNNEX (respuesta no válida)."
+  },
+  "tenantVariablesPage": {
+    "title": "Variables",
+    "description": "Define un valor una sola vez —un token de sitio de un proveedor, la URL de un repositorio interno— y refiérelo desde los scripts en lugar de escribirlo en cada cliente.",
+    "loading": "Cargando variables…",
+    "actions": {
+      "add": "Nueva variable",
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "edit": "Editar variable",
+      "delete": "Eliminar variable",
+      "confirmDelete": "Confirmar"
+    },
+    "fields": {
+      "key": "Clave",
+      "keyHint": "Minúsculas, dígitos y guiones bajos. Los scripts hacen referencia a la variable con este nombre.",
+      "keyImmutable": "La clave no se puede cambiar: los scripts la referencian por nombre.",
+      "value": "Valor",
+      "valueKeepHint": "Déjalo en blanco para conservar el valor guardado.",
+      "description": "Descripción",
+      "scope": "Se aplica a",
+      "isSecret": "Secreto",
+      "isSecretHint": "No se vuelve a mostrar después de guardarlo y se entrega a los scripts como variable de entorno."
+    },
+    "editor": {
+      "newTitle": "Nueva variable",
+      "editTitle": "Editar variable",
+      "scopeLegend": "Se aplica a",
+      "allOrgs": "Todas las organizaciones",
+      "allOrgsHint": "Disponible para todos los clientes que administras.",
+      "thisOrg": "Esta organización"
+    },
+    "issues": {
+      "key": "Ingresa una clave de minúsculas, dígitos y guiones bajos que empiece con una letra.",
+      "value": "Ingresa un valor.",
+      "unsecret": "Ingresa un valor de reemplazo para dejar de tratar esta variable como secreta.",
+      "org": "Selecciona una organización antes de crear una variable con alcance de organización."
+    },
+    "empty": {
+      "title": "Aún no hay variables",
+      "description": "Crea una para dejar de pegar el mismo token en los scripts de cada cliente."
+    },
+    "errors": {
+      "load": "No se pudieron cargar las variables."
+    },
+    "toasts": {
+      "saved": "Variable guardada",
+      "saveFailed": "No se pudo guardar la variable",
+      "deleted": "Variable eliminada",
+      "deleteFailed": "No se pudo eliminar la variable"
+    }
   }
 }

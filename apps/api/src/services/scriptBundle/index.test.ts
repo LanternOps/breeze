@@ -55,7 +55,12 @@ vi.mock('../../db', () => ({
         return { where: vi.fn(() => Promise.resolve()) };
       })
     }))
-  }
+  },
+  // tenantVariableResolution.ts (#3409 PR2, used by findSecretVariableReferences)
+  // requires both wrappers around its query; pass-throughs here mirror
+  // routes/scripts.test.ts and tenantVariableResolution.test.ts.
+  runOutsideDbContext: <T>(fn: () => T): T => fn(),
+  withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn()
 }));
 
 import { scripts, scriptTags, scriptToTags, scriptVersions } from '../../db/schema';
@@ -460,6 +465,65 @@ describe('importBundle', () => {
       expect(result.errors[0]!.error).toContain('timeoutSeconds');
       expect(result.imported).toBe(1);
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // Save-time {{var.<secret>}} rejection (#3409 PR2)
+  // ---------------------------------------------------------------------
+  it('rejects a bundle entry whose content references a secret variable, per-entry rather than failing the whole bundle', async () => {
+    const bundle = validBundle([
+      { ...baseEntry, content: 'echo {{var.s1_token}}' },
+      { ...baseEntry, name: 'Second script' } // no var.* tokens — unaffected
+    ]);
+    h.state.selectQueue.push(
+      // entry 1: loadTenantVariableScope([ORG_ID]) — org-owned secret row
+      [{ id: 'tv-1', key: 's1_token', value: 'shh', isSecret: true, version: 1, ownerOrgId: ORG_ID, forOrgId: ORG_ID }],
+      // entry 1 short-circuits before findExistingByName; entry 2 proceeds normally
+      [] // entry 2: findExistingByName → none
+    );
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toBe(
+        'Script content references secret variable(s): {{var.s1_token}}. Secret variables cannot be substituted into script content.'
+      );
+      expect(result.imported).toBe(1);
+    }
+    expect(h.state.inserts.filter((i) => i.table === scripts)).toHaveLength(1);
+  });
+
+  it('accepts a bundle entry referencing an UNKNOWN variable key — warn-only, not a block', async () => {
+    const bundle = validBundle([{ ...baseEntry, content: 'echo {{var.not_yet_created}}' }]);
+    h.state.selectQueue.push(
+      [], // loadTenantVariableScope([ORG_ID]) — no tenant_variables rows at all
+      [] // findExistingByName → none
+    );
+    const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('imported' in result) expect(result.imported).toBe(1);
+    if ('errors' in result) expect(result.errors).toHaveLength(0);
+  });
+
+  it("rejects a partner-wide import entry referencing the partner's own secret variable (no single org to resolve against)", async () => {
+    const auth = makeAuth({
+      scope: 'partner',
+      orgId: null,
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: [ORG_ID]
+    });
+    const bundle = validBundle([{ ...baseEntry, content: 'echo {{var.p_secret}}' }]);
+    // The partner-wide branch queries tenant_variables directly (org_id IS
+    // NULL AND partner_id = caller's partner) — no resolver snapshot, since
+    // there is no single org to attribute a partner-wide row to.
+    h.state.selectQueue.push([{ key: 'p_secret', isSecret: true }]);
+    const result = await importBundle(auth, bundle, { mode: 'skip', availability: 'partner' });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.error).toContain('p_secret');
+    }
+    expect(h.state.inserts).toHaveLength(0);
   });
 });
 

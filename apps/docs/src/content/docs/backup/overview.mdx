@@ -100,6 +100,8 @@ New to Breeze Backup? Here's the fastest path to protecting your first device:
 
 Enterprise backup operations (Hyper-V, SQL Server, system image, cloud-to-cloud) run in a dedicated `breeze-backup` helper process that communicates with the main agent over HMAC-signed IPC. This keeps the core agent lightweight (~15 MB) while the backup binary includes the heavier cloud SDKs and backup tooling. The backup binary is bundled by the Windows MSI, the macOS .pkg, and the Linux and macOS shell-script service installs — so every supported install path can run backups out of the box. (Previously only the MSI and .pkg bundled it, which meant hosts set up with the shell-script installer couldn't run backups until the helper was placed manually.)
 
+As of v0.105.0, the helper's version is slaved to the agent's: when the agent auto-updates, it downloads and atomically swaps `breeze-backup` in the same upgrade, so the helper no longer stays at whatever version the installer shipped. A periodic reconcile also re-fetches the helper if it turns up missing or stale.
+
 <Aside type="note">
-  The backup binary is installed automatically. No additional setup is needed unless you're building from source.
+  The backup binary is installed automatically and kept up to date alongside the agent. No additional setup is needed unless you're building from source.
 </Aside>

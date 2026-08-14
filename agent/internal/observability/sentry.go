@@ -85,24 +85,37 @@ func CaptureException(err error) {
 //	}()
 func Recoverer(where string) {
 	if r := recover(); r != nil {
-		var err error
-		switch v := r.(type) {
-		case error:
-			err = v
-		case string:
-			err = errors.New(v)
-		default:
-			err = errors.New("panic in " + where)
-		}
-		stack := string(debug.Stack())
-		sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("where", where)
-			// SetContext is the v0.46+ replacement for the removed SetExtra.
-			scope.SetContext("panic", sentry.Context{"stack": stack})
-			sentry.CaptureException(err)
-		})
-		slog.Error("recovered panic", "where", where, "err", err.Error())
+		ReportPanic(where, r, string(debug.Stack()))
 	}
+}
+
+// ReportPanic reports an ALREADY-recovered panic to Sentry with the stack +
+// context, then logs via slog. Use it when the panic was recovered elsewhere
+// and converted into a value (e.g. collectors.Guard turns a collector panic
+// into an error so the goroutine survives) — such a panic never reaches an
+// enclosing Recoverer, so without this call it would be invisible to fleet
+// telemetry. `value` is the recover() result and `stack` the stack captured at
+// recover time.
+//
+// Recoverer is the deferred form of this; both funnel through here so the two
+// paths report identically.
+func ReportPanic(where string, value any, stack string) {
+	var err error
+	switch v := value.(type) {
+	case error:
+		err = v
+	case string:
+		err = errors.New(v)
+	default:
+		err = errors.New("panic in " + where)
+	}
+	sentry.WithScope(func(scope *sentry.Scope) {
+		scope.SetTag("where", where)
+		// SetContext is the v0.46+ replacement for the removed SetExtra.
+		scope.SetContext("panic", sentry.Context{"stack": stack})
+		sentry.CaptureException(err)
+	})
+	slog.Error("recovered panic", "where", where, "err", err.Error())
 }
 
 // scrubEvent redacts secrets from event fields before transmission.

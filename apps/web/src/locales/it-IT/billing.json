@@ -873,7 +873,24 @@
       "sendCanceledSaveFailed": "Una modifica non è stata salvata, quindi l'invio è stato annullato. Correggi il campo evidenziato e riprova.",
       "sendBlockedUnsaved": "\"{{field}}\" contiene una modifica non salvata. Correggila lì, poi invia.",
       "unsavedHint": "\"{{field}}\" contiene una modifica non salvata — l'invio si sblocca una volta salvata.",
-      "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'invio si sblocca una volta salvata."
+      "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'invio si sblocca una volta salvata.",
+      "resend": "Invia di nuovo",
+      "resendError": "Impossibile inviare di nuovo la proposta.",
+      "resendSuccess": "Proposta inviata di nuovo a {{orgName}}: stesso link, stesso documento.",
+      "resendNotDelivered": "Nuovo invio registrato, ma nessuna email è stata consegnata. Controlla l’indirizzo oppure copia il link di condivisione e invialo tu.",
+      "copyShareLink": "Copia link di condivisione",
+      "copyingShareLink": "Copia in corso…",
+      "shareLinkCopied": "Link di condivisione copiato: è lo stesso link inviato al cliente.",
+      "shareLinkCopyFailed": "Copia automatica non riuscita. Il link di condivisione è: {{url}}",
+      "shareLinkError": "Impossibile ottenere il link di condivisione.",
+      "resendConfirm": {
+        "title": "Invia di nuovo la proposta",
+        "message": "Invia a {{orgName}} un’altra copia di questa proposta. Nulla cambia nel preventivo e il link di accettazione resta lo stesso."
+      },
+      "resendNewLinkOriginalLive": "Proposta inviata di nuovo, ma con un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme al nuovo.",
+      "resendNewLinkOriginalDead": "Proposta inviata di nuovo, ma con un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare quello nuovo.",
+      "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
+      "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo."
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",
@@ -985,7 +1002,8 @@
         "tax": "Imposta",
         "title": "Totali"
       },
-      "viewInvoice": "Visualizza fattura"
+      "viewInvoice": "Visualizza fattura",
+      "sentTo": "Inviato a"
     },
     "distributorLookup": {
       "available": "{{count}} disp.",

@@ -337,6 +337,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // this table and sorts before it alphabetically, so the child is already
   // deleted first — no manual reordering needed.
   'support_sessions',
+  // tenant_variables (#3409): dual-axis (org_id XOR partner_id). Only the
+  // org-owned rows are reachable by the org cascade; partner-wide rows have
+  // org_id NULL and are cleared by cascadeDeletePartner's dynamic partner_id
+  // sweep instead. Cascade leaf — nothing FK-references it — so its position
+  // only has to satisfy alphabetization ('support_sessions' <
+  // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
+  'tenant_variables',
   'ticket_alert_links',
   // ticket_form_org_links (spec 2026-07-11): org allowlist for partner-wide
   // ticket_forms. Own org_id column is a direct FK to organizations (ON

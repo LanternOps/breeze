@@ -1,5 +1,6 @@
 import { Building2, MapPin, User, Mail, Phone, Globe } from 'lucide-react';
 import type { PartnerSettings } from '@breeze/shared';
+import { isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -41,6 +42,11 @@ export default function PartnerCompanyTab({
   const setContact = (field: keyof Contact, value: string) => {
     onContactChange({ ...contact, [field]: value });
   };
+  // Mirrors the server-side http/https allowlist on `contact.website` (#3430).
+  // Empty is fine — the field is clearable — so only a populated, non-http(s)
+  // value is flagged. The parent also blocks the save with the same rule.
+  const websiteValue = (contact.website || '').trim();
+  const websiteInvalid = websiteValue !== '' && !isHttpUrl(websiteValue);
 
   return (
     <div className="space-y-6">
@@ -203,7 +209,14 @@ export default function PartnerCompanyTab({
               onChange={(e) => setContact('website', e.target.value)}
               placeholder={t('partnerCompany.placeholders.website')}
               className={inputClass}
+              aria-invalid={websiteInvalid || undefined}
+              aria-describedby={websiteInvalid ? 'contact-website-error' : undefined}
             />
+            {websiteInvalid && (
+              <p id="contact-website-error" data-testid="contact-website-error" className="text-sm text-destructive">
+                {httpUrlErrorMessage(t('partnerCompany.website'))}
+              </p>
+            )}
           </div>
         </div>
       </section>

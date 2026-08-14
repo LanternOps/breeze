@@ -15,7 +15,38 @@ export interface EncryptedColumnSpec {
   column: string;
   kind: EncryptedColumnKind;
   idColumn?: string;
+  /**
+   * How the ciphertext is bound to its location.
+   *
+   * 'column' (default) — AAD is `table.column`. Stops a blob being moved
+   * between COLUMNS, which is all the historical columns need: their rows are
+   * addressed by an id the tenant cannot choose.
+   *
+   * 'row' — AAD is `table.column:<row id>`. Additionally stops a blob being
+   * moved between ROWS, which for a tenant-owned column means between TENANTS:
+   * without it, someone with DB write access could paste another tenant's
+   * ciphertext into their own row and have the application decrypt it back to
+   * them. Row-bound columns must be written by a caller that knows the row id
+   * (see services/tenantVariables.ts) — the generic
+   * `encryptColumnValueForWrite` helper refuses them rather than sealing a
+   * value under the wrong AAD.
+   */
+  aadBinding?: 'column' | 'row';
   description: string;
+}
+
+/**
+ * The AAD string for a registered column. The single constructor for both the
+ * write path and the rotation walker, so the two can never derive a different
+ * binding for the same column.
+ */
+export function columnAad(spec: EncryptedColumnSpec, rowId?: string): string {
+  const base = `${spec.table}.${spec.column}`;
+  if (spec.aadBinding !== 'row') return base;
+  if (!rowId) {
+    throw new Error(`${base} is row-bound: a row id is required to derive its AAD`);
+  }
+  return `${base}:${rowId}`;
 }
 
 export interface ReencryptSecretsOptions {
@@ -81,6 +112,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'td_synnex_ec_express_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX EC Express API credentials' },
   { table: 'td_synnex_sftp_integrations', column: 'credentials', kind: 'json', description: 'TD SYNNEX nightly SFTP P&A password (credentials.password)' },
   { table: 'device_recovery_keys', column: 'encrypted_key', kind: 'text', description: 'escrowed BitLocker/FileVault recovery key (#2021)' },
+  { table: 'tenant_variables', column: 'value', kind: 'text', aadBinding: 'row', description: 'tenant variable value (#3409) — AAD bound to the row id' },
 ];
 
 const SECRET_JSON_KEYS = new Set([
@@ -130,8 +162,8 @@ function aadV3Enabled(): boolean {
   return process.env.ENABLE_AAD_V3 === 'true';
 }
 
-function maybeReencryptString(value: string, force: boolean, aad?: string): string {
-  const withAad = aad && aadV3Enabled() ? aad : undefined;
+function maybeReencryptString(value: string, force: boolean, aad?: string, alwaysAad = false): string {
+  const withAad = aad && (alwaysAad || aadV3Enabled()) ? aad : undefined;
   const opts = withAad ? { aad: withAad } : undefined;
   if (isEncryptedSecret(value)) {
     return shouldReencryptSecret(value, { targetWithAad: Boolean(withAad) })
@@ -150,23 +182,23 @@ function maybeReencryptString(value: string, force: boolean, aad?: string): stri
   return encryptSecret(value, opts) ?? value;
 }
 
-function transformJsonSecrets(value: unknown, key?: string, aad?: string): unknown {
+function transformJsonSecrets(value: unknown, key?: string, aad?: string, alwaysAad = false): unknown {
   if (typeof value === 'string') {
     if (isEncryptedSecret(value) || (key && SECRET_JSON_KEYS.has(key) && value.length > 0)) {
-      return maybeReencryptString(value, Boolean(key && SECRET_JSON_KEYS.has(key)), aad);
+      return maybeReencryptString(value, Boolean(key && SECRET_JSON_KEYS.has(key)), aad, alwaysAad);
     }
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => transformJsonSecrets(entry, key, aad));
+    return value.map((entry) => transformJsonSecrets(entry, key, aad, alwaysAad));
   }
 
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
         entryKey,
-        transformJsonSecrets(entryValue, entryKey, aad),
+        transformJsonSecrets(entryValue, entryKey, aad, alwaysAad),
       ])
     );
   }
@@ -174,23 +206,33 @@ function transformJsonSecrets(value: unknown, key?: string, aad?: string): unkno
   return value;
 }
 
-export function transformEncryptedColumnValue(spec: EncryptedColumnSpec, value: unknown): unknown {
+export function transformEncryptedColumnValue(
+  spec: EncryptedColumnSpec,
+  value: unknown,
+  rowId?: string,
+): unknown {
   // AAD binds the ciphertext to its schema location so a blob from one column
   // cannot be silently swapped into another. Only written for new v3 rows
   // (gated by ENABLE_AAD_V3); existing v2 rows continue to decrypt unchanged.
-  const aad = `${spec.table}.${spec.column}`;
+  //
+  // Row-bound columns are exempt from that gate: they are new, so they have no
+  // v2 rows to migrate and no flag day to coordinate. Their binding is applied
+  // from the first write, which is also what makes it safe for the write path
+  // and this walker to agree without consulting an env var.
+  const aad = columnAad(spec, rowId);
+  const alwaysAad = spec.aadBinding === 'row';
 
   if (spec.kind === 'text') {
-    return typeof value === 'string' ? maybeReencryptString(value, true, aad) : value;
+    return typeof value === 'string' ? maybeReencryptString(value, true, aad, alwaysAad) : value;
   }
 
   if (spec.kind === 'text-array') {
     return Array.isArray(value)
-      ? value.map((entry) => typeof entry === 'string' ? maybeReencryptString(entry, true, aad) : entry)
+      ? value.map((entry) => typeof entry === 'string' ? maybeReencryptString(entry, true, aad, alwaysAad) : entry)
       : value;
   }
 
-  return transformJsonSecrets(value, undefined, aad);
+  return transformJsonSecrets(value, undefined, aad, alwaysAad);
 }
 
 /**
@@ -206,6 +248,10 @@ export function transformEncryptedColumnValue(spec: EncryptedColumnSpec, value: 
  *
  * No-op when the table/column is not registered (returns the value unchanged)
  * — callers can guard registered and unregistered columns with the same code.
+ *
+ * THROWS for `aadBinding: 'row'` columns: their AAD needs a row id this helper
+ * has no way to know, and sealing under the wrong AAD would produce a row that
+ * can never be decrypted again. Those columns have a dedicated writer instead.
  */
 export function encryptColumnValueForWrite(table: string, column: string, value: unknown): unknown {
   const spec = encryptedColumnRegistry.find((s) => s.table === table && s.column === column);
@@ -311,7 +357,9 @@ export async function reencryptRegisteredSecrets(options: ReencryptSecretsOption
           stats.scanned++;
 
           try {
-            const transformed = transformEncryptedColumnValue(spec, row.value);
+            // row.id is threaded through so row-bound columns rebuild exactly
+            // the AAD their write path used; ignored by column-bound specs.
+            const transformed = transformEncryptedColumnValue(spec, row.value, row.id);
             if (valuesEqual(transformed, row.value)) {
               continue;
             }
