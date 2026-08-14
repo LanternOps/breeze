@@ -46,12 +46,13 @@ export interface PdfThemeFonts {
 const FONT_DIR = resolveFontDir();
 
 function resolveFontDir(): string {
-  const candidates = [
+  const [cwdCandidate, ...rest] = [
     path.resolve(process.cwd(), 'assets/fonts'),
     path.resolve(__dirname, '../assets/fonts'), // bundled dist layout
     path.resolve(__dirname, '../../assets/fonts'), // unbundled src layout
   ];
-  return candidates.find((dir) => fs.existsSync(dir)) ?? candidates[0];
+  const candidates = [cwdCandidate, ...rest];
+  return candidates.find((dir) => fs.existsSync(dir)) ?? cwdCandidate;
 }
 
 export { FONT_DIR };

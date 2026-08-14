@@ -85,6 +85,7 @@ function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     sellerSnapshot: { name: 'Breeze MSP', address: null, phone: null, email: null, website: null },
     coverPage: null,
     termsAndConditions: null,
+    presentationSnapshot: null,
     declineReason: null,
     convertedInvoiceId: null,
     pdfDocumentRef: null,

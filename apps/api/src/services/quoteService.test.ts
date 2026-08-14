@@ -746,7 +746,9 @@ describe('structured block sanitization', () => {
     expect(out.rows[0]!.cells[0]).toBe('<strong>ok</strong>');
   });
   it('sanitizes callout html with the block profile and drops out-of-contract shapes on read', () => {
-    const rows = svc.sanitizeQuoteBlocksForRead([{ blockType: 'table', content: { rows: 'garbage' } } as never]);
+    const rows = svc.sanitizeQuoteBlocksForRead([
+      { blockType: 'table', content: { rows: 'garbage' } } as { blockType: string; content: unknown },
+    ]);
     expect(rows[0]!.content).toEqual({ columns: [], rows: [] }); // canonical empty, never raw garbage
   });
 });
