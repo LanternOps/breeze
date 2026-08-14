@@ -106,15 +106,31 @@ uninstall_macos() {
     echo "Removed group: ${ipc_group}"
   fi
 
-  # 10. Verify.
+  # 10. Verify. `launchctl bootout` is asynchronous — a service can still be
+  # tearing down for a moment after it returns, so poll instead of reporting a
+  # false failure the first time we look. A warning that cries wolf reads as a
+  # failed uninstall to the technician running it.
   echo "--- verification ---"
   if command -v launchctl >/dev/null 2>&1; then
-    local l
+    local l waited
     for l in "$watchdog_label" "$agent_label"; do
+      waited=0
+      while launchctl print "system/${l}" >/dev/null 2>&1 && [[ "$waited" -lt 20 ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+      done
       if launchctl print "system/${l}" >/dev/null 2>&1; then
-        warn "${l} still loaded"; else echo "ok: ${l} not loaded"; fi
+        warn "${l} still loaded after 10s"
+      else
+        echo "ok: ${l} not loaded"
+      fi
     done
   fi
+  # Backstop any process that outlived its job (mirrors the watchdog pkill).
+  local p
+  for p in nu-agent nu-desktop-helper; do
+    pgrep -x "$p" >/dev/null 2>&1 && { pkill -x "$p" 2>/dev/null || true; }
+  done
   for b in "$AGENT_BINARY" "$WATCHDOG_BINARY" "$HELPER_BINARY" "$BACKUP_BINARY"; do
     [[ -e "$b" ]] && warn "${b} still present" || true
   done
