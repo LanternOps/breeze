@@ -397,7 +397,10 @@ export default function PartnerSettingsPage() {
         name: contactName || undefined,
         email: contactEmail || undefined,
         phone: contactPhone || undefined,
-        website: contactWebsite || undefined
+        // Trimmed to match the predicate the guard above applied — sending the
+        // untrimmed value made a whitespace-only entry pass the client check
+        // and then fail server-side with no inline error to explain it.
+        website: contactWebsite.trim() || undefined
       },
       address: {
         street1: address.street1 || undefined,

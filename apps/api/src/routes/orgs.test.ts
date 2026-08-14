@@ -1098,6 +1098,79 @@ describe('org routes', () => {
         }
       );
     });
+
+    // The three sibling URL fields share the same helper as contact.website but
+    // had NO coverage of their own — the suite stayed 213/213 green with all
+    // three guards deleted (#3430 review). They are defense-in-depth (egress is
+    // separately guarded by safeFetch), which is exactly why a silent
+    // regression here would go unnoticed.
+    describe('sibling URL fields share the scheme allowlist', () => {
+      function seedPartner() {
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+              limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+            })
+          })
+        } as any);
+      }
+
+      async function patchSettings(settings: Record<string, unknown>) {
+        return app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings })
+        });
+      }
+
+      const BAD = 'javascript:alert(1)';
+      const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+        [
+          'notifications.slackWebhookUrl',
+          { notifications: { slackWebhookUrl: BAD } },
+          { notifications: { slackWebhookUrl: 'https://hooks.slack.example/x' } },
+        ],
+        [
+          'notifications.webhooks[]',
+          { notifications: { webhooks: [BAD] } },
+          { notifications: { webhooks: ['https://hooks.example.com/x'] } },
+        ],
+        [
+          'eventLogs.elasticsearchUrl',
+          { eventLogs: { elasticsearchUrl: BAD } },
+          { eventLogs: { elasticsearchUrl: 'https://es.example.com:9200' } },
+        ],
+      ];
+
+      it.each(cases)('rejects a dangerous scheme on %s with 400 and never writes it', async (_label, bad) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        seedPartner();
+        const setSpy = vi.fn();
+        vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+        const res = await patchSettings(bad);
+
+        expect(res.status).toBe(400);
+        expect(setSpy).not.toHaveBeenCalled();
+      });
+
+      it.each(cases)('accepts an https value on %s', async (_label, _bad, good) => {
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        seedPartner();
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: {} }])
+            })
+          })
+        } as any);
+
+        const res = await patchSettings(good);
+
+        expect(res.status).toBe(200);
+      });
+    });
   });
 
   describe('PATCH /orgs/partners/me — ticketing.inbound merge safety', () => {

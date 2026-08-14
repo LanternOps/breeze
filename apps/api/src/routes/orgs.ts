@@ -468,12 +468,20 @@ const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'i
  * The partner-settings URL fields below are restricted to http/https by the
  * shared `httpUrlValue`/`httpUrlField` helpers (`@breeze/shared`). They split
  * into two risk classes and both land on the same guard:
- *  - values rendered as links (contact.website → branded PDFs, invoices, email
- *    footers), where `javascript:`/`data:text/html,…` is stored XSS against the
- *    partner's own customers;
+ *
+ *  - `contact.website` — a partner-authored value shaped like a link. Its only
+ *    consumers today are this settings form itself (PartnerSettingsPage /
+ *    PartnerCompanyTab), so there is no live XSS sink; the guard is here so the
+ *    first person to put it in an `href` inherits a safe value. NOTE: the
+ *    website printed on branded PDFs/invoices/quotes is a DIFFERENT column,
+ *    `partners.billing_website` (see `buildSellerSnapshot`), validated by
+ *    `partnerBillingSettingsSchema` in `@breeze/shared`.
  *  - values the SERVER dials outbound (Slack webhook, extra webhooks, the
- *    Elasticsearch endpoint), where `file://` and friends are an SSRF/scheme-
- *    confusion problem rather than an XSS one.
+ *    Elasticsearch endpoint), where a non-http scheme like `file://` is a
+ *    scheme-confusion problem rather than an XSS one. This guard covers the
+ *    SCHEME only — it is NOT an SSRF control, and deliberately still permits
+ *    `http://localhost` / link-local hosts, which some self-hosted deployments
+ *    legitimately point at.
  *
  * None has a legitimate custom-scheme use — unlike the remote-access launcher
  * template further down this file, which deliberately allows `rustdesk:` and

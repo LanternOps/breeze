@@ -3,10 +3,15 @@ import { z } from 'zod';
 // Shared http(s)-only URL guard for tenant-authored URL fields (#3430).
 //
 // These are values a partner admin types into a settings form and that the
-// product later either renders (partner Website on branded invoices, quotes
-// and PDFs) or dials outbound (Slack webhook, Elasticsearch endpoint). Neither
-// class has a legitimate custom-scheme use, so both get the same narrow
-// allowlist: `http:` and `https:`, nothing else.
+// product later either renders (`partners.billing_website` → the seller block
+// on branded invoices, quotes and PDFs) or dials outbound (Slack webhook,
+// Elasticsearch endpoint). Neither class has a legitimate custom-scheme use,
+// so both get the same narrow allowlist: `http:` and `https:`, nothing else.
+//
+// SCOPE: this is a scheme guard, NOT an SSRF control. `http://localhost:9200`
+// and link-local addresses still pass, deliberately — self-hosted deployments
+// legitimately point the Elasticsearch endpoint at them. Anything that needs
+// egress restrictions has to add them separately.
 //
 // Contrast with `remoteAccessLauncherScheme.ts`, which deliberately keeps a
 // WIDER, denylist-backed rule because partners genuinely need `rustdesk:` and
