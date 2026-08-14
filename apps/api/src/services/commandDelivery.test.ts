@@ -16,6 +16,8 @@ vi.mock('./sentry', () => ({
 import { decryptClaimedCommandsForDelivery } from './commandDelivery';
 import { encryptSensitivePayloadFields } from './sensitiveCommandPayload';
 
+const CLAIM_DEVICE = '99999999-9999-4999-8999-999999999999';
+
 const claimedAt = new Date('2026-07-13T00:00:00Z');
 
 // A well-formed-looking but undecryptable sensitive payload (e.g. after an
@@ -23,6 +25,7 @@ const claimedAt = new Date('2026-07-13T00:00:00Z');
 const undecryptable = {
   id: 'cmd-bad',
   type: 'encryption_rotate_key',
+  deviceId: CLAIM_DEVICE,
   payload: { password: 'enc:v3:deadbeef:not-real-ciphertext' },
   executedAt: claimedAt,
 };
@@ -35,8 +38,8 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
   it('releases a command that fails decryption back to pending while its siblings still deliver', async () => {
     const goodEncrypted = encryptSensitivePayloadFields('encryption_rotate_key', { password: 'pw' });
     const claimed = [
-      { id: 'cmd-plain', type: 'run_script', payload: { scriptId: 's-1' }, executedAt: claimedAt },
-      { id: 'cmd-good', type: 'encryption_rotate_key', payload: goodEncrypted, executedAt: claimedAt },
+      { id: 'cmd-plain', type: 'run_script', deviceId: CLAIM_DEVICE, payload: { scriptId: 's-1' }, executedAt: claimedAt },
+      { id: 'cmd-good', type: 'encryption_rotate_key', deviceId: CLAIM_DEVICE, payload: goodEncrypted, executedAt: claimedAt },
       undecryptable,
     ];
 
@@ -57,7 +60,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
 
   it('does not touch the release path when every command decrypts', async () => {
     const delivered = await decryptClaimedCommandsForDelivery([
-      { id: 'cmd-1', type: 'run_script', payload: { scriptId: 's-1' }, executedAt: claimedAt },
+      { id: 'cmd-1', type: 'run_script', deviceId: CLAIM_DEVICE, payload: { scriptId: 's-1' }, executedAt: claimedAt },
     ]);
 
     expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-1']);
@@ -69,7 +72,7 @@ describe('decryptClaimedCommandsForDelivery (#2414)', () => {
     releaseClaimedCommandDeliveryMock.mockRejectedValueOnce(new Error('db down'));
 
     const delivered = await decryptClaimedCommandsForDelivery([
-      { id: 'cmd-plain', type: 'run_script', payload: {}, executedAt: claimedAt },
+      { id: 'cmd-plain', type: 'run_script', deviceId: CLAIM_DEVICE, payload: {}, executedAt: claimedAt },
       undecryptable,
     ]);
 

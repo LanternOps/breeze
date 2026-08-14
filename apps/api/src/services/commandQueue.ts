@@ -10,7 +10,11 @@ import {
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
 import { recordCommandDispatch } from './anomalyMetrics';
-import { decryptCommandForDelivery, terminalPayloadErasureSet} from './sensitiveCommandPayload';
+import {
+  decryptCommandForDelivery,
+  terminalPayloadErasureSet,
+  toAgentCommandFrame,
+} from './sensitiveCommandPayload';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -465,11 +469,17 @@ export async function queueCommand(
   deviceId: string,
   type: CommandType | string,
   payload: CommandPayload = {},
-  userId?: string
+  userId?: string,
+  // #3409 PR4a: the script secret envelope's AAD binds the command id, so the
+  // id has to exist BEFORE the payload is encrypted. Callers that seal a
+  // payload reserve a UUID and pass it here; everyone else keeps the column
+  // default. Never accept a client-supplied value.
+  options: { commandId?: string } = {}
 ): Promise<QueuedCommand> {
   const [command] = await db
     .insert(deviceCommands)
     .values({
+      ...(options.commandId ? { id: options.commandId } : {}),
       deviceId,
       type,
       payload,
@@ -667,10 +677,8 @@ export async function queueCommandForExecution(
       // Decrypt sensitive fields just-in-time; a decrypt failure returns null
       // (logged) and skips the send so the command is released for retry rather
       // than throwing out of the enqueue path.
-      const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
-      const sent = delivered
-        ? sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload })
-        : false;
+      const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
+      const sent = delivered ? sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered)) : false;
       if (sent) {
         return {
           command: {
@@ -938,10 +946,10 @@ export async function executeCommand(
       if (claimed) {
         // Decrypt once up-front; null means the payload can't be decrypted, so
         // there's nothing deliverable to retry — skip the send loop and release.
-        const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
+        const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
         let sent = false;
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload });
+          sent = sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered));
           if (sent) {
             if (attempt > 0) {
               console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
