@@ -510,7 +510,9 @@
       "autosaveHint": "Changes save automatically. An amber outline marks an unsaved edit.",
       "block": {
         "imageSectionPdf": "Image section (rendered in the PDF).",
-        "richTextContentAria": "Rich text content"
+        "richTextContentAria": "Rich text content",
+        "tableEmpty": "Empty table.",
+        "calloutEmpty": "Empty callout."
       },
       "blockTypes": {
         "heading": "Heading",

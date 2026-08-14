@@ -510,7 +510,9 @@
       "autosaveHint": "Los cambios se guardan automáticamente. Un contorno ámbar marca una edición sin guardar.",
       "block": {
         "imageSectionPdf": "Sección de imagen (representada en PDF).",
-        "richTextContentAria": "Contenido de texto enriquecido"
+        "richTextContentAria": "Contenido de texto enriquecido",
+        "tableEmpty": "Tabla vacía.",
+        "calloutEmpty": "Recuadro vacío."
       },
       "blockTypes": {
         "heading": "Título",

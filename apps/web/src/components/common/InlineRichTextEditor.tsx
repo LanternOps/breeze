@@ -31,6 +31,12 @@ export interface InlineRichTextEditorProps {
    *  namespaced off this so many instances (e.g. one per table cell) can
    *  render side by side without colliding testids. */
   testId: string;
+  /** Optional cap on the emitted HTML string length, mirroring the server
+   *  validator it feeds (e.g. quoteTableContentSchema's cell `z.string().max(2000)`).
+   *  An edit that would push `getHTML()` over the cap is reverted rather than
+   *  propagated — client-side defense so the field never drifts into a shape
+   *  the server would 422 on. */
+  maxLength?: number;
 }
 
 // Same allowlist logic as RichTextEditor.tsx — kept in sync deliberately
@@ -203,7 +209,7 @@ function Toolbar({ editor, testId }: { editor: Editor; testId: string }) {
   );
 }
 
-export default function InlineRichTextEditor({ value, onChange, ariaLabel, testId }: InlineRichTextEditorProps) {
+export default function InlineRichTextEditor({ value, onChange, ariaLabel, testId, maxLength }: InlineRichTextEditorProps) {
   const editor = useEditor({
     extensions: buildExtensions(),
     content: value,
@@ -229,7 +235,14 @@ export default function InlineRichTextEditor({ value, onChange, ariaLabel, testI
       transformPastedHTML: (html) => sanitizeToInlineHtml(html),
     },
     onUpdate: ({ editor: e }) => {
-      onChange(e.getHTML());
+      const html = e.getHTML();
+      if (maxLength != null && html.length > maxLength) {
+        // Revert rather than truncate: truncating mid-tag could produce
+        // malformed HTML, and undo cleanly restores the last valid state.
+        e.commands.undo();
+        return;
+      }
+      onChange(html);
     },
   });
 

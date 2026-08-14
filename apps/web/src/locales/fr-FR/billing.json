@@ -510,7 +510,9 @@
       "autosaveHint": "Les modifications sont enregistrées automatiquement. Un contour ambre signale une modification non enregistrée.",
       "block": {
         "imageSectionPdf": "Section image (rendue dans le PDF).",
-        "richTextContentAria": "Contenu en texte enrichi"
+        "richTextContentAria": "Contenu en texte enrichi",
+        "tableEmpty": "Tableau vide.",
+        "calloutEmpty": "Encadré vide."
       },
       "blockTypes": {
         "heading": "Titre",

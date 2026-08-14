@@ -2291,6 +2291,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                               <input
                                 type="text"
                                 value={col.label}
+                                maxLength={200}
                                 onChange={(e) => setTableColumnLabel(colIdx, e.target.value)}
                                 placeholder={t('quotes.editor.table.columnLabelPlaceholder')}
                                 data-testid={`quote-block-table-column-label-${colIdx}`}
@@ -2346,6 +2347,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                                 onChange={(html) => setTableCell(rowIdx, colIdx, html)}
                                 ariaLabel={t('quotes.editor.table.cellAria', { row: rowIdx + 1, column: colIdx + 1 })}
                                 testId={`quote-block-table-cell-${rowIdx}-${colIdx}`}
+                                maxLength={2000}
                               />
                             </td>
                           ))}
@@ -2379,6 +2381,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 <input
                   type="text"
                   value={tableCaption}
+                  maxLength={300}
                   onChange={(e) => setTableCaption(e.target.value)}
                   placeholder={t('quotes.editor.table.captionPlaceholder')}
                   data-testid="quote-block-table-caption"

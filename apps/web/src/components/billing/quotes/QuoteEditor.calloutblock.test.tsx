@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
-import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
+import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
 import { addBlock } from '../../../lib/api/quotes';
 
 // Same house pattern as TemplateEditor.test.tsx: swap the tiptap-backed
@@ -146,5 +146,26 @@ describe('QuoteEditor — add callout block', () => {
     // regression class this brief calls out explicitly.
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     await waitFor(() => expect(submit).not.toBeDisabled());
+  });
+});
+
+describe('QuoteEditor — persisted callout block', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Regression: after Task 13's initial cut, QuoteBlockCard had no branch for
+  // `table`/`callout`, so a just-created (or reloaded) callout block rendered
+  // as an empty block — invisible on the canvas even though it existed
+  // server-side. This proves the read-only display branch renders content.
+  it('renders the persisted callout content visibly (not blank) on the canvas', async () => {
+    const calloutBlock: QuoteBlock = {
+      id: 'blk-c', quoteId: 'q-1', orgId: 'org-1', blockType: 'callout',
+      content: { variant: 'warn', title: 'Heads up', html: '<p>Read carefully</p>' },
+      sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    };
+    render(<QuoteEditor detail={{ ...detail, blocks: [calloutBlock] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-block-callout-content-blk-c')).toBeInTheDocument());
+    const content = screen.getByTestId('quote-block-callout-content-blk-c');
+    expect(content).toHaveTextContent('Heads up');
+    expect(content).toHaveTextContent('Read carefully');
   });
 });

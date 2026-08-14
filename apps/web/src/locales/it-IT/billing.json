@@ -510,7 +510,9 @@
       "autosaveHint": "Le modifiche vengono salvate automaticamente. Un bordo ambra indica una modifica non salvata.",
       "block": {
         "imageSectionPdf": "Sezione immagine (renderizzata nel PDF).",
-        "richTextContentAria": "Contenuto di testo formattato"
+        "richTextContentAria": "Contenuto di testo formattato",
+        "tableEmpty": "Tabella vuota.",
+        "calloutEmpty": "Riquadro vuoto."
       },
       "blockTypes": {
         "heading": "Intestazione",

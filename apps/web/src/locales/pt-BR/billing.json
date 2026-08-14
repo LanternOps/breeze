@@ -510,7 +510,9 @@
       "autosaveHint": "As alterações são salvas automaticamente. Um contorno âmbar marca uma edição não salva.",
       "block": {
         "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
-        "richTextContentAria": "Conteúdo de rich text"
+        "richTextContentAria": "Conteúdo de rich text",
+        "tableEmpty": "Tabela vazia.",
+        "calloutEmpty": "Destaque vazio."
       },
       "blockTypes": {
         "heading": "Título",

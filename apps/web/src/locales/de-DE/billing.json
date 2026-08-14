@@ -510,7 +510,9 @@
       "autosaveHint": "Änderungen werden automatisch gespeichert. Ein bernsteinfarbener Rahmen markiert eine ungespeicherte Änderung.",
       "block": {
         "imageSectionPdf": "Bildausschnitt (gerendert im PDF).",
-        "richTextContentAria": "Rich-Text-Inhalt"
+        "richTextContentAria": "Rich-Text-Inhalt",
+        "tableEmpty": "Leere Tabelle.",
+        "calloutEmpty": "Leere Hinweisbox."
       },
       "blockTypes": {
         "heading": "Überschrift",
