@@ -351,7 +351,10 @@ const fetchJson = async (url: string) => {
   try {
     return JSON.parse(text);
   } catch {
-    return null;
+    // A 200 with an unparseable body (proxy error page, truncated response)
+    // is a failure, not data — surface it through the per-source catch
+    // instead of letting the normalizers render it as zeros.
+    throw new Error('Unparseable response body');
   }
 };
 
@@ -377,11 +380,12 @@ const fetchTrends = async (url: string): Promise<TrendsResult> => {
   const response = await fetchWithAuth(url);
   const text = await response.text();
   let payload: unknown = null;
+  let parseFailed = false;
   if (text) {
     try {
       payload = JSON.parse(text);
     } catch {
-      payload = null;
+      parseFailed = true;
     }
   }
 
@@ -390,6 +394,12 @@ const fetchTrends = async (url: string): Promise<TrendsResult> => {
       return { unavailable: true };
     }
     throw new Error(`${response.status} ${response.statusText}`);
+  }
+
+  if (parseFailed) {
+    // Same rule as fetchJson: an ok-but-unparseable body is a failure, not an
+    // empty chart.
+    throw new Error('Unparseable response body');
   }
 
   return { unavailable: false, data: payload };
@@ -447,8 +457,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     sessions: 0
   });
   const [performanceData, setPerformanceData] = useState<PerformancePoint[]>([]);
-  // True only for the documented site-scope denial: the trend card is hidden
-  // instead of rendered empty, and the denial is not counted as a page error.
+  // True only for the documented site-scope denial: the performance card is
+  // hidden instead of rendered empty, and the denial is not counted as a page
+  // error. (The weekly-trend sparkline card is unrelated and stays visible.)
   const [performanceUnavailable, setPerformanceUnavailable] = useState(false);
   const [osDistribution, setOsDistribution] = useState<OsDistributionPoint[]>([]);
   const [alertRows, setAlertRows] = useState<AlertRow[]>([]);
@@ -644,7 +655,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                   };
                 }
               } catch {
-                // Definition list already loaded; live compliance is best-effort.
+                // A definition exists but its numbers couldn't be fetched.
+                // When the listing itself carried a figure we keep showing it;
+                // otherwise this is a load failure, not the "no SLA configured"
+                // empty state.
+                if (summary === null) errors.push('sla');
               }
             }
 
@@ -668,6 +683,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                 .filter(Boolean)
             );
           } catch {
+            // QueryBuilder treats an empty deviceIds as "no devices selected",
+            // so a swallowed failure here would misdiagnose a live fleet.
+            errors.push('devices');
             setDeviceIds([]);
           }
         })()
@@ -1010,6 +1028,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             key={option.value}
             type="button"
             role="tab"
+            id={`analytics-tab-${option.value}`}
+            aria-controls={`analytics-tabpanel-${option.value}`}
             aria-selected={selectedDashboard === option.value}
             onClick={() => selectDashboard(option.value)}
             className={cn(
@@ -1079,15 +1099,17 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                 </div>
                 <div className="mt-1 flex items-baseline gap-1.5">
                   <span className="text-2xl font-semibold tracking-tight">{tile.value}</span>
-                  {tile.change !== undefined && tile.changeLabel && (
+                  {tile.change !== undefined && (
                     <span
                       className={cn(
                         'inline-flex items-center gap-0.5 truncate text-xs font-medium',
                         tile.change >= 0 ? 'text-success' : 'text-destructive'
                       )}
+                      title={tile.changeLabel}
                     >
                       {tile.change >= 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
                       {formatPercent(Math.abs(tile.change) / 100, { maximumFractionDigits: 1 })}
+                      {tile.changeLabel && <span className="text-muted-foreground">{tile.changeLabel}</span>}
                     </span>
                   )}
                   {tile.sub && (
@@ -1110,7 +1132,13 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           </div>
 
           {selectedDashboard === 'operations' && (
-            <div className="grid items-start gap-6 lg:grid-cols-3">
+            <div
+              id="analytics-tabpanel-operations"
+              role="tabpanel"
+              aria-labelledby="analytics-tab-operations"
+              tabIndex={0}
+              className="grid items-start gap-6 lg:grid-cols-3"
+            >
               {showPerformance && <div className="lg:col-span-2">{performanceCard}</div>}
               {osCard}
               {alertsCard}
@@ -1120,7 +1148,13 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           )}
 
           {selectedDashboard === 'capacity' && (
-            <div className="grid items-start gap-6 lg:grid-cols-3">
+            <div
+              id="analytics-tabpanel-capacity"
+              role="tabpanel"
+              aria-labelledby="analytics-tab-capacity"
+              tabIndex={0}
+              className="grid items-start gap-6 lg:grid-cols-3"
+            >
               <div className="lg:col-span-2">{capacityCard}</div>
               {complianceCard}
               {showPerformance && <div className="lg:col-span-2">{performanceCard}</div>}
@@ -1129,7 +1163,13 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           )}
 
           {selectedDashboard === 'sla' && (
-            <div className="grid items-start gap-6 lg:grid-cols-3">
+            <div
+              id="analytics-tabpanel-sla"
+              role="tabpanel"
+              aria-labelledby="analytics-tab-sla"
+              tabIndex={0}
+              className="grid items-start gap-6 lg:grid-cols-3"
+            >
               {slaCard}
               {complianceCard}
               {alertsCard}
