@@ -87,6 +87,7 @@ const DETAIL: SoftwareGroupDetail = {
       ticketNumber: 'T-2026-C009',
     },
   ],
+  findingsTotal: 2,
 };
 
 describe('SoftwareGroupDrawer', () => {

@@ -140,6 +140,16 @@ const groupKeyParamSchema = z.object({
   groupKey: z.string().min(4).max(600).regex(/^(sw:|os:)/),
 });
 
+// Drawer findings pagination. Both OPTIONAL and opt-in: absent => the whole
+// findings list is returned (backward-compatible with the pre-pagination client).
+// A client that passes findingsLimit gets that page + findingsTotal to lazy-load
+// the rest, so a high-cardinality group (e.g. Chrome ~5,492 findings) no longer
+// ships megabytes on drawer-open.
+const groupDetailQuerySchema = z.object({
+  findingsOffset: z.coerce.number().int().min(0).optional(),
+  findingsLimit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
 const cveIdParamSchema = z.object({
   // Real-world CVE ids are CVE-YYYY-NNNN+, but seeded/e2e ids use letters too.
   cveId: z.string().trim().regex(/^CVE-\d{4}-[A-Za-z0-9-]{1,32}$/i),
@@ -618,18 +628,24 @@ vulnerabilityRoutes.get('/software', zValidator('query', softwareQuerySchema), a
 });
 
 // Software-group drawer payload: group summary + per-CVE rollup + raw findings.
-vulnerabilityRoutes.get('/software/:groupKey', zValidator('param', groupKeyParamSchema), async (c) => {
-  const { groupKey } = c.req.valid('param');
-  const perms = c.get('permissions') as UserPermissions | undefined;
-  // status 'all' so the drawer can show accepted/mitigated findings alongside
-  // open ones (reopen lives in the drawers).
-  const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds });
-  const detail = buildGroupDetail(groupKey, rows);
-  if (!detail) {
-    return c.json({ error: 'Group not found' }, 404);
-  }
-  return c.json(detail);
-});
+vulnerabilityRoutes.get(
+  '/software/:groupKey',
+  zValidator('param', groupKeyParamSchema),
+  zValidator('query', groupDetailQuerySchema),
+  async (c) => {
+    const { groupKey } = c.req.valid('param');
+    const { findingsOffset, findingsLimit } = c.req.valid('query');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    // status 'all' so the drawer can show accepted/mitigated findings alongside
+    // open ones (reopen lives in the drawers).
+    const rows = await fetchFleetFindingRows({ status: 'all', allowedSiteIds: perms?.allowedSiteIds });
+    const detail = buildGroupDetail(groupKey, rows, { findingsOffset, findingsLimit });
+    if (!detail) {
+      return c.json({ error: 'Group not found' }, 404);
+    }
+    return c.json(detail);
+  },
+);
 
 // The four stat-card numbers in one call. Needs every status: open findings
 // feed three cards, accepted findings feed the expiring-soon card. Also carries
