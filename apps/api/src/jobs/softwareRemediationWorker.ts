@@ -183,12 +183,36 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
 
   const auditOrgId = policy.orgId ?? deviceRow?.orgId ?? null;
 
+  const [compliance] = await db
+    .select()
+    .from(softwareComplianceStatus)
+    .where(and(
+      eq(softwareComplianceStatus.policyId, data.policyId),
+      eq(softwareComplianceStatus.deviceId, data.deviceId),
+    ))
+    .limit(1);
+
+  if (!compliance) {
+    console.warn('[SoftwareRemediationWorker] Compliance record not found', {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+    });
+    return {
+      policyId: data.policyId,
+      deviceId: data.deviceId,
+      commandsQueued: 0,
+      errors: 0,
+    };
+  }
+
   // Arming re-check (#3543, incident #3381). This worker is the last hop before
   // `software_uninstall` commands reach real machines, and until now it
   // uninstalled whatever it was handed — the gate existed only in the compliance
   // evaluator that produces `auto` jobs. Re-checking here means a policy
   // disarmed AFTER a job was enqueued (or a stale/replayed/hand-enqueued job)
-  // can no longer uninstall anything.
+  // can no longer uninstall anything. It sits after the compliance READ so a
+  // refusal can be reflected on the row, but ahead of every mutation and of
+  // queueCommand.
   //
   // Note on the BullMQ jobId (`software-remediation-<policy>-<device>`): an auto
   // and a manual job for the same pair share a key and can dedupe into each
@@ -240,28 +264,24 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
     });
     recordSoftwareRemediationDecision('policy_not_armed');
 
-    return {
-      policyId: data.policyId,
-      deviceId: data.deviceId,
-      commandsQueued: 0,
-      errors: 0,
-    };
-  }
+    // The row must not be left at the enqueue-time 'pending': softwareComplianceWorker
+    // rewrites any non-terminal remediationStatus to 'completed' once the device
+    // next scans compliant, which would claim Breeze's uninstall succeeded when it
+    // was refused and never ran. Record the refusal and its reason instead.
+    await db
+      .update(softwareComplianceStatus)
+      .set({
+        remediationStatus: 'failed',
+        remediationErrors: [{
+          message: `Remediation skipped: policy is not armed for uninstall (${arming.reason}).`,
+        }],
+      })
+      .where(eq(softwareComplianceStatus.id, compliance.id))
+      .catch((err: unknown) => {
+        console.error('[SoftwareRemediationWorker] Failed to record refused remediation status:', err);
+        captureException(err);
+      });
 
-  const [compliance] = await db
-    .select()
-    .from(softwareComplianceStatus)
-    .where(and(
-      eq(softwareComplianceStatus.policyId, data.policyId),
-      eq(softwareComplianceStatus.deviceId, data.deviceId),
-    ))
-    .limit(1);
-
-  if (!compliance) {
-    console.warn('[SoftwareRemediationWorker] Compliance record not found', {
-      policyId: data.policyId,
-      deviceId: data.deviceId,
-    });
     return {
       policyId: data.policyId,
       deviceId: data.deviceId,

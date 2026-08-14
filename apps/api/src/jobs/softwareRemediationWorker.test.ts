@@ -65,9 +65,12 @@ const ORG_ID = 'org-1';
 
 function chain(result: unknown): any {
   const p: any = Promise.resolve(result);
-  for (const m of ['from', 'innerJoin', 'where', 'limit', 'set', 'orderBy']) p[m] = () => p;
+  for (const m of ['from', 'innerJoin', 'where', 'limit', 'orderBy']) p[m] = () => p;
   return p;
 }
+
+/** Captures the payload passed to `db.update(...).set(...)`. */
+let setSpy: ReturnType<typeof vi.fn>;
 
 function policyRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -107,7 +110,8 @@ function primeDb(policy: unknown, opts: { compliance?: unknown } = {}) {
   ];
   let call = 0;
   selectMock.mockImplementation(() => chain(results[Math.min(call++, results.length - 1)]));
-  updateMock.mockImplementation(() => chain([]));
+  setSpy = vi.fn(() => chain([]));
+  updateMock.mockImplementation(() => ({ set: setSpy }));
 }
 
 function policyAuditActions(): string[] {
@@ -129,8 +133,18 @@ describe('processRemediateDevice — arming gate for automatic jobs (#3543)', ()
     const audit = recordPolicyAuditMock.mock.calls[0]![0] as any;
     expect(audit).toMatchObject({ orgId: ORG_ID, policyId: POLICY_ID, deviceId: DEVICE_ID, actor: 'system' });
     expect(audit.details).toMatchObject({ reason: 'enforce_mode_off', trigger: 'auto' });
-    // The gate must fire before the row is flipped to in_progress.
-    expect(updateMock).not.toHaveBeenCalled();
+
+    // The refusal must be reflected on the compliance row: leaving it at the
+    // enqueue-time 'pending' would later be rewritten to 'completed' by the
+    // compliance worker, falsely claiming the uninstall succeeded.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const written = setSpy.mock.calls[0]![0];
+    expect(written.remediationStatus).toBe('failed');
+    expect(written.remediationErrors[0].message).toMatch(/not armed/i);
+    expect(written.remediationErrors[0].message).toContain('enforce_mode_off');
+    // Crucially it must NOT be left pending, and must not be flipped to in_progress.
+    expect(written.remediationStatus).not.toBe('pending');
+    expect(written.remediationStatus).not.toBe('in_progress');
   });
 
   it('skips when enforceMode is on but autoUninstall is not armed', async () => {

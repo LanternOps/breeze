@@ -161,6 +161,22 @@ describe('manage_software_policy create — writes both audit stores (#3543)', (
     expect(auditLog!.details).toMatchObject({ enforceMode: true, autoUninstall: true, tool_name: 'manage_software_policy' });
   });
 
+  it('audits a partner-wide create on the partner axis (orgId NULL)', async () => {
+    mockDb.insert.mockImplementation(() => chain([
+      policyRow({ ...ARMED, orgId: null, partnerId: 'partner-9', name: 'Partner template' }),
+    ]));
+
+    await handlerFor('manage_software_policy')({
+      action: 'create', name: 'Partner template', mode: 'blocklist',
+      software: [{ name: 'Foo' }], enforceMode: true,
+    }, makeAuth());
+
+    expect(policyAuditCalls()[0]).toMatchObject({
+      orgId: null, partnerId: 'partner-9', action: 'policy_created', actor: 'ai',
+    });
+    expect(auditLogCalls()[0]).toMatchObject({ orgId: null, action: 'software_policy.create' });
+  });
+
   it('does not audit when the create is rejected before any row is written', async () => {
     const result = JSON.parse(await handlerFor('manage_software_policy')({
       action: 'create',
@@ -354,7 +370,25 @@ describe('remediate_software_violation — arming gate (#3543 / incident #3381)'
 
     await handlerFor('remediate_software_violation')({ policyId: POLICY_ID, deviceIds: ['d1'] }, makeAuth());
 
-    const options = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![2];
-    expect(options?.trigger).not.toBe('manual');
+    // Assert on ARITY, not on `options?.trigger` — the AI tool passes no options
+    // object at all, so `undefined?.trigger` would be vacuously non-'manual'
+    // even if a manual override were later introduced.
+    const call = vi.mocked(scheduleSoftwareRemediation).mock.calls[0]!;
+    expect(call.length).toBe(2);
+    expect(call[2]).toBeUndefined();
+  });
+
+  it('audits a partner-wide policy (orgId NULL) on the partner axis', async () => {
+    mockDb.select.mockImplementation(() => chain([
+      policyRow({ ...ARMED, orgId: null, partnerId: 'partner-9' }),
+    ]));
+    vi.mocked(scheduleSoftwareRemediation).mockResolvedValue(1);
+
+    await handlerFor('remediate_software_violation')({ policyId: POLICY_ID, deviceIds: ['d1'] }, makeAuth());
+
+    // recordSoftwarePolicyAudit throws when BOTH axes are null — a partner-wide
+    // policy must carry partnerId so the row is still writable and visible.
+    expect(policyAuditCalls()[0]).toMatchObject({ orgId: null, partnerId: 'partner-9' });
+    expect(auditLogCalls()[0]).toMatchObject({ orgId: null, resourceId: POLICY_ID });
   });
 });
