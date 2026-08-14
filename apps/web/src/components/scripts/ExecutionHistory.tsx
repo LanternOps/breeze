@@ -19,6 +19,10 @@ export type ScriptExecution = {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  // Failure reason captured by the agent/server (validation errors, timeouts,
+  // reaper recoveries). Often the ONLY populated field on a failed run whose
+  // stdout/stderr are empty — the details view must surface it (#3097 class).
+  errorMessage?: string;
   duration?: number; // in seconds
 };
 

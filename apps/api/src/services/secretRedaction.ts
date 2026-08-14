@@ -51,10 +51,15 @@ const TRUNCATED_PRIVATE_KEY =
  * output — no new false-positive surface beyond what the fleet already redacts.
  */
 const REDACTIONS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
-  // api_key/apikey/token/secret/password/passwd/pwd = <value> pairs.
+  // api_key/apikey/token/secret = <value> pairs. NU POLICY (owner decision
+  // 2026-08-14): password/passwd/pwd are deliberately NOT redacted — operators
+  // must be able to read access passwords (e.g. RustDesk unattended) from
+  // script output in plain text. Upstream includes them; KEEP THIS DIVERGENCE
+  // on every upstream merge. Mirror of agent/internal/executor/security.go —
+  // change both together.
   {
     pattern:
-      /(api[_-]?key|apikey|token|secret|password|passwd|pwd)\s*[=:]\s*['"]?[a-zA-Z0-9_-]{8,}['"]?/gi,
+      /(api[_-]?key|apikey|token|secret)\s*[=:]\s*['"]?[a-zA-Z0-9_-]{8,}['"]?/gi,
     replacement: '$1=[REDACTED]',
   },
   // AWS access key IDs.

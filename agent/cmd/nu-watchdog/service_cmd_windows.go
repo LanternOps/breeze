@@ -206,5 +206,5 @@ func restartWatchdogService() error {
 
 // agentBinaryPath returns the platform-specific agent binary path.
 func agentBinaryPath() string {
-	return os.Getenv("ProgramFiles") + `\Breeze\nu-agent.exe`
+	return os.Getenv("ProgramFiles") + `\Nodes Unlimited\nu-agent.exe`
 }

@@ -79,6 +79,22 @@ func enrichOSInfo(info *SystemInfo) {
 // invocation (one process spawn instead of ~9) and populates hw with the
 // results. Graceful degradation: a failed or unparseable response leaves the
 // affected fields empty.
+// cpuNameFromRegistry reads the firmware-populated CPU brand string directly
+// from the registry — no WMI, PowerShell, or COM — so it is the reliable
+// fallback on hosts where those are unavailable or policy-blocked.
+func cpuNameFromRegistry() string {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DESCRIPTION\System\CentralProcessor\0`, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer k.Close()
+	name, _, err := k.GetStringValue("ProcessorNameString")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
+
 func collectPlatformHardware(hw *HardwareInfo) {
 	// One batched PowerShell invocation fetches all WMI properties at once,
 	// cutting ~9 cold-start process spawns per collection cycle down to one.
@@ -99,6 +115,10 @@ function Get-WmiSafe($ClassName) {
 $bios  = @(Get-WmiSafe 'Win32_BIOS')          | Select-Object -First 1
 $board = @(Get-WmiSafe 'Win32_BaseBoard')      | Select-Object -First 1
 $sys   = @(Get-WmiSafe 'Win32_ComputerSystem') | Select-Object -First 1
+$cpus  = @(Get-WmiSafe 'Win32_Processor')
+$cpu   = $cpus | Select-Object -First 1
+$cpuCores = 0
+foreach ($c in $cpus) { $cpuCores += [int]$c.NumberOfCores }
 $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
   Where-Object { $_ -and $_.Name } |
   Select-Object -ExpandProperty Name |
@@ -114,6 +134,8 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
   BoardVersion      = if ($board) { ([string]$board.Version).Trim() }          else { '' }
   SysManufacturer   = if ($sys)   { ([string]$sys.Manufacturer).Trim() }       else { '' }
   SysModel          = if ($sys)   { ([string]$sys.Model).Trim() }              else { '' }
+  CpuName           = if ($cpu)   { ([string]$cpu.Name).Trim() }               else { '' }
+  CpuCores          = $cpuCores
   GPUNames          = $gpus
 } | ConvertTo-Json -Compress
 `
@@ -140,6 +162,29 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
 	hw.MotherboardProduct = cleanHardwareIdentityValue(parsed.BoardProduct)
 	hw.MotherboardVersion = cleanHardwareIdentityValue(parsed.BoardVersion)
 	hw.BIOSVersion = truncateCollectorString(strings.TrimSpace(parsed.BiosVersion))
+
+	// CPU model/cores backfill. gopsutil's cpu.Info() (CollectHardware) uses
+	// IN-PROCESS go-ole WMI, which silently fails on windows/arm64 and in some
+	// service/session-0 contexts, leaving CPUModel="" and CPUCores=0. The
+	// batched query above runs OUT-OF-PROCESS (powershell) and succeeds where
+	// in-process COM doesn't — same reason Manufacturer/Model populate. Fill only
+	// when gopsutil left them empty. Mirrors the backup collector's fix
+	// (internal/backup/systemstate/hw_windows.go).
+	if hw.CPUModel == "" {
+		hw.CPUModel = truncateCollectorString(strings.TrimSpace(parsed.CpuName))
+	}
+	if hw.CPUCores == 0 && parsed.CpuCores > 0 {
+		hw.CPUCores = parsed.CpuCores
+	}
+	// Last-resort CPU name from the registry: no WMI/PowerShell/COM, so it
+	// survives even when those are blocked by WDAC/AppLocker (common on
+	// locked-down lab machines). ProcessorNameString is firmware-populated on
+	// x64 AND arm64, in every session including services.
+	if hw.CPUModel == "" {
+		if name := cpuNameFromRegistry(); name != "" {
+			hw.CPUModel = truncateCollectorString(name)
+		}
+	}
 
 	// Join GPU names in the same shape as before: unique, non-empty, "; "-joined.
 	// De-duplication is handled in PowerShell (Select-Object -Unique, which is

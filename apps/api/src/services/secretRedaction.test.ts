@@ -112,9 +112,11 @@ describe('redactSecretsFromOutput', () => {
     expect(out).toContain('Bearer [TOKEN_REDACTED]');
   });
 
-  it('redacts password= / token= / secret= style pairs', () => {
+  it('does NOT redact password= pairs (NU policy) while still redacting token=', () => {
+    // Owner decision 2026-08-14: operators must be able to read access
+    // passwords (e.g. RustDesk unattended) from script output in plain text.
     const out = redactSecretsFromOutput('DB_PASSWORD=SuperSecret123 and token: abcd1234efgh');
-    expect(out).not.toContain('SuperSecret123');
+    expect(out).toContain('SuperSecret123');
     expect(out).not.toContain('abcd1234efgh');
     expect(out).toContain('[REDACTED]');
   });
@@ -141,7 +143,7 @@ describe('redactOptionalSecretText (#2434)', () => {
   });
 
   it('redacts a non-null value', () => {
-    const out = redactOptionalSecretText('password=SuperSecret123');
+    const out = redactOptionalSecretText('token=SuperSecret123');
     expect(out).not.toContain('SuperSecret123');
   });
 });

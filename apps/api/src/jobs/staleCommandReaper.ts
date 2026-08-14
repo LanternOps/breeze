@@ -386,12 +386,29 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       ? 'Agent result was delivered but never recorded on this execution; recovered from the device command (#3097)'
       : 'Server-side timeout: no response from agent';
 
+    // #3097 follow-up: when the agent DID reply (terminal device_commands row),
+    // the real captured output lives in cmd.result. Copy it onto the recovered
+    // execution so the operator sees the actual stdout/stderr/exit code instead
+    // of a blank panel. Already redacted at store time (buildStoredCommandResult).
+    const cmdResult = cmd?.result as
+      | { stdout?: string | null; stderr?: string | null; exitCode?: number | null }
+      | null
+      | undefined;
+    const recoveredOutput = cmdIsTerminal
+      ? {
+          stdout: cmdResult?.stdout ?? undefined,
+          stderr: cmdResult?.stderr ?? undefined,
+          exitCode: cmdResult?.exitCode ?? undefined,
+        }
+      : {};
+
     const updated = await db
       .update(scriptExecutions)
       .set({
         status: reapedStatus,
         completedAt: new Date(),
         errorMessage: reapedError,
+        ...recoveredOutput,
       })
       .where(
         and(

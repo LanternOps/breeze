@@ -610,7 +610,8 @@
       "noOutput": "No output",
       "title": "Output",
       "stdout": "Standard Output (stdout)",
-      "stderr": "Standard Error (stderr)"
+      "stderr": "Standard Error (stderr)",
+      "error": "Error"
     },
     "actions": {
       "copyToClipboard": "Copy to clipboard"

@@ -737,14 +737,18 @@ if [[ "\$OS" == "darwin" ]]; then
     fatal "Downloaded file is not a macOS installer package — something on this network may be intercepting requests to \$BREEZE_SERVER (captive portal, proxy, or web filter)."
   fi
 
-  # Verify Apple notarization/signature before installing as root — the installer
-  # CLI does not enforce Gatekeeper on its own, so a tampered/MITM'd download
-  # would otherwise be installed with full privileges.
-  info "Verifying installer package signature..."
-  if ! spctl --assess --type install "\$TMPPKG" >/dev/null 2>&1; then
-    fatal "Installer package failed Gatekeeper notarization assessment. Refusing to install."
+  # Nodes Unlimited ships the agent UNSIGNED by policy (no Apple Developer ID /
+  # notarization), so a Gatekeeper assessment cannot pass — it is a best-effort
+  # NOTICE, not a gate. Transport integrity comes from validated HTTPS/TLS to
+  # \$BREEZE_SERVER plus the xar-magic check above (which catches a captive
+  # portal or proxy serving something that isn't our pkg). A future notarized
+  # build still reports cleanly here.
+  info "Checking installer package signature..."
+  if spctl --assess --type install "\$TMPPKG" >/dev/null 2>&1; then
+    success "Installer package is Apple-notarized"
+  else
+    warn "Installer package is not Apple-notarized (expected — this build ships unsigned by policy); proceeding. Integrity relies on the HTTPS download from \$BREEZE_SERVER."
   fi
-  success "Verified installer package notarization"
 
   info "Installing Breeze Agent..."
   installer -pkg "\$TMPPKG" -target /

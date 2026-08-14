@@ -124,11 +124,27 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	if scriptResult.Error != "" && strings.Contains(scriptResult.Error, "timed out") {
 		status = "timeout"
 	}
+
+	stderr := executor.SanitizeOutput(scriptResult.Stderr)
+	// Guarantee that a FAILED/TIMEOUT run never comes back blank. Several
+	// early-exit failure paths in the executor (validation, unsupported type,
+	// shell-missing, runAs, timeout-before-first-print) leave Stdout/Stderr
+	// empty and carry the reason only in Error. Surface that reason on the
+	// stderr channel so every consumer — the UI panels, history, logs — shows
+	// WHY it failed instead of an empty result.
+	if status != "completed" && strings.TrimSpace(stderr) == "" {
+		if strings.TrimSpace(scriptResult.Error) != "" {
+			stderr = "[error] " + scriptResult.Error
+		} else {
+			stderr = "[error] script " + status + " with no output"
+		}
+	}
+
 	return tools.CommandResult{
 		Status:     status,
 		ExitCode:   scriptResult.ExitCode,
 		Stdout:     executor.SanitizeOutput(scriptResult.Stdout),
-		Stderr:     executor.SanitizeOutput(scriptResult.Stderr),
+		Stderr:     stderr,
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}

@@ -264,7 +264,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     expect(script).toContain('launchctl kickstart');
   });
 
-  it('install.sh verifies pkg notarization before installing as root (security gate)', async () => {
+  it('install.sh checks pkg notarization before install but proceeds when unsigned (ships unsigned by policy)', async () => {
     const zipBuffer = await buildMacosInstallerZip({
       serverUrl: 'https://x.com',
       enrollmentKey: realEnrollmentKey(),
@@ -275,14 +275,18 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
 
-    // The installer CLI does not enforce Gatekeeper; the script must spctl-assess
-    // (fail closed) BEFORE handing the downloaded pkg to `installer -pkg` as root.
+    // The notarization check still runs BEFORE `installer -pkg` and reports its
+    // result — but the NU fork ships unsigned by policy, so it is a best-effort
+    // notice, NOT a hard gate: it must never abort the install.
     const gateIdx = script.indexOf('spctl --assess --type install');
     const installIdx = script.indexOf('installer -pkg');
     expect(gateIdx).toBeGreaterThan(-1);
     expect(installIdx).toBeGreaterThan(-1);
     expect(gateIdx).toBeLessThan(installIdx);
-    expect(script).toMatch(/Refusing to install/);
+    // Must NOT fail closed on an unsigned package: no refusal, and the
+    // unsigned branch explicitly proceeds rather than exiting.
+    expect(script).not.toMatch(/Refusing to install/);
+    expect(script).toMatch(/not Apple-notarized[\s\S]*proceeding/i);
   });
 
   it('install.sh removes the credential file on any exit (no secret left behind)', async () => {

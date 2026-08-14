@@ -8,7 +8,7 @@
     Failure diagnostics: when this script fails, the MSI rolls back with
     "installer rolled back" and no actionable text in the default MSI log.
     To preserve the cause, every error path writes a single-line timestamped
-    record to C:\ProgramData\Nodes Unlimited\logs\user-helper-install-last-error.txt
+    record to C:\ProgramData\Breeze\logs\user-helper-install-last-error.txt
     (survives the rollback because CA-written files are opaque to MSI) and
     emits an Event Viewer entry under Application/BreezeAgent. This mirrors
     the enrollment CA's diagnostic trail.
@@ -16,12 +16,42 @@
 
 $ErrorActionPreference = "Stop"
 
-$BinaryPath = "C:\Program Files\Nodes Unlimited\nu-agent.exe"
-$UserHelperBinaryPath = "C:\Program Files\Nodes Unlimited\nu-user-helper.exe"
+# Resolve the install root from THIS script's own location instead of hardcoding
+# a product name. The MSI lays this script down at <INSTALLDIR>\scripts\install\,
+# so ..\.. IS the install root (today C:\Program Files\Breeze) and the agent
+# binaries sit directly in it. A half-finished rebrand hardcoded
+# "C:\Program Files\Nodes Unlimited" here, so Test-Path failed against the real
+# "Breeze" dir, RegisterUserHelperTask exited 1, and MSI rolled the whole
+# install back with Error 1722. Deriving the path can never drift from the wxs
+# INSTALLFOLDER, whatever it is named.
+$InstallRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$BinaryPath = Join-Path $InstallRoot "nu-agent.exe"
+$UserHelperBinaryPath = Join-Path $InstallRoot "nu-user-helper.exe"
 $TaskXmlPath = Join-Path $PSScriptRoot "..\..\service\windows\nu-agent-user-task.xml"
 $TaskName = "\Breeze\AgentUserHelper"
-$LogDir = "C:\ProgramData\Nodes Unlimited\logs"
+$LogDir = "C:\ProgramData\Breeze\logs"
 $SentinelPath = Join-Path $LogDir "user-helper-install-last-error.txt"
+
+# Full install transcript in a KNOWN, easy-to-find location so a tech can open
+# it after any install / repair without hunting through MSI verbose logs. One
+# file per calendar day; every run appends. Best-effort — logging never breaks
+# the install.
+$InstallLogDir = "C:\Temp\Logs\NURmm-logs"
+$InstallLogFile = Join-Path $InstallLogDir ("NURmm-install-{0}.log" -f (Get-Date -Format "yyyy-MM-dd"))
+function Write-Log {
+    param([string]$Message)
+    $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $line = "[$ts] $Message"
+    try {
+        if (-not (Test-Path $InstallLogDir)) {
+            New-Item -ItemType Directory -Path $InstallLogDir -Force | Out-Null
+        }
+        Add-Content -Path $InstallLogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch {
+        # Logging is auxiliary — swallow any failure.
+    }
+    Write-Host $line
+}
 
 function Write-FailureDiagnostic {
     param([string]$Message)
@@ -47,9 +77,13 @@ function Write-FailureDiagnostic {
     } catch {
         # Ignore — diagnostic is auxiliary
     }
+    Write-Log "FAILURE: $Message"
     Write-Error $Message
 }
 
+Write-Log "=== NU Agent user-helper install started (pid $PID) ==="
+Write-Log "Install root: $InstallRoot"
+Write-Log "Agent binary: $BinaryPath | User-helper binary: $UserHelperBinaryPath"
 Write-Host "Installing Breeze Agent User Helper..."
 
 # Verify binaries exist. nu-agent.exe is the console-subsystem CLI binary
@@ -112,6 +146,7 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
     }
 }
 if ($registered) {
+    Write-Log "Scheduled task registered: $TaskName"
     Write-Host "  Scheduled task registered: $TaskName"
     # Clear the sentinel from any prior failed install so support staff can
     # tell a fresh failure from a stale record.
@@ -127,6 +162,7 @@ if ($registered) {
 }
 
 Write-Host ""
+Write-Log "=== NU Agent user-helper install completed OK ==="
 Write-Host "Breeze Agent User Helper installed."
 Write-Host "The helper will start automatically at next user login."
 Write-Host "To start now: schtasks /run /tn `"$TaskName`""

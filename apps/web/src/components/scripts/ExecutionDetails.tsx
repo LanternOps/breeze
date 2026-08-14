@@ -272,6 +272,22 @@ export default function ExecutionDetails({
             </div>
           )}
 
+          {/* Failure reason — often the ONLY populated field when a script
+              fails before producing output (validation errors, timeouts,
+              reaper-recovered runs). Without this banner the modal shows two
+              empty panels and the operator sees nothing. */}
+          {execution.errorMessage && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4">
+              <p className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {t('executionDetails.output.error', 'Error')}
+              </p>
+              <p className="mt-1.5 whitespace-pre-wrap break-words font-mono text-sm text-destructive">
+                {normalizeOutput(execution.errorMessage)}
+              </p>
+            </div>
+          )}
+
           {/* Output Sections */}
           <div className="space-y-4">
             <h3 className="text-sm font-semibold">{t('executionDetails.output.title')}</h3>

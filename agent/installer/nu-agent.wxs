@@ -13,7 +13,7 @@
      guard below Package for why it exists and why its default is the
      Self-Hosted GUID (the complement of the Hosted defaults here). -->
 <?ifndef ProductName?>
-<?define ProductName=Breeze Agent?>
+<?define ProductName=Nodes Unlimited Agent?>
 <?endif?>
 <?ifndef UpgradeCode?>
 <?define UpgradeCode={70A57B7A-4F72-4E18-B8D3-7D2783C2C1A9}?>
@@ -103,14 +103,14 @@
          product), and the Launch Condition blocks install before any files
          are touched if the other edition is found. -->
     <MajorUpgrade
-      DowngradeErrorMessage="A newer version of Breeze Agent is already installed."
+      DowngradeErrorMessage="A newer version of Nodes Unlimited Agent is already installed."
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallExecute" />
 
     <Upgrade Id="$(var.OtherUpgradeCode)">
       <UpgradeVersion Minimum="0.0.0.0" IncludeMinimum="yes" OnlyDetect="yes" Property="OTHEREDITIONFOUND" />
     </Upgrade>
-    <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
+    <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Nodes Unlimited Agent is already installed. Uninstall it before installing this edition." />
     <!-- The stock MSI sequences run LaunchConditions (100) BEFORE
          FindRelatedProducts (200), which would leave OTHEREDITIONFOUND
          permanently unset when the Launch condition above is evaluated —
@@ -124,7 +124,7 @@
       <FindRelatedProducts Before="LaunchConditions" />
     </InstallExecuteSequence>
 
-    <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
+    <Launch Condition="VersionNT64" Message="Nodes Unlimited Agent requires 64-bit Windows." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
     <?ifdef ServerUrlDefault ?>
@@ -341,7 +341,7 @@
       Return="ignore" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Breeze">
+      <Directory Id="INSTALLFOLDER" Name="Nodes Unlimited">
         <Component Id="cmpBreezeAgentExe" Guid="*">
           <File Id="filBreezeAgentExe" Name="nu-agent.exe" Source="$(var.AgentExePath)" KeyPath="yes" />
           <ServiceInstall
@@ -627,7 +627,7 @@
       <Custom Action="UninstallNotify" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
-    <Feature Id="MainFeature" Title="Breeze Agent" Level="1">
+    <Feature Id="MainFeature" Title="Nodes Unlimited Agent" Level="1">
       <ComponentRef Id="cmpBreezeAgentExe" />
       <ComponentRef Id="cmpBreezeBackupExe" />
       <ComponentRef Id="cmpBreezeUserHelperExe" />

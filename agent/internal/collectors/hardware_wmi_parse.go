@@ -50,6 +50,8 @@ type windowsHardwareJSON struct {
 	BoardVersion      string      `json:"BoardVersion"`
 	SysManufacturer   string      `json:"SysManufacturer"`
 	SysModel          string      `json:"SysModel"`
+	CpuName           string      `json:"CpuName"`
+	CpuCores          int         `json:"CpuCores"`
 	GPUNames          gpuNameList `json:"GPUNames"`
 }
 

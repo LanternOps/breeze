@@ -203,8 +203,13 @@ func SanitizeOutput(output string) string {
 		regex       *regexp.Regexp
 		replacement string
 	}{
-		// API keys and tokens
-		{regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|secret|password|passwd|pwd)\s*[=:]\s*['"]?[a-zA-Z0-9_\-]{8,}['"]?`), "$1=[REDACTED]"},
+		// API keys and tokens. NU POLICY (owner decision 2026-08-14):
+		// password/passwd/pwd are deliberately NOT in this pattern — operators
+		// must be able to read access passwords (e.g. RustDesk unattended) from
+		// script output in plain text. Upstream includes them; KEEP THIS
+		// DIVERGENCE on every upstream merge. Mirror of
+		// apps/api/src/services/secretRedaction.ts — change both together.
+		{regexp.MustCompile(`(?i)(api[_-]?key|apikey|token|secret)\s*[=:]\s*['"]?[a-zA-Z0-9_\-]{8,}['"]?`), "$1=[REDACTED]"},
 		// AWS keys
 		{regexp.MustCompile(`(?i)AKIA[0-9A-Z]{16}`), "[AWS_KEY_REDACTED]"},
 		// Private keys — remove the ENTIRE PEM block (header + base64 body + footer),

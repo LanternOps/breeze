@@ -37,7 +37,7 @@ function generateWindowsInstallScript(enrollmentKey: string): string {
 setlocal EnableDelayedExpansion
 
 REM This installer runs msiexec, which requires elevation. Run unelevated it
-REM silently fails, the agent binary never lands in %ProgramFiles%\\Breeze, and
+REM silently fails, the agent binary never lands in %ProgramFiles%\\Nodes Unlimited, and
 REM the enroll step below then errors with a confusing "path not found" -- yet
 REM the script used to still print "installed successfully" (#1832). Fail fast
 REM with a clear message instead.
@@ -94,8 +94,8 @@ for /f "usebackq tokens=1,* delims=:" %%a in (\`type "%ENROLLMENT_JSON%"\`) do (
 set ENROLLMENT_KEY="${enrollmentKey}"
 REM The NU packages install nu-agent.exe; upstream packages installed
 REM breeze-agent.exe. Accept either so this wrapper works with both.
-set "AGENT_EXE=%ProgramFiles%\\Breeze\\nu-agent.exe"
-if not exist "%AGENT_EXE%" set "AGENT_EXE=%ProgramFiles%\\Breeze\\breeze-agent.exe"
+set "AGENT_EXE=%ProgramFiles%\\Nodes Unlimited\\nu-agent.exe"
+if not exist "%AGENT_EXE%" set "AGENT_EXE=%ProgramFiles%\\Nodes Unlimited\\breeze-agent.exe"
 set ENROLL_CMD="%AGENT_EXE%" enroll "%ENROLLMENT_KEY%" --server "%SERVER_URL%"
 if defined ENROLLMENT_SECRET if not "%ENROLLMENT_SECRET%"=="" (
     set ENROLL_CMD=%ENROLL_CMD% --enrollment-secret "%ENROLLMENT_SECRET%"
@@ -214,13 +214,15 @@ if [ ! -s "$TMPPKG" ]; then
   exit 1
 fi
 
-# Verify the package is Apple-notarized and Developer-ID signed BEFORE installing
-# as root. The \`installer\` CLI does NOT enforce Gatekeeper/notarization on its
-# own (stapling is only checked in the Finder double-click flow), so without this
-# an MITM'd or tampered download would be installed with full root privileges.
-if ! spctl --assess --type install "$TMPPKG" >/dev/null 2>&1; then
-  echo "Error: installer package failed Gatekeeper notarization assessment. Refusing to install."
-  exit 1
+# Nodes Unlimited ships the agent UNSIGNED by policy (no Apple Developer ID /
+# notarization), so a Gatekeeper assessment cannot pass — treat it as a
+# best-effort NOTICE, not a gate. Integrity comes from the HTTPS download plus
+# the empty/HTTP-code checks above. A future notarized build still reports
+# cleanly here.
+if spctl --assess --type install "$TMPPKG" >/dev/null 2>&1; then
+  echo "Installer package is Apple-notarized."
+else
+  echo "Note: installer package is not Apple-notarized (expected for this unsigned build); proceeding."
 fi
 
 # Install the PKG

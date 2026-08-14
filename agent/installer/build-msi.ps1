@@ -2,10 +2,10 @@
     [Parameter(Mandatory = $false)]
     [string]$Version = "0.1.0",
 
-    # Installer identity to build. "Hosted" (default) reproduces today's MSI
-    # identity byte-for-byte (ProductName "Breeze Agent", the original
-    # UpgradeCode) so existing callers that pass nothing get an unchanged
-    # package and existing hosted fleets keep upgrading in place.
+    # Installer identity to build. "Hosted" (default) is the NU fleet's package:
+    # ProductName "Nodes Unlimited Agent" on the original (unchanged) UpgradeCode,
+    # so callers that pass nothing get the branded package and existing installs
+    # keep upgrading in place (MajorUpgrade keys on the UpgradeCode, not the name).
     # "SelfHost" builds the self-hosted edition under its own permanent
     # UpgradeCode. See breeze.wxs's preprocessor block and the cross-edition
     # Upgrade/Launch guard near MajorUpgrade for why the two must never
@@ -115,9 +115,9 @@ if (-not (Test-Path $outputDir)) {
 # reverse). Do not change either GUID; the SelfHost UpgradeCode in
 # particular is permanent — self-hosted fleets identify their upgrade
 # lineage by it.
-$hostedProductName = "Breeze Agent"
+$hostedProductName = "Nodes Unlimited Agent"
 $hostedUpgradeCode = "{70A57B7A-4F72-4E18-B8D3-7D2783C2C1A9}"
-$selfHostProductName = "Breeze Agent (Self-Hosted)"
+$selfHostProductName = "Nodes Unlimited Agent (Self-Hosted)"
 $selfHostUpgradeCode = "{787838E2-1A3E-4B61-8514-75DD922A6B1B}"
 
 if ($Edition -eq "SelfHost") {
