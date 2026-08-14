@@ -137,6 +137,8 @@ describe('portal quotes GET /quotes/:id', () => {
       partnerName: 'Lantern IT',
       logoUrl: 'https://cdn.example.test/logo.png',
       primaryColor: '#123456',
+      theme: 'classic',
+      pageSize: 'a4',
     });
   });
 
@@ -155,7 +157,7 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
   });
 
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {
