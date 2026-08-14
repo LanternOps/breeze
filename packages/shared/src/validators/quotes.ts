@@ -52,7 +52,10 @@ const tableColumn = z.object({
   align: z.enum(['left', 'center', 'right']).optional(),
   weight: z.number().int().min(1).max(10).optional(),
 });
-const tableContent = z.object({
+// Exported (not just inferred as a type) so the read-path defense-in-depth
+// sanitizer (quoteService.sanitizeQuoteBlocksForRead) can safeParse stored
+// JSONB against the same shape write validated, without duplicating it.
+export const quoteTableContentSchema = z.object({
   columns: z.array(tableColumn).min(1).max(8),
   rows: z.array(z.object({ cells: z.array(z.string().max(2000)) })).min(1).max(100),
   caption: z.string().max(300).optional(),
@@ -67,11 +70,13 @@ const tableContent = z.object({
     }
   });
 });
-const calloutContent = z.object({
+const tableContent = quoteTableContentSchema;
+export const quoteCalloutContentSchema = z.object({
   variant: z.enum(['info', 'accent', 'warn']),
   title: z.string().max(200).optional(),
   html: z.string().max(50_000), // same cap as rich_text
 });
+const calloutContent = quoteCalloutContentSchema;
 
 export const quoteBlockInputSchema = z.discriminatedUnion('blockType', [
   z.object({ blockType: z.literal('heading'), content: headingContent }),

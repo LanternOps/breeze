@@ -14,9 +14,11 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
-import { sanitizeRichTextHtml } from './richTextSanitize';
+import { sanitizeRichTextHtml, sanitizeInlineRichText, sanitizePlainText } from './richTextSanitize';
+import { quoteTableContentSchema, quoteCalloutContentSchema } from '@breeze/shared';
 import type {
-  CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery
+  CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery,
+  QuoteTableContent, QuoteCalloutContent,
 } from '@breeze/shared';
 
 // ---------------------------------------------------------------------------
@@ -77,23 +79,64 @@ export function attachCustomerLineImages<T extends { id: string; imageId: string
  * API — the internal editor (getQuote, below), the portal, and the public accept
  * link — must route through this so no unsanitized author HTML is ever served.
  */
+/** Per-field sanitization shared by write (sanitizeBlockContentForWrite) and
+ * read (sanitizeQuoteBlocksForRead) for the 'table' block: every cell/label is
+ * inline-only HTML (richTextSanitize's inline profile), caption is plain text. */
+function sanitizeTableContent(c: QuoteTableContent): QuoteTableContent {
+  return {
+    ...c,
+    columns: c.columns.map((col) => ({ ...col, label: sanitizeInlineRichText(col.label) })),
+    rows: c.rows.map((r) => ({ cells: r.cells.map(sanitizeInlineRichText) })),
+    caption: c.caption ? sanitizePlainText(c.caption) : c.caption,
+  };
+}
+
+/** Per-field sanitization shared by write and read for the 'callout' block:
+ * html uses the same 11-tag block profile as rich_text, title is plain text. */
+function sanitizeCalloutContent(c: QuoteCalloutContent): QuoteCalloutContent {
+  return { ...c, html: sanitizeRichTextHtml(c.html), title: c.title ? sanitizePlainText(c.title) : c.title };
+}
+
+// Canonical empty content substituted on read when a stored block's JSONB
+// fails to safeParse against the Task 2 Zod shape (legacy row, direct write,
+// or any future write path that forgets to validate) — a renderer must never
+// see an out-of-contract shape (spec §4 read-path hardening).
+const EMPTY_TABLE_CONTENT: QuoteTableContent = { columns: [], rows: [] };
+const EMPTY_CALLOUT_CONTENT: QuoteCalloutContent = { variant: 'info', html: '' };
+
 export function sanitizeQuoteBlocksForRead<T extends { blockType: string; content: unknown }>(blocks: T[]): T[] {
   return blocks.map((block) => {
-    if (block.blockType !== 'rich_text') return block;
-    const content = block.content;
-    if (!content || typeof content !== 'object' || Array.isArray(content)) return block;
-    const html = (content as Record<string, unknown>).html;
-    if (typeof html !== 'string') return block;
-    return { ...block, content: { ...(content as Record<string, unknown>), html: sanitizeRichTextHtml(html) } };
+    if (block.blockType === 'rich_text') {
+      const content = block.content;
+      if (!content || typeof content !== 'object' || Array.isArray(content)) return block;
+      const html = (content as Record<string, unknown>).html;
+      if (typeof html !== 'string') return block;
+      return { ...block, content: { ...(content as Record<string, unknown>), html: sanitizeRichTextHtml(html) } };
+    }
+    if (block.blockType === 'table') {
+      const parsed = quoteTableContentSchema.safeParse(block.content);
+      return { ...block, content: parsed.success ? sanitizeTableContent(parsed.data) : EMPTY_TABLE_CONTENT };
+    }
+    if (block.blockType === 'callout') {
+      const parsed = quoteCalloutContentSchema.safeParse(block.content);
+      return { ...block, content: parsed.success ? sanitizeCalloutContent(parsed.data) : EMPTY_CALLOUT_CONTENT };
+    }
+    return block;
   });
 }
 
-/** Sanitize a rich_text block's content.html at WRITE time (addBlock/updateBlock) —
- * the primary defense; sanitizeQuoteBlocksForRead above is the secondary one.
- * Other block types pass through unchanged. */
-function sanitizeBlockContentForWrite(input: QuoteBlockInput): QuoteBlockInput['content'] {
+/** Sanitize a block's content at WRITE time (addBlock/updateBlock) — the
+ * primary defense; sanitizeQuoteBlocksForRead above is the secondary one.
+ * Other block types pass through unchanged. Exported for direct unit testing. */
+export function sanitizeBlockContentForWrite(input: QuoteBlockInput): QuoteBlockInput['content'] {
   if (input.blockType === 'rich_text') {
     return { ...input.content, html: sanitizeRichTextHtml(input.content.html) };
+  }
+  if (input.blockType === 'table') {
+    return sanitizeTableContent(input.content);
+  }
+  if (input.blockType === 'callout') {
+    return sanitizeCalloutContent(input.content);
   }
   return input.content;
 }
