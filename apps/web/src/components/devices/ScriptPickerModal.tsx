@@ -6,6 +6,7 @@ import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import type { ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
+import { asList } from '@/lib/asList';
 
 export type ScriptLanguage = 'powershell' | 'bash' | 'python' | 'cmd';
 export type OSType = 'windows' | 'macos' | 'linux';
@@ -80,7 +81,7 @@ export default function ScriptPickerModal({
       }
 
       const data = await response.json();
-      const scriptList = data.data ?? data.scripts ?? data ?? [];
+      const scriptList = asList(data, 'scripts');
 
       // Transform scripts
       const transformedScripts: Script[] = scriptList

@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { Plus, Pencil, Trash2, Search, Settings, ChevronDown, AlertCircle } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import type { CustomFieldDefinition, CustomFieldType, CustomFieldOptions } from '@breeze/shared';
+import { asList } from '@/lib/asList';
 
 interface CustomField extends Omit<CustomFieldDefinition, 'createdAt' | 'updatedAt'> {
   createdAt: string | Date;
@@ -63,7 +64,7 @@ export default function CustomFieldsPage() {
         throw new Error(t('customFieldsPage.errors.fetch'));
       }
       const data = await response.json();
-      setFields(data.data ?? data ?? []);
+      setFields(asList(data));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('customFieldsPage.errors.fetch'));
     } finally {

@@ -6,6 +6,7 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { toCsv } from "@/lib/csvExport";
+import { asList } from '@/lib/asList';
 
 type InventoryItem = {
   id: string;
@@ -68,7 +69,7 @@ export default function SoftwareInventoryView({
       }
       const payload = await response.json();
       const rawList =
-        payload.data ?? payload.inventory ?? payload.items ?? payload ?? [];
+        asList(payload, 'inventory', 'items');
       // Handle nested inventory structure (inventory per device)
       let flatList: Record<string, unknown>[] = [];
       if (Array.isArray(rawList)) {

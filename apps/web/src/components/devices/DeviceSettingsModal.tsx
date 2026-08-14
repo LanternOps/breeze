@@ -5,6 +5,7 @@ import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { extractApiError } from '@/lib/apiError';
+import { asList } from '@/lib/asList';
 
 type Site = {
   id: string;
@@ -42,7 +43,7 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
     // so showing other orgs' sites would just surface invalid choices.
     fetchWithAuth(`/orgs/sites?organizationId=${device.orgId}`)
       .then(res => res.ok ? res.json() : Promise.reject(new Error(t('deviceSettingsModal.errors.loadSites'))))
-      .then(data => setSites(data.data ?? data.sites ?? data ?? []))
+      .then(data => setSites(asList(data, 'sites')))
       .catch(() => setSites([]));
   }, [isOpen, device]);
 

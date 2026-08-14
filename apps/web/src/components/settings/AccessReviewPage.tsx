@@ -7,6 +7,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import AccessReviewList, { type AccessReview } from './AccessReviewList';
 import AccessReviewForm from './AccessReviewForm';
 import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
+import { asList } from '@/lib/asList';
 
 type AccessReviewDecision = 'pending' | 'approved' | 'revoked';
 
@@ -183,7 +184,7 @@ export default function AccessReviewPage() {
         throw new Error(t('accessReviewPage.failedToFetchReviewers'));
       }
       const data = await response.json();
-      const users = data.data ?? data.users ?? data ?? [];
+      const users = asList(data, 'users');
       setReviewers(
         users.map((user: ReviewerOption) => ({
           id: user.id,

@@ -1359,3 +1359,54 @@ describe('DeviceList — bulk actions are all classified by the status gate (#24
     expect(both).toEqual([]);
   });
 });
+
+describe('DeviceList — Compare bulk action gating', () => {
+  const mkDevice = (n: number): Device => ({
+    ...baseDevice,
+    id: `${n}0000000-0000-0000-0000-00000000000${n}`,
+    hostname: `host-${n}`,
+  });
+  const fleet = (count: number) => Array.from({ length: count }, (_, i) => mkDevice(i + 1));
+
+  const selectAllAndOpenMenu = () => {
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+  };
+
+  it("emits 'compare' with the selected devices for a 2-device selection", () => {
+    const onBulkAction = vi.fn();
+    render(<DeviceList devices={fleet(2)} onBulkAction={onBulkAction} />);
+
+    selectAllAndOpenMenu();
+    fireEvent.click(screen.getByTestId('bulk-compare'));
+
+    expect(onBulkAction).toHaveBeenCalledTimes(1);
+    expect(onBulkAction.mock.calls[0]![0]).toBe('compare');
+    expect((onBulkAction.mock.calls[0]![1] as Device[])).toHaveLength(2);
+  });
+
+  it('offers Compare at exactly 4 devices (the documented maximum)', () => {
+    const onBulkAction = vi.fn();
+    render(<DeviceList devices={fleet(4)} onBulkAction={onBulkAction} />);
+
+    selectAllAndOpenMenu();
+    fireEvent.click(screen.getByTestId('bulk-compare'));
+
+    expect(onBulkAction.mock.calls[0]![0]).toBe('compare');
+    expect((onBulkAction.mock.calls[0]![1] as Device[])).toHaveLength(4);
+  });
+
+  it('hides Compare for a single-device selection', () => {
+    render(<DeviceList devices={fleet(1)} onBulkAction={vi.fn()} />);
+    selectAllAndOpenMenu();
+    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+  });
+
+  it('hides Compare above the 4-device limit (DeviceCompare cap)', () => {
+    render(<DeviceList devices={fleet(5)} onBulkAction={vi.fn()} />);
+    selectAllAndOpenMenu();
+    expect(screen.queryByTestId('bulk-compare')).toBeNull();
+    // The uncapped 2+ actions are still offered on the same selection.
+    expect(screen.getByTestId('bulk-link-multiboot')).toBeInTheDocument();
+  });
+});

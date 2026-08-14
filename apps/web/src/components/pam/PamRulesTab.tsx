@@ -27,6 +27,7 @@ import {
   theadRowClass,
   rowClass,
 } from './ui';
+import { asList } from '@/lib/asList';
 
 function ruleCriteriaSummary(rule: PamRule, signerGroupNames: Record<string, string> = {}): string {
   const parts: string[] = [];
@@ -70,7 +71,7 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
       .then(async (res) => {
         if (!res.ok) return;
         const data = await res.json();
-        const list = (data.data ?? data.sites ?? data ?? []) as Array<{ id: string; name: string }>;
+        const list = (asList(data, 'sites')) as Array<{ id: string; name: string }>;
         setSiteNames(Object.fromEntries(list.map((s) => [s.id, s.name])));
       })
       .catch(() => {});

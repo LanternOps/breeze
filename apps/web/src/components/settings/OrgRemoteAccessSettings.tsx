@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
+import { asList } from '@/lib/asList';
 
 type AllowlistRule = {
   id: string; siteId: string; pattern: string; description: string;
@@ -68,7 +69,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
       .then(async res => {
         if (res.ok) {
           const data = await res.json();
-          setFetchedSites((data.sites ?? data).map((s: any) => ({ id: s.id, name: s.name })));
+          setFetchedSites(asList(data, 'sites').map((s: any) => ({ id: s.id, name: s.name })));
         }
       })
       .catch(() => {});
@@ -95,7 +96,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
       const res = await fetchWithAuth('/tunnels?status=active');
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.loadActiveTunnels'));
       const data = await res.json();
-      setTunnels(data.tunnels ?? data);
+      setTunnels(asList(data, 'tunnels'));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.loadTunnels'));
     } finally { setTunnelsLoading(false); }

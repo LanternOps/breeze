@@ -5,6 +5,7 @@ import { extractApiError } from "@/lib/apiError";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { asList } from '@/lib/asList';
 
 type TestHistoryItem = {
   id: string;
@@ -94,7 +95,7 @@ export default function WebhookTestPanel({
         throw new Error(t("webhookTestPanel.failedToFetchTestHistory"));
       }
       const data = await response.json();
-      const deliveries = data.deliveries ?? data ?? [];
+      const deliveries = asList(data, 'deliveries');
       setHistory(
         deliveries.map(
           (delivery: {

@@ -14,6 +14,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { formatTime } from './backupDashboardHelpers';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ export default function EncryptionKeyList() {
         throw new Error(extractApiError(data, 'Failed to fetch encryption keys'));
       }
       const payload = await response.json();
-      const data = payload?.data ?? payload ?? [];
+      const data = asList(payload);
       setKeys(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('[EncryptionKeyList] fetchKeys:', err);

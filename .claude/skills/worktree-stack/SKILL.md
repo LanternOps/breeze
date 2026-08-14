@@ -17,7 +17,7 @@ Loop for testing the current worktree end to end:
 4. Tear down: `pnpm wt-stack down` (removes volumes by default).
 
 Notes:
-- Requires Node v22.20.0 on PATH and a populated root `.env` (image refs).
+- Requires the `.node-version` Node on PATH and a populated root `.env` (image refs).
 - Caddy serves plain HTTP in dev; `baseUrl` is `http://localhost:<port>`.
 - OrbStack is recommended for speed but not required — the CLI uses only the
   standard `docker compose` interface.

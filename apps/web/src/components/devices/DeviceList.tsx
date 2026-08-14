@@ -2020,6 +2020,18 @@ export default function DeviceList({
                 >
                   {t("deviceList.wakeSelected")}{" "}
                 </button>
+                {/* Compare caps at 4 devices (DeviceCompare's selection limit),
+                    so the item only shows for a 2-4 selection. */}
+                {selectedIds.size >= 2 && selectedIds.size <= 4 && (
+                  <button
+                    type="button"
+                    data-testid="bulk-compare"
+                    onClick={() => handleBulkAction("compare")}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                  >
+                    {t("deviceList.compareSelected")}{" "}
+                  </button>
+                )}
                 {selectedIds.size >= 2 && (
                   <button
                     type="button"

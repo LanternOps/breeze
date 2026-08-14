@@ -36,6 +36,7 @@ import {
   getDeviceRoleSourceLabel,
   getDeviceRoleSourceColor,
 } from "@/lib/deviceRoles";
+import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
 import { formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
@@ -401,7 +402,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         return r.json();
       })
       .then((data) => {
-        if (data) setFieldDefs(data.data ?? data ?? []);
+        if (data) setFieldDefs(asList(data));
       })
       .catch((err) => {
         console.error("Failed to load custom field definitions:", err);

@@ -12,6 +12,7 @@ import {
   type DiscoveredAssetLinkSource,
   type DiscoveredAssetTypeSource,
 } from './networkTypes';
+import { asList } from '@/lib/asList';
 
 // Re-exported so existing consumers importing it from './DiscoveredAssetList'
 // keep working; the canonical declaration now lives in ./networkTypes.
@@ -275,7 +276,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         throw new Error(t('discoveredAssetList.errors.fetch'));
       }
       const data = await response.json();
-      const items = data.data ?? data.assets ?? data ?? [];
+      const items = asList(data, 'assets');
       const mappedAssets = items.map(mapAsset);
       setAssets(mappedAssets);
       const validIds = new Set(mappedAssets.map((asset: DiscoveredAsset) => asset.id));
@@ -341,7 +342,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         return;
       }
       const data = await response.json();
-      const raw: any[] = data.devices ?? data.data ?? data ?? [];
+      const raw: any[] = asList(data, 'devices');
       setDevices(raw.map((d: any) => ({ id: d.id, name: d.displayName || d.hostname || d.id, online: d.status === 'online' })));
     } catch (err) {
       console.warn('[DiscoveredAssetList] Failed to fetch devices:', err);

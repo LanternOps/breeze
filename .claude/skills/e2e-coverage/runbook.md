@@ -2,7 +2,7 @@
 
 The accumulated "how to get a working local sweep environment" so you never rediscover it. Commands assume repo root `/Users/toddhebebrand/breeze` and the local Docker stack (`breeze-api`, `breeze-web`, `breeze-postgres`, `breeze-redis`, `breeze-caddy`).
 
-Node is pinned: prefix toolchain commands with `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH` (default node breaks pnpm engine-strict).
+Node is pinned in `.node-version`: prefix toolchain commands with `PATH=$HOME/.nvm/versions/node/v$(cat .node-version)/bin:$PATH` (default node breaks pnpm engine-strict).
 
 ---
 

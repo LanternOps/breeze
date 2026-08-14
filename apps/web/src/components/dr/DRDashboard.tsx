@@ -21,6 +21,7 @@ import DRPlanEditor from './DRPlanEditor';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import { OrgRequiredGate } from '../shared/OrgRequiredGate';
+import { asList } from '@/lib/asList';
 import '../../lib/i18n';
 
 type DRTab = 'plans' | 'executions';
@@ -101,7 +102,7 @@ function DRDashboardInner() {
     const plansResponse = await fetchWithAuth('/dr/plans');
     if (!plansResponse.ok) throw new Error('Failed to load recovery plans');
     const plansPayload = await plansResponse.json();
-    const nextPlans = (plansPayload?.data ?? plansPayload ?? []) as DRPlan[];
+    const nextPlans = (asList(plansPayload)) as DRPlan[];
     setPlans(Array.isArray(nextPlans) ? nextPlans : []);
 
     const details = await Promise.allSettled(
@@ -129,7 +130,7 @@ function DRDashboardInner() {
     const response = await fetchWithAuth('/dr/executions?limit=100');
     if (!response.ok) throw new Error('Failed to load executions');
     const payload = await response.json();
-    const nextExecutions = (payload?.data ?? payload ?? []) as DRExecution[];
+    const nextExecutions = (asList(payload)) as DRExecution[];
     setExecutions(Array.isArray(nextExecutions) ? nextExecutions : []);
   }, []);
 

@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CheckCircle,
 } from "lucide-react";
+import { asList } from '@/lib/asList';
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../../stores/auth";
 import { useTranslation } from "react-i18next";
@@ -105,7 +106,7 @@ export default function SoftwareCatalogPicker({
         );
       }
       const payload = await response.json();
-      const data = payload.data ?? payload ?? [];
+      const data = asList(payload);
       const items: CatalogItem[] = Array.isArray(data)
         ? data.map((item: Record<string, unknown>) => ({
             id: String(item.id),
@@ -140,7 +141,7 @@ export default function SoftwareCatalogPicker({
         );
       }
       const payload = await response.json();
-      const data = payload.data ?? payload.versions ?? payload ?? [];
+      const data = asList(payload, 'versions');
       const versionList: VersionItem[] = Array.isArray(data)
         ? data.map((v: Record<string, unknown>) => ({
             id: String(v.id ?? ""),

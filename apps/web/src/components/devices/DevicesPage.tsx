@@ -40,6 +40,7 @@ import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
+import { asList } from '@/lib/asList';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -450,7 +451,7 @@ export default function DevicesPage() {
       let orgsList: Org[] = [];
       if (orgsResponse.ok) {
         const orgsData = await orgsResponse.json();
-        orgsList = orgsData.data ?? orgsData.orgs ?? orgsData ?? [];
+        orgsList = asList(orgsData, 'orgs');
       } else {
         console.warn('Failed to fetch orgs:', orgsResponse.status);
       }
@@ -459,7 +460,7 @@ export default function DevicesPage() {
       let sitesList: Site[] = [];
       if (sitesResponse.ok) {
         const sitesData = await sitesResponse.json();
-        sitesList = sitesData.data ?? sitesData.sites ?? sitesData ?? [];
+        sitesList = asList(sitesData, 'sites');
       } else {
         console.warn('Failed to fetch sites:', sitesResponse.status);
       }
@@ -850,6 +851,23 @@ export default function DevicesPage() {
         type: 'warning',
         message: t('devicesPage.toasts.networkSkipped', { count: skippedNetworkCount }),
       });
+    }
+
+    // Compare is navigation, not an agent command — nothing queues, so the
+    // decommissioned gate below doesn't apply (comparing a decommissioned
+    // device's last-known data is legitimate). The menu gates on a 2-4
+    // selection, but that invariant isn't enforced here: the network-row
+    // filter above can shrink the set below 2 (a 1-device "comparison" is
+    // useless — refuse it with an explanation), and the slice caps at
+    // DeviceCompare's 4-device limit rather than trusting the caller.
+    if (action === 'compare') {
+      if (selectedDevices.length < 2) {
+        showToast({ type: 'error', message: t('devicesPage.toasts.compareNeedsTwo') });
+        return;
+      }
+      const ids = selectedDevices.slice(0, 4).map(d => d.id);
+      void navigateTo(`/devices/compare?ids=${ids.join(',')}`);
+      return;
     }
 
     // Decommissioned gate (#2465). Agent commands are QUEUED, not delivered

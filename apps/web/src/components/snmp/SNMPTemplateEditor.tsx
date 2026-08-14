@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { FileUp, Loader2, PlusCircle, Trash2, CheckCircle2, Layers, Search, Copy, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
+import { asList } from '@/lib/asList';
 
 type OidRow = {
   id: string;
@@ -177,7 +178,7 @@ export default function SNMPTemplateEditor({ selectedTemplateId, refreshToken = 
       }
 
       const payload = await response.json();
-      const rawTemplates = payload.data ?? payload.templates ?? payload ?? [];
+      const rawTemplates = asList(payload, 'templates');
       const normalizedTemplates = Array.isArray(rawTemplates)
         ? rawTemplates.map((t: Record<string, unknown>) => normalizeTemplate(t))
         : [];

@@ -4,6 +4,7 @@ import { Check, Plus, Tag, Trash2, Loader2 } from 'lucide-react';
 import { cn, resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { asList } from '@/lib/asList';
 
 type ScriptTag = {
   id: string;
@@ -59,7 +60,7 @@ export default function ScriptTagManager({ tags: externalTags, scripts: external
       }
 
       const scriptsData = await scriptsResponse.json();
-      const scriptList = scriptsData.data ?? scriptsData.scripts ?? (Array.isArray(scriptsData) ? scriptsData : []);
+      const scriptList = asList(scriptsData, 'scripts');
 
       // Extract unique tags from scripts
       const tagMap = new Map<string, ScriptTag>();

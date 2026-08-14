@@ -147,7 +147,7 @@ Branch naming (AGENTS.md — no `codex/` / `claude/` prefixes):
 
 Fresh worktrees need `pnpm install` and the gitignored `.env.test` symlink —
 without it RLS forge tests pass vacuously on a BYPASSRLS connection. Prefix
-node-pinned commands: `PATH=$HOME/.nvm/versions/node/v22.20.0/bin:$PATH`.
+node-pinned commands: `PATH=$HOME/.nvm/versions/node/v$(cat .node-version)/bin:$PATH`.
 
 ## 4. Fix
 
