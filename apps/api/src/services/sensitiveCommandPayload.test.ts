@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 process.env.APP_ENCRYPTION_KEY = process.env.APP_ENCRYPTION_KEY || 'test-app-encryption-key-for-vitest';
 
@@ -8,6 +9,8 @@ import {
   decryptCommandForDelivery,
   decryptCommandsForDelivery,
   hasSensitivePayload,
+  TERMINAL_PAYLOAD_STRIP_KEYS,
+  terminalPayloadErasureSet,
 } from './sensitiveCommandPayload';
 
 describe('sensitiveCommandPayload', () => {
@@ -85,5 +88,27 @@ describe('decryptCommandsForDelivery', () => {
 
   it('returns an empty array for an empty batch', () => {
     expect(decryptCommandsForDelivery([])).toEqual([]);
+  });
+});
+
+describe('terminal payload erasure', () => {
+  it('strips every field name any sensitive command type can carry', () => {
+    // Derived from the registry, not hand-listed: adding a sensitive field to
+    // a command type must automatically extend the erasure set.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).toEqual(
+      expect.arrayContaining(['password', 'currentRecoveryKey', 'secretEnvEnvelope']),
+    );
+  });
+
+  it('emits a jsonb key-subtraction that preserves a NULL payload', () => {
+    const { payload } = terminalPayloadErasureSet();
+    // Render through the real dialect: a Drizzle SQL object holds a circular
+    // reference to the table, and asserting on the emitted SQL is what
+    // actually proves the key list reaches Postgres.
+    const rendered = new PgDialect().sqlToQuery(payload).sql;
+    expect(rendered).toContain('"device_commands"."payload" IS NULL');
+    expect(rendered).toContain("'password'");
+    expect(rendered).toContain("'secretEnvEnvelope'");
+    expect(rendered).toContain('::text[]');
   });
 });

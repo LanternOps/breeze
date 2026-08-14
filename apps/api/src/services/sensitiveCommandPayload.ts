@@ -1,3 +1,5 @@
+import { sql, type SQL } from 'drizzle-orm';
+import { deviceCommands } from '../db/schema';
 import { decryptSecret, encryptSecret } from './secretCrypto';
 import { captureException } from './sentry';
 
@@ -18,6 +20,52 @@ const SENSITIVE_PAYLOAD_FIELDS: Record<string, readonly string[]> = {
 
 export function hasSensitivePayload(type: string): boolean {
   return type in SENSITIVE_PAYLOAD_FIELDS;
+}
+
+/**
+ * The script secret envelope's STORED field name (#3409 PR4). Declared here
+ * rather than imported from services/scriptSecretEnvelope so the erasure set
+ * below has no dependency on the codec — erasure must keep working even for
+ * rows written by a build whose codec has since changed.
+ */
+const SCRIPT_SECRET_ENVELOPE_FIELD = 'secretEnvEnvelope';
+
+/**
+ * Every payload field name that may hold credential material, across all
+ * command types, plus the PR4 script secret envelope. Derived from the
+ * registry so a new sensitive field is erased automatically — the historical
+ * failure mode was a field added to one type and erased at one of eleven
+ * terminal writers.
+ */
+export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
+  ...new Set([
+    ...Object.values(SENSITIVE_PAYLOAD_FIELDS).flat(),
+    SCRIPT_SECRET_ENVELOPE_FIELD,
+  ]),
+].sort();
+
+/**
+ * The `.set({...})` fragment every terminal `device_commands` update must
+ * spread, so credential material stops living in an unbounded-retention,
+ * RLS-free table the moment the command stops being deliverable.
+ *
+ * Until #3409 PR4a only ONE of eleven terminal writers blanked the payload
+ * (the REST result route); the WS ingest — the dominant path — the stale
+ * reaper, six cancellation routes and tenant offboarding all retained it.
+ *
+ * Key-subtraction rather than `payload: null`: the same expression is then
+ * correct on the BULK cancellation/reaper updates that never load individual
+ * rows, and non-secret payload fields (scriptId, type, target) survive for
+ * forensics. Idempotent — jsonb `-` on an absent key is a no-op — so a row
+ * driven terminal twice (the WS/REST race) is fine.
+ */
+export function terminalPayloadErasureSet(): { payload: SQL } {
+  return {
+    payload: sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL
+      ELSE ${deviceCommands.payload} - ${sql.raw(
+        `ARRAY[${TERMINAL_PAYLOAD_STRIP_KEYS.map((key) => `'${key}'`).join(',')}]::text[]`,
+      )} END`,
+  };
 }
 
 export function encryptSensitivePayloadFields(
