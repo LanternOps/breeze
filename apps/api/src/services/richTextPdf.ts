@@ -468,6 +468,27 @@ function countWrappedLines(doc: PDFKit.PDFDocument, runs: RichTextRun[], width: 
   return lines;
 }
 
+/** The line height to charge PER LINE for a run sequence: the tallest
+ *  `currentLineHeight(true)` among the DISTINCT fonts those runs actually draw
+ *  in (forced-bold blocks, and each run's own bold/italic switch, both folded
+ *  in via fontFor — same selection the draw loop uses). A themed bold/italic
+ *  face can have taller line metrics than its regular face (e.g. condensed
+ *  theme's DM Sans weights), so charging the regular face's line height alone
+ *  would UNDER-measure any block containing a bold or italic run — the exact
+ *  clipping failure this API exists to prevent. Never returns less than any
+ *  font actually drawn in the block. */
+function maxLineHeightForRuns(doc: PDFKit.PDFDocument, runs: RichTextRun[], fontSize: number, fonts: BodyFonts, forceBold: boolean): number {
+  const usedFonts = new Set<string>();
+  for (const run of runs) usedFonts.add(fontFor(fonts, forceBold || run.bold, run.italic));
+  if (usedFonts.size === 0) usedFonts.add(fontFor(fonts, forceBold, false));
+  let max = 0;
+  for (const font of usedFonts) {
+    doc.font(font).fontSize(fontSize);
+    max = Math.max(max, doc.currentLineHeight(true));
+  }
+  return max;
+}
+
 /** Measures one block's height using the same per-run font selection, gutter,
  *  and indent math as the draw loop, but via countWrappedLines instead of an
  *  actual pdfkit draw. Returns the block's own height (excluding spacingAfter —
@@ -487,11 +508,11 @@ function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextBlock, width
   const runs = block.runs.length ? block.runs : [{ text: '', bold: false, italic: false, underline: false }];
   const lines = countWrappedLines(doc, runs, textWidth, style.fontSize, fonts, style.forceBold);
 
-  doc.font(fonts.regular).fontSize(style.fontSize);
   // includeGap=true matches doc.heightOfString's own line-height convention
   // (the draw loop's prior single-font blockHeight approximation used
   // heightOfString), so per-run measurement stays comparable to it.
-  return lines * doc.currentLineHeight(true);
+  const lineHeight = maxLineHeightForRuns(doc, runs, style.fontSize, fonts, style.forceBold);
+  return lines * lineHeight;
 }
 
 /** Height the given sanitized inline/block HTML would occupy at `width`,
@@ -527,8 +548,8 @@ export function measureInlineRuns(doc: PDFKit.PDFDocument, html: string, width: 
     const runs = extractRuns(tokenize(html), BASE_CTX);
     const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
     const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, false);
-    doc.font(bodyFonts.regular).fontSize(fontSize);
-    return lines * doc.currentLineHeight(true);
+    const lineHeight = maxLineHeightForRuns(doc, effectiveRuns, fontSize, bodyFonts, false);
+    return lines * lineHeight;
   } finally {
     restoreFontState(doc, saved);
   }
