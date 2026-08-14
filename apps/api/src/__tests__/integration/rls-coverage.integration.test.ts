@@ -646,6 +646,40 @@ function offendersFrom(rows: TableRow[]): Array<{ table: string; rls_on: boolean
 }
 
 describe('RLS coverage contract', () => {
+  // agent_uninstall_tokens is Shape 1 (direct org_id) and therefore needs NO
+  // allowlist entry above — it is picked up by the generic org_id
+  // auto-discovery. It gets an explicit assertion anyway because the rows are
+  // credential material that authorizes tearing an agent off a managed
+  // machine: a future migration that relaxes FORCE or drops a per-command
+  // policy must fail here by name, not silently widen a teardown credential.
+  // It also carries device_id; the Shape 5 EXISTS-join form
+  // (DEVICE_ID_JOIN_POLICY_TABLES) deliberately does NOT apply, because that
+  // shape is for device-scoped tables WITHOUT a denormalized org_id.
+  it('agent_uninstall_tokens enforces forced org-axis RLS on all four commands', async () => {
+    const [table] = (await db.execute(sql`
+      SELECT relrowsecurity AS rls_on, relforcerowsecurity AS rls_forced
+      FROM pg_class
+      WHERE oid = 'public.agent_uninstall_tokens'::regclass;
+    `)) as unknown as Array<{ rls_on: boolean; rls_forced: boolean }>;
+
+    expect(table?.rls_on).toBe(true);
+    expect(table?.rls_forced).toBe(true);
+
+    const policies = (await db.execute(sql`
+      SELECT cmd, COALESCE(qual, '') AS qual, COALESCE(with_check, '') AS with_check
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'agent_uninstall_tokens';
+    `)) as unknown as Array<{ cmd: string; qual: string; with_check: string }>;
+
+    for (const cmd of REQUIRED_CMDS) {
+      const forCmd = policies.filter((p) => p.cmd === cmd || p.cmd === 'ALL');
+      expect(forCmd.length, `no policy covers ${cmd}`).toBeGreaterThan(0);
+      for (const policy of forCmd) {
+        expect(`${policy.qual}\n${policy.with_check}`).toContain('breeze_has_org_access');
+      }
+    }
+  });
+
   it('oauth_clients shared rows are visible only to system scope or granted partners', async () => {
     const rows = (await db.execute(sql`
       SELECT

@@ -104,6 +104,18 @@ vi.mock('../db/schema', () => ({
     enabled: 'enabled'
   },
   enrollmentKeys: {},
+  // Read by GET /agents/uninstall.sh (token gate) and burned by
+  // POST /agents/:id/uninstall-authorize.
+  agentUninstallTokens: {
+    id: 'id',
+    orgId: 'orgId',
+    deviceId: 'deviceId',
+    token: 'token',
+    expiresAt: 'expiresAt',
+    consumedAt: 'consumedAt',
+    consumedFromIp: 'consumedFromIp',
+    updatedAt: 'updatedAt',
+  },
   deviceDisks: {},
   deviceRegistryState: {},
   deviceConfigState: {},
@@ -258,14 +270,45 @@ describe('agent routes', () => {
   });
 
   describe('GET /agents/install.sh', () => {
-    it('serves public install and uninstall scripts without agent-token auth', async () => {
+    it('serves the public install script without agent-token auth', async () => {
+      // install.sh is legitimately public: it runs on a machine that is not
+      // enrolled yet and therefore has no agent token. The enrollment token
+      // passed to it is what actually authorizes anything.
       const installRes = await app.request('/agents/install.sh');
-      const uninstallRes = await app.request('/agents/uninstall.sh');
 
       expect(installRes.status).toBe(200);
-      expect(uninstallRes.status).toBe(200);
-      expect(await uninstallRes.text()).toContain('case "$uname_s"');
       expect(agentAuthMiddleware).not.toHaveBeenCalled();
+    });
+
+    it('does NOT serve uninstall.sh publicly — an untokened request 404s', async () => {
+      // uninstall.sh is NOT public. It skips agent-token auth (its callers, a
+      // technician browser and curl|bash, have no agent token) but the route
+      // itself requires ?token=<RMM-minted uninstall token>. Before this gate
+      // any local admin could strip a managed machine out of management.
+      const uninstallRes = await app.request('/agents/uninstall.sh');
+
+      expect(uninstallRes.status).toBe(404);
+      expect(await uninstallRes.text()).not.toContain('uninstall --token');
+      // The gate is the token, not agent auth — assert we didn't accidentally
+      // "fix" it by routing a browser download through agent-token middleware.
+      expect(agentAuthMiddleware).not.toHaveBeenCalled();
+    });
+
+    it('404s uninstall.sh for a malformed token without touching the database', async () => {
+      const res = await app.request('/agents/uninstall.sh?token=not-a-real-token');
+
+      expect(res.status).toBe(404);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(agentAuthMiddleware).not.toHaveBeenCalled();
+    });
+
+    it('404s uninstall.sh for a well-formed token with no live row (unknown/expired/burned)', async () => {
+      // The default select chain resolves to [] — the same answer Postgres
+      // gives for an unknown, expired or already-consumed token, all of which
+      // must be indistinguishable from the outside.
+      const res = await app.request(`/agents/uninstall.sh?token=nuu_${'ab'.repeat(32)}`);
+
+      expect(res.status).toBe(404);
     });
 
     it('does not apply script auth bypasses to nested paths', async () => {
@@ -284,32 +327,36 @@ describe('agent routes', () => {
       expect(script).toContain('Refusing to install without a trusted checksum');
     });
 
-    it('uninstall.sh finds NU-branded macOS binaries and services, keeping breeze fallbacks', async () => {
-      const res = await app.request('/agents/uninstall.sh');
+    it('uninstall.sh with a LIVE token finds NU-branded binaries first, keeping the breeze fallback', async () => {
+      const token = `nuu_${'cd'.repeat(32)}`;
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'uninstall-token-1' }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/agents/uninstall.sh?token=${token}`);
       expect(res.status).toBe(200);
       const script = await res.text();
 
-      // Binaries: prefer the NU-branded nu-* names, fall back to breeze-* so the
+      // Binaries: prefer the NU-branded nu-* name, fall back to breeze-* so the
       // same uninstaller works on the Linux install (which ships breeze-agent).
-      expect(script).toContain('AGENT_BINARY="/usr/local/bin/nu-agent"');
-      expect(script).toContain('AGENT_BINARY="/usr/local/bin/breeze-agent"');
-      expect(script).toContain('WATCHDOG_BINARY="/usr/local/bin/nu-watchdog"');
-      expect(script).toContain('WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"');
-      expect(script).toContain('BACKUP_BINARY="/usr/local/bin/nu-backup"');
-      expect(script).toContain('BACKUP_BINARY="/usr/local/bin/breeze-backup"');
+      const nuIdx = script.indexOf('/usr/local/bin/nu-agent');
+      const breezeIdx = script.indexOf('/usr/local/bin/breeze-agent');
+      expect(nuIdx).toBeGreaterThan(-1);
+      expect(breezeIdx).toBeGreaterThan(nuIdx);
 
-      // macOS launchd: NU labels/plists first, breeze labels/plists as fallback.
-      expect(script).toContain('launchctl bootout system/com.nodesunlimited.agent');
-      expect(script).toContain('launchctl bootout system/com.breeze.agent');
-      expect(script).toContain('launchctl bootout system/com.nodesunlimited.watchdog');
-      expect(script).toContain('launchctl bootout system/com.breeze.watchdog');
-      expect(script).toContain('/Library/LaunchDaemons/com.nodesunlimited.agent.plist');
-      expect(script).toContain('/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist');
-      expect(script).toContain('/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist');
-
-      // Linux systemd unit names stay breeze-agent — the fix must not touch them.
-      expect(script).toContain('systemctl stop breeze-agent');
-      expect(script).toContain('/etc/systemd/system/breeze-agent.service');
+      // The launchd/systemd/rm teardown that used to live here now lives in the
+      // agent binary (agent/internal/heartbeat/handlers_uninstall.go), behind
+      // the server-side authorization of this token. The script must delegate,
+      // never tear down itself — that is what made it dangerous unauthenticated.
+      expect(script).toContain(`TOKEN="${token}"`);
+      expect(script).toContain('uninstall --token "$TOKEN"');
+      expect(script).not.toContain('launchctl');
+      expect(script).not.toContain('systemctl');
+      expect(script).not.toMatch(/\brm\s+-[rf]/);
     });
   });
 

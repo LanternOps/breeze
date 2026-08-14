@@ -4,6 +4,7 @@ import { downloadRoutes } from './download';
 import { enrollmentRoutes } from './enrollment';
 import { heartbeatRoutes } from './heartbeat';
 import { uninstallIntentRoutes } from './uninstallIntent';
+import { uninstallAuthorizeRoutes } from './uninstallAuthorize';
 import { commandsRoutes } from './commands';
 import { agentSecurityRoutes } from './security';
 import { agentRecoveryKeysRoutes } from './recoveryKeys';
@@ -35,6 +36,23 @@ export const AGENT_AUTH_SKIP_ID_SEGMENTS = new Set([
   'org',
   'download',
 ]);
+// `uninstall.sh` STAYS here deliberately, and it is no longer a hole.
+//
+// The obvious hardening — drop it from this set so agent-token auth applies —
+// cannot work: the callers of GET /agents/uninstall.sh are a technician's
+// browser (the Add Device dialog links to it as a plain download) and
+// `curl | sudo bash` on a machine that may not be enrolled at all. Neither has
+// an agent token, so agent auth would simply break the documented flow while
+// closing nothing.
+//
+// The hole is closed at the two places that actually matter instead:
+//   1. the route now REQUIRES `?token=<uninstall token>` and 404s otherwise
+//      (download.ts), and
+//   2. the script it emits does no teardown of its own — it shells out to
+//      `nu-agent uninstall --token`, which fails closed unless the server
+//      authorizes the token at POST /agents/:id/uninstall-authorize.
+// So possession of the script is worthless without an RMM-minted, MFA-gated,
+// device-bound, single-use token.
 export const AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS = new Set(['install.sh', 'uninstall.sh']);
 // Routes of the exact shape /:id/<action> that use user JWT auth.
 export const AGENT_AUTH_SKIP_ACTIONS = new Set(['approve', 'deny']);
@@ -66,6 +84,7 @@ agentRoutes.route('/', enrollmentRoutes);
 // Mount all `:id/*` routes
 agentRoutes.route('/', heartbeatRoutes);
 agentRoutes.route('/', uninstallIntentRoutes);
+agentRoutes.route('/', uninstallAuthorizeRoutes);
 agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', agentRecoveryKeysRoutes);

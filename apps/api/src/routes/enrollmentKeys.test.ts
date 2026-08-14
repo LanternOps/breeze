@@ -79,6 +79,16 @@ vi.mock("../services/installerBuilder", () => ({
   fetchRegularMsi: vi.fn(async () => Buffer.from("regular-msi")),
   assertMacosInstallerPkgsReachable: vi.fn(async () => {}),
   fetchMacosInstallerAppZip: vi.fn(async () => null),
+  // DMG path — default null so existing macOS tests keep their behavior.
+  fetchMacosInstallerDmg: vi.fn(async () => null),
+  serveMacosBootstrapDmg: vi.fn((c: any, args: { dmg: Buffer; token: string; apiHost: string }) => {
+    const filename = `Nodes Unlimited Agent [${args.token}@${args.apiHost}].dmg`;
+    c.header("Content-Type", "application/octet-stream");
+    c.header("Content-Disposition", `attachment; filename="${filename}"`);
+    c.header("Content-Length", String(args.dmg.length));
+    c.header("Cache-Control", "no-store");
+    return c.body(args.dmg);
+  }),
   serveWindowsBootstrapMsi: vi.fn((c: any, args: { msi: Buffer; token: string; apiHost: string }) => {
     const filename = `Breeze Agent (${args.token}@${args.apiHost}).msi`;
     c.header("Content-Type", "application/octet-stream");

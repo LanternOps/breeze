@@ -240,7 +240,16 @@ describe('#2434 — handleCisCommandResult redacts stdout-derived CIS state', ()
     const stdout = JSON.stringify({
       details: { note: `applied with key ${PEM}` },
       beforeState: { 'HKLM\\Svc\\Password': `${PEM}` },
-      afterState: { 'HKLM\\Svc\\Password': 'password=NewSecretValue123' },
+      afterState: {
+        'HKLM\\Svc\\ApiToken': 'token=NewSecretValue123',
+        // NU POLICY (owner decision 2026-08-14, secretRedaction.ts + the Go
+        // mirror in agent/internal/executor/security.go): password/passwd/pwd
+        // pairs are deliberately NOT redacted — operators must be able to read
+        // access passwords (e.g. RustDesk unattended) out of script output.
+        // Asserted explicitly below so an accidental re-add of the upstream
+        // password rule fails here instead of silently changing behaviour.
+        'HKLM\\Svc\\Password': 'password=OperatorVisiblePw1',
+      },
       rollbackHint: `restore with ${PEM}`,
     });
 
@@ -254,8 +263,12 @@ describe('#2434 — handleCisCommandResult redacts stdout-derived CIS state', ()
     expectRedacted(stored.details);
     expectRedacted(stored.beforeState);
     expectRedacted(stored.rollbackHint);
-    // afterState carried a `password=` pair rather than a PEM.
+    // afterState carried key=value pairs rather than a PEM: the `token=` pair
+    // must be redacted...
     expect(JSON.stringify(stored.afterState)).not.toContain('NewSecretValue123');
+    expect(JSON.stringify(stored.afterState)).toContain('token=[REDACTED]');
+    // ...while the `password=` pair is preserved by the NU divergence above.
+    expect(JSON.stringify(stored.afterState)).toContain('password=OperatorVisiblePw1');
   });
 });
 

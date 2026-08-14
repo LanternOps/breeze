@@ -7,6 +7,7 @@ import { createHash, randomBytes } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import {
+  agentUninstallTokens,
   devices,
   deviceHardware,
   deviceReliability,
@@ -112,7 +113,8 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = ['support_sessions', 'tickets'] as
  *   psa_ticket_mappings, software_compliance_status
  */
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
-  'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
+  'agent_logs', 'agent_uninstall_tokens',
+  'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_run_device_results',
   'backup_chains', 'backup_jobs', 'backup_sla_events',
@@ -274,6 +276,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Fleet hygiene finding membership — live device_id column (no FK; the
   // device-move trigger rewrites org_id in place), leaf table, no children.
   'fleet_finding_devices',
+  // Local-uninstall authorization tokens (FK device_id → devices.id ON DELETE
+  // CASCADE; leaf table, no children). Listed for the explicit-cascade
+  // coverage contract.
+  'agent_uninstall_tokens',
 ] as const;
 
 export function getDeviceCascadeDeleteTables(): readonly string[] {
@@ -1639,6 +1645,91 @@ coreRoutes.delete(
       ...(!uninstallSent && device.agentId && {
         warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
       }),
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Local-uninstall authorization tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Default lifetime of a local-uninstall token. Deliberately short: the token
+ * is meant to be minted, pasted into the technician's terminal on the machine
+ * in front of them, and burned. Overridable per-request within
+ * UNINSTALL_TOKEN_MAX_TTL_MINUTES.
+ */
+const UNINSTALL_TOKEN_DEFAULT_TTL_MINUTES = 30;
+const UNINSTALL_TOKEN_MAX_TTL_MINUTES = 240; // 4 hours
+
+const uninstallTokenSchema = z
+  .object({ ttlMinutes: z.number().int().min(1).max(UNINSTALL_TOKEN_MAX_TTL_MINUTES).optional() })
+  .strict();
+
+/**
+ * POST /devices/:id/uninstall-token — mint a single-use, short-TTL token that
+ * authorizes a LOCAL uninstall of the agent on THIS device.
+ *
+ * Before this existed, `GET /api/v1/agents/uninstall.sh` was unauthenticated
+ * and removed everything, so any local admin could strip the agent off a
+ * managed client machine. The agent now refuses a local uninstall unless it
+ * can exchange one of these tokens at POST /agents/:id/uninstall-authorize.
+ *
+ * Gated exactly like the destructive device routes above (DEVICES_DELETE +
+ * MFA) because that is what it is: authorization to remove management from an
+ * endpoint. The plaintext is returned ONCE — only the peppered hash is stored.
+ */
+coreRoutes.post(
+  '/:id/uninstall-token',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
+  requireMfa(),
+  optionalJsonValidator(uninstallTokenSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const deviceId = c.req.param('id')!;
+
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    if (!device) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
+
+    const ttlMinutes = c.req.valid('json').ttlMinutes ?? UNINSTALL_TOKEN_DEFAULT_TTL_MINUTES;
+    const rawToken = `nuu_${randomBytes(32).toString('hex')}`;
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+
+    const [row] = await db
+      .insert(agentUninstallTokens)
+      .values({
+        orgId: device.orgId,
+        deviceId,
+        token: hashEnrollmentKey(rawToken),
+        expiresAt,
+        createdBy: auth.user.id,
+      })
+      .returning({ id: agentUninstallTokens.id });
+
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.uninstall_token.mint',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: device.hostname ?? device.displayName ?? deviceId,
+      details: {
+        uninstallTokenId: row?.id ?? null,
+        expiresAt: expiresAt.toISOString(),
+        ttlMinutes,
+      },
+    });
+
+    return c.json({
+      token: rawToken,
+      deviceId,
+      expiresAt: expiresAt.toISOString(),
+      singleUse: true,
     });
   }
 );

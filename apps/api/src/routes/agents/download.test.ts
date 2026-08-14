@@ -24,7 +24,68 @@ vi.mock('../../services/binarySource', () => ({
   },
 }));
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+/**
+ * `GET /uninstall.sh` is token-gated (see download.ts). The route reads
+ * `agent_uninstall_tokens` through a system DB context, so this suite stands
+ * up a tiny in-memory stand-in for that ONE query.
+ *
+ * The stand-in does not blindly return rows: it RENDERS the real Drizzle
+ * condition the route built (PgDialect → SQL text + params) and filters the
+ * fixture rows using the predicates that SQL actually contains. A route that
+ * dropped `consumed_at IS NULL` or `expires_at > NOW()` would therefore start
+ * serving the script to a burned/expired token here, exactly as it would
+ * against Postgres.
+ */
+const uninstallDb = vi.hoisted(() => ({
+  rows: [] as Array<{
+    id: string;
+    token: string;
+    consumedAt: Date | null;
+    expiresAt: Date;
+  }>,
+  lastSql: '' as string,
+  lastParams: [] as unknown[],
+}));
+
+vi.mock('../../db', async () => {
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const dialect = new PgDialect();
+
+  const runSelect = (condition: unknown) => {
+    const query = dialect.sqlToQuery(condition as never);
+    uninstallDb.lastSql = query.sql;
+    uninstallDb.lastParams = query.params as unknown[];
+
+    const checksConsumed = /"consumed_at"\s+is\s+null/i.test(query.sql);
+    const checksExpiry = /"expires_at"\s*>\s*NOW\(\)/i.test(query.sql);
+    const now = Date.now();
+
+    return uninstallDb.rows.filter((row) => {
+      if (!(query.params as unknown[]).includes(row.token)) return false;
+      if (checksConsumed && row.consumedAt !== null) return false;
+      if (checksExpiry && row.expiresAt.getTime() <= now) return false;
+      return true;
+    });
+  };
+
+  return {
+    db: {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn((condition: unknown) => ({
+            limit: vi.fn(async () => runSelect(condition)),
+          })),
+        })),
+      })),
+    },
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    SYSTEM_DB_ACCESS_CONTEXT: { scope: 'system', orgId: null, accessibleOrgIds: null },
+  };
+});
+
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -33,6 +94,7 @@ import { join } from 'node:path';
 import { downloadRoutes } from './download';
 import { getBinarySource, getGithubAgentPkgUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl } from '../../services/binarySource';
 import { isS3Configured, getPresignedUrl } from '../../services/s3Storage';
+import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
 
 describe('public agent binary downloads', () => {
   const originalAgentDir = process.env.AGENT_BINARY_DIR;
@@ -216,7 +278,9 @@ describe('public agent binary downloads', () => {
     expect(body).not.toContain('/tmp/breeze-secret-agent-binaries');
     expect(console.warn).toHaveBeenCalledWith(
       '[pkg-download] Local package missing',
-      { filename: 'breeze-agent-darwin-amd64.pkg' },
+      // NU-branded macOS client (commit 54452ee99): the pkg ships as
+      // nu-agent-darwin-<arch>.pkg. The plain binaries keep the breeze-* names.
+      { filename: 'nu-agent-darwin-amd64.pkg' },
     );
   });
 
@@ -338,16 +402,16 @@ describe('public agent .pkg downloads — per-arch serving', () => {
   it('serves amd64 and arm64 as DISTINCT packages (the Bad CPU type regression guard)', async () => {
     // The whole point of the fix: each arch must resolve to its OWN file, never
     // a hardcoded one. Write distinct bodies and prove they come back distinct.
-    writeFileSync(join(tmp, 'breeze-agent-darwin-amd64.pkg'), 'AMD64-PKG-BODY');
-    writeFileSync(join(tmp, 'breeze-agent-darwin-arm64.pkg'), 'ARM64-PKG-BODY');
+    writeFileSync(join(tmp, 'nu-agent-darwin-amd64.pkg'), 'AMD64-PKG-BODY');
+    writeFileSync(join(tmp, 'nu-agent-darwin-arm64.pkg'), 'ARM64-PKG-BODY');
 
     const amd = await downloadRoutes.request('/download/darwin/amd64/pkg');
     const arm = await downloadRoutes.request('/download/darwin/arm64/pkg');
 
     expect(amd.status).toBe(200);
     expect(arm.status).toBe(200);
-    expect(amd.headers.get('content-disposition')).toContain('breeze-agent-darwin-amd64.pkg');
-    expect(arm.headers.get('content-disposition')).toContain('breeze-agent-darwin-arm64.pkg');
+    expect(amd.headers.get('content-disposition')).toContain('nu-agent-darwin-amd64.pkg');
+    expect(arm.headers.get('content-disposition')).toContain('nu-agent-darwin-arm64.pkg');
 
     const amdBody = await amd.text();
     const armBody = await arm.text();
@@ -377,7 +441,7 @@ describe('public agent .pkg downloads — per-arch serving', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe('https://s3.test/presigned-arm64');
-    expect(getPresignedUrl).toHaveBeenCalledWith('agent/breeze-agent-darwin-arm64.pkg');
+    expect(getPresignedUrl).toHaveBeenCalledWith('agent/nu-agent-darwin-arm64.pkg');
   });
 
   it('falls back to disk (and warns) when the S3 object is missing', async () => {
@@ -568,12 +632,39 @@ describe('GET /install.sh — generated installer script', () => {
   });
 });
 
-describe('GET /uninstall.sh — generated uninstaller script', () => {
-  async function fetchScript(): Promise<string> {
-    const res = await downloadRoutes.request('/uninstall.sh');
+describe('GET /uninstall.sh — token-gated uninstaller script', () => {
+  // Shape minted by POST /devices/:id/uninstall-token: `nuu_` + 64 hex chars.
+  const VALID_TOKEN = `nuu_${'a1b2c3d4'.repeat(8)}`;
+
+  function seedLiveToken(token = VALID_TOKEN) {
+    uninstallDb.rows = hashEnrollmentKeyCandidates(token).map((hash, i) => ({
+      id: `token-${i}`,
+      token: hash,
+      consumedAt: null,
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+    }));
+  }
+
+  beforeEach(() => {
+    uninstallDb.rows = [];
+    uninstallDb.lastSql = '';
+    uninstallDb.lastParams = [];
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    uninstallDb.rows = [];
+    vi.restoreAllMocks();
+  });
+
+  async function fetchScript(token = VALID_TOKEN): Promise<string> {
+    seedLiveToken(token);
+    const res = await downloadRoutes.request(`/uninstall.sh?token=${token}`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/plain');
     expect(res.headers.get('content-disposition')).toBeNull();
+    // A token-bearing script must never be cached by a proxy or the browser.
+    expect(res.headers.get('cache-control')).toBe('no-store');
     return res.text();
   }
 
@@ -589,45 +680,142 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
     }
   });
 
-  it('detects macOS and Linux instead of relying on separate scripts', async () => {
+  it('finds the NU-branded agent binary and keeps the breeze fallback', async () => {
+    // Both platforms are covered by ONE probe list now: the NU builds install
+    // /usr/local/bin/nu-agent, the Linux/upstream install lays down
+    // /usr/local/bin/breeze-agent. Preference order is load-bearing.
     const script = await fetchScript();
-    expect(script).toContain('Darwin*) uninstall_macos');
-    expect(script).toContain('Linux*) uninstall_linux');
-    expect(script).toContain('launchctl bootout system/com.breeze.agent');
-    expect(script).toContain('systemctl stop breeze-agent');
+    const nuIdx = script.indexOf('/usr/local/bin/nu-agent');
+    const breezeIdx = script.indexOf('/usr/local/bin/breeze-agent');
+    expect(nuIdx).toBeGreaterThan(-1);
+    expect(breezeIdx).toBeGreaterThan(nuIdx);
+    // No binary present → refuse, never a hand-rolled second teardown path.
+    expect(script).toContain('no agent binary found');
   });
 
-  it('removes breeze-backup alongside the agent and watchdog binaries on both platforms', async () => {
+  it('delegates teardown to the agent binary and performs NONE of its own', async () => {
+    // This replaces the old "removes breeze-backup / stops launchd+systemd"
+    // assertions. Those behaviours did not disappear — they moved into
+    // agent/internal/heartbeat/handlers_uninstall.go, reached only via
+    // `nu-agent uninstall --token`, which fails closed unless the server
+    // authorizes the token. A script that regained its own rm/launchctl/
+    // systemctl teardown would be an unauthenticated removal path again.
     const script = await fetchScript();
-    expect(script).toContain('BACKUP_BINARY="/usr/local/bin/breeze-backup"');
-
-    const macosBlock = script.slice(
-      script.indexOf('uninstall_macos()'),
-      script.indexOf('uninstall_linux()'),
-    );
-    expect(macosBlock).toContain('rm -f "$BACKUP_BINARY"');
-
-    const linuxStart = script.indexOf('uninstall_linux()');
-    const linuxBlock = script.slice(
-      linuxStart,
-      script.indexOf('require_root', linuxStart),
-    );
-    expect(linuxBlock).toContain('rm -f "$BACKUP_BINARY"');
+    expect(script).toContain('uninstall --token "$TOKEN"');
+    expect(script).not.toMatch(/\brm\s+-[rf]/);
+    expect(script).not.toContain('launchctl');
+    expect(script).not.toContain('systemctl');
+    expect(script).not.toContain('pkgutil');
   });
 
-  it('matches the checked-in web and agent script copies', async () => {
+  it('embeds the presented token so the agent can re-present it', async () => {
     const script = await fetchScript();
-    const webScript = readFileSync(
-      join(import.meta.dirname, '../../../../web/public/scripts/uninstall.sh'),
-      'utf8',
-    );
-    const agentScript = readFileSync(
-      join(import.meta.dirname, '../../../../../agent/scripts/install/uninstall.sh'),
-      'utf8',
-    );
+    expect(script).toContain(`TOKEN="${VALID_TOKEN}"`);
+  });
 
-    expect(script).toBe(webScript);
-    expect(agentScript).toBe(webScript);
+  it('still requires root', async () => {
+    const script = await fetchScript();
+    expect(script).toContain('must run as root');
+  });
+
+  // ---- security contract -------------------------------------------------
+
+  it('404s with no token at all', async () => {
+    seedLiveToken();
+    const res = await downloadRoutes.request('/uninstall.sh');
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain('uninstall --token');
+  });
+
+  it('404s on an empty token', async () => {
+    seedLiveToken();
+    const res = await downloadRoutes.request('/uninstall.sh?token=');
+    expect(res.status).toBe(404);
+  });
+
+  it.each([
+    ['wrong prefix', `nue_${'a1b2c3d4'.repeat(8)}`],
+    ['too short', 'nuu_deadbeef'],
+    ['non-hex body', `nuu_${'z'.repeat(64)}`],
+    ['uppercase hex', `nuu_${'A1B2C3D4'.repeat(8)}`],
+    ['sql-ish junk', "nuu_' OR 1=1 --"],
+  ])('404s on a malformed token (%s) without ever querying the database', async (_name, token) => {
+    seedLiveToken();
+    const res = await downloadRoutes.request(
+      `/uninstall.sh?token=${encodeURIComponent(token)}`,
+    );
+    expect(res.status).toBe(404);
+    // The shape check must short-circuit before the DB round-trip.
+    expect(uninstallDb.lastSql).toBe('');
+  });
+
+  it('404s on a well-formed token that does not exist', async () => {
+    uninstallDb.rows = [];
+    const res = await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404s on an EXPIRED token', async () => {
+    uninstallDb.rows = hashEnrollmentKeyCandidates(VALID_TOKEN).map((hash, i) => ({
+      id: `token-${i}`,
+      token: hash,
+      consumedAt: null,
+      expiresAt: new Date(Date.now() - 60_000),
+    }));
+    const res = await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`);
+    expect(res.status).toBe(404);
+    // Proven by the predicate the route actually sent, not by the fixture alone.
+    expect(uninstallDb.lastSql).toMatch(/"expires_at"\s*>\s*NOW\(\)/i);
+  });
+
+  it('404s on an ALREADY-CONSUMED token', async () => {
+    uninstallDb.rows = hashEnrollmentKeyCandidates(VALID_TOKEN).map((hash, i) => ({
+      id: `token-${i}`,
+      token: hash,
+      consumedAt: new Date(Date.now() - 1000),
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+    }));
+    const res = await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`);
+    expect(res.status).toBe(404);
+    expect(uninstallDb.lastSql).toMatch(/"consumed_at"\s+is\s+null/i);
+  });
+
+  it('looks the token up by PEPPERED HASH, never by plaintext', async () => {
+    await fetchScript();
+    expect(uninstallDb.lastParams).not.toContain(VALID_TOKEN);
+    for (const hash of hashEnrollmentKeyCandidates(VALID_TOKEN)) {
+      expect(uninstallDb.lastParams).toContain(hash);
+    }
+  });
+
+  it('does NOT burn the token — downloading twice still works', async () => {
+    // The burn belongs to POST /agents/:id/uninstall-authorize; a download
+    // that consumed the single use would break the documented curl|bash flow.
+    seedLiveToken();
+    const first = await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`);
+    const second = await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(uninstallDb.rows.every((r) => r.consumedAt === null)).toBe(true);
+  });
+
+  it('gives an unknown, an expired and a burned token the SAME 404 body (no probing oracle)', async () => {
+    const bodies: string[] = [];
+
+    uninstallDb.rows = [];
+    bodies.push(await (await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`)).text());
+
+    uninstallDb.rows = hashEnrollmentKeyCandidates(VALID_TOKEN).map((hash, i) => ({
+      id: `t${i}`, token: hash, consumedAt: null, expiresAt: new Date(Date.now() - 1000),
+    }));
+    bodies.push(await (await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`)).text());
+
+    uninstallDb.rows = hashEnrollmentKeyCandidates(VALID_TOKEN).map((hash, i) => ({
+      id: `t${i}`, token: hash, consumedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+    }));
+    bodies.push(await (await downloadRoutes.request(`/uninstall.sh?token=${VALID_TOKEN}`)).text());
+
+    expect(new Set(bodies).size).toBe(1);
   });
 });
 

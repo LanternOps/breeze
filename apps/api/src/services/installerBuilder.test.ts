@@ -10,6 +10,8 @@ import {
   fetchRegularMsi,
   assertMacosInstallerPkgsReachable,
   serveWindowsBootstrapMsi,
+  serveMacosBootstrapDmg,
+  fetchMacosInstallerDmg,
 } from './installerBuilder';
 import type { Context } from 'hono';
 
@@ -522,5 +524,102 @@ describe('serveWindowsBootstrapMsi', () => {
     expect(headers.get('content-type')).toBe('application/octet-stream');
     expect(headers.get('content-length')).toBe(String(msi.length));
     expect(headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('serveMacosBootstrapDmg', () => {
+  // Same minimal Context stub as the Windows suite above. Both macOS download
+  // routes (enrollmentKeys.ts) delegate here, so this is the single source of
+  // truth for the DMG download filename.
+  function fakeContext(): { c: Context; headers: Map<string, string>; captured: { body: Buffer | null } } {
+    const headers = new Map<string, string>();
+    const captured: { body: Buffer | null } = { body: null };
+    const c = {
+      header: (k: string, v: string) => headers.set(k.toLowerCase(), v),
+      body: (b: Buffer) => {
+        captured.body = b;
+        return new Response();
+      },
+    } as unknown as Context;
+    return { c, headers, captured };
+  }
+
+  it('stamps the token into the download filename with SQUARE BRACKETS', () => {
+    const { c, headers } = fakeContext();
+    serveMacosBootstrapDmg(c, {
+      dmg: Buffer.from('notarized-dmg-bytes'),
+      token: 'ABCDE12345',
+      apiHost: 'api.example.com',
+    });
+
+    expect(headers.get('content-disposition')).toBe(
+      'attachment; filename="Nodes Unlimited Agent [ABCDE12345@api.example.com].dmg"',
+    );
+  });
+
+  it('serves the DMG bytes COMPLETELY untouched (notarization must survive)', () => {
+    const { c, headers, captured } = fakeContext();
+    const dmg = Buffer.from([0x78, 0x01, 0x00, 0xff, 0xfe, 0x42]);
+    serveMacosBootstrapDmg(c, { dmg, token: 'ZZZZZ99999', apiHost: 'eu.2breeze.app' });
+
+    expect(captured.body).not.toBeNull();
+    expect(Buffer.compare(captured.body!, dmg)).toBe(0);
+    expect(headers.get('content-type')).toBe('application/octet-stream');
+    expect(headers.get('content-length')).toBe(String(dmg.length));
+    expect(headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('rejects a host carrying a port — `:` would break the quoted filename', () => {
+    const { c } = fakeContext();
+    expect(() =>
+      serveMacosBootstrapDmg(c, {
+        dmg: Buffer.from('dmg'),
+        token: 'ABCDE12345',
+        apiHost: 'rmm.example.com:8443',
+      }),
+    ).toThrow(/not safe for a macOS installer filename/);
+  });
+
+  it('rejects a token outside ^[A-Z0-9]{10}$ (client parser contract)', () => {
+    const { c } = fakeContext();
+    for (const token of ['abcde12345', 'ABCDE1234', 'ABCDE123456', 'ABCD"1234']) {
+      expect(() =>
+        serveMacosBootstrapDmg(c, {
+          dmg: Buffer.from('dmg'),
+          token,
+          apiHost: 'api.example.com',
+        }),
+      ).toThrow(/not safe for a macOS installer filename/);
+    }
+  });
+});
+
+describe('fetchMacosInstallerDmg', () => {
+  const origEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...origEnv };
+    vi.unstubAllGlobals();
+  });
+
+  it('returns null (not a throw) when the release asset is missing — callers fall back', async () => {
+    process.env.BINARY_SOURCE = 'github';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
+    await expect(fetchMacosInstallerDmg()).resolves.toBeNull();
+  });
+
+  it('returns null when the local binary dir has no DMG staged', async () => {
+    process.env.BINARY_SOURCE = 'local';
+    process.env.AGENT_BINARY_DIR = mkdtempSync(join(tmpdir(), 'breeze-dmg-'));
+    await expect(fetchMacosInstallerDmg()).resolves.toBeNull();
+  });
+
+  it('reads the staged DMG from AGENT_BINARY_DIR by its canonical asset name', async () => {
+    process.env.BINARY_SOURCE = 'local';
+    const dir = mkdtempSync(join(tmpdir(), 'breeze-dmg-'));
+    process.env.AGENT_BINARY_DIR = dir;
+    writeFileSync(join(dir, 'Nodes Unlimited Agent.dmg'), Buffer.from('dmg-bytes'));
+    const buf = await fetchMacosInstallerDmg();
+    expect(buf?.toString()).toBe('dmg-bytes');
+    rmSync(dir, { recursive: true, force: true });
   });
 });

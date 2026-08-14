@@ -4,6 +4,10 @@ import { join, resolve } from 'node:path';
 import { VALID_OS, VALID_ARCH } from './schemas';
 import { isS3Configured, getPresignedUrl, isS3NotFound } from '../../services/s3Storage';
 import { getBinarySource, getGithubAgentUrl, getGithubAgentPkgUrl, getGithubHelperUrl, getGithubUserHelperUrl, getGithubWatchdogUrl, getGithubBackupUrl, HELPER_FILENAMES } from '../../services/binarySource';
+import { and, gt, inArray, isNull, sql } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { agentUninstallTokens } from '../../db/schema';
+import { hashEnrollmentKeyCandidates } from '../../services/enrollmentKeySecurity';
 
 export const downloadRoutes = new Hono();
 
@@ -370,150 +374,124 @@ downloadRoutes.get('/install.sh', async (c) => {
   });
 });
 
-downloadRoutes.get('/uninstall.sh', async () => {
-  return new Response(generateUninstallScript(), {
+/**
+ * GET /uninstall.sh — the LOCAL uninstaller, now token-gated.
+ *
+ * This route used to be unauthenticated and returned a script that removed
+ * the whole agent install, so any local admin could strip an endpoint out of
+ * management. It now requires `?token=<uninstall token>` minted by
+ * POST /devices/:id/uninstall-token (DEVICES_DELETE + MFA, device-bound,
+ * single-use, short TTL).
+ *
+ * Two independent gates, because a downloaded script is a file that can be
+ * kept:
+ *   1. here — an absent/unknown/expired/already-burned token gets the same
+ *      404 as a missing route, so the endpoint cannot be probed;
+ *   2. in the emitted script — it performs NO teardown of its own, it calls
+ *      `nu-agent uninstall --token`, which re-presents the token to
+ *      POST /agents/:id/uninstall-authorize (agent-token authenticated) and
+ *      refuses to remove anything unless the server allows it. That call is
+ *      what BURNS the token; this route only checks that it is live, so
+ *      downloading the script does not consume the single use.
+ *
+ * The route stays out of agent-token auth (see AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS
+ * in index.ts) because its callers — a technician's browser and `curl` on a
+ * possibly-unenrolled machine — have no agent token. The token IS the auth.
+ */
+downloadRoutes.get('/uninstall.sh', async (c) => {
+  const token = c.req.query('token') ?? '';
+
+  if (!UNINSTALL_TOKEN_PATTERN.test(token)) {
+    return c.json({ error: 'not found' }, 404);
+  }
+
+  // Unauthenticated caller → system context, exactly like the installer
+  // bootstrap redemption path. Read-only: presence check, never a burn.
+  const live = await withSystemDbAccessContext(async () => {
+    const [row] = await db
+      .select({ id: agentUninstallTokens.id })
+      .from(agentUninstallTokens)
+      .where(
+        and(
+          inArray(agentUninstallTokens.token, hashEnrollmentKeyCandidates(token)),
+          isNull(agentUninstallTokens.consumedAt),
+          gt(agentUninstallTokens.expiresAt, sql`NOW()`),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  });
+
+  if (!live) {
+    console.error('[agents] uninstall.sh denied: no live uninstall token');
+    return c.json({ error: 'not found' }, 404);
+  }
+
+  return new Response(generateUninstallScript(token), {
     status: 200,
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-store',
     },
   });
 });
 
-function generateUninstallScript(): string {
+/** `nuu_` + 64 hex chars — the shape minted by POST /devices/:id/uninstall-token. */
+const UNINSTALL_TOKEN_PATTERN = /^nuu_[0-9a-f]{64}$/;
+
+/**
+ * The uninstaller script is a THIN WRAPPER on purpose.
+ *
+ * It deliberately contains no `rm -rf`, no `launchctl bootout`, no
+ * `systemctl stop`. Every one of those lived here before, which is what made
+ * an unauthenticated download equivalent to full removal. The single teardown
+ * implementation now lives in the agent binary
+ * (`agent/internal/heartbeat/handlers_uninstall.go`, shared with the
+ * RMM-pushed `self_uninstall` command) and is reached only through
+ * `nu-agent uninstall --token`, which fails closed on any rejection or
+ * network failure.
+ *
+ * Consequences that are intentional, not oversights:
+ *   - no agent binary on the box → nothing to uninstall, and this script
+ *     refuses rather than hand-rolling a second teardown path that would
+ *     drift from the real one;
+ *   - the token is embedded so `curl … | sudo bash` keeps working for the
+ *     documented flow; it is single-use and device-bound, so a copy of the
+ *     script is worthless once used or if carried to another machine.
+ */
+function generateUninstallScript(token: string): string {
   return `#!/usr/bin/env bash
 set -euo pipefail
 
-# The NU branded builds install the binaries as nu-agent/nu-watchdog/nu-backup
-# (this is what the macOS pkg ships); upstream and the Linux install lay them
-# down as breeze-agent/breeze-watchdog/breeze-backup. Prefer the nu-* names and
-# fall back to breeze-* so this single uninstaller handles both. On Linux the
-# nu-* binaries are never present, so it always falls through to breeze-*.
-AGENT_BINARY="/usr/local/bin/nu-agent"
-[ -x "$AGENT_BINARY" ] || AGENT_BINARY="/usr/local/bin/breeze-agent"
-WATCHDOG_BINARY="/usr/local/bin/nu-watchdog"
-[ -x "$WATCHDOG_BINARY" ] || WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
-BACKUP_BINARY="/usr/local/bin/nu-backup"
-[ -x "$BACKUP_BINARY" ] || BACKUP_BINARY="/usr/local/bin/breeze-backup"
+# Nodes Unlimited agent — authorized local uninstall.
+#
+# This script performs NO teardown itself. It hands the RMM-issued
+# authorization token to the agent, which verifies it with the server and
+# only then removes everything (payload binaries, launchd jobs, config,
+# state, logs, keychain items, pkg receipts). Any rejection or network
+# failure aborts the uninstall — fail closed.
 
-fatal() {
-  echo "Error: $*" >&2
-  exit 1
-}
+TOKEN="${token}"
 
-warn() {
-  echo "Warning: $*" >&2
-}
+fatal() { echo "Error: $*" >&2; exit 1; }
 
-require_root() {
-  if [[ "$(id -u)" -ne 0 ]]; then
-    fatal "must run as root (sudo $0)"
+if [[ "$(id -u)" -ne 0 ]]; then
+  fatal "must run as root (sudo $0)"
+fi
+
+AGENT_BINARY=""
+for candidate in /usr/local/bin/nu-agent /usr/local/bin/breeze-agent; do
+  if [[ -x "$candidate" ]]; then
+    AGENT_BINARY="$candidate"
+    break
   fi
-}
+done
 
-uninstall_macos() {
-  # NU branded launchd labels/plists (what the macOS pkg installs) are tried
-  # first; the upstream breeze labels/plists are kept as fallbacks so this one
-  # uninstaller removes either install. rm -f on a missing path is a no-op, so
-  # removing both the nu-* and breeze-* paths is always safe.
-  local nu_agent_plist="/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
-  local nu_watchdog_plist="/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
-  local nu_helper_user_plist="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist"
-  local nu_helper_lw_plist="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist"
-  local breeze_agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
-  local breeze_watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
-  local breeze_user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
+if [[ -z "$AGENT_BINARY" ]]; then
+  fatal "no agent binary found — nothing to uninstall. (This script never removes files itself; the agent performs its own verified teardown.)"
+fi
 
-  echo "Uninstalling Breeze Agent for macOS..."
-
-  if command -v launchctl >/dev/null 2>&1; then
-    # Daemons: bootout the NU label first, then the legacy breeze label, then a
-    # legacy unload of whichever plist is present.
-    launchctl bootout system/com.nodesunlimited.agent 2>/dev/null \
-      || launchctl bootout system/com.breeze.agent 2>/dev/null \
-      || launchctl unload "$nu_agent_plist" 2>/dev/null \
-      || launchctl unload "$breeze_agent_plist" 2>/dev/null || true
-    launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null \
-      || launchctl bootout system/com.breeze.watchdog 2>/dev/null \
-      || launchctl unload "$nu_watchdog_plist" 2>/dev/null \
-      || launchctl unload "$breeze_watchdog_plist" 2>/dev/null || true
-    # Per-user LaunchAgents: the NU desktop-helper (user + loginwindow) and the
-    # legacy breeze user agent.
-    launchctl unload "$nu_helper_user_plist" 2>/dev/null || true
-    launchctl unload "$nu_helper_lw_plist" 2>/dev/null || true
-    launchctl unload "$breeze_user_plist" 2>/dev/null || true
-  else
-    warn "launchctl not found; skipping service stop"
-  fi
-
-  rm -f "$nu_agent_plist" "$breeze_agent_plist"
-  rm -f "$nu_watchdog_plist" "$breeze_watchdog_plist"
-  rm -f "$nu_helper_user_plist" "$nu_helper_lw_plist" "$breeze_user_plist"
-  rm -f "$AGENT_BINARY"
-  rm -f "$WATCHDOG_BINARY"
-  rm -f "$BACKUP_BINARY"
-  # The NU macOS build also lays down a desktop-helper binary alongside the agent.
-  rm -f /usr/local/bin/nu-desktop-helper
-
-  echo "Breeze Agent uninstalled."
-  echo "Config at /Library/Application Support/Breeze/ was preserved."
-  echo "To remove config: sudo rm -rf '/Library/Application Support/Breeze'"
-}
-
-uninstall_linux() {
-  local agent_service="/etc/systemd/system/breeze-agent.service"
-  local watchdog_service="/etc/systemd/system/breeze-watchdog.service"
-  local user_service="/usr/lib/systemd/user/breeze-agent-user.service"
-  local xdg_autostart="/etc/xdg/autostart/breeze-agent-user.desktop"
-  local ipc_dir="/var/run/breeze"
-
-  echo "Uninstalling Breeze Agent for Linux..."
-
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-active --quiet breeze-agent 2>/dev/null; then
-      systemctl stop breeze-agent
-      echo "Service stopped."
-    fi
-    if systemctl is-enabled --quiet breeze-agent 2>/dev/null; then
-      systemctl disable breeze-agent
-    fi
-    if systemctl is-active --quiet breeze-watchdog 2>/dev/null; then
-      systemctl stop breeze-watchdog
-      echo "Watchdog service stopped."
-    fi
-    if systemctl is-enabled --quiet breeze-watchdog 2>/dev/null; then
-      systemctl disable breeze-watchdog
-    fi
-  else
-    warn "systemctl not found; skipping service stop and disable"
-  fi
-
-  rm -f "$agent_service"
-  rm -f "$watchdog_service"
-  rm -f "$user_service"
-  rm -f "$xdg_autostart"
-  rm -f "$AGENT_BINARY"
-  rm -f "$WATCHDOG_BINARY"
-  rm -f "$BACKUP_BINARY"
-  rmdir "$ipc_dir" 2>/dev/null || true
-
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-  fi
-
-  echo "Breeze Agent uninstalled."
-  echo "Config at /etc/breeze/ was preserved."
-  echo "To remove config: sudo rm -rf /etc/breeze"
-}
-
-require_root
-
-uname_s="$(uname -s)"
-case "$uname_s" in
-  Darwin*) uninstall_macos ;;
-  Linux*) uninstall_linux ;;
-  *) fatal "unsupported operating system: $uname_s. Only Linux and macOS are supported by this uninstaller." ;;
-esac
+exec "$AGENT_BINARY" uninstall --token "$TOKEN"
 `;
 }
 

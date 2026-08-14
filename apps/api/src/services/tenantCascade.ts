@@ -66,6 +66,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'account_deletion_requests',
   'action_intents',
   'agent_logs',
+  // Child of devices/organizations/users; alphabetical placement also satisfies
+  // children-before-parents (devices, users, organizations all sort later).
+  'agent_uninstall_tokens',
   'ai_action_plans',
   'ai_budgets',
   'ai_cost_usage',
