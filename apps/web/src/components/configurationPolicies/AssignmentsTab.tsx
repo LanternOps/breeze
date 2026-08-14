@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, Trash2, Search, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, Search, ChevronDown, Lock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
@@ -43,11 +43,14 @@ type Props = {
   policyId: string;
   // null for partner-owned ("all organizations") policies.
   orgId: string | null;
+  // Owning org's name (org-owned policies only) — shown in the locked
+  // organization-level target field.
+  orgName?: string | null;
   // Set when the policy is partner-OWNED (all-orgs). Drives the partner-wide UI.
   partnerId?: string | null;
 };
 
-export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
+export default function AssignmentsTab({ policyId, orgId, orgName, partnerId }: Props) {
   const isPartnerOwned = !!partnerId;
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
@@ -107,20 +110,29 @@ export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
     }
     setLoadingTargets(true);
     setTargetOptions([]);
-    // site / device_group targets are scoped to the owning org. This branch is
-    // only reached for org-owned policies (partner-owned uses the no-picker
-    // flow), which always have an orgId — but guard rather than interpolate
+    // Every target level here is scoped to the owning org. This branch is only
+    // reached for org-owned policies (partner-owned uses the no-picker flow),
+    // which always have an orgId — but guard rather than interpolate
     // `orgId=null` into the URL if the ownership invariant is ever violated.
-    if ((level === 'site' || level === 'device_group') && !orgId) {
+    if (!orgId) {
       setLoadingTargets(false);
-      setError('This policy has no organization, so sites and device groups cannot be listed.');
+      setError('This policy has no organization, so assignment targets cannot be listed.');
+      return;
+    }
+    // Organization level: an org-owned policy can only be assigned to its own
+    // org, so there's nothing to pick — lock the target to the owning org.
+    if (level === 'organization') {
+      const name = orgName || orgId;
+      setTargetOptions([{ id: orgId, name }]);
+      setTargetNameCache((prev) => ({ ...prev, [orgId]: name }));
+      setNewTargetId(orgId);
+      setLoadingTargets(false);
       return;
     }
     const endpointMap: Record<string, string> = {
-      organization: '/orgs/organizations?limit=200',
       site: `/orgs/sites?orgId=${orgId}&limit=200`,
       device_group: `/device-groups?orgId=${orgId}&limit=200`,
-      device: '/devices?limit=200',
+      device: `/devices?orgId=${orgId}&limit=200`,
     };
     try {
       const url = endpointMap[level];
@@ -149,12 +161,14 @@ export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
     } finally {
       setLoadingTargets(false);
     }
-  }, [orgId]);
+  }, [orgId, orgName]);
 
   useEffect(() => {
-    fetchTargetOptions(newLevel);
+    // Reset BEFORE fetching — the organization branch of fetchTargetOptions
+    // pre-selects the owning org synchronously and must not be cleared.
     setNewTargetId('');
     setTargetSearch('');
+    fetchTargetOptions(newLevel);
   }, [newLevel, fetchTargetOptions]);
 
   // Close dropdown on outside click
@@ -537,6 +551,21 @@ export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
               ))}
             </select>
           </div>
+          {newLevel === 'organization' ? (
+            <div>
+              <label className="text-sm font-medium">
+                Target
+                <HelpTooltip text="An organization policy always targets its own organization. Pick a narrower level (site, device group, device) to scope it further." />
+              </label>
+              <div
+                className="mt-2 flex h-10 w-full items-center gap-2 rounded-md border bg-muted/40 px-3 text-sm"
+                data-testid="locked-org-target"
+              >
+                <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{selectedTargetName || orgName || 'This organization'}</span>
+              </div>
+            </div>
+          ) : (
           <div ref={dropdownRef} className="relative">
             <label className="text-sm font-medium">Target</label>
             <button
@@ -598,6 +627,7 @@ export default function AssignmentsTab({ policyId, orgId, partnerId }: Props) {
               </div>
             )}
           </div>
+          )}
           {priorityField}
         </div>
         <div className="mt-4">{filterFields}</div>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Search, ChevronLeft, ChevronRight, Pencil, Trash2, Globe } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Pencil, Trash2, Globe, Building2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type ConfigPolicyStatus = 'active' | 'inactive' | 'archived';
@@ -11,6 +11,9 @@ export type ConfigPolicy = {
   status: ConfigPolicyStatus;
   // null = partner-wide ("All organizations") policy (#1724)
   orgId: string | null;
+  partnerId?: string | null;
+  // Owning org's name, joined in by the list API for org-owned policies.
+  orgName?: string | null;
   createdAt?: string;
   updatedAt?: string;
   featureLinks?: { id: string; featureType: string }[];
@@ -143,6 +146,16 @@ export default function ConfigPolicyList({
                         >
                           <Globe className="h-3 w-3" />
                           All orgs
+                        </span>
+                      )}
+                      {policy.orgId !== null && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                          title={`Organization policy — applies only to ${policy.orgName ?? 'its owning organization'}`}
+                          data-testid="org-badge"
+                        >
+                          <Building2 className="h-3 w-3" />
+                          {policy.orgName ?? 'Organization'}
                         </span>
                       )}
                     </div>

@@ -29,7 +29,7 @@ import {
   sensitiveDataPolicies,
   peripheralPolicies,
 } from '../db/schema';
-import { and, eq, desc, or, sql, inArray, asc, SQL } from 'drizzle-orm';
+import { and, eq, desc, or, sql, inArray, asc, getTableColumns, SQL } from 'drizzle-orm';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { z } from 'zod';
 import { eventLogInlineSettingsSchema, monitoringInlineSettingsSchema } from '@breeze/shared/validators';
@@ -192,9 +192,12 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
   const accessCond = policyAccessCondition(auth);
   if (accessCond) conditions.push(accessCond);
 
+  // orgName lets the UI label org-owned policies with their owning org
+  // (partner-wide rows have orgId NULL, so orgName comes back NULL too).
   const [policy] = await db
-    .select()
+    .select({ ...getTableColumns(configurationPolicies), orgName: organizations.name })
     .from(configurationPolicies)
+    .leftJoin(organizations, eq(configurationPolicies.orgId, organizations.id))
     .where(and(...conditions))
     .limit(1);
 
@@ -257,8 +260,9 @@ export async function listConfigPolicies(
   const offset = (pagination.page - 1) * pagination.limit;
 
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(configurationPolicies), orgName: organizations.name })
     .from(configurationPolicies)
+    .leftJoin(organizations, eq(configurationPolicies.orgId, organizations.id))
     .where(whereCondition)
     .orderBy(desc(configurationPolicies.updatedAt))
     .limit(pagination.limit)
