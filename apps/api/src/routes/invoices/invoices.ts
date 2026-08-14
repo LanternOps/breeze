@@ -61,7 +61,12 @@ invoiceCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), as
     // Branding (partner name/logo, accent, seller, footer) lets the in-app Preview
     // render the customer-facing document without a second round-trip — the same
     // partner/portal source the invoice PDF resolves, so the two brand identically.
-    const branding = await resolveQuoteBranding(detail.invoice);
+    // Invoices are out of scope for the proposal presentation theme/pageSize work
+    // (Task 5) and must stay classic/a4 — pass presentationSnapshot: null so
+    // resolveQuoteBranding falls through to the partner's live columns/defaults
+    // exactly as it did before theme/pageSize existed (invoices never freeze a
+    // presentation snapshot; the field is simply ignored by every caller here).
+    const branding = await resolveQuoteBranding({ ...detail.invoice, presentationSnapshot: null });
     return c.json({ data: { ...detail, branding } });
   } catch (err) { return handleServiceError(c, err); }
 });

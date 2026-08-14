@@ -14,7 +14,7 @@ export const quoteStatusEnum = pgEnum('quote_status', [
 ]);
 export const quoteLineSourceTypeEnum = pgEnum('quote_line_source_type', ['catalog', 'bundle', 'manual']);
 export const quoteLineRecurrenceEnum = pgEnum('quote_line_recurrence', ['one_time', 'monthly', 'annual']);
-export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items', 'contract']);
+export const quoteBlockTypeEnum = pgEnum('quote_block_type', ['heading', 'rich_text', 'image', 'line_items', 'contract', 'table', 'callout']);
 export const quoteDepositTypeEnum = pgEnum('quote_deposit_type', ['none', 'percent', 'selected_lines']);
 
 /** Reason codes persisted in quotes.send_email_reason (plain text column, not
@@ -68,6 +68,9 @@ export const quotes = pgTable('quotes', {
   // Enhanced-proposals cover page content (title, logo, hero image, etc.) —
   // contract documents + enhanced proposals Phase 1.
   coverPage: jsonb('cover_page'),
+  // Frozen { theme, pageSize } captured at send so sent quotes never restyle
+  // when the partner later changes theme (sellerSnapshot pattern).
+  presentationSnapshot: jsonb('presentation_snapshot'),
   termsAndConditions: text('terms_and_conditions'),
   declineReason: text('decline_reason'),
   convertedInvoiceId: uuid('converted_invoice_id'),

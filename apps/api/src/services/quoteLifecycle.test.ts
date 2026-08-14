@@ -703,6 +703,94 @@ describe('sendQuote bill-to snapshot', () => {
 });
 
 /**
+ * Task 5: theme/pageSize is frozen into `quotes.presentation_snapshot` exactly
+ * once, at send — never overwritten by a later send-path run (there isn't one
+ * today; sendQuote is issue-once and a draft would have to already carry a
+ * snapshot some other way, e.g. a future clone-from-sent path) — and the
+ * emailed PDF's branding must render from that frozen value, not the
+ * partner's live document_theme/document_page_size columns.
+ */
+describe('sendQuote presentation snapshot', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
+  function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([quote]); // getQuote: quote
+    queueResult([]);       // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
+    queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
+    queueResult([partnerRow]); // partnerRow
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+    queueResult([]);       // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+  }
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+    presentationSnapshot: null,
+  };
+
+  /** Pull the `.set(...)` payload from the status→sent claim update. */
+  function claimSet() {
+    const found = setCalls.find((s) => s.status === 'sent' && 'presentationSnapshot' in s);
+    expect(found, 'send update should set presentationSnapshot').toBeDefined();
+    return found!;
+  }
+
+  it('stamps theme/pageSize resolved from the partner columns when the quote has no snapshot yet', async () => {
+    queueSendPath(baseQuote, {
+      id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    });
+
+    await sendQuote('q1', actor);
+
+    expect(claimSet().presentationSnapshot).toEqual({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('never overwrites an existing presentation snapshot on send', async () => {
+    queueSendPath(
+      { ...baseQuote, presentationSnapshot: { theme: 'condensed', pageSize: 'letter' } },
+      { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, documentTheme: 'classic', documentPageSize: 'a4' },
+    );
+
+    await sendQuote('q1', actor);
+
+    // Partner now says classic/a4, but the pre-existing snapshot must win.
+    expect(claimSet().presentationSnapshot).toEqual({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('passes the stamped snapshot values through to the send-time emailed PDF render', async () => {
+    queueSendPath(baseQuote, {
+      id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    });
+
+    await sendQuote('q1', actor);
+
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData) — branding is arg index 4.
+    const branding = capturedPdfArgs![4] as Record<string, unknown>;
+    expect(branding.theme).toBe('condensed');
+    expect(branding.pageSize).toBe('letter');
+  });
+});
+
+/**
  * Send-time contract-variable gate (Task 12): a `contract` block references an
  * immutable, published template version with declared variables (auto/manual).
  * Sending must be blocked while any declared variable has no resolved value —

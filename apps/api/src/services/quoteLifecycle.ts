@@ -13,6 +13,7 @@ import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
+import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -179,6 +180,16 @@ export async function sendQuote(
   });
   const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
+  // Stamp the presentation ONCE, at send: never overwrite an existing snapshot
+  // (a draft that already carries one — e.g. cloned from a sent quote — keeps
+  // it verbatim), so a re-read of this same quote always renders the document
+  // the customer was actually shown, even if the partner's live theme/pageSize
+  // columns change later. Precedence matches resolveQuoteBranding exactly.
+  const presentationSnapshot = quote.presentationSnapshot ?? {
+    theme: resolveThemeId(partnerRow?.documentTheme),
+    pageSize: resolvePageSize(partnerRow?.documentPageSize),
+  };
+
   const claimed = await db
     .update(quotes)
     .set({
@@ -195,6 +206,7 @@ export async function sendQuote(
       sellerSnapshot: buildSellerSnapshot(partnerRow),
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
+      presentationSnapshot,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -225,6 +237,7 @@ export async function sendQuote(
     billToAddress,
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
+    presentationSnapshot,
   };
 
   const { emailed, emailReason } = await deliverQuoteEmail({
@@ -383,12 +396,20 @@ async function deliverQuoteEmail(
           // rendering, so the emailed attachment matches the on-demand download.
           const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
+          // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
+          // frozenQuote.presentationSnapshot is the send-stamped value on a first
+          // send, and the already-frozen one on a resend — either way it wins over
+          // the partner's live theme/pageSize columns.
+          const presentationSnap = frozenQuote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+          const emailBranding = {
+            partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+            footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+            theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
+            pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+          };
           const rawPdf = await renderQuotePdf(
             frozenQuote,
-            blocks, customerLines, loadImage, {
-              partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-              footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-            }, undefined, contractRenderData);
+            blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
           const { mergeUploadedContractPdfs } = await import('./pdfMerge');
           pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
         } catch (pdfErr) {

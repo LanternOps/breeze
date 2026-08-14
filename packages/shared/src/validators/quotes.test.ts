@@ -275,6 +275,32 @@ describe('contract block type', () => {
   });
 });
 
+describe('table block content', () => {
+  const valid = { blockType: 'table', content: { columns: [{ label: 'Item' }, { label: 'Better', align: 'center', weight: 2 }], rows: [{ cells: ['<strong>EDR</strong>', 'Included'] }] } };
+  it('accepts a valid table', () => { expect(quoteBlockInputSchema.safeParse(valid).success).toBe(true); });
+  it('rejects cells.length !== columns.length', () => {
+    const bad = structuredClone(valid); bad.content.rows[0].cells.push('extra');
+    expect(quoteBlockInputSchema.safeParse(bad).success).toBe(false);
+  });
+  it('rejects >8 columns, >100 rows, oversized cells, bad weight', () => {
+    const cols9 = { ...valid, content: { ...valid.content, columns: Array.from({ length: 9 }, () => ({ label: 'c' })), rows: [] } };
+    expect(quoteBlockInputSchema.safeParse(cols9).success).toBe(false);
+    const bigCell = structuredClone(valid); bigCell.content.rows[0].cells[0] = 'x'.repeat(2001);
+    expect(quoteBlockInputSchema.safeParse(bigCell).success).toBe(false);
+    for (const weight of [0, -1, 1.5, Infinity, 11]) {
+      const w = structuredClone(valid); w.content.columns[0] = { label: 'c', weight };
+      expect(quoteBlockInputSchema.safeParse(w).success).toBe(false);
+    }
+  });
+});
+describe('callout block content', () => {
+  it('accepts valid, rejects bad variant and oversized html', () => {
+    expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'accent', title: 'Why this matters', html: '<p>Because.</p>' } }).success).toBe(true);
+    expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'loud', html: '<p>x</p>' } }).success).toBe(false);
+    expect(quoteBlockInputSchema.safeParse({ blockType: 'callout', content: { variant: 'info', html: 'x'.repeat(50_001) } }).success).toBe(false);
+  });
+});
+
 describe('coverPageSchema', () => {
   it('accepts a minimal disabled cover page', () => {
     const parsed = coverPageSchema.parse({ enabled: false });

@@ -119,7 +119,7 @@ describe('invoice crud + lines routes', () => {
     expect(body.data.invoice.id).toBe(INV_ID);
     expect(body.data.branding.partnerName).toBe('Lantern IT');
     expect(svc.getInvoice).toHaveBeenCalledWith(INV_ID, expect.anything());
-    expect(brandingSvc.resolveQuoteBranding).toHaveBeenCalledWith({ id: INV_ID });
+    expect(brandingSvc.resolveQuoteBranding).toHaveBeenCalledWith({ id: INV_ID, presentationSnapshot: null });
   });
 
   it('POST /:id/lines adds a manual line', async () => {

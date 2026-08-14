@@ -19,6 +19,8 @@ const blockTypeMembers: Record<QuoteBlockType, true> = {
   image: true,
   line_items: true,
   contract: true,
+  table: true,
+  callout: true,
 };
 
 const statusMembers: Record<QuoteStatus, true> = {

@@ -19,7 +19,7 @@ export type QuoteStatus =
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
 export type QuoteLineSourceType = 'catalog' | 'bundle' | 'manual';
-export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract';
+export type QuoteBlockType = 'heading' | 'rich_text' | 'image' | 'line_items' | 'contract' | 'table' | 'callout';
 
 /** Customer display label: prefer the explicit bill-to name; otherwise resolve
  *  the real organization name from the client-side org list (same source the
