@@ -223,7 +223,7 @@ Trigger remediation without running a full evaluation cycle.
 POST /api/v1/policies/:id/remediate
 ```
 
-The endpoint resolves the remediation automation from the policy's rules or `remediationScriptId`, creates an `automation_runs` entry, increments the automation's `runCount`, and returns the run details. Returns a 400 error if no remediation automation is configured.
+The endpoint resolves the remediation automation from the policy's rules or `remediationScriptId`, creates an `automation_runs` entry, increments the automation's `runCount`, dispatches the run for execution against the policy's target devices, and returns the run details. Returns a 400 error if no remediation automation is configured.
 
 ## Policy state collection from agents
 
@@ -423,7 +423,7 @@ Configuration Policy compliance rules are evaluated on a scheduled basis by the 
 3. For each device, resolves the **winning** compliance rules from the Configuration Policy hierarchy (most specific assignment wins).
 4. Evaluates each compliance rule against the device's telemetry context.
 5. Upserts the result into `automation_policy_compliance` with `policyId: null` and `configPolicyId` set to the feature link ID.
-6. If enforcement is `enforce` and the device is non-compliant, triggers remediation via a linked automation.
+6. If enforcement is `enforce` and the device is non-compliant, triggers remediation via a linked automation and dispatches it to the device.
 7. Publishes `policy.evaluated`, `policy.violation`, or `policy.compliant` events.
 
 ## Troubleshooting
@@ -447,6 +447,7 @@ Configuration Policy compliance rules are evaluated on a scheduled basis by the 
 - Verify a remediation script or automation is linked. Check the policy's `remediationScriptId` or the rule's `remediationAutomationId`.
 - Ensure the linked automation is **enabled** and belongs to the same organisation as the policy.
 - Check the automation's `actions` array to confirm it references the correct `scriptId`.
+- On releases before v0.105.0, a policy remediation run could be created but never dispatched to the agent (or reported as completed without executing), leaving runs stuck in `running`. If you see stale historical runs from before the upgrade, re-trigger them.
 
 ### Config policy compliance not being evaluated
 

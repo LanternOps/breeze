@@ -32,6 +32,12 @@ Not every credential field applies to every provider. Fill in the ones your prov
 
 ---
 
+## Connection Ownership
+
+A PSA connection is owned either by a **single organization** or **partner-wide** (all organizations under your partner). Since one MSP typically runs one PSA for all its customers, partner-wide is the natural choice: one connection serves every org. The scope is chosen when the connection is created and cannot be changed afterwards; creating a partner-wide connection requires full-partner access.
+
+A partner-wide connection is visible to any partner-scope user — but the tickets and device/alert mappings underneath it are still filtered to the organizations you can access, so a restricted technician never sees another customer's work items through a shared connection.
+
 ## Connecting a PSA Platform
 
 <Steps>
