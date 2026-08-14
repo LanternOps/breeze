@@ -183,6 +183,9 @@ Automation parameter capture (`AutomationForm.tsx:61-69,676-690` has **no** para
 2. **Duplicate parameter keys that collide as env vars are now rejected** (`log-level` vs `log_level` vs `logLevel`). Previously accepted, with a **nondeterministic** winner per run.
 3. **A value supplied for a bound parameter is ignored**, reported in `ignoredParameters`, and audited.
 4. **`script.version` now increments when parameter definitions change**, not only content.
+5. **Required `runtime` parameters are now enforced server-side.** `required` was previously only checked in the browser (`ScriptParametersForm.validateParameters`) — the server had no definition schema at all, so it could not enforce it. Now a required runtime parameter with no caller value and no default fails that device.
+
+   > This mainly bites **automations**, which have no parameter-capture UI and send `{}`. Such a run was *already* broken — the agent received no value, left `{{param}}` verbatim in the script, and never set `BREEZE_PARAM_*` — so this converts a silent wrong-result into a loud failure rather than breaking something that worked. Same class as PR2's parameter-strictness item, and it must be release-noted with it.
 
 ---
 

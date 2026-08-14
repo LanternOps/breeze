@@ -704,7 +704,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     } as any);
 
     vi.mocked(dispatchScriptToDevice).mockResolvedValue({
-      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, deliveryOutcome: 'sent', executedAt: new Date(),
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, deliveryOutcome: 'sent', executedAt: new Date(), ignoredParameters: [],
     } as any);
 
     const result = await executeConfigPolicyAutomationRun(

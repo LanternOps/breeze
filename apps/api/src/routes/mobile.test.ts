@@ -1554,6 +1554,8 @@ describe('mobile routes', () => {
         executions: [
           { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
         ],
+        failures: [],
+        ignoredParameters: [],
         status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
@@ -1597,6 +1599,96 @@ describe('mobile routes', () => {
           })
         })
       );
+    });
+
+    // #3409 PR3 §2.2 — this endpoint accepts `parameters`, so a mobile caller
+    // can supply a value for a parameter that is BOUND to a source. The
+    // binding wins and the value is dropped; surfacing it here keeps the
+    // mobile client's contract consistent with POST /scripts/:id/execute.
+    it('surfaces ignored bound parameter keys in the body and the audit', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: 'batch-1',
+        scriptId: '22222222-2222-2222-2222-222222222222',
+        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [
+          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
+        ],
+        failures: [],
+        ignoredParameters: ['api_key'],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: 'org-123'
+      });
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '22222222-2222-2222-2222-222222222222',
+          parameters: { api_key: 'caller-supplied-secret' }
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.ignoredParameters).toEqual(['api_key']);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ ignoredParameterKeys: ['api_key'] })
+        })
+      );
+      // Keys only — the caller's value must never reach an audit row.
+      const auditDetails = writeRouteAuditMock.mock.calls.at(-1)?.[1]?.details ?? {};
+      expect(JSON.stringify(auditDetails)).not.toContain('caller-supplied-secret');
+    });
+
+    it('omits ignoredParameters entirely when nothing was ignored', async () => {
+      vi.mocked(db.select).mockReturnValue(
+        mockSelectLimitChain([
+          { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
+        ]) as any
+      );
+      executeScriptOnDevicesMock.mockResolvedValueOnce({
+        ok: true,
+        batchId: 'batch-1',
+        scriptId: '22222222-2222-2222-2222-222222222222',
+        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
+        devicesTargeted: 1,
+        maintenanceSuppressedDeviceIds: [],
+        executions: [
+          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
+        ],
+        failures: [],
+        ignoredParameters: [],
+        status: 'queued',
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: 'org-123'
+      });
+
+      const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'run_script',
+          scriptId: '22222222-2222-2222-2222-222222222222'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect('ignoredParameters' in body).toBe(false);
     });
 
     it.skip('should submit device action commands', async () => {
@@ -1691,6 +1783,8 @@ describe('mobile routes', () => {
           devicesTargeted: 1,
           maintenanceSuppressedDeviceIds: [],
           executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
+          failures: [],
+          ignoredParameters: [],
           status: 'queued',
           triggerType: 'manual',
           runAs: 'system',
@@ -1720,6 +1814,8 @@ describe('mobile routes', () => {
           devicesTargeted: 1,
           maintenanceSuppressedDeviceIds: [],
           executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
+          failures: [],
+          ignoredParameters: [],
           status: 'queued',
           triggerType: 'manual',
           runAs: 'system',

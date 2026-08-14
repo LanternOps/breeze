@@ -984,6 +984,18 @@ scriptRoutes.post(
         maintenanceSuppressedDeviceIds: result.maintenanceSuppressedDeviceIds,
         triggerType: result.triggerType,
         runAs: result.runAs,
+        // #3409 PR3 §2.2 — bound parameters the caller supplied a value for.
+        // The binding won and the supplied value was dropped, so the audit
+        // trail must record that the run did NOT use what the caller sent.
+        // KEYS ONLY, never values: a caller can send anything under a bound
+        // key (including the secret they thought they were overriding), and
+        // audit details are long-lived and widely readable.
+        //
+        // A distinct, self-describing field rather than folding these into an
+        // existing one: audit `details` is an untyped jsonb bag shared across
+        // every action in this repo, and overloading a generic key there has
+        // already produced one cross-meaning collision (`deviceId`).
+        ignoredParameterKeys: result.ignoredParameters,
       }
     });
 
@@ -1000,6 +1012,11 @@ scriptRoutes.post(
       // all-failed case returned 422 above). Omitted when empty so the
       // common clean-run response shape is unchanged.
       failures: result.failures.length > 0 ? result.failures : undefined,
+      // Bound parameter keys whose caller-supplied value was ignored (#3409
+      // PR3 §2.2) — the binding is authoritative. Omitted when empty, exactly
+      // like `failures` above, so the common clean-run response shape is
+      // unchanged and a client can treat presence alone as "warn the user".
+      ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
       status: result.status,
     }, 201);
   }

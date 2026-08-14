@@ -15,6 +15,7 @@ vi.mock('./scriptDispatch', () => ({
     delivered: true,
     deliveryOutcome: 'sent',
     executedAt: new Date('2026-08-11T00:00:00Z'),
+    ignoredParameters: [],
   }),
 }));
 // See scriptExecution.test.ts for why the resolver itself is stubbed here
@@ -47,6 +48,7 @@ describe('automationRuntime', () => {
       delivered: true,
       deliveryOutcome: 'sent',
       executedAt: new Date('2026-08-11T00:00:00Z'),
+      ignoredParameters: [],
     } as any);
     vi.mocked(loadTenantVariableScope).mockResolvedValue({ orgIds: new Set() } as any);
   });
@@ -197,6 +199,45 @@ describe('automationRuntime', () => {
     });
   });
 
+  // #3409 PR3 §2.2: an automation whose action configures a value for a
+  // parameter that is BOUND to a source has that value dropped. Automations
+  // have no parameter-capture UI, so the run log is the ONLY surface where an
+  // author can ever see it — without this the ignore is completely silent for
+  // exactly the consumer the "ignore, don't 400" decision was made for.
+  it('records ignored bound parameter keys on the run log', async () => {
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true,
+      commandId: 'cmd-1',
+      executionId: 'exec-1',
+      delivered: true,
+      deliveryOutcome: 'sent',
+      executedAt: new Date('2026-08-11T00:00:00Z'),
+      ignoredParameters: ['api_key'],
+    } as any);
+
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1', parameters: { api_key: 'configured-in-the-automation' } },
+      0,
+      contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.log.details).toMatchObject({ ignoredParameterKeys: ['api_key'] });
+    // KEYS ONLY — the configured value must not be copied into the run log.
+    expect(JSON.stringify(result.log.details)).not.toContain('configured-in-the-automation');
+  });
+
+  it('leaves the run log untouched when nothing was ignored', async () => {
+    const result = await executeRunScriptAction(
+      { type: 'run_script', scriptId: 'script-1' },
+      0,
+      contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.log.details).not.toHaveProperty('ignoredParameterKeys');
+  });
+
   describe('loadAutomationRunVariableScope (#3409 PR3 P2)', () => {
     const scriptsById = new Map<string, any>([
       ['script-1', TOKEN_SCRIPT],
@@ -248,6 +289,45 @@ describe('automationRuntime', () => {
       );
 
       expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-a']);
+    });
+
+    // #3409 PR3 P1. The fixture below is deliberately TOKEN-FREE so the
+    // assertion is not vacuous: under the old content-only gate this run
+    // passes `[]`, and every bound parameter then resolves against an empty
+    // scope at dispatch.
+    //
+    // MUTATION-VERIFIED: forcing `scriptNeedsVariableScope` to `false` fails
+    // this test (and the two sibling gate tests) and nothing else.
+    it('loads a scope for a token-free script whose PARAMETERS bind a tenant variable', async () => {
+      const boundScript = {
+        id: 'script-bound',
+        content: 'echo hi',
+        parameters: [{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' }],
+      } as any;
+
+      await loadAutomationRunVariableScope(
+        [{ type: 'run_script', scriptId: 'script-bound' }] as any,
+        new Map([['script-bound', boundScript]]),
+        ['org-a'],
+      );
+
+      expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-a']);
+    });
+
+    it('does not load a scope for a token-free script whose parameters are all runtime', async () => {
+      const runtimeScript = {
+        id: 'script-runtime',
+        content: 'echo hi',
+        parameters: [{ name: 'level', type: 'string', source: 'runtime' }],
+      } as any;
+
+      await loadAutomationRunVariableScope(
+        [{ type: 'run_script', scriptId: 'script-runtime' }] as any,
+        new Map([['script-runtime', runtimeScript]]),
+        ['org-a'],
+      );
+
+      expect(loadTenantVariableScope).toHaveBeenCalledWith([]);
     });
 
     it('does not throw when an action references a script that failed to load', async () => {

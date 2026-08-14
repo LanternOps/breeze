@@ -1013,6 +1013,7 @@ describe('scripts routes', () => {
           code: 'unresolved_variables',
           error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
         }],
+        ignoredParameters: [],
         status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
@@ -1049,6 +1050,7 @@ describe('scripts routes', () => {
           commandId: 'cmd-1',
         }],
         failures: [],
+        ignoredParameters: [],
         status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
@@ -1063,6 +1065,104 @@ describe('scripts routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.failures).toBeUndefined();
+    });
+  });
+
+  // #3409 PR3 §2.2: a caller-supplied value for a parameter BOUND to a source
+  // (tenantVariable / deviceCustomField / builtin) is ignored — the binding
+  // wins — rather than 400'd, so a stored automation cannot be broken by a
+  // script author flipping a parameter to bound. That makes the ignore
+  // otherwise SILENT, which is why it has to reach both the response body and
+  // the audit trail.
+  describe('ignored bound parameters on execute (#3409 PR3)', () => {
+    const executeWithParameters = (parameters: Record<string, unknown>) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters,
+      }),
+    });
+
+    const okResultWithIgnored = (ignoredParameters: string[]) => ({
+      ok: true,
+      batchId: null,
+      batchIds: [],
+      scriptId: SCRIPT_ID_1,
+      script: { id: SCRIPT_ID_1, name: 'Script One' },
+      devicesTargeted: 1,
+      maintenanceSuppressedDeviceIds: [],
+      executions: [{
+        executionId: 'exec-1',
+        deviceId: '11111111-1111-1111-1111-111111111111',
+        commandId: 'cmd-1',
+      }],
+      failures: [],
+      ignoredParameters,
+      status: 'queued' as const,
+      triggerType: 'manual' as const,
+      runAs: 'system',
+      auditOrgId: ORG_ID,
+    });
+
+    it('returns the ignored bound keys on the 201 body', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored(['api_key', 'site_code']));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ api_key: 'caller-supplied', site_code: 'caller-supplied' }),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.ignoredParameters).toEqual(['api_key', 'site_code']);
+      // The run still succeeded — ignoring is not failing.
+      expect(body.executions).toHaveLength(1);
+      expect(body.failures).toBeUndefined();
+    });
+
+    it('audits the ignored KEYS (and no values) under a dedicated details field', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored(['api_key']));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ api_key: 's3cret-value-the-caller-sent' }),
+      );
+
+      expect(res.status).toBe(201);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'script.execute',
+          details: expect.objectContaining({ ignoredParameterKeys: ['api_key'] }),
+        }),
+      );
+      // Keys only: whatever the caller sent under a bound key must never land
+      // in an audit row, which is long-lived and widely readable.
+      const auditDetails = vi.mocked(writeRouteAudit).mock.calls.at(-1)?.[1].details ?? {};
+      expect(JSON.stringify(auditDetails)).not.toContain('s3cret-value-the-caller-sent');
+    });
+
+    it('omits ignoredParameters entirely on a clean run', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored([]));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ runtime_param: 'value' }),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      // ABSENT, not an empty array — the common clean-run shape is unchanged,
+      // so a client can treat presence alone as "warn the user".
+      expect(body.ignoredParameters).toBeUndefined();
+      expect('ignoredParameters' in body).toBe(false);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ ignoredParameterKeys: [] }),
+        }),
+      );
     });
   });
 

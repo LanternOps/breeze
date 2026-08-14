@@ -32,6 +32,16 @@ export interface ResolvedVariable {
   isSecret: boolean;
   variableId: string;
   version: number;
+  /**
+   * Which axis this row was owned on — `'partner'` for a partner-wide row
+   * (`tenant_variables.org_id IS NULL`), `'organization'` for an org override.
+   *
+   * Carried because #3409 PR3 persists a binding DESCRIPTOR (never a value)
+   * on `script_executions`, and "which variable did this device actually
+   * resolve" is not answerable from `variableId` alone once an org override
+   * can shadow a partner-wide row of the same key.
+   */
+  ownerScope: 'organization' | 'partner';
 }
 
 /**
@@ -82,7 +92,14 @@ interface RawResolvedRow {
 function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
   try {
     const value = decryptTenantVariableValue(row);
-    return { key: row.key, value, isSecret: row.isSecret, variableId: row.id, version: row.version };
+    return {
+      key: row.key,
+      value,
+      isSecret: row.isSecret,
+      variableId: row.id,
+      version: row.version,
+      ownerScope: row.ownerOrgId === null ? 'partner' : 'organization'
+    };
   } catch (err) {
     console.warn('[tenant-variable-resolution] failed to decrypt tenant variable value', { id: row.id });
     return null;

@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import { hasVariableTokens, scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
+import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
 import { db } from '../db';
 import {
   alertRules,
@@ -21,6 +21,7 @@ import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
+import { scriptNeedsVariableScope } from './sourcedParameters';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
@@ -881,15 +882,16 @@ type ActionExecutionContext = {
  * otherwise compound the trap.
  *
  * The gate is preserved, just widened from one script to the run's script set:
- * if no `run_script` action references a script whose content carries a
- * `{{var.*}}` token, we pass `[]` and `loadTenantVariableScope` short-circuits
- * without querying at all (tenantVariableResolution.ts) — so a token-free run,
- * which is the overwhelming majority, still does exactly zero work.
+ * if no `run_script` action references a script that needs a scope, we pass
+ * `[]` and `loadTenantVariableScope` short-circuits without querying at all
+ * (tenantVariableResolution.ts) — so a variable-free run, which is the
+ * overwhelming majority, still does exactly zero work.
  *
- * NOTE for PR3's sourced parameters: this gate is content-only. When bound
- * parameters land, extend it to `hasTenantVariableBoundParameters(parameters)`
- * as well (plan §3 P1) — a parameter binding lives in `scripts.parameters`,
- * not in the content, and would resolve against an empty scope here.
+ * #3409 PR3 P1: the per-script predicate is `scriptNeedsVariableScope`, NOT
+ * `hasVariableTokens(content)`. A `tenantVariable`-bound parameter lives in
+ * `scripts.parameters`, not in the content, so a content-only gate would pass
+ * `[]` here and every bound parameter would then resolve against an EMPTY
+ * scope at dispatch — failing as "no value set" for a variable that exists.
  *
  * `loadTenantVariableScope` owns the `runOutsideDbContext(() =>
  * withSystemDbAccessContext(...))` double wrapper; do not add or unwrap one
@@ -901,11 +903,11 @@ export async function loadAutomationRunVariableScope(
   scriptsById: Map<string, typeof scripts.$inferSelect>,
   deviceOrgIds: string[],
 ): Promise<TenantVariableScope> {
-  const anyScriptUsesVariables = actions.some(
-    (action) =>
-      action.type === 'run_script' &&
-      hasVariableTokens(scriptsById.get(action.scriptId)?.content ?? ''),
-  );
+  const anyScriptUsesVariables = actions.some((action) => {
+    if (action.type !== 'run_script') return false;
+    const script = scriptsById.get(action.scriptId);
+    return script !== undefined && scriptNeedsVariableScope(script);
+  });
   return loadTenantVariableScope(anyScriptUsesVariables ? [...new Set(deviceOrgIds)] : []);
 }
 
@@ -1018,7 +1020,22 @@ export async function executeRunScriptAction(
       // "queued, agent offline" (no_agent) from "we had a socket and failed
       // to reach it" (claim_lost/decrypt_failed/send_failed) — see
       // scriptDispatch.ts's DispatchScriptResult for the full enum.
-      details: { scriptId: script.id, executionId: dispatch.executionId, deliveryOutcome: dispatch.deliveryOutcome },
+      details: {
+        scriptId: script.id,
+        executionId: dispatch.executionId,
+        deliveryOutcome: dispatch.deliveryOutcome,
+        // #3409 PR3 §2.2 — the automation configured a value for a parameter
+        // that is BOUND to a source, so the binding won and the configured
+        // value was dropped. Automations have no parameter-capture UI, so the
+        // run log is the ONLY place this warning can surface for them: an
+        // author who set `parameters: {api_key: '...'}` before the script's
+        // author flipped that key to a binding otherwise sees a silently
+        // different run. Spread conditionally so a run log for the ~all of
+        // today's automations is byte-identical to before.
+        ...(dispatch.ignoredParameters.length > 0
+          ? { ignoredParameterKeys: dispatch.ignoredParameters }
+          : {}),
+      },
     }),
   };
 }

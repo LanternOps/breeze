@@ -125,7 +125,8 @@ function mapWith(entry: Partial<ResolvedVariable> & { key: string }): Map<string
         value: entry.value ?? 'v',
         isSecret: entry.isSecret ?? false,
         variableId: entry.variableId ?? ROW_ORG,
-        version: entry.version ?? 1
+        version: entry.version ?? 1,
+        ownerScope: entry.ownerScope ?? 'organization'
       }
     ]
   ]);
@@ -166,6 +167,20 @@ describe('loadTenantVariableScope', () => {
     stubSelect([encryptedRow(ROW_PARTNER, 'partner-value', { key: 'k', ownerOrgId: null, forOrgId: ORG_A })]);
     const scope = await loadTenantVariableScope([ORG_A]);
     expect(resolveForOrg(scope, ORG_A).get('k')?.value).toBe('partner-value');
+  });
+
+  // #3409 PR3 carries `ownerScope` on every resolved row so a persisted
+  // binding descriptor can say WHICH axis a device actually resolved on —
+  // `variableId` alone can't, once an org override shadows a partner-wide
+  // row of the same key.
+  it('tags each resolved row with the axis it was owned on', async () => {
+    stubSelect([
+      encryptedRow(ROW_PARTNER, 'partner-value', { key: 'inherited', ownerOrgId: null, forOrgId: ORG_A }),
+      encryptedRow(ROW_ORG, 'org-value', { key: 'overridden', ownerOrgId: ORG_A, forOrgId: ORG_A })
+    ]);
+    const resolved = resolveForOrg(await loadTenantVariableScope([ORG_A]), ORG_A);
+    expect(resolved.get('inherited')?.ownerScope).toBe('partner');
+    expect(resolved.get('overridden')?.ownerScope).toBe('organization');
   });
 
   it('never leaks another org value into this org resolution', async () => {
@@ -247,8 +262,8 @@ describe('substituteTenantVariables', () => {
 
   it('mixes a resolved, a missing, and a secret key correctly in one pass', () => {
     const resolved = new Map<string, ResolvedVariable>([
-      ['ok', { key: 'ok', value: 'fine', isSecret: false, variableId: ROW_ORG, version: 1 }],
-      ['sekret', { key: 'sekret', value: 'nope', isSecret: true, variableId: ROW_SECRET, version: 1 }]
+      ['ok', { key: 'ok', value: 'fine', isSecret: false, variableId: ROW_ORG, version: 1, ownerScope: 'organization' }],
+      ['sekret', { key: 'sekret', value: 'nope', isSecret: true, variableId: ROW_SECRET, version: 1, ownerScope: 'partner' }]
     ]);
     const out = substituteTenantVariables('{{var.ok}} {{var.sekret}} {{var.gone}}', resolved);
     expect(out.content).toBe('fine {{var.sekret}} {{var.gone}}');
