@@ -140,3 +140,80 @@ describe('QuoteBlocks — line rendering (title/blurb + thumbnail)', () => {
     expect(screen.queryByTestId('quote-line-image-l4')).toBeNull();
   });
 });
+
+describe('QuoteBlocks — table block rendering', () => {
+  it('renders column labels, inline HTML cells, zebra striping and caption', () => {
+    const blocks: QuoteBlock[] = [
+      {
+        id: 'block-table-1',
+        blockType: 'table',
+        sortOrder: 0,
+        content: {
+          columns: [{ label: '<strong>Item</strong>' }, { label: 'Qty', align: 'right' }],
+          rows: [
+            { cells: ['Widget', '1'] },
+            { cells: ['Gadget', '2'] },
+          ],
+          caption: 'Pricing detail',
+          zebra: true,
+        },
+      },
+    ];
+    renderBlocks(blocks);
+
+    const table = screen.getByTestId('quote-table-block');
+    expect(table.querySelector('table')).not.toBeNull();
+    const header = screen.getByText('Item');
+    expect(header.tagName).toBe('STRONG');
+    expect(screen.getByText('Widget')).not.toBeNull();
+    expect(screen.getByText('Gadget')).not.toBeNull();
+    expect(screen.getByText('Pricing detail')).not.toBeNull();
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows[0].className).not.toContain('bg-muted/30');
+    expect(rows[1].className).toContain('bg-muted/30');
+  });
+
+  it('renders nothing for a table block with no columns or rows', () => {
+    const blocks: QuoteBlock[] = [
+      { id: 'block-table-empty', blockType: 'table', sortOrder: 0, content: { columns: [], rows: [] } },
+    ];
+    renderBlocks(blocks);
+    expect(screen.queryByTestId('quote-table-block')).toBeNull();
+  });
+});
+
+describe('QuoteBlocks — callout block rendering', () => {
+  it('renders a variant-tinted container with title and html', () => {
+    const blocks: QuoteBlock[] = [
+      {
+        id: 'block-callout-1',
+        blockType: 'callout',
+        sortOrder: 0,
+        content: { variant: 'warn', title: 'Heads up', html: '<p>Please read <strong>carefully</strong>.</p>' },
+      },
+    ];
+    renderBlocks(blocks);
+
+    const callout = screen.getByTestId('quote-callout-block');
+    expect(callout.className).toContain('border-amber-500/40');
+    expect(screen.getByText('Heads up')).not.toBeNull();
+    const strongEl = screen.getByText('carefully');
+    expect(strongEl.tagName).toBe('STRONG');
+  });
+
+  it('renders nothing for a callout block with no html', () => {
+    const blocks: QuoteBlock[] = [
+      { id: 'block-callout-empty', blockType: 'callout', sortOrder: 0, content: { html: '   ' } },
+    ];
+    renderBlocks(blocks);
+    expect(screen.queryByTestId('quote-callout-block')).toBeNull();
+  });
+
+  it('keeps returning null for an unknown block type (customers never see debris)', () => {
+    const blocks: QuoteBlock[] = [
+      { id: 'block-unknown-1', blockType: 'mystery_block', sortOrder: 0, content: { foo: 'bar' } },
+    ];
+    const { container } = renderBlocks(blocks);
+    expect(container.textContent).toBe('');
+  });
+});

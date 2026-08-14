@@ -443,6 +443,27 @@ export interface QuoteContractBlockContent {
   authoring?: never;
 }
 
+/** Server-serialized shape of a `table` quote block's `content` (mirrors
+ *  `quoteTableContentSchema` in @breeze/shared/validators/quotes.ts). Column
+ *  labels and cell values are sanitized server-side with the inline-only
+ *  profile before ever reaching the portal, same precedent as rich_text. */
+export interface QuoteTableContent {
+  columns: Array<{ label: string; align?: 'left' | 'center' | 'right' }>;
+  rows: Array<{ cells: string[] }>;
+  caption?: string;
+  zebra?: boolean;
+  headerStyle?: 'accent' | 'plain';
+}
+
+/** Server-serialized shape of a `callout` quote block's `content` (mirrors
+ *  `quoteCalloutContentSchema` in @breeze/shared/validators/quotes.ts). `html`
+ *  is sanitized server-side, same precedent as rich_text. */
+export interface QuoteCalloutContent {
+  variant: 'info' | 'accent' | 'warn';
+  title?: string;
+  html: string;
+}
+
 export interface QuoteBlock {
   id: string;
   blockType: string;
