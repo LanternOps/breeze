@@ -4,6 +4,43 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## OneDrive Helper Phase 4 (UPN reporting + graph_group tagging) — wt-stack + live Windows VM — 2026-07-10
+
+**Branch:** `feat/onedrive-helper-phase4` · **Tested by:** Claude · **Result:** PASS (UPN reporting + fail-closed graph rule verified live; full Graph loop pending M365 connection).
+
+Stack `breeze-wt-feat-onedrive-helper-phase4` (:32778), VM agent re-enrolled (fresh device, agent build `dev-onedrive-p4` @ c69821b6c). Policy `p4-onedrive-e2e`: everyone-targeted Company library (real composite) + graph_group library (fictitious composite + fake groupId, no M365 connection → fail-closed expected).
+
+1. **UPN reporting:** `onedrive_device_state.signed_in_upns = ["Todd@lanternops.io"]` (from `HKU\<admin SID>\...\Business1\UserEmail`), signed_in=t, version 26.106.0603.0003. Gotcha caught live: reader only enumerates `WTSActive` sessions — a disconnected console session reports signed_in=f/upns=[] (correct per design; reconnected via `tscon 2 /dest:console` + relaunched OneDrive to proceed).
+2. **Fail-closed graph rule:** with no M365 connection, delivery tags `allowedUpns: []` → agent leaves the graph library **pending**: absent from `entitled_libraries`, absent from `TenantAutoMount` registry (verified per-SID — only the everyone composite's `Breeze-e6379b5f09a7` value present, byte-identical URL-encoded), and **no drift entry** for it.
+3. **Server warn path:** `[agents] graph_group tagging: membership lookup failed for device <id>: no_connection` — device id + error code only, **no UPN in logs** (security requirement verified).
+4. **Everyone library baseline (phase 2 regression):** mounted at `C:\Users\Administrator\LanternOps LLC\Company - Documents`; drift initially flagged `not_mounted` because fixture displayName "Company Documents" ≠ tenant-cache path "Company - Documents" (KNOWN ledgered limitation — displayName substring matching); renamed to "Documents" via feature-link PATCH → drift cleared.
+5. **Stale mount observation:** old phase2/3 `Breeze-76922677df7b` TenantAutoMount value persists after re-enrollment — by design until Sub-project B (unmount/scrub).
+6. **NOT covered (needs Todd):** positive graph_group path (member UPN → allowedUpns → mount) requires a real M365 connection on the stack org (`/integrations#m365`) + a real Entra group containing todd@lanternops.io.
+
+## OneDrive Helper Phase 3 (web UI) — wt-stack browser verification — 2026-07-09
+
+**Branch:** `feat/onedrive-helper-phase3` · **Tested by:** Claude (Playwright) · **Result:** PASS with one live-caught fix.
+
+Stack `breeze-wt-feat-onedrive-helper-phase3` (:32785), VM agent re-enrolled there; policy recreated via API.
+
+- **Policy editor tab:** OneDrive Helper appears in the feature-tab bar ("Configured" badge); base toggles seeded from the live feature link; enabling KFM revealed folder checkboxes + block-opt-out + tenant-ID input; Save round-trip verified in `config_policy_onedrive_settings` (kfm=t, folders, tenant id).
+- **Library picker:** opened from "Add library". **Live-caught bug:** with the stack's `M365_ENABLED` off, the `/m365/connection` 404 landed the picker in the raw error state, making the manual-paste fallback unreachable — fixed (probe failure now = disconnected state with paste fallback).
+- **Org rollup `/onedrive`:** nav entry after Vulnerabilities; tiles 1/1/1/0 correct; table row `3/3 redirected`, mounted/entitled 1/1, drift 0, "Just now"; hostname links `/devices/<id>#onedrive`.
+- **Device OneDrive tab:** chips (Signed in / FOD On / 26.106.0603.0003 / Just now), KFM 3× Redirected, entitled composite decoded to `lanternops.sharepoint.com/sites/Company` (full composite in title), mounted path listed.
+
+## OneDrive Helper Phase 2 — wt-stack + live Windows VM E2E — 2026-07-09
+
+**Branch:** `worktree-onedrive-helper-phase2` · **Tested by:** Claude · **Result:** PASS end-to-end, no bugs found during E2E (three review-found bugs fixed pre-E2E).
+
+**Pipeline verified against the real stack (wt-stack :32782) + Windows test VM (agent build `dev-onedrive-e2e`, OneDrive 26.106.0603.0003):**
+1. **Spike gate (Task 1): CLEAN confirmed** — `buildTenantAutoMountValue` output mounted a never-synced SharePoint library in ~15s (`Company - Documents`). Spike doc updated with encoding verdict + tenant-cache shape + session-0 gotcha.
+2. **Write path:** `POST /configuration-policies/:id/features` with `onedrive_helper` inlineSettings → route validation applied defaults (hiveScope/enabled visible in response) → normalized rows in `config_policy_onedrive_settings` + `_libraries` (sortOrder, 257-char composite intact).
+3. **Delivery + apply:** agent received `onedrive_helper_settings` on heartbeat; within 15s wrote per-SID `HKU\<SID>\...\TenantAutoMount\Breeze-76922677df7b` (composite byte-identical, no re-encoding) + HKLM `SilentAccountConfig=1`, `FilesOnDemandEnabled=1`, `BreezeOneDriveManaged=1` sentinel.
+4. **State ingest:** `onedrive_device_state` row: signed_in=t, FOD=t, version, all 3 KFM folders `redirected`, `mounted_libraries` = the real library path only (**personal UserFolder correctly excluded** — spike-derived fix verified live), `entitled_libraries` = composite, `drift_entries=[]` (empty array on the wire, not null — Task 9 Critical fix verified).
+5. **Drift lifecycle:** hid the library from OneDrive's tenant cache (client stopped) → next cycle reported `[{"reason":"not_mounted","libraryId":…,"displayName":"Documents"}]`; restored + relaunched OneDrive → cache self-rebuilt in 15s → drift cleared to `[]` and mounted list restored. No key-rewrite thrash, no restart loop.
+
+**Not covered here (tracked follow-ups in SDD ledger):** `local_ad_group` end-to-end on a domain-joined host; multi-session/RDS; the fully-encoded "Copy library ID" paste variant on a second library; KFMSilentOptIn reboot persistence.
+
 ## BE-16 Enhancement P1 — Risk-acceptance RBAC (`vulnerabilities:accept_risk`) — unit tests + type-check — 2026-06-24
 
 **Branch:** `feat/be16-vuln-phase1` · **Tested by:** Claude · **Result:** PASS (unit/web suites + astro check); browser wt-stack spot-check **pending Todd's manual UI verification**.
