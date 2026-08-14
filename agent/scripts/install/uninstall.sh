@@ -75,6 +75,14 @@ uninstall_macos() {
     launchctl disable "system/${agent_label}" 2>/dev/null || true
     launchctl bootout "system/${agent_label}" 2>/dev/null \
       || launchctl unload "$agent_plist" 2>/dev/null || true
+
+    # `launchctl disable` writes a PERSISTENT override that outlives the
+    # uninstall — it is keyed on the label, not the plist. Leaving it set means
+    # a later reinstall drops the agent binary and plist in place, and launchd
+    # then silently refuses to start it ("could not start the agent service
+    # automatically"), with no clue why. The disable above is only wanted for
+    # the teardown window itself, so clear it once the service is stopped.
+    launchctl enable "system/${agent_label}" 2>/dev/null || true
   fi
 
   # 4. Remove all plists.
