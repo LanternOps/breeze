@@ -2713,14 +2713,17 @@ func (h *Heartbeat) sendPatchInventory() {
 		return
 	}
 
-	// A failed pending collection that yielded nothing must NOT be uploaded as a
-	// full sweep: an empty pending list with full=true and no coveredSources
-	// tombstones every pending patch on the device (#2217). We still get here
-	// when installedItems is non-empty, so send those and leave pending alone
-	// rather than sweeping on the strength of a collection that crashed.
-	fullSweep := err == nil || len(pendingItems) > 0
+	// A failed pending collection that yielded nothing must NOT be uploaded as an
+	// unbounded full sweep: an empty pending list with full=true and a NIL
+	// coveredSources tombstones every pending patch on the device (#2217). That
+	// combination only arises on the legacy collector path, which reports no
+	// per-provider coverage. A non-nil coveredSources already narrows the sweep
+	// to the buckets that genuinely scanned clean (failed providers are excluded
+	// upstream), so it stays a full sweep even after an error — suppressing it
+	// there would strand already-installed patches as pending indefinitely.
+	fullSweep := err == nil || len(pendingItems) > 0 || coveredSources != nil
 	if !fullSweep {
-		log.Warn("pending patch collection failed and produced no items — uploading installed only, skipping full sweep")
+		log.Warn("pending patch collection failed and produced no items with no coverage info — uploading installed only, skipping full sweep")
 	}
 
 	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, "", fullSweep, coveredSources)

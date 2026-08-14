@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"fmt"
+	"regexp"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -32,24 +33,52 @@ func (e *PanicError) Error() string {
 // cycle — every ~60s for metrics — so reporting unconditionally would flood
 // Sentry from a single device. One event per key per interval keeps the signal
 // (including the fact that it is still happening) without the flood.
-const panicReportInterval = time.Hour
+const (
+	panicReportInterval = time.Hour
+	// panicReportKeyMax caps the key length so a panic value carrying command
+	// output or a long path can't retain an oversized string.
+	panicReportKeyMax = 160
+	// panicReportMaxKeys bounds the throttle map. The agent runs for months, so
+	// an unbounded map is a slow leak; on overflow we drop the whole table,
+	// which at worst re-reports each live panic once.
+	panicReportMaxKeys = 256
+)
 
 var (
 	panicReportMu   sync.Mutex
 	panicReportSeen = map[string]time.Time{}
+	// panicReportDigits collapses the varying operands that Go runtime panics
+	// embed ("index out of range [17] with length 12") so repeats of the SAME
+	// bug share one key. Without this the key differs on nearly every
+	// occurrence, which both grows the map without bound and defeats the
+	// throttle entirely — the flood it exists to prevent.
+	panicReportDigits = regexp.MustCompile(`\d+`)
 )
+
+// panicReportKey builds a throttle key that identifies the panic SITE and shape
+// rather than its exact text.
+func panicReportKey(op string, value any) string {
+	key := op + "|" + panicReportDigits.ReplaceAllString(fmt.Sprintf("%v", value), "#")
+	if len(key) > panicReportKeyMax {
+		key = key[:panicReportKeyMax]
+	}
+	return key
+}
 
 // shouldReportPanic reports whether this (op, value) pair is due for a Sentry
 // event, and records the decision. Split out so tests can exercise the
 // throttle without touching Sentry.
 func shouldReportPanic(op string, value any, now time.Time) bool {
-	key := fmt.Sprintf("%s|%v", op, value)
+	key := panicReportKey(op, value)
 
 	panicReportMu.Lock()
 	defer panicReportMu.Unlock()
 
 	if last, ok := panicReportSeen[key]; ok && now.Sub(last) < panicReportInterval {
 		return false
+	}
+	if len(panicReportSeen) >= panicReportMaxKeys {
+		panicReportSeen = make(map[string]time.Time, panicReportMaxKeys)
 	}
 	panicReportSeen[key] = now
 	return true

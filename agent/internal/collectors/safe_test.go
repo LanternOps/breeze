@@ -96,9 +96,7 @@ func TestGuardDoesNotPropagatePanicToCaller(t *testing.T) {
 // panics on every cycle doesn't flood, while a DIFFERENT panic still reports
 // immediately.
 func TestShouldReportPanicThrottlesPerOpAndValue(t *testing.T) {
-	panicReportMu.Lock()
-	panicReportSeen = map[string]time.Time{}
-	panicReportMu.Unlock()
+	resetPanicReportState()
 
 	base := time.Now()
 	val := "index out of range [2] with length 1"
@@ -120,6 +118,58 @@ func TestShouldReportPanicThrottlesPerOpAndValue(t *testing.T) {
 	if !shouldReportPanic("software", val, base.Add(time.Minute)) {
 		t.Fatal("a different op must report immediately")
 	}
+}
+
+// Go runtime panics embed varying operands. If those reached the throttle key
+// verbatim, the same recurring bug would report on every cycle — the flood the
+// throttle exists to prevent — and grow the map without bound.
+func TestShouldReportPanicThrottlesAcrossVaryingOperands(t *testing.T) {
+	resetPanicReportState()
+
+	base := time.Now()
+	if !shouldReportPanic("metrics", "index out of range [2] with length 1", base) {
+		t.Fatal("first occurrence must report")
+	}
+	if shouldReportPanic("metrics", "index out of range [17] with length 12", base.Add(time.Minute)) {
+		t.Fatal("same bug with different operands must be throttled, not re-reported")
+	}
+}
+
+func TestShouldReportPanicBoundsMapGrowth(t *testing.T) {
+	resetPanicReportState()
+
+	now := time.Now()
+	for i := 0; i < panicReportMaxKeys*3; i++ {
+		// Alphabetic-only distinct ops: digit-normalisation must not be what
+		// keeps this map small, or the test would pass with no bound at all.
+		shouldReportPanic(alphaOpName(i), "boom", now)
+	}
+
+	panicReportMu.Lock()
+	size := len(panicReportSeen)
+	panicReportMu.Unlock()
+
+	if size > panicReportMaxKeys {
+		t.Fatalf("throttle map grew to %d entries, want <= %d", size, panicReportMaxKeys)
+	}
+}
+
+// alphaOpName renders i in base-26 using letters only.
+func alphaOpName(i int) string {
+	name := ""
+	for {
+		name = string(rune('a'+i%26)) + name
+		i /= 26
+		if i == 0 {
+			return "op" + name
+		}
+	}
+}
+
+func resetPanicReportState() {
+	panicReportMu.Lock()
+	panicReportSeen = map[string]time.Time{}
+	panicReportMu.Unlock()
 }
 
 func TestPanicErrorMessage(t *testing.T) {
