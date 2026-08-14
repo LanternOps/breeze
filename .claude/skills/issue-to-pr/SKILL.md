@@ -94,7 +94,20 @@ gh issue view N --repo LanternOps/breeze --comments \
 # already shipped the fix; --state open would never show it).
 gh pr list --repo LanternOps/breeze --state all --search "N in:body" \
   --json number,title,state,headRefName,mergedAt
+# OTHER OPEN ISSUES on the same subject — search the symptom, not the number.
+# Nothing links a duplicate to you; you have to go looking.
+gh issue list --repo LanternOps/breeze --state open --limit 20 \
+  --search "<2-4 distinctive words from the title/symptom>" \
+  --json number,title,createdAt
 ```
+
+**Search for a sibling issue before you start, using the symptom rather than
+the issue number.** A number-based search only finds things that already point to
+you; the issue you need to find is the one nobody linked. If one exists it
+changes the work: it may carry a maintainer's root-cause analysis, a proposed
+fix (possibly a *wrong* one worth correcting), or evidence the blast radius is
+wider than your issue says. Cross-link both directions when you find one —
+don't silently work a duplicate.
 
 Read the **whole** issue and **every** comment. **ABORT and report back** (do
 not start work) if any of these is true:
@@ -201,6 +214,43 @@ generic "ready for review" banner.
 If review surfaced nothing, say that explicitly ("0 findings") rather than
 omitting the line — a missing line reads as "didn't run it."
 
+## 8b. Re-check GitHub before you hand off — state moved while you worked
+
+A run takes 30-60+ minutes. The repo does not hold still for it: issues get
+filed, PRs open, `main` moves, CI infrastructure breaks. **Your step-1 guard
+answered "is this eligible?" at minute zero — it is stale by the time you
+open a PR.** Re-run the cheap checks:
+
+```bash
+gh issue view N --repo LanternOps/breeze --comments --json state,assignees,comments
+gh issue list --repo LanternOps/breeze --state open --limit 20 \
+  --search "<the same symptom words>" --json number,title,createdAt
+gh pr list --repo LanternOps/breeze --state all --search "N in:body" --json number,state
+```
+
+Act on what changed: a new comment may redirect the fix, a freshly-filed
+sibling issue needs cross-linking, and someone else's PR may have overtaken
+you. Then **link your PR to every related issue/PR you found** — a PR that
+fixes a tracked issue but never names it leaves the issue looking unworked.
+
+**Post the status where the people affected will look, not only in your final
+report to the orchestrator.** Your report reaches one reader, once; a comment
+on the issue is what the reporter and the next agent see. Specifically:
+
+- If your PR **supersedes or corrects another issue's analysis**, say so on
+  *that* issue — especially when its proposed fix is insufficient. A tracking
+  issue proposing a fix that would go green while leaving the bug in place is
+  the highest-value correction you can leave behind.
+- If you hit a **repo-wide breakage** (red CI that isn't yours, a broken
+  scanner, a stale pin), note it once on the tracking issue — and, if it is
+  blocking other open PRs, leave a one-line note on those PRs so their authors
+  don't each re-diagnose it from scratch.
+- If you **filed spin-off issues** for out-of-scope findings, link them from
+  the PR body so the scope boundary is visible.
+
+Cheap, and it is what turns five parallel workers into one coherent picture
+instead of five private ones.
+
 ## 9. Hand off — STOP
 
 Report the PR number + a one-line summary to the orchestrator/user. Then stop.
@@ -221,6 +271,10 @@ are the user's judgment calls — see the merge/hold rules. The issue stays
 - "I'm already inside a worktree, I'll just use this one." → No — it's another task's worktree. Make your *own* off fresh `origin/main`.
 - "Affected tests pass, skip the rest / skip typecheck." → Run typecheck (and astro check) too.
 - "Posting 'ready for review' is enough." → No. Record *which review ran and what it found*.
+- "I checked eligibility at the start, that's settled." → It's stale by handoff. Re-check (step 8b) — issues and PRs appeared while you worked.
+- "No PR references this issue, so nobody's on it." → A **sibling issue** on the same symptom won't reference it either. Search the symptom, not the number.
+- "The red CI isn't mine, I'll note it in my final report." → Note it **on GitHub** too. A report reaches one reader once; the next agent re-diagnoses it from zero.
+- "Another issue proposes a different fix — not my problem." → If yours supersedes it, say so **on that issue**. Letting an insufficient fix stand is a bug you saw and left.
 
 | Rationalization | Reality |
 |---|---|
@@ -260,6 +314,22 @@ To work several issues at once, the in-session agent acts as orchestrator:
    reservation working, not a poach.
 4. Collect the results into one summary table for the user. The orchestrator
    does **not** merge or close either — same boundary applies.
+5. **Reconcile findings that repeat across workers, and record the conclusion
+   on GitHub.** When N workers independently report the same thing — "the two
+   security scans are red and it isn't my PR" — that repetition is itself the
+   finding: it is repo-wide, not per-PR. The orchestrator is the only party who
+   can see it, because each worker only ever sees its own PR.
+
+   Do three things with it: confirm whether a tracking issue already exists
+   (search the symptom — see step 1), correct that issue if the workers'
+   evidence supersedes its analysis, and note the blocker on each affected PR
+   so nobody re-derives it. Otherwise the cost is paid N times and then again
+   by whoever picks the branch up tomorrow.
+
+   Observed: five parallel workers each spent part of their run diagnosing the
+   same two red scanner jobs, each correctly concluded "not mine," and none
+   discovered the tracking issue that already existed — whose proposed fix was
+   insufficient and would have shipped a live agent panic.
 
 Do not auto-expand the list beyond what the user named. If you self-selected
 from a label, `log`/state the cap and which issues were dropped.

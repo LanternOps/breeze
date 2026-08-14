@@ -53,6 +53,14 @@ rather than one big run.
   files this session.)
 - **Verify with real evidence** (affected tests single-fork + typecheck) before
   claiming the fix is ready. Never report ready on red tests.
+- **Keep GitHub current as you go — don't save everything for your final
+  report.** Your report reaches one reader once; GitHub is what the reporter,
+  the maintainer, and the next agent actually read. Before handing off,
+  re-check the issue and search for sibling issues on the same symptom (skill
+  step 8b) — your minute-zero guard is stale by then. Then link the PR to
+  everything related, correct any tracking issue your work supersedes, and
+  note repo-wide blockers (red CI that isn't yours) on GitHub rather than only
+  in chat.
 - **Never merge the PR. Never close the issue.** Those are the user's calls.
   You stop after posting the review-summary comment.
 
@@ -65,6 +73,10 @@ Report back, concisely:
   (which review ran, findings count, test/typecheck status), **or** the
   **abort reason** if you stopped at the guard.
 - Anything the user must decide (merge timing, UI-test hold, ambiguity).
+- **Anything that isn't about your issue but affects the repo** — red CI you
+  ruled out as not-yours, a related issue you found, a sibling bug you filed.
+  Say what you posted to GitHub about it, so the orchestrator can reconcile
+  it against the other workers' findings instead of hearing it N times.
 
 Do not narrate every step. Return the runbook's result — the PR or the abort —
 plus what the user needs to know to merge and close.
