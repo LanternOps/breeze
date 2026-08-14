@@ -537,6 +537,49 @@ export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: nu
   }
 }
 
+/** Draw counterpart to measureInlineRuns — a single-line-wrapped run
+ *  sequence (no block splitting, e.g. table cells) at `x, y`, per-run
+ *  bold/italic/underline/link honored the same way the block draw loop above
+ *  handles them (pdfkit `continued: true` runs so multiple formatting spans
+ *  reflow as one wrapped paragraph). `align` is only meaningful passed on the
+ *  FIRST run's text() call — pdfkit applies width/align to the whole
+ *  continued-run paragraph, not per individual continued call. Restores
+ *  doc.fillColor to TEXT_COLOR before returning (matching the block draw
+ *  loop), but does NOT save/restore font state — callers already do that
+ *  around their own measure+draw pair (see tablePdf.ts's renderTableIntoPdf). */
+export function renderInlineRunsIntoPdf(
+  doc: PDFKit.PDFDocument,
+  html: string,
+  x: number,
+  y: number,
+  width: number,
+  fontSize: number,
+  fonts?: BodyFonts,
+  align: 'left' | 'center' | 'right' = 'left',
+  color: string = TEXT_COLOR,
+): void {
+  const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
+  if (!html || !html.trim()) return;
+  const runs = extractRuns(tokenize(html), BASE_CTX);
+  const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
+  effectiveRuns.forEach((run, i) => {
+    const isFirst = i === 0;
+    const isLast = i === effectiveRuns.length - 1;
+    doc.font(fontFor(bodyFonts, run.bold, run.italic)).fontSize(fontSize).fillColor(run.link ? LINK_COLOR : color);
+    const textOptions: PDFKit.Mixins.TextOptions = {
+      continued: !isLast,
+      underline: run.underline || !!run.link,
+      link: run.link ?? null,
+    };
+    if (isFirst) {
+      doc.text(run.text, x, y, { ...textOptions, width, align });
+    } else {
+      doc.text(run.text, textOptions);
+    }
+  });
+  doc.fillColor(TEXT_COLOR);
+}
+
 /** Same per-run measurement for a single inline-runs string (table cells):
  *  no block splitting — the whole string is one line-wrapped run sequence at
  *  a single caller-supplied font size. */

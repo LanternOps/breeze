@@ -9,10 +9,17 @@
 //    PDFDocument for text metrics (Task 7's measureInlineRuns), restoring the
 //    doc's font state before returning.
 //
-// renderTableIntoPdf (drawing) is Task 9 — deliberately not implemented here.
+// renderTableIntoPdf (drawing, Task 9) draws a measured TableModel with:
+//  - header repetition on every page the table spills onto (mirrors
+//    renderLineTable's drawTableHeader/ensureRowSpace pattern in quotePdf.ts),
+//  - a per-row "does the WHOLE row fit on a fresh page" degrade check BEFORE
+//    drawing (never mid-row) — rows never split, so a row taller than a full
+//    usable page degrades to a stacked "label: value" paragraph via
+//    renderRichTextIntoPdf, which paginates itself,
+//  - zebra striping and accent/plain header fills.
 
 import { quoteTableContentSchema } from '@breeze/shared';
-import { measureInlineRuns } from './richTextPdf';
+import { measureInlineRuns, renderInlineRunsIntoPdf, renderRichTextIntoPdf } from './richTextPdf';
 import type { PdfThemeFonts } from './documentThemes';
 
 export const MIN_COLUMN_WIDTH = 40;
@@ -28,7 +35,10 @@ export interface TableModel {
   headerStyle: 'accent' | 'plain';
 }
 
-/** Pending — implemented in Task 9. */
+/** Richer page-break contract than quotePdf.ts's plain `ensureSpace` (which
+ *  only returns the possibly-reset y): callers that need to redraw a table
+ *  header after a page break (renderTableIntoPdf) or know whether a callout's
+ *  chrome landed on a fresh page also need the `didBreak` signal. */
 export interface EnsureRoomRich {
   (needed: number): { y: number; didBreak: boolean };
 }
@@ -132,4 +142,131 @@ export function measureTable(doc: PDFKit.PDFDocument, model: TableModel, fonts: 
   } finally {
     restoreFontState(doc, saved);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering (Task 9)
+// ---------------------------------------------------------------------------
+
+const ZEBRA_FILL = '#f8fafc';
+const PLAIN_HEADER_FILL = '#f1f5f9';
+const HEADER_TEXT_ON_ACCENT = '#ffffff';
+const HEADER_TEXT_ON_PLAIN = '#111827';
+const BODY_TEXT_COLOR = '#1f2937';
+const BODY_FONT_SIZE_DRAW = 10;
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export interface RenderTableOpts {
+  x: number;
+  startY: number;
+  /** Table header fill when headerStyle === 'accent' (usually the document's
+   *  branding primary color); the degrade path's rich-text isn't affected. */
+  accent: string;
+  fonts: PdfThemeFonts;
+  /** Caller's page-break helper — see EnsureRoomRich above. quotePdf.ts's
+   *  block-walk branch wires this to its own ensureSpace. */
+  ensureRoom: EnsureRoomRich;
+}
+
+/** Draws a measured TableModel (see measureTable) into `doc` starting at
+ *  opts.startY. Returns the new y cursor, matching every other quotePdf
+ *  block-type branch's convention (gap-after-block included).
+ *
+ *  Header repeats on every page the table spans (ensureRoom's `didBreak`
+ *  signal). Rows never split: a row that would still overflow a FRESH page
+ *  (row.height > usable page height - header height) degrades BEFORE
+ *  drawing to a stacked "label: value" paragraph per cell via
+ *  renderRichTextIntoPdf, which paginates itself — this can never loop,
+ *  since the degrade branch always advances past the row (draws it via
+ *  richtext, `continue`s) rather than re-attempting ensureRoom(row.height). */
+export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, opts: RenderTableOpts): number {
+  const { x, fonts, accent, ensureRoom } = opts;
+  const totalWidth = model.columns.reduce((sum, col) => sum + col.width, 0);
+  const usablePageHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+
+  const drawHeader = (atY: number): void => {
+    doc.save();
+    const fill = model.headerStyle === 'accent' ? accent : PLAIN_HEADER_FILL;
+    doc.rect(x, atY, totalWidth, model.headerHeight).fill(fill);
+    doc.restore();
+    const textColor = model.headerStyle === 'accent' ? HEADER_TEXT_ON_ACCENT : HEADER_TEXT_ON_PLAIN;
+    let cx = x;
+    for (const col of model.columns) {
+      renderInlineRunsIntoPdf(
+        doc,
+        `<strong>${escapeHtml(col.label)}</strong>`,
+        cx + CELL_PADDING,
+        atY + CELL_PADDING,
+        Math.max(0, col.width - 2 * CELL_PADDING),
+        BODY_FONT_SIZE_DRAW,
+        fonts.body,
+        col.align,
+        textColor,
+      );
+      cx += col.width;
+    }
+  };
+
+  const drawRow = (cells: string[], atY: number, height: number, zebraFill: string | null): void => {
+    if (zebraFill) {
+      doc.save();
+      doc.rect(x, atY, totalWidth, height).fill(zebraFill);
+      doc.restore();
+    }
+    let cx = x;
+    model.columns.forEach((col, i) => {
+      renderInlineRunsIntoPdf(
+        doc,
+        cells[i] ?? '',
+        cx + CELL_PADDING,
+        atY + CELL_PADDING,
+        Math.max(0, col.width - 2 * CELL_PADDING),
+        BODY_FONT_SIZE_DRAW,
+        fonts.body,
+        col.align,
+        BODY_TEXT_COLOR,
+      );
+      cx += col.width;
+    });
+  };
+
+  const headerRoom = ensureRoom(model.headerHeight);
+  let y = headerRoom.y;
+  drawHeader(y);
+  y += model.headerHeight;
+
+  model.rows.forEach((row, i) => {
+    const rowRoom = ensureRoom(row.height);
+    y = rowRoom.y;
+    if (rowRoom.didBreak) {
+      drawHeader(y);
+      y += model.headerHeight;
+    }
+
+    // Degrade BEFORE drawing: a row that wouldn't fit a completely fresh page
+    // (net of the header it must share the page with) would otherwise loop
+    // ensureRoom forever trying to find room that doesn't exist.
+    if (row.height > usablePageHeight - model.headerHeight) {
+      model.columns.forEach((col, idx) => {
+        const cellHtml = row.cells[idx] ?? '';
+        const html = `<strong>${escapeHtml(col.label)}:</strong> ${cellHtml}`;
+        const numberAdapter = (needed: number): number => ensureRoom(needed).y;
+        y = renderRichTextIntoPdf(doc, html, { x, width: totalWidth, startY: y, ensureRoom: numberAdapter, fonts: fonts.body });
+      });
+      return;
+    }
+
+    drawRow(row.cells, y, row.height, model.zebra && i % 2 === 1 ? ZEBRA_FILL : null);
+    y += row.height;
+  });
+
+  return y + 6;
 }

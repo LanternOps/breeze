@@ -833,6 +833,64 @@ describe('renderQuotePdf', () => {
   });
 });
 
+describe('renderQuotePdf table + callout block dispatch (Task 9)', () => {
+  const baseQuote = {
+    id: 'q-t9', quoteNumber: 'Q-T9', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD',
+  };
+
+  it('draws a table block via the measured (not the raw, unmeasured) model', async () => {
+    // Regression guard for a real bug the brief's own snippet has: it calls
+    // measureTable(doc, model, fonts) but discards the return — measureTable
+    // does NOT mutate `model` (see tablePdf.ts doc comment), so passing the
+    // unmeasured original to renderTableIntoPdf would draw every row at
+    // height 0 (rows/header would all overlap at the same y). Asserting BOTH
+    // column labels are present as distinct positioned text confirms real
+    // (non-zero) row/column layout was used.
+    const blocks = [
+      {
+        id: 'b1', blockType: 'table' as const, sortOrder: 0,
+        content: { columns: [{ label: 'Item' }, { label: 'Qty' }], rows: [{ cells: ['Widget', '3'] }, { cells: ['Gadget', '5'] }] },
+      },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('Item');
+    expect(text).toContain('Qty');
+    expect(text).toContain('Widget');
+    expect(text).toContain('Gadget');
+  });
+
+  it('skips a malformed table block rather than throwing', async () => {
+    const blocks = [{ id: 'b1', blockType: 'table' as const, sortOrder: 0, content: { columns: [], rows: [] } }];
+    await expect(renderQuotePdf(baseQuote as never, blocks, [], async () => null, {})).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('draws a callout block with its title and body', async () => {
+    const blocks = [
+      {
+        id: 'b1', blockType: 'callout' as const, sortOrder: 0,
+        content: { variant: 'accent', title: 'Heads up', html: '<p>Read this before you sign.</p>' },
+      },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { primaryColor: '#059669' });
+    const text = extractPdfText(buf);
+    expect(text).toContain('Heads up');
+    expect(text).toContain('Read this before you sign');
+  });
+
+  it('a table block followed by a rich_text block renders both (block-walk keeps advancing)', async () => {
+    const blocks = [
+      { id: 'b1', blockType: 'table' as const, sortOrder: 0, content: { columns: [{ label: 'Col' }], rows: [{ cells: ['val'] }] } },
+      { id: 'b2', blockType: 'rich_text' as const, sortOrder: 1, content: { html: '<p>After the table.</p>' } },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('val');
+    expect(text).toContain('After the table');
+  });
+});
+
 describe('renderQuotePdf theme + page size (Task 6)', () => {
   const baseQuote = {
     id: 'q-theme', quoteNumber: 'Q-THEME', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',

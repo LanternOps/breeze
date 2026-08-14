@@ -19,6 +19,8 @@ import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './s
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf } from './richTextPdf';
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
+import { parseTable, measureTable, renderTableIntoPdf, type EnsureRoomRich } from './tablePdf';
+import { renderCalloutIntoPdf } from './calloutPdf';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -958,6 +960,28 @@ export async function renderQuotePdf(
         doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
         y = doc.y + 8;
       }
+    } else if (b.blockType === 'table') {
+      const model = parseTable(b.content, c.contentWidth);
+      if (model) {
+        // Hoisted above (not redeclared per-branch): the callout branch below
+        // reuses the same richer {y, didBreak} contract, and a single closure
+        // per block-walk iteration is simpler to reason about than two nearly
+        // identical ones.
+        const ensureRoomRich: EnsureRoomRich = (needed) => {
+          const before = doc.y;
+          y = ensureSpace(doc, doc.y, needed);
+          return { y, didBreak: doc.y !== before };
+        };
+        const measured = measureTable(doc, model, fonts);
+        y = renderTableIntoPdf(doc, measured, { x: c.left, startY: y, accent: primary, fonts, ensureRoom: ensureRoomRich });
+      }
+    } else if (b.blockType === 'callout') {
+      const ensureRoomRich: EnsureRoomRich = (needed) => {
+        const before = doc.y;
+        y = ensureSpace(doc, doc.y, needed);
+        return { y, didBreak: doc.y !== before };
+      };
+      y = renderCalloutIntoPdf(doc, b.content, { x: c.left, width: c.contentWidth, startY: y, accent: primary, fonts, ensureRoom: ensureRoomRich });
     }
   }
 
