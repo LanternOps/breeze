@@ -1,17 +1,14 @@
 package collectors
 
 import (
-	"errors"
-	"log/slog"
-	"sync"
-
 	"github.com/shirou/gopsutil/v3/net"
 )
 
-// netIOStackLogged ensures the (large) panic stack is logged once per process
-// rather than on every collection cycle — on an affected host the panic recurs
-// every heartbeat, and the stack is only diagnostic value the first time.
-var netIOStackLogged sync.Once
+// netIOCounters is the gopsutil entry point used by safeNetIOCounters. It is a
+// variable purely so tests can inject a panicking implementation — there is no
+// other way to exercise the recovery path, since whether the real gopsutil
+// panics depends on the host's `netstat` output.
+var netIOCounters = net.IOCounters
 
 // safeNetIOCounters wraps gopsutil's net.IOCounters, converting a panic into an
 // error so the rest of the metrics sample (CPU, RAM, disk) still gets reported.
@@ -23,28 +20,16 @@ var netIOStackLogged sync.Once
 // the metrics goroutine mid-heartbeat (issue #3459).
 //
 // Upgrading does NOT fix this: the same unguarded indexing is still present in
-// gopsutil v4.26.7, so there is no released version to move to. Guarding at our
-// own call site is the fix until upstream adds the bounds check.
+// gopsutil v4.26.7, whose first len(columns) check sits after both accesses, so
+// there is no released version to move to. Guarding at our own call site is the
+// fix until upstream adds the bounds check.
 //
 // Behaviour on panic matches gopsutil's own error path for a malformed line
 // (parseNetstatOutput already fails the whole call on any unparsable line), so
 // this loses no data that would otherwise have been collected — it only stops
-// the crash from escaping.
+// the crash from escaping. recoverAs reports the panic to Sentry and logs it,
+// so recovery here is not a silent failure.
 func safeNetIOCounters(pernic bool) (stats []net.IOCountersStat, err error) {
 	defer recoverAs("net.IOCounters", &err)
-	return net.IOCounters(pernic)
-}
-
-// logNetIOPanic reports a recovered net.IOCounters panic. Ordinary
-// (non-panic) IOCounters errors are left to the caller's existing handling.
-func logNetIOPanic(pernic bool, err error) {
-	var panicErr *PanicError
-	if !errors.As(err, &panicErr) {
-		return
-	}
-	slog.Warn("network IO counters panicked; skipping network metrics this cycle",
-		"pernic", pernic, "error", panicErr.Error())
-	netIOStackLogged.Do(func() {
-		slog.Warn("network IO counters panic stack", "stack", panicErr.Stack)
-	})
+	return netIOCounters(pernic)
 }

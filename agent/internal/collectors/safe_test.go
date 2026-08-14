@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGuardPassesThroughSuccess(t *testing.T) {
@@ -88,6 +89,36 @@ func TestGuardDoesNotPropagatePanicToCaller(t *testing.T) {
 	}()
 	if err := <-done; err == nil {
 		t.Fatal("goroutine should have received an error instead of dying")
+	}
+}
+
+// Sentry reporting is throttled per (op, panic value) so a collector that
+// panics on every cycle doesn't flood, while a DIFFERENT panic still reports
+// immediately.
+func TestShouldReportPanicThrottlesPerOpAndValue(t *testing.T) {
+	panicReportMu.Lock()
+	panicReportSeen = map[string]time.Time{}
+	panicReportMu.Unlock()
+
+	base := time.Now()
+	val := "index out of range [2] with length 1"
+
+	if !shouldReportPanic("metrics", val, base) {
+		t.Fatal("first occurrence must report")
+	}
+	if shouldReportPanic("metrics", val, base.Add(time.Minute)) {
+		t.Fatal("a repeat inside the interval must be throttled")
+	}
+	if !shouldReportPanic("metrics", val, base.Add(panicReportInterval+time.Second)) {
+		t.Fatal("a repeat after the interval must report again")
+	}
+	// A different panic value on the same op is a different bug.
+	if !shouldReportPanic("metrics", "nil pointer dereference", base.Add(time.Minute)) {
+		t.Fatal("a different panic value must report immediately")
+	}
+	// A different op with the same value is a different site.
+	if !shouldReportPanic("software", val, base.Add(time.Minute)) {
+		t.Fatal("a different op must report immediately")
 	}
 }
 

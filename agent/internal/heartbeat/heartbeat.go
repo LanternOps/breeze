@@ -1901,6 +1901,8 @@ func (h *Heartbeat) claimPatchScanLocked(now time.Time, interval time.Duration) 
 // runProcessSampler periodically captures a top-N process snapshot and POSTs it,
 // on its own ticker decoupled from the heartbeat (spec: process-sample pipeline).
 func (h *Heartbeat) runProcessSampler() {
+	// Launched as a bare goroutine; without this a panic takes down the process.
+	defer observability.Recoverer("heartbeat.processSampler")
 	configured := h.config.ProcessSampleIntervalSeconds
 	secs := clampProcessSampleInterval(configured)
 	if secs != configured {
@@ -1998,7 +2000,10 @@ func (h *Heartbeat) submitPeripheralEvents(events []peripheral.PeripheralEvent) 
 }
 
 func (h *Heartbeat) sendHardwareInventory() {
-	hw, err := h.hardwareCol.CollectHardware()
+	// Launched as a bare goroutine; without this a panic takes down the process.
+	defer observability.Recoverer("heartbeat.hardwareInventory")
+
+	hw, err := collectors.Guard("hardware", h.hardwareCol.CollectHardware)
 	if err != nil {
 		log.Error("failed to collect hardware info", "error", err.Error())
 		return
@@ -2682,6 +2687,9 @@ func (h *Heartbeat) sendPolicyConfigState() {
 }
 
 func (h *Heartbeat) sendPatchInventory() {
+	// Launched as a bare goroutine; without this a panic takes down the process.
+	defer observability.Recoverer("heartbeat.patchInventory")
+
 	pendingItems, installedItems, coveredSources, err := h.collectPatchInventory()
 	if err != nil {
 		log.Warn("patch inventory collection warning", "error", err.Error())
@@ -2705,7 +2713,17 @@ func (h *Heartbeat) sendPatchInventory() {
 		return
 	}
 
-	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, "", true, coveredSources)
+	// A failed pending collection that yielded nothing must NOT be uploaded as a
+	// full sweep: an empty pending list with full=true and no coveredSources
+	// tombstones every pending patch on the device (#2217). We still get here
+	// when installedItems is non-empty, so send those and leave pending alone
+	// rather than sweeping on the strength of a collection that crashed.
+	fullSweep := err == nil || len(pendingItems) > 0
+	if !fullSweep {
+		log.Warn("pending patch collection failed and produced no items — uploading installed only, skipping full sweep")
+	}
+
+	pendingErr, installedErr := h.sendPatchInventoryData(pendingItems, installedItems, "", fullSweep, coveredSources)
 	if pendingErr != nil {
 		log.Warn("failed to send pending patch inventory", "error", pendingErr.Error())
 	}
@@ -3293,6 +3311,9 @@ func (h *Heartbeat) sendBootPerformance(metrics *collectors.BootPerformanceMetri
 // survives restarts (#1906); on any failure the persisted gate is left stale
 // so the next restart retries.
 func (h *Heartbeat) sendReliabilityMetrics(sentAt time.Time) {
+	// Launched as a bare goroutine; without this a panic takes down the process.
+	defer observability.Recoverer("heartbeat.reliabilityMetrics")
+
 	if h.reliabilityCol == nil {
 		return
 	}
