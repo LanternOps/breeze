@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createTenantVariableSchema,
   updateTenantVariableSchema,
-  MAX_TENANT_VARIABLE_VALUE_LENGTH
+  MAX_TENANT_VARIABLE_VALUE_LENGTH,
+  MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH
 } from './tenantVariables';
 
 const valid = { ownerScope: 'organization' as const, key: 's1_site_token', value: 'abc123' };
@@ -85,5 +86,44 @@ describe('updateTenantVariableSchema', () => {
     expect(
       updateTenantVariableSchema.safeParse({ value: 'a'.repeat(MAX_TENANT_VARIABLE_VALUE_LENGTH + 1) }).success
     ).toBe(false);
+  });
+});
+
+describe('secret value redaction floor', () => {
+  const short = 'a'.repeat(MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH - 1);
+  const atFloor = 'a'.repeat(MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH);
+
+  it('rejects a secret value below the floor on create', () => {
+    // A value this short cannot be exact-value-redacted from script output
+    // without shredding the output, so dispatch refuses to ship it — reject
+    // it here, where the operator can still fix it.
+    const res = createTenantVariableSchema.safeParse({ ...valid, value: short, isSecret: true });
+    expect(res.success).toBe(false);
+    expect(res.error?.issues[0]?.path).toEqual(['value']);
+  });
+
+  it('accepts a secret value exactly at the floor', () => {
+    expect(
+      createTenantVariableSchema.safeParse({ ...valid, value: atFloor, isSecret: true }).success
+    ).toBe(true);
+  });
+
+  it('still allows a short NON-secret value', () => {
+    expect(
+      createTenantVariableSchema.safeParse({ ...valid, value: '3', isSecret: false }).success
+    ).toBe(true);
+  });
+
+  it('rejects promoting a short value to secret in one update', () => {
+    expect(
+      updateTenantVariableSchema.safeParse({ value: short, isSecret: true }).success
+    ).toBe(false);
+  });
+
+  it('cannot see a flip to isSecret with no value — the service layer re-checks', () => {
+    // Documents the gap deliberately: .partial() means `value` is absent, so
+    // the cross-field refinement has nothing to measure. assertSecretValueFloor
+    // in services/tenantVariables.ts closes it against the STORED value.
+    expect(updateTenantVariableSchema.safeParse({ isSecret: true }).success).toBe(true);
   });
 });
