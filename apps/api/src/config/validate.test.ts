@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2440,6 +2440,110 @@ describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
   ])('validates %s (regression: silently dropped before #2896)', (key) => {
     expect(ENV_SCHEMA_KEYS).toContain(key);
     expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3374 — the CONVERSE of #2896: a key READ inside validateConfig() /
+// collectWarnings() but never DECLARED in envSchema.
+//
+// #2896 closed "declared but never parsed". The mirror-image drift stayed open:
+// a rule written directly against `env.SOME_KEY` gets no type, no default, no
+// validation, and no place in the schema-derived contract above — so the value
+// the validator acts on and the value getConfig() reports can disagree, and a
+// typo boots silently. Three keys were in that state when #3374 was filed
+// (M365_GRAPH_ACTIONS_TOOLS_ENABLED, APP_ENCRYPTION_KEY_ID,
+// TRUST_CF_CONNECTING_IP).
+//
+// Source-level rather than behavioural on purpose: the point is to fail the
+// NEXT undeclared read at authoring time, and there is no runtime observation
+// that distinguishes "read a declared key" from "read an undeclared one".
+// ---------------------------------------------------------------------------
+
+/** Body of a top-level function in `source`, by brace matching from its header. */
+export function functionBody(source: string, header: string): string {
+  const start = source.indexOf(header);
+  if (start === -1) throw new Error(`function header not found: ${header}`);
+  const open = source.indexOf('{', start);
+  if (open === -1) throw new Error(`no body for: ${header}`);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  throw new Error(`unbalanced body for: ${header}`);
+}
+
+/**
+ * SCREAMING_SNAKE keys read off the `env` parameter in `body` — `env.FOO`,
+ * `env?.FOO`, `env['FOO']` — that are not in `declared`.
+ *
+ * Dynamic reads (`env[key]` over a local list, as the optional-secrets loop
+ * does) are deliberately not matched: there is no literal to check, and those
+ * keys are only inspected for placeholder-looking values, never acted on as
+ * configuration.
+ */
+export function undeclaredEnvReads(body: string, declared: readonly string[]): string[] {
+  const declaredSet = new Set(declared);
+  const found = new Set<string>();
+  const patterns = [
+    /\benv\??\.([A-Z][A-Z0-9_]*)\b/g,
+    /\benv\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]/g,
+  ];
+  for (const re of patterns) {
+    for (const m of body.matchAll(re)) {
+      const key = m[1];
+      if (key && !declaredSet.has(key)) found.add(key);
+    }
+  }
+  return [...found].sort();
+}
+
+describe('envSchema ↔ direct env reads contract (#3374)', () => {
+  const source = readFileSync(new URL('./validate.ts', import.meta.url), 'utf8');
+
+  it.each([
+    ['collectWarnings', 'function collectWarnings('],
+    ['validateConfig', 'export function validateConfig('],
+  ])('%s reads no env key that envSchema does not declare', (_name, header) => {
+    const undeclared = undeclaredEnvReads(functionBody(source, header), ENV_SCHEMA_KEYS);
+    expect(
+      undeclared,
+      `These keys are read straight off \`env\` but are not declared in envSchema, so they get ` +
+        `no validation, no default, and do not participate in the #2896 parse-input contract. ` +
+        `Declare each in envObjectSchema (and read it from the parsed data where possible):\n  ` +
+        undeclared.join('\n  '),
+    ).toEqual([]);
+  });
+
+  // The exact three that were undeclared when #3374 was filed.
+  it.each([
+    'M365_GRAPH_ACTIONS_TOOLS_ENABLED',
+    'APP_ENCRYPTION_KEY_ID',
+    'TRUST_CF_CONNECTING_IP',
+  ])('declares %s (regression: read but undeclared before #3374)', (key) => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  // Guards the detector itself: a broken matcher would report [] forever and
+  // the suite above would pass vacuously.
+  it('detects an undeclared read (and ignores a declared one)', () => {
+    const body = `{ const a = env.TOTALLY_UNDECLARED; const b = env['ALSO_UNDECLARED']; const c = env.NODE_ENV; }`;
+    expect(undeclaredEnvReads(body, ['NODE_ENV'])).toEqual([
+      'ALSO_UNDECLARED',
+      'TOTALLY_UNDECLARED',
+    ]);
+  });
+
+  it('extracts a function body by brace matching, not to the first closing brace', () => {
+    const src = 'function f(a) {\n  if (a) { return 1; }\n  return 2;\n}\nconst after = 3;';
+    const body = functionBody(src, 'function f(');
+    expect(body).toContain('return 2;');
+    expect(body).not.toContain('after');
   });
 });
 
