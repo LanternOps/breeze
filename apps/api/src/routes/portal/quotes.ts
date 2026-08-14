@@ -71,11 +71,12 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     // authoring content with the render contract the portal understands.
     const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
+    const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
+    const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
     return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-      theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
-      pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
-    } } });
+      theme, pageSize,
+    }, presentation: { theme, pageSize } } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;

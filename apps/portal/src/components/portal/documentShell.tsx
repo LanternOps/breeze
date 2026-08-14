@@ -21,11 +21,12 @@ function accentVars(primaryColor?: string | null): CSSProperties {
 
 /** The bordered document card with a partner-accent top rule. */
 export function DocumentPaper({
-  primaryColor, children, testId,
-}: { primaryColor?: string | null; children: ReactNode; testId?: string }) {
+  primaryColor, children, testId, docTheme,
+}: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: string | null }) {
   return (
     <div
       data-testid={testId}
+      data-doc-theme={docTheme ?? 'classic'}
       style={accentVars(primaryColor)}
       className="overflow-hidden rounded-xl border bg-card shadow-xs"
     >

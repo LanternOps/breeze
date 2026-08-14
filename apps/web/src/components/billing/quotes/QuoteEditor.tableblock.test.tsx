@@ -1,0 +1,222 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import QuoteEditor from './QuoteEditor';
+import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
+import { addBlock } from '../../../lib/api/quotes';
+
+// This test targets the table-grid authoring UI (add/remove row+column, align,
+// zebra/headerStyle, submit wiring) — not TipTap internals, which
+// InlineRichTextEditor.test.tsx already covers on its own. Replacing it with a
+// plain textarea mirrors the established house pattern for RichTextEditor
+// (see TemplateEditor.test.tsx) and makes cell edits trivially simulatable via
+// fireEvent.change.
+vi.mock('../../common/InlineRichTextEditor', () => ({
+  default: ({ value, onChange, testId }: { value: string; onChange: (v: string) => void; testId: string }) => (
+    <textarea data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)} />
+  ),
+}));
+
+vi.mock('../../../stores/auth', () => ({
+  registerOrgIdProvider: vi.fn(),
+  fetchWithAuth: vi.fn().mockResolvedValue(
+    { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: {} }) } as unknown as Response,
+  ),
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
+      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    { getState: () => ({ tokens: null }) },
+  ),
+}));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const showToast = vi.fn();
+vi.mock('../../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
+
+vi.mock('../../../lib/api/catalog', () => ({
+  listCatalog: vi.fn().mockResolvedValue(
+    { ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data: [] }) } as unknown as Response,
+  ),
+  createCatalogItem: vi.fn(),
+  polishTextRequest: vi.fn(),
+}));
+
+vi.mock('../../../lib/api/quotes', () => ({
+  addBlock: vi.fn(),
+  deleteBlock: vi.fn(),
+  updateBlock: vi.fn(),
+  updateQuote: vi.fn(),
+  addManualLine: vi.fn(),
+  addCatalogLine: vi.fn(),
+  updateLine: vi.fn(),
+  removeLine: vi.fn(),
+  moveLine: vi.fn(),
+  uploadQuoteImage: vi.fn(),
+  addQuoteImageFromUrl: vi.fn(),
+  quoteImageUrl: vi.fn().mockReturnValue('/quotes/q-1/images/img-1'),
+}));
+
+const okRes = (data: unknown) =>
+  ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockResolvedValue({ data }) } as unknown as Response);
+const errRes = () =>
+  ({ ok: false, status: 502, statusText: 'Bad Gateway', json: vi.fn().mockResolvedValue({ error: 'x' }) } as unknown as Response);
+
+const detail: QuoteDetailData = {
+  quote: {
+    id: 'q-1', quoteNumber: null, partnerId: 'p-1', orgId: 'org-1', siteId: null, status: 'draft',
+    currencyCode: 'USD', issueDate: null, expiryDate: null, subtotal: '0.00', taxRate: null,
+    taxTotal: '0.00', total: '0.00', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', billToName: null, introNotes: null, terms: null,
+    termsAndConditions: null, sellerSnapshot: null, acceptedAt: null, declinedAt: null,
+    convertedAt: null, convertedInvoiceId: null, sentAt: null, viewedAt: null, createdBy: null,
+    createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-01T00:00:00Z',
+  },
+  blocks: [],
+  lines: [],
+};
+
+const addBlockMock = vi.mocked(addBlock);
+
+async function openTableForm() {
+  render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+  await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('quote-add-block-type-table'));
+  await waitFor(() => expect(screen.getByTestId('quote-block-table')).toBeInTheDocument());
+}
+
+describe('QuoteEditor — add table block', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('shows a "Table" chip in the add-block picker', async () => {
+    render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-add-block-type-table')).toBeInTheDocument();
+  });
+
+  it('starts with a 2x2 grid', async () => {
+    await openTableForm();
+    expect(screen.getByTestId('quote-block-table-column-label-0')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-column-label-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-table-column-label-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-cell-0-0')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-cell-1-1')).toBeInTheDocument();
+  });
+
+  it('adding a column pads every existing row with an empty cell (cells.length === columns.length)', async () => {
+    await openTableForm();
+    fireEvent.change(screen.getByTestId('quote-block-table-cell-0-0'), { target: { value: 'A0' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-cell-1-1'), { target: { value: 'B1' } });
+
+    fireEvent.click(screen.getByTestId('quote-block-table-add-column'));
+
+    expect(screen.getByTestId('quote-block-table-column-label-2')).toBeInTheDocument();
+    // Every row now has a 3rd (padded, empty) cell — existing content untouched.
+    expect(screen.getByTestId('quote-block-table-cell-0-2')).toHaveValue('');
+    expect(screen.getByTestId('quote-block-table-cell-1-2')).toHaveValue('');
+    expect(screen.getByTestId('quote-block-table-cell-0-0')).toHaveValue('A0');
+    expect(screen.getByTestId('quote-block-table-cell-1-1')).toHaveValue('B1');
+  });
+
+  it('removing a column removes that cell from every row', async () => {
+    await openTableForm();
+    fireEvent.click(screen.getByTestId('quote-block-table-remove-column-0'));
+    expect(screen.queryByTestId('quote-block-table-column-label-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-column-label-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-table-cell-0-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-table-cell-1-1')).not.toBeInTheDocument();
+  });
+
+  it('cannot remove the last remaining column', async () => {
+    await openTableForm();
+    fireEvent.click(screen.getByTestId('quote-block-table-remove-column-0'));
+    expect(screen.getByTestId('quote-block-table-remove-column-0')).toBeDisabled();
+  });
+
+  it('adding then removing a row works and cannot go below one row', async () => {
+    await openTableForm();
+    fireEvent.click(screen.getByTestId('quote-block-table-add-row'));
+    expect(screen.getByTestId('quote-block-table-cell-2-0')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('quote-block-table-remove-row-2'));
+    fireEvent.click(screen.getByTestId('quote-block-table-remove-row-1'));
+    expect(screen.queryByTestId('quote-block-table-cell-1-0')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-remove-row-0')).toBeDisabled();
+  });
+
+  it('per-column align select and zebra/headerStyle toggles are present and changeable', async () => {
+    await openTableForm();
+    fireEvent.change(screen.getByTestId('quote-block-table-column-align-0'), { target: { value: 'right' } });
+    expect(screen.getByTestId('quote-block-table-column-align-0')).toHaveValue('right');
+
+    fireEvent.click(screen.getByTestId('quote-block-table-zebra'));
+    expect(screen.getByTestId('quote-block-table-zebra')).toBeChecked();
+
+    fireEvent.change(screen.getByTestId('quote-block-table-header-style'), { target: { value: 'accent' } });
+    expect(screen.getByTestId('quote-block-table-header-style')).toHaveValue('accent');
+  });
+
+  it('creating a table POSTs blockType "table" with the current grid content', async () => {
+    addBlockMock.mockResolvedValue(okRes({ id: 'blk-t' }));
+    await openTableForm();
+
+    fireEvent.change(screen.getByTestId('quote-block-table-column-label-0'), { target: { value: 'Item' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-column-label-1'), { target: { value: 'Notes' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-column-align-1'), { target: { value: 'right' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-cell-0-0'), { target: { value: 'Router' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-cell-0-1'), { target: { value: 'Optional' } });
+    fireEvent.change(screen.getByTestId('quote-block-table-caption'), { target: { value: 'Hardware' } });
+    fireEvent.click(screen.getByTestId('quote-block-table-zebra'));
+
+    fireEvent.click(screen.getByTestId('quote-add-block-submit'));
+
+    await waitFor(() => expect(addBlockMock).toHaveBeenCalledWith('q-1', {
+      blockType: 'table',
+      content: {
+        columns: [{ label: 'Item' }, { label: 'Notes', align: 'right' }],
+        rows: [{ cells: ['Router', 'Optional'] }, { cells: ['', ''] }],
+        caption: 'Hardware',
+        zebra: true,
+        headerStyle: 'plain',
+      },
+    }));
+  });
+
+  it('disables submit while add-block is in flight and re-enables with an error surfaced on failure', async () => {
+    addBlockMock.mockResolvedValue(errRes());
+    await openTableForm();
+
+    const submit = screen.getByTestId('quote-add-block-submit');
+    fireEvent.click(submit);
+
+    // Rejected request: the pending guard must unlatch (not leave submit
+    // permanently disabled) and the failure must be visible — the #3519
+    // regression class this brief calls out explicitly.
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(submit).not.toBeDisabled());
+  });
+});
+
+describe('QuoteEditor — persisted table block', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Regression: after Task 13's initial cut, QuoteBlockCard had no branch for
+  // `table`/`callout`, so a just-created (or reloaded) table block rendered
+  // as an empty block — invisible on the canvas even though it existed
+  // server-side. This proves the read-only display branch renders content.
+  it('renders the persisted table content visibly (not blank) on the canvas', async () => {
+    const tableBlock: QuoteBlock = {
+      id: 'blk-t', quoteId: 'q-1', orgId: 'org-1', blockType: 'table',
+      content: {
+        columns: [{ label: 'Item' }, { label: 'Notes', align: 'right' }],
+        rows: [{ cells: ['Router', 'Optional'] }],
+        caption: 'Hardware',
+      },
+      sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    };
+    render(<QuoteEditor detail={{ ...detail, blocks: [tableBlock] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-block-table-content-blk-t')).toBeInTheDocument());
+    const content = screen.getByTestId('quote-block-table-content-blk-t');
+    expect(content).toHaveTextContent('Item');
+    expect(content).toHaveTextContent('Router');
+    expect(content).toHaveTextContent('Hardware');
+  });
+});

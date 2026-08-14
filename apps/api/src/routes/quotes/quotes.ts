@@ -130,7 +130,11 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
       acceptTokenExpiresAt: _exp, acceptTokenKid: _kid,
       ...quoteForClient
     } = detail.quote;
-    return c.json({ data: { ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, recipients } });
+    // Sibling of `branding` — same resolved values (no extra query), typed
+    // explicitly so web doesn't have to depend on QuoteBranding growing new
+    // fields to pick up theme/pageSize (Task 12).
+    const presentation = { theme: branding.theme, pageSize: branding.pageSize };
+    return c.json({ data: { ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

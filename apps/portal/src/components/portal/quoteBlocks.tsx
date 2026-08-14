@@ -6,7 +6,7 @@
 // lines (no blockId) fall into a trailing default pricing table — same as the
 // PDF, which appends un-blocked lines after the block walk.
 import { Fragment } from 'react';
-import type { QuoteBlock, QuoteContractBlockContent, QuoteLine } from '@/lib/api';
+import type { QuoteBlock, QuoteCalloutContent, QuoteContractBlockContent, QuoteLine, QuoteTableContent } from '@/lib/api';
 
 export function money(value: string | number, currencyCode: string): string {
   const n = Number(value);
@@ -271,6 +271,66 @@ export function QuoteBlocks({
             <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Contract file unavailable</div>
           )}
           <p className="text-xs text-muted-foreground">{templateName} — v{versionNumber}</p>
+        </div>
+      );
+    }
+
+    if (block.blockType === 'table') {
+      // Structured JSON, never HTML-parsed — column labels and cell values are
+      // sanitized server-side with the inline-only profile (quoteService's
+      // read-path sanitizer), same precedent as rich_text above.
+      const c = content as unknown as Partial<QuoteTableContent>;
+      if (!c.columns?.length || !c.rows?.length) return null;
+      return (
+        <div key={block.id} className="overflow-x-auto" data-testid="quote-table-block">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className={c.headerStyle === 'plain' ? 'border-b-2' : 'border-b-2 bg-primary/10'}>
+                {c.columns.map((col, i) => (
+                  <th
+                    key={i}
+                    style={{ textAlign: col.align ?? 'left' }}
+                    className="px-3 py-2 font-semibold text-foreground"
+                    dangerouslySetInnerHTML={{ __html: col.label }}
+                  />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {c.rows.map((row, ri) => (
+                <tr key={ri} className={c.zebra && ri % 2 === 1 ? 'bg-muted/30' : undefined}>
+                  {row.cells.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      style={{ textAlign: c.columns?.[ci]?.align ?? 'left' }}
+                      className="px-3 py-2 align-top text-foreground/90"
+                      dangerouslySetInnerHTML={{ __html: cell }}
+                    />
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {c.caption && <p className="mt-1 text-xs text-muted-foreground">{c.caption}</p>}
+        </div>
+      );
+    }
+
+    if (block.blockType === 'callout') {
+      // Same sanitized-HTML precedent as rich_text — server-sanitized on both
+      // write and read before it ever reaches this component.
+      const c = content as unknown as Partial<QuoteCalloutContent>;
+      if (!c.html?.trim()) return null;
+      const tone =
+        c.variant === 'warn'
+          ? 'border-amber-500/40 bg-amber-500/10'
+          : c.variant === 'accent'
+            ? 'border-primary/40 bg-primary/10'
+            : 'border-border bg-muted/40';
+      return (
+        <div key={block.id} className={`rounded-lg border-l-4 p-4 ${tone}`} data-testid="quote-callout-block">
+          {c.title && <p className="mb-1 text-sm font-semibold text-foreground">{c.title}</p>}
+          <div className="quote-rich-text text-sm leading-relaxed text-foreground" dangerouslySetInnerHTML={{ __html: c.html }} />
         </div>
       );
     }
