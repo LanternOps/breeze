@@ -853,6 +853,15 @@ export async function renderQuotePdf(
 
   // ---- Walk blocks in sortOrder -------------------------------------------
   const sorted = [...blocks].sort((a, z) => a.sortOrder - z.sortOrder);
+  // Shared by the 'table' and 'callout' branches below — both need the richer
+  // {y, didBreak} contract (table redraws its header on break; callout needs
+  // to know whether its chrome landed on a fresh page), unlike the plain
+  // y-only ensureRoom closures the 'rich_text'/'contract' branches use.
+  const ensureRoomRich: EnsureRoomRich = (needed) => {
+    const before = doc.y;
+    y = ensureSpace(doc, doc.y, needed);
+    return { y, didBreak: doc.y !== before };
+  };
   for (const b of sorted) {
     y = ensureSpace(doc, y, 50);
     if (b.blockType === 'heading') {
@@ -963,24 +972,10 @@ export async function renderQuotePdf(
     } else if (b.blockType === 'table') {
       const model = parseTable(b.content, c.contentWidth);
       if (model) {
-        // Hoisted above (not redeclared per-branch): the callout branch below
-        // reuses the same richer {y, didBreak} contract, and a single closure
-        // per block-walk iteration is simpler to reason about than two nearly
-        // identical ones.
-        const ensureRoomRich: EnsureRoomRich = (needed) => {
-          const before = doc.y;
-          y = ensureSpace(doc, doc.y, needed);
-          return { y, didBreak: doc.y !== before };
-        };
         const measured = measureTable(doc, model, fonts);
         y = renderTableIntoPdf(doc, measured, { x: c.left, startY: y, accent: primary, fonts, ensureRoom: ensureRoomRich });
       }
     } else if (b.blockType === 'callout') {
-      const ensureRoomRich: EnsureRoomRich = (needed) => {
-        const before = doc.y;
-        y = ensureSpace(doc, doc.y, needed);
-        return { y, didBreak: doc.y !== before };
-      };
       y = renderCalloutIntoPdf(doc, b.content, { x: c.left, width: c.contentWidth, startY: y, accent: primary, fonts, ensureRoom: ensureRoomRich });
     }
   }
