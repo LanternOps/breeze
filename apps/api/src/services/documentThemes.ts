@@ -27,21 +27,31 @@ export interface PdfThemeFonts {
   body: { regular: string; bold: string; italic: string; boldItalic: string };
 }
 
-// Resolved once at module load. tsup bundles this into apps/api/dist, and the
-// API runs with cwd() = apps/api (see Dockerfile WORKDIR / package.json
-// `start` script), so `process.cwd()/assets/fonts` is the primary path in
-// both dev (ts-node/tsx from the apps/api dir) and production (Docker runner
-// WORKDIR /app/apps/api). The __dirname-relative fallback covers any run
-// context where cwd isn't apps/api (e.g. a test runner invoked from repo
-// root) — dist/services/documentThemes.cjs -> ../../assets/fonts is
-// apps/api/assets/fonts; the same relative depth also works from
-// src/services during ts-node execution.
+// Resolved once at module load. Primary path: `process.cwd()/assets/fonts` —
+// the API runs with cwd() = apps/api (Dockerfile WORKDIR / package.json
+// `start` script), so this covers both dev and production without touching
+// __dirname at all. The __dirname-relative candidates are a fallback for run
+// contexts where cwd isn't apps/api (e.g. a test runner invoked from repo
+// root), and have to account for two different possible layouts because
+// __dirname's meaning depends on how this module was loaded:
+//   - bundled:   tsup inlines this file into apps/api/dist/index.cjs, so
+//                __dirname = apps/api/dist and assets live one level up
+//                (../assets/fonts).
+//   - unbundled: running from src/services (e.g. ts-node/tsx/vitest without
+//                going through the dist bundle), so assets live two levels
+//                up (../../assets/fonts).
+// If none of the three exist (e.g. a unit-test process with no fonts vendored
+// at all), fall back to the cwd-based path anyway so registerThemeFonts still
+// throws its loud per-file error instead of resolving to a nonsense path.
 const FONT_DIR = resolveFontDir();
 
 function resolveFontDir(): string {
-  const fromCwd = path.resolve(process.cwd(), 'assets/fonts');
-  if (fs.existsSync(fromCwd)) return fromCwd;
-  return path.resolve(__dirname, '../../assets/fonts');
+  const candidates = [
+    path.resolve(process.cwd(), 'assets/fonts'),
+    path.resolve(__dirname, '../assets/fonts'), // bundled dist layout
+    path.resolve(__dirname, '../../assets/fonts'), // unbundled src layout
+  ];
+  return candidates.find((dir) => fs.existsSync(dir)) ?? candidates[0];
 }
 
 export { FONT_DIR };
@@ -100,8 +110,8 @@ export function registerThemeFonts(doc: PDFKit.PDFDocument, theme: DocumentTheme
     const filePath = path.join(FONT_DIR, fileName);
     try {
       fs.accessSync(filePath, fs.constants.R_OK);
-    } catch {
-      throw new Error(`document theme font missing: ${filePath}`);
+    } catch (err) {
+      throw new Error(`document theme font missing: ${filePath}`, { cause: err });
     }
     doc.registerFont(fontName, filePath);
   }
