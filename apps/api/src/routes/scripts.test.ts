@@ -1946,4 +1946,138 @@ describe('scripts routes', () => {
       expect(vi.mocked(writeRouteAudit)).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------
+  // Parameter DEFINITION validation + version bump (#3409 PR3)
+  // -------------------------------------------------------------------
+  // `parameters` was `z.any()` on both create and update, so definitions
+  // reached jsonb entirely unchecked; and `version` only tracked content, so
+  // a parameter rename or a source rebinding was invisible to anything
+  // pinning the version.
+  describe('parameter definitions + version bump', () => {
+    function mockCreateInsert(): void {
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'P', orgId: ORG_ID }]),
+        }),
+      } as any);
+    }
+
+    /** Mock the PUT read + capture what `.set()` receives. */
+    function mockUpdate(stored: Record<string, unknown>): { set: ReturnType<typeof vi.fn> } {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { id: SCRIPT_ID_1, name: 'S', content: 'echo hi', version: 7, isSystem: false, orgId: ORG_ID, ...stored },
+            ]),
+          }),
+        }),
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'S' }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return { set };
+    }
+
+    const put = (body: unknown) =>
+      app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify(body),
+      });
+
+    const post = (parameters: unknown) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'P', osTypes: ['linux'], language: 'bash', content: 'echo hi', parameters }),
+      });
+
+    it('accepts a legacy definition with no source on create', async () => {
+      mockCreateInsert();
+      expect((await post([{ name: 'target', type: 'string' }])).status).toBe(201);
+    });
+
+    it('accepts every bound source on create', async () => {
+      mockCreateInsert();
+      const res = await post([
+        { name: 'apiKey', type: 'string', source: 'tenantVariable', variableKey: 'vendor_api_key' },
+        { name: 'assetTag', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+        { name: 'orgName', type: 'string', source: 'builtin', builtinKey: 'org.name' },
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a definition whose name could not become an env var', async () => {
+      expect((await post([{ name: 'has space', type: 'string' }])).status).toBe(400);
+    });
+
+    it('rejects a bound definition missing its binding key', async () => {
+      expect((await post([{ name: 'x', type: 'string', source: 'tenantVariable' }])).status).toBe(400);
+    });
+
+    it('rejects two names that collide as one BREEZE_PARAM_* env var', async () => {
+      // Previously accepted, with a nondeterministic winner per run.
+      expect((await post([{ name: 'log-level', type: 'string' }, { name: 'log_level', type: 'string' }])).status).toBe(400);
+    });
+
+    it('rejects a non-array parameters value', async () => {
+      expect((await post({ notAnArray: true })).status).toBe(400);
+    });
+
+    it('bumps version when a parameter definition changes', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      expect((await put({ parameters: [{ name: 'a', type: 'number' }] })).status).toBe(200);
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('bumps version when a parameter is rebound to a tenant variable', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ parameters: [{ name: 'a', type: 'string', source: 'tenantVariable', variableKey: 'api_key' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('bumps version when a parameter is added', async () => {
+      const { set } = mockUpdate({ parameters: [] });
+      await put({ parameters: [{ name: 'a', type: 'string' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('does NOT bump version when the definitions are unchanged', async () => {
+      // The stored row is in the LEGACY shape (no `source`, no `required`)
+      // while the request carries the schema's materialized defaults. Comparing
+      // raw would report a change on every save of an untouched script.
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ parameters: [{ name: 'a', type: 'string', required: false, source: 'runtime' }] });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version');
+    });
+
+    it('does NOT bump version when parameters are omitted entirely', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ name: 'Renamed' });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version');
+    });
+
+    it('bumps version exactly once when content and parameters both change', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ content: 'echo bye', parameters: [{ name: 'b', type: 'string' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('still bumps version for a content-only change', async () => {
+      const { set } = mockUpdate({});
+      await put({ content: 'echo bye' });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('rejects a colliding definition on update', async () => {
+      mockUpdate({});
+      const res = await put({ parameters: [{ name: 'logLevel', type: 'string' }, { name: 'LOGLEVEL', type: 'string' }] });
+      expect(res.status).toBe(400);
+    });
+  });
 });

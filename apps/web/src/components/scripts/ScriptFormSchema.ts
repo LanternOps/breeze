@@ -1,13 +1,15 @@
 import { z } from 'zod';
+import { scriptParameterDefinitionSchema, scriptParameterDefinitionsSchema } from '@breeze/shared';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
-export const parameterSchema = z.object({
-  name: z.string().min(1, 'Parameter name is required'),
-  type: z.enum(['string', 'number', 'boolean', 'select']),
-  defaultValue: z.string().optional(),
-  required: z.boolean().optional().default(false),
-  options: z.string().optional() // comma-separated for select type
-});
+/**
+ * Re-exported from `@breeze/shared` rather than redeclared: this shape used to
+ * be hand-mirrored here, in `validators/ai.ts` and in `scriptBuilderTools.ts`,
+ * with the API accepting `z.any()`. `scriptParameterDefinitionsSchema` also
+ * carries the array-level env-var collision rule (`log-level` vs `log_level`),
+ * which no local copy had (#3409 PR3).
+ */
+export const parameterSchema = scriptParameterDefinitionSchema;
 
 export const severityValues = ['critical', 'high', 'medium', 'low', 'info'] as const;
 export type Severity = (typeof severityValues)[number];
@@ -34,7 +36,7 @@ export const scriptSchema = z.object({
   language: z.enum(['powershell', 'bash', 'python', 'cmd']),
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).min(1, 'Select at least one OS'),
   content: z.string().min(1, 'Script content is required'),
-  parameters: z.array(parameterSchema).optional(),
+  parameters: scriptParameterDefinitionsSchema.optional(),
   timeoutSeconds: z.coerce
     .number({ error: 'Enter a timeout value' })
     .int('Timeout must be a whole number')
@@ -68,7 +70,14 @@ export const scriptSchema = z.object({
 });
 
 export type ScriptFormValues = z.infer<typeof scriptSchema>;
-export type ScriptParameter = z.infer<typeof parameterSchema>;
+/**
+ * The INPUT type, deliberately: `ScriptParameter` types definitions read back
+ * from the API, and every definition stored before #3409 PR3 has no `source`
+ * key (and often no `required`). The output type would claim both are always
+ * present, which is false for exactly the rows the UI spends most of its time
+ * rendering. Reading `source` therefore correctly forces a `?? 'runtime'`.
+ */
+export type ScriptParameter = z.input<typeof parameterSchema>;
 export type ExitCodeSeverityRow = z.infer<typeof exitCodeSeverityRowSchema>;
 
 // Wire shape sent to / received from the API. Form-side editing keeps an

@@ -1,7 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { exitCodeSeverityMappingSchema, scriptParametersSchema } from '@breeze/shared';
+import {
+  exitCodeSeverityMappingSchema,
+  scriptParameterDefinitionsEqual,
+  scriptParameterDefinitionsSchema,
+  scriptParametersSchema,
+} from '@breeze/shared';
 import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { db } from '../db';
@@ -232,7 +237,10 @@ const createScriptSchema = z.object({
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).min(1),
   language: z.enum(['powershell', 'bash', 'python', 'cmd']),
   content: z.string().min(1),
-  parameters: z.any().optional(),
+  // Was `z.any()` — definitions reached the database entirely unvalidated
+  // (#3409 PR3). See scriptParameterDefinitions.ts for the union + the
+  // BREEZE_PARAM_* collision rule.
+  parameters: scriptParameterDefinitionsSchema.optional(),
   // Max 3600: the agent executor clamps script timeouts to 1 hour
   // (agent/internal/executor/executor.go MaxTimeout) — accepting more
   // at intake is silent false configurability (#2398).
@@ -250,7 +258,7 @@ const updateScriptSchema = z.object({
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).min(1).optional(),
   language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
   content: z.string().min(1).optional(),
-  parameters: z.any().optional(),
+  parameters: scriptParameterDefinitionsSchema.optional(),
   timeoutSeconds: z.number().int().min(1).max(3600).optional(),
   runAs: z.enum(['system', 'user', 'elevated']).optional(),
   exitCodeSeverityMapping: exitCodeSeverityMappingSchema.nullable().optional(),
@@ -760,12 +768,29 @@ scriptRoutes.put(
     if (data.category !== undefined) updates.category = data.category;
     if (data.osTypes !== undefined) updates.osTypes = data.osTypes;
     if (data.language !== undefined) updates.language = data.language;
-    if (data.parameters !== undefined) updates.parameters = data.parameters;
     if (data.timeoutSeconds !== undefined) updates.timeoutSeconds = data.timeoutSeconds;
     if (data.runAs !== undefined) updates.runAs = data.runAs;
     if (data.exitCodeSeverityMapping !== undefined) updates.exitCodeSeverityMapping = data.exitCodeSeverityMapping;
 
-    // Increment version if content changes
+    // The version bump covers BOTH halves of what a run consumes: the content
+    // and the parameter contract (#3409 PR3). It used to track content alone,
+    // so flipping a parameter to a bound source — or renaming one — left the
+    // version untouched, which PR4's effect digest pins. Both branches feed
+    // one bump so a save that changes both still moves the version by 1.
+    let versionChanged = false;
+
+    if (data.parameters !== undefined) {
+      updates.parameters = data.parameters;
+      // Compare NORMALIZED definitions: `script.parameters` may be a legacy
+      // value stored under the old `z.any()` intake with no `source` /
+      // `required` keys, and `data.parameters` always arrives with the
+      // schema's defaults materialized. A raw comparison would report every
+      // save of an untouched legacy script as a change.
+      if (!scriptParameterDefinitionsEqual(script.parameters, data.parameters)) {
+        versionChanged = true;
+      }
+    }
+
     if (data.content !== undefined && data.content !== script.content) {
       // Save-time {{var.<secret>}} rejection (#3409 PR2), against the
       // EFFECTIVE (post-rescope) scope. An UNKNOWN key is allowed — see
@@ -775,6 +800,10 @@ scriptRoutes.put(
         return c.json({ error: describeSecretVariableRejection(secretRefs) }, 400);
       }
       updates.content = data.content;
+      versionChanged = true;
+    }
+
+    if (versionChanged) {
       updates.version = script.version + 1;
     }
 

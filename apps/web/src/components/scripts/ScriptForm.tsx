@@ -336,7 +336,11 @@ export default function ScriptForm({
       type: 'string',
       defaultValue: '',
       required: false,
-      options: ''
+      options: '',
+      // Seeded explicitly (#3409 PR3): a new row must start on the same
+      // invoker-supplied binding every parameter had before sourced
+      // parameters existed.
+      source: 'runtime'
     });
   };
 

@@ -12,6 +12,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
+import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
@@ -171,13 +172,10 @@ export const applyScriptMetadataInputShape = {
   description: z.string().max(2000).optional().describe('Script description'),
   category: z.enum(['Maintenance', 'Security', 'Monitoring', 'Deployment', 'Backup', 'Network', 'User Management', 'Software', 'Custom']).optional(),
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-  parameters: z.array(z.object({
-    name: z.string(),
-    type: z.enum(['string', 'number', 'boolean', 'select']),
-    defaultValue: z.string().optional(),
-    required: z.boolean().optional(),
-    options: z.string().optional(),
-  })).optional(),
+  // The one definition schema (#3409 PR3) — same shape, same env-var collision
+  // rule, and the same 64-parameter cap the API itself now enforces, so the
+  // builder can no longer propose a definition list the save endpoint rejects.
+  parameters: scriptParameterDefinitionsSchema.optional(),
   runAs: z.enum(['system', 'user', 'elevated']).optional(),
   // 3600 = agent executor MaxTimeout — higher values are silently clamped
   // on-device, so don't let the builder propose them (#2398).

@@ -8,6 +8,7 @@
  * lived only in route handlers with no service-layer chokepoint — this module
  * is that chokepoint. Do not add a second script-insert path that bypasses it.
  */
+import type { ScriptParameterDefinition } from '@breeze/shared';
 import { db } from '../db';
 import { scripts } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -95,7 +96,10 @@ export type ScriptInsertInput = {
   osTypes: string[];
   language: 'powershell' | 'bash' | 'python' | 'cmd';
   content: string;
-  parameters?: unknown;
+  // Validated DEFINITIONS, never raw jsonb (#3409 PR3): both callers —
+  // `POST /scripts` and the bundle importer — now parse through
+  // `scriptParameterDefinitionsSchema` before reaching here.
+  parameters?: ScriptParameterDefinition[] | null;
   timeoutSeconds: number;
   runAs: 'system' | 'user' | 'elevated';
   exitCodeSeverityMapping?: Record<string, 'critical' | 'high' | 'medium' | 'low' | 'info' | null> | null;
