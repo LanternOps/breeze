@@ -1,6 +1,7 @@
-import type { PublicQuoteCoverPage, PublicQuoteHeader, PublicQuoteSellerSnapshot } from '@breeze/shared';
+import type { PublicQuoteCoverPage, PublicQuoteHeader, PublicQuoteSellerSnapshot, QuotePresentation } from '@breeze/shared';
 import type { quotes } from '../db/schema/quotes';
 import type { QuoteTotals } from './quoteMath';
+import type { DocumentThemeId, DocumentPageSize } from './documentThemes';
 
 type QuoteRow = typeof quotes.$inferSelect;
 
@@ -53,6 +54,17 @@ function toPublicStatus(status: QuoteRow['status']): PublicQuoteHeader['status']
     throw new Error('Draft quotes cannot be serialized for public access');
   }
   return status === 'sent' ? 'viewed' : status;
+}
+
+/** Resolved document presentation, sibling of `branding` on the public
+ *  token-view payload (Task 12). Callers pass already-resolved theme/pageSize
+ *  (quoteBranding.ts's precedence) — this is a pure shaping function, not
+ *  another resolution point. */
+export function toPublicQuotePresentation(
+  theme: DocumentThemeId,
+  pageSize: DocumentPageSize,
+): QuotePresentation {
+  return { theme, pageSize };
 }
 
 export function toPublicQuoteHeader(

@@ -21,7 +21,7 @@ import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { toPublicQuoteHeader } from '../services/publicQuoteDto';
+import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 
 /**
@@ -77,11 +77,12 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // sent quote's frozen presentation always wins over the partner's live
       // theme/pageSize columns.
       const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+      const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
+      const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
       return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
         partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-        theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
-        pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
-      } };
+        theme, pageSize,
+      }, presentation: toPublicQuotePresentation(theme, pageSize) };
     }));
     if (!data) return c.json({ error: 'Quote not found' }, 404);
     return c.json({ data });

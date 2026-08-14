@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { InvoiceStatus, PublicQuoteHeader, TicketFormField } from '@breeze/shared';
+import type { InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -526,6 +526,9 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */
   branding?: QuoteBranding;
+  /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
+   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+  presentation?: QuotePresentation;
 }
 
 export interface PublicQuoteDetail {
@@ -533,6 +536,9 @@ export interface PublicQuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;
+  /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
+   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+  presentation?: QuotePresentation;
 }
 
 export interface Profile {

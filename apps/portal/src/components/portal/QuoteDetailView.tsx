@@ -65,7 +65,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     );
   }
 
-  const { quote, blocks, lines, branding } = detail;
+  const { quote, blocks, lines, branding, presentation } = detail;
   const currency = quote.currencyCode;
   const open = status === 'sent' || status === 'viewed';
 
@@ -158,7 +158,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
         </a>
       </div>
 
-      <DocumentPaper primaryColor={branding?.primaryColor}>
+      <DocumentPaper primaryColor={branding?.primaryColor} docTheme={presentation?.theme}>
         <DocumentHeader
           logoUrl={branding?.logoUrl}
           partnerName={branding?.partnerName}

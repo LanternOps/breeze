@@ -6,8 +6,8 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent, QuotePresentation } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
 import type { QuoteSendEmailReason } from '../../../lib/api/quotes';
@@ -287,6 +287,11 @@ export interface QuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding?: QuoteBranding;
+  /** Resolved document theme/pageSize (Task 12) — same values `branding`
+   *  carries server-side, typed explicitly so QuoteDocument doesn't need to
+   *  widen QuoteBranding to pick them up. Optional: fixtures/older payloads
+   *  omit it, which must read as 'classic' (QuoteDocument's fallback). */
+  presentation?: QuotePresentation;
   billTo?: QuoteBillTo;
   /** Email addresses this quote was sent to, oldest first — the authorized
    *  portal signers recorded at send time. Empty on drafts and on legacy sends

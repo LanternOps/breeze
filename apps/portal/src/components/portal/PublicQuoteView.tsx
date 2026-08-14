@@ -33,7 +33,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
     );
   }
 
-  const { quote, blocks, lines, branding } = initial;
+  const { quote, blocks, lines, branding, presentation } = initial;
   const currency = quote.currencyCode;
   const open = status === 'sent' || status === 'viewed';
   const hasRecurring =
@@ -111,7 +111,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
-      <DocumentPaper primaryColor={branding.primaryColor} testId="public-quote">
+      <DocumentPaper primaryColor={branding.primaryColor} testId="public-quote" docTheme={presentation?.theme}>
         <DocumentHeader
           logoUrl={branding.logoUrl}
           partnerName={branding.partnerName}

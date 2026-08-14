@@ -68,6 +68,31 @@ describe('QuoteDocument', () => {
     expect(screen.queryByTestId('quote-document-due')).toBeNull();
   });
 
+  it('stamps data-doc-theme="condensed" when the DTO resolves the condensed theme', () => {
+    render(
+      <QuoteDocument
+        detail={makeDetail({ presentation: { theme: 'condensed', pageSize: 'letter' } })}
+        customerName="Acme Industries"
+      />
+    );
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'condensed');
+  });
+
+  it('stamps data-doc-theme="classic" when the DTO resolves the classic theme', () => {
+    render(
+      <QuoteDocument
+        detail={makeDetail({ presentation: { theme: 'classic', pageSize: 'a4' } })}
+        customerName="Acme Industries"
+      />
+    );
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
+  });
+
+  it('defaults data-doc-theme to "classic" when the payload omits presentation', () => {
+    render(<QuoteDocument detail={makeDetail({ presentation: undefined })} customerName="Acme Industries" />);
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
+  });
+
   it('falls back to a draft label and partner wordmark when number/logo are absent', () => {
     const d = makeDetail();
     d.quote.quoteNumber = null;

@@ -372,7 +372,7 @@ interface DocumentProps {
  *  logo/accent. Works for drafts (no portal round-trip). */
 export function QuoteDocument({ detail, customerName }: DocumentProps) {
   const { t } = useTranslation('billing');
-  const { quote, blocks, lines, branding, billTo } = detail;
+  const { quote, blocks, lines, branding, billTo, presentation } = detail;
   // Customer billing address lines (resolved server-side from the org's Billing
   // settings for drafts, or the frozen snapshot once sent). Empty when the org
   // has saved no billing address — the block then shows just the name.
@@ -414,6 +414,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
     <div
       style={accentStyle}
       data-testid="quote-document"
+      data-doc-theme={presentation?.theme ?? 'classic'}
       className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
     >
       <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">
