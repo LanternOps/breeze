@@ -263,8 +263,9 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     expect(script).toContain('/api/v1/agents/download/darwin/${ARCH}/pkg');
     expect(script).not.toContain('undefined');
 
-    // Service restart so newly-enrolled config is picked up.
-    expect(script).toContain('launchctl kickstart');
+    // Service (re)start so newly-enrolled config is picked up immediately —
+    // clean bootout + bootstrap (reliable on a fresh install), no reboot.
+    expect(script).toContain('launchctl bootstrap system /Library/LaunchDaemons/com.nodesunlimited.agent.plist');
   });
 
   it('install.sh checks pkg notarization before install but proceeds when unsigned (ships unsigned by policy)', async () => {

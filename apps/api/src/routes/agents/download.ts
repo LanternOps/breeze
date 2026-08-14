@@ -814,13 +814,17 @@ if [[ "\$OS" == "darwin" ]]; then
   fi
   success "Agent enrolled successfully"
 
-  # Restart the service so it picks up the new enrollment config. Surface a
-  # failure instead of swallowing it — otherwise an enrolled device that never
-  # starts looks like a success to the operator. The NU build's launchd label is
-  # com.nodesunlimited.agent; upstream was com.breeze.agent — try both.
-  if ! launchctl kickstart -k system/com.nodesunlimited.agent 2>/dev/null \
-     && ! launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
-    warn "Could not restart the agent service automatically; it will start on next login or reboot."
+  # (Re)start the daemon so it picks up the fresh enrollment config and the
+  # device comes online IMMEDIATELY — no login or reboot needed (critical for
+  # machines that must not be disrupted). The pkg's postinstall starts the daemon
+  # UNENROLLED at install time; a plain \`kickstart -k\` to reload it after enroll
+  # is unreliable on a fresh install, so do a clean bootout + bootstrap which
+  # forces the daemon to re-read the just-written config. Try the NU
+  # label/plist, then the upstream one.
+  launchctl bootout system/com.nodesunlimited.agent 2>/dev/null || launchctl bootout system/com.breeze.agent 2>/dev/null || true
+  if ! launchctl bootstrap system /Library/LaunchDaemons/com.nodesunlimited.agent.plist 2>/dev/null \
+     && ! launchctl bootstrap system /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null; then
+    warn "Could not start the agent service automatically; it will start on next login or reboot."
   fi
 
   echo ""

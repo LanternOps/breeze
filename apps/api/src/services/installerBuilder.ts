@@ -241,13 +241,14 @@ AGENT_BIN="/usr/local/bin/nu-agent"
 [ -x "$AGENT_BIN" ] || AGENT_BIN="/usr/local/bin/breeze-agent"
 sudo "$AGENT_BIN" enroll "\${ENROLL_ARGS[@]}"
 
-# Restart the service so it picks up the new enrollment config. Surface a failure
-# rather than swallowing it — a silent kickstart failure leaves an enrolled
-# device that never checks in, with the user told everything succeeded. The NU
-# build's launchd label is com.nodesunlimited.agent; upstream was com.breeze.agent.
-if ! sudo launchctl kickstart -k system/com.nodesunlimited.agent 2>/dev/null \
-   && ! sudo launchctl kickstart -k system/com.breeze.agent 2>/dev/null; then
-  echo "Note: could not restart the agent service automatically; it will start on next login or reboot."
+# (Re)start the daemon so it picks up the fresh enrollment config and the device
+# comes online IMMEDIATELY — no login or reboot needed. The pkg's postinstall
+# starts the daemon UNENROLLED; a plain kickstart -k reload is unreliable on a
+# fresh install, so do a clean bootout + bootstrap to force a config re-read.
+sudo launchctl bootout system/com.nodesunlimited.agent 2>/dev/null || sudo launchctl bootout system/com.breeze.agent 2>/dev/null || true
+if ! sudo launchctl bootstrap system /Library/LaunchDaemons/com.nodesunlimited.agent.plist 2>/dev/null \
+   && ! sudo launchctl bootstrap system /Library/LaunchDaemons/com.breeze.agent.plist 2>/dev/null; then
+  echo "Note: could not start the agent service automatically; it will start on next login or reboot."
 fi
 
 # Credentials are removed by the EXIT trap above.
