@@ -5,7 +5,31 @@ import {
   verify as verifySignature,
   type KeyObject,
 } from "node:crypto";
-import { assertDistributableReleaseAsset } from './releaseAssetTrust';
+import { assertDistributableReleaseAsset, isUnsignedSelfHostAsset } from './releaseAssetTrust';
+
+// Warn once per asset name per process. This fires on the normal, intended path
+// for a stock public release (#3504) — every self-hoster on BINARY_SOURCE=github
+// sees it — so it must be visible without being a per-request flood. The point
+// is that "the download worked" should not read as "the binary is signed":
+// Windows will show a SmartScreen warning, and the BYO-signing flow
+// (docs: Sign Your Own Agent Packages) is what makes it go away.
+const unsignedSelfHostWarned = new Set<string>();
+
+function warnIfUnsignedSelfHostAsset(
+  assetName: string,
+  platformTrust: string | null,
+  edition: string | null,
+): void {
+  if (!isUnsignedSelfHostAsset({ assetName, platformTrust, edition })) return;
+  if (unsignedSelfHostWarned.has(assetName)) return;
+  unsignedSelfHostWarned.add(assetName);
+  console.warn(
+    `[releaseAssetTrust] Serving UNSIGNED self-host asset ${assetName} (edition=self-host, platformTrust=none). ` +
+      'The public release pipeline does not Authenticode-sign Windows agent binaries. ' +
+      'Windows will show a SmartScreen warning on install. ' +
+      'To serve signed binaries, re-sign the release with the breeze-selfhost-signing template.',
+  );
+}
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -320,6 +344,11 @@ function selectManifestAsset(args: {
     intendedUse: readIntendedUse(entry, args.assetName),
     edition: typeof entry.edition === 'string' ? entry.edition : null,
   });
+  warnIfUnsignedSelfHostAsset(
+    args.assetName,
+    typeof entry.platformTrust === 'string' ? entry.platformTrust : null,
+    typeof entry.edition === 'string' ? entry.edition : null,
+  );
   if (
     args.expectedPlatformTrust &&
     entry.platformTrust !== args.expectedPlatformTrust
