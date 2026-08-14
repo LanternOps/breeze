@@ -61,6 +61,13 @@ COPY --from=builder --chown=hono:nodejs /deployed/package.json ./
 # Copy migration files for auto-migrate on startup
 COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./migrations
 
+# Document theme assets (vendored OFL font files for proposal/quote PDF
+# rendering — see apps/api/src/services/documentThemes.ts). This runner's
+# WORKDIR is /app with no apps/api subpath (self-contained pnpm deploy), so
+# FONT_DIR's process.cwd()-relative resolution needs ./assets here, not
+# ./apps/api/assets.
+COPY --from=builder --chown=hono:nodejs /app/apps/api/assets ./assets
+
 # Built-in extensions: migrations + prebuilt web assets, resolved at runtime
 # relative to cwd (/app) by builtinExtensions.ts.
 COPY --from=builder --chown=hono:nodejs /app/ee/workspace/migrations ./ee/workspace/migrations
