@@ -373,6 +373,22 @@ func TestAssembleVPNsInactiveReporting(t *testing.T) {
 			},
 		},
 		{
+			name: "one unattributed tunnel suppresses claims about every other provider",
+			// utun6 is attributed to Tailscale, but utun9 belongs to nobody we
+			// can name — and it could be either remaining client's tunnel, so
+			// neither may be called disconnected.
+			ifaces: []psnet.InterfaceStat{
+				{Name: "utun6", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.95.194.59/32"}}},
+				{Name: "utun9", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "10.9.0.3/32"}}},
+			},
+			signals: map[string]string{vpnTailscale: vpnSourceService, vpnNetBird: vpnSourceService, vpnOpenVPN: vpnSourceProcess},
+			attrs:   map[string]string{"utun6": vpnTailscale},
+			want: []VpnPresence{
+				{Provider: vpnTailscale, Active: true, InterfaceName: "utun6", IPv4: "100.95.194.59", DetectionSource: vpnSourceAdapter},
+				{Provider: vpnGeneric, Active: true, InterfaceName: "utun9", IPv4: "10.9.0.3", DetectionSource: vpnSourceInterface},
+			},
+		},
+		{
 			name: "attributed tunnel still allows inactive claims for the others",
 			ifaces: []psnet.InterfaceStat{
 				{Name: "utun6", Flags: []string{"up"}, Addrs: []psnet.InterfaceAddr{{Addr: "100.95.194.59/32"}}},
