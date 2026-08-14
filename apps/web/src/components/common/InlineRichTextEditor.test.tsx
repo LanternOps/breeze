@@ -73,7 +73,7 @@ describe('InlineRichTextEditor', () => {
     // getHTML() serializes the whole (single-paragraph) document, so a <p>
     // wrapper is expected — the assertion is about what's INSIDE it.
     expect(emitted).toBe('<p><strong>Hello</strong></p>');
-    expect(emitted).not.toMatch(/<div>|<script|<blockquote/);
+    expect(emitted).not.toMatch(/<div>|<script|<blockquote/i);
   });
 
   it('does not create a second paragraph when Enter is pressed', () => {
