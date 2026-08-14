@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import ProgressBar, { ProgressItemList, type ProgressItem } from '../shared/ProgressBar';
 import type { Script } from './ScriptList';
-import type { ScriptParameter } from './ScriptForm';
+import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from '../filters/FilterBuilder';
 import { useFilterPreview } from '../../hooks/useFilterPreview';
@@ -74,11 +74,16 @@ export default function ScriptExecutionModal({
     return new Set(filterPreview.devices.map(d => d.id));
   }, [showAdvancedFilter, filterPreview]);
 
+  // Runtime parameters only (#3409 PR3): a bound parameter is resolved per
+  // target device by the server, so it is neither prompted for nor seeded — a
+  // value supplied for one is ignored and reported in `ignoredParameters`.
+  const runtimeParams = useMemo(() => runtimeParameters(script.parameters), [script.parameters]);
+
   // Initialize parameters with defaults
   useEffect(() => {
     if (script.parameters) {
       const defaults: Record<string, string | number | boolean> = {};
-      script.parameters.forEach(param => {
+      runtimeParameters(script.parameters).forEach(param => {
         if (param.defaultValue !== undefined) {
           if (param.type === 'number') {
             defaults[param.name] = Number(param.defaultValue) || 0;
@@ -253,8 +258,9 @@ export default function ScriptExecutionModal({
             </p>
           </div>
 
-          {/* Parameters */}
-          {script.parameters && script.parameters.length > 0 && (
+          {/* Parameters — gated on the RUNTIME count: an all-bound script has
+              nothing to ask for, so the section would be an empty shell. */}
+          {runtimeParams.length > 0 && script.parameters && (
             <ScriptParametersForm
               parameters={script.parameters}
               values={parameters}

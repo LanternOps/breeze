@@ -916,7 +916,9 @@
       "timeoutSeconds": "Timeout (seconds)",
       "runAs": "Run As",
       "exitCode": "Exit code",
-      "severity": "Severity"
+      "severity": "Severity",
+      "source": "Source",
+      "fallbackValue": "Fallback value"
     },
     "placeholders": {
       "name": "Clear Temp Files",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "No parameters yet. Parameters let users supply values at runtime — reference them in your script as",
       "emptyMiddle": "(PowerShell/Bash) or",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Source for parameter {{index}}"
     },
     "execution": {
       "timeoutHint": "Script is killed after this duration. Default 300s (5 min) is suitable for most tasks. Maximum 3600s (1 hour).",
@@ -997,6 +1000,22 @@
       "empty": "No variables yet.",
       "secretUnavailable": "Secret — a later release delivers it as an environment variable.",
       "unknown": "No variable exists for {{keys}} — targeted devices will fail until you create it."
+    },
+    "parameterSources": {
+      "runtime": "Asked at run time",
+      "tenantVariable": "From a variable",
+      "deviceCustomField": "From a device custom field",
+      "builtin": "From a device property"
+    },
+    "parameterBinding": {
+      "variableLabel": "Variable key",
+      "variablePlaceholder": "e.g. vendor_token",
+      "fieldLabel": "Custom field key",
+      "fieldPlaceholder": "e.g. asset_tag",
+      "builtinLabel": "Property",
+      "chooseTitle": "Choose a variable",
+      "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",
+      "hint": "Resolved for every target device when the script runs — nobody is asked for it."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,12 @@
       "number": "Parameter \"{{name}}\" must be a valid number"
     },
     "title": "Parameters",
-    "selectPlaceholder": "Select..."
+    "selectPlaceholder": "Select...",
+    "suppliedBy": {
+      "tenantVariable": "Supplied automatically from variable {{key}}",
+      "deviceCustomField": "Supplied automatically from device custom field {{key}}",
+      "builtin": "Supplied automatically from {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
-import type { ScriptParameter } from '../scripts/ScriptFormSchema';
+import { runtimeParameters, type ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 
@@ -155,10 +155,15 @@ export default function ScriptPickerModal({
   }, [scripts, query, categoryFilter, deviceOs]);
 
   const handleSelect = (script: Script) => {
-    if (script.parameters && script.parameters.length > 0) {
+    // Runtime parameters only (#3409 PR3). A bound parameter is resolved per
+    // target device by the server, so it must neither open the parameter step
+    // on its own nor enter `paramValues` — a supplied value would be ignored
+    // and reported back in `ignoredParameters`.
+    const askable = runtimeParameters(script.parameters);
+    if (askable.length > 0) {
       // Seed param values from defaults
       const defaults: Record<string, unknown> = {};
-      for (const param of script.parameters) {
+      for (const param of askable) {
         if (param.defaultValue !== undefined) {
           if (param.type === 'number') {
             defaults[param.name] = Number(param.defaultValue) || 0;
@@ -319,9 +324,9 @@ export default function ScriptPickerModal({
                         <span>
                           {script.osTypes.join(', ')}
                         </span>
-                        {script.parameters && script.parameters.length > 0 && (
+                        {runtimeParameters(script.parameters).length > 0 && (
                           <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                            {t('scriptPickerModal.paramCount', { count: script.parameters.length })}
+                            {t('scriptPickerModal.paramCount', { count: runtimeParameters(script.parameters).length })}
                           </span>
                         )}
                       </div>

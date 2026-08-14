@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { scriptParameterDefinitionSchema, scriptParameterDefinitionsSchema } from '@breeze/shared';
+import {
+  scriptParameterDefinitionSchema,
+  scriptParameterDefinitionsSchema,
+  type ScriptParameterSource,
+} from '@breeze/shared';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
 /**
@@ -79,6 +83,68 @@ export type ScriptFormValues = z.infer<typeof scriptSchema>;
  */
 export type ScriptParameter = z.input<typeof parameterSchema>;
 export type ExitCodeSeverityRow = z.infer<typeof exitCodeSeverityRowSchema>;
+
+/**
+ * What a caller may hand `ScriptForm` as `defaultValues`.
+ *
+ * `parameters` is the INPUT type: definitions come back from the API exactly as
+ * they were stored, and every one written before #3409 PR3 lacks `source` (and
+ * often `required`). Typing this half as the schema OUTPUT would make the
+ * majority of real edit-page loads a type error while changing nothing about
+ * what the form actually receives.
+ */
+export type ScriptFormDefaults = Partial<Omit<ScriptFormValues, 'parameters'>> & {
+  parameters?: ScriptParameter[];
+};
+
+/**
+ * Where this parameter's value comes from (#3409 PR3).
+ *
+ * Every definition stored before PR3 omits `source` entirely, so the fallback
+ * is not defensive padding — it is the shape the majority of rows still have.
+ * Read the source ONLY through this helper so no surface can drift into
+ * treating a legacy row as unbound-by-accident rather than
+ * unbound-by-definition.
+ */
+export function parameterSource(parameter: ScriptParameter): ScriptParameterSource {
+  return parameter.source ?? 'runtime';
+}
+
+/**
+ * Is this parameter supplied by the server per target device rather than by
+ * the invoker? Bound parameters are never prompted for, never required of the
+ * invoker, and must never appear in the outgoing parameters map — a supplied
+ * value would be ignored and reported back in `ignoredParameters`.
+ */
+export function isBoundParameter(parameter: ScriptParameter): boolean {
+  return parameterSource(parameter) !== 'runtime';
+}
+
+/** The parameters a run surface actually prompts for. */
+export function runtimeParameters(
+  parameters: readonly ScriptParameter[] | undefined
+): ScriptParameter[] {
+  return (parameters ?? []).filter(parameter => !isBoundParameter(parameter));
+}
+
+/**
+ * The binding target as a display string — the tenant-variable key, the device
+ * custom-field key, or the built-in property name. `null` for a runtime
+ * parameter, and for a bound row whose key hasn't been chosen yet (mid-edit in
+ * the authoring form).
+ */
+export function parameterBindingKey(parameter: ScriptParameter): string | null {
+  switch (parameter.source) {
+    case 'tenantVariable':
+      return parameter.variableKey || null;
+    case 'deviceCustomField':
+      return parameter.fieldKey || null;
+    case 'builtin':
+      return parameter.builtinKey || null;
+    default:
+      return null;
+  }
+}
 
 // Wire shape sent to / received from the API. Form-side editing keeps an
 // ordered list of rows for stable React keys + per-row error display; we

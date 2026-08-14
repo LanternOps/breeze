@@ -916,7 +916,9 @@
       "timeoutSeconds": "Timeout (secondi)",
       "runAs": "Esegui come",
       "exitCode": "Codice di uscita",
-      "severity": "Gravità"
+      "severity": "Gravità",
+      "source": "Origine",
+      "fallbackValue": "Valore di riserva"
     },
     "placeholders": {
       "name": "Cancella file temporanei",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "Non ci sono ancora parametri. I parametri consentono agli utenti di fornire valori in fase di esecuzione - referenziali nello script come",
       "emptyMiddle": "(PowerShell/Bash) o",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Origine del parametro {{index}}"
     },
     "execution": {
       "timeoutHint": "Lo script viene terminato dopo questa durata. Il valore predefinito di 300 s (5 min) è adatto alla maggior parte delle attività. Massimo 3600 s (1 ora).",
@@ -997,6 +1000,22 @@
       "empty": "Ancora nessuna variabile.",
       "secretUnavailable": "Segreto: una versione futura lo passerà come variabile d'ambiente.",
       "unknown": "Non esiste alcuna variabile per {{keys}}: i dispositivi selezionati falliranno finché non la crei."
+    },
+    "parameterSources": {
+      "runtime": "Richiesto all’esecuzione",
+      "tenantVariable": "Da una variabile",
+      "deviceCustomField": "Da un campo personalizzato del dispositivo",
+      "builtin": "Da una proprietà del dispositivo"
+    },
+    "parameterBinding": {
+      "variableLabel": "Chiave della variabile",
+      "variablePlaceholder": "es. vendor_token",
+      "fieldLabel": "Chiave del campo personalizzato",
+      "fieldPlaceholder": "es. asset_tag",
+      "builtinLabel": "Proprietà",
+      "chooseTitle": "Scegli una variabile",
+      "secretRejected": "\"{{key}}\" è segreta: il salvataggio verrà rifiutato. Scegli una variabile non segreta.",
+      "hint": "Viene risolto per ogni dispositivo di destinazione all’esecuzione dello script: nessuno deve indicarlo."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,12 @@
       "number": "Il parametro \"{{name}}\" deve essere un numero valido"
     },
     "title": "Parametri",
-    "selectPlaceholder": "Seleziona..."
+    "selectPlaceholder": "Seleziona...",
+    "suppliedBy": {
+      "tenantVariable": "Fornito automaticamente dalla variabile {{key}}",
+      "deviceCustomField": "Fornito automaticamente dal campo personalizzato del dispositivo {{key}}",
+      "builtin": "Fornito automaticamente da {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {

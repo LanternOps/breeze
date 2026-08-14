@@ -42,6 +42,37 @@ const SCRIPTS_DATA = [
       { name: 'count', type: 'number', required: false, defaultValue: '5' },
     ],
   },
+  // #3409 PR3: one runtime parameter + one bound to a tenant variable. The
+  // bound one is `required` on purpose — dispatch resolves it per device, so it
+  // must not gate the Run button here.
+  {
+    id: 'p3',
+    name: 'Mixed Params',
+    language: 'bash',
+    category: 'General',
+    osTypes: ['linux'],
+    parameters: [
+      { name: 'message', type: 'string', required: true, defaultValue: '' },
+      {
+        name: 'api_key',
+        type: 'string',
+        required: true,
+        defaultValue: 'fallback',
+        source: 'tenantVariable',
+        variableKey: 'vendor_token',
+      },
+    ],
+  },
+  {
+    id: 'p4',
+    name: 'All Bound',
+    language: 'bash',
+    category: 'General',
+    osTypes: ['linux'],
+    parameters: [
+      { name: 'org', type: 'string', required: true, source: 'builtin', builtinKey: 'org.name' },
+    ],
+  },
 ];
 
 // Live-sessions fixture (GET /devices/:id/sessions/live)
@@ -242,6 +273,66 @@ describe('ScriptPickerModal', () => {
     });
 
     expect(screen.queryByText('Configure Parameters')).toBeNull();
+  });
+});
+
+describe('ScriptPickerModal sourced parameters (#3409 PR3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(SCRIPTS_DATA));
+  });
+
+  it('counts only runtime parameters in the list badge', async () => {
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Mixed Params')).toBeDefined());
+
+    const mixedRow = screen.getByText('Mixed Params').closest('button') as HTMLElement;
+    expect(mixedRow).toHaveTextContent('1 param(s)');
+    // A fully-bound script asks for nothing, so it carries no badge at all.
+    const allBoundRow = screen.getByText('All Bound').closest('button') as HTMLElement;
+    expect(allBoundRow).not.toHaveTextContent('param(s)');
+  });
+
+  it('runs a fully-bound script immediately instead of opening an input-less step', async () => {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    render(<ScriptPickerModal isOpen onClose={onClose} onSelect={onSelect} />);
+    await waitFor(() => expect(screen.getByText('All Bound')).toBeDefined());
+
+    fireEvent.click(screen.getByText('All Bound'));
+
+    expect(screen.queryByText('Configure Parameters')).toBeNull();
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p4' }),
+      'system',
+      undefined,
+      undefined
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows a bound parameter read-only and never sends it in the parameters map', async () => {
+    const onSelect = vi.fn();
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={onSelect} />);
+    await waitFor(() => expect(screen.getByText('Mixed Params')).toBeDefined());
+
+    fireEvent.click(screen.getByText('Mixed Params'));
+
+    // The bound parameter is visible, but as a chip — not an input, and its
+    // definition default ("fallback") must NOT be seeded into paramValues.
+    const chip = screen.getByTestId('script-bound-parameter-api_key');
+    expect(chip).toHaveTextContent('Supplied automatically from variable vendor_token');
+    expect(chip.querySelector('input')).toBeNull();
+    expect(screen.queryByDisplayValue('fallback')).toBeNull();
+
+    // Required-but-bound must not block the run.
+    fireEvent.change(screen.getByDisplayValue(''), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByText('Run Script'));
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    const submitted = onSelect.mock.calls[0][2] as Record<string, unknown>;
+    expect(submitted).toEqual({ message: 'hello' });
+    expect(submitted).not.toHaveProperty('api_key');
   });
 });
 
