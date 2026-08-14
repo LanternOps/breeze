@@ -105,10 +105,10 @@ describe('terminal payload erasure', () => {
     // Render through the real dialect: a Drizzle SQL object holds a circular
     // reference to the table, and asserting on the emitted SQL is what
     // actually proves the key list reaches Postgres.
-    const rendered = new PgDialect().sqlToQuery(payload).sql;
-    expect(rendered).toContain('"device_commands"."payload" IS NULL');
-    expect(rendered).toContain("'password'");
-    expect(rendered).toContain("'secretEnvEnvelope'");
-    expect(rendered).toContain('::text[]');
+    const query = new PgDialect().sqlToQuery(payload);
+    expect(query.sql).toContain('"device_commands"."payload" IS NULL');
+    // Keys travel as bound parameters, never interpolated into the SQL text.
+    expect(query.params).toEqual(expect.arrayContaining(TERMINAL_PAYLOAD_STRIP_KEYS));
+    expect(query.sql).not.toContain('secretEnvEnvelope');
   });
 });

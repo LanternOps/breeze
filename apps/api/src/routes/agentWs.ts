@@ -70,6 +70,7 @@ import {
 } from './agents/schemas';
 import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
+import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -1717,7 +1718,8 @@ async function processCommandResult(
               .set({
                   status: normalizedResult.status === 'completed' ? 'completed' : 'failed',
                   completedAt: new Date(),
-                  result: buildStoredCommandResult(command.type, normalizedResult, stdout)
+                  result: buildStoredCommandResult(command.type, normalizedResult, stdout),
+                  ...terminalPayloadErasureSet(),
               })
               .where(
                 and(

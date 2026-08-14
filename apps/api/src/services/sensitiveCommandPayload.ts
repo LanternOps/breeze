@@ -60,11 +60,16 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
  * driven terminal twice (the WS/REST race) is fine.
  */
 export function terminalPayloadErasureSet(): { payload: SQL } {
+  // Chained single-key `jsonb - text` subtractions with BOUND parameters —
+  // never sql.raw string interpolation, even for module-owned identifiers.
+  // The explicit ::text cast is required: `jsonb - anyelement` is ambiguous
+  // between the text and integer overloads for an untyped placeholder.
+  const stripped = TERMINAL_PAYLOAD_STRIP_KEYS.reduce<SQL>(
+    (expr, key) => sql`${expr} - ${key}::text`,
+    sql`${deviceCommands.payload}`,
+  );
   return {
-    payload: sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL
-      ELSE ${deviceCommands.payload} - ${sql.raw(
-        `ARRAY[${TERMINAL_PAYLOAD_STRIP_KEYS.map((key) => `'${key}'`).join(',')}]::text[]`,
-      )} END`,
+    payload: sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL ELSE ${stripped} END`,
   };
 }
 

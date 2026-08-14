@@ -25,6 +25,7 @@ import { captureException } from '../../services/sentry';
 import { requireMfa } from '../../middleware/auth';
 import type { Database } from '../../db';
 
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 export const abuseRoutes = new Hono();
 
 // The `users.disabled_reason` marker written by partner suspension. Unsuspend
@@ -155,6 +156,7 @@ abuseRoutes.post(
               status: 'cancelled',
               completedAt: new Date(),
               result: { reason: 'partner_suspended_for_abuse' },
+              ...terminalPayloadErasureSet(),
             })
             .where(
               and(

@@ -27,7 +27,7 @@ import { processCollectedAuditPolicyCommandResult } from '../../services/auditBa
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
-import { hasSensitivePayload } from '../../services/sensitiveCommandPayload';
+import { hasSensitivePayload, terminalPayloadErasureSet} from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -321,9 +321,11 @@ commandsRoutes.post(
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
               completedAt: new Date(),
               result: buildStoredCommandResult(command.type, normalizedData, stdout),
-              // Credentials ride the payload for some commands (e.g. FileVault
-              // rotation); blank them once the command is terminal.
-              ...(hasSensitivePayload(command.type) ? { payload: null } : {}),
+              // Credentials ride the payload for some command types (FileVault
+              // rotation, and the #3409 script secret envelope); strip them
+              // once the command is terminal. Shared with the ten other
+              // terminal writers that previously retained them.
+              ...terminalPayloadErasureSet(),
             })
             .where(and(
               eq(deviceCommands.id, commandId),
