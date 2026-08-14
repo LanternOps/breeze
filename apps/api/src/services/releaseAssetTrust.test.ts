@@ -174,6 +174,105 @@ describe('releaseAssetTrust', () => {
       ).toThrow(/windows-authenticode-required/);
     });
 
+    // #3504: the public pipeline stopped Authenticode-signing the Windows agent
+    // family in #3351 ("the public pipeline no longer signs these",
+    // release.yml:419) but the unsigned exception here was never widened past
+    // breeze-agent.msi. The four exes were rejected, and because binarySync's
+    // Phase 1 aborts the whole sync on a trust failure by design (bbde37ea9),
+    // ONE rejected exe stopped Linux and macOS registering too — so a
+    // BINARY_SOURCE=github self-hoster got a 404 for every platform.
+    it.each([
+      'breeze-agent-windows-amd64.exe',
+      'breeze-backup-windows-amd64.exe',
+      'breeze-watchdog-windows-amd64.exe',
+      'breeze-user-helper-windows-amd64.exe',
+    ])('accepts unsigned self-host %s', (assetName) => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName,
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).not.toThrow();
+    });
+
+    it.each([
+      'breeze-agent-windows-amd64.exe',
+      'breeze-backup-windows-amd64.exe',
+      'breeze-watchdog-windows-amd64.exe',
+      'breeze-user-helper-windows-amd64.exe',
+    ])('still accepts a signed self-host %s (BYO-resigned repos)', (assetName) => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName,
+          platformTrust: PLATFORM_TRUST_WINDOWS,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).not.toThrow();
+    });
+
+    // The edition gate is the whole safety property of this relaxation: hosted
+    // artifacts are signed and privately distributed, so an unsigned exe
+    // claiming edition "hosted" is either a mislabel or an attack.
+    it.each([
+      'breeze-agent-windows-amd64.exe',
+      'breeze-backup-windows-amd64.exe',
+      'breeze-watchdog-windows-amd64.exe',
+      'breeze-user-helper-windows-amd64.exe',
+    ])('rejects unsigned %s labeled edition "hosted"', (assetName) => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName,
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'hosted',
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    it.each([
+      'breeze-agent-windows-amd64.exe',
+      'breeze-backup-windows-amd64.exe',
+      'breeze-watchdog-windows-amd64.exe',
+      'breeze-user-helper-windows-amd64.exe',
+    ])('rejects unsigned %s with no edition claim', (assetName) => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName,
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    // Scoped to the exact four filenames the pipeline produces unsigned, not to
+    // "any windows exe" — an unrecognised exe must still require signing.
+    it('does NOT extend the unsigned exception to an unlisted Windows exe', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-installer-windows-amd64.exe',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).toThrow(/windows-authenticode-required/);
+    });
+
+    // The signing-input guard runs BEFORE the trust comparison, so widening the
+    // exception must not make "-unsigned" inputs distributable.
+    it('still refuses the -unsigned signing input for an allowlisted exe', () => {
+      expect(() =>
+        assertDistributableReleaseAsset({
+          assetName: 'breeze-agent-windows-amd64-unsigned.exe',
+          platformTrust: PLATFORM_TRUST_NONE,
+          intendedUse: null,
+          edition: 'self-host',
+        }),
+      ).toThrow(/signing input/);
+    });
+
     it('does NOT extend the unsigned exception to other .msi assets (e.g. helper)', () => {
       expect(() =>
         assertDistributableReleaseAsset({
