@@ -14,6 +14,8 @@
 //    rich_text block branch for the wiring, and contract document rendering
 //    (Task 14) for the other consumer.
 
+import type { PdfThemeFonts } from './documentThemes';
+
 // ---------------------------------------------------------------------------
 // Intermediate representation
 // ---------------------------------------------------------------------------
@@ -280,11 +282,22 @@ function styleFor(kind: RichTextBlock['kind']): BlockStyle {
   return { fontSize: 11, spacingAfter: 8, forceBold: false }; // 'p' | 'li'
 }
 
-function fontFor(bold: boolean, italic: boolean): string {
-  if (bold && italic) return 'Helvetica-BoldOblique';
-  if (bold) return 'Helvetica-Bold';
-  if (italic) return 'Helvetica-Oblique';
-  return 'Helvetica';
+/** Default Helvetica set — used when a caller doesn't opt into a theme (all
+ *  existing call sites), so their behavior is byte-for-byte unchanged. */
+const DEFAULT_BODY_FONTS: BodyFonts = {
+  regular: 'Helvetica',
+  bold: 'Helvetica-Bold',
+  italic: 'Helvetica-Oblique',
+  boldItalic: 'Helvetica-BoldOblique',
+};
+
+export type BodyFonts = PdfThemeFonts['body'];
+
+function fontFor(fonts: BodyFonts, bold: boolean, italic: boolean): string {
+  if (bold && italic) return fonts.boldItalic;
+  if (bold) return fonts.bold;
+  if (italic) return fonts.italic;
+  return fonts.regular;
 }
 
 export interface RenderRichTextOpts {
@@ -295,12 +308,17 @@ export interface RenderRichTextOpts {
    *  reserves `needed` px of vertical space, page-breaking first if it won't
    *  fit, and returns the y to draw at. */
   ensureRoom: (needed: number) => number;
+  /** Body font set to draw with (Task 6's theme threading). Defaults to the
+   *  classic Helvetica set — pass `documentThemes.ts`'s registerThemeFonts(...)
+   *  .body to draw in a document's theme instead. */
+  fonts?: BodyFonts;
 }
 
 /** Draw sanitized rich-text HTML into `doc` starting at opts.startY, paginating
  *  via opts.ensureRoom. Returns the new y cursor (below the last block + its
  *  trailing spacing), for the caller to continue drawing from. */
 export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opts: RenderRichTextOpts): number {
+  const bodyFonts = opts.fonts ?? DEFAULT_BODY_FONTS;
   const blocks = parseRichText(html);
   // Side-by-side callers can legitimately leave pdfkit's implicit cursor at the
   // bottom of the column drawn last rather than the lower of both columns.
@@ -323,7 +341,7 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
     const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
     let gutter = 0;
     if (isLi) {
-      doc.font('Helvetica').fontSize(style.fontSize);
+      doc.font(bodyFonts.regular).fontSize(style.fontSize);
       gutter = Math.max(BULLET_INDENT, Math.ceil(doc.widthOfString(prefix)) + 4);
     }
     const indent = (isLi ? gutter : 0) + block.indent * NESTED_INDENT;
@@ -331,7 +349,7 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
     const textWidth = opts.width - indent;
 
     const plainText = block.runs.map((r) => r.text).join('') || ' ';
-    doc.font(fontFor(style.forceBold, false)).fontSize(style.fontSize);
+    doc.font(fontFor(bodyFonts, style.forceBold, false)).fontSize(style.fontSize);
     const blockHeight = doc.heightOfString(plainText, { width: textWidth });
 
     // Detect whether ensureRoom actually broke the page (vs. just confirming
@@ -344,7 +362,7 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
     y = brokePage ? reserved : reserved + gapBefore;
 
     if (isLi) {
-      doc.font('Helvetica').fontSize(style.fontSize).fillColor(TEXT_COLOR);
+      doc.font(bodyFonts.regular).fontSize(style.fontSize).fillColor(TEXT_COLOR);
       // Draw the ordinal/bullet in its own measured gutter to the left of the
       // text. lineBreak:false guarantees the prefix stays a single line even if
       // a future font makes it marginally wider than the reserved gutter.
@@ -356,7 +374,7 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
       const bold = style.forceBold || run.bold;
       const isFirst = i === 0;
       const isLast = i === runs.length - 1;
-      doc.font(fontFor(bold, run.italic)).fontSize(style.fontSize).fillColor(run.link ? LINK_COLOR : TEXT_COLOR);
+      doc.font(fontFor(bodyFonts, bold, run.italic)).fontSize(style.fontSize).fillColor(run.link ? LINK_COLOR : TEXT_COLOR);
       const textOptions: PDFKit.Mixins.TextOptions = {
         continued: !isLast,
         underline: run.underline || !!run.link,

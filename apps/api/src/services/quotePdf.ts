@@ -18,6 +18,7 @@ import { toCents, fromCents, type CoverPage } from '@breeze/shared';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
 import { renderRichTextIntoPdf } from './richTextPdf';
+import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -84,6 +85,11 @@ export interface QuotePdfBranding {
   primaryColor?: string | null;
   footer?: string | null;
   currencyCode?: string | null;
+  // Optional so existing callers/tests compile unchanged; default classic/a4
+  // when absent (registerThemeFonts/pdfPageSize both treat undefined the same
+  // as an explicit 'classic'/'a4').
+  theme?: DocumentThemeId;
+  pageSize?: DocumentPageSize;
 }
 
 interface QuoteHeader {
@@ -633,6 +639,7 @@ async function renderCoverPage(
   branding: QuotePdfBranding,
   loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   c: QuotePdfColumns,
+  fonts: PdfThemeFonts,
 ): Promise<void> {
   const cp = (quote.coverPage ?? null) as CoverPage | null;
   if (!cp?.enabled) return;
@@ -688,19 +695,19 @@ async function renderCoverPage(
   // translucent white pill so it survives busy artwork.
   if (hasBackground) {
     doc.save();
-    doc.fontSize(16).font('Helvetica-Bold');
+    doc.fontSize(16).font(fonts.heading.bold);
     const wordW = doc.widthOfString(partnerName);
     doc.fillOpacity(0.85);
     doc.roundedRect(c.left - 10, top - 8, wordW + 20, 34, 6).fill('#ffffff');
     doc.restore();
   }
-  doc.fillColor('#111827').fontSize(16).font('Helvetica-Bold').text(partnerName, c.left, top);
+  doc.fillColor('#111827').fontSize(16).font(fonts.heading.bold).text(partnerName, c.left, top);
 
   // Title (24pt bold): inside the bottom band on a background cover, else in
   // the classic position under the top margin.
   if (cp.title?.trim()) {
     const titleY = hasBackground ? bandTop + 28 : top + 54;
-    doc.fillColor('#111827').fontSize(24).font('Helvetica-Bold').text(cp.title.trim(), c.left, titleY, { width: c.contentWidth });
+    doc.fillColor('#111827').fontSize(24).font(fonts.heading.bold).text(cp.title.trim(), c.left, titleY, { width: c.contentWidth });
   }
 
   // Prepared for / Prepared by, side by side at the bottom of the page.
@@ -769,7 +776,11 @@ export async function renderQuotePdf(
 
   // bufferPages keeps every page addressable until the end so the footer pass
   // can stamp "Page X of Y" — the total isn't known while content is drawn.
-  const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true });
+  // Doc construction MUST come before registerThemeFonts — registerFont calls
+  // on a not-yet-constructed PDFDocument aren't a thing pdfkit supports.
+  const doc = new PDFDocument({ size: pdfPageSize(branding.pageSize ?? 'a4'), margin: 50, bufferPages: true });
+  const themeId = branding.theme ?? 'classic';
+  const fonts: PdfThemeFonts = registerThemeFonts(doc, themeId);
   const chunks: Buffer[] = [];
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on('data', (d: Buffer) => chunks.push(d));
@@ -780,18 +791,18 @@ export async function renderQuotePdf(
   const c = columnsFor(doc);
 
   // ---- Cover page (page 1, when enabled) — always ends with doc.addPage() ---
-  await renderCoverPage(doc, quote, branding, loadImage, c);
+  await renderCoverPage(doc, quote, branding, loadImage, c, fonts);
 
   // ---- Header: partner wordmark (left) + accent PROPOSAL eyebrow + number ---
-  doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
-  doc.fillColor(primary).fontSize(10).font('Helvetica-Bold').text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
-  doc.fillColor('#111827').fontSize(20).font('Helvetica-Bold').text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
+  doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
+  doc.fillColor(primary).fontSize(10).font(fonts.heading.bold).text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
+  doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
   doc.moveTo(c.left, 100).lineTo(c.right, 100).lineWidth(2).strokeColor(primary).stroke();
 
   // ---- Quote title (tech-authored, e.g. "Office Network Refresh") -----------
   let y = 120;
   if (quote.title?.trim()) {
-    doc.fillColor('#111827').fontSize(15).font('Helvetica-Bold').text(quote.title.trim(), c.left, y - 6, { width: c.contentWidth });
+    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(quote.title.trim(), c.left, y - 6, { width: c.contentWidth });
     y = doc.y + 16;
   }
 
@@ -846,7 +857,7 @@ export async function renderQuotePdf(
       const level = Number((b.content as { level?: number }).level ?? 1);
       const text = String((b.content as { text?: string }).text ?? '');
       const size = level === 1 ? 18 : level === 2 ? 15 : 13;
-      doc.fillColor('#111827').fontSize(size).font('Helvetica-Bold').text(text, c.left, y, { width: c.contentWidth });
+      doc.fillColor('#111827').fontSize(size).font(fonts.heading.bold).text(text, c.left, y, { width: c.contentWidth });
       y = doc.y + 8;
     } else if (b.blockType === 'rich_text') {
       const html = String((b.content as { html?: string }).html ?? '');
@@ -860,7 +871,7 @@ export async function renderQuotePdf(
           y = ensureSpace(doc, doc.y, needed);
           return y;
         };
-        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom });
+        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
       }
     } else if (b.blockType === 'image') {
       const imageId = (b.content as { imageId?: string }).imageId;
@@ -932,19 +943,19 @@ export async function renderQuotePdf(
         // it) + the substituted rich text, via the SAME renderer/pagination
         // discipline the rich_text block branch above uses.
         y = ensureSpace(doc, y, 40);
-        doc.fillColor('#111827').fontSize(13).font('Helvetica-Bold').text(label ?? templateName, c.left, y, { width: c.contentWidth });
+        doc.fillColor('#111827').fontSize(13).font(fonts.heading.bold).text(label ?? templateName, c.left, y, { width: c.contentWidth });
         y = doc.y + 8;
         const ensureRoom = (needed: number): number => {
           y = ensureSpace(doc, doc.y, needed);
           return y;
         };
-        y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom });
+        y = renderRichTextIntoPdf(doc, data.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
       } else {
         // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts) —
         // draw a one-line marker; the route appends the uploaded PDF's own pages
         // after this document via mergeUploadedContractPdfs.
         y = ensureSpace(doc, y, 30);
-        doc.fillColor('#111827').fontSize(11).font('Helvetica-Bold').text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
+        doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(contractUploadedMarker(templateName), c.left, y, { width: c.contentWidth });
         y = doc.y + 8;
       }
     }
@@ -990,7 +1001,7 @@ export async function renderQuotePdf(
     const fWidth = fRight - fLeft;
     const ruleY = doc.page.height - 38;
     doc.moveTo(fLeft, ruleY).lineTo(fRight, ruleY).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
-    doc.fillColor('#9ca3af').fontSize(7.5).font('Helvetica');
+    doc.fillColor('#9ca3af').fontSize(7.5).font(fonts.body.regular);
     // Left: branding footer (single line, ellipsized) or the partner wordmark.
     doc.text(branding.footer?.trim() || partnerName, fLeft, ruleY + 7, {
       width: fWidth * 0.68, height: 10, lineBreak: false, ellipsis: true,

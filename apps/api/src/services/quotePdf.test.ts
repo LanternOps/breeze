@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
 import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -830,6 +830,58 @@ describe('renderQuotePdf', () => {
       // 14pt line height); the shipped bug drew it at a fixed one-line offset.
       expect(address.y).toBeGreaterThan(nameBottom + 10);
     });
+  });
+});
+
+describe('renderQuotePdf theme + page size (Task 6)', () => {
+  const baseQuote = {
+    id: 'q-theme', quoteNumber: 'Q-THEME', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD',
+  };
+  const blocks = [
+    { id: 'b1', blockType: 'heading' as const, sortOrder: 0, content: { text: 'Themed heading', level: 1 } },
+    { id: 'b2', blockType: 'rich_text' as const, sortOrder: 1, content: { html: '<p>Themed body copy.</p>' } },
+  ];
+
+  it('branding.pageSize "letter" produces a LETTER MediaBox (612x792)', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { pageSize: 'letter' });
+    const doc = await PDFDocument.load(buf);
+    const page = doc.getPage(0);
+    expect(page.getWidth()).toBeCloseTo(612, 0);
+    expect(page.getHeight()).toBeCloseTo(792, 0);
+  });
+
+  it('omitting pageSize keeps the classic A4 MediaBox (595x842)', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const doc = await PDFDocument.load(buf);
+    const page = doc.getPage(0);
+    expect(page.getWidth()).toBeCloseTo(595, 0);
+    expect(page.getHeight()).toBeCloseTo(842, 0);
+  });
+
+  it('branding.theme "condensed" embeds BarlowCondensed and DMSans font programs', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { theme: 'condensed' });
+    const doc = await PDFDocument.load(buf);
+    const baseFontNames: string[] = [];
+    for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+      if (obj instanceof PDFDict) {
+        const baseFont = obj.get(PDFName.of('BaseFont'));
+        if (baseFont) baseFontNames.push(baseFont.toString());
+      }
+    }
+    expect(baseFontNames.some((name) => name.includes('BarlowCondensed'))).toBe(true);
+    expect(baseFontNames.some((name) => name.includes('DMSans'))).toBe(true);
+  });
+
+  it('no theme/pageSize fields set still passes the classic content-stream regression', async () => {
+    // Belt-and-suspenders: the dedicated harness (quotePdf.classicRegression.test.ts)
+    // is the authoritative check, but assert here too that the plain {} branding
+    // this suite's other tests already exercise keeps producing Helvetica text
+    // runs, not a theme-font indirection leaking through when unrequested.
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('Themed heading');
+    expect(text).toContain('Themed body copy');
   });
 });
 
