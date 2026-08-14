@@ -382,9 +382,17 @@ function generateUninstallScript(): string {
   return `#!/usr/bin/env bash
 set -euo pipefail
 
-AGENT_BINARY="/usr/local/bin/breeze-agent"
-WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
-BACKUP_BINARY="/usr/local/bin/breeze-backup"
+# The NU branded builds install the binaries as nu-agent/nu-watchdog/nu-backup
+# (this is what the macOS pkg ships); upstream and the Linux install lay them
+# down as breeze-agent/breeze-watchdog/breeze-backup. Prefer the nu-* names and
+# fall back to breeze-* so this single uninstaller handles both. On Linux the
+# nu-* binaries are never present, so it always falls through to breeze-*.
+AGENT_BINARY="/usr/local/bin/nu-agent"
+[ -x "$AGENT_BINARY" ] || AGENT_BINARY="/usr/local/bin/breeze-agent"
+WATCHDOG_BINARY="/usr/local/bin/nu-watchdog"
+[ -x "$WATCHDOG_BINARY" ] || WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"
+BACKUP_BINARY="/usr/local/bin/nu-backup"
+[ -x "$BACKUP_BINARY" ] || BACKUP_BINARY="/usr/local/bin/breeze-backup"
 
 fatal() {
   echo "Error: $*" >&2
@@ -402,26 +410,48 @@ require_root() {
 }
 
 uninstall_macos() {
-  local agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
-  local watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
-  local user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
+  # NU branded launchd labels/plists (what the macOS pkg installs) are tried
+  # first; the upstream breeze labels/plists are kept as fallbacks so this one
+  # uninstaller removes either install. rm -f on a missing path is a no-op, so
+  # removing both the nu-* and breeze-* paths is always safe.
+  local nu_agent_plist="/Library/LaunchDaemons/com.nodesunlimited.agent.plist"
+  local nu_watchdog_plist="/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist"
+  local nu_helper_user_plist="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist"
+  local nu_helper_lw_plist="/Library/LaunchAgents/com.nodesunlimited.desktop-helper-loginwindow.plist"
+  local breeze_agent_plist="/Library/LaunchDaemons/com.breeze.agent.plist"
+  local breeze_watchdog_plist="/Library/LaunchDaemons/com.breeze.watchdog.plist"
+  local breeze_user_plist="/Library/LaunchAgents/com.breeze.agent-user.plist"
 
   echo "Uninstalling Breeze Agent for macOS..."
 
   if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout system/com.breeze.agent 2>/dev/null || launchctl unload "$agent_plist" 2>/dev/null || true
-    launchctl bootout system/com.breeze.watchdog 2>/dev/null || launchctl unload "$watchdog_plist" 2>/dev/null || true
-    launchctl unload "$user_plist" 2>/dev/null || true
+    # Daemons: bootout the NU label first, then the legacy breeze label, then a
+    # legacy unload of whichever plist is present.
+    launchctl bootout system/com.nodesunlimited.agent 2>/dev/null \
+      || launchctl bootout system/com.breeze.agent 2>/dev/null \
+      || launchctl unload "$nu_agent_plist" 2>/dev/null \
+      || launchctl unload "$breeze_agent_plist" 2>/dev/null || true
+    launchctl bootout system/com.nodesunlimited.watchdog 2>/dev/null \
+      || launchctl bootout system/com.breeze.watchdog 2>/dev/null \
+      || launchctl unload "$nu_watchdog_plist" 2>/dev/null \
+      || launchctl unload "$breeze_watchdog_plist" 2>/dev/null || true
+    # Per-user LaunchAgents: the NU desktop-helper (user + loginwindow) and the
+    # legacy breeze user agent.
+    launchctl unload "$nu_helper_user_plist" 2>/dev/null || true
+    launchctl unload "$nu_helper_lw_plist" 2>/dev/null || true
+    launchctl unload "$breeze_user_plist" 2>/dev/null || true
   else
     warn "launchctl not found; skipping service stop"
   fi
 
-  rm -f "$agent_plist"
-  rm -f "$watchdog_plist"
-  rm -f "$user_plist"
+  rm -f "$nu_agent_plist" "$breeze_agent_plist"
+  rm -f "$nu_watchdog_plist" "$breeze_watchdog_plist"
+  rm -f "$nu_helper_user_plist" "$nu_helper_lw_plist" "$breeze_user_plist"
   rm -f "$AGENT_BINARY"
   rm -f "$WATCHDOG_BINARY"
   rm -f "$BACKUP_BINARY"
+  # The NU macOS build also lays down a desktop-helper binary alongside the agent.
+  rm -f /usr/local/bin/nu-desktop-helper
 
   echo "Breeze Agent uninstalled."
   echo "Config at /Library/Application Support/Breeze/ was preserved."

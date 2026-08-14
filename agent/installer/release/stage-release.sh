@@ -39,11 +39,13 @@ REPOSITORY="${REPOSITORY:-bloomingbrands/breeze}"
 KEY="${SIGNING_KEY:-$HOME/.nu-agent-signing/nu-release-manifest.ed25519.key}"
 OUT="${OUT:-$AGENT_DIR/dist/release}"
 
-# Default to what the server actually serves today. `backup` is a real scanned
-# component but has never been staged here, and registering it would start
-# handing the fleet a component it has never had — a separate decision from
-# fixing the update trust chain. Override to include it: COMPONENTS="agent watchdog backup"
-read -r -a COMPONENTS <<< "${COMPONENTS:-agent watchdog}"
+# Ship the full agent family the installer expects. install.sh downloads
+# breeze-backup for the backup subsystem and checksum-verifies it against the
+# signed manifest (download.ts verify_sha256), so a staging run that omits
+# `backup` leaves the server 404ing that download and the install aborting.
+# Keep this in sync with the release.yml binaries-init download pattern.
+# Override to trim the set: COMPONENTS="agent watchdog"
+read -r -a COMPONENTS <<< "${COMPONENTS:-agent watchdog backup}"
 # os:arch pairs. Windows arm64 is included even though upstream never shipped
 # it — Windows 11 on ARM otherwise runs the amd64 build under emulation.
 TARGETS=(darwin:arm64 darwin:amd64 linux:arm64 linux:amd64 windows:amd64 windows:arm64)

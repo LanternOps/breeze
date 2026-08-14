@@ -283,6 +283,34 @@ describe('agent routes', () => {
       expect(script).toContain('verify_sha256 "$TMPFILE" "$EXPECTED_SHA256"');
       expect(script).toContain('Refusing to install without a trusted checksum');
     });
+
+    it('uninstall.sh finds NU-branded macOS binaries and services, keeping breeze fallbacks', async () => {
+      const res = await app.request('/agents/uninstall.sh');
+      expect(res.status).toBe(200);
+      const script = await res.text();
+
+      // Binaries: prefer the NU-branded nu-* names, fall back to breeze-* so the
+      // same uninstaller works on the Linux install (which ships breeze-agent).
+      expect(script).toContain('AGENT_BINARY="/usr/local/bin/nu-agent"');
+      expect(script).toContain('AGENT_BINARY="/usr/local/bin/breeze-agent"');
+      expect(script).toContain('WATCHDOG_BINARY="/usr/local/bin/nu-watchdog"');
+      expect(script).toContain('WATCHDOG_BINARY="/usr/local/bin/breeze-watchdog"');
+      expect(script).toContain('BACKUP_BINARY="/usr/local/bin/nu-backup"');
+      expect(script).toContain('BACKUP_BINARY="/usr/local/bin/breeze-backup"');
+
+      // macOS launchd: NU labels/plists first, breeze labels/plists as fallback.
+      expect(script).toContain('launchctl bootout system/com.nodesunlimited.agent');
+      expect(script).toContain('launchctl bootout system/com.breeze.agent');
+      expect(script).toContain('launchctl bootout system/com.nodesunlimited.watchdog');
+      expect(script).toContain('launchctl bootout system/com.breeze.watchdog');
+      expect(script).toContain('/Library/LaunchDaemons/com.nodesunlimited.agent.plist');
+      expect(script).toContain('/Library/LaunchDaemons/com.nodesunlimited.watchdog.plist');
+      expect(script).toContain('/Library/LaunchAgents/com.nodesunlimited.desktop-helper-user.plist');
+
+      // Linux systemd unit names stay breeze-agent — the fix must not touch them.
+      expect(script).toContain('systemctl stop breeze-agent');
+      expect(script).toContain('/etc/systemd/system/breeze-agent.service');
+    });
   });
 
   describe('POST /agents/enroll', () => {

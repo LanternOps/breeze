@@ -2384,11 +2384,15 @@ jobs:
       - name: Create staging directory
         run: mkdir -p staging/agent staging/viewer staging/helper
 
-      - name: Download agent artifacts
+      - name: Download agent-family artifacts
+        # Must cover every component the API's local scanner registers
+        # (parseBinaryFilename: breeze-<component>-<os>-<arch>[.exe]). A bare
+        # 'breeze-agent-*' silently drops backup/watchdog/user-helper from the
+        # binaries-init image, so install.sh 404s the backup download and aborts.
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: staging/agent
-          pattern: 'breeze-agent-*'
+          pattern: 'breeze-{agent,backup,watchdog,user-helper}-*'
           merge-multiple: true
 
       - name: Download viewer artifacts
