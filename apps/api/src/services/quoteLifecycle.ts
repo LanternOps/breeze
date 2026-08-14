@@ -247,15 +247,15 @@ export async function sendQuote(
   // status flip, which is the honest outcome — the email having already left is
   // a pre-existing property of sending inside the request transaction, not
   // something this write introduces.
-  // Scoped by orgId as well as id, not because the request path needs it (forced
-  // RLS covers that, and getQuote already enforced actor access) but because the
-  // scheduled-send worker calls this under a SYSTEM context where RLS is not the
-  // boundary. An id-only write there has nothing but the id standing between it
-  // and the wrong row.
+  // Matched on id alone, deliberately: the SAME predicate the draft→sent claim
+  // above used. Adding `orgId` here looks like defence-in-depth and is not —
+  // `quote` was read BEFORE the claim, and updateQuote can reassign a draft's
+  // org (quoteService.ts, `set.orgId = targetOrgId`). A concurrent move would
+  // leave the claim succeeding on id+status while this write matched ZERO rows
+  // against the stale org, silently losing the outcome this function exists to
+  // record. Keep the write bound to the row the claim actually took.
   if (emailReason) {
-    await db.update(quotes)
-      .set({ sendEmailReason: emailReason, updatedAt: new Date() })
-      .where(and(eq(quotes.id, id), eq(quotes.orgId, quote.orgId)));
+    await db.update(quotes).set({ sendEmailReason: emailReason, updatedAt: new Date() }).where(eq(quotes.id, id));
   }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
