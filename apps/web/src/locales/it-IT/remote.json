@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "Su Linux, rendi eseguibile il file scaricato (chmod +x) ed eseguilo una volta. In questo modo il visualizzatore viene registrato e da quel momento le sessioni si apriranno automaticamente.",
+      "linuxFuse": "Se si chiude senza aprire alcuna finestra, serve FUSE 2: installa libfuse2t64 (Debian 13 / Ubuntu 24.04+) oppure libfuse2 sulle versioni precedenti, o eseguilo con --appimage-extract-and-run.",
       "title": "Il visualizzatore non si è aperto?",
       "viewerDescription": "Se il visualizzatore si è aperto, puoi chiudere questo messaggio. In caso contrario, scaricalo qui sotto.",
       "vncDescription": "Apri invece la sessione VNC nel browser."

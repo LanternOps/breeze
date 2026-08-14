@@ -347,6 +347,60 @@ describe('PartnerSettingsPage Company tab', () => {
     expect(body.settings.address.city).toBe('Denver');
   });
 
+  // #3430 — the Website field reached the API unvalidated. handleSave now blocks
+  // the round-trip so the user gets a reason instead of a raw server 400.
+  describe('website scheme guard blocks the save', () => {
+    const loadedPartner = () =>
+      makeJsonResponse({
+        id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: {
+          timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
+          businessHours: { preset: 'business' }, contact: {}, address: {},
+        },
+      });
+
+    const patchCalls = () =>
+      fetchWithAuthMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+      );
+
+    it.each(['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'acme.com'])(
+      'does not PATCH when the website is %j',
+      async (bad) => {
+        fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+        fetchWithAuthMock.mockResolvedValueOnce(loadedPartner());
+
+        render(<PartnerSettingsPage />);
+        const websiteInput = await screen.findByLabelText(/website/i);
+        const user = userEvent.setup();
+        await user.type(websiteInput, bad);
+        await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+        expect(patchCalls()).toHaveLength(0);
+      }
+    );
+
+    it('PATCHes a valid https website, trimmed', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+      fetchWithAuthMock.mockResolvedValueOnce(loadedPartner());
+      fetchWithAuthMock.mockResolvedValueOnce(
+        makeJsonResponse({ id: 'partner-1', name: 'Acme MSP', settings: {} })
+      );
+
+      render(<PartnerSettingsPage />);
+      const websiteInput = await screen.findByLabelText(/website/i);
+      const user = userEvent.setup();
+      await user.type(websiteInput, '  https://acme.com  ');
+      await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+      const calls = patchCalls();
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse((calls[0]![1] as RequestInit).body as string);
+      expect(body.settings.contact.website).toBe('https://acme.com');
+    });
+  });
+
   const partnerWithSignature = (emailSignature: string | null) => ({
     id: 'partner-1',
     name: 'Acme MSP',

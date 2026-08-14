@@ -68,10 +68,14 @@ vi.mock('../../services/quotePdf', () => ({
 const dbRows = vi.hoisted(() => ({ next: [] as any[][], i: 0 }));
 vi.mock('../../db', () => {
   const builder = () => {
+    // Terminal steps (`limit`, `orderBy`) both resolve the next preset rows
+    // array — the recipients read on GET /:id ends in orderBy, not limit.
+    const resolve = () => Promise.resolve(dbRows.next[dbRows.i++] ?? []);
     const chain: any = {
       from: () => chain,
       where: () => chain,
-      limit: () => Promise.resolve(dbRows.next[dbRows.i++] ?? [])
+      orderBy: resolve,
+      limit: resolve
     };
     return chain;
   };

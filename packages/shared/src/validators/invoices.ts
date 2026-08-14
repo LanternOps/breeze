@@ -3,6 +3,7 @@ import { z } from 'zod';
 // const — a `string[]` intermediate would widen the schema to z.enum(string)).
 import { INVOICE_STATUSES, PAYMENT_METHODS } from '../types/billing-enums';
 import { BULK_ID_LIMIT } from '../constants';
+import { nullableHttpUrlField } from './httpUrl';
 
 const money = z.number().nonnegative().multipleOf(0.01);
 const positiveQty = z.number().positive().multipleOf(0.01);
@@ -101,7 +102,10 @@ export const partnerBillingSettingsSchema = z.object({
   // Seller "From" contact profile (snapshotted onto each document at issue).
   billingCompanyName: z.string().max(255).nullable().optional(),
   billingPhone: z.string().max(40).nullable().optional(),
-  billingWebsite: z.string().max(255).nullable().optional(),
+  // Snapshotted onto every issued invoice/quote and rendered in the branded
+  // PDF, the portal document shell and the web document views, so it must be a
+  // real web address rather than an arbitrary scheme (#3430).
+  billingWebsite: nullableHttpUrlField('Billing website', 255),
   billingAddressLine1: z.string().max(255).nullable().optional(),
   billingAddressLine2: z.string().max(255).nullable().optional(),
   billingAddressCity: z.string().max(120).nullable().optional(),

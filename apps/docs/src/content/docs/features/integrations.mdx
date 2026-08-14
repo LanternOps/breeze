@@ -5,7 +5,7 @@ description: Connect Breeze to PSA platforms, communication tools, and external 
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Integrations connect Breeze to the tools your team already uses -- PSA platforms for ticketing, communication channels for alerting, and monitoring endpoints for telemetry forwarding. Each integration is scoped to an organization and configured independently, so MSPs can tailor connections per customer without cross-tenant interference. PSA credentials are encrypted at rest using AES-256-GCM, and every configuration change is recorded in the audit log.
+Integrations connect Breeze to the tools your team already uses -- PSA platforms for ticketing, communication channels for alerting, and monitoring endpoints for telemetry forwarding. Most integrations are scoped to an organization and configured independently, so MSPs can tailor connections per customer without cross-tenant interference; PSA connections can also be owned **partner-wide**, so one connection serves every organization under the partner (see [PSA Integrations](/features/psa-integrations/#connection-ownership)). PSA credentials are encrypted at rest using AES-256-GCM, and every configuration change is recorded in the audit log.
 
 <Aside type="caution" title="Implementation Status">
   **PSA integrations** are fully database-backed with encrypted credential storage. **Communication, monitoring, and ticketing integrations** currently use in-memory storage and do not persist across API restarts. A migration to database-backed persistence for non-PSA integrations is planned.

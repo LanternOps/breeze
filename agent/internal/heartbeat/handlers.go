@@ -322,7 +322,7 @@ func safeModeRebootNotice(delayMinutes int) string {
 func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	collector := collectors.NewSoftwareCollector()
-	software, err := collector.Collect()
+	software, err := collectors.Guard("software", collector.Collect)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -406,7 +406,7 @@ func handleTerminalStop(h *Heartbeat, cmd Command) tools.CommandResult {
 
 func handleCollectBootPerformance(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
-	metrics, err := h.bootCol.Collect()
+	metrics, err := collectors.Guard("bootPerformance", h.bootCol.Collect)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
@@ -450,7 +450,7 @@ func handleCollectReliabilityMetrics(h *Heartbeat, _ Command) tools.CommandResul
 		return tools.NewErrorResult(fmt.Errorf("reliability collector unavailable"), time.Since(start).Milliseconds())
 	}
 
-	metrics, err := h.reliabilityCol.Collect()
+	metrics, err := collectors.Guard("reliability", h.reliabilityCol.Collect)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}

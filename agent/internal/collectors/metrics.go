@@ -7,7 +7,6 @@ import (
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
@@ -135,7 +134,16 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	c.collectDiskActivity(metrics, elapsed)
 
 	// Network — aggregate totals (backward-compatible)
-	netIO, err := net.IOCounters(false)
+	netIO, err := safeNetIOCounters(false)
+	if err != nil || len(netIO) == 0 {
+		// Drop the baseline. c.lastTime advances every cycle regardless, so
+		// carrying a stale counter across a missed sample would make the next
+		// successful cycle divide a multi-interval byte delta by a single
+		// interval — reporting a bandwidth spike that never happened. A zero
+		// baseline is re-seeded below and simply skips one sample instead.
+		c.lastNetIn = 0
+		c.lastNetOut = 0
+	}
 	if err == nil && len(netIO) > 0 {
 		currentIn := netIO[0].BytesRecv
 		currentOut := netIO[0].BytesSent
@@ -156,7 +164,12 @@ func (c *MetricsCollector) Collect() (*SystemMetrics, error) {
 	}
 
 	// Network — per-interface bandwidth
-	perIface, err := net.IOCounters(true)
+	perIface, err := safeNetIOCounters(true)
+	if err != nil {
+		// Same reasoning as the aggregate baseline above: a stale per-interface
+		// snapshot across a missed sample would fabricate a rate spike.
+		clear(c.lastIface)
+	}
 	if err == nil {
 		hasHistory := !c.lastTime.IsZero() && elapsed > 1 && elapsed < 300
 		seen := make(map[string]bool)

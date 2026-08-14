@@ -873,7 +873,24 @@
       "sendCanceledSaveFailed": "A change failed to save, so Send was canceled. Fix the highlighted field and try again.",
       "sendBlockedUnsaved": "“{{field}}” has a change that hasn’t saved. Fix it there, then Send.",
       "unsavedHint": "“{{field}}” has an unsaved change — Send unlocks once it saves.",
-      "unsavedTitle": "“{{field}}” has an unsaved change — Send unlocks once it saves."
+      "unsavedTitle": "“{{field}}” has an unsaved change — Send unlocks once it saves.",
+      "resend": "Re-send",
+      "resendError": "Could not re-send the proposal.",
+      "resendSuccess": "Proposal re-sent to {{orgName}} — same link, same document.",
+      "resendNotDelivered": "Re-send recorded, but no email was delivered. Check the address, or copy the share link and send it yourself.",
+      "copyShareLink": "Copy share link",
+      "copyingShareLink": "Copying…",
+      "shareLinkCopied": "Share link copied — this is the same link the customer was emailed.",
+      "shareLinkCopyFailed": "Could not copy automatically. The share link is: {{url}}",
+      "shareLinkError": "Could not get the share link.",
+      "resendConfirm": {
+        "title": "Re-send proposal",
+        "message": "Send {{orgName}} another copy of this proposal. Nothing about the quote changes and the accept link stays the same."
+      },
+      "resendNewLinkOriginalLive": "Proposal re-sent — but with a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside the new one.",
+      "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
+      "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
+      "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -985,7 +1002,8 @@
         "tax": "Tax",
         "title": "Totals"
       },
-      "viewInvoice": "View invoice"
+      "viewInvoice": "View invoice",
+      "sentTo": "Sent to"
     },
     "distributorLookup": {
       "available": "{{count}} avail",

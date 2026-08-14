@@ -72,6 +72,9 @@ Agents update themselves automatically. On each heartbeat (~60s), the API checks
 2. Backs up the current binary
 3. Replaces the executable and restarts the service
 4. Rolls back automatically if the new binary fails to start
+5. Swaps the bundled `breeze-backup` helper to the matching version in the same upgrade; a periodic reconcile re-fetches it later if the swap was skipped or the helper is missing or stale
+
+Since v0.105.0, release manifests can label each asset with an agent **edition** (`self-host` or `hosted`); the updater refuses an asset whose declared edition doesn't match the running build, and accepts manifests without edition labels for backward compatibility. See [Self-Host Agent Migration](/agents/self-host-migration/).
 
 During an update, the device status changes to **Updating** in the dashboard so you can distinguish active updates from offline agents. If the update takes longer than 5 minutes, the device reverts to **Offline**. After a successful restart, the agent immediately reports its new version (bypassing the normal 0--60 second heartbeat jitter).
 

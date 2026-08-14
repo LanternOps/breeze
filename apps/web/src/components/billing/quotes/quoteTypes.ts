@@ -288,6 +288,11 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   branding?: QuoteBranding;
   billTo?: QuoteBillTo;
+  /** Email addresses this quote was sent to, oldest first — the authorized
+   *  portal signers recorded at send time. Empty on drafts and on legacy sends
+   *  that predate the recipient record. Optional: older payloads/fixtures omit
+   *  it entirely, which must read as "unknown", not "sent to nobody". */
+  recipients?: string[];
   /** Persisted fulfillment staged during acceptance. Included in the detail
    * read model so technicians can discover the order after a reload. */
   pax8OrderId?: string | null;

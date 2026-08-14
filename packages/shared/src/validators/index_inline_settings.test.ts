@@ -405,6 +405,52 @@ describe('monitoringInlineSettingsSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  // #3491/#3492: a saved watch loads back from the DB with nulls in the three
+  // nullable columns, and the editor posts them straight back. Rejecting null
+  // made an existing policy impossible to re-save once any watch had an unset
+  // field — the reported error named exactly these three paths.
+  it('should accept a saved watch round-tripped with null optional fields', () => {
+    const result = monitoringInlineSettingsSchema.safeParse({
+      watches: [
+        {
+          watchType: 'service',
+          name: 'wuauserv',
+          displayName: null,
+          cpuThresholdPercent: null,
+          memoryThresholdMb: null,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // Preserved as null rather than coerced: the write path stores `?? null`
+      // and the agent delivery check is `!= null`, so both spellings behave
+      // identically downstream.
+      const watch = result.data.watches[0];
+      expect(watch?.displayName).toBeNull();
+      expect(watch?.cpuThresholdPercent).toBeNull();
+      expect(watch?.memoryThresholdMb).toBeNull();
+    }
+  });
+
+  // Covers all three widened fields, not just one: nullable must not become
+  // "accepts anything". Type and range checks have to survive the change.
+  it.each([
+    ['displayName wrong type', { displayName: 42 }],
+    ['displayName too long', { displayName: 'x'.repeat(256) }],
+    ['cpuThresholdPercent wrong type', { cpuThresholdPercent: 'high' }],
+    ['cpuThresholdPercent above max', { cpuThresholdPercent: 101 }],
+    ['cpuThresholdPercent below min', { cpuThresholdPercent: -1 }],
+    ['memoryThresholdMb wrong type', { memoryThresholdMb: 'lots' }],
+    ['memoryThresholdMb below min', { memoryThresholdMb: -1 }],
+  ])('still rejects %s after the nullable widening', (_label, patch) => {
+    expect(
+      monitoringInlineSettingsSchema.safeParse({
+        watches: [{ watchType: 'process', name: 'nginx', ...patch }],
+      }).success
+    ).toBe(false);
+  });
+
   it('should reject checkIntervalSeconds below 10', () => {
     expect(
       monitoringInlineSettingsSchema.safeParse({ checkIntervalSeconds: 9 }).success
