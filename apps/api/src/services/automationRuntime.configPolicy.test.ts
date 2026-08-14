@@ -18,7 +18,7 @@ vi.mock('../db/schema', () => ({
   configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
   configurationPolicies: { id: 'id', orgId: 'orgId' },
   devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status' },
-  scripts: { id: 'id' },
+  scripts: { id: 'id', deletedAt: 'deletedAt' },
   notificationChannels: { id: 'id', orgId: 'orgId' },
   automations: { id: 'id', runCount: 'runCount' },
   alerts: { id: 'id' },
@@ -39,6 +39,12 @@ vi.mock('./scriptDispatch', () => ({
   dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: false, code: 'insert_failed', error: 'mocked' }),
 }));
 
+// #3409 PR3 P2: spied so the per-run call COUNT is assertable. The resolver's
+// own behaviour is covered in tenantVariableResolution.test.ts.
+vi.mock('./tenantVariableResolution', () => ({
+  loadTenantVariableScope: vi.fn().mockResolvedValue({ orgIds: new Set() }),
+}));
+
 vi.mock('./notificationSenders', () => ({
   getEmailRecipients: vi.fn().mockReturnValue([]),
   sendEmailNotification: vi.fn().mockResolvedValue({ success: false }),
@@ -49,6 +55,7 @@ import { db } from '../db';
 import { createConfigPolicyAutomationRun, executeConfigPolicyAutomationRun } from './automationRuntime';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
+import { loadTenantVariableScope } from './tenantVariableResolution';
 
 function makeConfigPolicyAutomation(overrides: Record<string, unknown> = {}): any {
   return {
@@ -614,6 +621,109 @@ describe('executeConfigPolicyAutomationRun', () => {
     // Verify final status was persisted to DB
     const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
     expect(lastSetCall.status).toBe('partial');
+  });
+
+  // #3409 PR3 P2 — the N-connection trap. Before the hoist,
+  // executeRunScriptAction called loadTenantVariableScope itself, so this run
+  // (4 devices × 1 run_script action, inside runWithConcurrency(…, 5, …))
+  // issued FOUR scope loads, each escaping the ambient context and taking a
+  // second pooled connection. It must now issue exactly ONE, covering the
+  // run's distinct org set.
+  //
+  // Mutation check for this test: move the load back inside
+  // executeRunScriptAction and the call count becomes 4.
+  it('loads the tenant-variable scope ONCE per run, not once per device (#3409 PR3 P2)', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [{ type: 'run_script', scriptId: 'script-1' }],
+    });
+
+    const scope = { orgIds: new Set(['org-1', 'org-2']) };
+    vi.mocked(loadTenantVariableScope).mockResolvedValue(scope as any);
+
+    // Four devices spread over two orgs — the load must be keyed by the
+    // DISTINCT org set, not by the device list.
+    const deviceRows = [
+      { id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null, osType: 'linux', status: 'online', agentId: 'a1', siteId: 'site-1', customFields: {} },
+      { id: 'dev-2', orgId: 'org-2', hostname: 'host-2', displayName: null, osType: 'linux', status: 'online', agentId: 'a2', siteId: 'site-2', customFields: {} },
+      { id: 'dev-3', orgId: 'org-1', hostname: 'host-3', displayName: null, osType: 'linux', status: 'online', agentId: 'a3', siteId: 'site-1', customFields: {} },
+      { id: 'dev-4', orgId: 'org-2', hostname: 'host-4', displayName: null, osType: 'linux', status: 'online', agentId: 'a4', siteId: 'site-2', customFields: {} },
+    ];
+
+    // The script content MUST carry a {{var.*}} token: the preload is gated on
+    // it, so a token-free fixture would still pass with the gate forced false.
+    const scriptRows = [
+      { id: 'script-1', orgId: null, osTypes: ['linux'], runAs: 'system', content: 'curl {{var.repo_url}}', language: 'bash', timeoutSeconds: 60 },
+    ];
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        // resolveConfigPolicyOrgId
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ configPolicyId: 'cp-1' }]),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 3) {
+        return {
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
+        } as any;
+      }
+      if (selectCallCount === 4) {
+        return {
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(scriptRows) }),
+        } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as any;
+    });
+
+    const run = { id: 'run-1', automationId: null, status: 'running', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([run]) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-1', executionId: null, delivered: true, deliveryOutcome: 'sent', executedAt: new Date(),
+    } as any);
+
+    const result = await executeConfigPolicyAutomationRun(
+      automation,
+      deviceRows.map((d) => d.id),
+      'scheduler',
+    );
+
+    expect(result.devicesSucceeded).toBe(4);
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(4);
+
+    // The assertion this test exists for.
+    expect(loadTenantVariableScope).toHaveBeenCalledTimes(1);
+    expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-1', 'org-2']);
+
+    // ...and every device's dispatch got that one snapshot.
+    for (const [args] of vi.mocked(dispatchScriptToDevice).mock.calls) {
+      expect((args as any).variableScope).toBe(scope);
+    }
   });
 
   it('publishes automation.completed event on success', async () => {

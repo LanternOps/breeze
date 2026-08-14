@@ -28,6 +28,7 @@ import {
   AutomationValidationError,
   executeRunScriptAction,
   isCronDue,
+  loadAutomationRunVariableScope,
   normalizeAutomationActions,
   normalizeAutomationTrigger,
   normalizeNotificationTargets,
@@ -135,37 +136,129 @@ describe('automationRuntime', () => {
     expect(actions[0]).toMatchObject({ parameters: undefined });
   });
 
-  it('preloads a variable scope for the device org before dispatching a run_script action (#3409 PR2 Task 4)', async () => {
-    const scope = { orgIds: new Set(['org-a']) };
-    vi.mocked(loadTenantVariableScope).mockResolvedValue(scope as any);
-    const context = {
-      automation: { id: 'auto-1', orgId: 'org-a', name: 'Test automation', createdBy: 'user-1' },
-      runId: 'run-1',
-      device: {
-        id: 'device-1', orgId: 'org-a', hostname: 'host-1', displayName: null,
-        osType: 'linux' as const, status: 'online' as const, agentId: 'agent-1',
-      },
-      scriptsById: new Map([
-        // Content MUST carry a {{var.*}} token — the preload is gated on it,
-        // so a token-free fixture would assert nothing.
-        [
-          'script-1',
-          { id: 'script-1', orgId: 'org-a', osTypes: ['linux'], runAs: 'system', content: 'curl {{var.repo_url}}' } as any,
-        ],
-      ]),
-      channelsById: new Map(),
-    };
+  // Content MUST carry a {{var.*}} token — the preload is gated on it, so a
+  // token-free fixture would pass with the gate wired to constant false.
+  const TOKEN_SCRIPT = {
+    id: 'script-1',
+    orgId: 'org-a',
+    osTypes: ['linux'],
+    runAs: 'system',
+    content: 'curl {{var.repo_url}}',
+  } as any;
 
-    const result = await executeRunScriptAction(
+  const contextFor = (deviceId: string, orgId: string, variableScope: unknown) => ({
+    automation: { id: 'auto-1', orgId: 'org-a', name: 'Test automation', createdBy: 'user-1' },
+    runId: 'run-1',
+    device: {
+      id: deviceId, orgId, hostname: `host-${deviceId}`, displayName: null,
+      osType: 'linux' as const, status: 'online' as const, agentId: `agent-${deviceId}`,
+      siteId: `site-${orgId}`, customFields: { owner: 'ops' },
+    },
+    scriptsById: new Map([['script-1', TOKEN_SCRIPT]]),
+    channelsById: new Map(),
+    variableScope,
+  }) as any;
+
+  it('takes the variable scope from the run context and never loads one itself (#3409 PR3 P2)', async () => {
+    // The hoist's whole point: executeRunScriptAction runs once PER DEVICE PER
+    // run_script action inside runWithConcurrency. Calling it N times must
+    // therefore issue ZERO scope loads — the run-level preload already ran.
+    const scope = { orgIds: new Set(['org-a']) };
+
+    for (const deviceId of ['device-1', 'device-2', 'device-3']) {
+      const result = await executeRunScriptAction(
+        { type: 'run_script', scriptId: 'script-1' },
+        0,
+        contextFor(deviceId, 'org-a', scope),
+      );
+      expect(result.success).toBe(true);
+    }
+
+    expect(loadTenantVariableScope).not.toHaveBeenCalled();
+    const calls = vi.mocked(dispatchScriptToDevice).mock.calls;
+    expect(calls).toHaveLength(3);
+    for (const [args] of calls) {
+      expect(args.variableScope).toBe(scope);
+    }
+  });
+
+  it('carries the widened device projection through to dispatch (#3409 PR3 P3)', async () => {
+    await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
-      context,
+      contextFor('device-1', 'org-a', { orgIds: new Set(['org-a']) }),
     );
 
-    expect(result.success).toBe(true);
-    expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-a']);
     const dispatchArgs = vi.mocked(dispatchScriptToDevice).mock.calls[0]![0];
-    expect(dispatchArgs.variableScope).toBe(scope);
+    expect(dispatchArgs.device).toMatchObject({
+      hostname: 'host-device-1',
+      siteId: 'site-org-a',
+      customFields: { owner: 'ops' },
+    });
+  });
+
+  describe('loadAutomationRunVariableScope (#3409 PR3 P2)', () => {
+    const scriptsById = new Map<string, any>([
+      ['script-1', TOKEN_SCRIPT],
+      ['script-plain', { id: 'script-plain', content: 'echo hi' } as any],
+    ]);
+
+    it('loads ONCE for the run over the distinct org set, not once per device', async () => {
+      const scope = { orgIds: new Set(['org-a', 'org-b']) };
+      vi.mocked(loadTenantVariableScope).mockResolvedValue(scope as any);
+
+      // Five devices, two orgs, two run_script actions — one call, two orgs.
+      const result = await loadAutomationRunVariableScope(
+        [
+          { type: 'run_script', scriptId: 'script-1' },
+          { type: 'run_script', scriptId: 'script-plain' },
+        ] as any,
+        scriptsById,
+        ['org-a', 'org-b', 'org-a', 'org-b', 'org-a'],
+      );
+
+      expect(result).toBe(scope);
+      expect(loadTenantVariableScope).toHaveBeenCalledTimes(1);
+      expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-a', 'org-b']);
+    });
+
+    it('passes the empty org list when no run_script action uses a {{var.*}} token', async () => {
+      await loadAutomationRunVariableScope(
+        [
+          { type: 'run_script', scriptId: 'script-plain' },
+          { type: 'execute_command', command: 'echo {{var.not_a_script}}' },
+        ] as any,
+        scriptsById,
+        ['org-a', 'org-b'],
+      );
+
+      // [] is loadTenantVariableScope's documented no-op path — it
+      // short-circuits before touching the DB.
+      expect(loadTenantVariableScope).toHaveBeenCalledWith([]);
+    });
+
+    it('loads when ANY run_script action in the set uses a token, not only the first', async () => {
+      await loadAutomationRunVariableScope(
+        [
+          { type: 'run_script', scriptId: 'script-plain' },
+          { type: 'run_script', scriptId: 'script-1' },
+        ] as any,
+        scriptsById,
+        ['org-a'],
+      );
+
+      expect(loadTenantVariableScope).toHaveBeenCalledWith(['org-a']);
+    });
+
+    it('does not throw when an action references a script that failed to load', async () => {
+      await loadAutomationRunVariableScope(
+        [{ type: 'run_script', scriptId: 'deleted-script' }] as any,
+        scriptsById,
+        ['org-a'],
+      );
+
+      expect(loadTenantVariableScope).toHaveBeenCalledWith([]);
+    });
   });
 
   it('normalizes notification targets from legacy and canonical payloads', () => {

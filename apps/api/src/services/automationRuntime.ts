@@ -20,7 +20,7 @@ import {
 import { resolveDeploymentTargets } from './deploymentEngine';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
-import { loadTenantVariableScope } from './tenantVariableResolution';
+import { loadTenantVariableScope, type TenantVariableScope } from './tenantVariableResolution';
 import { publishEvent } from './eventBus';
 import { captureException } from './sentry';
 import {
@@ -846,10 +846,68 @@ type ActionExecutionContext = {
     // Needed by dispatchScriptToDevice (#3409 PR0) for WS delivery — carried
     // through the device snapshot rather than re-queried per action.
     agentId: string;
+    // #3409 PR3: sourced script parameters bind to device/site properties
+    // (`builtin`) and to the device's custom fields (`deviceCustomField`).
+    // They ride the run's ONE device snapshot — a per-device re-query at
+    // resolution time would reintroduce exactly the N-query shape the
+    // variable-scope hoist below removes. Not consumed yet; the resolver
+    // lands in a later task.
+    siteId: (typeof devices.$inferSelect)['siteId'];
+    customFields: (typeof devices.$inferSelect)['customFields'];
   };
   scriptsById: Map<string, typeof scripts.$inferSelect>;
   channelsById: Map<string, typeof notificationChannels.$inferSelect>;
+  /**
+   * Preloaded ONCE per run over the run's distinct org set — see
+   * {@link loadAutomationRunVariableScope}. Required (not optional) on
+   * purpose: an absent scope would silently resolve every `{{var.*}}` token
+   * to "missing" rather than failing loudly, so the type forces every runner
+   * to have done the preload.
+   */
+  variableScope: TenantVariableScope;
 };
+
+/**
+ * Preloads the tenant-variable scope ONCE per automation run (#3409 PR3 P2).
+ *
+ * Previously `executeRunScriptAction` called `loadTenantVariableScope` itself,
+ * which put the load inside `runWithConcurrency(deviceRows, 5, …)` × the
+ * action loop — i.e. once PER DEVICE PER run_script action, each one escaping
+ * the ambient context and taking a second pooled connection. A 200-device
+ * automation with two run_script actions issued 400 of them. `scriptExecution.ts`
+ * has always done this correctly (once per fan-out over the distinct org set);
+ * this is the automation path catching up, and it must happen BEFORE PR3 adds
+ * a second (parameter-level) resolver on the same code path, which would
+ * otherwise compound the trap.
+ *
+ * The gate is preserved, just widened from one script to the run's script set:
+ * if no `run_script` action references a script whose content carries a
+ * `{{var.*}}` token, we pass `[]` and `loadTenantVariableScope` short-circuits
+ * without querying at all (tenantVariableResolution.ts) — so a token-free run,
+ * which is the overwhelming majority, still does exactly zero work.
+ *
+ * NOTE for PR3's sourced parameters: this gate is content-only. When bound
+ * parameters land, extend it to `hasTenantVariableBoundParameters(parameters)`
+ * as well (plan §3 P1) — a parameter binding lives in `scripts.parameters`,
+ * not in the content, and would resolve against an empty scope here.
+ *
+ * `loadTenantVariableScope` owns the `runOutsideDbContext(() =>
+ * withSystemDbAccessContext(...))` double wrapper; do not add or unwrap one
+ * here. Both wrappers, in that order, are load-bearing — a bare system
+ * context nested inside a held org-scoped transaction does not elevate.
+ */
+export async function loadAutomationRunVariableScope(
+  actions: AutomationAction[],
+  scriptsById: Map<string, typeof scripts.$inferSelect>,
+  deviceOrgIds: string[],
+): Promise<TenantVariableScope> {
+  const anyScriptUsesVariables = actions.some(
+    (action) =>
+      action.type === 'run_script' &&
+      hasVariableTokens(scriptsById.get(action.scriptId)?.content ?? ''),
+  );
+  return loadTenantVariableScope(anyScriptUsesVariables ? [...new Set(deviceOrgIds)] : []);
+}
 
 type ActionExecutionResult = {
   success: boolean;
@@ -894,14 +952,12 @@ export async function executeRunScriptAction(
 
   const parameters = action.parameters ?? {};
 
-  // Preload ONCE for this single-device dispatch (#3409 PR2 Task 4). Only
-  // run_script needs a scope — execute_command below dispatches a
-  // {kind:'raw'} source, which scriptDispatch deliberately never substitutes.
-  // Gated on the content: an unconditional preload would take a second
-  // connection per automation run to build a snapshot nothing consults.
-  const variableScope = await loadTenantVariableScope(
-    hasVariableTokens(script.content) ? [context.device.orgId] : []
-  );
+  // #3409 PR3 P2: the scope is preloaded ONCE per run by the caller (see
+  // loadAutomationRunVariableScope) and threaded in on the context. Do NOT
+  // load it here — this function runs once per device per run_script action,
+  // inside runWithConcurrency, which is exactly the N-connection trap the
+  // hoist removed.
+  const variableScope = context.variableScope;
 
   // #3409 PR0: dispatchScriptToDevice owns the script_executions insert (#3162
   // — a REAL uuid row so handleScriptResult can correlate the agent's result),
@@ -1750,6 +1806,11 @@ async function executeAutomationRunInner(
         osType: devices.osType,
         status: devices.status,
         agentId: devices.agentId,
+        // #3409 PR3 P3 — sourced parameters (`builtin` / `deviceCustomField`)
+        // resolve against these. Selected once here with the rest of the run's
+        // device snapshot; see ActionExecutionContext.device.
+        siteId: devices.siteId,
+        customFields: devices.customFields,
       })
       .from(devices)
       .where(inArray(devices.id, targetDeviceIds))
@@ -1809,6 +1870,14 @@ async function executeAutomationRunInner(
   let devicesSucceeded = 0;
   let devicesFailed = 0;
 
+  // ONE preload for the whole run, over the distinct org set of every device
+  // this run targets (#3409 PR3 P2) — never inside the concurrency loop below.
+  const variableScope = await loadAutomationRunVariableScope(
+    normalized.actions,
+    scriptsById,
+    deviceRows.map((device) => device.orgId),
+  );
+
   await runWithConcurrency(deviceRows, 5, async (device) => {
     let deviceFailed = false;
     const deviceStartedAt = new Date();
@@ -1827,6 +1896,7 @@ async function executeAutomationRunInner(
           device,
           scriptsById,
           channelsById,
+          variableScope,
         });
 
         logs.push(result.log);
@@ -2314,6 +2384,10 @@ export async function executeConfigPolicyAutomationRun(
         osType: devices.osType,
         status: devices.status,
         agentId: devices.agentId,
+        // #3409 PR3 P3 — mirrors the standalone runner's projection above;
+        // both feed the same ActionExecutionContext.device.
+        siteId: devices.siteId,
+        customFields: devices.customFields,
       })
       .from(devices)
       .where(inArray(devices.id, targetDeviceIds))
@@ -2365,6 +2439,13 @@ export async function executeConfigPolicyAutomationRun(
   let devicesSucceeded = 0;
   let devicesFailed = 0;
 
+  // ONE preload for the whole run (#3409 PR3 P2) — see the standalone runner.
+  const variableScope = await loadAutomationRunVariableScope(
+    actions,
+    scriptsById,
+    deviceRows.map((device) => device.orgId),
+  );
+
   await runWithConcurrency(deviceRows, 5, async (device) => {
     let deviceFailed = false;
 
@@ -2377,6 +2458,7 @@ export async function executeConfigPolicyAutomationRun(
         device,
         scriptsById,
         channelsById,
+        variableScope,
       });
 
       logs.push(result.log);

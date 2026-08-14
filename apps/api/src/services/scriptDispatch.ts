@@ -37,7 +37,19 @@ export type ScriptDispatchSource =
   | { kind: 'raw'; content: string; language: string; provenance: string };
 
 export type DispatchScriptInput = {
-  device: Pick<typeof devices.$inferSelect, 'id' | 'orgId' | 'osType' | 'status' | 'agentId'>;
+  // `hostname`, `siteId`, and `customFields` are carried for #3409 PR3's
+  // sourced parameters: a `deviceCustomField` binding reads `customFields`
+  // and the `builtin` source reads device/site/org properties. Nothing in
+  // THIS file consumes them yet — widening the projection is deliberately a
+  // separate step from adding the resolver, so every call site is already
+  // supplying the data before resolution starts depending on it. Every
+  // caller either selects whole device rows (scriptExecution.ts,
+  // aiToolsScripts.ts via verifyDeviceAccess) or carries a run-level device
+  // snapshot that was widened to match (automationRuntime.ts).
+  device: Pick<
+    typeof devices.$inferSelect,
+    'id' | 'orgId' | 'osType' | 'status' | 'agentId' | 'hostname' | 'siteId' | 'customFields'
+  >;
   source: ScriptDispatchSource;
   parameters?: Record<string, unknown>;
   triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';

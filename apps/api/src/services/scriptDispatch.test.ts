@@ -29,8 +29,12 @@ const savedScript = (o = {}) => ({
   timeoutSeconds: 60, runAs: 'system', deletedAt: null, ...o,
 }) as any;
 
+// hostname/siteId/customFields joined the projection in #3409 PR3 P3 for
+// sourced parameters. Nothing in scriptDispatch reads them yet — they are on
+// the fixture so the shape here matches what real callers now supply.
 const device = (o = {}) => ({
-  id: 'device-1', orgId: 'org-a', osType: 'linux', status: 'online', agentId: null, ...o,
+  id: 'device-1', orgId: 'org-a', osType: 'linux', status: 'online', agentId: null,
+  hostname: 'host-1', siteId: 'site-1', customFields: { assetTag: 'A-1' }, ...o,
 }) as any;
 
 // #3409 PR2 Task 4: builds a TenantVariableScope directly, bypassing
