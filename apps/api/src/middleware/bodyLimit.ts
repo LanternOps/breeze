@@ -54,18 +54,22 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   // Multipart image/document uploads that the UI advertises at 5 MB (10 MB for
   // contract templates). Each of these routes already registers its OWN
   // `bodyLimit` sized to its cap + 64KB multipart slack, but a route-level
-  // middleware can never be reached: this global gate runs at `app.use('*')`
-  // before any route is mounted, so without a carve-out here every one of them
-  // 413s at 1MB with the generic message (#3482 for quote images; same shape as
-  // #1377). Sizes below MUST stay >= the route's own limit so the route answers
-  // with its specific message. The 64KB slack covers multipart part headers and
-  // boundaries on top of the raw file bytes.
+  // limit can only ever make a path TIGHTER, never looser: this global gate
+  // runs at `app.use('*')` before any route is mounted, so without a carve-out
+  // here every one of them 413s at 1MB with the generic message (#3482 for
+  // quote images; same shape as #1377). Sizes below MUST stay >= the route's
+  // own limit — where the two are equal this gate answers first, so the message
+  // here is the one callers see and should read the same as the route's. The
+  // 64KB slack covers multipart part headers and boundaries on top of the raw
+  // file bytes.
   if (
     path.match(/^\/api\/v1\/quotes\/[^/]+\/images$/) ||
-    path.match(/^\/api\/v1\/catalog\/[^/]+\/image$/) ||
-    path === '/api/v1/users/me/avatar'
+    path.match(/^\/api\/v1\/catalog\/[^/]+\/image$/)
   ) {
     return { maxSize: 5 * 1024 * 1024 + 64 * 1024, error: 'Image too large (max 5 MB)' };
+  }
+  if (path === '/api/v1/users/me/avatar') {
+    return { maxSize: 5 * 1024 * 1024 + 64 * 1024, error: 'Avatar file too large (max 5 MB)' };
   }
   if (path.match(/^\/api\/v1\/contracts\/contract-templates\/[^/]+\/versions\/upload$/)) {
     return { maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File exceeds the 10MB upload limit' };

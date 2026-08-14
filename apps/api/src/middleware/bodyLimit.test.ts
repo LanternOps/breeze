@@ -130,9 +130,11 @@ describe('bodyLimitForPath', () => {
       maxSize: 5 * MB + 64 * KB,
       error: 'Image too large (max 5 MB)',
     });
+    // Avatar keeps its own wording: at equal thresholds this gate answers
+    // before the route's middleware, so the message here is what callers see.
     expect(bodyLimitForPath('/api/v1/users/me/avatar')).toEqual({
       maxSize: 5 * MB + 64 * KB,
-      error: 'Image too large (max 5 MB)',
+      error: 'Avatar file too large (max 5 MB)',
     });
     expect(bodyLimitForPath('/api/v1/catalog/item-1').maxSize).toBe(1 * MB);
     expect(bodyLimitForPath('/api/v1/users/me').maxSize).toBe(1 * MB);
@@ -205,6 +207,7 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
       '/api/v1/agents/agent-1/software',
       '/api/v1/agents/agent-1/disks',
       '/api/v1/agents/agent-1/network',
+      '/api/v1/agents/agent-1/warranty-info',
     ],
     globalMaxSize: 1 * MB,
     note: 'INTENTIONALLY capped at the 1MB default — same reasoning as heartbeat.',
@@ -226,15 +229,24 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
   },
 };
 
-function routeFilesRegisteringBodyLimit(dir: string, root = dir): string[] {
+// index.ts hosts the global gate itself; bodyLimit.ts is this module. Route
+// surfaces live under src/ generally (routes/, but also modules/, extensions/),
+// so the scan roots at src/ rather than src/routes to catch registrations
+// mounted from outside the routes tree.
+const SCAN_EXEMPT = new Set(['index.ts', 'middleware/bodyLimit.ts']);
+
+function filesRegisteringBodyLimit(dir: string, root: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      found.push(...routeFilesRegisteringBodyLimit(full, root));
+      if (entry.name === 'node_modules' || entry.name === '__tests__') continue;
+      found.push(...filesRegisteringBodyLimit(full, root));
     } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+      const rel = relative(root, full);
+      if (SCAN_EXEMPT.has(rel)) continue;
       if (/\bbodyLimit\(\s*\{/.test(readFileSync(full, 'utf8'))) {
-        found.push(relative(root, full));
+        found.push(rel.startsWith('routes/') ? rel.slice('routes/'.length) : rel);
       }
     }
   }
@@ -242,10 +254,13 @@ function routeFilesRegisteringBodyLimit(dir: string, root = dir): string[] {
 }
 
 describe('route-level bodyLimit registrations vs the global gate', () => {
-  const routesDir = join(__dirname, '..', 'routes');
+  const srcDir = join(__dirname, '..');
 
-  it('every route file that registers its own bodyLimit is recorded here', () => {
-    const actual = routeFilesRegisteringBodyLimit(routesDir).sort();
+  it('every file that registers its own bodyLimit is recorded here', () => {
+    const actual = filesRegisteringBodyLimit(srcDir, srcDir).sort();
+    // Fail loudly if the scan root ever stops resolving — an empty scan would
+    // otherwise make this assertion pass vacuously against an empty registry.
+    expect(actual.length).toBeGreaterThan(0);
     const recorded = Object.keys(ROUTE_LEVEL_BODY_LIMITS).sort();
     // A new entry means someone added a route-level bodyLimit. Decide whether
     // that path needs a bodyLimitForPath carve-out (it does, if the route limit
