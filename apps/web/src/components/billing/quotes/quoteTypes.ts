@@ -7,7 +7,7 @@ export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
 import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState } from '@breeze/shared';
-export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState } from '@breeze/shared';
+export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
 import type { QuoteSendEmailReason } from '../../../lib/api/quotes';

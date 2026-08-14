@@ -1082,6 +1082,7 @@
         "subtotal": "Total parcial",
         "tax": "Impuesto"
       },
+      "unsupportedBlock": "Este tipo de bloque aún no es compatible con este visor.",
       "validUntil": "Válido hasta"
     },
     "page": {

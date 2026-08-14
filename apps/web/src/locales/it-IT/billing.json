@@ -1082,6 +1082,7 @@
         "subtotal": "Subtotale",
         "tax": "Imposta"
       },
+      "unsupportedBlock": "Questo tipo di blocco non è ancora supportato da questo visualizzatore.",
       "validUntil": "Valido fino al"
     },
     "page": {

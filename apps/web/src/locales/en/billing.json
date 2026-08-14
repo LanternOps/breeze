@@ -1082,6 +1082,7 @@
         "subtotal": "Subtotal",
         "tax": "Tax"
       },
+      "unsupportedBlock": "This block type isn't supported by this viewer yet.",
       "validUntil": "Valid until"
     },
     "page": {

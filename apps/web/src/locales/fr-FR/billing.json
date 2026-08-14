@@ -1082,6 +1082,7 @@
         "subtotal": "Sous-total",
         "tax": "Taxe"
       },
+      "unsupportedBlock": "Ce type de bloc n'est pas encore pris en charge par cette visionneuse.",
       "validUntil": "Valide jusqu'au"
     },
     "page": {

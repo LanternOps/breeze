@@ -1082,6 +1082,7 @@
         "subtotal": "Zwischensumme",
         "tax": "Steuer"
       },
+      "unsupportedBlock": "Dieser Blocktyp wird in dieser Ansicht noch nicht unterstützt.",
       "validUntil": "Gültig bis"
     },
     "page": {
