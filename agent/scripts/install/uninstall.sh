@@ -146,6 +146,26 @@ uninstall_linux() {
     warn "systemctl not found; skipping service stop and disable"
   fi
 
+  # `systemctl stop` returns once the job is queued; a unit still in
+  # 'deactivating' keeps the process alive. Removing the unit file and binary
+  # out from under a live process leaves an orphan holding a deleted binary
+  # (which on Debian/Ubuntu also makes needrestart flag the unit). Wait for a
+  # real exit, then SIGKILL what refuses to go.
+  local proc waited
+  for proc in nu-watchdog nu-agent; do
+    waited=0
+    while pgrep -x "$proc" >/dev/null 2>&1 && [[ "$waited" -lt 20 ]]; do
+      sleep 0.5
+      waited=$((waited + 1))
+    done
+    if pgrep -x "$proc" >/dev/null 2>&1; then
+      warn "$proc did not exit after stop; sending SIGTERM"
+      pkill -x "$proc" 2>/dev/null || true
+      sleep 2
+      pgrep -x "$proc" >/dev/null 2>&1 && pkill -9 -x "$proc" 2>/dev/null || true
+    fi
+  done
+
   rm -f "$agent_service" "$watchdog_service" "$user_service" "$xdg_autostart"
   rm -f "$AGENT_BINARY" "$WATCHDOG_BINARY" "$HELPER_BINARY" "$BACKUP_BINARY"
   rmdir "$ipc_dir" 2>/dev/null || true
