@@ -3,7 +3,7 @@ title: Breeze RMM Documentation
 description: Deploy and manage Breeze RMM — a fast, modern Remote Monitoring and Management platform.
 template: splash
 hero:
-  tagline: Open-source RMM that scales from 1 to 10,000+ endpoints. Cross-platform agent, real-time monitoring, and AI-powered diagnostics — deployed in minutes.
+  tagline: Open-source RMM that scales from 1 to 10,000+ endpoints. Cross-platform agent, real-time monitoring, and AI-powered operations, deployed in minutes.
   actions:
     - text: Quickstart
       link: /getting-started/quickstart/
@@ -21,6 +21,15 @@ import { Image } from 'astro:assets';
 import dashboard from '../../assets/screenshots/dashboard.png';
 import devices from '../../assets/screenshots/devices.png';
 
+## Start Here
+
+<CardGrid>
+  <LinkCard title="Quickstart" description="Run a full Breeze instance with a single docker compose up, in under 5 minutes." href="/getting-started/quickstart/" />
+  <LinkCard title="Deploy to Production" description="Production setup with Docker Compose, automatic TLS, and upgrade paths." href="/deploy/production/" />
+  <LinkCard title="Install the Agent" description="Enroll Linux, macOS, and Windows endpoints with a one-line install." href="/agents/installation/" />
+  <LinkCard title="API Reference" description="Build integrations and automations against the Breeze REST API." href="/reference/api/" />
+</CardGrid>
+
 ## See it in action
 
 <Image src={dashboard} alt="Breeze RMM dashboard showing device status, alerts, and activity" />
@@ -34,8 +43,8 @@ import devices from '../../assets/screenshots/devices.png';
   <Card title="Zero-Trust Security" icon="shield">
     Cloudflare mTLS certificates, SHA-256 token hashing, RBAC, SOC 2 control mapping, and full audit logging. Security isn't an add-on.
   </Card>
-  <Card title="AI-Powered Diagnostics" icon="star">
-    Built-in AI assistant with MCP tools for fleet intelligence, automated remediation, and natural-language device queries.
+  <Card title="AI-Powered Operations" icon="star">
+    Built-in AI assistant that queries your fleet, diagnoses device issues, and takes governed action, with tiered approvals and full audit logging.
   </Card>
   <Card title="Real-Time Monitoring" icon="pulse">
     Live CPU, memory, disk, and network telemetry. SNMP polling, network discovery, and configurable alert rules with instant notifications.
@@ -51,13 +60,40 @@ import devices from '../../assets/screenshots/devices.png';
   <LinkCard title="Deployments" description="Staggered rollouts with failure thresholds and tracking." href="/features/deployments/" />
 </CardGrid>
 
+## Patching & Software
+
+<CardGrid>
+  <LinkCard title="Patch Management" description="Discover, approve, deploy, and roll back patches with compliance reporting." href="/features/patch-management/" />
+  <LinkCard title="Update Rings" description="Control rollout velocity with staged rings and deferral periods." href="/features/update-rings/" />
+  <LinkCard title="Software Inventory" description="Track installed software, deploy updates, and queue uninstalls." href="/features/software-inventory/" />
+  <LinkCard title="Software Policies" description="Enforce allowlists and blocklists with automated remediation." href="/features/software-policies/" />
+</CardGrid>
+
 ## Security & Compliance
 
 <CardGrid>
+  <LinkCard title="Vulnerability Management" description="Continuous CVE detection with risk scoring and one-click remediation." href="/features/vulnerability-management/" />
   <LinkCard title="CIS Benchmarks" description="Automated hardening checks against CIS standards." href="/features/cis-hardening/" />
-  <LinkCard title="Patch Management" description="Update rings, approvals, and fleet-wide compliance." href="/features/patch-management/" />
-  <LinkCard title="EDR Integrations" description="Connect endpoint detection tools for unified visibility." href="/features/edr-integrations/" />
+  <LinkCard title="Privileged Access Management" description="Just-in-time elevation that intercepts UAC prompts and self-revokes." href="/features/pam/" />
   <LinkCard title="Sensitive Data" description="Discover and classify sensitive data across endpoints." href="/features/sensitive-data/" />
+</CardGrid>
+
+## Monitoring & Alerting
+
+<CardGrid>
+  <LinkCard title="Alerts" description="Configurable alert rules with notification routing and escalation." href="/features/alerts/" />
+  <LinkCard title="Network Monitors" description="Ping, port, and endpoint checks for availability and response times." href="/features/network-monitors/" />
+  <LinkCard title="SNMP Monitoring" description="Poll network infrastructure with templates and custom OIDs." href="/features/snmp/" />
+  <LinkCard title="Service Monitoring" description="Keep Windows services and processes running, with event-log alerting." href="/features/service-monitoring/" />
+</CardGrid>
+
+## AI & Intelligence
+
+<CardGrid>
+  <LinkCard title="AI Assistant" description="Natural-language fleet queries and governed, audited AI actions." href="/features/ai/" />
+  <LinkCard title="Script AI" description="Generate and edit scripts with natural language and curated templates." href="/features/script-ai/" />
+  <LinkCard title="MCP Server" description="Connect Claude Desktop, Cursor, and other MCP clients to your fleet." href="/features/mcp-server/" />
+  <LinkCard title="ML Insights" description="Anomaly detection, incident grouping, root-cause hints, and forecasting." href="/features/ml-insights/" />
 </CardGrid>
 
 ## Fleet Operations
@@ -69,4 +105,22 @@ import devices from '../../assets/screenshots/devices.png';
   <LinkCard title="Configuration Policies" description="Hierarchical policy management across your tenant structure." href="/features/configuration-policies/" />
   <LinkCard title="Reports & Analytics" description="Fleet reports, SLA tracking, and capacity planning." href="/features/reports/" />
   <LinkCard title="Integrations" description="Connect to PSA platforms, Slack, Teams, and more." href="/features/integrations/" />
+</CardGrid>
+
+## Billing & Client Management
+
+<CardGrid>
+  <LinkCard title="Invoices" description="Create invoices from your catalog, tracked time, and parts, and record payments." href="/features/invoices/" />
+  <LinkCard title="Quotes" description="Build priced quotes, take deposits, and convert them to invoices." href="/features/quotes/" />
+  <LinkCard title="Contracts" description="Managed-services agreements with automatic recurring invoicing." href="/features/contracts/" />
+  <LinkCard title="Client Portal" description="Self-service portal for end-users to view devices and submit tickets." href="/features/portal/" />
+</CardGrid>
+
+## Backup & Recovery
+
+<CardGrid>
+  <LinkCard title="Backup Overview" description="File, system image, Hyper-V, and SQL Server backups with cloud and local storage." href="/backup/overview/" />
+  <LinkCard title="Disaster Recovery" description="Recovery groups with RTO/RPO targets and rehearsed failover." href="/backup/disaster-recovery/" />
+  <LinkCard title="Cloud-to-Cloud" description="Back up Microsoft 365 and Google Workspace data." href="/backup/cloud-to-cloud/" />
+  <LinkCard title="Bare Metal Recovery" description="Restore a full system to bare hardware or a replacement device." href="/backup/bare-metal-recovery/" />
 </CardGrid>
