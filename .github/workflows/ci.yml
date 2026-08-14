@@ -23,7 +23,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.25.12'
+  GO_VERSION: '1.26.6'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.

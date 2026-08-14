@@ -14,7 +14,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.25.12'
+  GO_VERSION: '1.26.6'
 
 # Least-privilege default; the SARIF-uploading job opts into
 # security-events: write per-job below.
@@ -59,6 +59,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # Runs before Setup Go on purpose: this job only proves the toolchain it
+      # was handed is clean, so a pin that drifts anywhere else (release.yml
+      # builds the shipped binary) would scan one Go and ship another.
+      - name: Check Go toolchain pins agree
+        run: bash scripts/security/check-go-version-pins.sh
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
