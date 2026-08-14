@@ -505,6 +505,12 @@ const envObjectSchema = z
       .string({ error: 'APP_ENCRYPTION_KEY is required' })
       .min(1, 'APP_ENCRYPTION_KEY must not be empty'),
 
+    // Active key id for AAD-bound `enc:v2`/`enc:v3` ciphertext
+    // (services/secretCrypto.ts). Optional: a deployment without it seals to
+    // non-AAD `enc:v1`, which is the shipped default. It becomes REQUIRED once
+    // M365_GRAPH_ACTIONS_TOOLS_ENABLED is on — see the superRefine rule below.
+    APP_ENCRYPTION_KEY_ID: z.string().optional(),
+
     MFA_ENCRYPTION_KEY: z
       .string({ error: 'MFA_ENCRYPTION_KEY is required' })
       .min(1, 'MFA_ENCRYPTION_KEY must not be empty'),
@@ -524,6 +530,13 @@ const envObjectSchema = z
     // deployments that don't force HTTPS.
     PUBLIC_API_URL: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
+    // Whether CF-Connecting-IP is trusted for client-IP resolution
+    // (services/clientIp.ts). Boolean-ish; unset/empty means off. Format is
+    // guarded in the superRefine below so a typo can't silently read as "off"
+    // and strip client-IP attribution from rate limits, audit logs and IP
+    // allowlists. collectWarnings() additionally warns in production when proxy
+    // trust is on and this is off (SR2-16).
+    TRUST_CF_CONNECTING_IP: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
     ENROLLMENT_KEY_PEPPER: z.string().optional(),
@@ -586,6 +599,14 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above — see the superRefine rule for why a typo here
     // is worse than a typo on most flags.
     ABUSE_SIGNALS_ENABLED: z.string().optional(),
+
+    // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
+    // and the action-intents release worker's headless dispatch. Dark by
+    // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
+    // the format is guarded (a typo reads as OFF at the runtime flag parser,
+    // silently disabling the tools an operator believed they had enabled) and so
+    // the APP_ENCRYPTION_KEY_ID pairing rule below is schema-derived.
+    M365_GRAPH_ACTIONS_TOOLS_ENABLED: z.string().optional(),
 
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
@@ -1616,6 +1637,52 @@ const envSchema = envObjectSchema
       });
     }
 
+    // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
+    // reader (services/clientIp.ts) treats any unrecognized value as OFF, so a
+    // typo on a Cloudflare-fronted deploy silently resolves every client IP from
+    // X-Forwarded-For instead of the edge IP — rate limits, audit logs and
+    // partner IP allowlists all key off the wrong address. Empty/unset is
+    // allowed: both compose files inject the key unconditionally
+    // (`${TRUST_CF_CONNECTING_IP:-}` in docker-compose.yml, `${…:-true}` in
+    // deploy/docker-compose.prod.yml), so "" is what many stacks actually pass.
+    const trustCfRaw = (data.TRUST_CF_CONNECTING_IP ?? '').trim().toLowerCase();
+    if (trustCfRaw && !boolValues.has(trustCfRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TRUST_CF_CONNECTING_IP'],
+        message:
+          'TRUST_CF_CONNECTING_IP must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (CF-Connecting-IP is ignored). Set true only when the deployment really is behind Cloudflare.',
+      });
+    }
+
+    // M365_GRAPH_ACTIONS_TOOLS_ENABLED format guard + the APP_ENCRYPTION_KEY_ID
+    // pairing rule. The reveal path for m365_reset_password seals its temporary
+    // credential with AAD-bound v3 ciphertext and fails CLOSED without a key id,
+    // so the credential would be dropped and never revealable — turn that into a
+    // boot refusal. Lives here (rather than as a separate post-parse throw in
+    // validateConfig) so both keys are schema-declared and the failure joins the
+    // aggregated configuration-error report instead of short-circuiting it.
+    const graphActionsRaw = (data.M365_GRAPH_ACTIONS_TOOLS_ENABLED ?? '').trim().toLowerCase();
+    if (graphActionsRaw && !boolValues.has(graphActionsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['M365_GRAPH_ACTIONS_TOOLS_ENABLED'],
+        message:
+          'M365_GRAPH_ACTIONS_TOOLS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (Tier-3 M365 write-action tools are dark).',
+      });
+    }
+    if (
+      ['true', '1', 'yes', 'on'].includes(graphActionsRaw)
+      && !data.APP_ENCRYPTION_KEY_ID?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
+      });
+    }
+
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
     // (e.g. team + bundle without the signing key) would silently fail to
@@ -1672,11 +1739,22 @@ export type AppConfig = z.infer<typeof envSchema>;
  *
  * Deriving the input from the schema makes that drift structurally impossible:
  * declaring a key in `envObjectSchema` is now the only step required to have it
- * validated. Note the converse drift is NOT addressed here — `validateConfig()`
- * and `collectWarnings()` still read a few variables straight off `env` without
- * declaring them (`M365_GRAPH_ACTIONS_TOOLS_ENABLED`, `APP_ENCRYPTION_KEY_ID`,
- * `TRUST_CF_CONNECTING_IP`), and a key added to the schema by some route other
- * than this object literal would still be missed.
+ * validated.
+ *
+ * The CONVERSE drift — a variable read straight off `env` inside
+ * `validateConfig()`/`collectWarnings()` without ever being declared, so it gets
+ * no validation, no default and no place in the contract above — was closed by
+ * issue #3374. The last three offenders (`M365_GRAPH_ACTIONS_TOOLS_ENABLED`,
+ * `APP_ENCRYPTION_KEY_ID`, `TRUST_CF_CONNECTING_IP`) are now declared, and the
+ * `undeclaredEnvReads()` contract test in validate.test.ts fails CI on a new
+ * `env.KEY` read written INLINE in either function.
+ *
+ * That guard is deliberately narrow, so don't read it as "undeclared env reads
+ * are now impossible here". Keys reached INDIRECTLY are out of its scope and
+ * remain undeclared on purpose: `validateConfig()` hands the whole `env` to the
+ * three `validateM365*RuntimeConfigAtBoot()` validators, which parse roughly two
+ * dozen executor/descriptor keys lazily and keep them out of `AppConfig`
+ * entirely.
  */
 export const ENV_SCHEMA_KEYS: readonly string[] = Object.freeze(
   Object.keys(envObjectSchema.shape),
@@ -1892,15 +1970,9 @@ export function validateConfig(): AppConfig {
   // executor's, wrapped under a KEK the API's identity cannot get (§3.2).
   validateM365CommunicationsRuntimeConfigAtBoot(env);
 
-  // APP_ENCRYPTION_KEY_ID is required once Graph write-action tools are enabled:
-  // the reset-password reveal seals its temp credential with AAD-bound v3 ciphertext
-  // and fails closed at runtime if the key id is absent. Turn that into a boot error.
-  const truthy = (raw?: string) => ['true', '1', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
-  if (truthy(env.M365_GRAPH_ACTIONS_TOOLS_ENABLED) && !env.APP_ENCRYPTION_KEY_ID?.trim()) {
-    throw new Error(
-      'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
-    );
-  }
+  // (The APP_ENCRYPTION_KEY_ID ↔ M365_GRAPH_ACTIONS_TOOLS_ENABLED pairing rule
+  // used to live here as a post-parse throw reading `env` directly. It now runs
+  // in the schema superRefine on declared keys — see #3374.)
 
   _config = result.data;
 
