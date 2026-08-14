@@ -71,6 +71,7 @@ import {
 import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
 
@@ -1678,10 +1679,22 @@ async function processCommandResult(
     // redacted by construction and feed both the device_commands write and the
     // per-type handler dispatch below.
     const {
-      normalizedResult,
-      stdout,
+      normalizedResult: rawNormalizedResult,
+      stdout: rawStdout,
       validationError,
     } = normalizeCriticalResultIfNeeded(command.type, result);
+
+    // #3409 PR4a — exact-value redaction against the secrets THIS command
+    // carried, before either the device_commands.result write below or (via
+    // the per-type handler dispatch further down) script_executions. The
+    // name-based heuristic pass at the top of this function stays: it catches
+    // secrets this command never carried, which the exact pass cannot see.
+    // Inert until PR4c — no command carries an envelope yet.
+    const { result: normalizedResult, stdout } = redactResultAgainstCommandSecrets(
+      { id: command.id, type: command.type, deviceId: resolvedDeviceId, payload: command.payload },
+      rawNormalizedResult,
+      rawStdout,
+    );
 
     // Update outside transaction for same visibility reasons as the lookup, and
     // under an explicit system context so the compare-and-set is not a

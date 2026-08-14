@@ -27,6 +27,7 @@ import { processCollectedAuditPolicyCommandResult } from '../../services/auditBa
 import { CommandTypes, queueCommandForExecution } from '../../services/commandQueue';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { hasSensitivePayload, terminalPayloadErasureSet} from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
@@ -283,7 +284,7 @@ commandsRoutes.post(
 
     const {
       normalizedData: rawNormalizedData,
-      stdout,
+      stdout: rawStdout,
       validationError,
     } = normalizeCriticalResultIfNeeded(command.type, commandId, data);
 
@@ -293,7 +294,19 @@ commandsRoutes.post(
     // backup verification, restore, vault sync) so every persisted surface
     // receives redacted text. stdout stays raw here (structured-JSON parsers
     // + capture_pprof artifacts); persisted stdout is redacted per-site.
-    const normalizedData = redactAgentResultErrorFields(rawNormalizedData);
+    const heuristicallyRedacted = redactAgentResultErrorFields(rawNormalizedData);
+
+    // #3409 PR4a — REST twin of the WS exact-value pass: redact against the
+    // secrets THIS command carried, before the device_commands write below and
+    // before the per-type handlers persist anything. Unlike the heuristic above
+    // this DOES touch stdout, because a script that echoes a credential is
+    // exactly the case it exists for. Inert until PR4c — no command carries an
+    // envelope yet, so both bindings are the originals unchanged.
+    const { result: normalizedData, stdout } = redactResultAgainstCommandSecrets(
+      { id: commandId, type: command.type, deviceId, payload: command.payload },
+      heuristicallyRedacted,
+      rawStdout,
+    );
 
     // Terminal compare-and-set, outside the agentAuth transaction for the same
     // visibility reasons as the lookup above, and under an explicit system
