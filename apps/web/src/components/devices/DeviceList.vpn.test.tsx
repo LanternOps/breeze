@@ -59,6 +59,13 @@ const multiVpnBox = device('22222222-2222-2222-2222-222222222222', 'multi-box', 
   vpn({ provider: 'zerotier', interfaceName: 'zt0', ipv4: '10.147.0.2' }),
 ]);
 const noVpnBox = device('33333333-3333-3333-3333-333333333333', 'plain-box', []);
+const inactiveOnlyBox = device('44444444-4444-4444-4444-444444444444', 'inactive-box', [
+  vpn({ provider: 'netbird', active: false, interfaceName: '', ipv4: undefined, ipv6: undefined, dnsName: undefined }),
+]);
+const mixedActiveInactiveBox = device('55555555-5555-5555-5555-555555555555', 'mixed-box', [
+  vpn({ provider: 'openvpn', active: false, interfaceName: '', ipv4: undefined, ipv6: undefined, dnsName: undefined }),
+  vpn({ provider: 'tailscale', active: true, interfaceName: 'tailscale0', ipv4: '100.64.0.9' }),
+]);
 
 describe('DeviceList — VPN column + facet (#2139)', () => {
   beforeEach(() => {
@@ -110,5 +117,49 @@ describe('DeviceList — VPN column + facet (#2139)', () => {
     expect(screen.getByText('multi-box')).toBeTruthy();
     expect(screen.queryByText('ts-box')).toBeNull();
     expect(screen.queryByText('plain-box')).toBeNull();
+  });
+
+  // Disconnected VPN clients (#2139) — running with no tunnel up.
+  it('renders a badge (not the dash) for a device with only an inactive VPN', () => {
+    render(<DeviceList devices={[inactiveOnlyBox]} pageSize={50} />);
+
+    const cell = screen.getByTestId(`device-${inactiveOnlyBox.id}-vpn`);
+    const badge = within(cell).getByTestId(`device-${inactiveOnlyBox.id}-vpn-badge-netbird`);
+    expect(badge.textContent).toMatch(/NetBird/);
+    expect(cell.textContent).not.toContain('—');
+    expect(badge.getAttribute('data-vpn-active')).toBe('false');
+  });
+
+  it('renders the active badge first for a device with one active + one inactive VPN', () => {
+    render(<DeviceList devices={[mixedActiveInactiveBox]} pageSize={50} />);
+
+    const cell = screen.getByTestId(`device-${mixedActiveInactiveBox.id}-vpn`);
+    const activeBadge = within(cell).getByTestId(`device-${mixedActiveInactiveBox.id}-vpn-badge-tailscale`);
+    const inactiveBadge = within(cell).getByTestId(`device-${mixedActiveInactiveBox.id}-vpn-badge-openvpn`);
+    expect(activeBadge.getAttribute('data-vpn-active')).toBe('true');
+    expect(inactiveBadge.getAttribute('data-vpn-active')).toBe('false');
+
+    const badges = cell.querySelectorAll('[data-vpn-active]');
+    expect(badges[0]).toBe(activeBadge);
+    expect(badges[1]).toBe(inactiveBadge);
+  });
+
+  it('the "any active VPN" filter does not match a device whose only VPN is inactive', () => {
+    render(<DeviceList devices={[inactiveOnlyBox, tailscaleBox]} pageSize={50} />);
+
+    expect(screen.getByText('inactive-box')).toBeTruthy();
+    expect(screen.getByText('ts-box')).toBeTruthy();
+
+    fireEvent.change(screen.getByTestId('device-vpn-filter'), { target: { value: 'any' } });
+
+    expect(screen.queryByText('inactive-box')).toBeNull();
+    expect(screen.getByText('ts-box')).toBeTruthy();
+  });
+
+  it('a device with no VPNs at all still renders the dash', () => {
+    render(<DeviceList devices={[noVpnBox]} pageSize={50} />);
+
+    const cell = screen.getByTestId(`device-${noVpnBox.id}-vpn`);
+    expect(cell.textContent).toContain('—');
   });
 });

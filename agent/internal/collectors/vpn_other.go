@@ -7,3 +7,9 @@ package collectors
 func vpnServiceSignals() map[string]bool {
 	return nil
 }
+
+// vpnInterfaceAttributions has no per-interface owner lookup on unsupported
+// platforms; generic tunnels fall back to the single-running-client rule.
+func vpnInterfaceAttributions() map[string]string {
+	return nil
+}

@@ -44,19 +44,43 @@ export function getVpnProviderBadgeClass(provider: string): string {
   return metaFor(provider).badgeClass;
 }
 
-/** Active VPNs only, deduped by provider+interface, sorted by provider label. */
-export function activeVpnList(vpns: VpnPresence[] | null | undefined): VpnPresence[] {
-  if (!vpns || vpns.length === 0) return [];
+/** Muted badge styling for a VPN whose client is running but not connected. */
+export const INACTIVE_VPN_BADGE_CLASS =
+  'bg-muted text-muted-foreground border-border';
+
+export function getVpnBadgeClass(vpn: VpnPresence): string {
+  return vpn.active ? getVpnProviderBadgeClass(vpn.provider) : INACTIVE_VPN_BADGE_CLASS;
+}
+
+function dedupeVpns(vpns: VpnPresence[]): VpnPresence[] {
   const seen = new Set<string>();
   const result: VpnPresence[] = [];
   for (const vpn of vpns) {
-    if (!vpn.active) continue;
     const key = `${vpn.provider}:${vpn.interfaceName}`;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(vpn);
   }
-  return result.sort((a, b) => getVpnProviderLabel(a.provider).localeCompare(getVpnProviderLabel(b.provider)));
+  return result.sort((a, b) =>
+    getVpnProviderLabel(a.provider).localeCompare(getVpnProviderLabel(b.provider))
+  );
+}
+
+/** Active VPNs only, deduped by provider+interface, sorted by provider label. */
+export function activeVpnList(vpns: VpnPresence[] | null | undefined): VpnPresence[] {
+  if (!vpns || vpns.length === 0) return [];
+  return dedupeVpns(vpns.filter((vpn) => vpn.active));
+}
+
+/**
+ * Every reported VPN — connected first, then the ones whose client is running
+ * with no tunnel up (#2139). Each group deduped by provider+interface and
+ * sorted by provider label, so a truncated list always shows the active VPNs
+ * before the inactive ones.
+ */
+export function vpnList(vpns: VpnPresence[] | null | undefined): VpnPresence[] {
+  if (!vpns || vpns.length === 0) return [];
+  return [...activeVpnList(vpns), ...dedupeVpns(vpns.filter((vpn) => !vpn.active))];
 }
 
 /** Distinct provider ids among active VPNs (for the list facet options). */
@@ -66,11 +90,17 @@ export function activeVpnProviders(vpns: VpnPresence[] | null | undefined): VpnP
   return Array.from(set);
 }
 
-/** One-line tooltip for a single VPN: "WireGuard · wg0 · 10.8.0.2 · host.tailnet.ts.net". */
-export function formatVpnTooltip(vpn: VpnPresence): string {
-  const parts: string[] = [getVpnProviderLabel(vpn.provider), vpn.interfaceName];
+/**
+ * One-line tooltip for a single VPN: "WireGuard · wg0 · 10.8.0.2 · host.tailnet.ts.net".
+ * An inactive VPN has no interface or IPs, so it reduces to the provider label
+ * plus the caller-supplied state suffix.
+ */
+export function formatVpnTooltip(vpn: VpnPresence, stateLabel?: string): string {
+  const parts: string[] = [getVpnProviderLabel(vpn.provider)];
+  if (vpn.interfaceName) parts.push(vpn.interfaceName);
   if (vpn.ipv4) parts.push(vpn.ipv4);
   if (vpn.ipv6) parts.push(vpn.ipv6);
   if (vpn.dnsName) parts.push(vpn.dnsName);
+  if (stateLabel) parts.push(stateLabel);
   return parts.join(' · ');
 }

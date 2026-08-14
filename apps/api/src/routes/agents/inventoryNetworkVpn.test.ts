@@ -152,6 +152,56 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     expect(captured.activeVpns).toEqual([]);
   });
 
+  it('persists both an active and an inactive VPN entry, stamping reportedAt on each', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture();
+
+    const res = await putNetwork(makeApp(), {
+      adapters: [{ interfaceName: 'en0', ipAddress: '192.168.1.10', ipType: 'ipv4', isPrimary: true }],
+      vpns: [
+        {
+          provider: 'tailscale',
+          active: true,
+          interfaceName: 'utun3',
+          ipv4: '100.101.102.103',
+          detectionSource: 'interface',
+        },
+        {
+          provider: 'netbird',
+          active: false,
+          interfaceName: '',
+          detectionSource: 'service',
+        },
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.vpnCount).toBe(2);
+
+    const stored = captured.activeVpns as Array<Record<string, unknown>>;
+    expect(stored).toHaveLength(2);
+    const [active, inactive] = stored;
+    expect(active).toMatchObject({ provider: 'tailscale', active: true, interfaceName: 'utun3' });
+    expect(inactive).toMatchObject({ provider: 'netbird', active: false, interfaceName: '' });
+    // Both entries are stamped by the API, regardless of active/inactive.
+    expect(typeof active!.reportedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(active!.reportedAt as string))).toBe(false);
+    expect(typeof inactive!.reportedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(inactive!.reportedAt as string))).toBe(false);
+  });
+
+  it('rejects an active VPN entry with an empty interfaceName (validator)', async () => {
+    // zValidator rejects before the handler runs — no db mocks needed, and
+    // queuing a device lookup here would leak into the next test.
+    const res = await putNetwork(makeApp(), {
+      adapters: [],
+      vpns: [{ provider: 'tailscale', active: true, interfaceName: '', detectionSource: 'interface' }],
+    });
+
+    expect(res.status).toBe(400);
+  });
+
   it('rejects an unknown VPN provider (validator)', async () => {
     // zValidator rejects before the handler runs — no db mocks needed, and
     // queuing a device lookup here would leak into the next test.

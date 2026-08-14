@@ -20,7 +20,7 @@ import type {
   VpnPresence,
 } from "@breeze/shared";
 import {
-  activeVpnList,
+  vpnList,
   getVpnProviderLabel,
   getVpnProviderIcon,
 } from "@/lib/vpnProviders";
@@ -960,10 +960,11 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         </Section>
       )}
 
-      {/* Active VPN clients (#2139) — full list from cached network inventory.
-          Only rendered when at least one active VPN was reported. */}
+      {/* VPN clients (#2139) — full list from cached network inventory:
+          connected tunnels first, then clients that are running with no tunnel
+          up. Only rendered when at least one VPN was reported. */}
       {(() => {
-        const vpns = activeVpnList(info?.activeVpns);
+        const vpns = vpnList(info?.activeVpns);
         if (vpns.length === 0) return null;
         return (
           <Section
@@ -976,7 +977,8 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                 return (
                   <div
                     key={`${vpn.provider}:${vpn.interfaceName}`}
-                    className="rounded-md border p-3"
+                    className={`rounded-md border p-3${vpn.active ? "" : " bg-muted/30"}`}
+                    data-vpn-active={vpn.active ? "true" : "false"}
                     data-testid={`device-vpn-row-${vpn.provider}`}
                   >
                     <div className="mb-2 flex items-center gap-2">
@@ -990,9 +992,19 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
                     </div>
                     <dl className="divide-y">
                       <InfoRow
-                        label={t("deviceInfoTab.interface")}
-                        value={vpn.interfaceName}
+                        label={t("deviceInfoTab.vpnState")}
+                        value={
+                          vpn.active
+                            ? t("deviceInfoTab.vpnConnected")
+                            : t("deviceInfoTab.vpnDisconnected")
+                        }
                       />
+                      {vpn.interfaceName && (
+                        <InfoRow
+                          label={t("deviceInfoTab.interface")}
+                          value={vpn.interfaceName}
+                        />
+                      )}
                       {vpn.ipv4 && (
                         <InfoRow
                           label={t("deviceInfoTab.vpnIpv4")}
