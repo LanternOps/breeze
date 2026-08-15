@@ -7,6 +7,7 @@ import { computeInvariantSignals } from './invariants';
 import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators } from './heuristics';
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
+import { syncEndpointFingerprints, loadRecidivistMatches, computeRecidivistSignals } from './recidivistEndpoint';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
 
@@ -47,12 +48,20 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const cfg = loadSignalConfig();
   const now = new Date();
 
-  const { invariants, aggregates, scriptFindings, billingIdentity } = await runSystemDbCompute(async () => ({
-    invariants: await computeInvariantSignals(),
-    aggregates: await loadPartnerAggregates(),
-    scriptFindings: await loadScriptFindings(now),
-    billingIdentity: await loadBillingIdentityAggregates(),
-  }));
+  const { invariants, aggregates, scriptFindings, billingIdentity, recidivist } = await runSystemDbCompute(
+    async () => {
+      // syncEndpointFingerprints refreshes the corpus before the correlation
+      // read below runs, same ordering scriptContent uses for its own scan.
+      await syncEndpointFingerprints(now);
+      return {
+        invariants: await computeInvariantSignals(),
+        aggregates: await loadPartnerAggregates(),
+        scriptFindings: await loadScriptFindings(now),
+        billingIdentity: await loadBillingIdentityAggregates(),
+        recidivist: await loadRecidivistMatches(),
+      };
+    },
+  );
 
   const computed = [
     ...invariants,
@@ -66,6 +75,11 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // scorer takes no clock at all; card-testing is scored on the span the
     // billing service recorded, not on how recently the sweep ran.
     ...computeBillingIdentitySignals(billingIdentity.aggregates, billingIdentity.sharedFingerprints, cfg),
+    // Recidivist-endpoint signals are likewise never age-decayed —
+    // computeRecidivistSignals takes no clock and no partner age at all; a
+    // re-established aged account matching a suspended partner's fingerprint
+    // is more suspicious, not less (see the scorer's own header comment).
+    ...computeRecidivistSignals(recidivist.matches, cfg),
   ];
   // Script-scanned and billing-scanned partners join the evaluated set so open
   // rows for those detectors stale-resolve when the evidence disappears
@@ -75,6 +89,7 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     ...aggregates.map((a) => a.partnerId),
     ...scriptFindings.scannedPartnerIds,
     ...billingIdentity.scannedPartnerIds,
+    ...recidivist.scannedPartnerIds,
   ]);
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 

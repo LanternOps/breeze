@@ -12,6 +12,9 @@ const {
   loadScriptIndicators,
   loadBillingIdentityAggregates,
   computeBillingIdentitySignals,
+  syncEndpointFingerprints,
+  loadRecidivistMatches,
+  computeRecidivistSignals,
   persistSignals,
   markDelivered,
   sendOpsAlert,
@@ -26,6 +29,9 @@ const {
   loadScriptIndicators: vi.fn(),
   loadBillingIdentityAggregates: vi.fn(),
   computeBillingIdentitySignals: vi.fn(),
+  syncEndpointFingerprints: vi.fn(),
+  loadRecidivistMatches: vi.fn(),
+  computeRecidivistSignals: vi.fn(),
   persistSignals: vi.fn(),
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
@@ -47,6 +53,11 @@ vi.mock('./invariants', () => ({ computeInvariantSignals }));
 vi.mock('./heuristics', () => ({ loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators }));
 vi.mock('./scriptContent', () => ({ loadScriptFindings, computeScriptSignals, loadScriptIndicators }));
 vi.mock('./billingIdentity', () => ({ loadBillingIdentityAggregates, computeBillingIdentitySignals }));
+vi.mock('./recidivistEndpoint', () => ({
+  syncEndpointFingerprints,
+  loadRecidivistMatches,
+  computeRecidivistSignals,
+}));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
 vi.mock('../abuseMetrics', () => ({ recordAbuseSignalFired, recordAbuseSweepRun: vi.fn() }));
@@ -101,6 +112,9 @@ beforeEach(() => {
     scannedPartnerIds: [],
   });
   computeBillingIdentitySignals.mockReturnValue([]);
+  syncEndpointFingerprints.mockResolvedValue(undefined);
+  loadRecidivistMatches.mockResolvedValue({ matches: [], scannedPartnerIds: [] });
+  computeRecidivistSignals.mockReturnValue([]);
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
 });
@@ -229,5 +243,35 @@ describe('runAbuseSweep', () => {
     expect(result.fired).toBe(1);
     const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
     expect(persisted).toContainEqual(scriptSignal);
+  });
+
+  it('includes computeRecidivistSignals output in the persisted signal set', async () => {
+    const recidivistSignal: ComputedSignal = {
+      partnerId: 'pR',
+      signalKey: 'rmm.recidivist_endpoint',
+      score: 100,
+      severity: 'alert',
+      evidence: {},
+    };
+    computeRecidivistSignals.mockReturnValue([recidivistSignal]);
+
+    const result = await runAbuseSweep();
+
+    expect(result.fired).toBe(1);
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted).toContainEqual(recidivistSignal);
+  });
+
+  it('unions recidivist-scanned partner ids into evaluatedPartnerIds so recidivist signals can stale-resolve', async () => {
+    loadPartnerAggregates.mockResolvedValue([agg({ partnerId: 'pA' })]);
+    loadRecidivistMatches.mockResolvedValue({
+      matches: [],
+      scannedPartnerIds: ['pA', 'pRecidivist'],
+    });
+
+    await runAbuseSweep();
+
+    const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
+    expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pRecidivist']);
   });
 });

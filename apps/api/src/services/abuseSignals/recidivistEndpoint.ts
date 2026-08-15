@@ -1,5 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { scoreToSeverity, type SignalConfig } from './config';
+import type { ComputedSignal } from './types';
 
 // ---------------------------------------------------------------------------
 // Recidivist-endpoint detector: rmm.recidivist_endpoint
@@ -243,4 +245,101 @@ export async function loadRecidivistMatches(): Promise<{
     matches,
     scannedPartnerIds: scannedRows.map((r) => r.partner_id),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Scorer (pure)
+// ---------------------------------------------------------------------------
+
+/** Evidence is capped to the first N matches per partner, same shape as the corroborating detectors' bounded evidence. */
+const EVIDENCE_MATCH_CAP = 10;
+
+type RecidivistAxis = 'fingerprint' | 'hostname_ip' | 'hostname';
+
+/**
+ * Pure scoring: no I/O, no clock, no partner age — takes only the raw
+ * matches Task 2's SQL correlation produced. Unlike the other detectors in
+ * this module, there is no youngWeight() call here at all, deliberately: a
+ * re-established aged account matching a suspended partner's fingerprint is
+ * MORE suspicious than a freshly-created one doing the same (it means the
+ * operator sat on the reused hardware for a while before re-signing up), so
+ * decaying the score down for account age would run backwards against what
+ * the evidence means. Same structural argument as computeScriptSignals and
+ * computeBillingIdentitySignals: the scorer's signature enforces this rather
+ * than relying on a convention nobody checks.
+ *
+ * Per partner, three axes can fire (never summed — score is the MAX of
+ * whichever axes matched, because a fingerprint match and a hostname match
+ * against the same reused box are the same underlying event, not two
+ * independent pieces of evidence):
+ *   - fingerprint: any remote_tool_guid match, at any other partner.
+ *   - hostname_ip: a hostname match AND an egress_ip match against the SAME
+ *     other partner — the box kept both its hostname and its network egress,
+ *     which is stronger than either alone.
+ *   - hostname: a hostname match with no same-counterpart ip corroboration.
+ *   - egress_ip alone never fires (v1): an IP is far weaker evidence on its
+ *     own (NAT/ISP reuse, shared hosting ranges) — it only upgrades a
+ *     hostname match to hostname_ip. ip_score is reserved and unemitted here.
+ *
+ * The direction rule (active-side only, non-active counterpart) is already
+ * enforced by Task 2's SQL join — this function trusts its input and never
+ * re-checks partner status.
+ */
+export function computeRecidivistSignals(matches: RecidivistMatch[], cfg: SignalConfig): ComputedSignal[] {
+  const byPartner = new Map<string, RecidivistMatch[]>();
+  for (const m of matches) {
+    const list = byPartner.get(m.partnerId);
+    if (list) list.push(m);
+    else byPartner.set(m.partnerId, [m]);
+  }
+
+  const signals: ComputedSignal[] = [];
+
+  for (const [partnerId, partnerMatches] of byPartner) {
+    const hasFingerprint = partnerMatches.some((m) => m.kind === 'remote_tool_guid');
+    const hostnameCounterparts = new Set(
+      partnerMatches.filter((m) => m.kind === 'hostname').map((m) => m.otherPartnerId),
+    );
+    const ipCounterparts = new Set(
+      partnerMatches.filter((m) => m.kind === 'egress_ip').map((m) => m.otherPartnerId),
+    );
+    const hasHostname = hostnameCounterparts.size > 0;
+    // hostname_ip requires the SAME other-partner to hold both a hostname and
+    // an egress_ip match — a hostname match against one counterpart plus an
+    // ip match against an unrelated counterpart is two weaker, unrelated
+    // pieces of evidence, not one stronger one.
+    const hasHostnameIp = [...hostnameCounterparts].some((id) => ipCounterparts.has(id));
+
+    const axes: RecidivistAxis[] = [];
+    if (hasFingerprint) axes.push('fingerprint');
+    if (hasHostnameIp) axes.push('hostname_ip');
+    else if (hasHostname) axes.push('hostname');
+
+    if (axes.length === 0) continue; // ip-only (or no match at all) — no signal in v1
+
+    const axisScore: Record<RecidivistAxis, number> = {
+      fingerprint: cfg['rmm.recidivist_endpoint.fingerprint_score'],
+      hostname_ip: cfg['rmm.recidivist_endpoint.hostname_ip_score'],
+      hostname: cfg['rmm.recidivist_endpoint.hostname_score'],
+    };
+    const score = Math.max(...axes.map((axis) => axisScore[axis]));
+
+    signals.push({
+      partnerId,
+      signalKey: 'rmm.recidivist_endpoint',
+      score,
+      severity: scoreToSeverity(score, cfg),
+      evidence: {
+        axes,
+        matches: partnerMatches.slice(0, EVIDENCE_MATCH_CAP).map((m) => ({
+          kind: m.kind,
+          value: m.value,
+          otherPartnerName: m.otherPartnerName,
+          otherPartnerStatus: m.otherPartnerStatus,
+        })),
+      },
+    });
+  }
+
+  return signals;
 }
