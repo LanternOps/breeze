@@ -21,8 +21,8 @@
 - **A secret value must never appear in an error message, a log line, or a script file on disk.** Error text names the *key*, never the value.
 - **Secrets never reach `SubstituteParameters` or `validateScript`.** The substituted script is written to a temp file (`agent/internal/executor/shell.go:118-127`, 0700 on Unix / 0600 on Windows) — putting a secret through substitution lands it on the customer's filesystem, which is the entire reason env delivery exists.
 - **Constants must match the server.** `MinSecretValueLength = 4` mirrors `MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH` (`packages/shared/src/validators/tenantVariables.ts`); `MaxSecretEnvEntries = 32` mirrors `MAX_SECRET_ENV_ENTRIES` (`apps/api/src/services/scriptSecretEnvelope.ts`). No cross-language drift guard is possible — carry the cross-reference in a comment at each constant.
-- **Key grammar is `^[A-Za-z_][A-Za-z0-9_]*$`**, matching `TENANT_VARIABLE_KEY_PATTERN`. Anything else is rejected so a malformed key cannot inject a second env entry.
-- **Test commands:** `cd agent && go test ./internal/executor/... ./internal/heartbeat/...` for a slice; before opening the PR, `cd agent && go build ./... && go vet ./... && gofmt -l . && CGO_ENABLED=0 go test ./... && go test -race ./internal/executor ./internal/heartbeat`.
+- **Key grammar is exactly `^[a-z][a-z0-9_]{0,63}$`** — the server's `TENANT_VARIABLE_KEY_PATTERN` (`packages/shared/src/validators/tenantVariables.ts:14`), also enforced by the `tenant_variables_key_chk` DB constraint. The agent mirrors it **exactly** rather than being laxer than its only producer: lowercase-only, must start with a letter, 64 characters max. Anything else is rejected so a malformed key cannot inject a second env entry. *(Corrected 2026-08-14 after Task 1 review — the plan originally specified a laxer `^[A-Za-z_][A-Za-z0-9_]*$`, which permitted uppercase and a leading underscore and made the "mirrors the server" comment false.)*
+- **Test commands:** `cd agent && go test ./internal/executor/... ./internal/heartbeat/...` for a slice; before opening the PR, `cd agent && go build ./... && go vet ./... && CGO_ENABLED=0 go test ./... && go test -race ./internal/executor ./internal/heartbeat`. **New files must be gofmt-clean, but `gofmt -l .` over the whole tree is NOT a gate** — `internal/executor/executor.go` and ~20 other files already fail it on `origin/main`. CI gates `go vet ./...` unconditionally and `golangci-lint --new-from-rev` in new-issues-only mode; do not reformat pre-existing files.
 - **Mutation-verify every guard.** For each new guard: force it off (invert the condition / return a constant), confirm the new tests fail *and nothing else does*, restore.
 - **Do not touch the user-helper binary.** Secrets are blocked from the helper path in v1; fixing the helper needs a separately-versioned binary rollout (`HelperVersion`, `agent/internal/heartbeat/heartbeat.go:99`) and is explicitly out of scope.
 
@@ -101,16 +101,15 @@ Create `agent/internal/executor/secretenv_test.go`. Pure stdlib `testing`, table
 - `nil` → empty `SecretEnv`, no error (the field is absent on every command today).
 - `map[string]any{}` → empty `SecretEnv`, no error.
 - `map[string]any{"api_token": "super-secret-value"}` → `SecretEnv{"api_token": "super-secret-value"}`.
-- A key with a leading underscore (`_token`) and a key with digits after the first char (`token2`).
+- A key with digits after the first character (`token2`) and a 64-character key (the cap, inclusive).
 
 *`ParseSecretEnv` rejects (error, and the error message must NOT contain the value):*
 - Not an object: `"nope"`, `[]any{"a"}`, `42`.
 - Non-string value: `map[string]any{"api_token": 42}`.
 - Value shorter than `MinSecretValueLength`: `map[string]any{"api_token": "ab"}` — error text must contain `api_token` and must not contain `ab` as a standalone leak (assert `!strings.Contains(err.Error(), "\"ab\"")` and that the message mentions the length floor).
 - Empty value: `map[string]any{"api_token": ""}`.
-- Key outside the grammar: `"BAD KEY"`, `"9lives"`, `"a-b"`, `""`.
+- Key outside the grammar: `"BAD KEY"`, `"9lives"`, `"a-b"`, `""`, `"API_TOKEN"` (uppercase), `"_token"` (leading underscore), and a 65-character key (one over the cap).
 - More than `MaxSecretEnvEntries` entries.
-- **Two distinct keys that collide after uppercasing** — `map[string]any{"api_token": "value-one", "API_TOKEN": "value-two"}` — because both would produce `BREEZE_VAR_API_TOKEN` and the winner would depend on Go's randomized map iteration order. Error must name both keys.
 
 *Redacting representation:* for `SecretEnv{"api_token": "super-secret-value"}`, assert that none of `fmt.Sprintf("%v", se)`, `%+v`, `%#v`, `%s`, `se.String()`, or `json.Marshal(se)` contains `super-secret-value`, and that each yields the `[REDACTED]` marker. Also assert the same holds for a `ScriptExecution` value carrying it once Task 2 lands — leave that assertion for Task 2's test file, not here.
 
@@ -174,10 +173,20 @@ const (
 	SecretEnvPrefix = "BREEZE_VAR_"
 )
 
-// secretKeyPattern mirrors TENANT_VARIABLE_KEY_PATTERN on the server. Enforced
-// agent-side too so a malformed key cannot inject a second environment entry
-// (a key containing "=" or a newline would otherwise split the env block).
-var secretKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// secretKeyPattern is EXACTLY TENANT_VARIABLE_KEY_PATTERN from the server
+// (packages/shared/src/validators/tenantVariables.ts), which the
+// tenant_variables_key_chk DB constraint also enforces. Re-enforced agent-side
+// so a malformed key cannot inject a second environment entry (a key containing
+// "=" or a newline would otherwise split the env block), and deliberately not
+// one character laxer than its only producer: anything outside this grammar is
+// something the server should never have sent, so refusing it is fail-closed.
+//
+// The lowercase-only grammar is also what makes EnvKey's ToUpper folding
+// injective: two distinct keys cannot collide on one BREEZE_VAR_* name. If this
+// pattern is ever widened to admit uppercase, that stops being true and
+// ParseSecretEnv must grow a collision check — otherwise which secret wins would
+// depend on Go's randomized map iteration order.
+var secretKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // SecretEnv holds the secret variable values for a single script execution.
 //
@@ -264,7 +273,6 @@ func ParseSecretEnv(raw any) (SecretEnv, error) {
 	}
 	sort.Strings(keys)
 
-	seenEnvKeys := make(map[string]string, len(m))
 	for _, key := range keys {
 		if !secretKeyPattern.MatchString(key) {
 			return nil, fmt.Errorf("secretEnv key %q is not a valid variable key", key)
@@ -279,16 +287,6 @@ func ParseSecretEnv(raw any) (SecretEnv, error) {
 				key, MinSecretValueLength,
 			)
 		}
-		envKey := out.EnvKey(key)
-		if prior, dup := seenEnvKeys[envKey]; dup {
-			// Two keys differing only in case would both become the same
-			// BREEZE_VAR_* entry, and which one won would depend on map
-			// iteration order. Refuse rather than run a coin flip.
-			return nil, fmt.Errorf(
-				"secretEnv keys %q and %q both map to %s", prior, key, envKey,
-			)
-		}
-		seenEnvKeys[envKey] = key
 		out[key] = value
 	}
 	return out, nil
@@ -496,8 +494,7 @@ Create `agent/internal/heartbeat/handlers_script_secret_test.go`. Reuse the exis
 - Payload with `secretEnv` that is not an object → `Status: "failed"`, non-zero `ExitCode`, `Error` mentions `secretEnv`, and the executor was never invoked.
 - Payload with a 2-character secret value → failed, `Error` names the key and the length floor, never the value.
 - Payload with a non-string secret value → failed.
-- Payload with an invalid key (`"BAD KEY"`) → failed.
-- Payload with two case-colliding keys → failed.
+- Payload with an invalid key (`"BAD KEY"`, and separately an uppercase `"API_TOKEN"`) → failed.
 - Payload with **no** `secretEnv` key → behaves exactly as today (this is the regression guard proving the PR is inert for existing traffic).
 
 *runAs gating:*
