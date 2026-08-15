@@ -17,7 +17,7 @@ export type TestDevice = {
   status: 'online' | 'offline' | 'maintenance';
 };
 
-type TestRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout';
+type TestRunStatus = 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled';
 
 type TestRunExecution = {
   id: string;
@@ -44,7 +44,7 @@ type ScriptTestRunnerProps = {
 };
 
 const POLL_INTERVAL_MS = 2000;
-const TERMINAL_STATUSES: TestRunStatus[] = ['completed', 'failed', 'timeout'];
+const TERMINAL_STATUSES: TestRunStatus[] = ['completed', 'failed', 'timeout', 'cancelled'];
 
 const storageKey = (scriptId: string) => `breeze:script-test-device:${scriptId}`;
 
@@ -67,19 +67,31 @@ export default function ScriptTestRunner({
   const pollTokenRef = useRef(0);
 
   useEffect(() => {
+    // The runner is disabled for never-saved scripts — don't fetch the fleet
+    // list for /scripts/new.
+    if (!scriptId) return;
     let cancelled = false;
     (async () => {
       try {
         const response = await fetchWithAuth('/devices');
         if (!response.ok || cancelled) return;
         const data = await response.json();
-        if (!cancelled) setDevices(asList(data, 'devices'));
+        if (!cancelled) {
+          // GET /devices emits `osType`; normalise so the OS filter below works
+          // (other consumers do the same, see ScriptsPage's device mapping).
+          setDevices(asList<Record<string, unknown>>(data, 'devices').map(d => ({
+            id: String(d.id),
+            hostname: String(d.hostname ?? ''),
+            os: (d.osType ?? d.os ?? '') as TestDevice['os'],
+            status: (d.status ?? 'offline') as TestDevice['status'],
+          })));
+        }
       } catch {
         // Non-fatal: the picker just shows the empty state.
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [scriptId]);
 
   const compatibleDevices = useMemo(() => {
     const matching = devices.filter(device => osTypes?.includes(device.os));
@@ -136,7 +148,10 @@ export default function ScriptTestRunner({
   const pollExecution = useCallback(async (executionId: string) => {
     const token = ++pollTokenRef.current;
     // Poll to the script's own timeout plus slack for queue + agent pickup.
-    const deadline = Date.now() + ((timeoutSeconds || 300) + 120) * 1000;
+    // Number(): the form registers timeoutSeconds without valueAsNumber, so an
+    // edited field arrives as a string and would string-concatenate here.
+    const timeoutSecs = Number(timeoutSeconds) || 300;
+    const deadline = Date.now() + (timeoutSecs + 120) * 1000;
 
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -148,7 +163,16 @@ export default function ScriptTestRunner({
           void navigateTo('/login', { replace: true });
           return;
         }
-        if (!response.ok) continue; // transient — keep polling until deadline
+        if (!response.ok) {
+          // A 4xx is permanent (execution deleted, access revoked) — stop
+          // instead of hammering the endpoint to the deadline. 5xx retries.
+          if (response.status >= 400 && response.status < 500) {
+            setPhase('idle');
+            setRunError(t('testRunner.errors.pollFailed'));
+            return;
+          }
+          continue;
+        }
         const detail = await response.json() as TestRunExecution;
         if (pollTokenRef.current !== token) return;
         setExecution(detail);
@@ -228,6 +252,7 @@ export default function ScriptTestRunner({
     if (!execution) return null;
     switch (execution.status) {
       case 'pending':
+      case 'queued':
       case 'running':
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-500/20 px-2.5 py-1 text-xs font-medium text-blue-700">
@@ -254,6 +279,13 @@ export default function ScriptTestRunner({
           <span className="inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/15 px-2.5 py-1 text-xs font-medium text-warning">
             <AlertTriangle className="h-3 w-3" />
             {t('testRunner.status.timeout')}
+          </span>
+        );
+      case 'cancelled':
+        return (
+          <span className="inline-flex items-center gap-1.5 rounded-full border bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            <XCircle className="h-3 w-3" />
+            {t('testRunner.status.cancelled')}
           </span>
         );
     }

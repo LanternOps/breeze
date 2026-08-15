@@ -1237,13 +1237,16 @@
       "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
-      "timeout": "Timed out"
+      "timeout": "Timed out",
+      "queued": "Queued",
+      "cancelled": "Cancelled"
     },
     "errors": {
       "execute": "Failed to start the test run",
       "save": "Save failed — fix the errors above and try again.",
       "notStarted": "The run was not started (the device may be in maintenance).",
-      "pollDeadline": "Still no result — check the execution history for the outcome."
+      "pollDeadline": "Still no result — check the execution history for the outcome.",
+      "pollFailed": "Could not read the run result — it may have been deleted or your access changed."
     }
   }
 }

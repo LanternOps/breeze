@@ -15,6 +15,7 @@ vi.mock('../db', () => ({
   db: { select: vi.fn() },
 }));
 
+import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { registerScriptTools } from './aiToolsScripts';
 import type { AiTool } from './aiTools';
@@ -62,18 +63,39 @@ const executionRow = {
   createdAt: '2026-08-15T10:00:00Z',
 };
 
-function mockExecutionRows(rows: unknown[]) {
+function mockExecutionRows(rows: unknown[], capturedWhere?: unknown[]) {
   (db.select as ReturnType<typeof vi.fn>).mockReturnValue({
     from: () => ({
       innerJoin: () => ({
         leftJoin: () => ({
-          where: () => ({
-            limit: () => Promise.resolve(rows),
-          }),
+          where: (cond: unknown) => {
+            capturedWhere?.push(cond);
+            return { limit: () => Promise.resolve(rows) };
+          },
         }),
       }),
     }),
   });
+}
+
+/** Flatten a drizzle SQL condition tree to lowercase text tokens so tests can
+ *  assert on actual clause structure instead of vacuously trusting the mock
+ *  (a token-scan on the built condition, per the where-clause testing rule). */
+function flattenSql(node: unknown, out: string[] = []): string[] {
+  if (node == null) return out;
+  const anyNode = node as Record<string, unknown>;
+  if (Array.isArray(node)) {
+    for (const child of node) flattenSql(child, out);
+  } else if (Array.isArray(anyNode.queryChunks)) {
+    flattenSql(anyNode.queryChunks, out);
+  } else if (Array.isArray(anyNode.value)) {
+    for (const v of anyNode.value) out.push(String(v).toLowerCase());
+  } else if (typeof anyNode.name === 'string') {
+    out.push(String(anyNode.name).toLowerCase());
+  } else if ('value' in anyNode) {
+    out.push(String(anyNode.value).toLowerCase());
+  }
+  return out;
 }
 
 beforeEach(() => {
@@ -116,6 +138,22 @@ describe('get_script_execution', () => {
     const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, auth));
 
     expect(result.error).toBe('Execution not found');
+  });
+
+  it('org condition admits org-less (partner-wide/system) scripts via IS NULL, not a bare org match', async () => {
+    const captured: unknown[] = [];
+    mockExecutionRows([executionRow], captured);
+    const auth = makeAuth();
+    // Simulate an org-scoped session: orgCondition returns a real condition.
+    (auth as unknown as Record<string, unknown>).orgCondition =
+      (col: unknown) => eq(col as Parameters<typeof eq>[0], 'org-1');
+    await getTool().handler({ executionId: EXECUTION_ID }, auth);
+
+    const tokens = flattenSql(captured[0]).join(' ');
+    // The clause must OR the org match with IS NULL so partner-wide scripts
+    // (org_id NULL — the repo default ownership shape) stay readable.
+    expect(tokens).toContain('is null');
+    expect(tokens).toContain(' or ');
   });
 
   it('tolerates a deleted device (left join) — output still returned', async () => {

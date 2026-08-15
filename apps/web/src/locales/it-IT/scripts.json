@@ -1237,13 +1237,16 @@
       "running": "In esecuzione",
       "completed": "Completata",
       "failed": "Non riuscita",
-      "timeout": "Tempo scaduto"
+      "timeout": "Tempo scaduto",
+      "queued": "In coda",
+      "cancelled": "Annullata"
     },
     "errors": {
       "execute": "Impossibile avviare l'esecuzione di prova",
       "save": "Salvataggio non riuscito — correggi gli errori sopra e riprova.",
       "notStarted": "L'esecuzione non è stata avviata (il dispositivo potrebbe essere in manutenzione).",
-      "pollDeadline": "Ancora nessun risultato — controlla la cronologia delle esecuzioni."
+      "pollDeadline": "Ancora nessun risultato — controlla la cronologia delle esecuzioni.",
+      "pollFailed": "Impossibile leggere il risultato — l'esecuzione potrebbe essere stata eliminata o il tuo accesso è cambiato."
     }
   }
 }

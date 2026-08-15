@@ -97,6 +97,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Scripts & Automation
       { name: 'search_script_library', description: 'Search scripts and templates', category: 'Scripts & Automation' },
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
+      { name: 'get_script_execution_history', description: 'Past execution results for a script', category: 'Scripts & Automation' },
+      { name: 'get_script_execution', description: 'One script execution with its output', category: 'Scripts & Automation' },
       { name: 'list_playbooks', description: 'List self-healing playbooks', category: 'Scripts & Automation' },
       { name: 'get_playbook_history', description: 'Playbook execution history', category: 'Scripts & Automation' },
       // Configuration Policies

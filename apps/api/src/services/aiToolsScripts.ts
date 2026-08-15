@@ -679,10 +679,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      // Verify the script belongs to the user's org before returning execution data
+      // Verify the script belongs to the user's org before returning execution
+      // data. Partner-wide/system scripts have org_id NULL — same guard as
+      // run_script, or the history of the repo's default ownership shape would
+      // read as "Script not found".
       const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
-      if (orgCondition) scriptConditions.push(orgCondition);
+      if (orgCondition) scriptConditions.push(or(isNull(scripts.orgId), orgCondition)!);
 
       const [script] = await db
         .select({ id: scripts.id })
@@ -731,7 +734,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      const scriptOrgCondition = auth.orgCondition(scripts.orgId);
+      // Partner-wide/system scripts have org_id NULL; the plain orgCondition
+      // would exclude their executions (same trap run_script guards against
+      // above). Org-less scripts pass here; the device-site check below and
+      // RLS still constrain what the session can see.
+      const orgCond = auth.orgCondition(scripts.orgId);
+      const scriptOrgCondition = orgCond ? or(isNull(scripts.orgId), orgCond) : undefined;
 
       const [execution] = await db
         .select({

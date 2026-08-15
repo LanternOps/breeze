@@ -14,7 +14,9 @@ const SCRIPT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const EXECUTION_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 
-const onlineDevice = { id: DEVICE_ID, hostname: 'test-box', os: 'windows', status: 'online' };
+// Real GET /devices shape: the API emits `osType`, not `os` — the component
+// must normalise (regression: the picker filtered on `os` and matched nothing).
+const onlineDevice = { id: DEVICE_ID, hostname: 'test-box', osType: 'windows', status: 'online' };
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status });
@@ -47,7 +49,7 @@ describe('ScriptTestRunner', () => {
       if (url === '/devices') {
         return jsonResponse({ data: [
           onlineDevice,
-          { id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', hostname: 'mac-box', os: 'macos', status: 'online' },
+          { id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', hostname: 'mac-box', osType: 'macos', status: 'online' },
         ] });
       }
       return jsonResponse({}, 404);
@@ -146,6 +148,66 @@ describe('ScriptTestRunner', () => {
     fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
     expect(screen.getByTestId('test-run-button')).toBeDisabled();
     expect(screen.getByText(/target/)).toBeInTheDocument();
+  });
+
+  it('treats a cancelled execution as terminal and shows its status', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({ id: EXECUTION_ID, status: 'cancelled', stdout: '', stderr: '' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    await waitFor(
+      () => expect(screen.getByText(/cancelled/i)).toBeInTheDocument(),
+      { timeout: 5000 }
+    );
+    // Terminal — the button is usable again, no deadline error.
+    expect(screen.getByTestId('test-run-button')).not.toBeDisabled();
+  }, 10000);
+
+  it('stops polling on a permanent 404 instead of retrying to the deadline', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) return jsonResponse({ error: 'gone' }, 404);
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+
+    await waitFor(
+      () => expect(screen.getByText(/could not read the run result/i)).toBeInTheDocument(),
+      { timeout: 5000 }
+    );
+    const pollCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).includes('/executions/'));
+    expect(pollCalls.length).toBe(1);
+  }, 10000);
+
+  it('does not fetch the device list for a never-saved script', async () => {
+    render(
+      <ScriptTestRunner osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+    await screen.findByText(/save the script once/i);
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/devices')).toBe(false);
   });
 
   it('remembers the pinned device per script and reports it to the parent', async () => {

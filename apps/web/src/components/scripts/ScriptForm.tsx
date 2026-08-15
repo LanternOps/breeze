@@ -357,7 +357,10 @@ export default function ScriptForm({
             { ...rest, exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping) },
             { navigate: false }
           );
-          reset(getValues());
+          // Baseline on the SAVED snapshot, keeping the live buffer: edits
+          // typed while the PUT was in flight stay dirty (so the next run
+          // re-saves them and the nav guard still protects them).
+          reset(values, { keepValues: true });
           resolve(true);
         } catch {
           resolve(false);

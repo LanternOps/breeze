@@ -1237,13 +1237,16 @@
       "running": "Läuft",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelled": "Abgebrochen"
     },
     "errors": {
       "execute": "Testlauf konnte nicht gestartet werden",
       "save": "Speichern fehlgeschlagen — beheben Sie die Fehler oben und versuchen Sie es erneut.",
       "notStarted": "Der Lauf wurde nicht gestartet (das Gerät befindet sich möglicherweise in Wartung).",
-      "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf."
+      "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf.",
+      "pollFailed": "Ergebnis konnte nicht gelesen werden — der Lauf wurde möglicherweise gelöscht oder Ihr Zugriff hat sich geändert."
     }
   }
 }

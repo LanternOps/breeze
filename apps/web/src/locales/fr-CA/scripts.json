@@ -1237,13 +1237,16 @@
       "running": "En cours",
       "completed": "Terminée",
       "failed": "Échouée",
-      "timeout": "Délai expiré"
+      "timeout": "Délai expiré",
+      "queued": "En file",
+      "cancelled": "Annulée"
     },
     "errors": {
       "execute": "Impossible de démarrer l'exécution de test",
       "save": "Échec de l'enregistrement — corrigez les erreurs ci-dessus et réessayez.",
       "notStarted": "L'exécution n'a pas démarré (l'appareil est peut-être en maintenance).",
-      "pollDeadline": "Toujours aucun résultat — consultez l'historique des exécutions."
+      "pollDeadline": "Toujours aucun résultat — consultez l'historique des exécutions.",
+      "pollFailed": "Impossible de lire le résultat — l'exécution a peut-être été supprimée ou votre accès a changé."
     }
   }
 }

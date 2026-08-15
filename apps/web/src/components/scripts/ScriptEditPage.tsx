@@ -141,6 +141,13 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       }
 
       showToast({ type: 'success', message: isNew ? t('scriptEditPage.toast.created') : t('scriptEditPage.toast.saved') });
+      // Keep the local scope in sync after an in-place save that re-scoped the
+      // script — a later save would otherwise compare against the stale scope,
+      // strip the availability fields as "unchanged", and silently leave the
+      // script on the wrong scope.
+      if (!isNew && payload.availability !== undefined) {
+        setScriptScope(prev => prev ? { ...prev, orgId: payload.orgId ?? null } : prev);
+      }
       // Test-run saves stay in the editor (navigate: false); the explicit Save
       // button keeps its return-to-list behavior.
       if (options?.navigate !== false) void navigateTo('/scripts');
