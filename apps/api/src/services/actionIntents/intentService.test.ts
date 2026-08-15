@@ -304,7 +304,7 @@ function makeIntentRow(overrides?: Record<string, unknown>) {
     // 0) — tests exercising the tier3-supervised-four-eyes split override
     // these explicitly (see createIntentWith / echoInsertedIntent below).
     approvalScope: 'four_eyes',
-    classificationVersion: 1,
+    classificationVersion: 2,
     effectDigest: null,
     status: 'pending_approval',
     createdAt: new Date(),
@@ -753,7 +753,7 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
 
     const captured = dbState.insertedActionIntentValues[0];
     expect(captured?.approvalScope).toBe('supervised');
-    expect(captured?.classificationVersion).toBe(1);
+    expect(captured?.classificationVersion).toBe(2);
     // Dual-write compat: legacy `expiresAt` still carries the same value as
     // the new `approvalExpiresAt` column (Plan 3 removes the legacy write).
     expect(captured?.expiresAt).toEqual(captured?.approvalExpiresAt);
