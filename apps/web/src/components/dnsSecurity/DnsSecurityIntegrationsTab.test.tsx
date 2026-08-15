@@ -7,6 +7,9 @@ import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore (pulled in transitively via the Add modal) registers an orgId
+  // provider at module load, so this export must exist under the mock.
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../shared/Toast', () => ({
