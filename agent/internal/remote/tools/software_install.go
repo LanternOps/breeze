@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -39,6 +40,11 @@ const (
 // shrink it — moving the real 500 MiB through a unit test is impractical.
 // Production behavior is unchanged.
 var maxInstallFileSize int64 = 500 * 1024 * 1024 // 500 MB
+
+// installerWaitDelay bounds how long Wait keeps collecting output after the
+// installer process itself has exited. A var (not a const) solely so tests
+// can shrink it; production behavior is a fixed safety net.
+var installerWaitDelay = 10 * time.Second
 
 var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
@@ -577,13 +583,30 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 		return 1, "", fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
 	}
 
+	return runInstallerCommand(ctx, cmd, fileType)
+}
+
+func runInstallerCommand(ctx context.Context, cmd *exec.Cmd, fileType string) (int, string, error) {
 	cmd.Env = procoutput.ApplyEnv(os.Environ())
+	// EXE installers are typically wrappers: they spawn the real setup (which
+	// inherits the output handles) and exit. Without WaitDelay, Wait blocks on
+	// pipe EOF until every descendant exits — real installs stalled into the
+	// 30-minute timeout. Mirrors scripts/runner.go and executor/executor.go.
+	cmd.WaitDelay = installerWaitDelay
 
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return -1, procoutput.BytesToUTF8(output),
+			fmt.Errorf("installer timed out after %s and was terminated", installTimeout)
+	}
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+		} else if errors.Is(err, exec.ErrWaitDelay) {
+			// The installer itself exited; only its abandoned descendants kept
+			// the output pipes open. Judge the install by the real exit code.
+			exitCode = cmd.ProcessState.ExitCode()
 		} else {
 			return 1, procoutput.BytesToUTF8(output), err
 		}
