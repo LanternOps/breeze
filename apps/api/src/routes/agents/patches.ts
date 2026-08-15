@@ -10,7 +10,7 @@ import { envInt } from '../../utils/envInt';
 import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitInstalledPatchesSchema, submitPatchesSchema, submitPendingPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
-import { admitPatchBatch, type AdmittedPatch, type PatchAdmission } from './patchIngestIdentity';
+import { admitPatchBatch, mergeRejectionReasons, type AdmittedPatch, type PatchAdmission } from './patchIngestIdentity';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 type PendingPatchData = z.infer<typeof submitPendingPatchesSchema>['patches'][number];
@@ -532,7 +532,12 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
   let pendingCount = 0;
   let installedCount = 0;
   await db.transaction(async (tx) => {
-    if (sweepIsSafe(pending)) {
+    // Gated on BOTH admissions, unlike the pending-only route: this sweep is
+    // markAllDevicePatchesMissing, which flips *installed* rows to 'missing'
+    // too, on the assumption that both lists below fully restate the device.
+    // A refused installed row is never re-upserted, so sweeping on a partial
+    // installed list would strand a genuinely-installed patch at 'missing'.
+    if (sweepIsSafe(pending) && sweepIsSafe(installed)) {
       await markAllDevicePatchesMissing(tx, device.id);
     } else {
       console.warn(`[PATCHES] Agent ${agentId} combined scan had refused rows — skipping tombstone sweep this cycle`);
@@ -557,7 +562,7 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
       pendingCount,
       installedCount,
       rejectedCount,
-      rejectedReasons: { ...pending.reasons, ...installed.reasons },
+      rejectedReasons: mergeRejectionReasons(pending.reasons, installed.reasons),
       ignoredLinuxPackageCount: installed.admitted.length - installedCount,
     },
   });

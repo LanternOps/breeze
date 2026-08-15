@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches } from '../../db/schema';
 import * as enrichmentModule from '../../services/thirdPartyEnrichment';
+import * as auditEvents from '../../services/auditEvents';
 import * as wingetWorker from '../../jobs/wingetReleaseTestWorker';
 import { patchesRoutes } from './patches';
 
@@ -347,6 +348,59 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
 
     vi.mocked(enrichmentModule.enrichFromCatalog).mockRestore();
+  });
+
+  it('converts download size to whole MB and clamps it to the integer column ceiling', async () => {
+    async function submitSize(size: number | undefined) {
+      patchRows = [];
+      await app.request(`/agents/${AGENT_ID}/patches`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patches: [{
+            name: 'Sized', source: 'third_party', externalId: 'sized-1',
+            packageId: 'Sized.Pkg', ...(size === undefined ? {} : { size }),
+          }],
+        }),
+      });
+      return patchRows[0]?.downloadSizeMb;
+    }
+
+    expect(await submitSize(5 * 1024 * 1024)).toBe(5);
+    // Rounds up: a partial megabyte still reports as one.
+    expect(await submitSize(1)).toBe(1);
+    expect(await submitSize(undefined)).toBeNull();
+    expect(await submitSize(0)).toBeNull();
+    // `download_size_mb` is a Postgres `integer` and the request schema puts no
+    // upper bound on `size`, so an absurd byte count must be clamped rather
+    // than overflowing the column and aborting the whole scan transaction.
+    expect(await submitSize(Number.MAX_SAFE_INTEGER)).toBe(2147483647);
+  });
+
+  it('audits refused rows with a reason histogram summed across both lists', async () => {
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Both lists refuse a row for the SAME reason. Merging the two
+        // histograms by object spread would drop one of the counts.
+        patches: [{ name: 'Bad pending', source: 'third_party', externalId: 'bad-p', packageId: 'winget:--all' }],
+        installed: [{ name: 'Bad installed', source: 'third_party', externalId: 'bad-i', packageId: 'winget:--all' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(expect.objectContaining({ success: true, rejected: 2 }));
+    expect(auditEvents.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.patches.submit',
+        details: expect.objectContaining({
+          rejectedCount: 2,
+          rejectedReasons: { package_id_option_like: 2 },
+        }),
+      }),
+    );
   });
 
   it('persists agent-supplied version into patches.version', async () => {

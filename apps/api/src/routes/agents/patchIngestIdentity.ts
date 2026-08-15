@@ -228,3 +228,20 @@ export function admitPatchBatch<T extends PatchIdentityInput>(patchList: T[]): P
 
   return { admitted, rejected, reasons };
 }
+
+/**
+ * Combine two rejection histograms by SUMMING per reason. Object spread would
+ * silently drop the first side's count whenever both batches refused rows for
+ * the same reason, which is the common case (the pending and installed lists of
+ * one combined scan usually fail the same way).
+ */
+export function mergeRejectionReasons(
+  a: Partial<Record<PatchIdentityRejectionReason, number>>,
+  b: Partial<Record<PatchIdentityRejectionReason, number>>,
+): Partial<Record<PatchIdentityRejectionReason, number>> {
+  const merged: Partial<Record<PatchIdentityRejectionReason, number>> = { ...a };
+  for (const [reason, count] of Object.entries(b) as [PatchIdentityRejectionReason, number][]) {
+    merged[reason] = (merged[reason] ?? 0) + count;
+  }
+  return merged;
+}

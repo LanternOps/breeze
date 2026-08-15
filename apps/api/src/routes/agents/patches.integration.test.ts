@@ -354,6 +354,35 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
     expect((await getDevicePatchRow(dev.id, keptId))?.status).toBe('pending');
   });
 
+  runDb('combined scan: a refused INSTALLED row also suppresses the full sweep', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const installedId = `itest.combined.installed.${stamp}`;
+
+    // Establish a genuinely-installed row via the combined endpoint.
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches`, {
+      patches: [],
+      installed: [{
+        name: 'Installed Thing', source: 'third_party', externalId: installedId,
+        packageId: 'Installed.Thing', version: '1.0', installedAt: '2026-01-05T00:00:00Z',
+      }],
+    });
+    expect((await getDevicePatchRow(dev.id, installedId))?.status).toBe('installed');
+
+    // The combined route's sweep is markAllDevicePatchesMissing — it flips
+    // INSTALLED rows too — so a refusal on the installed list must suppress it.
+    // Gating on the pending list alone stranded this row at 'missing'.
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches`, {
+      patches: [],
+      installed: [{ name: 'Malformed', source: 'third_party', externalId: `itest.bad.${stamp}`, packageId: 'winget:--all' }],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).rejected).toBe(1);
+    expect((await getDevicePatchRow(dev.id, installedId))?.status).toBe('installed');
+  });
+
   runDb('still accepts Apple softwareupdate labels, which legitimately contain spaces', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const dev = await insertDevice(env.organization.id, env.site.id);

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizePatchIdentity,
   admitPatchBatch,
+  mergeRejectionReasons,
   PATCH_DESCRIPTION_LIMIT,
   type PatchIdentityInput,
 } from './patchIngestIdentity';
@@ -243,5 +244,39 @@ describe('admitPatchBatch', () => {
   it('returns empty admission for empty input', () => {
     const result = admitPatchBatch([]);
     expect(result).toEqual({ admitted: [], rejected: 0, reasons: {} });
+  });
+});
+
+describe('mergeRejectionReasons', () => {
+  it('sums counts for a reason present on both sides (load-bearing: object spread would drop one side)', () => {
+    const a = { external_id_too_long: 2 };
+    const b = { external_id_too_long: 3 };
+    const result = mergeRejectionReasons(a, b);
+    expect(result).toEqual({ external_id_too_long: 5 });
+  });
+
+  it('keeps disjoint keys from both sides', () => {
+    const a = { external_id_too_long: 1 };
+    const b = { package_id_option_like: 4 };
+    const result = mergeRejectionReasons(a, b);
+    expect(result).toEqual({ external_id_too_long: 1, package_id_option_like: 4 });
+  });
+
+  it('is a no-op when either side is empty', () => {
+    const populated = { empty_title: 2 };
+    expect(mergeRejectionReasons(populated, {})).toEqual({ empty_title: 2 });
+    expect(mergeRejectionReasons({}, populated)).toEqual({ empty_title: 2 });
+  });
+
+  it('does not mutate either input object', () => {
+    const a = { external_id_too_long: 2 };
+    const b = { external_id_too_long: 3, empty_title: 1 };
+    const aCopy = { ...a };
+    const bCopy = { ...b };
+
+    mergeRejectionReasons(a, b);
+
+    expect(a).toEqual(aCopy);
+    expect(b).toEqual(bCopy);
   });
 });
