@@ -7,7 +7,13 @@ import {
   HardDriveUpload,
 } from "lucide-react";
 import { asList } from '@/lib/asList';
-import type { DetectionRule } from "@breeze/shared";
+import {
+  SOFTWARE_FILE_TYPES,
+  defaultSilentArgsForFileType,
+  deriveSoftwareFileTypeFromUrl,
+  type DetectionRule,
+  type SoftwareFileType,
+} from "@breeze/shared";
 import { cn } from "@/lib/utils";
 import { Dialog } from "../shared/Dialog";
 import { showToast } from "../shared/Toast";
@@ -72,6 +78,9 @@ const blankForm = {
   architecture: "x64" as Architecture,
   source: "url" as Source,
   downloadUrl: "",
+  // "" = infer from the URL's extension server-side. Only meaningful for the URL
+  // source; the file source derives it from the uploaded filename.
+  fileType: "" as "" | SoftwareFileType,
   supportedOs: [] as string[],
   silentInstallArgs: "",
   silentUninstallArgs: "",
@@ -173,6 +182,33 @@ export default function AddPackageModal({
           : prev.silentUninstallArgs,
     }));
   };
+  /** URL-source counterpart to handleFile: the extension in the URL is the only
+   *  signal we have about what the installer actually is, so prefill the same
+   *  MSI defaults from it. Prefill never overwrites something the user typed. */
+  const handleDownloadUrl = (value: string) => {
+    setForm((prev) => {
+      const derived = deriveSoftwareFileTypeFromUrl(value);
+      const defaults = defaultSilentArgsForFileType(derived);
+      return {
+        ...prev,
+        downloadUrl: value,
+        silentInstallArgs:
+          defaults && !prev.silentInstallArgs
+            ? defaults.install
+            : prev.silentInstallArgs,
+        silentUninstallArgs:
+          defaults && !prev.silentUninstallArgs
+            ? defaults.uninstall
+            : prev.silentUninstallArgs,
+      };
+    });
+  };
+  /** What the server will infer when the user leaves the selector on "auto" —
+   *  shown so an unrecognized URL doesn't silently fall back to exe. */
+  const inferredFileType = useMemo(
+    () => deriveSoftwareFileTypeFromUrl(form.downloadUrl),
+    [form.downloadUrl],
+  );
   const knownKeys = useMemo(
     () => new Set(customFields.map((f) => f.fieldKey)),
     [customFields],
@@ -259,6 +295,8 @@ export default function AddPackageModal({
         body: JSON.stringify({
           ...shared,
           downloadUrl: form.downloadUrl.trim() || undefined,
+          // Omitted when left on "auto" so the server infers from the URL.
+          fileType: form.fileType || undefined,
         }),
       });
   };
@@ -598,7 +636,7 @@ export default function AddPackageModal({
                   <VariableInput
                     id="pkg-url"
                     value={form.downloadUrl}
-                    onChange={(v) => update("downloadUrl", v)}
+                    onChange={handleDownloadUrl}
                     placeholder={i18n.t(
                       "policies:software.addPackageModal.httpsExampleComPackageV100",
                     )}
@@ -614,6 +652,51 @@ export default function AddPackageModal({
                       "policies:software.addPackageModal.resolvedPerOrganizationAtDeployTime",
                     )}
                   </p>
+                  {/* The installer type decides whether the agent runs msiexec or
+                      execs the file directly, so an MSI behind a URL with no
+                      recognizable extension has to be stated explicitly. */}
+                  <div className="mt-3">
+                    <label className={labelCls} htmlFor="pkg-file-type">
+                      {i18n.t(
+                        "policies:software.addPackageModal.installerType",
+                      )}
+                    </label>
+                    <select
+                      id="pkg-file-type"
+                      data-testid="package-file-type"
+                      value={form.fileType}
+                      onChange={(e) =>
+                        update(
+                          "fileType",
+                          e.target.value as "" | SoftwareFileType,
+                        )
+                      }
+                      className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                      <option value="">
+                        {inferredFileType
+                          ? i18n.t(
+                              "policies:software.addPackageModal.autoDetectedType",
+                              { type: inferredFileType.toUpperCase() },
+                            )
+                          : i18n.t(
+                              "policies:software.addPackageModal.autoDetectFromUrl",
+                            )}
+                      </option>
+                      {SOFTWARE_FILE_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {t.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                    {!form.fileType && !inferredFileType && (
+                      <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+                        {i18n.t(
+                          "policies:software.addPackageModal.installerTypeUndetected",
+                        )}
+                      </p>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="mt-3 flex items-center gap-3">

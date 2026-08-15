@@ -115,6 +115,71 @@ describe('AddPackageModal', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
+  // A URL package used to carry no installer type at all, so the agent saved the
+  // MSI as package.exe and exec'd it directly — ERROR_BAD_EXE_FORMAT on Windows,
+  // with the operator's msiexec command silently discarded.
+  describe('installer type (URL source)', () => {
+    const versionBody = () => {
+      const call = fetchMock.mock.calls.find(
+        ([u, o]) => /\/versions$/.test(u as string) && o?.method === 'POST',
+      );
+      return JSON.parse((call?.[1] as RequestInit).body as string);
+    };
+
+    it('prefills the msiexec commands from a .msi URL', async () => {
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fillMinimum();
+
+      await waitFor(() =>
+        expect(screen.getByLabelText('Silent install args')).toHaveValue(
+          'msiexec /i "{file}" /qn /norestart',
+        ),
+      );
+    });
+
+    it('leaves the install command alone for a non-MSI URL', async () => {
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+      fireEvent.change(screen.getByPlaceholderText('https://example.com/package-v1.0.0.msi'), {
+        target: { value: 'https://dl.example.com/setup.exe' },
+      });
+
+      // An EXE's silent switch is vendor-specific; guessing one would install
+      // interactively (or not at all) on an unattended machine.
+      expect(screen.getByLabelText('Silent install args')).toHaveValue('');
+    });
+
+    it('omits fileType when left on auto so the server infers it', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fillMinimum();
+      await submitCreate();
+      await waitFor(() => expect(onCreated).toHaveBeenCalled());
+
+      expect(versionBody()).not.toHaveProperty('fileType');
+      expect(versionBody().downloadUrl).toBe('https://dl.example.com/chrome.msi');
+    });
+
+    it('sends an explicitly chosen fileType for a URL with no usable extension', async () => {
+      const onCreated = vi.fn();
+      routeMock({});
+      render(<AddPackageModal open onClose={() => {}} onCreated={onCreated} />);
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Acme' } });
+      fireEvent.change(screen.getByLabelText('Version'), { target: { value: '1.0.0' } });
+      fireEvent.change(screen.getByPlaceholderText('https://example.com/package-v1.0.0.msi'), {
+        target: { value: 'https://vendor.example.com/download.php?product=acme' },
+      });
+      fireEvent.change(screen.getByTestId('package-file-type'), { target: { value: 'msi' } });
+
+      await submitCreate();
+      await waitFor(() => expect(onCreated).toHaveBeenCalled());
+
+      expect(versionBody().fileType).toBe('msi');
+    });
+  });
+
   it('blocks submit when the URL contains an unknown variable', async () => {
     routeMock({});
     render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);

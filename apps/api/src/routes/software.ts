@@ -43,7 +43,13 @@ import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
 } from '../services/softwareDeployment';
-import { detectionRulesSchema, softwareDownloadPolicySchema } from '@breeze/shared';
+import {
+  detectionRulesSchema,
+  softwareDownloadPolicySchema,
+  SOFTWARE_FILE_TYPES,
+  defaultSilentArgsForFileType,
+  deriveSoftwareFileTypeFromUrl,
+} from '@breeze/shared';
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import {
   ALLOWED_EXTENSIONS,
@@ -354,6 +360,11 @@ const createVersionSchema = z.object({
   releaseDate: z.string().datetime().optional(),
   releaseNotes: z.string().max(5000).optional(),
   downloadUrl: z.string().url().optional(),
+  // Explicit installer type, overriding what the URL's extension implies. The
+  // agent switches on this to pick msiexec vs. direct exec, so a URL-created
+  // version that omits it (and whose URL carries no usable extension) still
+  // reaches the device as the historical 'exe' default.
+  fileType: z.enum(SOFTWARE_FILE_TYPES).optional(),
   checksum: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
   fileSize: z.number().min(0).optional(),
   supportedOs: z.array(platformSchema).optional(),
@@ -789,17 +800,26 @@ softwareRoutes.post(
       .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
 
+    // A URL-created version never recorded a fileType, so the dispatcher fell
+    // back to 'exe' and the agent exec'd the downloaded file directly — which
+    // fails at CreateProcess for an MSI (ERROR_BAD_EXE_FORMAT) and silently
+    // discards the operator's msiexec command. Prefer an explicit fileType,
+    // otherwise infer it from the URL's extension; null keeps prior behavior.
+    const fileType = payload.fileType ?? deriveSoftwareFileTypeFromUrl(payload.downloadUrl);
+    const silentDefaults = defaultSilentArgsForFileType(fileType);
+
     const version = await insertLatestSoftwareVersion(id, {
       version: payload.version,
       releaseDate: payload.releaseDate ? new Date(payload.releaseDate) : new Date(),
       releaseNotes: payload.releaseNotes ?? null,
       downloadUrl: payload.downloadUrl ?? null,
+      fileType,
       checksum: payload.checksum ?? null,
       fileSize: payload.fileSize ?? null,
       supportedOs: payload.supportedOs ?? null,
       architecture: payload.architecture ?? null,
-      silentInstallArgs: payload.silentInstallArgs ?? null,
-      silentUninstallArgs: payload.silentUninstallArgs ?? null,
+      silentInstallArgs: payload.silentInstallArgs || silentDefaults?.install || null,
+      silentUninstallArgs: payload.silentUninstallArgs || silentDefaults?.uninstall || null,
       preInstallScript: payload.preInstallScript ?? null,
       postInstallScript: payload.postInstallScript ?? null,
       detectionRules: payload.detectionRules ?? null,
@@ -815,7 +835,7 @@ softwareRoutes.post(
       resourceType: 'software_version',
       resourceId: version.id,
       resourceName: catalogItem.name,
-      details: { version: payload.version },
+      details: { version: payload.version, fileType },
     });
 
     return c.json({ data: version }, 201);
@@ -940,11 +960,12 @@ softwareRoutes.post(
       }
 
       // Auto-detect MSI silent args
-      if (fileType === 'msi' && !silentInstallArgs) {
-        silentInstallArgs = 'msiexec /i "{file}" /qn /norestart';
+      const silentDefaults = defaultSilentArgsForFileType(fileType);
+      if (silentDefaults && !silentInstallArgs) {
+        silentInstallArgs = silentDefaults.install;
       }
-      if (fileType === 'msi' && !silentUninstallArgs) {
-        silentUninstallArgs = 'msiexec /x "{file}" /qn /norestart';
+      if (silentDefaults && !silentUninstallArgs) {
+        silentUninstallArgs = silentDefaults.uninstall;
       }
 
       const checksum = file.checksum;

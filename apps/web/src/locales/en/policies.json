@@ -1211,7 +1211,11 @@
       "uploading": "Uploading…",
       "creating": "Creating…",
       "retryAddingVersion": "Retry adding version",
-      "createPackage": "Create package"
+      "createPackage": "Create package",
+      "installerType": "Installer type",
+      "autoDetectFromUrl": "Auto-detect from URL",
+      "autoDetectedType": "Auto-detect ({{type}})",
+      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Managed built-in",

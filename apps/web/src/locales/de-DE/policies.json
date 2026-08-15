@@ -1211,7 +1211,11 @@
       "uploading": "Hochladen…",
       "creating": "Erstellen…",
       "retryAddingVersion": "Versuchen Sie erneut, die Version hinzuzufügen",
-      "createPackage": "Paket erstellen"
+      "createPackage": "Paket erstellen",
+      "installerType": "Installationstyp",
+      "autoDetectFromUrl": "Automatisch aus URL erkennen",
+      "autoDetectedType": "Automatisch erkannt ({{type}})",
+      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",
