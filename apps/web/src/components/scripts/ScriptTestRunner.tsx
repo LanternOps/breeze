@@ -112,9 +112,8 @@ export default function ScriptTestRunner({
       setSelectedDeviceId(stored);
       onTestDeviceChange?.(stored);
     }
-    // Restore once per script — onTestDeviceChange is a stable-enough callback
-    // and re-running on its identity would fight the user's manual selection.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Restore once per script (deliberately not keyed on onTestDeviceChange's
+    // identity — re-running would fight the user's manual selection).
   }, [scriptId, compatibleDevices.length]);
 
   // Cancel any in-flight poll loop on unmount.
