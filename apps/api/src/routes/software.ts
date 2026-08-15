@@ -422,6 +422,21 @@ function safeUrlHost(rawUrl: string): string {
   }
 }
 
+// PATCH body: only provided keys change; explicit null clears a field. The
+// binary-describing fields (checksum, fileSize, s3Key) and scripts are not
+// editable — replacing the installer means adding a new version.
+const updateVersionSchema = z.object({
+  version: z.string().min(1).max(100).optional(),
+  releaseDate: z.string().datetime().optional(),
+  releaseNotes: z.string().max(5000).nullable().optional(),
+  downloadUrl: z.string().url().nullable().optional(),
+  supportedOs: z.array(platformSchema).nullable().optional(),
+  architecture: z.string().max(20).optional(),
+  silentInstallArgs: z.string().max(2000).nullable().optional(),
+  silentUninstallArgs: z.string().max(2000).nullable().optional(),
+  detectionRules: detectionRulesSchema.nullable().optional()
+});
+
 const listDeploymentsSchema = z.object({
   status: z.enum(['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled']).optional(),
   page: z.string().optional(),
@@ -1137,6 +1152,71 @@ softwareRoutes.post(
       // Clean up temp file
       await unlink(tempPath).catch(() => {});
     }
+  }
+);
+
+// PATCH /catalog/:id/versions/:versionId - Update version metadata
+softwareRoutes.patch(
+  '/catalog/:id/versions/:versionId',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('param', versionIdParamSchema),
+  zValidator('json', updateVersionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+
+    const { id, versionId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    // Dual-axis fetch + write authorization (#2135) — see version create above.
+    const [catalogItem] = await db.select().from(softwareCatalog)
+      .where(eq(softwareCatalog.id, id));
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem);
+    if (denied) return c.json({ error: denied.error }, denied.status);
+
+    const [existingVersion] = await db.select().from(softwareVersions)
+      .where(and(
+        eq(softwareVersions.id, versionId),
+        eq(softwareVersions.catalogId, id),
+      ));
+    if (!existingVersion) return c.json({ error: 'Version not found' }, 404);
+
+    const updates: Record<string, unknown> = {};
+    if (payload.version !== undefined) updates.version = payload.version;
+    if (payload.releaseDate !== undefined) updates.releaseDate = new Date(payload.releaseDate);
+    if (payload.releaseNotes !== undefined) updates.releaseNotes = payload.releaseNotes;
+    if (payload.downloadUrl !== undefined) updates.downloadUrl = payload.downloadUrl;
+    if (payload.supportedOs !== undefined) updates.supportedOs = payload.supportedOs;
+    if (payload.architecture !== undefined) updates.architecture = payload.architecture;
+    if (payload.silentInstallArgs !== undefined) updates.silentInstallArgs = payload.silentInstallArgs;
+    if (payload.silentUninstallArgs !== undefined) updates.silentUninstallArgs = payload.silentUninstallArgs;
+    if (payload.detectionRules !== undefined) updates.detectionRules = payload.detectionRules;
+    if (Object.keys(updates).length === 0) {
+      return c.json({ error: 'No fields to update' }, 400);
+    }
+    // A URL-sourced version must not end up with neither URL nor uploaded file.
+    if (updates.downloadUrl === null && !existingVersion.s3Key) {
+      return c.json({ error: 'This version has no uploaded file — it needs a download URL' }, 400);
+    }
+
+    const [updated] = await db.update(softwareVersions)
+      .set(updates)
+      .where(eq(softwareVersions.id, versionId))
+      .returning();
+    if (!updated) return c.json({ error: 'Failed to update software version' }, 500);
+
+    writeRouteAudit(c, {
+      orgId: catalogItem.orgId,
+      action: 'software.catalog.version.update',
+      resourceType: 'software_version',
+      resourceId: versionId,
+      resourceName: catalogItem.name,
+      details: { version: updated.version, updatedFields: Object.keys(updates) },
+    });
+
+    return c.json({ data: updated });
   }
 );
 

@@ -1726,7 +1726,10 @@
       "autoDetectedType": "Auto-detect ({{type}})",
       "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI.",
       "advancedOptions": "Advanced options",
-      "uploadsRequireS3Storage": "File uploads require S3 object storage to be configured on the server."
+      "uploadsRequireS3Storage": "File uploads require S3 object storage to be configured on the server.",
+      "editingVersion": "Editing version",
+      "failedToUpdateVersion": "Failed to update version",
+      "replaceFileAddNewVersion": "To replace the installer file, add a new version instead."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",

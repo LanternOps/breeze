@@ -126,7 +126,8 @@ vi.mock('../middleware/auth', () => ({
       userId: 'user-123',
       scope: 'organization',
       orgId: 'org-123',
-      partnerId: null
+      partnerId: null,
+      canAccessOrg: (orgId: string) => orgId === 'org-123'
     });
     return next();
   }),
@@ -427,6 +428,61 @@ describe('software routes', () => {
 
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe('orgId is required for this scope');
+    });
+  });
+
+  describe('PATCH /software/catalog/:id/versions/:versionId', () => {
+    const CAT_ID = '33333333-3333-4333-8333-333333333333';
+    const VER_ID = '44444444-4444-4444-8444-444444444444';
+    const catalogRow = { id: CAT_ID, orgId: 'org-123', partnerId: null, integrationProvider: null, name: 'Chrome' };
+
+    const mockSelects = (versionRow: unknown) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: () => ({ where: async () => [catalogRow] }) } as any)
+        .mockReturnValueOnce({ from: () => ({ where: async () => (versionRow ? [versionRow] : []) }) } as any);
+    };
+
+    const patchReq = (body: unknown) =>
+      app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    it('updates only the provided metadata fields', async () => {
+      mockSelects({ id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: null });
+      const setSpy = vi.fn(() => ({
+        where: () => ({ returning: async () => [{ id: VER_ID, version: '1.0.1', silentInstallArgs: '/S' }] }),
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+      const res = await patchReq({ version: '1.0.1', silentInstallArgs: '/S' });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.version).toBe('1.0.1');
+      expect(setSpy).toHaveBeenCalledWith({ version: '1.0.1', silentInstallArgs: '/S' });
+    });
+
+    it('404s for a version that does not belong to the catalog item', async () => {
+      mockSelects(null);
+      const res = await patchReq({ version: '2.0.0' });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses to clear the download URL of a URL-only version', async () => {
+      mockSelects({ id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: null });
+      const res = await patchReq({ downloadUrl: null });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/needs a download URL/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('400s an empty update', async () => {
+      mockSelects({ id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: null });
+      const res = await patchReq({});
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('No fields to update');
     });
   });
 

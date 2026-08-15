@@ -1726,7 +1726,10 @@
       "autoDetectedType": "Detecção automática ({{type}})",
       "installerTypeUndetected": "Esta URL não tem uma extensão de instalador reconhecível. Escolha o tipo explicitamente — caso contrário, o arquivo baixado é executado diretamente, o que falha para um MSI.",
       "advancedOptions": "Opções avançadas",
-      "uploadsRequireS3Storage": "O upload de arquivos requer um armazenamento de objetos S3 configurado no servidor."
+      "uploadsRequireS3Storage": "O upload de arquivos requer um armazenamento de objetos S3 configurado no servidor.",
+      "editingVersion": "Editando versão",
+      "failedToUpdateVersion": "Falha ao atualizar a versão",
+      "replaceFileAddNewVersion": "Para substituir o arquivo do instalador, adicione uma nova versão."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserir uma variável de tempo de implantação",

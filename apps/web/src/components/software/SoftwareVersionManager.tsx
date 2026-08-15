@@ -22,6 +22,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { usePackageUploadsGate } from "../../stores/featuresStore";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { applyOsHint } from "@/lib/installerPackageHints";
+import { bumpVersionString } from "@/lib/versionBump";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
@@ -38,6 +39,13 @@ type VersionEntry = {
   originalFileName: string;
   notes: string[];
   isLatest: boolean;
+  // Full metadata, kept so Edit and add-version prefill don't refetch.
+  downloadUrl: string;
+  silentInstallArgs: string;
+  silentUninstallArgs: string;
+  supportedOs: string[];
+  detectionRules: DetectionRule[];
+  hasFile: boolean;
 };
 function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -67,6 +75,8 @@ function normalizeVersion(
   ) {
     architecture = "x86";
   }
+  const supportedOsRaw = raw.supportedOs;
+  const detectionRulesRaw = raw.detectionRules;
   return {
     id: String(raw.id ?? raw.versionId ?? `ver-${index}`),
     version: String(raw.version ?? ""),
@@ -76,6 +86,18 @@ function normalizeVersion(
     originalFileName: String(raw.originalFileName ?? ""),
     notes,
     isLatest: Boolean(raw.isLatest ?? raw.is_latest ?? false),
+    downloadUrl: typeof raw.downloadUrl === "string" ? raw.downloadUrl : "",
+    silentInstallArgs:
+      typeof raw.silentInstallArgs === "string" ? raw.silentInstallArgs : "",
+    silentUninstallArgs:
+      typeof raw.silentUninstallArgs === "string" ? raw.silentUninstallArgs : "",
+    supportedOs: Array.isArray(supportedOsRaw)
+      ? supportedOsRaw.map((o) => String(o).toLowerCase())
+      : [],
+    detectionRules: Array.isArray(detectionRulesRaw)
+      ? (detectionRulesRaw as DetectionRule[])
+      : [],
+    hasFile: Boolean(raw.s3Key ?? raw.originalFileName),
   };
 }
 /**
@@ -92,6 +114,30 @@ function toPercent(sentBytes: number, totalBytes: number): number {
   if (totalBytes <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((sentBytes / totalBytes) * 100)));
 }
+/** A stored fileType is a bare string; narrow it to the selector's union so a
+ *  value the server no longer recognizes falls back to "" (infer) rather than
+ *  pinning the form to a bogus type. */
+function asFileType(raw: string): "" | SoftwareFileType {
+  return (SOFTWARE_FILE_TYPES as readonly string[]).includes(raw)
+    ? (raw as SoftwareFileType)
+    : "";
+}
+const EMPTY_FORM = {
+  version: "",
+  architecture: "x64" as Architecture,
+  notes: "",
+  silentInstallArgs: "",
+  silentUninstallArgs: "",
+  downloadUrl: "",
+  // "" = let the server infer from the URL. Only meaningful for the URL
+  // source; the upload path derives it from the uploaded filename.
+  fileType: "" as "" | SoftwareFileType,
+  supportedOs: [] as string[],
+  detectionRules: [] as DetectionRule[],
+  file: null as File | null,
+  fileName: "",
+};
+
 interface SoftwareVersionManagerProps {
   timezone?: string;
   catalogId?: string;
@@ -111,6 +157,9 @@ export default function SoftwareVersionManager({
   const [latestId, setLatestId] = useState<string>("");
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Non-empty while the form edits an existing version (PATCH) instead of
+  // creating a new one.
+  const [editingVersionId, setEditingVersionId] = useState<string>("");
   const [selectedVersionId, setSelectedVersionId] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [promotingVersionId, setPromotingVersionId] = useState<string>("");
@@ -127,21 +176,7 @@ export default function SoftwareVersionManager({
   // it. A ref, not state: it must survive re-renders without causing one, and
   // the progress bar already re-renders on every acknowledged chunk.
   const uploadAbortRef = useRef<AbortController | null>(null);
-  const [formState, setFormState] = useState({
-    version: "",
-    architecture: "x64" as Architecture,
-    notes: "",
-    silentInstallArgs: "",
-    silentUninstallArgs: "",
-    downloadUrl: "",
-    // "" = let the server infer from the URL. Only meaningful for the URL
-    // source; the upload path derives it from the uploaded filename.
-    fileType: "" as "" | SoftwareFileType,
-    supportedOs: [] as string[],
-    detectionRules: [] as DetectionRule[],
-    file: null as File | null,
-    fileName: "",
-  });
+  const [formState, setFormState] = useState(EMPTY_FORM);
   const fetchVersions = useCallback(async () => {
     try {
       setLoading(true);
@@ -302,6 +337,65 @@ export default function SoftwareVersionManager({
     () => deriveSoftwareFileTypeFromUrl(formState.downloadUrl),
     [formState.downloadUrl],
   );
+  const resetForm = () => {
+    setFormState(EMPTY_FORM);
+    setEditingVersionId("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setIsFormOpen(false);
+    setAdvancedOpen(false);
+  };
+  /** Open the add form, seeded from the latest version so a routine "new
+   *  release, same install shape" needs only a glance: version bumped, URL,
+   *  args, OS and detection rules carried over. Release notes start empty. */
+  const openAddForm = () => {
+    setEditingVersionId("");
+    const seed = versions.find((v) => v.id === latestId) ?? versions[0];
+    setFormState(
+      seed
+        ? {
+            ...EMPTY_FORM,
+            version: bumpVersionString(seed.version),
+            architecture: seed.architecture,
+            fileType: asFileType(seed.fileType),
+            downloadUrl: seed.downloadUrl,
+            silentInstallArgs: seed.silentInstallArgs,
+            silentUninstallArgs: seed.silentUninstallArgs,
+            supportedOs: [...seed.supportedOs],
+            detectionRules: seed.detectionRules.map((r) => ({ ...r })),
+          }
+        : EMPTY_FORM,
+    );
+    setAdvancedOpen(
+      Boolean(seed && (seed.silentUninstallArgs || seed.detectionRules.length)),
+    );
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setIsFormOpen(true);
+  };
+  const openEditForm = (entry: VersionEntry) => {
+    setEditingVersionId(entry.id);
+    setFormState({
+      ...EMPTY_FORM,
+      version: entry.version,
+      architecture: entry.architecture,
+      fileType: asFileType(entry.fileType),
+      notes: entry.notes.join("\n"),
+      downloadUrl: entry.downloadUrl,
+      silentInstallArgs: entry.silentInstallArgs,
+      silentUninstallArgs: entry.silentUninstallArgs,
+      supportedOs: [...entry.supportedOs],
+      detectionRules: entry.detectionRules.map((r) => ({ ...r })),
+    });
+    setAdvancedOpen(
+      Boolean(
+        entry.silentUninstallArgs ||
+          entry.detectionRules.length ||
+          entry.notes.length,
+      ),
+    );
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setIsFormOpen(true);
+  };
+
   const handlePromoteLatest = useCallback(
     async (versionId: string) => {
       if (!catalogId || versionId === latestId) return;
@@ -349,6 +443,57 @@ export default function SoftwareVersionManager({
     event.preventDefault();
     if (!formState.version.trim()) return;
     if (!catalogId) return;
+    // Edit mode: metadata PATCH — no file handling, empty string clears.
+    if (editingVersionId) {
+      try {
+        setSaving(true);
+        setError(undefined);
+        const response = await fetchWithAuth(
+          `/software/catalog/${catalogId}/versions/${editingVersionId}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              version: formState.version.trim(),
+              architecture: formState.architecture,
+              releaseNotes: formState.notes.trim() || null,
+              downloadUrl: formState.downloadUrl.trim() || null,
+              silentInstallArgs: formState.silentInstallArgs || null,
+              silentUninstallArgs: formState.silentUninstallArgs || null,
+              supportedOs:
+                formState.supportedOs.length > 0 ? formState.supportedOs : null,
+              detectionRules:
+                formState.detectionRules.length > 0
+                  ? formState.detectionRules
+                  : null,
+            }),
+          },
+        );
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(
+            typeof errData.error === "string"
+              ? errData.error
+              : i18n.t(
+                  "policies:software.softwareVersionManager.failedToUpdateVersion",
+                ),
+          );
+        }
+        const data = await response.json();
+        const updated = normalizeVersion(data.data ?? data, 0);
+        setVersions((prev) =>
+          prev.map((v) => (v.id === updated.id ? updated : v)),
+        );
+        resetForm();
+      } catch (err) {
+        console.error("Failed to update version:", err);
+        setError(
+          err instanceof Error ? err.message : "Failed to update version",
+        );
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     // Only the file branch is abortable; the metadata-only POST is a single
     // short request and keeps its previous behaviour exactly.
     const controller = formState.file ? new AbortController() : null;
@@ -461,22 +606,7 @@ export default function SoftwareVersionManager({
         setLatestId(newVersion.id);
         setSelectedVersionId(newVersion.id);
       }
-      setFormState({
-        version: "",
-        architecture: "x64",
-        notes: "",
-        silentInstallArgs: "",
-        silentUninstallArgs: "",
-        downloadUrl: "",
-        fileType: "",
-        supportedOs: [],
-        detectionRules: [],
-        file: null,
-        fileName: "",
-      });
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      setIsFormOpen(false);
-      setAdvancedOpen(false);
+      resetForm();
     } catch (err) {
       // uploadPackageVersion REJECTS on abort. A cancel the user asked for is
       // not a failure — exit quietly, leaving `versions` untouched and no
@@ -496,7 +626,7 @@ export default function SoftwareVersionManager({
     // a version into the list the user thinks they cancelled.
     uploadAbortRef.current?.abort();
     uploadAbortRef.current = null;
-    setIsFormOpen(false);
+    resetForm();
   };
   if (loading) {
     return (
@@ -550,7 +680,7 @@ export default function SoftwareVersionManager({
         )}
         <button
           type="button"
-          onClick={() => setIsFormOpen((open) => !open)}
+          onClick={() => (isFormOpen ? handleCancelForm() : openAddForm())}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
         >
           <Plus className="h-4 w-4" />
@@ -574,6 +704,14 @@ export default function SoftwareVersionManager({
           onSubmit={handleSubmit}
           className="rounded-lg border bg-card p-6 shadow-xs"
         >
+          {editingVersionId && (
+            <p
+              className="mb-4 text-sm font-medium"
+              data-testid="version-form-editing"
+            >
+              {i18n.t("policies:software.softwareVersionManager.editingVersion")}
+            </p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-xs font-semibold uppercase text-muted-foreground">
@@ -733,6 +871,15 @@ export default function SoftwareVersionManager({
             </div>
           </div>
 
+          {editingVersionId ? (
+            /* The uploaded binary is immutable per version — replacing the
+               installer means adding a new version, not editing this one. */
+            <p className="mt-4 text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:software.softwareVersionManager.replaceFileAddNewVersion",
+              )}
+            </p>
+          ) : (
           <div className="mt-4">
             <label className="text-xs font-semibold uppercase text-muted-foreground">
               {i18n.t("policies:software.softwareVersionManager.packageFile")}
@@ -773,6 +920,7 @@ export default function SoftwareVersionManager({
               </span>
             </div>
           </div>
+          )}
 
           <div className="mt-4">
             <label className="text-xs font-semibold uppercase text-muted-foreground">
@@ -910,17 +1058,23 @@ export default function SoftwareVersionManager({
               disabled={saving || tokenErrors.length > 0}
               className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving
-                ? formState.file
-                  ? i18n.t("policies:software.softwareVersionManager.uploading")
-                  : i18n.t("policies:software.softwareVersionManager.saving")
-                : formState.file
-                  ? i18n.t(
-                      "policies:software.softwareVersionManager.uploadSave",
-                    )
-                  : i18n.t(
-                      "policies:software.softwareVersionManager.saveVersion",
-                    )}
+              {editingVersionId
+                ? saving
+                  ? i18n.t("policies:software.softwareVersionManager.saving")
+                  : i18n.t("common:actions.save")
+                : saving
+                  ? formState.file
+                    ? i18n.t(
+                        "policies:software.softwareVersionManager.uploading",
+                      )
+                    : i18n.t("policies:software.softwareVersionManager.saving")
+                  : formState.file
+                    ? i18n.t(
+                        "policies:software.softwareVersionManager.uploadSave",
+                      )
+                    : i18n.t(
+                        "policies:software.softwareVersionManager.saveVersion",
+                      )}
             </button>
           </div>
         </form>
@@ -970,13 +1124,18 @@ export default function SoftwareVersionManager({
                 <th className="px-4 py-3">
                   {i18n.t("policies:software.softwareVersionManager.latest2")}
                 </th>
+                <th className="px-4 py-3">
+                  <span className="sr-only">
+                    {i18n.t("common:actions.edit")}
+                  </span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {versions.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={6}
                     className="px-4 py-6 text-center text-sm text-muted-foreground"
                   >
                     {i18n.t(
@@ -1027,6 +1186,16 @@ export default function SoftwareVersionManager({
                               "policies:software.softwareVersionManager.setAsLatest",
                             )}
                       </label>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        data-testid={`version-edit-${entry.id}`}
+                        onClick={() => openEditForm(entry)}
+                        className="text-sm font-medium text-primary hover:underline"
+                      >
+                        {i18n.t("common:actions.edit")}
+                      </button>
                     </td>
                   </tr>
                 ))
