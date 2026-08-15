@@ -546,7 +546,12 @@ export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: nu
  *  continued-run paragraph, not per individual continued call. Restores
  *  doc.fillColor to TEXT_COLOR before returning (matching the block draw
  *  loop), but does NOT save/restore font state — callers already do that
- *  around their own measure+draw pair (see tablePdf.ts's renderTableIntoPdf). */
+ *  around their own measure+draw pair (see tablePdf.ts's renderTableIntoPdf).
+ *  `forceBold` ORs into every run's own bold state (mirrors styleFor(...).forceBold
+ *  in the block draw loop) — table headers use this instead of wrapping the
+ *  (already-sanitized, potentially tag-bearing) label HTML in a synthetic
+ *  `<strong>` string, which would double-encode any real `<strong>`/`<em>`/etc.
+ *  already in the label. */
 export function renderInlineRunsIntoPdf(
   doc: PDFKit.PDFDocument,
   html: string,
@@ -557,6 +562,7 @@ export function renderInlineRunsIntoPdf(
   fonts?: BodyFonts,
   align: 'left' | 'center' | 'right' = 'left',
   color: string = TEXT_COLOR,
+  forceBold = false,
 ): void {
   const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
   if (!html || !html.trim()) return;
@@ -565,7 +571,7 @@ export function renderInlineRunsIntoPdf(
   effectiveRuns.forEach((run, i) => {
     const isFirst = i === 0;
     const isLast = i === effectiveRuns.length - 1;
-    doc.font(fontFor(bodyFonts, run.bold, run.italic)).fontSize(fontSize).fillColor(run.link ? LINK_COLOR : color);
+    doc.font(fontFor(bodyFonts, forceBold || run.bold, run.italic)).fontSize(fontSize).fillColor(run.link ? LINK_COLOR : color);
     const textOptions: PDFKit.Mixins.TextOptions = {
       continued: !isLast,
       underline: run.underline || !!run.link,
@@ -582,16 +588,19 @@ export function renderInlineRunsIntoPdf(
 
 /** Same per-run measurement for a single inline-runs string (table cells):
  *  no block splitting — the whole string is one line-wrapped run sequence at
- *  a single caller-supplied font size. */
-export function measureInlineRuns(doc: PDFKit.PDFDocument, html: string, width: number, fontSize: number, fonts?: BodyFonts): number {
+ *  a single caller-supplied font size. `forceBold` must match whatever the
+ *  paired renderInlineRunsIntoPdf draw call passes — table headers measure
+ *  AND draw force-bold, so the reserved height accounts for the (often wider)
+ *  bold glyph metrics. */
+export function measureInlineRuns(doc: PDFKit.PDFDocument, html: string, width: number, fontSize: number, fonts?: BodyFonts, forceBold = false): number {
   const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
   const saved = saveFontState(doc);
   try {
     if (!html || !html.trim()) return 0;
     const runs = extractRuns(tokenize(html), BASE_CTX);
     const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
-    const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, false);
-    const lineHeight = maxLineHeightForRuns(doc, effectiveRuns, fontSize, bodyFonts, false);
+    const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, forceBold);
+    const lineHeight = maxLineHeightForRuns(doc, effectiveRuns, fontSize, bodyFonts, forceBold);
     return lines * lineHeight;
   } finally {
     restoreFontState(doc, saved);

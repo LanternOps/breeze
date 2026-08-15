@@ -67,6 +67,25 @@ function extractFilledRects(pdf: Buffer): { x: number; y: number; w: number; h: 
   return rects;
 }
 
+/** Positioned text fragments: each `BT ... Tm ... (text)/<hex> ... ET` text
+ *  object's origin (in top-down page coordinates) plus its decoded text —
+ *  needed to assert row N's last drawn line sits ABOVE (smaller y) row N+1's
+ *  first drawn line, i.e. no vertical overlap between rows. */
+function extractPositionedPdfText(pdf: Buffer, pageHeight = 841.89): { text: string; x: number; y: number }[] {
+  const fragments: { text: string; x: number; y: number }[] = [];
+  for (const body of inflatePdfStreams(pdf)) {
+    const textObjectRe = /BT\s+([\s\S]*?)\s+ET/g;
+    let textObject: RegExpExecArray | null;
+    while ((textObject = textObjectRe.exec(body))) {
+      const tm = /1 0 0 1 ([\d.]+) ([\d.]+) Tm/.exec(textObject[1]!);
+      if (!tm) continue;
+      const text = decodeShowTextTokens(textObject[1]!);
+      if (text) fragments.push({ text, x: Number(tm[1]), y: pageHeight - Number(tm[2]) });
+    }
+  }
+  return fragments;
+}
+
 function hexToRgbFrac(hex: string): [number, number, number] {
   const v = hex.replace('#', '');
   const num = parseInt(v, 16);
@@ -371,5 +390,96 @@ describe('renderTableIntoPdf', () => {
     const [ar, ag, ab] = hexToRgbFrac(ACCENT);
     const accentRect = rects.find((r) => Math.abs(r.r - ar) < 0.01 && Math.abs(r.g - ag) < 0.01 && Math.abs(r.b - ab) < 0.01);
     expect(accentRect).toBeUndefined();
+  });
+
+  // Regression tests for two acceptance-testing bugs found on a live stack
+  // after this table renderer first shipped:
+  //
+  //  Bug A (Critical): wrapped cell text overlapped the next row. Root cause —
+  //  ensureRoom's underlying implementation reads pdfkit's own doc.y cursor,
+  //  which drawHeader/drawRow's per-COLUMN doc.text() calls leave at wherever
+  //  the LAST-drawn column's cell ended (not the row's true bottom, since row
+  //  height is the MAX across cells). When the last-drawn column's cell was
+  //  shorter than another column's in the same row — e.g. a short "Qty"
+  //  column after a long wrapping "Description" column — the next row started
+  //  from that too-small stale y, overlapping the previous row's last line.
+  //  Fixed by resyncing doc.y to renderTableIntoPdf's own tracked `y`
+  //  immediately before every ensureRoom call.
+  //
+  //  Bug B (Important): a column label containing real inline HTML (e.g.
+  //  `<strong>Managed</strong>` — labels are sanitized inline-HTML per the
+  //  schema, same as body cells) rendered its literal tag characters, because
+  //  drawHeader escaped the label as plain text and then wrapped the escaped
+  //  string in a SYNTHETIC `<strong>`. Fixed by drawing the label as real
+  //  inline HTML (like body cells) with a `forceBold` draw/measure flag
+  //  instead of the escape-and-wrap trick.
+  it('Bug A regression: a wrapped middle-column cell does not overlap the next row, even when the LAST column is short', async () => {
+    // weights 2/4/1 mirrors the acceptance repro exactly: column 2 (index 2,
+    // drawn last) is short ("Qty"), column 1 (index 1) is the one that wraps.
+    const midText =
+      'Comprehensive managed detection and response coverage across every endpoint in the fleet monitored continuously by our SOC team around the clock every single day.';
+    const buf = await renderToBuffer((doc) => {
+      const theme = registerThemeFonts(doc, 'classic');
+      const model = buildMeasured(
+        {
+          columns: [{ label: 'Item', weight: 2 }, { label: 'Description', weight: 4 }, { label: 'Qty', weight: 1 }],
+          rows: [
+            { cells: ['Service A', midText, '1'] },
+            { cells: ['Service B', midText, '2'] },
+            { cells: ['Service C', midText, '3'] },
+          ],
+        },
+        doc,
+        doc.page.width - 100,
+      );
+      const yRef = { y: 100 };
+      const ensureRoom = makeEnsureRoomRich(doc, yRef);
+      renderTableIntoPdf(doc, model, { x: doc.page.margins.left, startY: yRef.y, accent: ACCENT, fonts: theme, ensureRoom });
+    });
+
+    const positioned = extractPositionedPdfText(buf);
+    const rowStarts = positioned.filter((f) => /^Service [ABC]$/.test(f.text)).sort((a, b) => a.y - b.y);
+    expect(rowStarts.length).toBe(3);
+    // The wrapped middle-column text's LAST line ("our SOC team...") for each
+    // row must sit ABOVE (smaller y, since y grows downward here) the NEXT
+    // row's label — i.e. real vertical separation, not overlap/collapse.
+    const lastLines = positioned.filter((f) => f.text.startsWith('our SOC team')).sort((a, b) => a.y - b.y);
+    expect(lastLines.length).toBe(3);
+    for (let i = 0; i < 2; i++) {
+      expect(rowStarts[i + 1]!.y).toBeGreaterThan(lastLines[i]!.y);
+    }
+    // Also assert the row-to-row spacing is at least the full 3-line cell
+    // height (a loose lower bound — well beyond what a collapsed-row bug like
+    // the one this regression guards against could produce).
+    const rowGap = rowStarts[1]!.y - rowStarts[0]!.y;
+    expect(rowGap).toBeGreaterThan(30);
+  });
+
+  it('Bug B regression: a header label with real inline HTML draws formatted text, not literal tag characters, and stays bold', async () => {
+    const buf = await renderToBuffer((doc) => {
+      const theme = registerThemeFonts(doc, 'classic');
+      const model = buildMeasured({ columns: [{ label: '<strong>Managed</strong> Services' }, { label: 'Price' }], rows: [{ cells: ['x', 'y'] }] }, doc);
+      const yRef = { y: 100 };
+      const ensureRoom = makeEnsureRoomRich(doc, yRef);
+      renderTableIntoPdf(doc, model, { x: doc.page.margins.left, startY: yRef.y, accent: ACCENT, fonts: theme, ensureRoom });
+    });
+    const text = extractPdfText(buf);
+    expect(text).not.toContain('<strong>');
+    expect(text).not.toContain('</strong>');
+    expect(text).toContain('Managed');
+    expect(text).toContain('Services');
+
+    // The header cell must draw at the BOLD font, not the regular one — check
+    // the content stream's font-selection operator (`/F<n> <size> Tf`)
+    // immediately preceding the "Managed" show-text op resolves to a bold
+    // BaseFont via the page's font resource dictionary. Simpler proxy: since
+    // renderInlineRunsIntoPdf's forceBold path selects fonts.body.bold for
+    // EVERY run regardless of the label's own <strong> tag, and Helvetica-Bold
+    // is a distinct Tf font name from Helvetica, assert the operator stream
+    // references Helvetica-Bold's font resource at least once (pdfkit names
+    // resources positionally, so we check for the BaseFont string directly
+    // in the (uncompressed) object bodies instead of the content stream).
+    const raw = buf.toString('latin1');
+    expect(raw).toContain('Helvetica-Bold');
   });
 });
