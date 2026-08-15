@@ -44,10 +44,20 @@ const (
 	SecretEnvPrefix = "BREEZE_VAR_"
 )
 
-// secretKeyPattern mirrors TENANT_VARIABLE_KEY_PATTERN on the server. Enforced
-// agent-side too so a malformed key cannot inject a second environment entry
-// (a key containing "=" or a newline would otherwise split the env block).
-var secretKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// secretKeyPattern is EXACTLY TENANT_VARIABLE_KEY_PATTERN from the server
+// (packages/shared/src/validators/tenantVariables.ts), which the
+// tenant_variables_key_chk DB constraint also enforces. Re-enforced agent-side
+// so a malformed key cannot inject a second environment entry (a key containing
+// "=" or a newline would otherwise split the env block), and deliberately not
+// one character laxer than its only producer: anything outside this grammar is
+// something the server should never have sent, so refusing it is fail-closed.
+//
+// The lowercase-only grammar is also what makes EnvKey's ToUpper folding
+// injective: two distinct keys cannot collide on one BREEZE_VAR_* name. If this
+// pattern is ever widened to admit uppercase, that stops being true and
+// ParseSecretEnv must grow a collision check — otherwise which secret wins would
+// depend on Go's randomized map iteration order.
+var secretKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 // SecretEnv holds the secret variable values for a single script execution.
 //
@@ -134,7 +144,6 @@ func ParseSecretEnv(raw any) (SecretEnv, error) {
 	}
 	sort.Strings(keys)
 
-	seenEnvKeys := make(map[string]string, len(m))
 	for _, key := range keys {
 		if !secretKeyPattern.MatchString(key) {
 			return nil, fmt.Errorf("secretEnv key %q is not a valid variable key", key)
@@ -149,16 +158,6 @@ func ParseSecretEnv(raw any) (SecretEnv, error) {
 				key, MinSecretValueLength,
 			)
 		}
-		envKey := out.EnvKey(key)
-		if prior, dup := seenEnvKeys[envKey]; dup {
-			// Two keys differing only in case would both become the same
-			// BREEZE_VAR_* entry, and which one won would depend on map
-			// iteration order. Refuse rather than run a coin flip.
-			return nil, fmt.Errorf(
-				"secretEnv keys %q and %q both map to %s", prior, key, envKey,
-			)
-		}
-		seenEnvKeys[envKey] = key
 		out[key] = value
 	}
 	return out, nil

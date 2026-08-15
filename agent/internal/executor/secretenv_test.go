@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+// key64 is exactly 64 lowercase characters — the inclusive cap of
+// secretKeyPattern (^[a-z][a-z0-9_]{0,63}$: 1 leading letter + up to 63 more).
+// key65 is one character over that cap and must be rejected.
+var (
+	key64 = "a" + strings.Repeat("b", 63)
+	key65 = "a" + strings.Repeat("b", 64)
+)
+
 func TestParseSecretEnv_Accepts(t *testing.T) {
 	tests := []struct {
 		name string
@@ -29,14 +37,14 @@ func TestParseSecretEnv_Accepts(t *testing.T) {
 			want: SecretEnv{"api_token": "super-secret-value"},
 		},
 		{
-			name: "leading underscore key",
-			raw:  map[string]any{"_token": "leading-underscore-ok"},
-			want: SecretEnv{"_token": "leading-underscore-ok"},
-		},
-		{
 			name: "digits after first char key",
 			raw:  map[string]any{"token2": "digits-after-first-ok"},
 			want: SecretEnv{"token2": "digits-after-first-ok"},
+		},
+		{
+			name: "64-character key (cap is inclusive)",
+			raw:  map[string]any{key64: "cap-inclusive-ok"},
+			want: SecretEnv{key64: "cap-inclusive-ok"},
 		},
 	}
 
@@ -67,7 +75,6 @@ func TestParseSecretEnv_RejectsMalformedShape(t *testing.T) {
 		{"array instead of object", []any{"a"}},
 		{"number instead of object", 42},
 		{"non-string value", map[string]any{"api_token": 42}},
-		{"empty value", map[string]any{"api_token": ""}},
 	}
 
 	for _, tt := range tests {
@@ -81,24 +88,36 @@ func TestParseSecretEnv_RejectsMalformedShape(t *testing.T) {
 }
 
 func TestParseSecretEnv_RejectsShortValue_WithoutLeakingIt(t *testing.T) {
-	_, err := ParseSecretEnv(map[string]any{"api_token": "ab"})
-	if err == nil {
-		t.Fatal("ParseSecretEnv with a 2-char value = nil error, want error")
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"2-char value", "ab"},
+		{"empty value", ""},
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "api_token") {
-		t.Errorf("error %q does not name the offending key %q", msg, "api_token")
-	}
-	if strings.Contains(msg, "\"ab\"") {
-		t.Errorf("error %q leaks the rejected value", msg)
-	}
-	if !strings.Contains(msg, "4") {
-		t.Errorf("error %q does not mention the length floor (MinSecretValueLength=%d)", msg, MinSecretValueLength)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseSecretEnv(map[string]any{"api_token": tt.value})
+			if err == nil {
+				t.Fatalf("ParseSecretEnv with value %q = nil error, want error", tt.value)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "api_token") {
+				t.Errorf("error %q does not name the offending key %q", msg, "api_token")
+			}
+			if tt.value != "" && strings.Contains(msg, fmt.Sprintf("%q", tt.value)) {
+				t.Errorf("error %q leaks the rejected value", msg)
+			}
+			if !strings.Contains(msg, "4") {
+				t.Errorf("error %q does not mention the length floor (MinSecretValueLength=%d)", msg, MinSecretValueLength)
+			}
+		})
 	}
 }
 
 func TestParseSecretEnv_RejectsInvalidKeyGrammar(t *testing.T) {
-	badKeys := []string{"BAD KEY", "9lives", "a-b", ""}
+	badKeys := []string{"BAD KEY", "9lives", "a-b", "", "API_TOKEN", "_token", key65}
 
 	for _, key := range badKeys {
 		t.Run(fmt.Sprintf("key=%q", key), func(t *testing.T) {
@@ -119,22 +138,6 @@ func TestParseSecretEnv_RejectsTooManyEntries(t *testing.T) {
 	_, err := ParseSecretEnv(m)
 	if err == nil {
 		t.Fatalf("ParseSecretEnv with %d entries = nil error, want error", len(m))
-	}
-}
-
-func TestParseSecretEnv_RejectsCaseCollision(t *testing.T) {
-	raw := map[string]any{
-		"api_token": "value-one-long",
-		"API_TOKEN": "value-two-long",
-	}
-
-	_, err := ParseSecretEnv(raw)
-	if err == nil {
-		t.Fatal("ParseSecretEnv with case-colliding keys = nil error, want error")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "api_token") || !strings.Contains(msg, "API_TOKEN") {
-		t.Errorf("error %q does not name both colliding keys", msg)
 	}
 }
 
