@@ -110,6 +110,14 @@ export function renderCalloutIntoPdf(doc: PDFKit.PDFDocument, content: unknown, 
     return renderRichTextIntoPdf(doc, plainHtml, { x, width, startY: opts.startY, ensureRoom: ensureRoomPlain, fonts: fonts.body });
   }
 
+  // Resync doc.y to our own tracked position before the page-break decision —
+  // ensureRoom's underlying implementation (quotePdf.ts's ensureRoomRich)
+  // reads pdfkit's OWN doc.y cursor, which may be trailing opts.startY by
+  // whatever gap the PREVIOUS block left it at (e.g. a rich_text/heading
+  // block's own spacing-after isn't drawn as text, so doc.y sits short of the
+  // outer y the block walk actually advanced to). See renderTableIntoPdf in
+  // tablePdf.ts for the same fix against the same class of staleness.
+  doc.y = opts.startY;
   const room = opts.ensureRoom(boxHeight);
   const y = room.y;
   const barColor = barColorFor(variant, accent);

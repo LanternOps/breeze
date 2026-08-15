@@ -110,10 +110,14 @@ export function parseTable(content: unknown, availableWidth: number): TableModel
 /** Height a single cell/header value occupies at BODY_FONT_SIZE within
  *  `width` minus 2x CELL_PADDING, via Task 7's per-run measurer (so a
  *  bold-heavy cell measures at its actual bold glyph widths, not a flattened
- *  regular-face approximation). */
-function measureCellHeight(doc: PDFKit.PDFDocument, text: string, width: number, fonts: PdfThemeFonts): number {
+ *  regular-face approximation). `forceBold` must match whatever the paired
+ *  draw call passes to renderInlineRunsIntoPdf — header cells are always
+ *  drawn bold (see drawHeader below), so they must also be MEASURED bold: a
+ *  themed bold face can have taller line metrics than its regular face,
+ *  under-measuring the header height otherwise. */
+function measureCellHeight(doc: PDFKit.PDFDocument, text: string, width: number, fonts: PdfThemeFonts, forceBold = false): number {
   const innerWidth = Math.max(0, width - 2 * CELL_PADDING);
-  return measureInlineRuns(doc, text, innerWidth, BODY_FONT_SIZE, fonts.body) + 2 * CELL_PADDING;
+  return measureInlineRuns(doc, text, innerWidth, BODY_FONT_SIZE, fonts.body, forceBold) + 2 * CELL_PADDING;
 }
 
 /** Fill in `model.headerHeight` and every row's `height` (max cell height in
@@ -125,7 +129,7 @@ export function measureTable(doc: PDFKit.PDFDocument, model: TableModel, fonts: 
   const saved = saveFontState(doc);
   try {
     const headerHeight = model.columns.reduce(
-      (max, col) => Math.max(max, measureCellHeight(doc, col.label, col.width, fonts)),
+      (max, col) => Math.max(max, measureCellHeight(doc, col.label, col.width, fonts, true)),
       0,
     );
 
@@ -154,15 +158,6 @@ const HEADER_TEXT_ON_ACCENT = '#ffffff';
 const HEADER_TEXT_ON_PLAIN = '#111827';
 const BODY_TEXT_COLOR = '#1f2937';
 const BODY_FONT_SIZE_DRAW = 10;
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 export interface RenderTableOpts {
   x: number;
@@ -200,9 +195,17 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
     const textColor = model.headerStyle === 'accent' ? HEADER_TEXT_ON_ACCENT : HEADER_TEXT_ON_PLAIN;
     let cx = x;
     for (const col of model.columns) {
+      // col.label is already-sanitized inline HTML (quoteService.ts's
+      // sanitizeTableContent runs it through the inline profile on both
+      // write and read) — draw it AS HTML, not escaped-then-wrapped: the
+      // previous `<strong>${escapeHtml(label)}</strong>` treatment escaped
+      // any real <strong>/<em>/<u>/<a> tags already in the label into
+      // literal visible text. forceBold=true keeps every header cell bold
+      // regardless of the label's own formatting, matching measureCellHeight's
+      // forceBold=true above.
       renderInlineRunsIntoPdf(
         doc,
-        `<strong>${escapeHtml(col.label)}</strong>`,
+        col.label,
         cx + CELL_PADDING,
         atY + CELL_PADDING,
         Math.max(0, col.width - 2 * CELL_PADDING),
@@ -210,6 +213,7 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
         fonts.body,
         col.align,
         textColor,
+        true,
       );
       cx += col.width;
     }
@@ -238,12 +242,28 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
     });
   };
 
+  // ensureRoom's underlying implementation (quotePdf.ts's ensureRoomRich)
+  // bases its page-break decision on doc.y — pdfkit's OWN cursor — not on any
+  // y this function tracks itself. That cursor gets clobbered by every
+  // doc.text() call drawHeader/drawRow make (one per COLUMN), so after
+  // drawing a row it's left wherever the LAST-drawn column's cell ended, not
+  // at this row's true bottom (`y + row.height`). Since row height is the MAX
+  // across cells, whenever the last-drawn (highest-index) column's cell is
+  // SHORTER than another column's in the same row, ensureRoom's next call
+  // would silently substitute that stale, too-small doc.y as the next row's
+  // start — collapsing rows on top of each other. Explicitly resyncing
+  // doc.y = y immediately before every ensureRoom call (mirroring
+  // renderRichTextIntoPdf's own `doc.y = opts.startY` on entry) keeps
+  // ensureRoom's decision — and its returned y — anchored to the position
+  // THIS function actually tracks.
+  doc.y = opts.startY;
   const headerRoom = ensureRoom(model.headerHeight);
   let y = headerRoom.y;
   drawHeader(y);
   y += model.headerHeight;
 
   model.rows.forEach((row, i) => {
+    doc.y = y;
     const rowRoom = ensureRoom(row.height);
     y = rowRoom.y;
     if (rowRoom.didBreak) {
@@ -257,7 +277,12 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
     if (row.height > usablePageHeight - model.headerHeight) {
       model.columns.forEach((col, idx) => {
         const cellHtml = row.cells[idx] ?? '';
-        const html = `<strong>${escapeHtml(col.label)}:</strong> ${cellHtml}`;
+        // col.label is already-sanitized inline HTML (see drawHeader above) —
+        // concatenate it raw, not escaped, so any real formatting tags in the
+        // label draw as formatting rather than literal text. The `<strong>`
+        // wrapper here only needs to survive nesting a label that may already
+        // contain its own <strong>/<em>/etc., which the tokenizer handles fine.
+        const html = `<strong>${col.label}:</strong> ${cellHtml}`;
         const numberAdapter = (needed: number): number => ensureRoom(needed).y;
         y = renderRichTextIntoPdf(doc, html, { x, width: totalWidth, startY: y, ensureRoom: numberAdapter, fonts: fonts.body });
       });
