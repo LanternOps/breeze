@@ -1216,5 +1216,34 @@
     "scriptCount": "{{count}} scripts dans le bundle",
     "statusInvalid": "Invalide",
     "exportLimit": "Vous pouvez exporter jusqu’à {{max}} scripts par bundle."
+  },
+  "testRunner": {
+    "title": "Exécution de test",
+    "devicePlaceholder": "Sélectionner un appareil de test…",
+    "noDevices": "Aucun appareil compatible",
+    "deviceStatus": {
+      "offline": "hors ligne",
+      "maintenance": "en maintenance"
+    },
+    "run": "Lancer le test",
+    "saveAndRun": "Enregistrer et tester",
+    "saveFirst": "Enregistrez le script une première fois pour activer les exécutions de test.",
+    "requiredParams": "Paramètres obligatoires sans valeur par défaut ({{params}}) — utilisez plutôt la boîte de dialogue Exécuter le script.",
+    "offlineWarning": "L'appareil sélectionné est hors ligne — l'exécution attendra sa reconnexion.",
+    "exitCode": "sortie {{code}}",
+    "viewHistory": "Voir l'historique",
+    "status": {
+      "pending": "En attente",
+      "running": "En cours",
+      "completed": "Terminée",
+      "failed": "Échouée",
+      "timeout": "Délai expiré"
+    },
+    "errors": {
+      "execute": "Impossible de démarrer l'exécution de test",
+      "save": "Échec de l'enregistrement — corrigez les erreurs ci-dessus et réessayez.",
+      "notStarted": "L'exécution n'a pas démarré (l'appareil est peut-être en maintenance).",
+      "pollDeadline": "Toujours aucun résultat — consultez l'historique des exécutions."
+    }
   }
 }

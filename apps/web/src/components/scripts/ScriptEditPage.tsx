@@ -87,7 +87,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
     fetchScript();
   }, [fetchScript]);
 
-  const handleSubmit = async (values: ScriptSubmitValues) => {
+  const handleSubmit = async (values: ScriptSubmitValues, options?: { navigate?: boolean }) => {
     setSubmitting(true);
     setError(undefined);
 
@@ -141,7 +141,9 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
       }
 
       showToast({ type: 'success', message: isNew ? t('scriptEditPage.toast.created') : t('scriptEditPage.toast.saved') });
-      void navigateTo('/scripts');
+      // Test-run saves stay in the editor (navigate: false); the explicit Save
+      // button keeps its return-to-list behavior.
+      if (options?.navigate !== false) void navigateTo('/scripts');
     } catch (err) {
       setError(err instanceof Error ? err.message : t('scriptEditPage.errors.generic'));
       throw err; // re-throw so ScriptForm knows the save failed
@@ -239,6 +241,7 @@ export default function ScriptEditPage({ scriptId }: ScriptEditPageProps) {
         loading={submitting}
         isNew={isNew}
         isSystemScript={scriptScope?.isSystem ?? false}
+        scriptId={scriptId}
       />
     </div>
   );

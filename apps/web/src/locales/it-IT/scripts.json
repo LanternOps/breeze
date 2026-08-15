@@ -1216,5 +1216,34 @@
     "scriptCount": "{{count}} script nel bundle",
     "statusInvalid": "Non valido",
     "exportLimit": "Puoi esportare fino a {{max}} script per bundle."
+  },
+  "testRunner": {
+    "title": "Esecuzione di prova",
+    "devicePlaceholder": "Seleziona un dispositivo di prova…",
+    "noDevices": "Nessun dispositivo compatibile",
+    "deviceStatus": {
+      "offline": "non in linea",
+      "maintenance": "manutenzione"
+    },
+    "run": "Esegui prova",
+    "saveAndRun": "Salva ed esegui prova",
+    "saveFirst": "Salva lo script una volta per abilitare le esecuzioni di prova.",
+    "requiredParams": "Parametri obbligatori senza valori predefiniti ({{params}}) — usa invece la finestra Esegui script.",
+    "offlineWarning": "Il dispositivo selezionato è offline — l'esecuzione attenderà la riconnessione.",
+    "exitCode": "codice {{code}}",
+    "viewHistory": "Vedi cronologia",
+    "status": {
+      "pending": "In coda",
+      "running": "In esecuzione",
+      "completed": "Completata",
+      "failed": "Non riuscita",
+      "timeout": "Tempo scaduto"
+    },
+    "errors": {
+      "execute": "Impossibile avviare l'esecuzione di prova",
+      "save": "Salvataggio non riuscito — correggi gli errori sopra e riprova.",
+      "notStarted": "L'esecuzione non è stata avviata (il dispositivo potrebbe essere in manutenzione).",
+      "pollDeadline": "Ancora nessun risultato — controlla la cronologia delle esecuzioni."
+    }
   }
 }

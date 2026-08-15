@@ -1216,5 +1216,34 @@
     "scriptCount": "{{count}} scripts in bundle",
     "statusInvalid": "Invalid",
     "exportLimit": "You can export up to {{max}} scripts per bundle."
+  },
+  "testRunner": {
+    "title": "Test run",
+    "devicePlaceholder": "Select a test device…",
+    "noDevices": "No compatible devices",
+    "deviceStatus": {
+      "offline": "offline",
+      "maintenance": "maintenance"
+    },
+    "run": "Test Run",
+    "saveAndRun": "Save & Test Run",
+    "saveFirst": "Save the script once to enable test runs.",
+    "requiredParams": "Required parameters without defaults ({{params}}) — use the Run Script dialog instead.",
+    "offlineWarning": "The selected device is offline — the run will wait until it reconnects.",
+    "exitCode": "exit {{code}}",
+    "viewHistory": "View history",
+    "status": {
+      "pending": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "timeout": "Timed out"
+    },
+    "errors": {
+      "execute": "Failed to start the test run",
+      "save": "Save failed — fix the errors above and try again.",
+      "notStarted": "The run was not started (the device may be in maintenance).",
+      "pollDeadline": "Still no result — check the execution history for the outcome."
+    }
   }
 }

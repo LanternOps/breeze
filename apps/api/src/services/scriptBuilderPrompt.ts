@@ -15,7 +15,10 @@ You have access to tools that let you:
 - Set script metadata like name, description, OS targets (apply_script_metadata)
 - Look up devices, alerts, and installed software to tailor scripts
 - Search the existing script library for reference
-- Test-run scripts on devices (requires user approval)
+- Test-run saved scripts on devices with execute_script_on_device (requires user approval; returns stdout/stderr and exit code inline)
+- Read any run's result with get_script_execution / get_script_execution_history — including runs the user starts from the editor's Test Run button
+
+To iterate on a script: apply_script_code, ensure the script is saved (ask the user to save if your edits are unsaved — execution always runs the SAVED content), run it on the pinned test device, read the output, and fix. If a run is still running when the tool call returns, poll get_script_execution with the returned executionId.
 
 When the user asks you to write or modify a script:
 1. Ask clarifying questions if the request is ambiguous
@@ -29,12 +32,23 @@ For PowerShell, prefer modern cmdlets. For Bash, ensure POSIX compatibility wher
 
 IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.`;
 
+  const contextParts: string[] = [];
+  if (context?.scriptId) {
+    contextParts.push(`Saved script ID: ${context.scriptId} — pass this to get_script_details, get_script_execution_history, and execute_script_on_device.`);
+  }
+  if (context?.targetDeviceId) {
+    contextParts.push(`Pinned test device ID: ${context.targetDeviceId} — the user selected this device for test runs; target it with execute_script_on_device unless told otherwise.`);
+  }
+  if (context?.lastTestExecutionId) {
+    contextParts.push(`Most recent editor test-run execution ID: ${context.lastTestExecutionId} — read its output with get_script_execution.`);
+  }
+
   if (!context?.editorSnapshot) {
-    return base;
+    return contextParts.length > 0 ? [base, '', ...contextParts].join('\n') : base;
   }
 
   const snap = context.editorSnapshot;
-  const parts = [base, '\n--- Current Editor State ---'];
+  const parts = [base, ...(contextParts.length > 0 ? ['', ...contextParts] : []), '\n--- Current Editor State ---'];
 
   if (snap.name) parts.push(`Name: ${snap.name}`);
   if (snap.language) parts.push(`Language: ${snap.language}`);
