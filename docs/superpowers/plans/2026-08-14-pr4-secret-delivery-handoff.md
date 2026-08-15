@@ -14,7 +14,23 @@ Read this instead of re-running discovery. The file:line references below cost t
 | PR1 | `tenant_variables` table, CRUD, `variables:read`/`variables:manage`, Settings → Variables UI | #3494 `da6a8efe9` |
 | PR2 | `{{var.*}}` resolved per device at dispatch; per-device failure channel | #3495 `2e7ee0621` |
 | PR3 | Sourced parameters (`source: runtime\|tenantVariable\|deviceCustomField\|builtin`) | #3533 `5ea1187eb` |
-| **PR4** | **Secret delivery — designed, not built. Split into 4a/4b/4c below.** | — |
+| **PR4a** | **Server-side machinery, inert — built. See `2026-08-14-pr4a-secret-envelope-server.md`.** | branch `ToddHebebrand/tenant-variables-pr4` |
+| **PR4b / 4c** | **Agent, then activation. Designed, not built.** | — |
+
+**PR4a as built** (7 commits, secrets still blocked everywhere):
+
+- `services/scriptSecretEnvelope.ts` — seal/open one canonical envelope; AAD binds schema version + type + field + command id + device id; v3 required (throws rather than degrading to `enc:v1:`); strict post-decrypt validation.
+- `sensitiveCommandPayload.ts` — `script` registered as an ENVELOPE type alongside the existing field-level mechanism. Missing context **throws**. `DeliverableCommand`/`ClaimedCommand` gained `deviceId`; `toAgentCommandFrame()` narrows back to `{id,type,payload}` at every send site so `deviceId` cannot leak onto the wire.
+- `scriptDispatch.ts` — reserves the command UUID (`randomUUID`) before encryption and passes it to `queueCommand(…, { commandId })`, so the AAD can bind it.
+- `services/exactSecretRedaction.ts` + `services/commandSecretRedaction.ts` — value-based redaction wired into BOTH ingest chokepoints, before any persistence; fail-closed to `[OUTPUT_REDACTED:VERIFICATION_FAILED]`. Empty fields stay empty.
+- **All 11 terminal `device_commands` writers** now strip sensitive payload keys via `terminalPayloadErasureSet()` (jsonb key-subtraction, bound params) — this fixes §4.1 below. Guarded by `services/terminalPayloadErasure.coverage.test.ts`.
+- `devices.script_secret_env_version` (migration `2026-08-22-…`), `securityCapabilities.scriptSecretEnvVersion`, non-sticky heartbeat write. **Stored only — no gate yet.**
+- Secret values must be ≥ 4 characters (`MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH` in `@breeze/shared`), enforced at save AND re-checked in `services/tenantVariables.ts` for the `isSecret`-flip-without-`value` case the `.partial()` schema cannot see.
+
+**Two traps hit while building it, worth knowing for 4b/4c:**
+
+1. `sql.raw` broke every test that mocks `drizzle-orm` (the mock's `sql` has no `.raw`). Bound parameters work everywhere and are better anyway.
+2. `script_secret_env_version` had to go in `reviewedIncluded`, not `included` — the name matches `SUSPICIOUS_NAME_PARTS`. **`tenant-export-policy.integration.test.ts` passed; only `tenantExportErasureRoundtrip` caught it**, because the name check runs when the plan is actually built. Run both.
 
 **All four are unreleased.** Latest tags are `v0.105.x`; PR0–PR3 land together in **0.106.0**.
 
@@ -86,7 +102,10 @@ Distinguish *absent* from *unreadable/decrypt-failed*; unreadable must block app
 
 ## 4. Discovered facts — the expensive part
 
-### 4.1 Live leak, independent of this initiative
+### 4.1 Live leak, independent of this initiative — **FIXED in PR4a**
+
+> Kept as written because the table below is still the map of every terminal writer. All eleven now spread `terminalPayloadErasureSet()`; the "Nulled?" column describes the state BEFORE PR4a.
+
 
 `encryption_rotate_key` already puts `password` and `currentRecoveryKey` into `device_commands.payload` (`sensitiveCommandPayload.ts:16`). **Only the REST ingest blanks them on terminal** (`routes/agents/commands.ts:319-326`). Verified: `hasSensitivePayload` appears **zero** times in `agentWs.ts`, `commandQueue.ts`, `staleCommandReaper.ts`.
 
@@ -142,7 +161,7 @@ Also: `commandQueue.ts:293-304` re-arms a **terminal** desktop-stream row back t
 ## 5. Also open
 
 1. **0.106.0 release notes** — 8 items across PR1–PR3. The two that will generate support load fire on things nobody edited: `normalizeAutomationActions` re-validating **stored** automation actions at runtime (PR2), and required `runtime` parameters now enforced server-side, hitting automations that send `{}` (PR3). Both were already producing silently wrong runs, so they are fixes — but they read as regressions if unannounced.
-2. **The FileVault retention leak (§4.1)** — file as its own issue.
+2. **The FileVault retention leak (§4.1)** — fixed in PR4a, but still worth its own issue: it predates this initiative and stands on its own merits (and the fix should be release-noted independently of tenant variables).
 3. **PR3 follow-ups** — automation parameter-capture UI (never existed, `AutomationForm.tsx:61-69` captures only `scriptId`); `aiToolsScripts` doesn't surface `ignoredParameters`; `deviceCustomField` binding is free-text, not a picker.
 4. **MEMORY.md** is over the hook's 17.1KB target; needs section→topic-file consolidation, not entry deletion.
 5. **Four-eyes adjacent, not PR4's job:** the web approvals inbox was never built (Plan 2 of the tier-3 split), and there is a `run_script` digest resolver unreachable on the supervised path.
