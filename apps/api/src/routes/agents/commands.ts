@@ -28,7 +28,7 @@ import { CommandTypes, queueCommandForExecution } from '../../services/commandQu
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
-import { hasSensitivePayload, terminalPayloadErasureSet} from '../../services/sensitiveCommandPayload';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
