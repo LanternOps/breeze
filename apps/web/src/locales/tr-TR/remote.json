@@ -46,6 +46,7 @@
     },
     "fallback": {
       "linuxFirstRun": "Linux'ta indirmeyi yürütülebilir hale getirin (chmod +x) ve bir kez çalıştırın. Bu, izleyiciyi kaydeder, böylece oturumlar bundan sonra otomatik olarak açılır.",
+      "linuxFuse": "Pencere açmadan kapanırsa FUSE 2 gerekir: Debian 13 / Ubuntu 24.04+ için libfuse2t64, eski sürümler için libfuse2 yükleyin ya da --appimage-extract-and-run ile çalıştırın.",
       "title": "Görüntüleyici açılmadı mı?",
       "viewerDescription": "Görüntüleyici açıldıysa bunu kapatabilirsiniz. Aksi takdirde aşağıdan indirin.",
       "vncDescription": "Bunun yerine tarayıcınızda VNC oturumunu açın."

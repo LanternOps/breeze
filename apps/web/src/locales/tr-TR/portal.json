@@ -72,7 +72,7 @@
       "submit": "Şifreyi sıfırla"
     },
     "email": "E-posta",
-    "emailPlaceholder": "siz@sirket.com",
+    "emailPlaceholder": "siz@example.com",
     "rememberedPassword": "Şifrenizi hatırladınız mı?",
     "request": {
       "sending": "Sıfırlama e-postası gönderiliyor...",

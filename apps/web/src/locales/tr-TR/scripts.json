@@ -916,7 +916,9 @@
       "timeoutSeconds": "Zaman aşımı (saniye)",
       "runAs": "Farklı Çalıştır",
       "exitCode": "Çıkış kodu",
-      "severity": "Önem"
+      "severity": "Önem",
+      "source": "Kaynak",
+      "fallbackValue": "Yedek değer"
     },
     "placeholders": {
       "name": "Geçici Dosyaları Temizle",
@@ -939,7 +941,24 @@
     "parameters": {
       "emptyPrefix": "Henüz parametre yok. Parametreler, kullanıcıların çalışma zamanında değerler sağlamasına olanak tanır; komut dosyanızda bunlara şu şekilde başvurun:",
       "emptyMiddle": "(PowerShell/Bash) veya",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "{{index}} parametresinin kaynağı"
+    },
+    "parameterBinding": {
+      "variableLabel": "Değişken anahtarı",
+      "variablePlaceholder": "ör. vendor_token",
+      "fieldLabel": "Özel alan anahtarı",
+      "fieldPlaceholder": "ör. asset_tag",
+      "builtinLabel": "Özellik",
+      "chooseTitle": "Bir değişken seçin",
+      "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",
+      "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
+    },
+    "parameterSources": {
+      "runtime": "Çalışma anında sorulur",
+      "tenantVariable": "Bir değişkenden",
+      "deviceCustomField": "Cihaz özel alanından",
+      "builtin": "Cihaz özelliğinden"
     },
     "execution": {
       "timeoutHint": "Komut dosyası bu sürenin sonunda sonlandırılır. Varsayılan 300 saniye (5 dakika) çoğu görev için uygundur. Maksimum 3600s (1 saat).",
@@ -1053,7 +1072,13 @@
       "number": "\"{{name}}\" parametresi geçerli bir sayı olmalıdır"
     },
     "title": "Parametreler",
-    "selectPlaceholder": "Seç..."
+    "selectPlaceholder": "Seç...",
+    "allSupplied": "Her parametre otomatik sağlanır — doldurulacak bir şey yok.",
+    "suppliedBy": {
+      "tenantVariable": "{{key}} değişkeninden otomatik sağlanır",
+      "deviceCustomField": "{{key}} cihaz özel alanından otomatik sağlanır",
+      "builtin": "{{key}} değerinden otomatik sağlanır"
+    }
   },
   "scriptTagManager": {
     "errors": {

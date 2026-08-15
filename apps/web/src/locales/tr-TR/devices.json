@@ -862,6 +862,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "VPN DNS Ad",
+    "vpnState": "Durum",
+    "vpnConnected": "Bağlı",
+    "vpnDisconnected": "Bağlantı kesildi",
     "detectionSource": "Algılama Kaynağı",
     "agent": "Temsilci",
     "agentVersion": "Temsilci Sürümü",
@@ -1043,6 +1046,7 @@
     "filterByVpn": "VPN'e göre filtrele",
     "allVpn": "Tüm VPN'ler",
     "anyActiveVpn": "Herhangi bir etkin VPN",
+    "vpnDisconnected": "bağlantı kesildi",
     "off": "kapalı",
     "on": "açık",
     "multiBootMachinesTuckExpectedOffline": "Çoklu önyüklemeli makineler: Beklenen çevrimdışı önyükleme profillerini, çevrimiçi kardeşlerinin altına ince şeritler halinde sıkıştırın. Kapalı = düz liste.",
@@ -1250,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Bu kuruluş {{name}}'yi onaylamadı. Yüklemeden önce yamayı onaylayın.",
+    "installPatchUserScopeTitle": "{{name}}, oturum açmış kullanıcının profilinde yüklü. Kullanıcı başına uygulamalar henüz sistem bağlamından yamalanamaz.",
     "installPatchTitle": "{{name}} yükleyin",
     "loading": "Yama durumu yükleniyor...",
     "notDownloadedTitle": "Henüz indirilmedi; yükleme işlemi daha uzun sürecektir",
@@ -1267,6 +1272,9 @@
       "queued": "{{label}} sıraya alındı",
       "queuedDetail": "{{label}} sıraya alındı{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Kullanıcı başına",
+    "perUserBadgeTitle": "Oturum açmış kullanıcının profilinde yüklü; henüz sistem bağlamından yamalanamaz",
+    "perUserNotScanned": "Kullanıcı başına uygulamalar taranmadı (etkileşimli kullanıcı oturumu yok) — kullanıcı başına güncellemeler eksik olabilir.",
     "rebootRequired": "Yeniden başlatma gerekli",
     "table": {
       "approval": "Onay",
@@ -2229,6 +2237,7 @@
     },
     "generalCategory": "Genel",
     "paramCount": "{{count}} parametre(ler)i",
+    "boundParamCount": "{{count}} otomatik sağlanır",
     "runAs": {
       "system": "Farklı çalıştır: Sistem",
       "user": "Farklı çalıştır: Oturum açmış kullanıcı"

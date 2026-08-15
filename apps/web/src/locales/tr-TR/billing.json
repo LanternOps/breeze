@@ -510,14 +510,26 @@
       "autosaveHint": "Değişiklikler otomatik olarak kaydedilir. Sarı renkli bir çerçeve, kaydedilmemiş bir düzenlemeyi işaret eder.",
       "block": {
         "imageSectionPdf": "Resim bölümü (PDF'de oluşturulmuştur).",
-        "richTextContentAria": "Zengin metin içeriği"
+        "richTextContentAria": "Zengin metin içeriği",
+        "tableEmpty": "Boş tablo.",
+        "calloutEmpty": "Boş çağrı kutusu."
       },
       "blockTypes": {
         "heading": "Başlık",
         "image": "Resim",
         "pricingTable": "Fiyatlandırma tablosu",
         "richText": "Zengin metin",
-        "contract": "Sözleşme"
+        "contract": "Sözleşme",
+        "table": "Tablo",
+        "callout": "Çağrı kutusu"
+      },
+      "callout": {
+        "variantLabel": "Stil",
+        "variantInfo": "Bilgi",
+        "variantAccent": "Vurgu",
+        "variantWarn": "Uyarı",
+        "titlePlaceholder": "Başlık (isteğe bağlı)",
+        "bodyAria": "Çağrı kutusu metni"
       },
       "bulk": {
         "applied_one": "{{count}} hattı güncellendi.",
@@ -728,7 +740,22 @@
         "taxTitle": "Satır başına vergi. Vergi toplamı başlığı geçerli bir başlıktır ve bir kuruşluk yuvarlama kadar farklılık gösterebilir.",
         "taxable": "Vergiye tabi",
         "total": "Toplam",
-        "unitPrice": "Birim fiyatı"
+        "unitPrice": "Birim fiyatı",
+        "columnLabelPlaceholder": "Sütun etiketi",
+        "columnAlignAria": "Sütun hizalaması",
+        "alignLeft": "Sol",
+        "alignCenter": "Orta",
+        "alignRight": "Sağ",
+        "removeColumn": "Sütunu kaldır",
+        "addColumn": "Sütun ekle",
+        "removeRow": "Satırı kaldır",
+        "addRow": "Satır ekle",
+        "cellAria": "Satır {{row}}, sütun {{column}}",
+        "captionPlaceholder": "Başlık (isteğe bağlı)",
+        "zebra": "Zebra şeritleri",
+        "headerStyle": "Başlık stili",
+        "headerStylePlain": "Düz",
+        "headerStyleAccent": "Vurgulu"
       },
       "terms": {
         "placeholder": "Ödeme koşulları, garanti hükümleri vb.",
@@ -873,7 +900,24 @@
       "sendCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Gönderme iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
       "sendBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin ve ardından Gönderin.",
       "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Gönderim, kaydedildiğinde kilidi açılır.",
-      "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Gönderim, kaydedildiğinde kilidi açılır."
+      "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Gönderim, kaydedildiğinde kilidi açılır.",
+      "resend": "Yeniden gönder",
+      "resendError": "Teklif yeniden gönderilemedi.",
+      "resendSuccess": "Teklif {{orgName}} kuruluşuna yeniden gönderildi — aynı bağlantı, aynı belge.",
+      "resendNotDelivered": "Yeniden gönderim kaydedildi ancak e-posta teslim edilmedi. Adresi kontrol edin ya da paylaşım bağlantısını kopyalayıp kendiniz gönderin.",
+      "copyShareLink": "Paylaşım bağlantısını kopyala",
+      "copyingShareLink": "Kopyalanıyor…",
+      "shareLinkCopied": "Paylaşım bağlantısı kopyalandı — müşteriye e-postayla gönderilen bağlantı da budur.",
+      "shareLinkCopyFailed": "Otomatik olarak kopyalanamadı. Paylaşım bağlantısı: {{url}}",
+      "shareLinkError": "Paylaşım bağlantısı alınamadı.",
+      "resendConfirm": {
+        "title": "Teklifi yeniden gönder",
+        "message": "Bu teklifin başka bir kopyasını {{orgName}} kuruluşuna gönderin. Teklifte hiçbir şey değişmez ve kabul bağlantısı aynı kalır."
+      },
+      "resendNewLinkOriginalLive": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı yenisiyle birlikte çalışmaya devam eder.",
+      "resendNewLinkOriginalDead": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes yeni bağlantıyı kullanmalıdır.",
+      "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
+      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır."
     },
     "detail": {
       "addContentInEditor": "Editör'e içerik ekleyin",
@@ -965,6 +1009,7 @@
       "pricing": "Fiyatlandırma",
       "proposalImageAlt": "Teklif resmi",
       "scheduledSendFailed": "Planlanan gönderme başarısız oldu — bu teklif GÖNDERİLMEDİ ve hâlâ taslak halinde. İnceleyin ve tekrar göndermeyi deneyin.",
+      "sentTo": "Gönderildi:",
       "table": {
         "item": "Ürün",
         "noLines": "Bu tabloda satır yok.",
@@ -1064,6 +1109,7 @@
         "subtotal": "Ara Toplam",
         "tax": "Vergi"
       },
+      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
       "validUntil": "Geçerlilik tarihi:"
     },
     "page": {
@@ -1650,6 +1696,12 @@
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
       "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "documentPageSize": "Sayfa boyutu",
+      "documentPageSizeA4": "A4",
+      "documentPageSizeLetter": "Letter",
+      "documentTheme": "Belge teması",
+      "documentThemeClassic": "Klasik",
+      "documentThemeCondensed": "Yoğun",
       "invoiceFooter": "Fatura altbilgisi",
       "invoiceFooterPlaceholder": "Ödeme talimatları, teşekkür notu vb.",
       "invoiceNumberPrefix": "Fatura numarası öneki",
