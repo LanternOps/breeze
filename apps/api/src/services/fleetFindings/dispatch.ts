@@ -44,6 +44,7 @@ import {
 } from '../../db/schema/fleetFindings';
 import type { AuthContext } from '../../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from '../commandQueue';
+import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { captureException } from '../sentry';
 import { getFleetFinding } from './query';
 
@@ -707,6 +708,10 @@ export async function pollRunProgress(runId: string): Promise<void> {
         status: 'cancelled',
         completedAt: now,
         result: { cancelReason: 'remediation_run_timeout' },
+        // Terminal writers must scrub sensitive payload keys (enforced by
+        // terminalPayloadErasure.coverage.test.ts) — a cancelled command's
+        // payload is no longer needed.
+        ...terminalPayloadErasureSet(),
       })
       .where(and(inArray(deviceCommands.id, chunk), eq(deviceCommands.status, 'pending')));
   }

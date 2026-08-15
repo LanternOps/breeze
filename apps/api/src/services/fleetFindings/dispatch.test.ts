@@ -210,6 +210,12 @@ vi.mock('../commandQueue', () => ({
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+// terminalPayloadErasureSet builds a jsonb SQL expression off the real
+// deviceCommands schema; stub it so the schema-mocked pollRunProgress cancel
+// path doesn't need the full schema. The returned key just rides the SET clause.
+vi.mock('../sensitiveCommandPayload', () => ({
+  terminalPayloadErasureSet: () => ({ payload: 'ERASE_PAYLOAD' }),
+}));
 
 import { fleetRemediationRuns } from '../../db/schema/fleetFindings';
 import {
