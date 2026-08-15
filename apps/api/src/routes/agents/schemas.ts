@@ -258,6 +258,10 @@ export const heartbeatSchema = z.object({
   // route treats anything other than exactly 1 as "not enforcing" anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
+    // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
+    // a bad value drops the field rather than 400-ing the heartbeat, since the
+    // route treats anything other than exactly 1 as "not capable" anyway.
+    scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Informational: a bad
@@ -667,6 +671,9 @@ const pendingPatchSchema = z.object({
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),
   description: z.string().optional(),
+  // Windows install scope the agent discovered this package at (#2727).
+  // Absent for providers with no scope concept — treated as machine-wide.
+  scope: z.enum(['machine', 'user']).optional(),
   source: patchSourceSchema.default('custom')
 });
 
@@ -697,7 +704,16 @@ export const submitPendingPatchesSchema = z.object({
   // degrade). If this schema is ever hardened to .strict(), a new agent's
   // coveredSources payload would 400 and patch uploads would stop entirely —
   // do not do that without a coordinated agent-fleet rollout.
-  coveredSources: z.array(patchSourceSchema).max(10).optional()
+  coveredSources: z.array(patchSourceSchema).max(10).optional(),
+  // Whether the agent's user-context winget pass actually ran this scan
+  // (#2727). It is a SECOND coverage axis, orthogonal to coveredSources: the
+  // SYSTEM machine-scope pass can succeed (third_party covered) while per-user
+  // apps went unlooked-at because nobody was logged in. Only when this is
+  // explicitly true are user-scope pending rows eligible to be swept to
+  // 'missing' — otherwise the sweep would tombstone rows the scan never saw,
+  // the #2217 failure mode one axis down. Absent (legacy agents, non-Windows,
+  // devices with no winget provider) is treated as "not scanned".
+  userScopeScanned: z.boolean().optional()
 });
 
 export const submitInstalledPatchesSchema = z.object({

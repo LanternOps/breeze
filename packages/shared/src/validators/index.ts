@@ -468,15 +468,23 @@ export const vpnProviderSchema = z.enum([
 
 export const vpnDetectionSourceSchema = z.enum(['interface', 'service', 'process', 'adapter']);
 
-export const vpnPresenceIngestSchema = z.object({
-  provider: vpnProviderSchema,
-  active: z.boolean(),
-  interfaceName: z.string().min(1).max(128),
-  ipv4: z.string().max(45).optional(),
-  ipv6: z.string().max(45).optional(),
-  dnsName: z.string().max(255).optional(),
-  detectionSource: vpnDetectionSourceSchema
-});
+// An inactive entry (client running, tunnel down) has no interface and no IPs,
+// so `interfaceName` may be empty — but only when `active` is false. An active
+// VPN without an interface would be a phantom, so the refine rejects it.
+export const vpnPresenceIngestSchema = z
+  .object({
+    provider: vpnProviderSchema,
+    active: z.boolean(),
+    interfaceName: z.string().max(128),
+    ipv4: z.string().max(45).optional(),
+    ipv6: z.string().max(45).optional(),
+    dnsName: z.string().max(255).optional(),
+    detectionSource: vpnDetectionSourceSchema
+  })
+  .refine((vpn) => !vpn.active || vpn.interfaceName.length > 0, {
+    message: 'interfaceName is required for an active VPN',
+    path: ['interfaceName']
+  });
 
 // ============================================
 // Filter Validators
@@ -1019,6 +1027,7 @@ export * from './ai';
 export * from './tenantVariables';
 export * from './variableTokens';
 export * from './scriptParameters';
+export * from './scriptParameterDefinitions';
 
 // ============================================
 // Ticket Validators

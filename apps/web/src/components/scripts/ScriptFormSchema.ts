@@ -1,13 +1,19 @@
 import { z } from 'zod';
+import {
+  scriptParameterDefinitionSchema,
+  scriptParameterDefinitionsSchema,
+  type ScriptParameterSource,
+} from '@breeze/shared';
 import type { ScriptLanguage, OSType } from './ScriptList';
 
-export const parameterSchema = z.object({
-  name: z.string().min(1, 'Parameter name is required'),
-  type: z.enum(['string', 'number', 'boolean', 'select']),
-  defaultValue: z.string().optional(),
-  required: z.boolean().optional().default(false),
-  options: z.string().optional() // comma-separated for select type
-});
+/**
+ * Re-exported from `@breeze/shared` rather than redeclared: this shape used to
+ * be hand-mirrored here, in `validators/ai.ts` and in `scriptBuilderTools.ts`,
+ * with the API accepting `z.any()`. `scriptParameterDefinitionsSchema` also
+ * carries the array-level env-var collision rule (`log-level` vs `log_level`),
+ * which no local copy had (#3409 PR3).
+ */
+export const parameterSchema = scriptParameterDefinitionSchema;
 
 export const severityValues = ['critical', 'high', 'medium', 'low', 'info'] as const;
 export type Severity = (typeof severityValues)[number];
@@ -34,7 +40,7 @@ export const scriptSchema = z.object({
   language: z.enum(['powershell', 'bash', 'python', 'cmd']),
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).min(1, 'Select at least one OS'),
   content: z.string().min(1, 'Script content is required'),
-  parameters: z.array(parameterSchema).optional(),
+  parameters: scriptParameterDefinitionsSchema.optional(),
   timeoutSeconds: z.coerce
     .number({ error: 'Enter a timeout value' })
     .int('Timeout must be a whole number')
@@ -68,8 +74,77 @@ export const scriptSchema = z.object({
 });
 
 export type ScriptFormValues = z.infer<typeof scriptSchema>;
-export type ScriptParameter = z.infer<typeof parameterSchema>;
+/**
+ * The INPUT type, deliberately: `ScriptParameter` types definitions read back
+ * from the API, and every definition stored before #3409 PR3 has no `source`
+ * key (and often no `required`). The output type would claim both are always
+ * present, which is false for exactly the rows the UI spends most of its time
+ * rendering. Reading `source` therefore correctly forces a `?? 'runtime'`.
+ */
+export type ScriptParameter = z.input<typeof parameterSchema>;
 export type ExitCodeSeverityRow = z.infer<typeof exitCodeSeverityRowSchema>;
+
+/**
+ * What a caller may hand `ScriptForm` as `defaultValues`.
+ *
+ * `parameters` is the INPUT type: definitions come back from the API exactly as
+ * they were stored, and every one written before #3409 PR3 lacks `source` (and
+ * often `required`). Typing this half as the schema OUTPUT would make the
+ * majority of real edit-page loads a type error while changing nothing about
+ * what the form actually receives.
+ */
+export type ScriptFormDefaults = Partial<Omit<ScriptFormValues, 'parameters'>> & {
+  parameters?: ScriptParameter[];
+};
+
+/**
+ * Where this parameter's value comes from (#3409 PR3).
+ *
+ * Every definition stored before PR3 omits `source` entirely, so the fallback
+ * is not defensive padding — it is the shape the majority of rows still have.
+ * Read the source ONLY through this helper so no surface can drift into
+ * treating a legacy row as unbound-by-accident rather than
+ * unbound-by-definition.
+ */
+export function parameterSource(parameter: ScriptParameter): ScriptParameterSource {
+  return parameter.source ?? 'runtime';
+}
+
+/**
+ * Is this parameter supplied by the server per target device rather than by
+ * the invoker? Bound parameters are never prompted for, never required of the
+ * invoker, and must never appear in the outgoing parameters map — a supplied
+ * value would be ignored and reported back in `ignoredParameters`.
+ */
+export function isBoundParameter(parameter: ScriptParameter): boolean {
+  return parameterSource(parameter) !== 'runtime';
+}
+
+/** The parameters a run surface actually prompts for. */
+export function runtimeParameters(
+  parameters: readonly ScriptParameter[] | undefined
+): ScriptParameter[] {
+  return (parameters ?? []).filter(parameter => !isBoundParameter(parameter));
+}
+
+/**
+ * The binding target as a display string — the tenant-variable key, the device
+ * custom-field key, or the built-in property name. `null` for a runtime
+ * parameter, and for a bound row whose key hasn't been chosen yet (mid-edit in
+ * the authoring form).
+ */
+export function parameterBindingKey(parameter: ScriptParameter): string | null {
+  switch (parameter.source) {
+    case 'tenantVariable':
+      return parameter.variableKey || null;
+    case 'deviceCustomField':
+      return parameter.fieldKey || null;
+    case 'builtin':
+      return parameter.builtinKey || null;
+    default:
+      return null;
+  }
+}
 
 // Wire shape sent to / received from the API. Form-side editing keeps an
 // ordered list of rows for stable React keys + per-row error display; we

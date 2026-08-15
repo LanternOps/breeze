@@ -33,7 +33,7 @@ import type { AiTool } from './aiTools';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
-import { hasVariableTokens } from '@breeze/shared';
+import { scriptNeedsVariableScope } from './sourcedParameters';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -292,8 +292,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           // preload — there is no wider fan-out to batch it against.
           const dispatch = await runOutsideDbContext(() =>
             withSystemDbAccessContext(async () => {
+              // #3409 PR3 P1: gated on `scriptNeedsVariableScope`, not
+              // content tokens alone — a `tenantVariable`-bound parameter
+              // lives in `scripts.parameters`, and a content-only gate would
+              // hand dispatch an empty scope for it.
               const variableScope = await loadTenantVariableScope(
-                hasVariableTokens(script.content) ? [access.device.orgId] : []
+                scriptNeedsVariableScope(script) ? [access.device.orgId] : []
               );
               return dispatchScriptToDevice({
                 device: access.device,

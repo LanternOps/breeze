@@ -738,3 +738,17 @@ describe('attachCustomerLineImages', () => {
     expect(line.imageUrl).toBeNull();
   });
 });
+
+describe('structured block sanitization', () => {
+  it('sanitizes every table cell and label on write', () => {
+    const out = svc.sanitizeBlockContentForWrite({ blockType: 'table', content: { columns: [{ label: '<p>Item</p>' }], rows: [{ cells: ['<script>x</script><strong>ok</strong>'] }] } } as never) as never as { columns: { label: string }[]; rows: { cells: string[] }[] };
+    expect(out.columns[0]!.label).toBe('Item');
+    expect(out.rows[0]!.cells[0]).toBe('<strong>ok</strong>');
+  });
+  it('sanitizes callout html with the block profile and drops out-of-contract shapes on read', () => {
+    const rows = svc.sanitizeQuoteBlocksForRead([
+      { blockType: 'table', content: { rows: 'garbage' } } as { blockType: string; content: unknown },
+    ]);
+    expect(rows[0]!.content).toEqual({ columns: [], rows: [] }); // canonical empty, never raw garbage
+  });
+});

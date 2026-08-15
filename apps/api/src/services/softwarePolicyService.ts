@@ -145,6 +145,66 @@ export function withStableViolationTimestamps(
   });
 }
 
+/**
+ * Uninstall-arming gate (#3543, incident #3381).
+ *
+ * A policy only authorises uninstall commands when all three are true:
+ * `mode !== 'audit'`, `enforceMode`, and `remediationOptions.autoUninstall`.
+ * Until #3543 the gate lived ONLY inline in softwareComplianceWorker.ts, so
+ * every other path that reached `scheduleSoftwareRemediation` (the AI tool, the
+ * manual route, a replayed BullMQ job) could queue mass uninstalls against a
+ * policy whose owner had deliberately left enforcement off. This is the single
+ * shared definition — callers must use it rather than re-deriving the check.
+ */
+export type SoftwarePolicyUnarmedReason = 'audit_mode' | 'enforce_mode_off' | 'auto_uninstall_off';
+
+export type SoftwarePolicyArmingState =
+  | { armed: true }
+  | { armed: false; reason: SoftwarePolicyUnarmedReason; message: string };
+
+export type SoftwarePolicyArmingInput = {
+  mode: string | null | undefined;
+  enforceMode: boolean | null | undefined;
+  remediationOptions: unknown;
+};
+
+/** `autoUninstall` is opt-in: absent or non-object options mean NOT armed. */
+export function readSoftwarePolicyAutoUninstall(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  return (raw as Record<string, unknown>).autoUninstall === true;
+}
+
+export function evaluateSoftwarePolicyArming(
+  policy: SoftwarePolicyArmingInput
+): SoftwarePolicyArmingState {
+  if (policy.mode === 'audit') {
+    return {
+      armed: false,
+      reason: 'audit_mode',
+      message: 'Policy is audit-only (mode="audit"); it cannot uninstall software.',
+    };
+  }
+  if (policy.enforceMode !== true) {
+    return {
+      armed: false,
+      reason: 'enforce_mode_off',
+      message:
+        'Policy enforcement is off (enforceMode=false), so it is detect-only and must not uninstall software. '
+        + 'An administrator has to enable enforcement on the policy first.',
+    };
+  }
+  if (!readSoftwarePolicyAutoUninstall(policy.remediationOptions)) {
+    return {
+      armed: false,
+      reason: 'auto_uninstall_off',
+      message:
+        'Policy remediation is not armed (remediationOptions.autoUninstall is not true), so it must not uninstall software. '
+        + 'An administrator has to enable automatic uninstall on the policy first.',
+    };
+  }
+  return { armed: true };
+}
+
 export function normalizeSoftwarePolicyRules(rules: unknown): SoftwarePolicyRulesDefinition {
   if (!rules || typeof rules !== 'object') {
     return { software: [], allowUnknown: false };

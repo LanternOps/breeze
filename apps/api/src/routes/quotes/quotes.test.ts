@@ -245,7 +245,25 @@ describe('quote crud + lines routes', () => {
       pax8OrderId: '55555555-5555-5555-5555-555555555555',
       pax8OrderLineCount: 2,
     });
+    // No partner/documentTheme row preset → resolveThemeId/resolvePageSize fall
+    // through to their defaults, same as `branding` (Task 12).
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
     expect(svc.getQuote).toHaveBeenCalledWith(QUOTE_ID, expect.anything());
+  });
+
+  it('GET /:id resolves presentation.theme="condensed" from the partner default (no query beyond the existing branding selects)', async () => {
+    (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+    // Branding selects: partner row (documentTheme condensed/pageSize letter), then portal_branding row.
+    dbRows.next = [
+      [{ name: 'Acme MSP', documentTheme: 'condensed', documentPageSize: 'letter' }],
+      [{ logoUrl: null, primaryColor: null }],
+    ];
+    const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.presentation).toEqual({ theme: 'condensed', pageSize: 'letter' });
+    expect(body.data.branding.theme).toBe('condensed');
+    expect(body.data.branding.pageSize).toBe('letter');
   });
 
   it('GET /:id denies callers without quotes:read before loading the staged-order summary', async () => {

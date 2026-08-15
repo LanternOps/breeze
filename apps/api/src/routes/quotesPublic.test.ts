@@ -180,6 +180,27 @@ describe('quotesPublic GET /:token', () => {
     ]);
     expect(JSON.stringify(header)).not.toContain('internal-');
     expect(JSON.stringify(header)).not.toContain('do-not-serialize');
+    // Sibling `presentation` field (Task 12) — no partner theme row preset, so
+    // it falls through to the defaults, same as `branding.theme`/`pageSize`.
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+  });
+
+  it('resolves presentation.theme="condensed" from the partner default', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, partnerId: 'p1', orgId: 'org1', quoteNumber: 'Q-1', status: 'sent',
+      currencyCode: 'USD', taxRate: null, depositType: 'none', depositPercent: null,
+      presentationSnapshot: null,
+    }]);
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([{ name: 'Lantern IT', documentTheme: 'condensed', documentPageSize: 'letter' }]); // partners SELECT
+    dbResults.push([]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.presentation).toEqual({ theme: 'condensed', pageSize: 'letter' });
+    expect(body.data.branding.theme).toBe('condensed');
   });
 
   it('401s an invalid/expired token without querying the DB', async () => {

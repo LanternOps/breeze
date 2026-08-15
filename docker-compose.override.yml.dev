@@ -29,6 +29,7 @@ services:
     volumes:
       # Mount source code for hot-reloading
       - ./apps/api/src:/app/apps/api/src:cached
+      - ./apps/api/assets:/app/apps/api/assets:ro
       - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached

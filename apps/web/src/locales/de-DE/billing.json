@@ -510,14 +510,18 @@
       "autosaveHint": "Änderungen werden automatisch gespeichert. Ein bernsteinfarbener Rahmen markiert eine ungespeicherte Änderung.",
       "block": {
         "imageSectionPdf": "Bildausschnitt (gerendert im PDF).",
-        "richTextContentAria": "Rich-Text-Inhalt"
+        "richTextContentAria": "Rich-Text-Inhalt",
+        "tableEmpty": "Leere Tabelle.",
+        "calloutEmpty": "Leere Hinweisbox."
       },
       "blockTypes": {
         "heading": "Überschrift",
         "image": "Bild",
         "pricingTable": "Preistabelle",
         "richText": "Rich-Text",
-        "contract": "Vertrag"
+        "contract": "Vertrag",
+        "table": "Tabelle",
+        "callout": "Hinweisbox"
       },
       "bulk": {
         "applied_one": "{{count}} Position aktualisiert.",
@@ -728,7 +732,22 @@
         "taxTitle": "Steuer pro Position. Maßgeblich ist die Überschrift „Steuersumme“, die um einen Rundungscent abweichen kann.",
         "taxable": "Steuerpflichtig",
         "total": "Insgesamt",
-        "unitPrice": "Stückpreis"
+        "unitPrice": "Stückpreis",
+        "columnLabelPlaceholder": "Spaltenbeschriftung",
+        "columnAlignAria": "Spaltenausrichtung",
+        "alignLeft": "Links",
+        "alignCenter": "Zentriert",
+        "alignRight": "Rechts",
+        "removeColumn": "Spalte entfernen",
+        "addColumn": "Spalte hinzufügen",
+        "removeRow": "Zeile entfernen",
+        "addRow": "Zeile hinzufügen",
+        "cellAria": "Zeile {{row}}, Spalte {{column}}",
+        "captionPlaceholder": "Beschriftung (optional)",
+        "zebra": "Zebrastreifen",
+        "headerStyle": "Kopfzeilenstil",
+        "headerStylePlain": "Einfach",
+        "headerStyleAccent": "Akzent"
       },
       "terms": {
         "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
@@ -798,6 +817,14 @@
       },
       "unsavedField": {
         "lines": "Positionen"
+      },
+      "callout": {
+        "variantLabel": "Stil",
+        "variantInfo": "Hinweis",
+        "variantAccent": "Akzent",
+        "variantWarn": "Warnung",
+        "titlePlaceholder": "Titel (optional)",
+        "bodyAria": "Hinweistext"
       }
     },
     "actions": {
@@ -1082,6 +1109,7 @@
         "subtotal": "Zwischensumme",
         "tax": "Steuer"
       },
+      "unsupportedBlock": "Dieser Blocktyp wird in dieser Ansicht noch nicht unterstützt.",
       "validUntil": "Gültig bis"
     },
     "page": {
@@ -1668,6 +1696,12 @@
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",
       "description": "Währung, Steuern, Nummerierung und Bedingungen, die auf neue Angebote und Rechnungen Ihrer Kunden angewendet werden.",
+      "documentPageSize": "Seitengröße",
+      "documentPageSizeA4": "A4",
+      "documentPageSizeLetter": "US-Letter",
+      "documentTheme": "Dokumentdesign",
+      "documentThemeClassic": "Klassisch",
+      "documentThemeCondensed": "Kompakt",
       "invoiceFooter": "Fußzeile der Rechnung",
       "invoiceFooterPlaceholder": "Zahlungsanweisungen, Dankesschreiben usw.",
       "invoiceNumberPrefix": "Präfix der Rechnungsnummer",

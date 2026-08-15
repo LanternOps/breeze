@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { InvoiceStatus, PublicQuoteHeader, TicketFormField } from '@breeze/shared';
+import type { InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -443,6 +443,27 @@ export interface QuoteContractBlockContent {
   authoring?: never;
 }
 
+/** Server-serialized shape of a `table` quote block's `content` (mirrors
+ *  `quoteTableContentSchema` in @breeze/shared/validators/quotes.ts). Column
+ *  labels and cell values are sanitized server-side with the inline-only
+ *  profile before ever reaching the portal, same precedent as rich_text. */
+export interface QuoteTableContent {
+  columns: Array<{ label: string; align?: 'left' | 'center' | 'right' }>;
+  rows: Array<{ cells: string[] }>;
+  caption?: string;
+  zebra?: boolean;
+  headerStyle?: 'accent' | 'plain';
+}
+
+/** Server-serialized shape of a `callout` quote block's `content` (mirrors
+ *  `quoteCalloutContentSchema` in @breeze/shared/validators/quotes.ts). `html`
+ *  is sanitized server-side, same precedent as rich_text. */
+export interface QuoteCalloutContent {
+  variant: 'info' | 'accent' | 'warn';
+  title?: string;
+  html: string;
+}
+
 export interface QuoteBlock {
   id: string;
   blockType: string;
@@ -505,6 +526,9 @@ export interface QuoteDetail {
   lines: QuoteLine[];
   /** Optional for API responses that predate the branding field. */
   branding?: QuoteBranding;
+  /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
+   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+  presentation?: QuotePresentation;
 }
 
 export interface PublicQuoteDetail {
@@ -512,6 +536,9 @@ export interface PublicQuoteDetail {
   blocks: QuoteBlock[];
   lines: QuoteLine[];
   branding: QuoteBranding;
+  /** Resolved document theme/pageSize (Task 12). Optional: fixtures/older
+   *  payloads omit it, which must read as 'classic' (documentShell's fallback). */
+  presentation?: QuotePresentation;
 }
 
 export interface Profile {

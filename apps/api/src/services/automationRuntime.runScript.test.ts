@@ -111,6 +111,7 @@ beforeEach(() => {
     executionId: EXECUTION_ID,
     delivered: true,
     executedAt: new Date('2026-08-14T00:00:00.000Z'),
+    ignoredParameters: [],
   });
 });
 
@@ -179,6 +180,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       executionId: EXECUTION_ID,
       delivered: false,
       executedAt: null,
+      ignoredParameters: [],
     });
 
     await executeRunScriptAction(
@@ -197,6 +199,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       executionId: EXECUTION_ID,
       delivered: false,
       executedAt: null,
+      ignoredParameters: [],
     });
 
     const whereArgs: unknown[] = [];
@@ -231,6 +234,7 @@ describe('executeRunScriptAction — dispatch via scriptDispatch core (#3409 PR0
       executionId: null,
       delivered: false,
       executedAt: null,
+      ignoredParameters: [],
     });
 
     await executeRunScriptAction(

@@ -11,7 +11,7 @@ import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { canAccessSite, type UserPermissions } from './permissions';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope } from './tenantVariableResolution';
-import { hasVariableTokens } from '@breeze/shared';
+import { scriptNeedsVariableScope } from './sourcedParameters';
 
 type ScriptExecutionAuth = {
   user: { id: string };
@@ -52,6 +52,23 @@ type ExecuteScriptOnDevicesSuccess = {
   // gets its own 'failed' script_executions row (see the dispatch loop below)
   // so `devicesTargeted` never outlives the rows a caller can find.
   failures: Array<{ deviceId: string; code: string; error: string }>;
+  // Bound parameter keys the caller supplied a value for, unioned across the
+  // fan-out and de-duplicated (#3409 PR3 §2.2). The binding is authoritative,
+  // so the supplied value was DROPPED — it is reported rather than rejected
+  // because a stored automation action is validated without consulting the
+  // referenced script's definitions and so cannot pre-validate against a
+  // binding; a 400 would turn a previously-valid stored automation into a
+  // delayed runtime failure the moment an author flips a parameter to bound.
+  //
+  // Parameter definitions belong to the script, not the device, so in practice
+  // every device in a fan-out produces the identical set — the union is
+  // defensive, and keeps this a property of THE RUN rather than of whichever
+  // device happened to be dispatched first. Devices that failed to dispatch
+  // contribute nothing (the failure arm of DispatchScriptResult carries no
+  // ignored keys); with a per-script set that loses information only when
+  // EVERY device failed, which the caller already surfaces as a 422 naming the
+  // real failure.
+  ignoredParameters: string[];
   status: 'queued';
   triggerType: 'manual' | 'scheduled' | 'alert' | 'policy';
   runAs: string;
@@ -160,14 +177,20 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
   // Preload ONCE per fan-out (#3409 PR2 Task 4), never per device — one
   // snapshot covers every org in this batch's executable device set.
   //
-  // Gated on the script actually containing a {{var.*}} token. Without the
-  // gate EVERY script run — the overwhelming majority of which reference no
-  // variable at all — would escape the request transaction via
-  // runOutsideDbContext and take a second connection to run a join that is
-  // then never consulted. loadTenantVariableScope short-circuits on an empty
-  // org list without querying, so passing [] is the no-op path.
+  // Gated on the script actually needing a scope. Without the gate EVERY
+  // script run — the overwhelming majority of which reference no variable at
+  // all — would escape the request transaction via runOutsideDbContext and
+  // take a second connection to run a join that is then never consulted.
+  // loadTenantVariableScope short-circuits on an empty org list without
+  // querying, so passing [] is the no-op path.
+  //
+  // #3409 PR3 P1: the gate is `scriptNeedsVariableScope`, not
+  // `hasVariableTokens(content)` — a `tenantVariable`-bound parameter lives
+  // in `scripts.parameters`, not in the content, and a content-only gate
+  // would hand dispatch an EMPTY scope for it, making every bound parameter
+  // resolve as "no value set" for a variable that exists.
   const variableScope = await loadTenantVariableScope(
-    hasVariableTokens(script.content) ? [...new Set(executableDevices.map((d) => d.orgId))] : []
+    scriptNeedsVariableScope(script) ? [...new Set(executableDevices.map((d) => d.orgId))] : []
   );
 
   // A multi-org run (partner/system script fanned out across orgs) must not
@@ -213,6 +236,9 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
 
   const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
   const failures: Array<{ deviceId: string; code: string; error: string }> = [];
+  // A Set, not an array: see `ignoredParameters` on the success type. Insertion
+  // order is preserved so the reported order matches definition order.
+  const ignoredParameters = new Set<string>();
   // This loop itself is sequential/awaited and therefore bounded, but
   // queueCommand (inside dispatchScriptToDevice) fires an un-awaited,
   // fire-and-forget audit transaction PER DEVICE for 'script' commands
@@ -240,10 +266,11 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     if (!dispatch.ok) {
       // 'insert_failed' means queueCommand/the execution insert itself broke
       // — a programming error, not a per-device condition. Every other code
-      // (today: 'unresolved_variables', once Task 4 wires resolution in) is a
-      // condition specific to this device and must not truncate the rest of
-      // the fan-out — see softwareDeployment.ts:399-414 for the pattern this
-      // mirrors.
+      // ('unresolved_variables' from PR2's content substitution,
+      // 'unresolved_parameters' from PR3's sourced parameters, plus the
+      // device-state codes) is a condition specific to this device and must
+      // not truncate the rest of the fan-out — see
+      // softwareDeployment.ts:399-414 for the pattern this mirrors.
       if (dispatch.code === 'insert_failed') {
         throw new Error(dispatch.error);
       }
@@ -269,6 +296,9 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       }
       failures.push({ deviceId: device.id, code: dispatch.code, error: dispatch.error });
       continue;
+    }
+    for (const key of dispatch.ignoredParameters) {
+      ignoredParameters.add(key);
     }
     executions.push({
       executionId: dispatch.executionId!,
@@ -302,6 +332,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     maintenanceSuppressedDeviceIds,
     executions,
     failures,
+    ignoredParameters: [...ignoredParameters],
     status: 'queued',
     triggerType,
     runAs,

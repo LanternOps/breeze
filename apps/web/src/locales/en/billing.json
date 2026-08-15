@@ -510,14 +510,18 @@
       "autosaveHint": "Changes save automatically. An amber outline marks an unsaved edit.",
       "block": {
         "imageSectionPdf": "Image section (rendered in the PDF).",
-        "richTextContentAria": "Rich text content"
+        "richTextContentAria": "Rich text content",
+        "tableEmpty": "Empty table.",
+        "calloutEmpty": "Empty callout."
       },
       "blockTypes": {
         "heading": "Heading",
         "image": "Image",
         "pricingTable": "Pricing table",
         "richText": "Rich text",
-        "contract": "Contract"
+        "contract": "Contract",
+        "table": "Table",
+        "callout": "Callout"
       },
       "bulk": {
         "applied_one": "Updated {{count}} line.",
@@ -728,7 +732,22 @@
         "taxTitle": "Per-line tax. The header Tax total is authoritative and may differ by a rounding cent.",
         "taxable": "Taxable",
         "total": "Total",
-        "unitPrice": "Unit price"
+        "unitPrice": "Unit price",
+        "columnLabelPlaceholder": "Column label",
+        "columnAlignAria": "Column alignment",
+        "alignLeft": "Left",
+        "alignCenter": "Center",
+        "alignRight": "Right",
+        "removeColumn": "Remove column",
+        "addColumn": "Add column",
+        "removeRow": "Remove row",
+        "addRow": "Add row",
+        "cellAria": "Row {{row}}, column {{column}}",
+        "captionPlaceholder": "Caption (optional)",
+        "zebra": "Zebra stripes",
+        "headerStyle": "Header style",
+        "headerStylePlain": "Plain",
+        "headerStyleAccent": "Accent"
       },
       "terms": {
         "placeholder": "Payment terms, warranty clauses, etc.",
@@ -798,6 +817,14 @@
       },
       "unsavedField": {
         "lines": "Line items"
+      },
+      "callout": {
+        "variantLabel": "Style",
+        "variantInfo": "Info",
+        "variantAccent": "Accent",
+        "variantWarn": "Warning",
+        "titlePlaceholder": "Title (optional)",
+        "bodyAria": "Callout text"
       }
     },
     "actions": {
@@ -1082,6 +1109,7 @@
         "subtotal": "Subtotal",
         "tax": "Tax"
       },
+      "unsupportedBlock": "This block type isn't supported by this viewer yet.",
       "validUntil": "Valid until"
     },
     "page": {
@@ -1668,6 +1696,12 @@
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",
       "description": "Currency, tax, numbering, and terms applied to new quotes and invoices across your customers.",
+      "documentPageSize": "Page size",
+      "documentPageSizeA4": "A4",
+      "documentPageSizeLetter": "Letter",
+      "documentTheme": "Document theme",
+      "documentThemeClassic": "Classic",
+      "documentThemeCondensed": "Condensed",
       "invoiceFooter": "Invoice footer",
       "invoiceFooterPlaceholder": "Payment instructions, thank-you note, etc.",
       "invoiceNumberPrefix": "Invoice number prefix",

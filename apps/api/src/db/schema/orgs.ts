@@ -71,6 +71,11 @@ export const partners = pgTable('partners', {
   invoiceNumberPrefix: varchar('invoice_number_prefix', { length: 12 }).notNull().default('INV'),
   invoiceTermsDays: integer('invoice_terms_days').notNull().default(30),
   invoiceFooter: text('invoice_footer'),
+  // Document presentation (Spec A): curated theme preset + page size for
+  // quote PDFs/HTML. Partner-owned deliberately (MSP identity, not per-org
+  // config) — see the spec's carve-out justification.
+  documentTheme: varchar('document_theme', { length: 32 }).notNull().default('classic'),
+  documentPageSize: varchar('document_page_size', { length: 8 }).notNull().default('letter'),
   billingCompanyName: varchar('billing_company_name', { length: 255 }),
   billingPhone: varchar('billing_phone', { length: 40 }),
   billingWebsite: varchar('billing_website', { length: 255 }),

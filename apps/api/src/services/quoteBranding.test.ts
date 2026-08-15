@@ -28,7 +28,7 @@ const basePartner = {
 const baseBrand = { logoUrl: 'logo.png', primaryColor: '#1c8a9e', footerText: 'portal footer' };
 
 function source(overrides: Partial<QuoteBrandingSource> = {}): QuoteBrandingSource {
-  return { partnerId: 'p1', orgId: 'o1', currencyCode: 'USD', terms: null, sellerSnapshot: null, ...overrides };
+  return { partnerId: 'p1', orgId: 'o1', currencyCode: 'USD', terms: null, sellerSnapshot: null, presentationSnapshot: null, ...overrides };
 }
 
 beforeEach(() => { dbRows.next = []; dbRows.i = 0; });
@@ -90,5 +90,37 @@ describe('resolveQuoteBranding', () => {
     const b = await resolveQuoteBranding(source());
     expect(b.logoUrl).toBeNull();
     expect(b.primaryColor).toBeNull();
+  });
+
+  // Task 5: theme/pageSize resolution. Precedence: quote.presentationSnapshot
+  // (non-null) → partner columns → defaults ('classic'/'a4').
+  describe('theme/pageSize resolution', () => {
+    it('resolves theme/pageSize from partner columns for drafts', async () => {
+      queue({ ...basePartner, documentTheme: 'condensed', documentPageSize: 'letter' }, baseBrand);
+      const b = await resolveQuoteBranding(source({ presentationSnapshot: null }));
+      expect(b.theme).toBe('condensed');
+      expect(b.pageSize).toBe('letter');
+    });
+
+    it('prefers the frozen snapshot for sent quotes, even when the partner disagrees', async () => {
+      queue({ ...basePartner, documentTheme: 'condensed', documentPageSize: 'letter' }, baseBrand);
+      const b = await resolveQuoteBranding(source({ presentationSnapshot: { theme: 'classic', pageSize: 'a4' } }));
+      expect(b.theme).toBe('classic');
+      expect(b.pageSize).toBe('a4');
+    });
+
+    it('falls back safely on unknown snapshot values', async () => {
+      queue(basePartner, baseBrand);
+      const b = await resolveQuoteBranding(source({ presentationSnapshot: { theme: 'x', pageSize: 'y' } }));
+      expect(b.theme).toBe('classic');
+      expect(b.pageSize).toBe('a4');
+    });
+
+    it('falls back to classic/a4 defaults when the partner is absent and there is no snapshot', async () => {
+      queue(null, baseBrand);
+      const b = await resolveQuoteBranding(source({ presentationSnapshot: null }));
+      expect(b.theme).toBe('classic');
+      expect(b.pageSize).toBe('a4');
+    });
   });
 });

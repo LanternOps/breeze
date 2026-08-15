@@ -2798,6 +2798,14 @@ func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[st
 	pendingPayload := map[string]any{
 		"patches": pendingItems,
 	}
+	// Second coverage axis (#2727): whether this scan could look at per-user
+	// installs at all. Sent on every pending upload, targeted or full, because
+	// both paths sweep. Omitted entirely when no scope-aware provider is
+	// registered, so the API can tell "not applicable" from "not scanned" and
+	// leaves user-scope rows alone in both cases.
+	if userScan, present := h.wingetUserScopeStatus(); present {
+		pendingPayload["userScopeScanned"] = userScan.Scanned
+	}
 	if source != "" {
 		pendingPayload["source"] = source
 	} else if full {
@@ -2863,6 +2871,16 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 				"uncoveredSources", uncovered)
 		} else {
 			log.Debug("patch scan full coverage", "coveredSources", coveredSources)
+		}
+
+		// Per-user winget installs are a separate coverage axis from the source
+		// buckets above: the machine-scope pass can succeed (third_party covered)
+		// while per-user apps went unlooked-at because nobody was logged in.
+		// Logged at Info when unscanned so the under-report is explainable in the
+		// field (#2727).
+		if userScan, present := h.wingetUserScopeStatus(); present && !userScan.Scanned {
+			log.Info("winget per-user apps were not scanned this cycle; results cover machine scope only",
+				"attempted", userScan.Attempted, "reason", userScan.Reason)
 		}
 
 		if scanErr != nil && installedErr != nil {
@@ -2975,7 +2993,7 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 				externalId = p.ID + "@" + p.Version
 			}
 		}
-		items[i] = map[string]any{
+		item := map[string]any{
 			"name":            p.Title,
 			"version":         p.Version,
 			"category":        category,
@@ -2990,8 +3008,34 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"requiresRestart": p.RebootRequired,
 			"releaseDate":     p.ReleaseDate,
 		}
+		// Only providers that can actually distinguish install scope set this
+		// (winget, #2727). Omitted rather than defaulted so the API can tell
+		// "machine-wide" apart from "this provider has no scope concept".
+		if p.Scope != "" {
+			item["scope"] = p.Scope
+		}
+		items[i] = item
 	}
 	return items
+}
+
+// wingetUserScopeStatus reports the last user-context winget pass, and whether
+// a provider capable of one is even registered. Used to tell the server that
+// per-user apps were NOT scanned, so a device showing no per-user updates can
+// be read as "not looked at" rather than "clean" (#2727).
+func (h *Heartbeat) wingetUserScopeStatus() (patching.UserScanStatus, bool) {
+	if h.patchMgr == nil {
+		return patching.UserScanStatus{}, false
+	}
+	provider, ok := h.patchMgr.GetProvider("winget")
+	if !ok {
+		return patching.UserScanStatus{}, false
+	}
+	scanner, ok := provider.(patching.UserScopeScanner)
+	if !ok {
+		return patching.UserScanStatus{}, false
+	}
+	return scanner.LastUserScan(), true
 }
 
 func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []map[string]any {

@@ -41,6 +41,7 @@ type PatchItem = {
   requiresReboot?: boolean;
   isDownloaded?: boolean;
   approvalStatus?: string;
+  scope?: 'machine' | 'user' | null;
 };
 
 type PatchPayload = {
@@ -48,6 +49,8 @@ type PatchPayload = {
   compliance?: number;
   lastPatchScanAt?: string | null;
   lastPatchScanStatus?: string | null;
+  lastPatchScanUserScopeScanned?: boolean | null;
+  lastPatchScanUserScopeSkipReason?: string | null;
   pending?: PatchItem[];
   pendingPatches?: PatchItem[];
   missing?: PatchItem[];
@@ -227,10 +230,24 @@ function isAwaitingApproval(patch: PatchItem): boolean {
   return !isPatchApprovedForInstall(patch);
 }
 
+// #2727 — per-user installs are detected but not yet remediable. The agent runs
+// as SYSTEM and cannot install into a logged-in user's profile, so it refuses
+// these outright; queueing one would only produce a guaranteed-failed job.
+function isUserScopedPatch(patch: PatchItem): boolean {
+  return patch.scope === 'user';
+}
+
+// A patch is installable only if it is both approved and remediable from the
+// system context. Used by every install path so the row control and the bulk
+// action cannot disagree.
+function isPatchInstallable(patch: PatchItem): boolean {
+  return isPatchApprovedForInstall(patch) && !isUserScopedPatch(patch);
+}
+
 // Only approved pending patches may be sent to the install endpoint. Mixing in
 // an unapproved id makes the server reject the whole batch with 409.
 function readApprovedPatchIds(patches: PatchItem[]): string[] {
-  return readPatchIds(patches.filter(patch => !isAwaitingApproval(patch)));
+  return readPatchIds(patches.filter(isPatchInstallable));
 }
 
 function isPatchApprovedForInstall(patch: PatchItem): boolean {
@@ -794,6 +811,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const lastPatchScanStatus = payload?.lastPatchScanStatus
     ? payload.lastPatchScanStatus.charAt(0).toUpperCase() + payload.lastPatchScanStatus.slice(1)
     : null;
+  // Only surface the "not scanned" note when the agent explicitly reported false —
+  // null/undefined means the field isn't present (older agent, non-Windows device,
+  // or no winget provider), which is not the same as "we tried and failed".
+  const userScopeNotScanned = payload?.lastPatchScanUserScopeScanned === false;
 
   // -------------------------------------------------------------------------
   // Post-install polling: poll every 5s for up to 90s watching pending count
@@ -1044,6 +1065,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 {lastPatchScanStatus && <span> ({lastPatchScanStatus})</span>}
               </span>
             </p>
+            {userScopeNotScanned && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('devicePatchStatusTab.perUserNotScanned')}
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -1196,10 +1222,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const notDownloaded = patch.isDownloaded === false;
                       const approvalBadge = getApprovalBadge(patch);
                       const isApproved = isPatchApprovedForInstall(patch);
+                      const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
-                      const installTitle = isApproved
-                        ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
-                        : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
+                      const installTitle = isUserScopedPatch(patch)
+                        ? t('devicePatchStatusTab.installPatchUserScopeTitle', { name: patchName })
+                        : isApproved
+                          ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
+                          : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-native'}-${index}`} className="text-sm">
@@ -1213,7 +1242,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   </span>
                                 )}
                               </div>
-                              {(severityBadge || (normalizedOsType !== 'windows' && kbLabel) || releaseLabel || patch.requiresReboot) && (
+                              {(severityBadge || (normalizedOsType !== 'windows' && kbLabel) || releaseLabel || patch.requiresReboot || isUserScopedPatch(patch)) && (
                                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                                   {severityBadge && (
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
@@ -1230,6 +1259,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   {patch.requiresReboot && (
                                     <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                                       {t('devicePatchStatusTab.rebootRequired')}
+                                    </span>
+                                  )}
+                                  {isUserScopedPatch(patch) && (
+                                    <span
+                                      title={t('devicePatchStatusTab.perUserBadgeTitle')}
+                                      className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground"
+                                    >
+                                      {t('devicePatchStatusTab.perUserBadge')}
                                     </span>
                                   )}
                                 </div>
@@ -1278,14 +1315,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                 <button
                                   type="button"
                                   aria-label={installTitle}
-                                  disabled={isBusy || isInstalling || !isApproved}
+                                  disabled={isBusy || isInstalling || !canInstall}
                                   onClick={() => queueSinglePatchInstall(patchId, patchName)}
                                   className="inline-flex items-center justify-center rounded-md border p-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   {isInstalling ? (
                                     <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
                                   ) : (
-                                    <Download className={`h-3.5 w-3.5 ${isApproved ? 'text-green-600' : 'text-muted-foreground'}`} />
+                                    <Download className={`h-3.5 w-3.5 ${canInstall ? 'text-green-600' : 'text-muted-foreground'}`} />
                                   )}
                                 </button>
                               </span>
@@ -1347,10 +1384,13 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const notDownloaded = patch.isDownloaded === false;
                       const approvalBadge = getApprovalBadge(patch);
                       const isApproved = isPatchApprovedForInstall(patch);
+                      const canInstall = isPatchInstallable(patch);
                       const patchName = normalizePatchName(patch);
-                      const installTitle = isApproved
-                        ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
-                        : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
+                      const installTitle = isUserScopedPatch(patch)
+                        ? t('devicePatchStatusTab.installPatchUserScopeTitle', { name: patchName })
+                        : isApproved
+                          ? t('devicePatchStatusTab.installPatchTitle', { name: patchName })
+                          : t('devicePatchStatusTab.installPatchNotApprovedTitle', { name: patchName });
 
                       return (
                         <tr key={patch.id ?? `${patch.name ?? patch.title ?? 'pending-other'}-${index}`} className="text-sm">
@@ -1378,7 +1418,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   </span>
                                 )}
                               </div>
-                              {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot) && (
+                              {(severityBadge || kbLabel || releaseLabel || patch.requiresReboot || isUserScopedPatch(patch)) && (
                                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                                   {severityBadge && (
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
@@ -1394,6 +1434,17 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   {patch.requiresReboot && (
                                     <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                                       {t('devicePatchStatusTab.rebootRequired')}
+                                    </span>
+                                  )}
+                                  {/* This is the table per-user winget packages
+                                      actually land in — they are third_party,
+                                      not native OS updates (#2727). */}
+                                  {isUserScopedPatch(patch) && (
+                                    <span
+                                      title={t('devicePatchStatusTab.perUserBadgeTitle')}
+                                      className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground"
+                                    >
+                                      {t('devicePatchStatusTab.perUserBadge')}
                                     </span>
                                   )}
                                 </div>
@@ -1440,14 +1491,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                 <button
                                   type="button"
                                   aria-label={installTitle}
-                                  disabled={isBusy || isInstalling || !isApproved}
+                                  disabled={isBusy || isInstalling || !canInstall}
                                   onClick={() => queueSinglePatchInstall(patchId, patchName)}
                                   className="inline-flex items-center justify-center rounded-md border p-1.5 text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   {isInstalling ? (
                                     <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
                                   ) : (
-                                    <Download className={`h-3.5 w-3.5 ${isApproved ? 'text-green-600' : 'text-muted-foreground'}`} />
+                                    <Download className={`h-3.5 w-3.5 ${canInstall ? 'text-green-600' : 'text-muted-foreground'}`} />
                                   )}
                                 </button>
                               </span>

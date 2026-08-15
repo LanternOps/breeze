@@ -202,10 +202,16 @@ export const devicePatches = pgTable('device_patches', {
   failureCount: integer('failure_count').notNull().default(0),
   lastError: text('last_error'),
   rollbackAvailable: boolean('rollback_available').notNull().default(false),
+  // Windows install scope the patch was discovered at: 'machine' | 'user'
+  // (#2727). NULL for providers with no scope concept and for rows written
+  // before the user-context winget pass existed; NULL is treated as
+  // machine-wide. Constrained by device_patches_scope_chk.
+  scope: varchar('scope', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   devicePatchUnique: uniqueIndex('device_patches_device_patch_unique').on(table.deviceId, table.patchId),
+  userScopeIdx: index('idx_device_patches_user_scope').on(table.deviceId).where(sql`scope = 'user'`),
   // Backs the `patches.pending` device-filter field (#968).
   pendingIdx: index('idx_device_patches_pending').on(table.deviceId).where(sql`status = 'pending'`)
 }));

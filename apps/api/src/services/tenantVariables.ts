@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { and, asc, count, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   MAX_TENANT_VARIABLES_PER_OWNER,
+  MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH,
   type CreateTenantVariableInput,
   type TenantVariable,
   type TenantVariableOwnerScope,
@@ -321,6 +322,22 @@ export async function updateTenantVariable(
     );
   }
 
+  // #3409 PR4a — redaction floor. The shared cross-field refinement only fires
+  // when BOTH `value` and `isSecret` are on the request; `updateTenantVariableSchema`
+  // is `.partial()`, so flipping `isSecret` to true alone slips past it. Measure
+  // against the STORED value here, otherwise a 2-character variable could be
+  // promoted to secret and would then fail on every device at dispatch.
+  const willBeSecret = input.isSecret ?? row.isSecret;
+  if (willBeSecret) {
+    const effectiveValue = input.value ?? readStoredPlaintextForFloorCheck(row);
+    if (effectiveValue !== null && effectiveValue.length < MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH) {
+      throw new TenantVariableError(
+        `Secret values must be at least ${MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH} characters so they can be redacted from script output`,
+        400
+      );
+    }
+  }
+
   const updates: Partial<TenantVariableRow> = { updatedBy: auth.user.id, updatedAt: new Date() };
   if (input.description !== undefined) updates.description = input.description;
   if (input.isSecret !== undefined) updates.isSecret = input.isSecret;
@@ -356,6 +373,20 @@ export async function updateTenantVariable(
     throw new TenantVariableError('This variable changed while you were editing it — reload and try again', 409);
   }
   return updated;
+}
+
+/**
+ * Stored plaintext for the redaction-floor check, or `null` when it cannot be
+ * read. An unreadable stored value must NOT block the edit: the variable is
+ * already broken for dispatch, and refusing the update would trap the operator
+ * in a state they cannot edit their way out of.
+ */
+function readStoredPlaintextForFloorCheck(row: TenantVariableRow): string | null {
+  try {
+    return decryptTenantVariableValue(row);
+  } catch {
+    return null;
+  }
 }
 
 /** True when the incoming plaintext differs from what is stored (unreadable stored value counts as changed). */

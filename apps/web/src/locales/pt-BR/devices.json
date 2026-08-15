@@ -862,6 +862,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "Nome DNS da VPN",
+    "vpnState": "Estado",
+    "vpnConnected": "Conectado",
+    "vpnDisconnected": "Desconectado",
     "detectionSource": "Origem da detecção",
     "agent": "Agente",
     "agentVersion": "Versão do agente",
@@ -1043,6 +1046,7 @@
     "filterByVpn": "Filtrar por VPN",
     "allVpn": "Todas as VPNs",
     "anyActiveVpn": "Qualquer VPN ativa",
+    "vpnDisconnected": "desconectado",
     "off": "desativado",
     "on": "ativado",
     "multiBootMachinesTuckExpectedOffline": "Máquinas com inicialização múltipla: recolha os perfis de inicialização que deveriam estar offline sob o perfil relacionado que está online, em faixas estreitas. Desativado = lista simples.",
@@ -1250,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Esta organização não aprovou {{name}}. Aprove o patch antes de instalá-lo.",
+    "installPatchUserScopeTitle": "{{name}} está instalado no perfil do usuário conectado. Apps por usuário ainda não podem ser corrigidos a partir do contexto do sistema.",
     "installPatchTitle": "Instalar {{name}}",
     "loading": "Carregando o status dos patches...",
     "notDownloadedTitle": "Ainda não foi baixado — a instalação demorará mais",
@@ -1267,6 +1272,9 @@
       "queued": "{{label}} adicionado à fila",
       "queuedDetail": "{{label}} adicionado à fila{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Por usuário",
+    "perUserBadgeTitle": "Instalado no perfil do usuário conectado; ainda não pode ser corrigido a partir do contexto do sistema",
+    "perUserNotScanned": "Os aplicativos por usuário não foram verificados (nenhuma sessão de usuário interativa) — atualizações por usuário podem estar ausentes.",
     "rebootRequired": "Reinicialização necessária",
     "table": {
       "approval": "Aprovação",
@@ -2229,6 +2237,7 @@
     },
     "generalCategory": "Geral",
     "paramCount": "Parâmetros: {{count}}",
+    "boundParamCount": "Automáticos: {{count}}",
     "runAs": {
       "system": "Executar como: Sistema",
       "user": "Executar como: usuário conectado"

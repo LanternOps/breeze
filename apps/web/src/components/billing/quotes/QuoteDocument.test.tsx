@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { QuoteDocument } from './QuoteDocument';
 import QuoteDocumentPreview from './QuoteDocument';
-import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
+import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
 // QuoteDocument is presentational, but its module imports the auth/org stores and
@@ -66,6 +66,31 @@ describe('QuoteDocument', () => {
     expect(screen.getByText(/doesn’t have any content yet/i)).toBeInTheDocument();
     // No totals block without content.
     expect(screen.queryByTestId('quote-document-due')).toBeNull();
+  });
+
+  it('stamps data-doc-theme="condensed" when the DTO resolves the condensed theme', () => {
+    render(
+      <QuoteDocument
+        detail={makeDetail({ presentation: { theme: 'condensed', pageSize: 'letter' } })}
+        customerName="Acme Industries"
+      />
+    );
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'condensed');
+  });
+
+  it('stamps data-doc-theme="classic" when the DTO resolves the classic theme', () => {
+    render(
+      <QuoteDocument
+        detail={makeDetail({ presentation: { theme: 'classic', pageSize: 'a4' } })}
+        customerName="Acme Industries"
+      />
+    );
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
+  });
+
+  it('defaults data-doc-theme to "classic" when the payload omits presentation', () => {
+    render(<QuoteDocument detail={makeDetail({ presentation: undefined })} customerName="Acme Industries" />);
+    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
   });
 
   it('falls back to a draft label and partner wordmark when number/logo are absent', () => {
@@ -206,6 +231,74 @@ describe('QuoteDocument', () => {
     expect(screen.getByTestId('contract-block')).toHaveTextContent('Contract file unavailable');
     expect(document.querySelector('iframe')).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('renders a table block with column labels, inline HTML cells, zebra striping and caption', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-6', quoteId: 'q-1', orgId: 'org-1', blockType: 'table',
+        content: {
+          columns: [{ label: '<strong>Item</strong>' }, { label: 'Qty', align: 'right' }],
+          rows: [
+            { cells: ['Widget', '1'] },
+            { cells: ['Gadget', '2'] },
+          ],
+          caption: 'Pricing detail',
+          zebra: true,
+        },
+        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme" />);
+
+    const table = screen.getByTestId('quote-table-block');
+    expect(table.querySelector('table')).not.toBeNull();
+    const header = screen.getByText('Item');
+    expect(header.tagName).toBe('STRONG');
+    expect(screen.getByText('Widget')).toBeInTheDocument();
+    expect(screen.getByText('Gadget')).toBeInTheDocument();
+    expect(screen.getByText('Pricing detail')).toBeInTheDocument();
+    // Zebra striping: second row (index 1) gets the muted background class.
+    const rows = table.querySelectorAll('tbody tr');
+    expect(rows[0]).not.toHaveClass('bg-muted/30');
+    expect(rows[1]).toHaveClass('bg-muted/30');
+  });
+
+  it('renders a callout block with a variant-tinted container, title and html', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        id: 'b-7', quoteId: 'q-1', orgId: 'org-1', blockType: 'callout',
+        content: { variant: 'warn', title: 'Heads up', html: '<p>Please read <strong>carefully</strong>.</p>' },
+        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme" />);
+
+    const callout = screen.getByTestId('quote-callout-block');
+    expect(callout).toHaveClass('border-amber-500/40');
+    expect(screen.getByText('Heads up')).toBeInTheDocument();
+    const strongEl = screen.getByText('carefully');
+    expect(strongEl.tagName).toBe('STRONG');
+  });
+
+  it('renders a visible placeholder for an unsupported/unknown block type', () => {
+    const d = makeDetail();
+    d.blocks = [
+      ...d.blocks,
+      {
+        // Intentionally a blockType the client doesn't know about (e.g. a
+        // future server-added type) — must fail visibly, not silently vanish.
+        id: 'b-8', quoteId: 'q-1', orgId: 'org-1', blockType: 'future_block_type' as unknown as QuoteBlock['blockType'],
+        content: {},
+        sortOrder: 3, createdAt: '2026-06-01T00:00:00Z',
+      },
+    ];
+    render(<QuoteDocument detail={d} customerName="Acme" />);
+    expect(screen.getByTestId('unsupported-block')).toBeInTheDocument();
   });
 
   it('never renders internal cost/markup/net on the customer document', () => {

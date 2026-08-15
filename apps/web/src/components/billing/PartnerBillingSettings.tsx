@@ -18,6 +18,8 @@ interface PartnerBilling {
   autoTaxHardware: boolean;
   catalogAiStyle: string | null;
   invoiceFooter: string | null;
+  documentTheme: 'classic' | 'condensed';
+  documentPageSize: 'letter' | 'a4';
   billingCompanyName: string | null;
   billingPhone: string | null;
   billingWebsite: string | null;
@@ -48,6 +50,8 @@ export default function PartnerBillingSettings() {
   // Partner AI copy style for Auto-fill/Polish; empty = built-in house format.
   const [aiStyle, setAiStyle] = useState('');
   const [footer, setFooter] = useState('');
+  const [documentTheme, setDocumentTheme] = useState<'classic' | 'condensed'>('classic');
+  const [documentPageSize, setDocumentPageSize] = useState<'letter' | 'a4'>('letter');
   const [companyName, setCompanyName] = useState('');
   const [phone, setPhone] = useState('');
   const [website, setWebsite] = useState('');
@@ -75,6 +79,8 @@ export default function PartnerBillingSettings() {
       setAutoTaxHardware(p.autoTaxHardware ?? true);
       setAiStyle(p.catalogAiStyle ?? '');
       setFooter(p.invoiceFooter ?? '');
+      setDocumentTheme(p.documentTheme ?? 'classic');
+      setDocumentPageSize(p.documentPageSize ?? 'letter');
       setCompanyName(p.billingCompanyName ?? '');
       setPhone(p.billingPhone ?? '');
       setWebsite(p.billingWebsite ?? '');
@@ -123,6 +129,8 @@ export default function PartnerBillingSettings() {
             autoTaxHardware,
             catalogAiStyle: aiStyle.trim() === '' ? null : aiStyle.trim(),
             invoiceFooter: footer.trim() === '' ? null : footer,
+            documentTheme,
+            documentPageSize,
             billingCompanyName: companyName.trim() === '' ? null : companyName.trim(),
             billingPhone: phone.trim() === '' ? null : phone.trim(),
             billingWebsite: website.trim() === '' ? null : website.trim(),
@@ -146,7 +154,7 @@ export default function PartnerBillingSettings() {
       setSaving(false);
     }
   }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, aiStyle, footer,
-      companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
+      documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
   if (loadError) {
@@ -243,6 +251,32 @@ export default function PartnerBillingSettings() {
           <p className="mt-1 text-xs text-muted-foreground">
             {t('partnerBillingSettings.defaults.aiStyleHelp')}
           </p>
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-document-theme">{t('partnerBillingSettings.defaults.documentTheme')}</label>
+            <select
+              id="pb-document-theme" value={documentTheme}
+              onChange={(e) => setDocumentTheme(e.target.value as 'classic' | 'condensed')}
+              data-testid="partner-billing-document-theme"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="classic">{t('partnerBillingSettings.defaults.documentThemeClassic')}</option>
+              <option value="condensed">{t('partnerBillingSettings.defaults.documentThemeCondensed')}</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="pb-document-page-size">{t('partnerBillingSettings.defaults.documentPageSize')}</label>
+            <select
+              id="pb-document-page-size" value={documentPageSize}
+              onChange={(e) => setDocumentPageSize(e.target.value as 'letter' | 'a4')}
+              data-testid="partner-billing-document-page-size"
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="letter">{t('partnerBillingSettings.defaults.documentPageSizeLetter')}</option>
+              <option value="a4">{t('partnerBillingSettings.defaults.documentPageSizeA4')}</option>
+            </select>
+          </div>
         </div>
         <div className="mt-4">
           <label className="text-sm font-medium" htmlFor="pb-footer">{t('partnerBillingSettings.defaults.invoiceFooter')}</label>

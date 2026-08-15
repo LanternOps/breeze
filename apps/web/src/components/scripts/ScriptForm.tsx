@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect, useRef, useCallback, type ComponentType } from 'react';
-import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import { useMemo, useState, useEffect, useId, useRef, useCallback, type ComponentType } from 'react';
+import { useForm, useFieldArray, Controller, type UseFormRegisterReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, Sparkles, AlertTriangle } from 'lucide-react';
+import { Plus, Trash2, Sparkles, AlertTriangle, Braces } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
 // Statically import Monaco's editor stylesheet so Astro bundles it into the
@@ -18,10 +18,12 @@ import type { EditorProps } from '@monaco-editor/react';
 // static bundle (see lib/monacoLoader.ts).
 import 'monaco-editor/min/vs/editor/editor.main.css';
 
+import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES } from '@breeze/shared';
 import ScriptAiPanel from './ScriptAiPanel';
 import CollapsibleSection from './CollapsibleSection';
 import ScriptVariablePicker from './ScriptVariablePicker';
-import { findUnknownVariableKeys, useTenantVariables } from '@/lib/tenantVariableTokens';
+import TenantVariableMenu from './TenantVariableMenu';
+import { findUnknownVariableKeys, useTenantVariables, type TenantVariableEntry } from '@/lib/tenantVariableTokens';
 import { cn } from '@/lib/utils';
 import { configureMonacoLoader } from '@/lib/monacoLoader';
 import { useScriptAiStore } from '@/stores/scriptAiStore';
@@ -33,16 +35,90 @@ import { getJwtClaims } from '@/lib/authScope';
 import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
-  rowsToMapping,
-  type ScriptFormValues, type ScriptSubmitValues,
+  rowsToMapping, parameterBindingKey, parameterSource,
+  type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 
 export type { ScriptFormValues, ScriptParameter, ScriptSubmitValues } from './ScriptFormSchema';
 
+/**
+ * The `tenantVariable` binding cell: a free-text key plus the shared picker.
+ *
+ * Its own component purely so the secret warning can own a `useId` — the row
+ * lives inside a `.map`, where a hook cannot be called, and a single shared id
+ * would mean two parameters bound to two different secrets announce only one of
+ * them (the same rule `VariableInput` follows for its two warning paragraphs).
+ *
+ * The warning is deliberately advisory rather than a submit gate: the API
+ * rejects a secret binding with a 400 at save, so the point here is to say so
+ * BEFORE the round trip, not to re-implement the rule. Typing a key by hand is
+ * still allowed — the picker disables secret rows, but a key can also be
+ * classified secret after the script was authored.
+ */
+function TenantVariableBindingField({
+  registration,
+  value,
+  variables,
+  onPick,
+  error,
+}: {
+  registration: UseFormRegisterReturn;
+  value: string;
+  variables: TenantVariableEntry[];
+  onPick: (key: string) => void;
+  error?: string;
+}) {
+  const { t } = useTranslation('scripts');
+  const warnId = useId();
+  const isSecret = variables.some(v => v.key === value && v.isSecret);
+
+  return (
+    <div className="space-y-1 sm:col-span-2">
+      <label className="text-xs font-medium text-muted-foreground">
+        {t('scriptForm.parameterBinding.variableLabel')}
+      </label>
+      <div className="flex items-stretch gap-2">
+        <input
+          {...registration}
+          placeholder={t('scriptForm.parameterBinding.variablePlaceholder')}
+          aria-invalid={isSecret || undefined}
+          aria-describedby={isSecret ? warnId : undefined}
+          className={cn(
+            'h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
+            isSecret && 'border-destructive/60 focus:ring-destructive/40'
+          )}
+        />
+        <TenantVariableMenu
+          variables={variables}
+          onSelect={onPick}
+          // The parameter stores the bare KEY, so the row's secondary line is
+          // the key itself — showing `{{var.key}}` here would advertise a shape
+          // this field must not contain.
+          formatDetail={key => key}
+          trigger={<Braces className="h-3.5 w-3.5" />}
+          triggerTitle={t('scriptForm.parameterBinding.chooseTitle')}
+          triggerClassName="h-9 shrink-0 bg-background px-3"
+        />
+      </div>
+      {isSecret && (
+        <p
+          id={warnId}
+          data-testid="script-parameter-secret-warning"
+          className="flex items-start gap-1.5 text-xs text-destructive"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{t('scriptForm.parameterBinding.secretRejected', { key: value })}</span>
+        </p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
 type ScriptFormProps = {
   onSubmit?: (values: ScriptSubmitValues) => void | Promise<void>;
   onCancel?: () => void;
-  defaultValues?: Partial<ScriptFormValues>;
+  defaultValues?: ScriptFormDefaults;
   submitLabel?: string;
   loading?: boolean;
   isNew?: boolean;
@@ -316,6 +392,7 @@ export default function ScriptForm({
   const runAsLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.runAs.${value}.label`);
   const runAsDescription = (value: string) => t(/* i18n-dynamic */ `scriptForm.runAs.${value}.description`);
   const parameterTypeLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.parameterTypes.${value}`);
+  const parameterSourceLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.parameterSources.${value}`);
   const severityLabel = (value: string) => t(/* i18n-dynamic */ `scriptForm.severity.${value}`);
   const osLabel = (os: OSType) => t(/* i18n-dynamic */ `scriptForm.os.${os}`);
 
@@ -336,8 +413,47 @@ export default function ScriptForm({
       type: 'string',
       defaultValue: '',
       required: false,
-      options: ''
+      options: '',
+      // Seeded explicitly (#3409 PR3): a new row must start on the same
+      // invoker-supplied binding every parameter had before sourced
+      // parameters existed.
+      source: 'runtime'
     });
+  };
+
+  /**
+   * Switch a row's source, clearing the other arms' binding keys.
+   *
+   * zodResolver strips them from the submitted values anyway (each union arm
+   * only declares its own key), but leaving them in form state makes a row that
+   * is switched back look bound to a key the user already abandoned — and the
+   * secret warning below would then fire off a key this row no longer uses.
+   * `builtin` is seeded with the first vocabulary entry so its `<select>` starts
+   * on the value it visually displays rather than on an empty non-option.
+   */
+  const handleParameterSourceChange = (index: number, next: string) => {
+    const set = (field: string, value: string | undefined) => {
+      setValue(
+        `parameters.${index}.${field}` as unknown as keyof ScriptFormValues,
+        value as never,
+        { shouldDirty: true }
+      );
+    };
+    set('source', next);
+    set('variableKey', '');
+    set('fieldKey', '');
+    set('builtinKey', next === 'builtin' ? SCRIPT_BUILTIN_PARAMETER_KEYS[0] : '');
+  };
+
+  /**
+   * Per-row field errors. The definitions schema is a discriminated union, so
+   * `errors.parameters[i]` is a union of per-arm error shapes and TS cannot see
+   * `variableKey` on the runtime arm — the error object itself is a plain
+   * record at runtime.
+   */
+  const parameterFieldError = (index: number, field: string): string | undefined => {
+    const row = errors.parameters?.[index] as Record<string, { message?: string }> | undefined;
+    return row?.[field]?.message;
   };
 
   return (
@@ -630,7 +746,11 @@ export default function ScriptForm({
               {t('scriptForm.parameters.emptySuffix')}
             </p>
           )}
-          {fields.map((field, index) => (
+          {fields.map((field, index) => {
+            const row = watchParameters?.[index];
+            const source = row ? parameterSource(row) : 'runtime';
+            const isBound = source !== 'runtime';
+            return (
             <div key={field.id} className="rounded-md border bg-muted/20 p-4">
               <div className="flex items-start gap-3">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground mt-2">{index + 1}</span>
@@ -638,16 +758,74 @@ export default function ScriptForm({
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">{t('common:labels.name')}</label>
                     <input placeholder={t('scriptForm.placeholders.parameterName')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.name`)} />
-                    {errors.parameters?.[index]?.name && <p className="text-xs text-destructive">{errors.parameters[index]?.name?.message}</p>}
+                    {parameterFieldError(index, 'name') && <p className="text-xs text-destructive">{parameterFieldError(index, 'name')}</p>}
                   </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.source')}</label>
+                    {/* Deliberately controlled rather than `register`ed: changing
+                        the source must write the new arm AND clear the previous
+                        arm's binding key in one pass, and a registered select
+                        gives no ordering guarantee between RHF's own write and
+                        a user `onChange` hook. */}
+                    <select
+                      aria-label={t('scriptForm.parameters.sourceAriaLabel', { index: index + 1 })}
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      value={source}
+                      onChange={e => handleParameterSourceChange(index, e.target.value)}
+                    >
+                      {SCRIPT_PARAMETER_SOURCES.map(value => <option key={value} value={value}>{parameterSourceLabel(value)}</option>)}
+                    </select>
+                  </div>
+                  {source === 'tenantVariable' && (
+                    <TenantVariableBindingField
+                      registration={register(`parameters.${index}.variableKey` as unknown as keyof ScriptFormValues)}
+                      value={(row && parameterBindingKey(row)) || ''}
+                      variables={tenantVariables}
+                      error={parameterFieldError(index, 'variableKey')}
+                      onPick={key => setValue(
+                        `parameters.${index}.variableKey` as unknown as keyof ScriptFormValues,
+                        key as never,
+                        { shouldDirty: true }
+                      )}
+                    />
+                  )}
+                  {source === 'deviceCustomField' && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.parameterBinding.fieldLabel')}</label>
+                      <input
+                        placeholder={t('scriptForm.parameterBinding.fieldPlaceholder')}
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        {...register(`parameters.${index}.fieldKey` as unknown as keyof ScriptFormValues)}
+                      />
+                      {parameterFieldError(index, 'fieldKey') && <p className="text-xs text-destructive">{parameterFieldError(index, 'fieldKey')}</p>}
+                    </div>
+                  )}
+                  {source === 'builtin' && (
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.parameterBinding.builtinLabel')}</label>
+                      <select
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        {...register(`parameters.${index}.builtinKey` as unknown as keyof ScriptFormValues)}
+                      >
+                        {SCRIPT_BUILTIN_PARAMETER_KEYS.map(key => <option key={key} value={key}>{key}</option>)}
+                      </select>
+                      {parameterFieldError(index, 'builtinKey') && <p className="text-xs text-destructive">{parameterFieldError(index, 'builtinKey')}</p>}
+                    </div>
+                  )}
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">{t('common:labels.type')}</label>
                     <select className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.type`)}>
                       {parameterTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{parameterTypeLabel(opt.value)}</option>)}
                     </select>
                   </div>
+                  {/* Bound parameters keep a default — resolution is
+                      `resolved value -> definition default -> missing` — but it
+                      is a fallback, not a prefilled answer, so it is labelled as
+                      one. */}
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.defaultValue')}</label>
+                    <label className="text-xs font-medium text-muted-foreground">
+                      {isBound ? t('scriptForm.fields.fallbackValue') : t('scriptForm.fields.defaultValue')}
+                    </label>
                     <input placeholder={t('scriptForm.placeholders.defaultValue')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
                   </div>
                   <div className="space-y-1">
@@ -657,11 +835,19 @@ export default function ScriptForm({
                       <span className="ml-2 text-sm">{t('common:labels.yes')}</span>
                     </div>
                   </div>
-                  {watchParameters?.[index]?.type === 'select' && (
+                  {/* `options` renders the run-time `<select>`. A bound parameter
+                      is never prompted for, so a choice list has nothing to
+                      drive and is hidden rather than silently ignored. */}
+                  {!isBound && row?.type === 'select' && (
                     <div className="space-y-1 sm:col-span-2 md:col-span-4">
                       <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.options')}</label>
                       <input placeholder={t('scriptForm.placeholders.options')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />
                     </div>
+                  )}
+                  {isBound && (
+                    <p className="text-xs text-muted-foreground sm:col-span-2 md:col-span-4">
+                      {t('scriptForm.parameterBinding.hint')}
+                    </p>
                   )}
                 </div>
                 <button type="button" onClick={() => remove(index)} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-muted text-destructive" title={t('scriptForm.actions.removeParameter')}>
@@ -669,7 +855,8 @@ export default function ScriptForm({
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
           <button type="button" onClick={addParameter} className="inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition">
             <Plus className="h-4 w-4" />
             {t('scriptForm.actions.addParameter')}

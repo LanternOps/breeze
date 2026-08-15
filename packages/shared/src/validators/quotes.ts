@@ -16,7 +16,7 @@ const taxRate = z.number().min(0).max(1);
 export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
-export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract']);
+export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract', 'table', 'callout']);
 export const quoteDepositTypeSchema = z.enum(['none', 'percent', 'selected_lines']);
 
 // Whole-percent, 2dp, exclusive bounds per spec (100% = "no deposit" — rejected).
@@ -43,12 +43,49 @@ const contractContent = z.object({
   label: z.string().max(200).optional(),
 });
 
+// Table: structured JSON, never HTML-parsed. Inline-HTML strings (cells/labels)
+// are sanitized server-side with the inline-only profile (richTextSanitize).
+// Hard caps: 8 cols x 100 rows x 2000 chars — unbounded content is a
+// memory/PDF-layout DoS surface (spec §4).
+const tableColumn = z.object({
+  label: z.string().max(200),
+  align: z.enum(['left', 'center', 'right']).optional(),
+  weight: z.number().int().min(1).max(10).optional(),
+});
+// Exported (not just inferred as a type) so the read-path defense-in-depth
+// sanitizer (quoteService.sanitizeQuoteBlocksForRead) can safeParse stored
+// JSONB against the same shape write validated, without duplicating it.
+export const quoteTableContentSchema = z.object({
+  columns: z.array(tableColumn).min(1).max(8),
+  rows: z.array(z.object({ cells: z.array(z.string().max(2000)) })).min(1).max(100),
+  caption: z.string().max(300).optional(),
+  zebra: z.boolean().optional(),
+  headerStyle: z.enum(['accent', 'plain']).optional(),
+}).superRefine((val, ctx) => {
+  // Exact shape — no render-time padding/truncation, which would let displayed
+  // content diverge from persisted/hashed content.
+  val.rows.forEach((row, i) => {
+    if (row.cells.length !== val.columns.length) {
+      ctx.addIssue({ code: 'custom', path: ['rows', i, 'cells'], message: `row has ${row.cells.length} cells, expected ${val.columns.length}` });
+    }
+  });
+});
+const tableContent = quoteTableContentSchema;
+export const quoteCalloutContentSchema = z.object({
+  variant: z.enum(['info', 'accent', 'warn']),
+  title: z.string().max(200).optional(),
+  html: z.string().max(50_000), // same cap as rich_text
+});
+const calloutContent = quoteCalloutContentSchema;
+
 export const quoteBlockInputSchema = z.discriminatedUnion('blockType', [
   z.object({ blockType: z.literal('heading'), content: headingContent }),
   z.object({ blockType: z.literal('rich_text'), content: richTextContent }),
   z.object({ blockType: z.literal('image'), content: imageContent }),
   z.object({ blockType: z.literal('line_items'), content: lineItemsContent }),
   z.object({ blockType: z.literal('contract'), content: contractContent }),
+  z.object({ blockType: z.literal('table'), content: tableContent }),
+  z.object({ blockType: z.literal('callout'), content: calloutContent }),
 ]);
 
 export const quoteLineInputSchema = z.object({
@@ -241,6 +278,9 @@ export const updateQuoteOrderLineSchema = z.object({
 
 export type QuoteLineInput = z.infer<typeof quoteLineInputSchema>;
 export type QuoteBlockInput = z.infer<typeof quoteBlockInputSchema>;
+export type QuoteTableColumn = z.infer<typeof tableColumn>;
+export type QuoteTableContent = z.infer<typeof tableContent>;
+export type QuoteCalloutContent = z.infer<typeof calloutContent>;
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
 export type CloneQuoteInput = z.infer<typeof cloneQuoteSchema>;
 export type UpdateQuoteInput = z.infer<typeof updateQuoteSchema>;

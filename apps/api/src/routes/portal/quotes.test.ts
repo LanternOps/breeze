@@ -137,7 +137,30 @@ describe('portal quotes GET /quotes/:id', () => {
       partnerName: 'Lantern IT',
       logoUrl: 'https://cdn.example.test/logo.png',
       primaryColor: '#123456',
+      theme: 'classic',
+      pageSize: 'a4',
     });
+    // Sibling `presentation` field (Task 12) — same resolved values.
+    expect(body.data.presentation).toEqual({ theme: 'classic', pageSize: 'a4' });
+  });
+
+  it('resolves presentation.theme="condensed" from the partner default', async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, presentationSnapshot: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT', documentTheme: 'condensed', documentPageSize: 'letter' }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.presentation).toEqual({ theme: 'condensed', pageSize: 'letter' });
+    expect(body.data.branding.theme).toBe('condensed');
   });
 
   it('falls back to null logo/color and a generic partner name when neither row exists', async () => {
@@ -155,7 +178,7 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
   });
 
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {

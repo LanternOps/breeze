@@ -6,6 +6,9 @@ import {
   activeVpnList,
   activeVpnProviders,
   formatVpnTooltip,
+  vpnList,
+  getVpnBadgeClass,
+  INACTIVE_VPN_BADGE_CLASS,
 } from './vpnProviders';
 
 function vpn(overrides: Partial<VpnPresence>): VpnPresence {
@@ -96,5 +99,78 @@ describe('formatVpnTooltip', () => {
 
   it('omits missing optional fields', () => {
     expect(formatVpnTooltip(vpn({ provider: 'wireguard', interfaceName: 'wg0' }))).toBe('WireGuard · wg0');
+  });
+
+  it('active entry with stateLabel omitted is unchanged from before', () => {
+    expect(
+      formatVpnTooltip(
+        vpn({ provider: 'tailscale', interfaceName: 'utun3', ipv4: '100.64.0.1', dnsName: 'host.ts.net' }),
+      ),
+    ).toBe('Tailscale · utun3 · 100.64.0.1 · host.ts.net');
+  });
+
+  it('renders an inactive entry (no interface/IPs) with a stateLabel and no empty middot segment', () => {
+    const inactive = vpn({
+      provider: 'netbird',
+      active: false,
+      interfaceName: '',
+      ipv4: undefined,
+      ipv6: undefined,
+      dnsName: undefined,
+    });
+    expect(formatVpnTooltip(inactive, 'disconnected')).toBe('NetBird · disconnected');
+  });
+});
+
+describe('vpnList', () => {
+  it('returns [] for null/undefined/empty', () => {
+    expect(vpnList(null)).toEqual([]);
+    expect(vpnList(undefined)).toEqual([]);
+    expect(vpnList([])).toEqual([]);
+  });
+
+  it('returns active entries before inactive ones', () => {
+    const list = vpnList([
+      vpn({ provider: 'openvpn', active: false, interfaceName: '' }),
+      vpn({ provider: 'tailscale', active: true, interfaceName: 'utun3' }),
+    ]);
+    expect(list.map((v) => v.provider)).toEqual(['tailscale', 'openvpn']);
+    expect(list[0].active).toBe(true);
+    expect(list[1].active).toBe(false);
+  });
+
+  it('sorts each group by provider label', () => {
+    const list = vpnList([
+      vpn({ provider: 'wireguard', active: true, interfaceName: 'wg0' }),
+      vpn({ provider: 'openvpn', active: true, interfaceName: 'tun0' }),
+      vpn({ provider: 'zerotier', active: false, interfaceName: '' }),
+      vpn({ provider: 'netbird', active: false, interfaceName: '' }),
+    ]);
+    // Active group: OpenVPN, WireGuard. Inactive group: NetBird, ZeroTier.
+    expect(list.map((v) => v.provider)).toEqual(['openvpn', 'wireguard', 'netbird', 'zerotier']);
+  });
+
+  it('dedupes each group by provider+interface', () => {
+    const list = vpnList([
+      vpn({ provider: 'zerotier', active: true, interfaceName: 'zt0' }),
+      vpn({ provider: 'zerotier', active: true, interfaceName: 'zt0' }),
+      vpn({ provider: 'zerotier', active: false, interfaceName: '' }),
+      vpn({ provider: 'zerotier', active: false, interfaceName: '' }),
+    ]);
+    expect(list).toHaveLength(2);
+    expect(list.filter((v) => v.active)).toHaveLength(1);
+    expect(list.filter((v) => !v.active)).toHaveLength(1);
+  });
+});
+
+describe('getVpnBadgeClass', () => {
+  it('returns the provider badge class when active', () => {
+    expect(getVpnBadgeClass(vpn({ provider: 'tailscale', active: true }))).toBe(
+      getVpnProviderBadgeClass('tailscale'),
+    );
+  });
+
+  it('returns INACTIVE_VPN_BADGE_CLASS when inactive', () => {
+    expect(getVpnBadgeClass(vpn({ provider: 'tailscale', active: false }))).toBe(INACTIVE_VPN_BADGE_CLASS);
   });
 });

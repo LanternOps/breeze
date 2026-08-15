@@ -862,6 +862,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "VPN DNS Nom",
+    "vpnState": "État",
+    "vpnConnected": "Connecté",
+    "vpnDisconnected": "Déconnecté",
     "detectionSource": "Source de détection",
     "agent": "Agent",
     "agentVersion": "Version de l’agent",
@@ -1043,6 +1046,7 @@
     "filterByVpn": "Filtrer par VPN",
     "allVpn": "Tous VPN",
     "anyActiveVpn": "Des VPN actifs",
+    "vpnDisconnected": "déconnecté",
     "off": "désactivé",
     "on": "activé",
     "multiBootMachinesTuckExpectedOffline": "Machines multi-boot : cacher les profils de démarrage attendus hors ligne sous leur homologue en ligne sous forme de fines bandes. Off = liste de plats.",
@@ -1250,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Cette organisation n’a pas approuvé {{name}}. Approuvez le correctif avant l’installation.",
+    "installPatchUserScopeTitle": "{{name}} est installé dans le profil de l'utilisateur connecté. Les applications par utilisateur ne peuvent pas encore être corrigées depuis le contexte système.",
     "installPatchTitle": "Installer {{name}}",
     "loading": "Chargement de l’état du patch...",
     "notDownloadedTitle": "Pas encore téléchargé — l’installation prendra plus de temps",
@@ -1267,6 +1272,9 @@
       "queued": "{{label}} en file d’attente",
       "queuedDetail": "{{label}} en file{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Par utilisateur",
+    "perUserBadgeTitle": "Installé dans le profil de l'utilisateur connecté; ne peut pas encore être corrigé depuis le contexte système",
+    "perUserNotScanned": "Les applications par utilisateur n'ont pas été analysées (aucune session utilisateur interactive) — des mises à jour par utilisateur pourraient manquer.",
     "rebootRequired": "Redémarrage nécessaire",
     "table": {
       "approval": "Approbation",
@@ -2229,6 +2237,7 @@
     },
     "generalCategory": "Généralités",
     "paramCount": "{{count}} paramètre(s)",
+    "boundParamCount": "{{count}} automatique(s)",
     "runAs": {
       "system": "Exécuter sous : Système",
       "user": "Exécuter en tant que : utilisateur connecté"

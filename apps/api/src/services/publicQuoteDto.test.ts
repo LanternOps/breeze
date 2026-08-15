@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { PublicQuoteHeader } from '@breeze/shared';
 import type { QuoteTotals } from './quoteMath';
-import { toPublicQuoteHeader } from './publicQuoteDto';
+import { toPublicQuoteHeader, toPublicQuotePresentation } from './publicQuoteDto';
 
 const HEADER_KEYS = [
   'id',
@@ -214,5 +214,12 @@ describe('toPublicQuoteHeader', () => {
       preparedForName: null,
       showPreparedBy: true,
     });
+  });
+});
+
+describe('toPublicQuotePresentation', () => {
+  it('shapes the resolved theme/pageSize into the presentation DTO (Task 12)', () => {
+    expect(toPublicQuotePresentation('condensed', 'letter')).toEqual({ theme: 'condensed', pageSize: 'letter' });
+    expect(toPublicQuotePresentation('classic', 'a4')).toEqual({ theme: 'classic', pageSize: 'a4' });
   });
 });

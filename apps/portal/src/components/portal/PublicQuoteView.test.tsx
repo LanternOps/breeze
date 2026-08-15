@@ -81,4 +81,19 @@ describe('PublicQuoteView exact public quote contract', () => {
     expect(screen.getByTestId('public-quote-terms-conditions').textContent)
       .toContain('Customer-facing terms and conditions.');
   });
+
+  it('stamps data-doc-theme="condensed" when the DTO resolves the condensed theme', () => {
+    render(
+      <PublicQuoteView
+        token="public-token"
+        initial={{ ...DETAIL, presentation: { theme: 'condensed', pageSize: 'letter' } }}
+      />
+    );
+    expect(screen.getByTestId('public-quote').getAttribute('data-doc-theme')).toBe('condensed');
+  });
+
+  it('defaults data-doc-theme to "classic" when the DTO omits presentation', () => {
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+    expect(screen.getByTestId('public-quote').getAttribute('data-doc-theme')).toBe('classic');
+  });
 });

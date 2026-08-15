@@ -1,8 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
 import { db } from '../db';
-import { devices, scriptExecutions, scripts } from '../db/schema';
+import { devices, organizations, scriptExecutions, scripts, sites } from '../db/schema';
 import {
   claimPendingCommandForDelivery,
   releaseClaimedCommandDelivery,
@@ -10,6 +11,7 @@ import {
 import { queueCommand } from './commandQueue';
 import {
   decryptCommandForDelivery,
+  toAgentCommandFrame,
   encryptSensitivePayloadFields,
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
@@ -18,8 +20,17 @@ import {
   describeVariableFailure,
   resolveForOrg,
   substituteTenantVariables,
+  type ResolvedVariable,
   type TenantVariableScope,
 } from './tenantVariableResolution';
+import {
+  builtinNameContextNeeds,
+  EXECUTION_PARAMETER_BINDINGS_KEY,
+  hasTenantVariableBoundParameters,
+  resolveSourcedParameters,
+  type ScriptParameterBindingDescriptor,
+  type SourcedParameterNameContext,
+} from './sourcedParameters';
 
 /**
  * Single seam through which every script reaches a device (#3409 PR 0).
@@ -37,7 +48,19 @@ export type ScriptDispatchSource =
   | { kind: 'raw'; content: string; language: string; provenance: string };
 
 export type DispatchScriptInput = {
-  device: Pick<typeof devices.$inferSelect, 'id' | 'orgId' | 'osType' | 'status' | 'agentId'>;
+  // `hostname`, `siteId`, and `customFields` are carried for #3409 PR3's
+  // sourced parameters: a `deviceCustomField` binding reads `customFields`
+  // and the `builtin` source reads device/site/org properties. Nothing in
+  // THIS file consumes them yet — widening the projection is deliberately a
+  // separate step from adding the resolver, so every call site is already
+  // supplying the data before resolution starts depending on it. Every
+  // caller either selects whole device rows (scriptExecution.ts,
+  // aiToolsScripts.ts via verifyDeviceAccess) or carries a run-level device
+  // snapshot that was widened to match (automationRuntime.ts).
+  device: Pick<
+    typeof devices.$inferSelect,
+    'id' | 'orgId' | 'osType' | 'status' | 'agentId' | 'hostname' | 'siteId' | 'customFields'
+  >;
   source: ScriptDispatchSource;
   parameters?: Record<string, unknown>;
   triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';
@@ -67,6 +90,12 @@ export type DispatchScriptResult =
       // reach it — operationally different, and worth a log line (see below).
       deliveryOutcome: 'sent' | 'claim_lost' | 'decrypt_failed' | 'send_failed' | 'no_agent';
       executedAt: Date | null;
+      // Bound parameter keys the caller supplied a value for (#3409 PR3
+      // §2.2). The binding wins authoritatively and the supplied value is
+      // dropped — reported rather than rejected, because a stored automation
+      // action is validated without consulting the referenced script's
+      // definitions and so literally cannot pre-validate against a binding.
+      ignoredParameters: string[];
     }
   | {
       ok: false;
@@ -80,7 +109,14 @@ export type DispatchScriptResult =
         // resolved to a secret) for this device's org. Per-device — Task 4
         // (#3409 PR2) is what actually produces this code; this task only
         // gives the fan-out a channel to carry it without aborting the batch.
-        | 'unresolved_variables';
+        | 'unresolved_variables'
+        // A SOURCED PARAMETER could not be resolved for this device (#3409
+        // PR3): a required parameter with no source value and no default, or
+        // a `tenantVariable` binding whose target is a secret. Deliberately
+        // distinct from 'unresolved_variables' above — a parameter-binding
+        // failure and a content-token failure are different operational
+        // conditions and must stay distinguishable in execution history.
+        | 'unresolved_parameters';
       error: string;
     };
 
@@ -161,6 +197,49 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     content = outcome.content;
   }
 
+  // #3409 PR3: sourced-parameter resolution. Sits AFTER content substitution
+  // and BEFORE the script_executions insert below, for the same reason PR2's
+  // substitution does — a device that fails resolution must leave no orphan
+  // 'pending' row behind for the reaper to later mislabel 'timeout'.
+  //
+  // `{kind:'raw'}` (execute_command) is skipped entirely: there is no
+  // declaring script, so there are no definitions to bind and nothing to
+  // resolve.
+  let resolvedParameters: Record<string, string | number | boolean> = parameters as Record<
+    string,
+    string | number | boolean
+  >;
+  let parameterBindings: ScriptParameterBindingDescriptor[] = [];
+  let ignoredParameters: string[] = [];
+  if (source.kind === 'saved' && Array.isArray(source.script.parameters) && source.script.parameters.length > 0) {
+    const definitions = source.script.parameters;
+    // Only a tenantVariable binding needs the snapshot; the other three
+    // sources read the device row (or the name lookup below), so a script
+    // with no such binding never requires a scope — mirroring the
+    // content-token gate directly above.
+    let variables: Map<string, ResolvedVariable> | undefined;
+    if (hasTenantVariableBoundParameters(definitions)) {
+      if (!input.variableScope) {
+        throw new Error('variableScope is required to dispatch a script with a tenantVariable-bound parameter');
+      }
+      variables = resolveForOrg(input.variableScope, device.orgId);
+    }
+
+    const resolution = resolveSourcedParameters({
+      definitions,
+      callerParameters: parameters,
+      device,
+      names: await loadBuiltinNameContext(definitions, device),
+      variables,
+    });
+    if (!resolution.ok) {
+      return { ok: false, code: resolution.code, error: resolution.error };
+    }
+    resolvedParameters = resolution.parameters;
+    parameterBindings = resolution.bindings;
+    ignoredParameters = resolution.ignoredParameters;
+  }
+
   let executionId: string | null = null;
   if (source.kind === 'saved') {
     // Child rows always take the DEVICE's org (partner-wide fan-out rule).
@@ -173,7 +252,15 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         triggeredBy: input.triggeredBy ?? null,
         triggerType: input.triggerType ?? 'manual',
         ...(source.automationRunId ? { automationRunId: source.automationRunId } : {}),
-        parameters,
+        // #3409 PR3 P4: the CALLER's raw parameters, never the resolved map.
+        // A resolved bound value must not be persisted — in PR4 that would
+        // mean writing a resolved SECRET into execution history, exactly the
+        // leak the out-of-band delivery channel exists to prevent. What IS
+        // persisted alongside is an identity-only binding descriptor
+        // (`{key, source, variableId?, ownerScope?, version?}`), so history
+        // can answer "which variable fed this run" without carrying what it
+        // was worth.
+        parameters: buildExecutionParameters(parameters, parameterBindings),
         status: 'pending',
       })
       .returning({ id: scriptExecutions.id });
@@ -221,10 +308,15 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   let command: Awaited<ReturnType<typeof queueCommand>>;
   let stage: 'payload build' | 'queueCommand' = 'payload build';
   try {
-    // Payload build lives inside this guarded region (not after it) so a
-    // throw here — no-op today (no 'script' entry in
-    // SENSITIVE_PAYLOAD_FIELDS), but PR4 of #3409 adds one — also discards
-    // the pending execution row instead of orphaning it.
+    // Payload build lives inside this guarded region (not after it) so a seal
+    // failure — #3409 PR4a made the 'script' entry real — also discards the
+    // pending execution row instead of orphaning it.
+    //
+    // The secret envelope's AAD binds the command id, so the id must exist
+    // BEFORE encryption. Reserving it here (rather than reading it back from
+    // the insert) is what keeps encryption inside this guarded region.
+    // Inert until PR4c: nothing sets `secretEnv` yet, so this is a passthrough.
+    const reservedCommandId = randomUUID();
     payload = encryptSensitivePayloadFields('script', {
       scriptId: payloadScriptId,
       ...(executionId ? { executionId } : {}),
@@ -238,13 +330,19 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // Every ingress (route, mobile, automation, AI tools, script builder,
       // remediation suggestions) funnels through here, so this is the one
       // place that guarantees the wire form regardless of caller.
-      parameters: canonicalizeScriptParameters(parameters as Record<string, string | number | boolean>),
+      // #3409 PR3: the RESOLVED map (caller runtime values + server-resolved
+      // bound values) — the only place a resolved value is ever allowed to
+      // exist. For a script with no parameter definitions this is the
+      // caller's map unchanged, i.e. exactly PR2's behaviour.
+      parameters: canonicalizeScriptParameters(resolvedParameters),
       timeoutSeconds,
       runAs,
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
-    });
+    }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
-    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined);
+    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined, {
+      commandId: reservedCommandId,
+    });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
     throw err;
@@ -260,9 +358,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.agentId) {
     const claimed = await claimPendingCommandForDelivery(command.id);
     if (claimed) {
-      const deliverable = decryptCommandForDelivery({ id: command.id, type: 'script', payload });
+      const deliverable = decryptCommandForDelivery({
+        id: command.id,
+        type: 'script',
+        deviceId: device.id,
+        payload,
+      });
       const sent = deliverable
-        ? sendCommandToAgent(device.agentId, deliverable as { id: string; type: string; payload: Record<string, unknown> })
+        ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
         : false;
       if (sent) {
         delivered = true;
@@ -293,5 +396,68 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     }
   }
 
-  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt };
+  return { ok: true, commandId: command.id, executionId, delivered, deliveryOutcome, executedAt, ignoredParameters };
+}
+
+/**
+ * The value written to `script_executions.parameters` — the caller's raw
+ * parameters, plus the binding descriptors under a reserved `$bindings` key
+ * when there are any (#3409 PR3 P4).
+ *
+ * The descriptors ride INSIDE the existing jsonb rather than in a new sibling
+ * column because PR3 ships no migration: `script_executions` carries an
+ * `org_id`, so a new column would also have to be classified in
+ * `CORE_TENANT_EXPORT_POLICY` (the registration step this repo has shipped
+ * bugs on five times), and a `jsonb` column would land in `excludedOpen`
+ * anyway. `$` can never start a parameter name
+ * (`SCRIPT_PARAMETER_KEY_PATTERN`), so the reserved key cannot collide with a
+ * real one; when there are no bindings the stored value is byte-identical to
+ * what PR2 wrote.
+ */
+function buildExecutionParameters(
+  callerParameters: Record<string, unknown>,
+  bindings: ScriptParameterBindingDescriptor[],
+): Record<string, unknown> {
+  if (bindings.length === 0) return callerParameters;
+  return { ...callerParameters, [EXECUTION_PARAMETER_BINDINGS_KEY]: bindings };
+}
+
+/**
+ * Load the two builtin values that are not columns on the device row.
+ * `org.id`, `site.id` and `device.hostname` come off the widened device
+ * projection for free; only `org.name` / `site.name` cost a query, and
+ * {@link builtinNameContextNeeds} keeps both queries off the path for every
+ * script that doesn't bind them — which is all of them today.
+ *
+ * Runs in the caller's ambient DB context deliberately: the caller was
+ * already authorized to dispatch to this device, so an org-scoped request
+ * transaction can read its own org/site, and the system-context callers
+ * (automation worker, AI tools) are unconstrained. No context escape is
+ * needed or wanted here.
+ */
+async function loadBuiltinNameContext(
+  definitions: unknown,
+  device: Pick<typeof devices.$inferSelect, 'orgId' | 'siteId'>,
+): Promise<SourcedParameterNameContext> {
+  const needs = builtinNameContextNeeds(definitions);
+  if (!needs.orgName && !needs.siteName) return {};
+
+  const context: SourcedParameterNameContext = {};
+  if (needs.orgName) {
+    const [org] = await db
+      .select({ name: organizations.name })
+      .from(organizations)
+      .where(eq(organizations.id, device.orgId))
+      .limit(1);
+    context.orgName = org?.name ?? null;
+  }
+  if (needs.siteName && device.siteId) {
+    const [site] = await db
+      .select({ name: sites.name })
+      .from(sites)
+      .where(eq(sites.id, device.siteId))
+      .limit(1);
+    context.siteName = site?.name ?? null;
+  }
+  return context;
 }

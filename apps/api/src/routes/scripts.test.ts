@@ -1013,6 +1013,7 @@ describe('scripts routes', () => {
           code: 'unresolved_variables',
           error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
         }],
+        ignoredParameters: [],
         status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
@@ -1049,6 +1050,7 @@ describe('scripts routes', () => {
           commandId: 'cmd-1',
         }],
         failures: [],
+        ignoredParameters: [],
         status: 'queued',
         triggerType: 'manual',
         runAs: 'system',
@@ -1063,6 +1065,104 @@ describe('scripts routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.failures).toBeUndefined();
+    });
+  });
+
+  // #3409 PR3 §2.2: a caller-supplied value for a parameter BOUND to a source
+  // (tenantVariable / deviceCustomField / builtin) is ignored — the binding
+  // wins — rather than 400'd, so a stored automation cannot be broken by a
+  // script author flipping a parameter to bound. That makes the ignore
+  // otherwise SILENT, which is why it has to reach both the response body and
+  // the audit trail.
+  describe('ignored bound parameters on execute (#3409 PR3)', () => {
+    const executeWithParameters = (parameters: Record<string, unknown>) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({
+        deviceIds: ['11111111-1111-1111-1111-111111111111'],
+        parameters,
+      }),
+    });
+
+    const okResultWithIgnored = (ignoredParameters: string[]) => ({
+      ok: true,
+      batchId: null,
+      batchIds: [],
+      scriptId: SCRIPT_ID_1,
+      script: { id: SCRIPT_ID_1, name: 'Script One' },
+      devicesTargeted: 1,
+      maintenanceSuppressedDeviceIds: [],
+      executions: [{
+        executionId: 'exec-1',
+        deviceId: '11111111-1111-1111-1111-111111111111',
+        commandId: 'cmd-1',
+      }],
+      failures: [],
+      ignoredParameters,
+      status: 'queued' as const,
+      triggerType: 'manual' as const,
+      runAs: 'system',
+      auditOrgId: ORG_ID,
+    });
+
+    it('returns the ignored bound keys on the 201 body', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored(['api_key', 'site_code']));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ api_key: 'caller-supplied', site_code: 'caller-supplied' }),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.ignoredParameters).toEqual(['api_key', 'site_code']);
+      // The run still succeeded — ignoring is not failing.
+      expect(body.executions).toHaveLength(1);
+      expect(body.failures).toBeUndefined();
+    });
+
+    it('audits the ignored KEYS (and no values) under a dedicated details field', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored(['api_key']));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ api_key: 's3cret-value-the-caller-sent' }),
+      );
+
+      expect(res.status).toBe(201);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'script.execute',
+          details: expect.objectContaining({ ignoredParameterKeys: ['api_key'] }),
+        }),
+      );
+      // Keys only: whatever the caller sent under a bound key must never land
+      // in an audit row, which is long-lived and widely readable.
+      const auditDetails = vi.mocked(writeRouteAudit).mock.calls.at(-1)?.[1].details ?? {};
+      expect(JSON.stringify(auditDetails)).not.toContain('s3cret-value-the-caller-sent');
+    });
+
+    it('omits ignoredParameters entirely on a clean run', async () => {
+      executeScriptOnDevicesMock.mockResolvedValueOnce(okResultWithIgnored([]));
+
+      const res = await app.request(
+        `/scripts/${SCRIPT_ID_1}/execute`,
+        executeWithParameters({ runtime_param: 'value' }),
+      );
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      // ABSENT, not an empty array — the common clean-run shape is unchanged,
+      // so a client can treat presence alone as "warn the user".
+      expect(body.ignoredParameters).toBeUndefined();
+      expect('ignoredParameters' in body).toBe(false);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          details: expect.objectContaining({ ignoredParameterKeys: [] }),
+        }),
+      );
     });
   });
 
@@ -1944,6 +2044,140 @@ describe('scripts routes', () => {
       expect(res.status).toBe(404);
       // No audit row written for a write that didn't happen.
       expect(vi.mocked(writeRouteAudit)).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Parameter DEFINITION validation + version bump (#3409 PR3)
+  // -------------------------------------------------------------------
+  // `parameters` was `z.any()` on both create and update, so definitions
+  // reached jsonb entirely unchecked; and `version` only tracked content, so
+  // a parameter rename or a source rebinding was invisible to anything
+  // pinning the version.
+  describe('parameter definitions + version bump', () => {
+    function mockCreateInsert(): void {
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'P', orgId: ORG_ID }]),
+        }),
+      } as any);
+    }
+
+    /** Mock the PUT read + capture what `.set()` receives. */
+    function mockUpdate(stored: Record<string, unknown>): { set: ReturnType<typeof vi.fn> } {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              { id: SCRIPT_ID_1, name: 'S', content: 'echo hi', version: 7, isSystem: false, orgId: ORG_ID, ...stored },
+            ]),
+          }),
+        }),
+      } as any);
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'S' }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return { set };
+    }
+
+    const put = (body: unknown) =>
+      app.request(`/scripts/${SCRIPT_ID_1}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify(body),
+      });
+
+    const post = (parameters: unknown) =>
+      app.request('/scripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'P', osTypes: ['linux'], language: 'bash', content: 'echo hi', parameters }),
+      });
+
+    it('accepts a legacy definition with no source on create', async () => {
+      mockCreateInsert();
+      expect((await post([{ name: 'target', type: 'string' }])).status).toBe(201);
+    });
+
+    it('accepts every bound source on create', async () => {
+      mockCreateInsert();
+      const res = await post([
+        { name: 'apiKey', type: 'string', source: 'tenantVariable', variableKey: 'vendor_api_key' },
+        { name: 'assetTag', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+        { name: 'orgName', type: 'string', source: 'builtin', builtinKey: 'org.name' },
+      ]);
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects a definition whose name could not become an env var', async () => {
+      expect((await post([{ name: 'has space', type: 'string' }])).status).toBe(400);
+    });
+
+    it('rejects a bound definition missing its binding key', async () => {
+      expect((await post([{ name: 'x', type: 'string', source: 'tenantVariable' }])).status).toBe(400);
+    });
+
+    it('rejects two names that collide as one BREEZE_PARAM_* env var', async () => {
+      // Previously accepted, with a nondeterministic winner per run.
+      expect((await post([{ name: 'log-level', type: 'string' }, { name: 'log_level', type: 'string' }])).status).toBe(400);
+    });
+
+    it('rejects a non-array parameters value', async () => {
+      expect((await post({ notAnArray: true })).status).toBe(400);
+    });
+
+    it('bumps version when a parameter definition changes', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      expect((await put({ parameters: [{ name: 'a', type: 'number' }] })).status).toBe(200);
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('bumps version when a parameter is rebound to a tenant variable', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ parameters: [{ name: 'a', type: 'string', source: 'tenantVariable', variableKey: 'api_key' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('bumps version when a parameter is added', async () => {
+      const { set } = mockUpdate({ parameters: [] });
+      await put({ parameters: [{ name: 'a', type: 'string' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('does NOT bump version when the definitions are unchanged', async () => {
+      // The stored row is in the LEGACY shape (no `source`, no `required`)
+      // while the request carries the schema's materialized defaults. Comparing
+      // raw would report a change on every save of an untouched script.
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ parameters: [{ name: 'a', type: 'string', required: false, source: 'runtime' }] });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version');
+    });
+
+    it('does NOT bump version when parameters are omitted entirely', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ name: 'Renamed' });
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('version');
+    });
+
+    it('bumps version exactly once when content and parameters both change', async () => {
+      const { set } = mockUpdate({ parameters: [{ name: 'a', type: 'string' }] });
+      await put({ content: 'echo bye', parameters: [{ name: 'b', type: 'string' }] });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('still bumps version for a content-only change', async () => {
+      const { set } = mockUpdate({});
+      await put({ content: 'echo bye' });
+      expect(set.mock.calls[0]![0]).toMatchObject({ version: 8 });
+    });
+
+    it('rejects a colliding definition on update', async () => {
+      mockUpdate({});
+      const res = await put({ parameters: [{ name: 'logLevel', type: 'string' }, { name: 'LOGLEVEL', type: 'string' }] });
+      expect(res.status).toBe(400);
     });
   });
 });

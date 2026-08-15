@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import PDFDocument from 'pdfkit';
-import { parseRichText, renderRichTextIntoPdf } from './richTextPdf';
+import { parseRichText, renderRichTextIntoPdf, measureRichText, measureInlineRuns, type BodyFonts } from './richTextPdf';
+import { registerThemeFonts } from './documentThemes';
 
 describe('parseRichText', () => {
   it('splits paragraphs and inline formatting runs', () => {
@@ -177,5 +178,157 @@ describe('renderRichTextIntoPdf', () => {
     // y=200 — the renderer must call ensureRoom often enough (and reserve
     // enough per block) for at least one page break to actually fire.
     expect(pageAdds).toBeGreaterThan(0);
+  });
+});
+
+describe('measureRichText', () => {
+  // Long enough, at a narrow width, that bold's wider glyphs push it onto more
+  // wrapped lines than the same text would take set in the regular face.
+  const LONG_TEXT =
+    'The quick brown fox jumps over the lazy dog and then keeps running through the proposal terms section without stopping for quite a while.';
+  const NARROW_WIDTH = 160;
+
+  it('measures a bold-heavy string at its actual (wider) bold glyphs — taller-or-equal vs a flattened single-font measurement', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const boldHtml = `<p><strong>${LONG_TEXT}</strong></p>`;
+
+    const perRunHeight = measureRichText(doc, boldHtml, NARROW_WIDTH);
+
+    // Flattened single-font measurement: same text, same width, but measured
+    // in the regular (narrower) face — what a naive "ignore run fonts" measurer
+    // would produce.
+    doc.font('Helvetica').fontSize(11);
+    const flattenedHeight = doc.heightOfString(LONG_TEXT, { width: NARROW_WIDTH });
+
+    expect(perRunHeight).toBeGreaterThanOrEqual(flattenedHeight);
+  });
+
+  it('is deterministic across repeated calls', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const html = `<p>plain <strong>bold</strong> and <em>italic</em> text mixed together for measurement.</p>`;
+
+    const first = measureRichText(doc, html, 250);
+    const second = measureRichText(doc, html, 250);
+
+    expect(first).toBe(second);
+  });
+
+  it('restores the doc font state (font name + size) after measuring', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica').fontSize(9);
+    const before = doc as unknown as { _font: { name: string }; _fontSize: number };
+    const beforeFontName = before._font.name;
+    const beforeFontSize = before._fontSize;
+
+    measureRichText(doc, `<p><strong>${LONG_TEXT}</strong></p>`, NARROW_WIDTH);
+
+    const after = doc as unknown as { _font: { name: string }; _fontSize: number };
+    expect(after._font.name).toBe(beforeFontName);
+    expect(after._fontSize).toBe(beforeFontSize);
+  });
+
+  it('returns 0 for empty/whitespace input', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    expect(measureRichText(doc, '', 300)).toBe(0);
+  });
+
+  it('never under-measures a forced-bold (h3) block when the "bold" face has taller line metrics than the regular face', () => {
+    // Regression: measureBlockHeight used to charge line height from
+    // fonts.regular unconditionally, even for h3 blocks (forceBold: true)
+    // that ALWAYS draw in fonts.bold. Uses real condensed-theme font files
+    // registered via registerThemeFonts on a real PDFDocument (not mocked) —
+    // but note DM Sans's own Regular/Bold weights (Doc-Body/Doc-Body-Bold)
+    // turn out to share IDENTICAL vertical metrics in the vendored files
+    // (verified empirically), so this fixture pairs Doc-Body (body regular)
+    // against Doc-Heading (Barlow Condensed SemiBold) as the "bold" slot —
+    // two genuinely distinct real font files with different line heights —
+    // to actually exercise the divergent-metrics path the bug affected.
+    // (Doc-Heading/Barlow Condensed measures SHORTER than Doc-Body/DM Sans at
+    // the same font size, so it's assigned to `regular` here and DM Sans to
+    // `bold` — this is what makes the "bold" face the TALLER one, which is
+    // the direction that actually reproduces the under-measurement bug.)
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const theme = registerThemeFonts(doc, 'condensed');
+    const fonts: BodyFonts = {
+      regular: theme.heading.regular,
+      bold: theme.body.regular,
+      italic: theme.body.italic,
+      boldItalic: theme.body.boldItalic,
+    };
+
+    doc.font(fonts.regular).fontSize(13); // h3 fontSize per styleFor
+    const regularLineHeight = doc.currentLineHeight(true);
+    doc.font(fonts.bold).fontSize(13);
+    const boldLineHeight = doc.currentLineHeight(true);
+    // Sanity: the two faces really do have different line metrics — otherwise
+    // this test can't distinguish the bug from the fix.
+    expect(boldLineHeight).not.toBe(regularLineHeight);
+
+    const heading = measureRichText(doc, '<h3>Scope of Engagement</h3>', 400, fonts);
+
+    // A single short h3 wraps to exactly one line — measured height must be
+    // at least that one line charged at the BOLD face's own line height
+    // (never the regular face's, since h3 always draws bold).
+    expect(heading).toBeGreaterThanOrEqual(boldLineHeight);
+    // The old bug would have returned exactly regularLineHeight here whenever
+    // regular < bold — assert we're strictly past that under-measurement.
+    if (boldLineHeight > regularLineHeight) {
+      expect(heading).toBeGreaterThan(regularLineHeight);
+    }
+  });
+
+  it('measures a mixed bold paragraph with themed fonts >= the same content measured all-regular', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const fonts = registerThemeFonts(doc, 'condensed');
+
+    const mixedHtml = '<p>Plain lead-in text followed by <strong>a bold clause that matters</strong> and more plain text after it.</p>';
+    const plainHtml = '<p>Plain lead-in text followed by a bold clause that matters and more plain text after it.</p>';
+
+    const mixed = measureRichText(doc, mixedHtml, 300, fonts.body);
+    const allRegular = measureRichText(doc, plainHtml, 300, fonts.body);
+
+    expect(mixed).toBeGreaterThanOrEqual(allRegular);
+  });
+});
+
+describe('measureInlineRuns', () => {
+  const LONG_TEXT =
+    'The quick brown fox jumps over the lazy dog and then keeps running through the proposal terms section without stopping for quite a while.';
+  const NARROW_WIDTH = 140;
+
+  it('measures a bold-heavy inline-runs string taller-or-equal vs a flattened single-font measurement at narrow width', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const boldHtml = `<strong>${LONG_TEXT}</strong>`;
+
+    const perRunHeight = measureInlineRuns(doc, boldHtml, NARROW_WIDTH, 10);
+
+    doc.font('Helvetica').fontSize(10);
+    const flattenedHeight = doc.heightOfString(LONG_TEXT, { width: NARROW_WIDTH });
+
+    expect(perRunHeight).toBeGreaterThanOrEqual(flattenedHeight);
+  });
+
+  it('is deterministic across repeated calls', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const html = 'plain <strong>bold</strong> and <em>italic</em> text for a table cell.';
+
+    const first = measureInlineRuns(doc, html, 200, 10);
+    const second = measureInlineRuns(doc, html, 200, 10);
+
+    expect(first).toBe(second);
+  });
+
+  it('restores the doc font state (font name + size) after measuring', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.font('Helvetica').fontSize(9);
+    const before = doc as unknown as { _font: { name: string }; _fontSize: number };
+    const beforeFontName = before._font.name;
+    const beforeFontSize = before._fontSize;
+
+    measureInlineRuns(doc, `<strong>${LONG_TEXT}</strong>`, NARROW_WIDTH, 10);
+
+    const after = doc as unknown as { _font: { name: string }; _fontSize: number };
+    expect(after._font.name).toBe(beforeFontName);
+    expect(after._fontSize).toBe(beforeFontSize);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeRichTextHtml } from './richTextSanitize';
+import { sanitizeRichTextHtml, sanitizeInlineRichText } from './richTextSanitize';
 
 describe('sanitizeRichTextHtml', () => {
   it('preserves the allowed subset', () => {
@@ -26,5 +26,16 @@ describe('sanitizeRichTextHtml', () => {
     // not survive as an href, and must not receive the forced rel/target either.
     expect(sanitizeRichTextHtml('<a href="//evil.example">x</a>')).toBe('<a>x</a>');
     expect(sanitizeRichTextHtml('<a href="//evil.example/path?q=1">x</a>')).toBe('<a>x</a>');
+  });
+});
+
+describe('sanitizeInlineRichText', () => {
+  it('keeps inline marks, strips block tags', () => {
+    expect(sanitizeInlineRichText('<strong>a</strong> <em>b</em><br><u>c</u>')).toBe('<strong>a</strong> <em>b</em><br /><u>c</u>');
+    expect(sanitizeInlineRichText('<p>x</p><ul><li>y</li></ul><table><tr><td>z</td></tr></table>')).toBe('xyz');
+  });
+  it('applies the hardened link rules', () => {
+    expect(sanitizeInlineRichText('<a href="javascript:alert(1)">x</a>')).not.toContain('javascript');
+    expect(sanitizeInlineRichText('<a href="https://a.b">x</a>')).toContain('rel="noopener noreferrer"');
   });
 });

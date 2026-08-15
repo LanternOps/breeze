@@ -862,6 +862,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "Nome DNS VPN",
+    "vpnState": "Stato",
+    "vpnConnected": "Connesso",
+    "vpnDisconnected": "Disconnesso",
     "detectionSource": "Origine rilevamento",
     "agent": "Agent",
     "agentVersion": "Versione agent",
@@ -1043,6 +1046,7 @@
     "filterByVpn": "Filtra per VPN",
     "allVpn": "Tutte le VPN",
     "anyActiveVpn": "Qualsiasi VPN attiva",
+    "vpnDisconnected": "disconnesso",
     "off": "disattivato",
     "on": "attivo",
     "multiBootMachinesTuckExpectedOffline": "Macchine multi-boot: mostra i profili di avvio offline previsti sotto il relativo dispositivo online come strisce sottili. Disattivato = elenco piatto.",
@@ -1250,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Questa organizzazione non ha approvato {{name}}. Approva la patch prima di installarla.",
+    "installPatchUserScopeTitle": "{{name}} è installato nel profilo dell'utente connesso. Le app per utente non possono ancora essere aggiornate dal contesto di sistema.",
     "installPatchTitle": "Installa {{name}}",
     "loading": "Caricamento stato patch...",
     "notDownloadedTitle": "Non ancora scaricata -- l'installazione richiederà più tempo",
@@ -1267,6 +1272,9 @@
       "queued": "{{label}} accodato",
       "queuedDetail": "{{label}} accodato{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Per utente",
+    "perUserBadgeTitle": "Installato nel profilo dell'utente connesso; non può ancora essere applicato dal contesto di sistema",
+    "perUserNotScanned": "Le app per utente non sono state analizzate (nessuna sessione utente interattiva) — alcuni aggiornamenti per utente potrebbero mancare.",
     "rebootRequired": "Riavvio richiesto",
     "table": {
       "approval": "Approvazione",
@@ -2229,6 +2237,7 @@
     },
     "generalCategory": "Generale",
     "paramCount": "{{count}} parametri",
+    "boundParamCount": "{{count}} automatici",
     "runAs": {
       "system": "Esegui come: System",
       "user": "Esegui come: utente connesso"

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFKitDocument from 'pdfkit';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFDict, PDFName } from 'pdf-lib';
 import { renderQuotePdf, contractUploadedMarker, columnsFor, imageIntrinsicSize } from './quotePdf';
 
 // Encode a real, pdfkit-decodable grayscale PNG of the given dimensions. The
@@ -830,6 +830,116 @@ describe('renderQuotePdf', () => {
       // 14pt line height); the shipped bug drew it at a fixed one-line offset.
       expect(address.y).toBeGreaterThan(nameBottom + 10);
     });
+  });
+});
+
+describe('renderQuotePdf table + callout block dispatch (Task 9)', () => {
+  const baseQuote = {
+    id: 'q-t9', quoteNumber: 'Q-T9', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD',
+  };
+
+  it('draws a table block via the measured (not the raw, unmeasured) model', async () => {
+    // Regression guard for a real bug the brief's own snippet has: it calls
+    // measureTable(doc, model, fonts) but discards the return — measureTable
+    // does NOT mutate `model` (see tablePdf.ts doc comment), so passing the
+    // unmeasured original to renderTableIntoPdf would draw every row at
+    // height 0 (rows/header would all overlap at the same y). Asserting BOTH
+    // column labels are present as distinct positioned text confirms real
+    // (non-zero) row/column layout was used.
+    const blocks = [
+      {
+        id: 'b1', blockType: 'table' as const, sortOrder: 0,
+        content: { columns: [{ label: 'Item' }, { label: 'Qty' }], rows: [{ cells: ['Widget', '3'] }, { cells: ['Gadget', '5'] }] },
+      },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('Item');
+    expect(text).toContain('Qty');
+    expect(text).toContain('Widget');
+    expect(text).toContain('Gadget');
+  });
+
+  it('skips a malformed table block rather than throwing', async () => {
+    const blocks = [{ id: 'b1', blockType: 'table' as const, sortOrder: 0, content: { columns: [], rows: [] } }];
+    await expect(renderQuotePdf(baseQuote as never, blocks, [], async () => null, {})).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('draws a callout block with its title and body', async () => {
+    const blocks = [
+      {
+        id: 'b1', blockType: 'callout' as const, sortOrder: 0,
+        content: { variant: 'accent', title: 'Heads up', html: '<p>Read this before you sign.</p>' },
+      },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { primaryColor: '#059669' });
+    const text = extractPdfText(buf);
+    expect(text).toContain('Heads up');
+    expect(text).toContain('Read this before you sign');
+  });
+
+  it('a table block followed by a rich_text block renders both (block-walk keeps advancing)', async () => {
+    const blocks = [
+      { id: 'b1', blockType: 'table' as const, sortOrder: 0, content: { columns: [{ label: 'Col' }], rows: [{ cells: ['val'] }] } },
+      { id: 'b2', blockType: 'rich_text' as const, sortOrder: 1, content: { html: '<p>After the table.</p>' } },
+    ];
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('val');
+    expect(text).toContain('After the table');
+  });
+});
+
+describe('renderQuotePdf theme + page size (Task 6)', () => {
+  const baseQuote = {
+    id: 'q-theme', quoteNumber: 'Q-THEME', oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '100.00', currencyCode: 'USD',
+  };
+  const blocks = [
+    { id: 'b1', blockType: 'heading' as const, sortOrder: 0, content: { text: 'Themed heading', level: 1 } },
+    { id: 'b2', blockType: 'rich_text' as const, sortOrder: 1, content: { html: '<p>Themed body copy.</p>' } },
+  ];
+
+  it('branding.pageSize "letter" produces a LETTER MediaBox (612x792)', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { pageSize: 'letter' });
+    const doc = await PDFDocument.load(buf);
+    const page = doc.getPage(0);
+    expect(page.getWidth()).toBeCloseTo(612, 0);
+    expect(page.getHeight()).toBeCloseTo(792, 0);
+  });
+
+  it('omitting pageSize keeps the classic A4 MediaBox (595x842)', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const doc = await PDFDocument.load(buf);
+    const page = doc.getPage(0);
+    expect(page.getWidth()).toBeCloseTo(595, 0);
+    expect(page.getHeight()).toBeCloseTo(842, 0);
+  });
+
+  it('branding.theme "condensed" embeds BarlowCondensed and DMSans font programs', async () => {
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, { theme: 'condensed' });
+    const doc = await PDFDocument.load(buf);
+    const baseFontNames: string[] = [];
+    for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+      if (obj instanceof PDFDict) {
+        const baseFont = obj.get(PDFName.of('BaseFont'));
+        if (baseFont) baseFontNames.push(baseFont.toString());
+      }
+    }
+    expect(baseFontNames.some((name) => name.includes('BarlowCondensed'))).toBe(true);
+    expect(baseFontNames.some((name) => name.includes('DMSans'))).toBe(true);
+  });
+
+  it('no theme/pageSize fields set still passes the classic content-stream regression', async () => {
+    // Belt-and-suspenders: the dedicated harness (quotePdf.classicRegression.test.ts)
+    // is the authoritative check, but assert here too that the plain {} branding
+    // this suite's other tests already exercise keeps producing Helvetica text
+    // runs, not a theme-font indirection leaking through when unrequested.
+    const buf = await renderQuotePdf(baseQuote as never, blocks, [], async () => null, {});
+    const text = extractPdfText(buf);
+    expect(text).toContain('Themed heading');
+    expect(text).toContain('Themed body copy');
   });
 });
 

@@ -28,7 +28,9 @@ const namespaceDuplicateBaselines = {
     // pt-BR (same cognate already accepted for document.totals.subtotal).
     // +3: order breakdown — "SKU" is a locale-invariant acronym, and "Item" /
     // "{{count}} item" spell identically to English in pt-BR.
-    'billing.json': 50,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 51,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -76,7 +78,9 @@ const namespaceDuplicateBaselines = {
     // +1: liveTotals "Total" — spells identically to English in es-419 (same
     // cognate already accepted for document.totals.firstPeriodTotal's root word).
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
-    'billing.json': 40,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 41,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -130,7 +134,9 @@ const namespaceDuplicateBaselines = {
     // +1: liveTotals "Total" — spells identically to English in fr-FR (same
     // cognate already accepted for document.totals.firstPeriodTotal's root word).
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
-    'billing.json': 51,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 52,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -181,7 +187,9 @@ const namespaceDuplicateBaselines = {
     // in fr-FR), and unassigned.qtyPrice "{{qty}} × {{price}}" is two
     // interpolations plus a multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
-    'billing.json': 51,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 52,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -233,7 +241,9 @@ const namespaceDuplicateBaselines = {
     // placeholder are locale-invariant.
     // +2: order breakdown — "SKU" is a locale-invariant acronym and "Markup" is
     // the loanword the quote editor already uses in de-DE.
-    'billing.json': 37,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 38,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -274,7 +284,9 @@ const namespaceDuplicateBaselines = {
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
     // multiplication sign with no wording to translate.
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
-    'billing.json': 31,
+    // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
+    // ISO 216 paper size code, identical in every catalog.
+    'billing.json': 32,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats

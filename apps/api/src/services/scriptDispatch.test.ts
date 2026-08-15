@@ -10,6 +10,11 @@ vi.mock('./commandDispatch', () => ({
 vi.mock('./sensitiveCommandPayload', () => ({
   encryptSensitivePayloadFields: vi.fn((_t: string, p: unknown) => p),
   decryptCommandForDelivery: vi.fn((c: unknown) => c),
+  toAgentCommandFrame: vi.fn((c: { id: string; type: string; payload: unknown }) => ({
+    id: c.id,
+    type: c.type,
+    payload: c.payload,
+  })),
 }));
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -29,8 +34,13 @@ const savedScript = (o = {}) => ({
   timeoutSeconds: 60, runAs: 'system', deletedAt: null, ...o,
 }) as any;
 
+// hostname/siteId/customFields joined the projection in #3409 PR3 P3 and are
+// read by the sourced-parameter resolver (the `builtin` and
+// `deviceCustomField` sources) — see the sourced-parameters describe block
+// at the bottom of this file.
 const device = (o = {}) => ({
-  id: 'device-1', orgId: 'org-a', osType: 'linux', status: 'online', agentId: null, ...o,
+  id: 'device-1', orgId: 'org-a', osType: 'linux', status: 'online', agentId: null,
+  hostname: 'host-1', siteId: 'site-1', customFields: { assetTag: 'A-1' }, ...o,
 }) as any;
 
 // #3409 PR2 Task 4: builds a TenantVariableScope directly, bypassing
@@ -43,7 +53,7 @@ const device = (o = {}) => ({
 // exactly (orgIds + byOrg); TenantVariableScope itself only declares
 // `orgIds`, so this is cast through `unknown`.
 const resolvedVar = (key: string, value: string, isSecret = false): ResolvedVariable => ({
-  key, value, isSecret, variableId: `var-${key}`, version: 1,
+  key, value, isSecret, variableId: `var-${key}`, version: 1, ownerScope: 'organization',
 });
 
 const buildScope = (orgId: string, vars: ResolvedVariable[] = []): TenantVariableScope => ({
@@ -269,9 +279,28 @@ describe('dispatchScriptToDevice — rows and payload', () => {
 
   it('runs the payload through encryptSensitivePayloadFields before queueCommand', async () => {
     await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
-    expect(encryptSensitivePayloadFields).toHaveBeenCalledWith('script', expect.any(Object));
+    expect(encryptSensitivePayloadFields).toHaveBeenCalledWith(
+      'script',
+      expect.any(Object),
+      // #3409 PR4a: the secret envelope's AAD binds the command id, so the id
+      // is reserved BEFORE encryption and reused for the insert.
+      { commandId: expect.any(String), deviceId: device().id },
+    );
     expect(vi.mocked(encryptSensitivePayloadFields).mock.invocationCallOrder[0]!)
       .toBeLessThan(vi.mocked(queueCommand).mock.invocationCallOrder[0]!);
+  });
+
+  it('reserves ONE command id and uses it for both the AAD and the insert', async () => {
+    // A mismatch here would make every sealed envelope un-openable at delivery.
+    await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
+    const encryptCtx = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![2] as
+      | { commandId: string; deviceId: string }
+      | undefined;
+    const queueOptions = vi.mocked(queueCommand).mock.calls[0]![4] as
+      | { commandId?: string }
+      | undefined;
+    expect(encryptCtx?.commandId).toBeTruthy();
+    expect(queueOptions?.commandId).toBe(encryptCtx?.commandId);
   });
 
   it('input runAs/timeoutSeconds override script defaults', async () => {
@@ -536,5 +565,285 @@ describe('dispatchScriptToDevice — {{var.*}} resolution', () => {
     expect(r.ok).toBe(true);
     const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
     expect((payload as Record<string, unknown>).content).toBe('curl {{var.repo_url}}');
+  });
+});
+
+// #3409 PR3: sourced-parameter resolution at the dispatch chokepoint.
+describe('dispatchScriptToDevice — sourced parameters', () => {
+  const scriptWithParams = (parameters: unknown[], overrides = {}) =>
+    savedScript({ parameters, ...overrides });
+
+  const payloadParameters = () => {
+    const [, , payload] = vi.mocked(queueCommand).mock.calls[0]!;
+    return (payload as Record<string, unknown>).parameters;
+  };
+
+  const executionParameters = () =>
+    vi.mocked(db.insert).mock.results[0]!.value.values.mock.calls[0]![0].parameters;
+
+  it('pre-fills a bound parameter from the device row and drops the caller override', async () => {
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'host', type: 'string', source: 'builtin', builtinKey: 'device.hostname' },
+          { name: 'level', type: 'string', source: 'runtime' },
+        ]),
+      },
+      parameters: { host: 'caller-tried-this', level: 'debug' },
+    });
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.ignoredParameters).toEqual(['host']);
+    expect(payloadParameters()).toEqual({ host: 'host-1', level: 'debug' });
+    expect(JSON.stringify(payloadParameters())).not.toContain('caller-tried-this');
+  });
+
+  it('resolves a tenantVariable-bound parameter from the preloaded scope', async () => {
+    const scope = buildScope('org-a', [resolvedVar('api_token', 'tok-123')]);
+    await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+      variableScope: scope,
+    });
+
+    expect(payloadParameters()).toEqual({ token: 'tok-123' });
+  });
+
+  it('fails the device with unresolved_parameters — DISTINCT from unresolved_variables', async () => {
+    const scope = buildScope('org-a', []);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', required: true, source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+      variableScope: scope,
+    });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('unresolved_parameters');
+      expect(r.code).not.toBe('unresolved_variables');
+      expect(r.error).toContain('token');
+    }
+  });
+
+  // Same rule PR2 established for content substitution: resolution runs
+  // BEFORE the insert, so a failing device leaves no orphan 'pending' row.
+  it('leaves no orphan execution row when a device fails resolution', async () => {
+    const scope = buildScope('org-a', []);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', required: true, source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+      variableScope: scope,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
+  });
+
+  it('fails the device when a bound parameter targets a SECRET tenant variable', async () => {
+    const SECRET_VALUE = 'sup3r-s3cret-xyz';
+    const scope = buildScope('org-a', [resolvedVar('api_token', SECRET_VALUE, true)]);
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          // A default IS present — the denial must not fall back to it.
+          { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token', defaultValue: 'the-default' },
+        ]),
+      },
+      parameters: { token: 'caller-supplied' },
+      variableScope: scope,
+    });
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe('unresolved_parameters');
+      expect(r.error).toMatch(/secret/i);
+    }
+    expect(queueCommand).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(queueCommand).mock.calls)).not.toContain(SECRET_VALUE);
+  });
+
+  it('requires a variableScope only for a tenantVariable binding, not for the other sources', async () => {
+    const r = await dispatchScriptToDevice({
+      device: device({ customFields: { asset_tag: 'A-1' } }),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'lic', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+        ]),
+      },
+      // deliberately no variableScope — must not throw
+    });
+
+    expect(r.ok).toBe(true);
+    expect(payloadParameters()).toEqual({ lic: 'A-1' });
+  });
+
+  it('throws when a tenantVariable binding is dispatched with no scope (call-site bug)', async () => {
+    await expect(dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: scriptWithParams([
+          { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' },
+        ]),
+      },
+    })).rejects.toThrow(/variableScope is required/i);
+  });
+
+  it('skips resolution entirely for a raw execute_command source', async () => {
+    const r = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'raw', content: 'ipconfig', language: 'powershell', provenance: 'automation:auto-1' },
+      parameters: { anything: 'kept' },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(payloadParameters()).toEqual({ anything: 'kept' });
+  });
+
+  it('leaves a script with no parameter definitions byte-identical to PR2 behaviour', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'saved', script: savedScript() },
+      parameters: { a: '1' },
+    });
+
+    expect(payloadParameters()).toEqual({ a: '1' });
+    expect(executionParameters()).toEqual({ a: '1' });
+  });
+
+  // Plan §3 P4 — the persistence rule.
+  describe('P4: resolved values never enter script_executions.parameters', () => {
+    it('stores the CALLER parameters plus an identity-only $bindings descriptor', async () => {
+      const scope = buildScope('org-a', [resolvedVar('api_token', 'tok-123')]);
+      await dispatchScriptToDevice({
+        device: device(),
+        source: {
+          kind: 'saved',
+          script: scriptWithParams([
+            { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' },
+            { name: 'level', type: 'string', source: 'runtime' },
+          ]),
+        },
+        parameters: { level: 'debug' },
+        variableScope: scope,
+      });
+
+      const stored = executionParameters();
+      expect(stored).toEqual({
+        level: 'debug',
+        $bindings: [
+          { key: 'token', source: 'tenantVariable', variableId: 'var-api_token', ownerScope: 'organization', version: 1 },
+        ],
+      });
+      // The resolved value exists ONLY in the command payload.
+      expect(JSON.stringify(stored)).not.toContain('tok-123');
+      expect(payloadParameters()).toMatchObject({ token: 'tok-123' });
+    });
+
+    it('does not add a $bindings key when the script has no bound parameters', async () => {
+      await dispatchScriptToDevice({
+        device: device(),
+        source: {
+          kind: 'saved',
+          script: scriptWithParams([{ name: 'level', type: 'string', source: 'runtime' }]),
+        },
+        parameters: { level: 'debug' },
+      });
+
+      expect(executionParameters()).toEqual({ level: 'debug' });
+      expect(executionParameters()).not.toHaveProperty('$bindings');
+    });
+
+    it('never persists a builtin- or custom-field-resolved value either', async () => {
+      await dispatchScriptToDevice({
+        device: device({ customFields: { asset_tag: 'A-1' } }),
+        source: {
+          kind: 'saved',
+          script: scriptWithParams([
+            { name: 'host', type: 'string', source: 'builtin', builtinKey: 'device.hostname' },
+            { name: 'lic', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+          ]),
+        },
+      });
+
+      const stored = executionParameters();
+      expect(stored).toEqual({
+        $bindings: [
+          { key: 'host', source: 'builtin' },
+          { key: 'lic', source: 'deviceCustomField' },
+        ],
+      });
+      expect(JSON.stringify(stored)).not.toContain('host-1');
+      expect(JSON.stringify(stored)).not.toContain('A-1');
+    });
+  });
+
+  describe('builtin name lookups', () => {
+    // `loadBuiltinNameContext` is the only db.select this codepath makes
+    // (requireOnline is off in these tests), so one chain models both.
+    const mockNameSelect = (rows: unknown[]) => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        }),
+      } as any);
+    };
+
+    it('looks up org.name / site.name and resolves them', async () => {
+      mockNameSelect([{ name: 'Acme Corp' }]);
+      await dispatchScriptToDevice({
+        device: device(),
+        source: {
+          kind: 'saved',
+          script: scriptWithParams([
+            { name: 'org_name', type: 'string', source: 'builtin', builtinKey: 'org.name' },
+            { name: 'site_name', type: 'string', source: 'builtin', builtinKey: 'site.name' },
+          ]),
+        },
+      });
+
+      expect(db.select).toHaveBeenCalledTimes(2); // one org query, one site query
+      expect(payloadParameters()).toEqual({ org_name: 'Acme Corp', site_name: 'Acme Corp' });
+    });
+
+    // The two name queries are the only per-device cost this feature adds;
+    // a script that binds no NAME builtin must not pay it.
+    it('issues NO lookup for the id/hostname builtins', async () => {
+      await dispatchScriptToDevice({
+        device: device(),
+        source: {
+          kind: 'saved',
+          script: scriptWithParams([
+            { name: 'org_id', type: 'string', source: 'builtin', builtinKey: 'org.id' },
+            { name: 'site_id', type: 'string', source: 'builtin', builtinKey: 'site.id' },
+            { name: 'host', type: 'string', source: 'builtin', builtinKey: 'device.hostname' },
+          ]),
+        },
+      });
+
+      expect(db.select).not.toHaveBeenCalled();
+      expect(payloadParameters()).toEqual({ org_id: 'org-a', site_id: 'site-1', host: 'host-1' });
+    });
   });
 });

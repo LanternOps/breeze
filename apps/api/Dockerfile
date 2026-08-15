@@ -90,6 +90,11 @@ COPY --from=builder --chown=hono:nodejs /app/ee ./apps/api/ee
 
 # Copy migration files for auto-migrate on startup
 COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migrations
+# Document theme assets (vendored OFL font files for proposal/quote PDF
+# rendering — see apps/api/src/services/documentThemes.ts). FONT_DIR resolves
+# from process.cwd(), and this runner's cwd ends at /app/apps/api (WORKDIR
+# below), so the destination mirrors the migrations copy above.
+COPY --from=builder --chown=hono:nodejs /app/apps/api/assets ./apps/api/assets
 # Runtime-extension mount point: deployments deliver extensions as SIGNED
 # bundles by mounting extensions.yaml (+ artifacts) here. Created empty and
 # owned by the runtime user; without a mount both the reconciler and the

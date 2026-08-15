@@ -387,7 +387,8 @@ describe('sendQuote email delivery status', () => {
   it('reports no_billing_contact (and sends nothing) when the org has no billing email', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: null });
     // No billingContact → the email branch short-circuits before the
-    // portalBranding read, straight to the final re-select.
+    // portalBranding read, straight to the outcome marker and the re-select.
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]);
 
     const result = await sendQuote('q1', actor);
@@ -401,6 +402,7 @@ describe('sendQuote email delivery status', () => {
   it('reports send_failed when the email provider throws (send still commits)', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
     queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     sendEmailMock.mockRejectedValue(new Error('smtp down'));
 
@@ -414,6 +416,7 @@ describe('sendQuote email delivery status', () => {
   it('reports pdf_render_failed (and never calls the email transport) when building the attachment throws', async () => {
     queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
     queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
     vi.mocked(renderQuotePdf).mockRejectedValueOnce(new Error('pdfkit blew up'));
 
@@ -423,6 +426,40 @@ describe('sendQuote email delivery status', () => {
     expect(result.emailReason).toBe('pdf_render_failed');
     expect(sendEmailMock).not.toHaveBeenCalled(); // never reached the transport
     expect(result.quote.status).toBe('sent'); // the send itself still commits
+  });
+
+  // #3502: a direct send that fails delivery must leave a marker, or the detail
+  // page shows "Sent" with no banner and the customer silently got nothing.
+  it('persists send_email_reason so a failed direct send raises the banner', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([]); // outcome-marker update
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', sendEmailReason: 'send_failed' }]);
+    sendEmailMock.mockRejectedValue(new Error('smtp down'));
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailReason).toBe('send_failed');
+    // The write itself, not just the returned row: the banner reads the column.
+    expect(setCalls.some((p) => p.sendEmailReason === 'send_failed')).toBe(true);
+  });
+
+  it('writes exactly one sendEmailReason on a successful send: the claim clearing it', async () => {
+    queueThroughClaim({ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } });
+    queueResult([]); // portalBranding — none configured
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.emailed).toBe(true);
+    expect(result.emailReason).toBeUndefined();
+    // Exactly one `.set()` carries sendEmailReason (the draft→sent claim, which
+    // clears it) — a successful send must not add a second bookkeeping write.
+    // Asserting the COUNT rather than the absence of a value: a stray
+    // `{ sendEmailReason: null }` update would slip past a value-only check.
+    const reasonWrites = setCalls.filter((p) => 'sendEmailReason' in p);
+    expect(reasonWrites).toHaveLength(1);
+    expect(reasonWrites[0]?.sendEmailReason).toBeNull();
   });
 
   it('reports emailed:true with no reason on a successful send', async () => {
@@ -662,6 +699,94 @@ describe('sendQuote bill-to snapshot', () => {
     expect(claimSet().billToAddress).toEqual({
       line1: null, line2: null, city: null, region: null, postalCode: null, country: null,
     });
+  });
+});
+
+/**
+ * Task 5: theme/pageSize is frozen into `quotes.presentation_snapshot` exactly
+ * once, at send — never overwritten by a later send-path run (there isn't one
+ * today; sendQuote is issue-once and a draft would have to already carry a
+ * snapshot some other way, e.g. a future clone-from-sent path) — and the
+ * emailed PDF's branding must render from that frozen value, not the
+ * partner's live document_theme/document_page_size columns.
+ */
+describe('sendQuote presentation snapshot', () => {
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    capturedPdfArgs = null;
+    sendEmailMock.mockResolvedValue(undefined);
+  });
+
+  /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
+  function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([quote]); // getQuote: quote
+    queueResult([]);       // getQuote: blocks
+    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: listQuoteOrders — order headers
+    queueResult([]); // getQuote: listQuoteOrders — order lines
+    queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
+    queueResult([partnerRow]); // partnerRow
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: { email: 'billing@customer.example' } }]); // org (billing snapshot + recipient)
+    queueResult([{ id: 'q1' }]); // update ... returning (claimed)
+    queueResult([]);       // portalBranding
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent' }]); // final re-select
+  }
+
+  const baseQuote = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '100.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+    presentationSnapshot: null,
+  };
+
+  /** Pull the `.set(...)` payload from the status→sent claim update. */
+  function claimSet() {
+    const found = setCalls.find((s) => s.status === 'sent' && 'presentationSnapshot' in s);
+    expect(found, 'send update should set presentationSnapshot').toBeDefined();
+    return found!;
+  }
+
+  it('stamps theme/pageSize resolved from the partner columns when the quote has no snapshot yet', async () => {
+    queueSendPath(baseQuote, {
+      id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    });
+
+    await sendQuote('q1', actor);
+
+    expect(claimSet().presentationSnapshot).toEqual({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('never overwrites an existing presentation snapshot on send', async () => {
+    queueSendPath(
+      { ...baseQuote, presentationSnapshot: { theme: 'condensed', pageSize: 'letter' } },
+      { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, documentTheme: 'classic', documentPageSize: 'a4' },
+    );
+
+    await sendQuote('q1', actor);
+
+    // Partner now says classic/a4, but the pre-existing snapshot must win.
+    expect(claimSet().presentationSnapshot).toEqual({ theme: 'condensed', pageSize: 'letter' });
+  });
+
+  it('passes the stamped snapshot values through to the send-time emailed PDF render', async () => {
+    queueSendPath(baseQuote, {
+      id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    });
+
+    await sendQuote('q1', actor);
+
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, loadCatalogImage, contractRenderData) — branding is arg index 4.
+    const branding = capturedPdfArgs![4] as Record<string, unknown>;
+    expect(branding.theme).toBe('condensed');
+    expect(branding.pageSize).toBe('letter');
   });
 });
 
