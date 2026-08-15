@@ -18,7 +18,6 @@ vi.mock('../services/auditService', () => ({
 import { Hono } from 'hono';
 import { createExtensionsAdminRoutes, type ExtensionsAdminDeps } from './extensionsAdmin';
 import { ExtensionContributionRegistry, type StagedExtensionContributions } from '../extensions/contributionRegistry';
-import { ExtensionJobHost, extensionJobId, type JobHostQueue } from '../extensions/jobHost';
 import type { ExtensionStateRecord } from '../extensions/stateStore';
 import type { ExtensionHostDescriptor } from '../extensions/compatibility';
 
@@ -98,12 +97,9 @@ function snapshot(over: Partial<StagedExtensionContributions> = {}): StagedExten
   } as StagedExtensionContributions;
 }
 
-type ResyncMock = Mock<() => Promise<void>>;
-
 interface Harness {
   app: Hono;
   setEnabled: Mock<(name: string, enabled: boolean) => Promise<void>>;
-  resync: ResyncMock;
   storeCalls: string[];
   registry: ExtensionContributionRegistry;
 }
@@ -113,7 +109,6 @@ function buildHarness(opts: {
   rows?: ExtensionStateRecord[];
   registrySnapshots?: StagedExtensionContributions[];
   roots?: Map<string, string>;
-  resync?: ResyncMock;
 } = {}): Harness {
   const rows = opts.rows ?? [record()];
   const storeCalls: string[] = [];
@@ -125,8 +120,6 @@ function buildHarness(opts: {
 
   const registry = new ExtensionContributionRegistry();
   for (const staged of opts.registrySnapshots ?? []) registry.activate(staged);
-
-  const resync: ResyncMock = opts.resync ?? vi.fn(async () => {});
 
   const deps: ExtensionsAdminDeps = {
     stateStore: {
@@ -142,7 +135,6 @@ function buildHarness(opts: {
       setEnabled,
     },
     registry,
-    resyncSchedules: resync,
     hostDescriptor: HOST,
     extensionRoots: () => opts.roots ?? new Map(),
   };
@@ -154,7 +146,7 @@ function buildHarness(opts: {
     await next();
   });
   app.route('/api/v1/admin/extensions', createExtensionsAdminRoutes(deps));
-  return { app, setEnabled, resync, storeCalls, registry };
+  return { app, setEnabled, storeCalls, registry };
 }
 
 beforeEach(() => {
@@ -296,84 +288,5 @@ describe('POST enable / disable', () => {
       (await app.request('/api/v1/admin/extensions/nope/disable', { method: 'POST' })).status,
     ).toBe(404);
     expect(setEnabled).not.toHaveBeenCalled();
-  });
-});
-
-describe('disable removes future repeat schedules without a restart', () => {
-  /** A fake BullMQ queue that remembers the repeatables it was asked to hold. */
-  function fakeQueue() {
-    const repeatables = new Map<
-      string,
-      { key: string; name: string; id: string; pattern: string }
-    >();
-    const removed: string[] = [];
-    const queue: JobHostQueue = {
-      getRepeatableJobs: async () => [...repeatables.values()],
-      removeRepeatableByKey: async (key: string) => {
-        removed.push(key);
-        for (const [k, v] of repeatables) if (v.key === key) repeatables.delete(k);
-        return true;
-      },
-      add: async (name: string, _data: unknown, opts: unknown) => {
-        const o = opts as { jobId: string; repeat: { pattern: string } };
-        repeatables.set(o.jobId, {
-          key: `${name}:${o.jobId}:::${o.repeat.pattern}`,
-          name,
-          id: o.jobId,
-          pattern: o.repeat.pattern,
-        });
-        return null;
-      },
-    };
-    return { queue, repeatables, removed };
-  }
-
-  it('drops the disabled extension repeatable on the next sync', async () => {
-    const { queue, repeatables, removed } = fakeQueue();
-    const staged = snapshot();
-
-    // Wire the route's resync to a REAL job host over the REAL registry, so the
-    // test proves the end-to-end effect rather than that a spy was called.
-    let harness: Harness;
-    const resync: ResyncMock = vi.fn(async () => {
-      const host = new ExtensionJobHost({
-        registry: harness.registry,
-        store: { isEnabled: async () => true },
-      });
-      await host.sync(queue);
-    });
-    harness = buildHarness({ registrySnapshots: [staged], resync });
-
-    // Boot-equivalent sync: the schedule exists while the extension is enabled.
-    await resync();
-    const jobKey = extensionJobId('demo', 'nightly');
-    expect(repeatables.has(jobKey)).toBe(true);
-
-    await harness.app.request('/api/v1/admin/extensions/demo/disable', { method: 'POST' });
-
-    expect(resync).toHaveBeenCalledTimes(2);
-    expect(repeatables.has(jobKey)).toBe(false);
-    expect(removed).toHaveLength(1);
-
-    // Re-enabling brings the schedule back, still without a restart.
-    await harness.app.request('/api/v1/admin/extensions/demo/enable', { method: 'POST' });
-    expect(repeatables.has(jobKey)).toBe(true);
-  });
-
-  it('still flips the flag when the schedule resync fails (Redis unavailable)', async () => {
-    const resync: ResyncMock = vi.fn(async () => {
-      throw new Error('ECONNREFUSED redis:6379');
-    });
-    const { app, setEnabled } = buildHarness({ registrySnapshots: [snapshot()], resync });
-
-    const res = await app.request('/api/v1/admin/extensions/demo/disable', { method: 'POST' });
-
-    expect(res.status).toBe(200);
-    expect(setEnabled).toHaveBeenCalledExactlyOnceWith('demo', false);
-    const body = await res.json();
-    expect(body.enabled).toBe(false);
-    expect(body.scheduleSyncDeferred).toBe(true);
-    // The raw Redis error must not be echoed to the operator surface.
-    expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
   });
 });

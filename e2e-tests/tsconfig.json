@@ -16,13 +16,11 @@
   "include": [
     "*.ts",
     "pages/**/*.ts",
-    "tests/**/*.ts",
-    "fixtures/**/*.ts"
+    "tests/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "perf-harness/**",
-    "live-signup/**",
-    "fixtures/runtime-extension/build/**"
+    "live-signup/**"
   ]
 }

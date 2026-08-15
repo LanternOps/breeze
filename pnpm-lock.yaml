@@ -99,9 +99,6 @@ importers:
       '@breeze/ext-workspace':
         specifier: workspace:*
         version: link:../../ee/workspace
-      '@breeze/extension-api':
-        specifier: workspace:*
-        version: link:../../packages/extension-api
       '@breeze/extension-sdk':
         specifier: workspace:*
         version: link:../../packages/extension-sdk
@@ -247,9 +244,6 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@breeze/extension-cli':
-        specifier: workspace:*
-        version: link:../../packages/extension-cli
       '@types/archiver':
         specifier: ^7.0.0
         version: 7.0.0
@@ -1238,62 +1232,6 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.2.0)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(jsdom@30.0.1(@noble/hashes@2.2.0))(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.2)(tsx@4.23.11)(yaml@2.9.0))
-
-  packages/extension-api:
-    dependencies:
-      '@breeze/extension-sdk':
-        specifier: workspace:*
-        version: link:../extension-sdk
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@types/node':
-        specifier: ^26.2.0
-        version: 26.2.0
-      drizzle-orm:
-        specifier: 0.45.2
-        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.21.0)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
-      hono:
-        specifier: ^4.13.1
-        version: 4.13.1
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.9
-        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.2.0)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(jsdom@30.0.1(@noble/hashes@2.2.0))(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.2)(tsx@4.23.11)(yaml@2.9.0))
-
-  packages/extension-cli:
-    dependencies:
-      '@breeze/extension-sdk':
-        specifier: workspace:*
-        version: link:../extension-sdk
-      archiver:
-        specifier: ^7.0.1
-        version: 7.0.1
-      commander:
-        specifier: ^15.0.0
-        version: 15.0.0
-      node-stream-zip:
-        specifier: ^1.15.0
-        version: 1.15.0
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@types/archiver':
-        specifier: ^7.0.0
-        version: 7.0.0
-      '@types/node':
-        specifier: ^26.2.0
-        version: 26.2.0
-      typescript:
-        specifier: ^5.7.2
-        version: 5.9.3
-      vitest:
-        specifier: ^4.1.9
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.2.0)(@vitest/coverage-v8@4.1.10)(happy-dom@20.11.1)(jsdom@30.0.1(@noble/hashes@2.2.0))(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.49.2)(tsx@4.23.11)(yaml@2.9.0))
 
   packages/extension-sdk:
@@ -6588,10 +6526,6 @@ packages:
   commander@13.1.0:
     resolution: {integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==}
     engines: {node: '>=18'}
-
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
-    engines: {node: '>=22.12.0'}
 
   commander@2.20.3:
     resolution: {integrity: sha512-GpVkmM8vF2vQUkj2LvZmD35JxeJOLCwJ9cUkugyk2nuhbv3+mJvpLYYt+0+USMxE+oj+ey/lJEnhZw75x/OMcQ==}
@@ -15505,9 +15439,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.2': {}
 
@@ -18063,8 +17995,6 @@ snapshots:
   commander@12.1.0: {}
 
   commander@13.1.0: {}
-
-  commander@15.0.0: {}
 
   commander@2.20.3: {}
 

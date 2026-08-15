@@ -34,8 +34,8 @@ import { defaultExistingDeclaredTables } from './builtinExtensions';
  * `DROP DATABASE ... WITH (FORCE)` runs first so an interrupted previous run
  * cannot leave anything behind. Mutating `process.env.DATABASE_URL` around the
  * calls is safe ONLY because the integration config sets `fileParallelism:
- * false` (vitest.integration.config.ts) — the same argument
- * `twoReplicaReconcile.integration.test.ts` documents.
+ * false` (vitest.integration.config.ts), so no other suite is connected while
+ * the variable is swapped.
  */
 const THROWAWAY_DB = 'breeze_test_probe';
 

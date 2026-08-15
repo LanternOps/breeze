@@ -240,35 +240,4 @@ const workspaceExtension: BreezeExtensionV1 = {
   },
 };
 
-/**
- * Legacy-host bridge. breeze main's `stageLegacyExtension` (apps/api
- * src/extensions/loader.ts:136) still calls `register(context)` with ONE
- * argument whose `mountRoute` delegates to the staging registrar, while the
- * v1 contract this extension adopted in #11 is `register(registrar, context)`.
- * Detect the single-argument call and re-split it; also adapt the legacy
- * single-argument `log(message)` to the v1 `log(level, message)` signature.
- * Remove once the host loader makes the two-argument v1 call (Plan 05
- * follow-up — flagged in the W3 ledger).
- */
-const legacyHostBridge: BreezeExtensionV1 = {
-  register(...args: unknown[]) {
-    if (args.length >= 2 && args[1] !== undefined) {
-      return workspaceExtension.register(
-        ...(args as Parameters<BreezeExtensionV1['register']>),
-      );
-    }
-    const legacy = args[0] as {
-      mountRoute: (app: unknown) => void;
-      log: (message: string) => void;
-    };
-    const registrar = {
-      mountRoute: (app: unknown) => legacy.mountRoute(app),
-    } as Parameters<BreezeExtensionV1['register']>[0];
-    const context = Object.create(legacy) as Parameters<BreezeExtensionV1['register']>[1];
-    (context as { log: (level: string, message: string) => void }).log = (level, message) =>
-      legacy.log(`[${level}] ${message}`);
-    return workspaceExtension.register(registrar, context);
-  },
-};
-
-export default legacyHostBridge;
+export default workspaceExtension;

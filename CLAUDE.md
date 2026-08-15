@@ -17,7 +17,8 @@ Breeze is a fast, modern Remote Monitoring and Management (RMM) platform for MSP
 ## Monorepo Layout
 
 - `apps/`: api, web, portal, mobile, viewer, helper, docs, excel/outlook/powerpoint/word add-ins, m365-graph-{read,actions}-executor
-- `packages/`: shared, office-addin-core, extension-{api,cli,sdk,web-sdk,testkit}
+- `packages/`: shared, office-addin-core, extension-{sdk,web-sdk,testkit}
+- `ee/`: first-party built-in extensions compiled into the API image (`workspace`); each loads at boot only when its enable flag is set (`BREEZE_WORKSPACE_ENABLED`)
 - `agent/`: Go agent (own Makefile; `make run`)
 
 ## Key Patterns

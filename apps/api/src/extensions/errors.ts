@@ -1,16 +1,15 @@
 /**
- * Typed errors for the runtime-extension reconciler.
+ * Typed errors for the extension loading pipeline.
  *
  * These carry a machine-usable identity (and, for the incompatible case, the
- * structured reasons) WITHOUT ever putting untrusted bundle/manifest text into a
- * message that could be logged or persisted. `recordSanitizedFailure` maps them
- * to a coarse category + a fixed generic message — the raw `cause` is never
- * threaded into any persisted string. See reconciler.ts.
+ * structured reasons) WITHOUT ever putting untrusted manifest text into a
+ * message that could be logged or persisted. A raw `cause` is never threaded
+ * into any persisted string.
  */
 
 /**
- * A REQUIRED extension failed to reconcile. Thrown by the reconciler to abort
- * boot. The message contains `required extension <name>` (the failure-policy
+ * A REQUIRED extension failed to load. Thrown to abort boot. The message
+ * contains `required extension <name>` (the failure-policy
  * contract) plus the COARSE pipeline phase, and nothing else.
  *
  * Deliberately carries NO `cause`: the raw underlying error is consumed at the

@@ -1,8 +1,3 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import JSZip from 'jszip';
 import type postgres from 'postgres';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -14,7 +9,6 @@ import {
 import type { ExtensionLifecycleState } from '../db/schema/extensions';
 import {
   reconcileExtensionMigrations,
-  readBundleMigrations,
   type MigratableExtension,
 } from './migrator';
 
@@ -23,7 +17,6 @@ import {
  * the database is exercised here:
  *   - dangerous-statement rejection (pure, before any lock/SQL)
  *   - the rollback-refusal and rolling-update gates (pure, read only the store)
- *   - the bundle→migration-file seam (reads a plain zip archive, no DB)
  *
  * The genuinely transactional guarantees — atomic rollback with no ledger row,
  * and single-application under advisory-lock contention — require real Postgres
@@ -180,89 +173,5 @@ describe('reconcileExtensionMigrations — gates and validation (no DB)', () => 
         'replace',
       ),
     ).rejects.toThrow(/not permitted|must not|transaction/i);
-  });
-});
-
-describe('readBundleMigrations — bundle→migration-file seam (no DB)', () => {
-  /** Write a zip to a temp dir and return its path plus the verifier-style hash map. */
-  async function writeArchive(
-    members: Record<string, string>,
-  ): Promise<{ archivePath: string; files: Map<string, { sha256: string; uncompressedSize: number }> }> {
-    const zip = new JSZip();
-    const files = new Map<string, { sha256: string; uncompressedSize: number }>();
-    for (const [name, body] of Object.entries(members)) {
-      zip.file(name, body);
-      const bytes = Buffer.from(body, 'utf8');
-      files.set(name, {
-        sha256: createHash('sha256').update(bytes).digest('hex'),
-        uncompressedSize: bytes.length,
-      });
-    }
-    const buf = await zip.generateAsync({ type: 'nodebuffer' });
-    const dir = mkdtempSync(path.join(tmpdir(), 'bundle-mig-'));
-    const archivePath = path.join(dir, 'demo.breeze-ext');
-    writeFileSync(archivePath, buf);
-    return { archivePath, files };
-  }
-
-  const MEMBERS = {
-    'manifest.json': '{}',
-    'server/index.js': 'exports.x = 1;',
-    'migrations/0002-second.sql': 'CREATE TABLE b (id int);',
-    'migrations/0001-first.sql': 'CREATE TABLE a (id int);',
-    'migrations/notes.txt': 'ignore me',
-  };
-
-  it('reads sorted migrations/*.sql members from the bundle archive', async () => {
-    const { archivePath, files } = await writeArchive(MEMBERS);
-
-    const read = await readBundleMigrations({
-      archivePath,
-      files,
-      manifest: { migrationsDir: 'migrations' } as never,
-    });
-
-    expect(read.map((f) => f.filename)).toEqual(['0001-first.sql', '0002-second.sql']);
-    expect(read[0]?.sql).toContain('CREATE TABLE a');
-    expect(read[1]?.sql).toContain('CREATE TABLE b');
-  });
-
-  // TIME-OF-CHECK/TIME-OF-USE: verifyExtensionBundle hashes members through one
-  // handle and closes it; this re-opens the same path. If the archive is swapped
-  // in between (anyone with write access to the artifact-store volume), trusting
-  // the fresh read hands the attacker arbitrary DDL under a passing signature.
-  it('rejects a migration whose on-disk bytes no longer match the verified hash', async () => {
-    const { archivePath, files } = await writeArchive(MEMBERS);
-    // The verified record says the file hashed to something else — i.e. the
-    // bytes now on disk are NOT the bytes the signature covered.
-    files.set('migrations/0001-first.sql', { sha256: '0'.repeat(64), uncompressedSize: 1 });
-
-    await expect(
-      readBundleMigrations({
-        archivePath,
-        files,
-        manifest: { migrationsDir: 'migrations' } as never,
-      }),
-    ).rejects.toThrow(/integrity re-check failed/i);
-  });
-
-  // The member LIST must come from the verified record, not a fresh directory
-  // read — otherwise an attacker can ADD a brand-new *.sql member post-verify
-  // and it would be applied even though every pre-existing hash still matches.
-  it('ignores an unverified migration member that only exists on disk', async () => {
-    const { archivePath, files } = await writeArchive({
-      ...MEMBERS,
-      'migrations/0003-injected.sql': 'DROP TABLE organizations;',
-    });
-    files.delete('migrations/0003-injected.sql');
-
-    const read = await readBundleMigrations({
-      archivePath,
-      files,
-      manifest: { migrationsDir: 'migrations' } as never,
-    });
-
-    expect(read.map((f) => f.filename)).toEqual(['0001-first.sql', '0002-second.sql']);
-    expect(read.some((f) => f.sql.includes('DROP TABLE'))).toBe(false);
   });
 });

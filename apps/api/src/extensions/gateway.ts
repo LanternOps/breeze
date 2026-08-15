@@ -5,7 +5,6 @@ import type { ExtensionManifestV1 } from '@breeze/extension-sdk';
 import { agentAuthMiddleware } from '../middleware/agentAuth';
 import { authMiddleware } from '../middleware/auth';
 import { helperAuth } from '../middleware/helperAuth';
-import { buildOrgInstallGuard, installScopeOf, type OrgInstalledReader } from './orgInstallGate';
 import { recordExtensionRequest } from './metrics';
 import type {
   ExtensionContributionRegistry,
@@ -161,27 +160,11 @@ interface SnapshotWrapper {
 function createSnapshotWrapper(
   active: StagedExtensionContributions,
   mountPrefix: string,
-  isInstalledForOrg: OrgInstalledReader,
 ): SnapshotWrapper {
   const wrapper = new Hono();
   const labeler = new RouteLabeler(mountPrefix);
   wrapper.use('*', labeler.middleware);
   wrapper.use('*', buildExtensionAuthGuard(mountPrefix, active.manifest));
-  // L1 install scoping — MUST run after the auth guard: the caller's org is
-  // only established once auth has run, and a non-installed org gets the same
-  // 404 the wrapper's notFound emits (default-deny). Within THIS wrapper the
-  // 404 is not distinguishable from "wrong path" — but it is not quite true
-  // that no existence oracle exists anywhere in the dispatch stack: an
-  // UNRESOLVED extension name never reaches this wrapper at all — it's
-  // rejected earlier by `dispatchCanonical`'s own 503 "extension unavailable"
-  // (see below) — so a caller who gets a 404 here has already learned the
-  // extension name resolves to something registered and enabled. Tracked as
-  // a spec note (404-vs-503 distinguishability), not treated as a fix here.
-  wrapper.use('*', buildOrgInstallGuard({
-    extension: active.name,
-    installScope: installScopeOf(active.manifest),
-    isInstalled: isInstalledForOrg,
-  }));
   const beforeCompose = wrapper.routes.length;
   active.routeApp?.composeInto(wrapper, mountPrefix);
   labeler.seal(wrapper, beforeCompose);
@@ -196,7 +179,6 @@ function createAgentSnapshotWrapper(
   active: StagedExtensionContributions,
   mountPrefix: string,
   isEnabled: (name: string) => Promise<boolean>,
-  isInstalledForOrg: OrgInstalledReader,
 ): SnapshotWrapper {
   const wrapper = new Hono();
   const labeler = new RouteLabeler(mountPrefix);
@@ -217,14 +199,6 @@ function createAgentSnapshotWrapper(
     }
     await next();
   });
-  // L1 install scoping — after agent auth (and its rate limits) AND after the
-  // availability check, mirroring the ordering note above: agent prefixes may
-  // be exempt from the global limiter, so nothing here may run pre-auth.
-  wrapper.use('*', buildOrgInstallGuard({
-    extension: active.name,
-    installScope: installScopeOf(active.manifest),
-    isInstalled: isInstalledForOrg,
-  }));
   const beforeCompose = wrapper.routes.length;
   active.routeApp?.composeInto(wrapper, mountPrefix);
   labeler.seal(wrapper, beforeCompose);
@@ -282,7 +256,6 @@ export function mountExtensionGateway(
   app: Hono,
   registry: ExtensionContributionRegistry,
   isEnabled: (name: string) => Promise<boolean>,
-  isInstalledForOrg: OrgInstalledReader,
 ): void {
   const wrappers = new WeakMap<StagedExtensionContributions, Map<string, SnapshotWrapper>>();
   const agentWrappers = new WeakMap<StagedExtensionContributions, Map<string, SnapshotWrapper>>();
@@ -301,7 +274,7 @@ export function mountExtensionGateway(
       }
       let agentWrapper = byPrefix.get(mountPrefix);
       if (!agentWrapper) {
-        agentWrapper = createAgentSnapshotWrapper(active, mountPrefix, isEnabled, isInstalledForOrg);
+        agentWrapper = createAgentSnapshotWrapper(active, mountPrefix, isEnabled);
         byPrefix.set(mountPrefix, agentWrapper);
       }
       return dispatchMeasured(agentWrapper, active.name, c);
@@ -322,7 +295,7 @@ export function mountExtensionGateway(
     }
     let wrapper = byPrefix.get(mountPrefix);
     if (!wrapper) {
-      wrapper = createSnapshotWrapper(active, mountPrefix, isInstalledForOrg);
+      wrapper = createSnapshotWrapper(active, mountPrefix);
       byPrefix.set(mountPrefix, wrapper);
     }
 

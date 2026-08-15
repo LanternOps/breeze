@@ -161,13 +161,6 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "escalation_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["steps"]}),
   "event_bus_events": tablePolicy("org_id", {"included":["id","org_id","event_type","source","priority","processed_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload","metadata"]}),
   "executive_summaries": tablePolicy("org_id", {"included":["id","org_id","period_type","period_start","period_end","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["device_stats","alert_stats","patch_stats","sla_stats","trends","highlights"]}),
-  // extension_org_installs is the L1 install-scoping authorization record
-  // (Task 2) — no secrets, no open containers: extension_name is a plain
-  // catalog-style identifier (same as device_id/config_id elsewhere),
-  // installed_by is an actor user id like created_by/approved_by on the
-  // tables above, and enabled/installed_at/updated_at are plain
-  // status/timestamp columns.
-  "extension_org_installs": tablePolicy("org_id", {"included":["extension_name","org_id","enabled","installed_by","installed_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "fleet_finding_devices": tablePolicy("org_id", {"included":["finding_id","org_id","device_id","source_kind","source_row_id","first_seen_at","last_seen_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["member_evidence"]}),
   "fleet_findings": tablePolicy("org_id", {"included":["id","org_id","kind","semantic_key","algorithm_version","status","severity","title","summary","device_count","revision","first_seen_at","last_seen_at","last_reconciled_at","acknowledged_at","acknowledged_by","dismissed_at","dismissed_by","dismiss_notes","resolved_at","resolution_reason","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence"]}),
   "fleet_remediation_run_targets": tablePolicy("org_id", {"included":["run_id","org_id","target_device_uuid","hostname_snapshot","site_id_snapshot","status","device_command_id","skip_reason","queued_at","completed_at"],"reviewedIncluded":[],"excludedSensitive":["result_summary"],"excludedOpen":[]}),

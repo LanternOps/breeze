@@ -188,7 +188,8 @@
   # The fourth pattern covers the extension agent mount
   # (extensions/gateway.ts: `<mountPrefix>/agent/:id`, reachable as both
   # `/api/v1/ext/<extension>/agent/<agentId>` and
-  # `/api/v1/<routeNamespace>/agent/<agentId>` — see extensions/loader.ts),
+  # `/api/v1/<routeNamespace>/agent/<agentId>` — both mounted by
+  # extensions/gateway.ts),
   # which authenticates with the SAME agent token and device identity as the
   # core routes and would otherwise be an unprotected second agent surface.
   @agentMtlsProtected {

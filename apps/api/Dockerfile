@@ -16,10 +16,9 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
-# apps/api depends on these source-only workspace packages (@breeze/extension-api
-# re-exports @breeze/extension-sdk); their manifests must be present so pnpm
+# apps/api and the built-in @breeze/ext-workspace extension depend on these
+# source-only workspace packages; their manifests must be present so pnpm
 # creates the workspace symlinks the API's tsup bundle resolves at build time.
-COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 COPY packages/extension-testkit/package.json ./packages/extension-testkit/
@@ -95,14 +94,6 @@ COPY --from=builder --chown=hono:nodejs /app/apps/api/migrations ./apps/api/migr
 # from process.cwd(), and this runner's cwd ends at /app/apps/api (WORKDIR
 # below), so the destination mirrors the migrations copy above.
 COPY --from=builder --chown=hono:nodejs /app/apps/api/assets ./apps/api/assets
-# Runtime-extension mount point: deployments deliver extensions as SIGNED
-# bundles by mounting extensions.yaml (+ artifacts) here. Created empty and
-# owned by the runtime user; without a mount both the reconciler and the
-# (deprecated, flag-gated) legacy source loader treat it as a clean no-op.
-# Without this ENV the CJS bundle would fall back to a cwd-derived path that
-# does not exist in this image's layout, silently ignoring any mount.
-RUN mkdir -p /app/extensions && chown hono:nodejs /app/extensions
-ENV BREEZE_EXTENSIONS_DIR=/app/extensions
 # Run the API from its workspace path so module resolution uses apps/api/node_modules first.
 WORKDIR /app/apps/api
 
