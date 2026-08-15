@@ -9,11 +9,11 @@ import {
 import { asList } from '@/lib/asList';
 import {
   SOFTWARE_FILE_TYPES,
-  defaultSilentArgsForFileType,
   deriveSoftwareFileTypeFromUrl,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
+import { applySilentArgsPrefill } from "@/lib/installerArgsPrefill";
 import { cn } from "@/lib/utils";
 import { Dialog } from "../shared/Dialog";
 import { showToast } from "../shared/Toast";
@@ -167,41 +167,40 @@ export default function AddPackageModal({
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    // A filename is a URL's last path segment as far as the derivation cares.
+    const derived = deriveSoftwareFileTypeFromUrl(file.name);
     setForm((prev) => ({
       ...prev,
       file,
       fileName: file.name,
-      silentInstallArgs:
-        ext === "msi" && !prev.silentInstallArgs
-          ? 'msiexec /i "{file}" /qn /norestart'
-          : prev.silentInstallArgs,
-      silentUninstallArgs:
-        ext === "msi" && !prev.silentUninstallArgs
-          ? 'msiexec /x "{file}" /qn /norestart'
-          : prev.silentUninstallArgs,
+      ...applySilentArgsPrefill(prev, derived),
     }));
   };
   /** URL-source counterpart to handleFile: the extension in the URL is the only
    *  signal we have about what the installer actually is, so prefill the same
-   *  MSI defaults from it. Prefill never overwrites something the user typed. */
+   *  MSI defaults from it. The prefill is retractable — see applySilentArgsPrefill
+   *  for why leaving a stale msiexec command behind is actively dangerous. */
   const handleDownloadUrl = (value: string) => {
-    setForm((prev) => {
-      const derived = deriveSoftwareFileTypeFromUrl(value);
-      const defaults = defaultSilentArgsForFileType(derived);
-      return {
-        ...prev,
-        downloadUrl: value,
-        silentInstallArgs:
-          defaults && !prev.silentInstallArgs
-            ? defaults.install
-            : prev.silentInstallArgs,
-        silentUninstallArgs:
-          defaults && !prev.silentUninstallArgs
-            ? defaults.uninstall
-            : prev.silentUninstallArgs,
-      };
-    });
+    setForm((prev) => ({
+      ...prev,
+      downloadUrl: value,
+      ...applySilentArgsPrefill(
+        prev,
+        // An explicit selector choice outranks the URL for prefill purposes too.
+        prev.fileType || deriveSoftwareFileTypeFromUrl(value),
+      ),
+    }));
+  };
+  /** Selector changes retract or install the prefill the same way a URL edit does. */
+  const handleFileTypeChange = (value: "" | SoftwareFileType) => {
+    setForm((prev) => ({
+      ...prev,
+      fileType: value,
+      ...applySilentArgsPrefill(
+        prev,
+        value || deriveSoftwareFileTypeFromUrl(prev.downloadUrl),
+      ),
+    }));
   };
   /** What the server will infer when the user leaves the selector on "auto" —
    *  shown so an unrecognized URL doesn't silently fall back to exe. */
@@ -666,8 +665,7 @@ export default function AddPackageModal({
                       data-testid="package-file-type"
                       value={form.fileType}
                       onChange={(e) =>
-                        update(
-                          "fileType",
+                        handleFileTypeChange(
                           e.target.value as "" | SoftwareFileType,
                         )
                       }
@@ -689,7 +687,9 @@ export default function AddPackageModal({
                         </option>
                       ))}
                     </select>
-                    {!form.fileType && !inferredFileType && (
+                    {form.downloadUrl.trim() !== "" &&
+                      !form.fileType &&
+                      !inferredFileType && (
                       <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
                         {i18n.t(
                           "policies:software.addPackageModal.installerTypeUndetected",

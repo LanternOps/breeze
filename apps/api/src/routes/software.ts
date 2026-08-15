@@ -376,6 +376,19 @@ const createVersionSchema = z.object({
   detectionRules: detectionRulesSchema.optional()
 });
 
+/**
+ * Host of a managed-software URL, for logging. Never the full URL: these carry
+ * presigned capability query strings, and a stored URL may still hold
+ * unresolved `{{org.name}}` deploy-time tokens that make `new URL()` throw.
+ */
+function safeUrlHost(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).host || 'unparseable';
+  } catch {
+    return 'unparseable';
+  }
+}
+
 const listDeploymentsSchema = z.object({
   status: z.enum(['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled']).optional(),
   page: z.string().optional(),
@@ -802,11 +815,28 @@ softwareRoutes.post(
 
     // A URL-created version never recorded a fileType, so the dispatcher fell
     // back to 'exe' and the agent exec'd the downloaded file directly — which
-    // fails at CreateProcess for an MSI (ERROR_BAD_EXE_FORMAT) and silently
-    // discards the operator's msiexec command. Prefer an explicit fileType,
-    // otherwise infer it from the URL's extension; null keeps prior behavior.
+    // fails at CreateProcess for an MSI (ERROR_BAD_EXE_FORMAT) and misroutes the
+    // operator's msiexec command into the MSI's own argv. Prefer an explicit
+    // fileType, otherwise infer from the URL; null keeps prior behavior.
     const fileType = payload.fileType ?? deriveSoftwareFileTypeFromUrl(payload.downloadUrl);
     const silentDefaults = defaultSilentArgsForFileType(fileType);
+
+    // Storing NULL means committing to a row we will later GUESS about at
+    // dispatch. The web forms warn about it, but an API/MCP/script client gets
+    // no such prompt, so record it server-side — otherwise nobody can even
+    // count how often this happens in production. Not a 400: an extensionless
+    // URL serving a real EXE is legitimate, and rejecting would break existing
+    // scripted clients.
+    if (payload.downloadUrl && fileType === null) {
+      captureMessage('software version created with undetermined installer type', 'warning', {
+        orgId,
+        catalogId: id,
+        version: payload.version,
+        // Host only — a managed-software URL can carry a presigned capability
+        // query string that must never reach a log.
+        downloadUrlHost: safeUrlHost(payload.downloadUrl),
+      });
+    }
 
     const version = await insertLatestSoftwareVersion(id, {
       version: payload.version,

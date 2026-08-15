@@ -48,6 +48,18 @@ describe('deriveSoftwareFileTypeFromUrl', () => {
   it('does not mistake a dotted host or path segment for an extension', () => {
     expect(deriveSoftwareFileTypeFromUrl('https://downloads.vendor.example')).toBeNull();
     expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/v1.2.3/installer')).toBeNull();
+    expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/installers/')).toBeNull();
+  });
+
+  it('does not read an extension out of the query string', () => {
+    // Pinned deliberately. A well-meaning "improvement" that scanned the query
+    // string would reintroduce this bug pointed the other way: a download
+    // script whose ?file= names an MSI may still serve an EXE wrapper.
+    expect(deriveSoftwareFileTypeFromUrl('https://host/download?file=agent.msi')).toBeNull();
+  });
+
+  it('does not decode percent-encoded separators', () => {
+    expect(deriveSoftwareFileTypeFromUrl('https://host/agent%2Emsi')).toBeNull();
   });
 
   it('handles empty and non-string input', () => {
@@ -81,10 +93,31 @@ describe('defaultSilentArgsForFileType', () => {
     expect(defaultSilentArgsForFileType('msi')!.install).toContain('"{file}"');
   });
 
-  it('has no default for types whose silent switch is vendor-specific', () => {
+  it('has no default for exe, whose silent switch is vendor-specific', () => {
     expect(defaultSilentArgsForFileType('exe')).toBeNull();
+  });
+
+  it('has no default for deb/pkg/dmg, whose args the agent ignores entirely', () => {
+    // Different reason from exe: the agent hardcodes `dpkg -i`,
+    // `installer -pkg … -target /` and mount-and-install, and never reads
+    // silentInstallArgs for these at all.
     expect(defaultSilentArgsForFileType('deb')).toBeNull();
+    expect(defaultSilentArgsForFileType('pkg')).toBeNull();
+    expect(defaultSilentArgsForFileType('dmg')).toBeNull();
+  });
+
+  it('normalizes case and surrounding space', () => {
+    // A stored 'MSI' must not silently yield no defaults — every other layer
+    // (Go's strings.ToLower, getFileExtension) is case-insensitive.
+    expect(defaultSilentArgsForFileType('MSI')?.install).toBe(
+      'msiexec /i "{file}" /qn /norestart',
+    );
+    expect(defaultSilentArgsForFileType('  msi  ')).not.toBeNull();
+  });
+
+  it('has no default for a missing type', () => {
     expect(defaultSilentArgsForFileType(null)).toBeNull();
     expect(defaultSilentArgsForFileType(undefined)).toBeNull();
+    expect(defaultSilentArgsForFileType('rpm')).toBeNull();
   });
 });

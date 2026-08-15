@@ -8,7 +8,7 @@ import {
   S3ConfigError,
   S3OperationError,
 } from '../services/s3Storage';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
 import { authMiddleware } from '../middleware/auth';
@@ -782,6 +782,51 @@ describe('software routes', () => {
       });
       expect(captured.values?.fileType).toBe('exe');
       expect(captured.values?.silentInstallArgs).toBeNull();
+    });
+
+    it('treats an explicitly-empty install command as absent, not as a value', async () => {
+      // `||` rather than `??`: a cleared form field posts '', and storing that
+      // literal empty string would suppress the MSI default for no reason.
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme.msi',
+        silentInstallArgs: '',
+      });
+      expect(captured.values?.silentInstallArgs).toBe('msiexec /i "{file}" /qn /norestart');
+    });
+
+    it('records the resolved type on the audit event', async () => {
+      // The only durable server-side trace of what was decided at write time.
+      await createVersion({ downloadUrl: 'https://cdn.example.com/acme.msi' });
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'software.catalog.version.create',
+          details: expect.objectContaining({ fileType: 'msi' }),
+        }),
+      );
+    });
+
+    it('flags an undetermined installer type for non-web clients', async () => {
+      // The web forms warn in the UI, but an API/MCP/script client gets no
+      // prompt — without this nobody can count how often it happens.
+      await createVersion({
+        downloadUrl: 'https://vendor.example.com/download.php?product=acme',
+      });
+      expect(captureMessage).toHaveBeenCalledWith(
+        'software version created with undetermined installer type',
+        'warning',
+        expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+      );
+    });
+
+    it('does not log the presigned query string of a download URL', async () => {
+      // Managed-software URLs carry capability query strings that must never
+      // reach a log — host only.
+      await createVersion({
+        downloadUrl: 'https://vendor.example.com/get?token=SECRET-CAPABILITY',
+      });
+      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[2];
+      expect(JSON.stringify(logged)).not.toContain('SECRET-CAPABILITY');
     });
 
     it('rejects an unsupported explicit fileType with 400', async () => {

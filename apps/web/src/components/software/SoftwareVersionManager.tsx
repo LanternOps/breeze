@@ -10,7 +10,13 @@ import {
   Upload,
 } from "lucide-react";
 import { asList } from '@/lib/asList';
-import type { DetectionRule } from "@breeze/shared";
+import {
+  SOFTWARE_FILE_TYPES,
+  deriveSoftwareFileTypeFromUrl,
+  type DetectionRule,
+  type SoftwareFileType,
+} from "@breeze/shared";
+import { applySilentArgsPrefill } from "@/lib/installerArgsPrefill";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
 import { findUnknownTokens } from "@/lib/installerVariables";
@@ -122,6 +128,9 @@ export default function SoftwareVersionManager({
     silentInstallArgs: "",
     silentUninstallArgs: "",
     downloadUrl: "",
+    // "" = let the server infer from the URL. Only meaningful for the URL
+    // source; the upload path derives it from the uploaded filename.
+    fileType: "" as "" | SoftwareFileType,
     supportedOs: [] as string[],
     detectionRules: [] as DetectionRule[],
     file: null as File | null,
@@ -249,22 +258,42 @@ export default function SoftwareVersionManager({
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     setFormState((prev) => ({
       ...prev,
       file,
       fileName: file.name,
-      // Auto-populate MSI silent args
-      silentInstallArgs:
-        ext === "msi" && !prev.silentInstallArgs
-          ? 'msiexec /i "{file}" /qn /norestart'
-          : prev.silentInstallArgs,
-      silentUninstallArgs:
-        ext === "msi" && !prev.silentUninstallArgs
-          ? 'msiexec /x "{file}" /qn /norestart'
-          : prev.silentUninstallArgs,
+      // Auto-populate MSI silent args (retractable — see applySilentArgsPrefill).
+      ...applySilentArgsPrefill(prev, deriveSoftwareFileTypeFromUrl(file.name)),
     }));
   };
+  /** The URL source carries no filename, so the installer type has to come from
+   *  the URL's extension or from the operator. Without it the server stores
+   *  file_type NULL, the dispatcher falls back to 'exe', and the agent execs the
+   *  installer directly — which is the bug this whole path exists to prevent. */
+  const handleDownloadUrlChange = (value: string) => {
+    setFormState((prev) => ({
+      ...prev,
+      downloadUrl: value,
+      ...applySilentArgsPrefill(
+        prev,
+        prev.fileType || deriveSoftwareFileTypeFromUrl(value),
+      ),
+    }));
+  };
+  const handleFileTypeChange = (value: "" | SoftwareFileType) => {
+    setFormState((prev) => ({
+      ...prev,
+      fileType: value,
+      ...applySilentArgsPrefill(
+        prev,
+        value || deriveSoftwareFileTypeFromUrl(prev.downloadUrl),
+      ),
+    }));
+  };
+  const inferredFileType = useMemo(
+    () => deriveSoftwareFileTypeFromUrl(formState.downloadUrl),
+    [formState.downloadUrl],
+  );
   const handlePromoteLatest = useCallback(
     async (versionId: string) => {
       if (!catalogId || versionId === latestId) return;
@@ -396,6 +425,8 @@ export default function SoftwareVersionManager({
               silentInstallArgs: formState.silentInstallArgs || undefined,
               silentUninstallArgs: formState.silentUninstallArgs || undefined,
               downloadUrl: formState.downloadUrl || undefined,
+              // Omitted on "auto" so the server infers from the URL.
+              fileType: formState.fileType || undefined,
               supportedOs:
                 formState.supportedOs.length > 0
                   ? formState.supportedOs
@@ -429,6 +460,7 @@ export default function SoftwareVersionManager({
         silentInstallArgs: "",
         silentUninstallArgs: "",
         downloadUrl: "",
+        fileType: "",
         supportedOs: [],
         detectionRules: [],
         file: null,
@@ -589,9 +621,7 @@ export default function SoftwareVersionManager({
             <div className="mt-2">
               <VariableInput
                 value={formState.downloadUrl}
-                onChange={(value) =>
-                  setFormState((prev) => ({ ...prev, downloadUrl: value }))
-                }
+                onChange={handleDownloadUrlChange}
                 placeholder={i18n.t(
                   "policies:software.softwareVersionManager.httpsExampleComPackageV100",
                 )}
@@ -610,6 +640,54 @@ export default function SoftwareVersionManager({
                 "policies:software.softwareVersionManager.resolvePerOrganizationAtDeployTime",
               )}
             </p>
+            {/* Only shown for the URL source: the upload path derives the type
+                from the uploaded filename and needs no operator input. */}
+            {!formState.file && (
+              <div className="mt-3">
+                <label
+                  className="text-xs font-semibold uppercase text-muted-foreground"
+                  htmlFor="version-file-type"
+                >
+                  {i18n.t(
+                    "policies:software.softwareVersionManager.installerType",
+                  )}
+                </label>
+                <select
+                  id="version-file-type"
+                  data-testid="version-file-type"
+                  value={formState.fileType}
+                  onChange={(e) =>
+                    handleFileTypeChange(e.target.value as "" | SoftwareFileType)
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option value="">
+                    {inferredFileType
+                      ? i18n.t(
+                          "policies:software.softwareVersionManager.autoDetectedType",
+                          { type: inferredFileType.toUpperCase() },
+                        )
+                      : i18n.t(
+                          "policies:software.softwareVersionManager.autoDetectFromUrl",
+                        )}
+                  </option>
+                  {SOFTWARE_FILE_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+                {formState.downloadUrl.trim() !== "" &&
+                  !formState.fileType &&
+                  !inferredFileType && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+                      {i18n.t(
+                        "policies:software.softwareVersionManager.installerTypeUndetected",
+                      )}
+                    </p>
+                  )}
+              </div>
+            )}
           </div>
 
           <div className="mt-4">
