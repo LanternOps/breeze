@@ -515,8 +515,8 @@ export default function DeviceGroupsPage() {
         type: groupForm.type,
       };
 
-      // Only a fleet-scope create carries an explicit owner org; a focused
-      // create relies on the injected `?orgId=`, and edits never move orgs.
+      // A create carries the concrete owner org in the body (the focused org, or
+      // the fleet picker's choice); edits never move a group between orgs.
       if (!isEdit && fleet.bodyOrgId) {
         payload.orgId = fleet.bodyOrgId;
       }

@@ -51,12 +51,14 @@ describe('useFleetOrgOwner', () => {
     expect(result.current.bodyOrgId).toBe('org-2');
   });
 
-  it('concrete-org scope: no picker, has a resolvable owner, never sends orgId', () => {
+  it('concrete-org scope: no picker, and sends the focused org in the body', () => {
+    // The body must carry the concrete org even when focused — some routes
+    // (DNS integrations, #3505) read only body.orgId, never the injected query.
     seed({ currentOrgId: 'org-1', organizations: [acme], organizationsLoaded: true });
     const { result } = renderHook(() => useFleetOrgOwner());
     expect(result.current.isFleetScope).toBe(false);
     expect(result.current.needsOrgSelection).toBe(false);
-    expect(result.current.bodyOrgId).toBeUndefined();
+    expect(result.current.bodyOrgId).toBe('org-1');
   });
 
   // Regression guard: the pre-hydration null (list not loaded, All-orgs not
@@ -70,6 +72,17 @@ describe('useFleetOrgOwner', () => {
     expect(result.current.bodyOrgId).toBeUndefined();
   });
 
+  // A persisted focused currentOrgId that is no longer in the accessible list
+  // (deleted / access revoked, before the list repairs it) must NOT be
+  // submitted — it would 403. Block instead.
+  it('focused scope with a stale/inaccessible currentOrgId: blocked, no body', () => {
+    seed({ currentOrgId: 'org-gone', organizations: [acme], organizationsLoaded: true });
+    const { result } = renderHook(() => useFleetOrgOwner());
+    expect(result.current.isFleetScope).toBe(false);
+    expect(result.current.needsOrgSelection).toBe(true);
+    expect(result.current.bodyOrgId).toBeUndefined();
+  });
+
   // Org-list load failure while the page stays usable: still no injectable org,
   // so the create must stay blocked rather than 400.
   it('org-list error state: create blocked, no picker', () => {
@@ -77,6 +90,24 @@ describe('useFleetOrgOwner', () => {
     const { result } = renderHook(() => useFleetOrgOwner());
     expect(result.current.isFleetScope).toBe(false);
     expect(result.current.needsOrgSelection).toBe(true);
+  });
+
+  // Cold-load FAILURE while legitimately focused: the org list never loaded
+  // (organizationsLoaded false), but a persisted currentOrgId keeps the user
+  // focused. The focused owner must still be trusted (server authorizes it) —
+  // NOT blocked just because the list is empty, or the user is stranded with no
+  // retry. Regression guard.
+  it('focused scope, org-list not loaded (cold-load failure): trusts the focused org', () => {
+    seed({
+      currentOrgId: 'org-1',
+      organizations: [],
+      organizationsLoaded: false,
+      error: 'Failed to fetch organizations',
+    });
+    const { result } = renderHook(() => useFleetOrgOwner());
+    expect(result.current.isFleetScope).toBe(false);
+    expect(result.current.needsOrgSelection).toBe(false);
+    expect(result.current.bodyOrgId).toBe('org-1');
   });
 
   // Finding 6: a pick that drops out of the accessible org list (partner switch,

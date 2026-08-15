@@ -18,76 +18,100 @@ export interface FleetOrgOwner {
   /**
    * True when the create has no resolvable owner and must be blocked: the fleet
    * view with no valid pick, OR any scope that has not resolved to a concrete
-   * org (loading, error, empty, cleared). A focused, resolved org scope is fine
-   * — the server gets the injected `?orgId=`.
+   * org (loading, error, empty, cleared). A focused, resolved org scope always
+   * has an owner (the selected org).
    */
   needsOrgSelection: boolean;
   /**
-   * The orgId to place in the create body: the validated pick in fleet scope,
-   * otherwise undefined (a focused scope relies on the `?orgId=` that
-   * fetchWithAuth injects, so the body must stay silent there).
+   * The concrete owner org to place in the create body: the selected org in a
+   * focused scope, or the validated pick in fleet scope. Undefined only while
+   * the scope is unresolved (which `needsOrgSelection` also blocks).
+   *
+   * The body must carry it in BOTH scopes: some org-owned create routes read
+   * only `body.orgId` and never the `?orgId=` query that fetchWithAuth injects
+   * (e.g. DNS integrations — #3505 fails in a focused view too), so relying on
+   * the injected query alone leaves a multi-org partner 400ing when focused.
    */
   bodyOrgId: string | undefined;
 }
 
 /**
- * Backs a fleet-only "Organization" picker for org-owned create forms (DNS
- * integrations, device groups). Those resources must belong to exactly one org;
- * the dashboard normally scopes the create by the `?orgId=` that fetchWithAuth
- * injects from the active org. In the EXPLICIT All-organizations view there is
- * no active org, nothing is injected, and the server rejects the create with
+ * Backs a fleet "Organization" picker for org-owned create forms (DNS
+ * integrations, device groups). Those resources must belong to exactly one org.
+ * In a focused view the owner is the selected org; in the EXPLICIT
+ * All-organizations view there is no active org, so the form must ask which org
+ * should own the resource — otherwise the server rejects the create with
  * "orgId is required for this scope". This hook surfaces the org list, tracks
- * the chosen owner, and reports when a create has no resolvable owner yet.
+ * the chosen owner, and always reports the concrete owner to send in the body.
  *
  * Gate the picker on `useOrgScope().scope === 'all'`, NOT `currentOrgId === null`:
  * the bare-null read also matches the pre-hydration frame before the first org
  * auto-selects, which would flash the picker on a scope that's about to resolve
  * to a concrete org. (Same rule as useDefaultOwnerScope.)
  *
- * `needsOrgSelection` deliberately also blocks the unresolved/degraded scopes
- * (loading, org-list load failure, empty, cleared): those inject no `?orgId=`
- * either, so an unguarded create would hit the same opaque 400. And the picker
- * value is validated against the live org list every render, so a selection
- * that stops being accessible cannot be silently reused as the owner.
+ * `needsOrgSelection` deliberately blocks the unresolved/degraded scopes
+ * (loading, org-list load failure, empty, cleared): those have no owner to send,
+ * so an unguarded create would hit the same opaque 400. And the picker value is
+ * validated against the live org list every render, so a selection that stops
+ * being accessible cannot be silently reused as the owner.
  */
 export function useFleetOrgOwner(): FleetOrgOwner {
   const scope = useOrgScope();
   const organizations = useOrgStore((s) => s.organizations);
+  const organizationsLoaded = useOrgStore((s) => s.organizationsLoaded);
   const [selectedOrgId, setSelectedOrgId] = useState('');
 
   const isFleetScope = scope.status === 'resolved' && scope.scope === 'all';
-  const isFocusedScope = scope.status === 'resolved' && scope.scope === 'org';
+  // The concrete org in a focused, resolved scope (undefined otherwise).
+  // Narrowed here so `scope.orgId` is typed as string.
+  const focusedOrgId =
+    scope.status === 'resolved' && scope.scope === 'org' ? scope.orgId : undefined;
 
   const sortedOrganizations = useMemo(
     () => [...organizations].sort((a, b) => a.name.localeCompare(b.name)),
     [organizations],
   );
 
-  // Only honor a pick that is still a member of the accessible org list.
-  const validOrgId = organizations.some((o) => o.id === selectedOrgId)
-    ? selectedOrgId
-    : '';
+  const inList = (id: string) => organizations.some((o) => o.id === id);
 
-  // Actually clear a pick that has dropped out of the list — don't just mask it.
-  // Otherwise, if that org later reappears while this (page-level) hook stays
-  // mounted, the stale choice would silently resurrect and re-enable submit
-  // without a fresh user selection.
+  // Fleet pick: always a current member of the loaded list — it was chosen from
+  // that list, and a pick that drops out must not resurrect.
+  const fleetPick = isFleetScope && selectedOrgId && inList(selectedOrgId) ? selectedOrgId : '';
+
+  // Focused owner: the selected org. Drop it ONLY when the list is LOADED and
+  // proves it absent (stale / access revoked). While the list is unloaded —
+  // still loading OR the cold-load fetch failed — keep trusting the concrete
+  // selection: useOrgScope's contract is that a concrete selection stays usable
+  // after a refetch failure, and the server authorizes the owner anyway.
+  // Requiring list membership unconditionally would strand a legitimately
+  // focused user whose org-list fetch failed, with no retry on these forms.
+  const focusedOwner =
+    focusedOrgId && (!organizationsLoaded || inList(focusedOrgId)) ? focusedOrgId : '';
+
+  const ownerOrgId = isFleetScope ? fleetPick : focusedOwner;
+
+  // Actually clear a fleet pick that has dropped out of the loaded list — don't
+  // just mask it. Otherwise, if that org later reappears while this (page-level)
+  // hook stays mounted, the stale choice would silently resurrect and re-enable
+  // submit without a fresh selection. Gate on `organizationsLoaded` so a
+  // transient/failed empty list never wipes a valid pick. (Focused ids aren't
+  // local state, so they need no clearing.)
   useEffect(() => {
-    if (selectedOrgId && !validOrgId) {
+    if (
+      selectedOrgId &&
+      organizationsLoaded &&
+      !organizations.some((o) => o.id === selectedOrgId)
+    ) {
       setSelectedOrgId('');
     }
-  }, [selectedOrgId, validOrgId]);
-
-  // A create has a resolvable owner when the scope is a concrete focused org
-  // (server injects it) or a fleet view with a valid pick.
-  const hasOwner = isFocusedScope || (isFleetScope && Boolean(validOrgId));
+  }, [selectedOrgId, organizationsLoaded, organizations]);
 
   return {
     isFleetScope,
     organizations: sortedOrganizations,
-    orgId: validOrgId,
+    orgId: ownerOrgId,
     setOrgId: setSelectedOrgId,
-    needsOrgSelection: !hasOwner,
-    bodyOrgId: isFleetScope ? validOrgId || undefined : undefined,
+    needsOrgSelection: !ownerOrgId,
+    bodyOrgId: ownerOrgId || undefined,
   };
 }

@@ -125,6 +125,9 @@ describe('AddDnsIntegrationModal', () => {
       isActive: true,
     });
     expect(body.apiSecret).toBeUndefined();
+    // Focused scope must still send the concrete org in the body — the DNS
+    // route reads only body.orgId, never the injected query (#3505).
+    expect(body.orgId).toBe('org-aaaa');
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'success', message: expect.stringMatching(/Cloudflare/) }),
