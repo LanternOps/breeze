@@ -1053,7 +1053,7 @@ scriptRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: executionList,
+      data: executionList.map(execution => ({ ...execution, scriptName: script.name })),
       pagination: { page, limit, total }
     });
   }
