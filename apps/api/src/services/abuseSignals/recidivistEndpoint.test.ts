@@ -161,13 +161,15 @@ describe('syncEndpointFingerprints', () => {
 
     await syncEndpointFingerprints(now);
 
-    // Exactly 3 execute calls total: no crash from Postgres's "affect row a
-    // second time" restriction would be visible here since db is mocked, but
-    // the dedup happens in JS before the SQL is built — assert only one
-    // occurrence of the guid value survives into the statement text.
+    // Postgres rejects an INSERT ... ON CONFLICT DO UPDATE that hits the same
+    // row twice in one statement, so the dedup must collapse both software
+    // rows down to exactly ONE VALUES row for this (partner, kind, value).
+    // db is mocked, so that constraint can't fire here — instead assert the
+    // guid value appears exactly once in the built statement, which is what
+    // guarantees only one VALUES row was emitted for it.
     const upsertCall = vi.mocked(db.execute).mock.calls[2]![0] as unknown;
     const occurrences = JSON.stringify(upsertCall).split('0123456789abcdef').length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(1);
+    expect(occurrences).toBe(1);
   });
 });
 
