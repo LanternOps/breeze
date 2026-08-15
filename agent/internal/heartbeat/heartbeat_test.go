@@ -232,15 +232,22 @@ func TestBootstrapRetryStopsOnContextCancel(t *testing.T) {
 
 // TestHeartbeatPayloadSecurityCapabilitiesJSON pins the exact wire shape the
 // server-side heartbeat schema expects (Wave 6 Task 4, security
-// remediation): `{"securityCapabilities":{"outboundNetworkPolicyVersion":1}}`.
+// remediation; #3409 PR4b):
+// `{"securityCapabilities":{"outboundNetworkPolicyVersion":1,"scriptSecretEnvVersion":1}}`.
 // A field rename, a dropped `omitempty`-less requirement, or a wrapper-type
 // change here would silently desync from apps/api/src/routes/agents/
-// schemas.ts without either side's own tests catching it.
+// schemas.ts without either side's own tests catching it. scriptSecretEnvVersion
+// in particular must be emitted even when it is the zero value — the server
+// distinguishes "old agent, whole object absent" from "capable agent
+// declaring 0" — so this also guards against a stray `omitempty` creeping in.
 func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
 	payload := HeartbeatPayload{
-		Status:               "ok",
-		AgentVersion:         "1.2.3",
-		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
+		Status:       "ok",
+		AgentVersion: "1.2.3",
+		SecurityCapabilities: SecurityCapabilities{
+			OutboundNetworkPolicyVersion: 1,
+			ScriptSecretEnvVersion:       1,
+		},
 	}
 
 	body, err := json.Marshal(&payload)
@@ -267,5 +274,39 @@ func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
 	}
 	if got, want := version, float64(1); got != want {
 		t.Fatalf("outboundNetworkPolicyVersion = %v, want %v", got, want)
+	}
+
+	secretEnvVersion, ok := caps["scriptSecretEnvVersion"]
+	if !ok {
+		t.Fatalf("scriptSecretEnvVersion key missing: %#v", caps)
+	}
+	if got, want := secretEnvVersion, float64(1); got != want {
+		t.Fatalf("scriptSecretEnvVersion = %v, want %v", got, want)
+	}
+
+	// Emitted unconditionally: a zero-value SecurityCapabilities must still
+	// produce the key (no omitempty), so the server can tell "old agent,
+	// object absent" apart from "capable agent declaring 0".
+	zeroBody, err := json.Marshal(&HeartbeatPayload{
+		Status:       "ok",
+		AgentVersion: "1.2.3",
+	})
+	if err != nil {
+		t.Fatalf("marshal zero-value payload: %v", err)
+	}
+	var zeroDecoded map[string]any
+	if err := json.Unmarshal(zeroBody, &zeroDecoded); err != nil {
+		t.Fatalf("unmarshal zero-value payload: %v", err)
+	}
+	zeroCaps, ok := zeroDecoded["securityCapabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("securityCapabilities missing/not an object on zero-value payload: %s", zeroBody)
+	}
+	zeroVersion, ok := zeroCaps["scriptSecretEnvVersion"]
+	if !ok {
+		t.Fatalf("scriptSecretEnvVersion key missing on zero-value payload (omitempty regression?): %#v", zeroCaps)
+	}
+	if got, want := zeroVersion, float64(0); got != want {
+		t.Fatalf("zero-value scriptSecretEnvVersion = %v, want %v", got, want)
 	}
 }

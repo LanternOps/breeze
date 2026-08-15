@@ -176,6 +176,13 @@ func migrationSignal(server, backup string) (edition string, migrationRequired b
 // enforces the policy this version number claims to be honoring.
 type SecurityCapabilities struct {
 	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
+	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
+	// user-context runs that would drop the credential, and redacts the values
+	// out of stdout/stderr/error. Declared unconditionally: the behavior is
+	// compiled in, not a runtime toggle. The server writes this non-sticky on
+	// every beat, so a DOWNGRADE to an older agent reports back down to 0 and
+	// the PR4c dispatch gate stops trusting a stale claim.
+	ScriptSecretEnvVersion int `json:"scriptSecretEnvVersion"`
 }
 
 type DesktopAccessState struct {
@@ -3869,7 +3876,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
+		SecurityCapabilities: SecurityCapabilities{
+			OutboundNetworkPolicyVersion: 1,
+			ScriptSecretEnvVersion:       1,
+		},
 	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
 	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.
