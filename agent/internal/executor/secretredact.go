@@ -23,6 +23,12 @@ const SecretRedactionMarker = "[REDACTED]"
 // careless output, never as a control against a hostile script author — who
 // holds the credential by definition.
 //
+// It also runs LAST, after two earlier transforms, and only matches text that
+// survived them intact: a secret whose middle is consumed by a SanitizeOutput
+// pattern, or one straddling the 1 MB limitedWriter cap (executor.go), can
+// leave an unmatched fragment behind. Inherent to redact-last; the alternative
+// (redact first) would let the pattern layer re-mangle the markers.
+//
 // Mirrors apps/api/src/services/exactSecretRedaction.ts so the agent and the
 // server produce identical redacted text for the same input.
 func BuildSecretRedactor(values []string) func(string) string {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -32,8 +33,9 @@ func init() {
 //
 // `Error` in particular was copied raw out of the executor and out of the
 // helper IPC result, so a credential echoed into an error message reached the
-// server unredacted. Keeping the redaction here — rather than at the eight
-// executor sites that assign result.Error — means a new failure path cannot
+// server unredacted. BOTH error passes live here — the pattern-based
+// SanitizeOutput as well as the exact-value redactor — rather than at the eight
+// executor sites that assign result.Error, so a new failure path cannot
 // silently opt out. Mirrors the server's own chokepoint invariant
 // (redactAgentResultErrorFields as the first statement of processCommandResult,
 // apps/api/src/routes/agentWs.ts).
@@ -42,16 +44,25 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	secretEnv, err := executor.ParseSecretEnv(cmd.Payload[executor.SecretEnvPayloadKey])
 	if err != nil {
 		// Fail closed: never run a script whose secret map we could not
-		// validate. ParseSecretEnv error text names keys, never values.
+		// validate. ParseSecretEnv error text names keys, never values — but
+		// the key is server-supplied text, so it gets the same sanitizer as
+		// every other Error below.
 		return tools.CommandResult{
 			Status: "failed",
 			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
 			ExitCode:   1,
-			Error:      fmt.Sprintf("refusing to execute script: %v", err),
+			Error:      executor.SanitizeOutput(fmt.Sprintf("refusing to execute script: %v", err)),
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
 	res := handleScriptInner(h, cmd, secretEnv)
+	// Unconditional, and centralized here rather than at the result-build
+	// sites: the two tools.NewErrorResult returns (the executor error below and
+	// the helper IPC send failure in executeViaUserHelper — the latter is a
+	// live path) never had a sanitizer at all, which is precisely the "a new
+	// failure path silently opts out" failure this wrapper exists to prevent.
+	// Stdout/Stderr stay sanitized at their build sites; only Error moved.
+	res.Error = executor.SanitizeOutput(res.Error)
 	if len(secretEnv) == 0 {
 		return res
 	}
@@ -199,27 +210,46 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		ExitCode: scriptResult.ExitCode,
 		Stdout:   executor.SanitizeOutput(scriptResult.Stdout),
 		Stderr:   executor.SanitizeOutput(scriptResult.Stderr),
-		// Error was the only result field that skipped the pattern sanitizer,
-		// so a credential shape in an executor error reached the server intact.
-		Error:      executor.SanitizeOutput(scriptResult.Error),
+		// Error is deliberately raw here: handleScript sanitizes it for every
+		// exit path, including the NewErrorResult return above that never
+		// reached this build site. The timeout classification a few lines up
+		// also needs the unmodified text.
+		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
 }
 
+// isRunningElevated is an indirection over privilege.IsRunningAsRoot so the
+// elevated-path gate below can be tested deterministically on both root and
+// non-root hosts; CI runners differ.
+var isRunningElevated = privilege.IsRunningAsRoot
+
 // runAsSupportsSecrets reports whether an execution with this runAs setting
-// will reach the LOCAL executor, which is the only path that carries
-// BREEZE_VAR_* environment. Mirrors resolveRunAsSession's contract: "", system
-// and elevated never resolve a helper session. An explicit username is refused
-// even though it currently falls through to local execution on an unresolved
-// lookup — that fall-through is a best-effort downgrade, and downgrading a
-// secret-bearing run is exactly what must not happen silently.
+// will reach the LOCAL executor *with its environment intact* — the only way
+// BREEZE_VAR_* actually arrives.
+//
+// "" and system always do. An explicit username is refused even though it
+// currently falls through to local execution on an unresolved lookup — that
+// fall-through is a best-effort downgrade, and downgrading a secret-bearing run
+// is exactly what must not happen silently.
+//
+// `elevated` is admitted ONLY when the agent is already elevated, mirroring
+// executor.configureRunAs's own short-circuit. On a non-root Unix agent
+// configureRunAs re-execs the command through `sudo -n` with no -E /
+// --preserve-env, and sudo's default env_reset discards the BREEZE_VAR_*
+// entries built into cmd.Env — the script would run with the credential UNSET,
+// the same silent-wrong-run the helper IPC path is blocked for, reached by a
+// different mechanism. (-E is not the fix: it would change behavior for every
+// existing script and sudoers can refuse it outright.)
 func runAsSupportsSecrets(runAs string, targetSessionID int) bool {
 	if targetSessionID >= 0 {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(runAs)) {
-	case "", "system", "elevated":
+	case "", "system":
 		return true
+	case "elevated":
+		return isRunningElevated()
 	default:
 		return false
 	}
@@ -361,12 +391,13 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 		)
 	}
 
-	// Translate IPC result to tools.CommandResult. Error was the only field
-	// copied straight out of the helper's IPC result without the pattern
-	// sanitizer that stdout/stderr get below.
+	// Translate IPC result to tools.CommandResult. Error is copied raw and
+	// sanitized once, centrally, in handleScript — the send-failure return
+	// above never passes through here, so sanitizing at this site would have
+	// left that path uncovered.
 	cmdResult := tools.CommandResult{
 		Status:     result.Status,
-		Error:      executor.SanitizeOutput(result.Error),
+		Error:      result.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
 

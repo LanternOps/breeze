@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -157,6 +158,15 @@ func TestHandleScriptMalformedSecretEnvFailsClosed(t *testing.T) {
 			secretEnv: map[string]any{"API_TOKEN": testSecretValue},
 			wantIn:    []string{"API_TOKEN", "not a valid variable key"},
 			wantNotIn: []string{testSecretValue},
+		},
+		{
+			// The refusal quotes the offending key, which is server-supplied
+			// text — so even this earliest exit path runs through
+			// SanitizeOutput.
+			name:      "credential-shaped key is sanitized in the refusal",
+			secretEnv: map[string]any{awsKeyInError: testSecretValue},
+			wantIn:    []string{"[AWS_KEY_REDACTED]", "not a valid variable key"},
+			wantNotIn: []string{awsKeyInError, testSecretValue},
 		},
 	}
 
@@ -342,17 +352,65 @@ func TestHandleScriptSecretEnvRunsInSystemContexts(t *testing.T) {
 	}
 }
 
-func TestHandleScriptSecretEnvAllowsElevated(t *testing.T) {
-	// runAs=elevated stays a local execution (a sudo re-exec on unix), so the
-	// gate must let it through. Whether the sudo itself succeeds depends on the
-	// host, so assert only that the refusal did not fire.
+// stubElevated overrides the agent's own elevation check for one test. Tests in
+// this package do not run in parallel, so a package-level override is safe.
+func stubElevated(t *testing.T, elevated bool) {
+	t.Helper()
+	prev := isRunningElevated
+	isRunningElevated = func() bool { return elevated }
+	t.Cleanup(func() { isRunningElevated = prev })
+}
+
+// TestRunAsSupportsSecrets pins the gate decision itself, deterministically on
+// any host. The handleScript-level tests below cover the wiring; this covers
+// the matrix.
+func TestRunAsSupportsSecrets(t *testing.T) {
+	cases := []struct {
+		runAs           string
+		targetSessionID int
+		elevatedAgent   bool
+		want            bool
+	}{
+		{runAs: "", targetSessionID: -1, want: true},
+		{runAs: "system", targetSessionID: -1, want: true},
+		{runAs: "SYSTEM", targetSessionID: -1, want: true},
+		{runAs: " system ", targetSessionID: -1, want: true},
+		// elevated on an already-root agent keeps cmd.Env (configureRunAs
+		// short-circuits); on a non-root agent it re-execs through `sudo -n`,
+		// whose env_reset drops BREEZE_VAR_*.
+		{runAs: "elevated", targetSessionID: -1, elevatedAgent: true, want: true},
+		{runAs: "elevated", targetSessionID: -1, elevatedAgent: false, want: false},
+		{runAs: "Elevated", targetSessionID: -1, elevatedAgent: false, want: false},
+		{runAs: "user", targetSessionID: -1, want: false},
+		{runAs: "alice", targetSessionID: -1, want: false},
+		// Session targeting always routes to a helper, regardless of runAs.
+		{runAs: "system", targetSessionID: 7, want: false},
+		{runAs: "elevated", targetSessionID: 7, elevatedAgent: true, want: false},
+		{runAs: "", targetSessionID: 0, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("runAs=%q/target=%d/elevatedAgent=%v", tc.runAs, tc.targetSessionID, tc.elevatedAgent), func(t *testing.T) {
+			stubElevated(t, tc.elevatedAgent)
+			if got := runAsSupportsSecrets(tc.runAs, tc.targetSessionID); got != tc.want {
+				t.Fatalf("runAsSupportsSecrets(%q, %d) = %v, want %v", tc.runAs, tc.targetSessionID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleScriptSecretEnvRefusesElevatedOnUnelevatedAgent — the sudo re-exec
+// would strip BREEZE_VAR_* (env_reset), so the script must not run at all.
+func TestHandleScriptSecretEnvRefusesElevatedOnUnelevatedAgent(t *testing.T) {
+	stubElevated(t, false)
+	content, marker := markerScript(t)
 	h := newTestHeartbeat(nil)
 
 	res := handleScript(h, Command{
-		ID:   "cmd-secret-elevated",
+		ID:   "cmd-secret-elevated-unelevated",
 		Type: tools.CmdScript,
 		Payload: map[string]any{
-			"content":        "echo ok",
+			"content":        content,
 			"language":       "bash",
 			"runAs":          "elevated",
 			"timeoutSeconds": 10,
@@ -360,10 +418,78 @@ func TestHandleScriptSecretEnvAllowsElevated(t *testing.T) {
 		},
 	})
 
-	if strings.Contains(res.Error, "secret variables") {
-		t.Fatalf("runAs=elevated must not be refused by the secret gate, got %q", res.Error)
+	if res.Status != "failed" {
+		t.Fatalf("expected failed, got %q (error: %q)", res.Status, res.Error)
+	}
+	// Same failure shape as every other blocked path.
+	if !strings.Contains(res.Error, "secret variables") ||
+		!strings.Contains(res.Error, "system-context execution") ||
+		!strings.Contains(res.Error, "was not executed") {
+		t.Fatalf("unexpected refusal message: %q", res.Error)
+	}
+	assertScriptDidNotRun(t, marker)
+	assertNoSecretLeak(t, res)
+}
+
+// TestHandleScriptSecretEnvElevatedOnElevatedAgent — the delivery half. It
+// needs the agent to be genuinely elevated, because the stub governs only the
+// gate; executor.configureRunAs consults privilege.IsRunningAsRoot directly and
+// would otherwise sudo-re-exec (the exact env-stripping this gate blocks). The
+// gate's decision on a non-root host is covered deterministically by
+// TestRunAsSupportsSecrets.
+func TestHandleScriptSecretEnvElevatedOnElevatedAgent(t *testing.T) {
+	if !privilege.IsRunningAsRoot() {
+		t.Skip("agent is not elevated on this host; the executor would re-exec through sudo")
+	}
+	stubElevated(t, true)
+	h := newTestHeartbeat(nil)
+
+	res := handleScript(h, Command{
+		ID:   "cmd-secret-elevated-root",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        `printf 'len=%s\n' "${#BREEZE_VAR_API_TOKEN}"`,
+			"language":       "bash",
+			"runAs":          "elevated",
+			"timeoutSeconds": 10,
+			"secretEnv":      map[string]any{"api_token": testSecretValue},
+		},
+	})
+
+	if res.Status != "completed" {
+		t.Fatalf("expected completed, got %q (error: %q, stderr: %q)", res.Status, res.Error, res.Stderr)
+	}
+	want := fmt.Sprintf("len=%d", testSecretValueLen)
+	if got := strings.TrimSpace(res.Stdout); got != want {
+		t.Fatalf("elevated run did not receive the secret: got %q, want %q", got, want)
 	}
 	assertNoSecretLeak(t, res)
+}
+
+// TestHandleScriptElevatedWithoutSecretsUnaffected — the gate cannot fire
+// without delivered secrets, in either elevation state.
+func TestHandleScriptElevatedWithoutSecretsUnaffected(t *testing.T) {
+	for _, elevated := range []bool{true, false} {
+		t.Run(fmt.Sprintf("elevatedAgent=%v", elevated), func(t *testing.T) {
+			stubElevated(t, elevated)
+			h := newTestHeartbeat(nil)
+
+			res := handleScript(h, Command{
+				ID:   "cmd-elevated-no-secrets",
+				Type: tools.CmdScript,
+				Payload: map[string]any{
+					"content":        "echo ok",
+					"language":       "bash",
+					"runAs":          "elevated",
+					"timeoutSeconds": 10,
+				},
+			})
+
+			if strings.Contains(res.Error, "secret variables") {
+				t.Fatalf("runAs=elevated without secrets must never hit the secret gate, got %q", res.Error)
+			}
+		})
+	}
 }
 
 // TestHandleScriptEmptySecretEnvDoesNotGate — an empty object is "no secrets",
