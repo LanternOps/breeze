@@ -79,6 +79,8 @@ export const aiSessionQuerySchema = z.object({
 
 export const scriptBuilderContextSchema = z.object({
   scriptId: z.string().guid().optional(),
+  targetDeviceId: z.string().guid().optional(),
+  lastTestExecutionId: z.string().guid().optional(),
   editorSnapshot: z.object({
     name: z.string().max(255).optional(),
     content: z.string().max(500_000).optional(),

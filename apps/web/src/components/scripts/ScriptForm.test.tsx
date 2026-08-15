@@ -318,7 +318,10 @@ describe('ScriptForm unknown-variable notice', () => {
     editorInstances.length = 0;
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
     orgStoreMock.mockReturnValue({ organizations: [], partners: [], sites: [] });
-    fetchWithAuthMock.mockResolvedValue(
+    // Fresh Response per call: the form now issues several reads on mount
+    // (tenant variables + the test runner's device list), and a shared
+    // Response body can only be consumed once.
+    fetchWithAuthMock.mockImplementation(async () =>
       new Response(JSON.stringify({ data: [tenantVariable] }), { status: 200 })
     );
   });

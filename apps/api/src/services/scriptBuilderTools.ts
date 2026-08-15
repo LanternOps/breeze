@@ -44,6 +44,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_script_details: 1,
   list_script_templates: 1,
   get_script_execution_history: 1,
+  get_script_execution: 1,
   execute_script_on_device: 3,
 };
 
@@ -281,6 +282,15 @@ export function createScriptBuilderMcpServer(
         limit: z.number().int().min(1).max(50).optional(),
       },
       makeExistingHandler('get_script_execution_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_script_execution',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use after a run you or the user started to read its result.',
+      {
+        executionId: uuid.describe('The execution ID to fetch'),
+      },
+      makeExistingHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // --- Execution tool (requires approval) ---

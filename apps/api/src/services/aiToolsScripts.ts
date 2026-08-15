@@ -11,6 +11,7 @@
  * - get_script_details (Tier 1): Get script metadata with optional content/versions/stats
  * - list_script_templates (Tier 1): Browse available script templates
  * - get_script_execution_history (Tier 1): Get past execution results for a script
+ * - get_script_execution (Tier 1): Get a single execution by ID (status + output)
  * - search_script_library (Tier 1): Search scripts and templates together
  * - manage_processes (Tier 1): List or kill running processes on a device
  * - manage_scheduled_tasks (Tier 1): List/run/enable/disable/delete scheduled tasks
@@ -682,10 +683,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      // Verify the script belongs to the user's org before returning execution data
+      // Verify the script belongs to the user's org before returning execution
+      // data. Partner-wide/system scripts have org_id NULL — same guard as
+      // run_script, or the history of the repo's default ownership shape would
+      // read as "Script not found".
       const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
       const orgCondition = auth.orgCondition(scripts.orgId);
-      if (orgCondition) scriptConditions.push(orgCondition);
+      if (orgCondition) scriptConditions.push(or(isNull(scripts.orgId), orgCondition)!);
 
       const [script] = await db
         .select({ id: scripts.id })
@@ -713,6 +717,68 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         .limit(limit);
 
       return JSON.stringify({ executions: results, count: results.length });
+    },
+  });
+
+  // ============================================
+  // get_script_execution - Tier 1 (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_script_execution',
+      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this to fetch the result of a run you or the user started (e.g. after a run outlived the tool call, or after the user clicked Test Run in the editor).',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          executionId: { type: 'string', description: 'UUID of the script execution to fetch' },
+        },
+        required: ['executionId'],
+      },
+    },
+    handler: async (input, auth) => {
+      // Partner-wide/system scripts have org_id NULL; the plain orgCondition
+      // would exclude their executions (same trap run_script guards against
+      // above). Org-less scripts pass here; the device-site check below and
+      // RLS still constrain what the session can see.
+      const orgCond = auth.orgCondition(scripts.orgId);
+      const scriptOrgCondition = orgCond ? or(isNull(scripts.orgId), orgCond) : undefined;
+
+      const [execution] = await db
+        .select({
+          id: scriptExecutions.id,
+          scriptId: scriptExecutions.scriptId,
+          scriptName: scripts.name,
+          deviceId: scriptExecutions.deviceId,
+          deviceHostname: devices.hostname,
+          deviceSiteId: devices.siteId,
+          status: scriptExecutions.status,
+          exitCode: scriptExecutions.exitCode,
+          stdout: scriptExecutions.stdout,
+          stderr: scriptExecutions.stderr,
+          errorMessage: scriptExecutions.errorMessage,
+          startedAt: scriptExecutions.startedAt,
+          completedAt: scriptExecutions.completedAt,
+          createdAt: scriptExecutions.createdAt,
+        })
+        .from(scriptExecutions)
+        .innerJoin(scripts, eq(scriptExecutions.scriptId, scripts.id))
+        .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
+        .where(and(
+          eq(scriptExecutions.id, input.executionId as string),
+          ...(scriptOrgCondition ? [scriptOrgCondition] : []),
+        ))
+        .limit(1);
+
+      if (!execution) return JSON.stringify({ error: 'Execution not found' });
+      // Site axis: same rule verifyDeviceAccess applies on the write path.
+      if (auth.canAccessSite && !auth.canAccessSite(execution.deviceSiteId)) {
+        return JSON.stringify({ error: 'Execution not found' });
+      }
+
+      const { deviceSiteId: _siteId, ...result } = execution;
+      return JSON.stringify({ execution: result });
     },
   });
 

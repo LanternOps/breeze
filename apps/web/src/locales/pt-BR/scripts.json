@@ -1241,5 +1241,37 @@
     "scriptCount": "{{count}} scripts no pacote",
     "statusInvalid": "Inválido",
     "exportLimit": "Você pode exportar até {{max}} scripts por pacote."
+  },
+  "testRunner": {
+    "title": "Execução de teste",
+    "devicePlaceholder": "Selecionar dispositivo de teste…",
+    "noDevices": "Nenhum dispositivo compatível",
+    "deviceStatus": {
+      "offline": "desconectado",
+      "maintenance": "manutenção"
+    },
+    "run": "Executar teste",
+    "saveAndRun": "Salvar e testar",
+    "saveFirst": "Salve o script uma vez para habilitar execuções de teste.",
+    "requiredParams": "Parâmetros obrigatórios sem valores padrão ({{params}}) — use a caixa de diálogo Executar script.",
+    "offlineWarning": "O dispositivo selecionado está offline — a execução aguardará até que ele reconecte.",
+    "exitCode": "saída {{code}}",
+    "viewHistory": "Ver histórico",
+    "status": {
+      "pending": "Na fila",
+      "running": "Em execução",
+      "completed": "Concluída",
+      "failed": "Falhou",
+      "timeout": "Tempo esgotado",
+      "queued": "Na fila",
+      "cancelled": "Cancelada"
+    },
+    "errors": {
+      "execute": "Falha ao iniciar a execução de teste",
+      "save": "Falha ao salvar — corrija os erros acima e tente novamente.",
+      "notStarted": "A execução não foi iniciada (o dispositivo pode estar em manutenção).",
+      "pollDeadline": "Ainda sem resultado — verifique o histórico de execuções.",
+      "pollFailed": "Não foi possível ler o resultado — a execução pode ter sido excluída ou seu acesso mudou."
+    }
   }
 }

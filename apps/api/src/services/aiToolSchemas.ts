@@ -1253,6 +1253,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     scriptId: uuid,
     limit: z.number().int().min(1).max(50).optional(),
   }),
+  get_script_execution: z.object({
+    executionId: uuid,
+  }),
 
   // Monitoring tools
   query_monitors: z.object({

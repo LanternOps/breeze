@@ -56,7 +56,7 @@ function normalizeOutput(raw: string): string {
   return s;
 }
 
-function OutputSection({
+export function OutputSection({
   title,
   content,
   icon: Icon,

@@ -801,6 +801,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_script_details: { resource: 'scripts', action: 'read' },
   list_script_templates: { resource: 'scripts', action: 'read' },
   get_script_execution_history: { resource: 'scripts', action: 'read' },
+  get_script_execution: { resource: 'scripts', action: 'read' },
   // Backup & DR tools
   query_backups: { resource: 'devices', action: 'read' },
   get_backup_status: { resource: 'devices', action: 'read' },

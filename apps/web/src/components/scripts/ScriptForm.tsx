@@ -20,6 +20,7 @@ import 'monaco-editor/min/vs/editor/editor.main.css';
 
 import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES } from '@breeze/shared';
 import ScriptAiPanel from './ScriptAiPanel';
+import ScriptTestRunner from './ScriptTestRunner';
 import CollapsibleSection from './CollapsibleSection';
 import ScriptVariablePicker from './ScriptVariablePicker';
 import TenantVariableMenu from './TenantVariableMenu';
@@ -116,7 +117,7 @@ function TenantVariableBindingField({
 }
 
 type ScriptFormProps = {
-  onSubmit?: (values: ScriptSubmitValues) => void | Promise<void>;
+  onSubmit?: (values: ScriptSubmitValues, options?: { navigate?: boolean }) => void | Promise<void>;
   onCancel?: () => void;
   defaultValues?: ScriptFormDefaults;
   submitLabel?: string;
@@ -125,6 +126,9 @@ type ScriptFormProps = {
   // System scripts can't be re-scoped through this form (they're read-only for
   // non-system users and stay system-scope-seed-only). Hides the picker on edit.
   isSystemScript?: boolean;
+  // Saved script id — enables the test runner and lets the AI panel know which
+  // script it is editing. Absent for never-saved scripts.
+  scriptId?: string;
 };
 
 export default function ScriptForm({
@@ -135,6 +139,7 @@ export default function ScriptForm({
   loading,
   isNew = false,
   isSystemScript = false,
+  scriptId,
 }: ScriptFormProps) {
   const { t } = useTranslation('scripts');
   // Resolved after mount, never during render. Reading `navigator` inline made
@@ -235,6 +240,7 @@ export default function ScriptForm({
     watch,
     getValues,
     setValue,
+    reset,
     formState: { errors, isSubmitting, isDirty }
   } = useForm<ScriptFormValues>({
     resolver: zodResolver(scriptSchema) as never,
@@ -278,7 +284,15 @@ export default function ScriptForm({
 
   const { panelOpen, togglePanel } = useScriptAiStore();
 
+  // Test-runner state the AI panel context reads through the bridge. Refs (not
+  // state) because the bridge is memoized once and reads lazily.
+  const testDeviceIdRef = useRef<string | null>(null);
+  const lastTestExecutionIdRef = useRef<string | null>(null);
+
   const bridge: ScriptFormBridge = useMemo(() => ({
+    getScriptId: () => scriptId ?? null,
+    getTestDeviceId: () => testDeviceIdRef.current,
+    getLastTestExecutionId: () => lastTestExecutionIdRef.current,
     getFormValues: () => getValues() as ScriptFormValues,
     setFormValues: (partial) => {
       Object.entries(partial).forEach(([key, value]) => {
@@ -297,7 +311,7 @@ export default function ScriptForm({
         });
       }
     },
-  }), [getValues, setValue]);
+  }), [getValues, setValue, scriptId]);
 
   // Warn before leaving with unsaved changes (browser close/refresh + Astro SPA nav)
   const isDirtyRef = useRef(false);
@@ -406,6 +420,32 @@ export default function ScriptForm({
       setValue('osTypes', [...current, os]);
     }
   };
+
+  // Save the form without navigating away — used by the test runner before a
+  // run when the buffer is dirty, so the run always executes what's on screen.
+  // Resolves false on validation or save failure. Marks the form pristine on
+  // success so the unsaved-changes guard doesn't warn about saved work.
+  const saveForTestRun = useCallback(() => new Promise<boolean>((resolve) => {
+    void handleSubmit(
+      async values => {
+        try {
+          const { exitCodeSeverityMapping, ...rest } = values;
+          await onSubmit?.(
+            { ...rest, exitCodeSeverityMapping: rowsToMapping(exitCodeSeverityMapping) },
+            { navigate: false }
+          );
+          // Baseline on the SAVED snapshot, keeping the live buffer: edits
+          // typed while the PUT was in flight stay dirty (so the next run
+          // re-saves them and the nav guard still protects them).
+          reset(values, { keepValues: true });
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      },
+      () => resolve(false)
+    )();
+  }), [handleSubmit, onSubmit, reset, getValues]);
 
   const addParameter = () => {
     append({
@@ -725,6 +765,16 @@ export default function ScriptForm({
             </span>
           </p>
         )}
+        <ScriptTestRunner
+          scriptId={scriptId}
+          osTypes={watchOsTypes ?? []}
+          parameters={watchParameters}
+          timeoutSeconds={watch('timeoutSeconds')}
+          isDirty={isDirty}
+          onSaveChanges={saveForTestRun}
+          onTestDeviceChange={(deviceId) => { testDeviceIdRef.current = deviceId; }}
+          onExecutionChange={(executionId) => { lastTestExecutionIdRef.current = executionId; }}
+        />
       </div>
 
       {/* Parameters */}
