@@ -467,6 +467,79 @@ describe('list_quotes / get_quote read tools (#2361)', () => {
     expect(JSON.parse(out)).toEqual({ error: 'Quote not found', code: 'QUOTE_NOT_FOUND' });
   });
 
+  // #3485: large quotes overflow the MCP output cap. get_quote can page its
+  // content blocks and return a metadata-only overview.
+  const multiBlockQuote = {
+    quote: { id: 'quote-1', status: 'draft' },
+    blocks: [
+      { id: 'b1', quoteId: 'quote-1', blockType: 'heading', content: { text: 'H', level: 2 }, sortOrder: 0 },
+      { id: 'b2', quoteId: 'quote-1', blockType: 'rich_text', content: { html: '<p>a</p>' }, sortOrder: 1 },
+      { id: 'b3', quoteId: 'quote-1', blockType: 'rich_text', content: { html: '<p>b</p>' }, sortOrder: 2 },
+      { id: 'b4', quoteId: 'quote-1', blockType: 'callout', content: { text: 'c' }, sortOrder: 3 },
+      { id: 'b5', quoteId: 'quote-1', blockType: 'table', content: { columns: [], rows: [] }, sortOrder: 4 },
+    ],
+    lines: [],
+  };
+
+  it('get_quote pages content blocks with blocksOffset/blocksLimit and reports pagination', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce(multiBlockQuote as never);
+
+    const out = await getTool('get_quote').handler(
+      { quoteId: 'quote-1', blocksOffset: 1, blocksLimit: 2 },
+      auth,
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed.blocks.map((b: { id: string }) => b.id)).toEqual(['b2', 'b3']);
+    expect(parsed.blocks[0].content).toBeDefined();
+    expect(parsed.blocksPagination).toMatchObject({
+      total: 5,
+      offset: 1,
+      limit: 2,
+      returned: 2,
+      hasMore: true,
+      includeBlockContent: true,
+    });
+  });
+
+  it('get_quote with includeBlockContent:false returns block metadata only (compact overview)', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce(multiBlockQuote as never);
+
+    const out = await getTool('get_quote').handler(
+      { quoteId: 'quote-1', includeBlockContent: false },
+      auth,
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed.blocks).toHaveLength(5);
+    expect(parsed.blocks[0].content).toBeUndefined();
+    expect(parsed.blocks[0].blockType).toBe('heading');
+    expect(parsed.blocksPagination).toMatchObject({
+      total: 5,
+      returned: 5,
+      hasMore: false,
+      includeBlockContent: false,
+    });
+  });
+
+  it('get_quote default is backward compatible: all blocks, full content, plus pagination metadata', async () => {
+    vi.mocked(quoteService.getQuote).mockResolvedValueOnce(multiBlockQuote as never);
+
+    const out = await getTool('get_quote').handler({ quoteId: 'quote-1' }, auth);
+    const parsed = JSON.parse(out);
+
+    expect(parsed.blocks).toHaveLength(5);
+    expect(parsed.blocks[4].content).toBeDefined();
+    expect(parsed.blocksPagination).toMatchObject({
+      total: 5,
+      offset: 0,
+      limit: null,
+      returned: 5,
+      hasMore: false,
+      includeBlockContent: true,
+    });
+  });
+
   it('update with an empty patch is rejected with VALIDATION_ERROR and does not touch the quote (#2361)', async () => {
     const out = await getTool().handler({ action: 'update', quoteId: 'quote-1', patch: {} }, auth);
 

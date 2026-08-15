@@ -304,6 +304,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_quote: z.object({
     quoteId: uuid,
+    // Large quotes (many content blocks) can exceed the MCP output cap. These
+    // let the caller page the blocks or fetch a block-metadata overview (#3485).
+    blocksOffset: z.number().int().min(0).optional(),
+    blocksLimit: z.number().int().min(1).max(100).optional(),
+    includeBlockContent: z.boolean().optional(),
   }),
 
   list_organizations: z.object({
