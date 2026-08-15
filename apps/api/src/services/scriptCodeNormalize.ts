@@ -2,17 +2,19 @@
  * Normalize typographic Unicode punctuation in AI-generated script code.
  *
  * LLMs occasionally emit curly quotes, em/en dashes, ellipses, and
- * non-breaking/zero-width spaces inside script code. Interpreters treat these
- * as ordinary characters (bash/python) or, worse, Windows PowerShell 5.1
- * mis-decodes them entirely in a BOM-less ANSI read, producing cascading
- * parse errors ("Unexpected token", "missing string terminator"). The agent
- * now writes .ps1 files with a UTF-8 BOM, but code should be plain ASCII
- * punctuation regardless -- a curly quote is never intentional in a quote
- * position and breaks bash/python even when decoded correctly.
+ * non-breaking/zero-width characters inside script code. In syntax positions
+ * these break bash/python outright, and Windows PowerShell 5.1 mis-decodes
+ * them entirely in a BOM-less ANSI read, producing cascading parse errors
+ * ("Unexpected token", "missing string terminator"). The Go agent stamps a
+ * UTF-8 BOM on .ps1 files (internal/executor/shell.go WriteScriptFile), but
+ * code should be plain ASCII punctuation regardless.
  *
- * Deliberately conservative: only characters that are unambiguous typographic
- * substitutions for ASCII are mapped. Everything else (accented letters,
- * CJK, symbols) passes through untouched.
+ * Replacements apply everywhere, including inside string contents -- an
+ * intentional trade-off: typographic punctuation in script output text is
+ * cosmetic, while in a delimiter position it is always a bug. Otherwise
+ * deliberately conservative: only unambiguous typographic substitutions for
+ * ASCII are mapped; everything else (accented letters, CJK, symbols) passes
+ * through untouched.
  */
 
 const TYPOGRAPHIC_REPLACEMENTS: ReadonlyArray<[RegExp, string]> = [

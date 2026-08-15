@@ -137,16 +137,20 @@ function makeExistingHandler(
 // Apply tool handlers (emit SSE events, no DB execution)
 // ============================================
 
-function makeApplyHandler(
+// Exported for scriptBuilderTools.applyNormalize.test.ts, which pins that the
+// normalized (not raw) code is what reaches onPostToolUse — the object the SSE
+// tool_result re-attach delivers to the editor.
+export function makeApplyHandler(
   toolName: string,
   onPostToolUse?: PostToolUseCallback,
 ) {
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
     // Scrub typographic Unicode (curly quotes, em-dashes, NBSP) the model
-    // sometimes emits — it breaks script parsing on-device (#PS 5.1 ANSI
-    // decode, bash literal chars). The editor receives `args` via the SSE
-    // tool_result re-attach in aiAgentSdk.createSessionPostToolUse.
+    // sometimes emits — it breaks script parsing on-device (PowerShell 5.1
+    // ANSI mis-decode; literal chars in bash syntax positions). The editor
+    // receives `args` via the SSE tool_result re-attach in
+    // aiAgentSdk.createSessionPostToolUse.
     if (typeof args.code === 'string') {
       args = { ...args, code: normalizeScriptCode(args.code) };
     }
