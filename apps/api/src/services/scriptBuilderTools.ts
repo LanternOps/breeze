@@ -16,6 +16,7 @@ import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { normalizeScriptCode } from './scriptCodeNormalize';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -142,6 +143,13 @@ function makeApplyHandler(
 ) {
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
+    // Scrub typographic Unicode (curly quotes, em-dashes, NBSP) the model
+    // sometimes emits — it breaks script parsing on-device (#PS 5.1 ANSI
+    // decode, bash literal chars). The editor receives `args` via the SSE
+    // tool_result re-attach in aiAgentSdk.createSessionPostToolUse.
+    if (typeof args.code === 'string') {
+      args = { ...args, code: normalizeScriptCode(args.code) };
+    }
     const code = typeof args.code === 'string' ? args.code : undefined;
     const output = compactToolResultForChat(toolName, JSON.stringify({
       applied: true,

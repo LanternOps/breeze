@@ -27,6 +27,11 @@ When editing an existing script, prefer targeted modifications over full rewrite
 Always consider error handling, logging, and cross-platform compatibility.
 For PowerShell, prefer modern cmdlets. For Bash, ensure POSIX compatibility where possible.
 
+Script code must use plain ASCII punctuation only: straight quotes (' and "), ASCII
+hyphens (-), and regular spaces. Never use typographic characters (curly quotes,
+en/em dashes, ellipsis, non-breaking spaces) in code — they cause parse errors on
+target machines.
+
 IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.`;
 
   if (!context?.editorSnapshot) {

@@ -98,9 +98,21 @@ func normalizeLineEndings(content, scriptType string) string {
 	}
 }
 
+// utf8BOM is prepended to PowerShell scripts on write. Windows PowerShell 5.1
+// decodes a BOM-less .ps1 as the system ANSI codepage, so any non-ASCII
+// character in UTF-8 content (curly quotes, em-dashes, accented letters) turns
+// into mojibake and the parser reports cascading "Unexpected token" /
+// "missing terminator" errors. The BOM forces UTF-8 decoding; pwsh on all
+// platforms handles it too. Bash/python/cmd must NOT get one — bash refuses a
+// BOM before the shebang and cmd feeds it to the first command.
+const utf8BOM = "\xEF\xBB\xBF"
+
 // WriteScriptFile writes script content to a temporary file with the appropriate extension
 func WriteScriptFile(content, scriptType string) (string, error) {
 	content = normalizeLineEndings(content, scriptType)
+	if strings.ToLower(scriptType) == ScriptTypePowerShell && !strings.HasPrefix(content, utf8BOM) {
+		content = utf8BOM + content
+	}
 	// Get the temp directory
 	tempDir := os.TempDir()
 	scriptDir := filepath.Join(tempDir, "breeze-scripts")
