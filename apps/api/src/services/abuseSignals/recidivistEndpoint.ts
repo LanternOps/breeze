@@ -59,10 +59,15 @@ const WIN_PREFIX_DENY_MAX_LENGTH = 12;
 
 /**
  * Hostnames that must never enter the corpus as a `hostname` fingerprint:
- * empty/blank, `localhost`, and any short auto-generated `WIN-` default
- * (Windows Setup stamps `WIN-<10 random chars>`, which is exactly the kind
- * of unrenamed-installer-default noise that would pollute cross-partner
- * correlation with false positives rather than catch a real recidivist).
+ * empty/blank, `localhost`, and a degenerate short `WIN-` name. Windows
+ * Setup's real default is `WIN-<10 random chars>` (14 characters total),
+ * which is AT the threshold and therefore NOT denied — a genuine
+ * unrenamed-installer default still enters the corpus and can still fire a
+ * match, which is intentional (see the module header: this is exactly the
+ * unrenamed-default-box signature the detector exists to catch). This deny
+ * only catches shorter, hand-typed or truncated `WIN-` stand-ins that carry
+ * no real per-install entropy and would otherwise pollute cross-partner
+ * correlation with coincidental collisions.
  *
  * Pure; exported for tests. Expects an already-lowercased/trimmed value —
  * callers normalize before checking (and before storing) so the deny-list
@@ -97,6 +102,22 @@ interface DeviceRow {
   last_seen_ip: string | null;
   enrollment_ip: string | null;
 }
+
+/**
+ * Sweep-level bound on the fingerprint upsert, same two-part shape as
+ * scriptContent.ts's HOST_UPSERTS_PER_SWEEP_CAP:
+ *
+ *  - FINGERPRINT_UPSERT_CHUNK_SIZE bounds each single INSERT statement. Each
+ *    VALUES row binds 6 params, so 500 rows/chunk = 3,000 params/statement —
+ *    comfortably under Postgres's 65,535-param Bind limit (which the old
+ *    single-statement upsert blew past once the corpus crossed ~10.9k rows).
+ *  - FINGERPRINT_UPSERTS_PER_SWEEP_CAP bounds total sweep cost: even chunked,
+ *    an unbounded fingerprint set means unbounded round trips per sweep.
+ *    Overflow truncates deterministically (first N of the de-duped set) and
+ *    logs a warning rather than silently dropping data unnoticed.
+ */
+const FINGERPRINT_UPSERT_CHUNK_SIZE = 500;
+const FINGERPRINT_UPSERTS_PER_SWEEP_CAP = 10_000;
 
 /**
  * Refreshes the abuse_endpoint_fingerprints corpus from current device and
@@ -142,30 +163,43 @@ export async function syncEndpointFingerprints(now: Date): Promise<void> {
       record({ partnerId: r.partner_id, kind: 'hostname', value: hostname, deviceId: r.id });
     }
 
-    const ip = (r.last_seen_ip ?? r.enrollment_ip ?? '').trim();
+    // `||`, not `??`: an empty-string last_seen_ip (device has never
+    // reported in) must also fall back to enrollment_ip, not short-circuit
+    // to an empty fingerprint value that then gets skipped below.
+    const ip = (r.last_seen_ip || r.enrollment_ip || '').trim();
     if (ip.length > 0) {
       record({ partnerId: r.partner_id, kind: 'egress_ip', value: ip, deviceId: r.id });
     }
   }
 
-  const rows = [...byKey.values()];
+  let rows = [...byKey.values()];
   if (rows.length === 0) return;
 
-  const values = sql.join(
-    rows.map(
-      (r) =>
-        sql`(${r.partnerId}::uuid, ${r.kind}::abuse_endpoint_fingerprint_kind, ${r.value}, ${r.deviceId}::uuid, ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)`,
-    ),
-    sql`, `,
-  );
+  if (rows.length > FINGERPRINT_UPSERTS_PER_SWEEP_CAP) {
+    console.warn(
+      `[AbuseSignals] FINGERPRINT_UPSERTS_PER_SWEEP_CAP exceeded — truncating ${rows.length} fingerprint rows to ${FINGERPRINT_UPSERTS_PER_SWEEP_CAP} this sweep`,
+    );
+    rows = rows.slice(0, FINGERPRINT_UPSERTS_PER_SWEEP_CAP);
+  }
 
-  await db.execute(sql`
-    INSERT INTO abuse_endpoint_fingerprints (partner_id, kind, value, device_id, first_seen_at, last_seen_at)
-    VALUES ${values}
-    ON CONFLICT (partner_id, kind, value) DO UPDATE SET
-      last_seen_at = EXCLUDED.last_seen_at,
-      device_id = COALESCE(abuse_endpoint_fingerprints.device_id, EXCLUDED.device_id)
-  `);
+  for (let i = 0; i < rows.length; i += FINGERPRINT_UPSERT_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + FINGERPRINT_UPSERT_CHUNK_SIZE);
+    const values = sql.join(
+      chunk.map(
+        (r) =>
+          sql`(${r.partnerId}::uuid, ${r.kind}::abuse_endpoint_fingerprint_kind, ${r.value}, ${r.deviceId}::uuid, ${now.toISOString()}::timestamptz, ${now.toISOString()}::timestamptz)`,
+      ),
+      sql`, `,
+    );
+
+    await db.execute(sql`
+      INSERT INTO abuse_endpoint_fingerprints (partner_id, kind, value, device_id, first_seen_at, last_seen_at)
+      VALUES ${values}
+      ON CONFLICT (partner_id, kind, value) DO UPDATE SET
+        last_seen_at = EXCLUDED.last_seen_at,
+        device_id = COALESCE(abuse_endpoint_fingerprints.device_id, EXCLUDED.device_id)
+    `);
+  }
 }
 
 export interface RecidivistMatch {
@@ -221,7 +255,8 @@ export async function loadRecidivistMatches(): Promise<{
       AND af2.value = af1.value
       AND af2.partner_id != af1.partner_id
     JOIN partners p2 ON p2.id = af2.partner_id
-    WHERE p1.status IN ('active', 'pending')
+    WHERE p1.deleted_at IS NULL
+      AND p1.status IN ('active', 'pending')
       AND p2.status != 'active'
   `)) as unknown as MatchRow[];
 

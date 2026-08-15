@@ -132,9 +132,11 @@ export const SIGNAL_DEFAULTS = {
   // same remote-management client identity and scores at the ceiling.
   // hostname_ip_score requires a hostname AND an egress_ip match against the
   // SAME other partner (strong corroboration, just short of a hard
-  // identifier) and sits just above severity.alert_score. hostname_score
-  // alone is weaker (hostnames can coincidentally collide, e.g. an unrenamed
-  // vendor image) but still clears alert on its own. ip_score is RESERVED
+  // identifier) and sits just above severity.alert_score, clearing alert on
+  // its own. hostname_score alone is weaker (hostnames can coincidentally
+  // collide, e.g. an unrenamed vendor image) and at defaults caps at
+  // severity.watch_score — it does NOT clear alert by itself; only the
+  // fingerprint and hostname_ip axes do that at defaults. ip_score is RESERVED
   // and never emitted alone in v1 — an IP alone is too easily explained by
   // NAT/ISP/hosting-range reuse, so it only exists to upgrade a hostname
   // match to hostname_ip; do not wire it to fire standalone without new

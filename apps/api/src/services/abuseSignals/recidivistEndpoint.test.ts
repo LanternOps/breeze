@@ -174,6 +174,64 @@ describe('syncEndpointFingerprints', () => {
     const occurrences = JSON.stringify(upsertCall).split('0123456789abcdef').length - 1;
     expect(occurrences).toBe(1);
   });
+
+  it('chunks the upsert into batches of at most 500 rows per statement when the corpus exceeds one chunk', async () => {
+    // 1,200 distinct hostname rows across 1,200 distinct devices/partners ->
+    // 1,200 distinct (partnerId, kind, value) keys, so none collapse in the
+    // de-dup map. At 500 rows/chunk that must issue 3 upsert statements
+    // (500 + 500 + 200), each with <= 500 VALUES tuples.
+    const deviceRows = Array.from({ length: 1200 }, (_, i) => ({
+      id: `device-${i}`,
+      partner_id: `partner-${i}`,
+      hostname: `finance-pc-${i}`,
+      last_seen_ip: null,
+      enrollment_ip: null,
+    }));
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([] as never) // software_inventory scan
+      .mockResolvedValueOnce(deviceRows as never) // devices scan
+      .mockResolvedValue([] as never); // the chunked upserts
+
+    await syncEndpointFingerprints(now);
+
+    // 2 setup calls + 3 upsert chunk calls.
+    expect(db.execute).toHaveBeenCalledTimes(5);
+    const chunkSizes = vi.mocked(db.execute).mock.calls.slice(2).map((call) => {
+      const sqlObj = call[0] as { queryChunks?: unknown[] };
+      // Each VALUES tuple appears as its own queryChunks entry boundary —
+      // count occurrences of the fingerprint kind cast, one per row, as a
+      // stand-in for "how many VALUES tuples landed in this statement".
+      const asString = JSON.stringify(sqlObj);
+      return asString.split('hostname').length - 1;
+    });
+    expect(chunkSizes).toEqual([500, 500, 200]);
+    expect(chunkSizes.every((n) => n <= 500)).toBe(true);
+  });
+
+  it('truncates deterministically and warns when the corpus exceeds FINGERPRINT_UPSERTS_PER_SWEEP_CAP', async () => {
+    // 10,050 distinct rows -> exceeds the 10,000 cap by 50; the sync must
+    // truncate to exactly 10,000 (20 chunks of 500) and log a warning
+    // instead of silently dropping the overflow unnoticed.
+    const deviceRows = Array.from({ length: 10_050 }, (_, i) => ({
+      id: `device-${i}`,
+      partner_id: `partner-${i}`,
+      hostname: `finance-pc-${i}`,
+      last_seen_ip: null,
+      enrollment_ip: null,
+    }));
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce(deviceRows as never)
+      .mockResolvedValue([] as never);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await syncEndpointFingerprints(now);
+
+    // 2 setup calls + 20 upsert chunk calls (10,000 / 500).
+    expect(db.execute).toHaveBeenCalledTimes(22);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('FINGERPRINT_UPSERTS_PER_SWEEP_CAP'));
+    warnSpy.mockRestore();
+  });
 });
 
 describe('loadRecidivistMatches', () => {

@@ -65,6 +65,16 @@ export async function deleteDeviceCascade(
 
   // Tenant business records (tickets, support_sessions): preserve history,
   // detach the device.
+  //
+  // For abuse_endpoint_fingerprints specifically, this UPDATE is a structural
+  // no-op: it's a system-only-RLS corpus table, and this cascade runs inside
+  // the caller's tenant-scoped request context, so the tenant policy filters
+  // every row out before the UPDATE ever sees one. The real detach happens
+  // via the column's `device_id` FK, declared ON DELETE SET NULL — that fires
+  // unconditionally at the DB layer once the device row below is deleted, no
+  // RLS context involved. Listed here anyway for the single detach-tables
+  // contract (getDeviceCascadeDeleteTables et al.), not because this line
+  // does the work for that table.
   for (const detachTable of DEVICE_DETACH_DEVICE_ID_TABLES) {
     await tx.execute(sql`UPDATE ${sql.identifier(detachTable)} SET device_id = NULL WHERE device_id = ${deviceId}`);
   }

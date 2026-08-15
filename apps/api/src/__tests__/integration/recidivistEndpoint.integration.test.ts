@@ -198,6 +198,12 @@ describe('recidivist-endpoint detector (real DB)', () => {
     });
 
     const firstRun = await runDetector(new Date());
+    // Total-count assertion: only the active partner may ever be scored (the
+    // suspended partner sits on the non-active side of the SQL join and must
+    // never produce a signal of its own), so this proves no unexpected
+    // second signal — on the suspended partner or otherwise — sneaks through
+    // unproven by the filtered assertion below.
+    expect(firstRun).toHaveLength(1);
     const firstForActive = firstRun.filter((s) => s.partnerId === active.partner.id);
     expect(firstForActive).toHaveLength(1);
     expect(firstForActive[0]!.score).toBe(60);
