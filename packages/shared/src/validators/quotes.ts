@@ -143,7 +143,9 @@ export const createQuoteSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid().optional(),
   title: z.string().max(200).optional(),
-  currencyCode: z.string().length(3).default('USD'),
+  // Omit to inherit the partner's configured currency (resolved server-side in
+  // createQuote); the DB column still defaults to 'USD' as a backstop (#3200).
+  currencyCode: z.string().length(3).optional(),
   expiryDate: isoDate.optional(),
   introNotes: z.string().max(5000).optional(),
   terms: z.string().max(20_000).optional(),
