@@ -268,6 +268,98 @@ describe('device patch routes', () => {
     expect(body.data.lastPatchScanStatus).toBe('completed');
   });
 
+  // #2727 — the "per-user apps were not scanned" signal.
+  //
+  // The agent's payload arrives wrapped: device_commands.result holds the
+  // {status, exitCode, stdout} envelope with the handler's map JSON-ENCODED in
+  // `stdout`. Reading the field off the envelope directly returns undefined, so
+  // this asserts the unwrap actually happens — the note would silently never
+  // render otherwise, which is the same class of silent under-report #2727 fixes.
+  it.each([
+    {
+      name: 'unwraps the user-scope coverage signal from the stdout envelope',
+      result: {
+        status: 'completed',
+        exitCode: 0,
+        stdout: JSON.stringify({
+          pendingCount: 3,
+          userScopeScanned: false,
+          userScopeSkipReason: 'no user helper session connected',
+        }),
+      },
+      wantScanned: false,
+      wantReason: 'no user helper session connected',
+    },
+    {
+      name: 'reports a covered user scope as true',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ userScopeScanned: true }) },
+      wantScanned: true,
+      wantReason: null,
+    },
+    {
+      name: 'absent field stays null rather than collapsing to false',
+      result: { status: 'completed', exitCode: 0, stdout: JSON.stringify({ pendingCount: 0 }) },
+      wantScanned: null,
+      wantReason: null,
+    },
+    {
+      name: 'malformed stdout yields null, never a throw',
+      result: { status: 'completed', exitCode: 0, stdout: 'not json at all' },
+      wantScanned: null,
+      wantReason: null,
+    },
+    {
+      name: 'missing result yields null',
+      result: null,
+      wantScanned: null,
+      wantReason: null,
+    },
+  ])('$name', async ({ result, wantScanned, wantReason }) => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectPatchStatusResult([
+        {
+          id: 'dp-scope-1',
+          patchId: '11111111-1111-4111-8111-111111111111',
+          status: 'pending',
+          scope: 'user',
+          installedAt: null,
+          lastCheckedAt: '2026-02-09T10:00:00.000Z',
+          failureCount: 0,
+          lastError: null,
+          externalId: 'winget:Google.Chrome',
+          title: 'Google Chrome',
+          description: null,
+          severity: 'unknown',
+          category: 'application',
+          source: 'third_party',
+          releaseDate: null,
+          requiresReboot: false
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResult([
+        {
+          status: 'completed',
+          createdAt: '2026-02-09T09:59:00.000Z',
+          completedAt: '2026-02-09T10:00:00.000Z',
+          result,
+        }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([]) as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.lastPatchScanUserScopeScanned).toBe(wantScanned);
+    expect(body.data.lastPatchScanUserScopeSkipReason).toBe(wantReason);
+    // The per-row scope label reaches the client too — it drives the badge.
+    expect(body.data.pending[0].scope).toBe('user');
+  });
+
   it('excludes Linux installed package inventory from patch compliance', async () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select)

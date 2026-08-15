@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "This org has not approved {{name}}. Approve the patch before installing.",
+    "installPatchUserScopeTitle": "{{name}} is installed in the logged-in user's profile. Per-user apps cannot be patched from the system context yet.",
     "installPatchTitle": "Install {{name}}",
     "loading": "Loading patch status...",
     "notDownloadedTitle": "Not yet downloaded -- install will take longer",

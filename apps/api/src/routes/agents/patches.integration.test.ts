@@ -467,6 +467,42 @@ describe('patch ingest — user-scope rows are only swept when the user pass ran
     expect((await getDevicePatchRow(dev.id, userPkgId))?.status).toBe('missing');
   });
 
+  // The reason the guard is `IS DISTINCT FROM 'user'` and not `<> 'user'`.
+  // NULL is what the overwhelming majority of real rows carry — every row
+  // written before the column existed, and every provider with no scope concept
+  // (Windows Update, apt, homebrew). Under `<>`, `NULL <> 'user'` evaluates to
+  // NULL, the row drops out of the WHERE clause, and NOTHING is ever swept
+  // again, fleet-wide. Only real Postgres can prove the three-valued logic.
+  runDb('still sweeps NULL-scope rows, which is what three-valued logic would silently break', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.wu.kb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // A provider with no scope concept: the payload omits `scope` entirely.
+    const seedRes = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      full: true,
+      coveredSources: ['microsoft'],
+      patches: [{ name: 'KB5000001', source: 'microsoft', externalId, kbNumber: externalId }],
+    });
+    expect(seedRes.status).toBe(200);
+    const seeded = await getDevicePatchRow(dev.id, externalId);
+    expect(seeded?.status).toBe('pending');
+    expect(seeded?.scope).toBeNull();
+
+    // The patch is installed, so the next scan no longer reports it. A NULL
+    // scope is machine-wide and must be swept — even on a scan that could not
+    // cover user scope.
+    const sweepRes = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      full: true,
+      coveredSources: ['microsoft'],
+      userScopeScanned: false,
+      patches: [],
+    });
+    expect(sweepRes.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, externalId))?.status).toBe('missing');
+  });
+
   runDb('a scope-less re-report does not erase an established user scope', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const dev = await insertDevice(env.organization.id, env.site.id);

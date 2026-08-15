@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Esta organização não aprovou {{name}}. Aprove o patch antes de instalá-lo.",
+    "installPatchUserScopeTitle": "{{name}} está instalado no perfil do usuário conectado. Apps por usuário ainda não podem ser corrigidos a partir do contexto do sistema.",
     "installPatchTitle": "Instalar {{name}}",
     "loading": "Carregando o status dos patches...",
     "notDownloadedTitle": "Ainda não foi baixado — a instalação demorará mais",

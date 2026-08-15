@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Diese Organisation hat {{name}} nicht genehmigt. Genehmigen Sie den Patch vor der Installation.",
+    "installPatchUserScopeTitle": "{{name}} ist im Profil des angemeldeten Benutzers installiert. Benutzerbezogene Apps können noch nicht aus dem Systemkontext gepatcht werden.",
     "installPatchTitle": "Installieren Sie {{name}}",
     "loading": "Patch-Status wird geladen...",
     "notDownloadedTitle": "Noch nicht heruntergeladen – die Installation dauert länger",

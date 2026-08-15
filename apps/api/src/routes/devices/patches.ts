@@ -350,19 +350,29 @@ patchesRoutes.get(
 
     const lastPatchScan = lastPatchScanRows[0] ?? null;
 
-    // Parse the patch_scan command result defensively — the field is only present
-    // on newer agents that perform a best-effort per-user winget scan alongside the
-    // machine-scope scan. Absent/malformed payloads must yield nulls, never throw.
+    // #2727 — did the last scan cover per-user installs?
+    //
+    // The stored command result is the agent's ENVELOPE
+    // ({status, exitCode, stdout, ...}) with the handler's payload sitting in
+    // `stdout` as a JSON *string* (tools.NewSuccessResult). Reading
+    // `result.userScopeScanned` directly would therefore always be undefined —
+    // go through safeParsePatchResult, the same unwrapping this file already
+    // uses for pendingCount et al.
+    //
+    // null (not false) when the field is absent: an older agent, a non-Windows
+    // device, or one with no winget provider has not told us it failed to scan
+    // per-user apps — it has told us nothing. Only an explicit false means
+    // "tried and could not", which is what the UI notes.
     let lastPatchScanUserScopeScanned: boolean | null = null;
     let lastPatchScanUserScopeSkipReason: string | null = null;
-    const lastPatchScanResult = lastPatchScan?.result;
-    if (lastPatchScanResult && typeof lastPatchScanResult === 'object' && !Array.isArray(lastPatchScanResult)) {
-      const resultObj = lastPatchScanResult as Record<string, unknown>;
-      if (typeof resultObj.userScopeScanned === 'boolean') {
-        lastPatchScanUserScopeScanned = resultObj.userScopeScanned;
+    const lastPatchScanResult = asRecord(safeParsePatchResult(lastPatchScan?.result));
+    if (lastPatchScanResult) {
+      const scanPayload = asRecord(lastPatchScanResult.stdout) ?? lastPatchScanResult;
+      if (typeof scanPayload.userScopeScanned === 'boolean') {
+        lastPatchScanUserScopeScanned = scanPayload.userScopeScanned;
       }
-      if (typeof resultObj.userScopeSkipReason === 'string') {
-        lastPatchScanUserScopeSkipReason = resultObj.userScopeSkipReason;
+      if (typeof scanPayload.userScopeSkipReason === 'string') {
+        lastPatchScanUserScopeSkipReason = scanPayload.userScopeSkipReason;
       }
     }
     const patchIds = [...new Set(devicePatchList.map((patch) => patch.patchId))];

@@ -340,3 +340,126 @@ func TestPendingPayloadCarriesUserScopeCoverage(t *testing.T) {
 		})
 	}
 }
+
+// TestMalformedHelperResultIsASkipNotAnEmptyScan closes the gap between two
+// separately-tested behaviours whose COMPOSITION is what actually protects
+// against #2727's original symptom.
+//
+// decodeUserExecResult is deliberately lenient: a malformed helper payload
+// yields empty stdout rather than an error. That is only safe because the
+// parser treats headerless output with no explicit "matched nothing" message as
+// unparsable (#2726). If either half regressed independently — a laxer parser,
+// or a decoder that invented an empty-but-successful result — a garbled IPC
+// reply would read as "user scope scanned, nothing pending", which is exactly
+// the silent under-report this work exists to remove.
+func TestMalformedHelperResultIsASkipNotAnEmptyScan(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		resp *ipc.Envelope
+	}{
+		{name: "result is not an object", resp: execEnvelope(t, "completed", "", nil)},
+		{name: "result has no stdout", resp: execEnvelope(t, "completed", "", map[string]any{"exitCode": 0})},
+		{name: "stdout is the wrong type", resp: execEnvelope(t, "completed", "", map[string]any{"stdout": 42})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sender := &fakeSender{resp: tt.resp}
+			p := patching.NewSystemWingetProviderWithUserScan(`C:\wg\winget.exe`,
+				func(string, []string, time.Duration) (string, string, int, error) {
+					return "Name    Id               Version  Available Source\n" +
+						strings.Repeat("-", 50) + "\n" +
+						"Firefox Mozilla.Firefox   1.0      2.0       winget\n", "", 0, nil
+				},
+				func(name string, args []string, timeout time.Duration) (string, string, int, error) {
+					return sendUserExec(sender, name, args, timeout)
+				})
+
+			patches, err := p.Scan()
+			if err != nil {
+				t.Fatalf("machine scope must still flow: %v", err)
+			}
+			if len(patches) != 1 {
+				t.Fatalf("a garbled user reply must not add or remove packages: %+v", patches)
+			}
+			if status := p.LastUserScan(); status.Scanned {
+				t.Fatalf("LastUserScan = %+v, want the user pass reported as NOT scanned", status)
+			}
+		})
+	}
+}
+
+// TestPatchScanCommandResultCarriesUserScopeCoverage covers the path the UI
+// actually reads: the patch_scan command result stored on the device_commands
+// row, which is where the "per-user apps were not scanned" note comes from.
+func TestPatchScanCommandResultCarriesUserScopeCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		userExec   patching.UserExecFunc
+		wantKey    bool
+		wantValue  bool
+		wantReason bool
+	}{
+		{
+			name: "user pass ran",
+			userExec: func(string, []string, time.Duration) (string, string, int, error) {
+				return "No installed package found matching input criteria.\n", "", 0, nil
+			},
+			wantKey:   true,
+			wantValue: true,
+		},
+		{
+			name: "nobody logged in",
+			userExec: func(string, []string, time.Duration) (string, string, int, error) {
+				return "", "", -1, errors.New("no user helper session connected")
+			},
+			wantKey:    true,
+			wantReason: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.ReadAll(r.Body); err != nil {
+					t.Fatal(err)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer ts.Close()
+
+			h := New(&config.Config{AgentID: "agent-1", ServerURL: ts.URL, AuthToken: "token"})
+			h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+			h.patchMgr = patching.NewPatchManager(patching.NewSystemWingetProviderWithUserScan(
+				`C:\wg\winget.exe`,
+				func(string, []string, time.Duration) (string, string, int, error) {
+					return "Name    Id               Version  Available Source\n" +
+						strings.Repeat("-", 50) + "\n" +
+						"Firefox Mozilla.Firefox   1.0      2.0       winget\n", "", 0, nil
+				},
+				tt.userExec))
+
+			res := handlePatchScan(h, Command{ID: "cmd-1", Type: "patch_scan", Payload: map[string]any{}})
+			// tools.NewSuccessResult marshals the payload into Stdout as a JSON
+			// string; that is the shape the server persists and the UI reads.
+			var data map[string]any
+			if err := json.Unmarshal([]byte(res.Stdout), &data); err != nil {
+				t.Fatalf("result stdout %q is not JSON: %v", res.Stdout, err)
+			}
+			scanned, present := data["userScopeScanned"]
+			if present != tt.wantKey {
+				t.Fatalf("userScopeScanned present = %v, want %v (data %#v)", present, tt.wantKey, data)
+			}
+			if scanned != tt.wantValue {
+				t.Fatalf("userScopeScanned = %#v, want %v", scanned, tt.wantValue)
+			}
+			reason, hasReason := data["userScopeSkipReason"]
+			if hasReason != tt.wantReason {
+				t.Fatalf("userScopeSkipReason present = %v, want %v", hasReason, tt.wantReason)
+			}
+			if tt.wantReason {
+				if s, _ := reason.(string); !strings.Contains(s, "no user helper session") {
+					t.Fatalf("userScopeSkipReason = %#v, want the real cause", reason)
+				}
+			}
+		})
+	}
+}

@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Cette organisation n’a pas approuvé {{name}}. Approuvez le correctif avant l’installation.",
+    "installPatchUserScopeTitle": "{{name}} est installé dans le profil de l'utilisateur connecté. Les applications par utilisateur ne peuvent pas encore être corrigées depuis le contexte système.",
     "installPatchTitle": "Installer {{name}}",
     "loading": "Chargement de l’état du patch...",
     "notDownloadedTitle": "Pas encore téléchargé — l’installation prendra plus de temps",

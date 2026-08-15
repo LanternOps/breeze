@@ -504,6 +504,191 @@ describe('DevicePatchStatusTab', () => {
     });
   });
 
+  it('excludes user-scope pending patches from the bulk install request body', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'machine-scope-1',
+            title: '2026-01 Cumulative Update (KB5050001)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'machine'
+          },
+          {
+            id: 'user-scope-1',
+            title: 'Google Chrome',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'user'
+          },
+          {
+            id: 'scopeless-1',
+            title: '2026-01 Feature Update (KB5050099)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved'
+          }
+        ],
+        installed: []
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/patches/install')) {
+        return makeJsonResponse({ success: true, commandId: 'cmd-install-1', patchCount: 2 });
+      }
+      return makeJsonResponse(patchData);
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    // The bulk-install count reflects only the two installable (approved,
+    // non-user-scope) patches.
+    const installButton = await screen.findByRole('button', { name: /Install pending OS patches \(2\)/i });
+    fireEvent.click(installButton);
+    fireEvent.click(await screen.findByTestId('confirm-install-patches'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/patches/install`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ patchIds: ['machine-scope-1', 'scopeless-1'] })
+        })
+      );
+    });
+
+    const calledBody = fetchWithAuthMock.mock.calls.find(([url]) =>
+      typeof url === 'string' && url.includes('/patches/install')
+    )?.[1]?.body as string;
+    expect(calledBody).toBeTruthy();
+    expect(JSON.parse(calledBody).patchIds).not.toContain('user-scope-1');
+  });
+
+  it('disables the per-row install button for a user-scope patch but not a machine-scope patch', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'machine-scope-1',
+            title: '2026-01 Cumulative Update (KB5050001)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'machine'
+          },
+          {
+            id: 'user-scope-1',
+            title: 'Zoom',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'user'
+          }
+        ],
+        installed: []
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async () => makeJsonResponse(patchData));
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    await screen.findByText('2026-01 Cumulative Update (KB5050001)');
+
+    const machineScopeButton = screen.getByLabelText('Install 2026-01 Cumulative Update (KB5050001)');
+    expect((machineScopeButton as HTMLButtonElement).disabled).toBe(false);
+
+    const userScopeTitle = "Zoom is installed in the logged-in user's profile. Per-user apps cannot be patched from the system context yet.";
+    const userScopeButton = screen.getByLabelText(userScopeTitle);
+    expect((userScopeButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows the Per-user badge only for the user-scope pending row', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 10,
+        pending: [
+          {
+            id: 'machine-scope-1',
+            title: '2026-01 Cumulative Update (KB5050001)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'machine'
+          },
+          {
+            id: 'user-scope-1',
+            title: 'Slack',
+            source: 'microsoft',
+            category: 'security',
+            status: 'pending',
+            approvalStatus: 'approved',
+            scope: 'user'
+          }
+        ],
+        installed: []
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async () => makeJsonResponse(patchData));
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    await screen.findByText('Slack');
+    expect(screen.getAllByText('Per-user')).toHaveLength(1);
+
+    const machineScopeRow = screen.getByText('2026-01 Cumulative Update (KB5050001)').closest('tr');
+    expect(machineScopeRow).not.toBeNull();
+    expect(machineScopeRow && Array.from(machineScopeRow.querySelectorAll('span')).some(el => el.textContent === 'Per-user')).toBe(false);
+  });
+
+  it('shows the per-user-apps-not-scanned note only when lastPatchScanUserScopeScanned is explicitly false', async () => {
+    const buildPatchData = (lastPatchScanUserScopeScanned?: boolean) => ({
+      data: {
+        compliancePercent: 100,
+        ...(lastPatchScanUserScopeScanned === undefined ? {} : { lastPatchScanUserScopeScanned }),
+        pending: [],
+        installed: []
+      }
+    });
+
+    const noteText = /Per-user apps were not scanned/i;
+
+    // Case 1: explicitly false -- note renders.
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(buildPatchData(false)));
+    const { unmount: unmountFalse } = render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('Pending Windows Updates');
+    expect(screen.queryByText(noteText)).not.toBeNull();
+    unmountFalse();
+
+    // Case 2: explicitly true -- note does not render.
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(buildPatchData(true)));
+    const { unmount: unmountTrue } = render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('Pending Windows Updates');
+    expect(screen.queryByText(noteText)).toBeNull();
+    unmountTrue();
+
+    // Case 3: field absent -- note does not render (absent must not be treated as false).
+    vi.clearAllMocks();
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(buildPatchData(undefined)));
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+    await screen.findByText('Pending Windows Updates');
+    expect(screen.queryByText(noteText)).toBeNull();
+  });
+
   it('surfaces unapproved patch count when install returns 409', async () => {
     const patchData = {
       data: {

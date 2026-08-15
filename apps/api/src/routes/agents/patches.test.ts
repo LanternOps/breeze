@@ -776,6 +776,12 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
       const serialized = JSON.stringify(updateWheres[0]);
       if (wantGuard) {
         expect(serialized, `userScopeScanned=${String(payloadFlag)} must spare user-scope rows`).toContain('IS DISTINCT FROM');
+
+        // Assert the OPERAND too, not just the operator: comparing against the
+        // wrong literal would leave the substring above intact while sparing
+        // the wrong rows.
+        expect(serialized).toContain("IS DISTINCT FROM 'user'");
+        expect(serialized).toContain('devicePatches.scope');
       } else {
         expect(serialized, 'a scan that covered user scope may sweep user-scope rows').not.toContain('IS DISTINCT FROM');
       }
