@@ -174,6 +174,12 @@ export default function VulnerabilitiesPage() {
     setSelectedIds(next);
   };
   const { active, quarantined, critical } = summary;
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant (errorKind "none") keeps its real 0s. Mirrors AntivirusPage
+  // (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   // Cell pieces shared by the desktop table and the mobile cards.
   const renderSeverity = (t: Threat) => (
     <span
@@ -242,25 +248,25 @@ export default function VulnerabilitiesPage() {
         <SecurityStatCard
           icon={AlertTriangle}
           label={t("securityVulnerabilitiesPage.total")}
-          value={formatNumber(pagination.total)}
+          value={stat(pagination.total)}
         />
         <SecurityStatCard
           icon={Shield}
           label={t("securityVulnerabilitiesPage.critical")}
-          value={formatNumber(critical)}
-          variant="danger"
+          value={stat(critical)}
+          variant={hasData ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={ShieldAlert}
           label={t("securityVulnerabilitiesPage.active")}
-          value={formatNumber(active)}
-          variant="warning"
+          value={stat(active)}
+          variant={hasData ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityVulnerabilitiesPage.quarantined")}
-          value={formatNumber(quarantined)}
-          variant="success"
+          value={stat(quarantined)}
+          variant={hasData ? "success" : "default"}
         />
       </div>
 

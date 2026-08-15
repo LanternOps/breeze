@@ -195,6 +195,11 @@ export default function RecommendationsPage() {
       </div>
     );
   }
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant keeps its real 0s. Mirrors AntivirusPage (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -210,25 +215,25 @@ export default function RecommendationsPage() {
         <SecurityStatCard
           icon={Sparkles}
           label={t("securityRecommendationsPage.total")}
-          value={formatNumber(summary.total)}
+          value={stat(summary.total)}
         />
         <SecurityStatCard
           icon={Lightbulb}
           label={t("securityRecommendationsPage.open")}
-          value={formatNumber(summary.open)}
-          variant="warning"
+          value={stat(summary.open)}
+          variant={hasData ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={Sparkles}
           label={t("securityRecommendationsPage.criticalHigh")}
-          value={formatNumber(summary.criticalAndHigh)}
-          variant="danger"
+          value={stat(summary.criticalAndHigh)}
+          variant={hasData ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={Check}
           label={t("securityRecommendationsPage.completed")}
-          value={formatNumber(summary.completed)}
-          variant="success"
+          value={stat(summary.completed)}
+          variant={hasData ? "success" : "default"}
         />
       </div>
 

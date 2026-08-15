@@ -151,6 +151,11 @@ export default function FirewallPage() {
       </div>
     );
   }
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant keeps its real 0s. Mirrors AntivirusPage (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -164,33 +169,39 @@ export default function FirewallPage() {
         <SecurityStatCard
           icon={Shield}
           label={t("securityFirewallPage.totalDevices")}
-          value={formatNumber(summary.total)}
+          value={stat(summary.total)}
         />
         <SecurityStatCard
           icon={Shield}
           label={t("securityFirewallPage.enabled")}
-          value={formatNumber(summary.enabled)}
-          variant="success"
+          value={stat(summary.enabled)}
+          variant={hasData ? "success" : "default"}
         />
         <SecurityStatCard
           icon={ShieldOff}
           label={t("securityFirewallPage.disabled")}
-          value={formatNumber(summary.disabled)}
-          variant="danger"
+          value={stat(summary.disabled)}
+          variant={hasData ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={Shield}
           label={t("securityFirewallPage.coverage")}
-          value={`${summary.coveragePercent}%`}
-          variant={summary.coveragePercent >= 90 ? "success" : "warning"}
+          value={hasData ? `${summary.coveragePercent}%` : "—"}
+          variant={
+            hasData ? (summary.coveragePercent >= 90 ? "success" : "warning") : "default"
+          }
         />
       </div>
 
-      <div className="h-3 w-full rounded-full bg-muted">
-        <div
-          className={`h-3 rounded-full bg-sky-500 ${widthPercentClass(summary.coveragePercent)}`}
-        />
-      </div>
+      {/* Hide the coverage bar on a failed read — an empty (0%-width) bar reads
+          as "0% coverage", the same fabricated all-clear as the zeroed tiles. */}
+      {hasData && (
+        <div className="h-3 w-full rounded-full bg-muted">
+          <div
+            className={`h-3 rounded-full bg-sky-500 ${widthPercentClass(summary.coveragePercent)}`}
+          />
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
