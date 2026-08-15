@@ -58,7 +58,12 @@ function setClausesForDeviceCommands(source: string): string[] {
 
 let cachedMatches: string[] | null = null;
 
-/** Walks apps/api/src once; the scan is a few seconds cold, so it is memoized. */
+/**
+ * Walks apps/api/src once and memoizes: the scan reads ~1400 files, which is
+ * sub-second warm but several seconds cold — and much worse when the full suite
+ * has eight workers competing for the same disk. Hence the generous per-test
+ * timeout below; the work itself is trivial.
+ */
 function filesUpdatingDeviceCommands(): string[] {
   if (cachedMatches) return cachedMatches;
   const matches: string[] = [];
@@ -86,7 +91,7 @@ describe('terminal device_commands payload erasure coverage', () => {
     expect(
       files.some((file) => file.endsWith(path.join('routes', 'agentWs.ts'))),
     ).toBe(true);
-  }, 60_000);
+  }, 120_000);
 
   it('erases sensitive payload keys at every terminal writer', () => {
     const offenders: string[] = [];
@@ -103,5 +108,5 @@ describe('terminal device_commands payload erasure coverage', () => {
       }
     }
     expect(offenders).toEqual([]);
-  }, 60_000);
+  }, 120_000);
 });
