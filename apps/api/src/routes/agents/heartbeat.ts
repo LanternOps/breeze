@@ -474,6 +474,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // reports back down to 0 rather than leaving a stale capability claim
     // that Task 5's dispatch gate would wrongly trust.
     outboundNetworkPolicyVersion: data.securityCapabilities?.outboundNetworkPolicyVersion === 1 ? 1 : 0,
+    // #3409 PR4 — same non-sticky contract as the line above: written every
+    // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
+    // not only at enqueue, because an offline-queued command can be claimed
+    // after the agent downgraded.
+    scriptSecretEnvVersion: data.securityCapabilities?.scriptSecretEnvVersion === 1 ? 1 : 0,
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these

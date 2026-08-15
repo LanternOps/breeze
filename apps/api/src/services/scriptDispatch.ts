@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
@@ -10,6 +11,7 @@ import {
 import { queueCommand } from './commandQueue';
 import {
   decryptCommandForDelivery,
+  toAgentCommandFrame,
   encryptSensitivePayloadFields,
 } from './sensitiveCommandPayload';
 import { sendCommandToAgent } from '../routes/agentWs';
@@ -306,10 +308,15 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   let command: Awaited<ReturnType<typeof queueCommand>>;
   let stage: 'payload build' | 'queueCommand' = 'payload build';
   try {
-    // Payload build lives inside this guarded region (not after it) so a
-    // throw here — no-op today (no 'script' entry in
-    // SENSITIVE_PAYLOAD_FIELDS), but PR4 of #3409 adds one — also discards
-    // the pending execution row instead of orphaning it.
+    // Payload build lives inside this guarded region (not after it) so a seal
+    // failure — #3409 PR4a made the 'script' entry real — also discards the
+    // pending execution row instead of orphaning it.
+    //
+    // The secret envelope's AAD binds the command id, so the id must exist
+    // BEFORE encryption. Reserving it here (rather than reading it back from
+    // the insert) is what keeps encryption inside this guarded region.
+    // Inert until PR4c: nothing sets `secretEnv` yet, so this is a passthrough.
+    const reservedCommandId = randomUUID();
     payload = encryptSensitivePayloadFields('script', {
       scriptId: payloadScriptId,
       ...(executionId ? { executionId } : {}),
@@ -331,9 +338,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       timeoutSeconds,
       runAs,
       ...(input.targetSessionId != null ? { targetSessionId: input.targetSessionId } : {}),
-    });
+    }, { commandId: reservedCommandId, deviceId: device.id });
     stage = 'queueCommand';
-    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined);
+    command = await queueCommand(device.id, 'script', payload, input.createdBy ?? undefined, {
+      commandId: reservedCommandId,
+    });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
     throw err;
@@ -349,9 +358,14 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   if (device.agentId) {
     const claimed = await claimPendingCommandForDelivery(command.id);
     if (claimed) {
-      const deliverable = decryptCommandForDelivery({ id: command.id, type: 'script', payload });
+      const deliverable = decryptCommandForDelivery({
+        id: command.id,
+        type: 'script',
+        deviceId: device.id,
+        payload,
+      });
       const sent = deliverable
-        ? sendCommandToAgent(device.agentId, deliverable as { id: string; type: string; payload: Record<string, unknown> })
+        ? sendCommandToAgent(device.agentId, toAgentCommandFrame(deliverable))
         : false;
       if (sent) {
         delivered = true;

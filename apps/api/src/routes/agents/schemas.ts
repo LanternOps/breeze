@@ -258,6 +258,10 @@ export const heartbeatSchema = z.object({
   // route treats anything other than exactly 1 as "not enforcing" anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
+    // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
+    // a bad value drops the field rather than 400-ing the heartbeat, since the
+    // route treats anything other than exactly 1 as "not capable" anyway.
+    scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
   // agent believes it needs to migrate hosted↔self-host. Informational: a bad

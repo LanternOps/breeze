@@ -41,6 +41,7 @@ import {
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
 
+import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 export const scriptRoutes = new Hono();
 
 // Helper functions
@@ -1233,7 +1234,8 @@ scriptRoutes.post(
       .set({
         status: 'cancelled',
         completedAt: new Date(),
-        result: { cancelled: true, cancelledBy: auth.user.id }
+        result: { cancelled: true, cancelledBy: auth.user.id },
+        ...terminalPayloadErasureSet(),
       })
       .where(
         and(

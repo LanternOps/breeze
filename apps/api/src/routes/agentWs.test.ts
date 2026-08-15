@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+
+// #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
+// which only happens when a key id and keyring are configured. Set before the
+// secretCrypto import so the module sees them.
+process.env.APP_ENCRYPTION_KEY_ID = 'current';
+process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 import { and, eq, notInArray } from 'drizzle-orm';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
@@ -325,6 +331,7 @@ import {
 } from '../services/agentWorkExpectation';
 import { applyBackupCommandResultToJob } from '../services/backupResultPersistence';
 import { enqueueBackupResults } from '../jobs/backupEnqueue';
+import { encryptSensitivePayloadFields } from '../services/sensitiveCommandPayload';
 
 function wsMock() {
   return {
@@ -2258,6 +2265,88 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
       expect(stored.result[field]).toContain('[PRIVATE_KEY_REDACTED]');
       expect(stored.result[field]).not.toContain('BEGIN RSA PRIVATE KEY');
     }
+  });
+
+  // #3409 PR4a. The heuristic redaction above is NAME-based: it only fires when
+  // a secret sits next to a recognized key name, so a bare echoed credential
+  // survives it. These pin the exact-value layer at the WS chokepoint.
+  it('redacts the exact secret values the command carried, from stdout/stderr/error', async () => {
+    const preValidatedAgent = { deviceId: 'device-s', orgId: 'org-s' };
+    const { handlers, ws } = await connectedAgent('agent-s', preValidatedAgent);
+
+    // The AAD binds the command id and device id, so seal with the same pair
+    // the route will reconstruct from the device_commands row.
+    const payload = encryptSensitivePayloadFields(
+      'script',
+      { scriptId: 's', secretEnv: { api_token: 'sup3r-s3cret-token' } },
+      { commandId: 'cmd-secret', deviceId: 'device-s' },
+    );
+    expect(payload.secretEnvEnvelope).toBeDefined();
+
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-secret', type: 'script', payload, deviceId: 'device-s' },
+    ]) as any);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-secret' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '77777777-7777-4777-8777-777777777777',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'echoed sup3r-s3cret-token here',
+        stderr: 'also sup3r-s3cret-token',
+        error: 'failed using sup3r-s3cret-token',
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const stored = setSpy.mock.calls[0]![0] as {
+      result: { stdout: string; stderr: string; error: string };
+    };
+    for (const field of ['stdout', 'stderr', 'error'] as const) {
+      expect(stored.result[field]).not.toContain('sup3r-s3cret-token');
+      expect(stored.result[field]).toContain('[REDACTED]');
+    }
+  });
+
+  it('discards all output when the command envelope will not open', async () => {
+    const preValidatedAgent = { deviceId: 'device-t', orgId: 'org-t' };
+    const { handlers, ws } = await connectedAgent('agent-t', preValidatedAgent);
+
+    // Sealed against a DIFFERENT device: the AAD will not verify, so the
+    // server cannot know what to redact and must not persist raw output.
+    const payload = encryptSensitivePayloadFields(
+      'script',
+      { scriptId: 's', secretEnv: { api_token: 'sup3r-s3cret-token' } },
+      { commandId: 'cmd-mismatch', deviceId: 'some-other-device' },
+    );
+
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-mismatch', type: 'script', payload, deviceId: 'device-t' },
+    ]) as any);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-mismatch' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '66666666-6666-4666-8666-666666666666',
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'echoed sup3r-s3cret-token here',
+      }),
+    } as any, ws as any);
+
+    const stored = setSpy.mock.calls[0]![0] as { result: { stdout: string }; status: string };
+    expect(stored.result.stdout).toBe('[OUTPUT_REDACTED:VERIFICATION_FAILED]');
+    // Status survives — the operator still learns the script completed.
+    expect(stored.status).toBe('completed');
   });
 });
 

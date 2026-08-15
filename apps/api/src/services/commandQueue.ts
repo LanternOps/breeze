@@ -10,7 +10,11 @@ import {
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
 import { recordCommandDispatch } from './anomalyMetrics';
-import { decryptCommandForDelivery } from './sensitiveCommandPayload';
+import {
+  decryptCommandForDelivery,
+  terminalPayloadErasureSet,
+  toAgentCommandFrame,
+} from './sensitiveCommandPayload';
 
 // Sentinel error string for the WS-pre-check fast-fail path. The fileBrowser
 // route (and any other interactive caller) matches on this substring to map
@@ -290,6 +294,14 @@ export async function rearmIdempotentCommandForDelivery(input: {
 
     // A confirmed result is filtered by ensureDesktopStreamStopped before this
     // helper is called. Re-arm every other state using the same row identity.
+    //
+    // #3409 PR4a: this resurrects a row that may already be TERMINAL, and a
+    // terminal row has had its sensitive payload keys stripped
+    // (terminalPayloadErasureSet) — re-delivering a command whose secrets are
+    // gone would be a silent wrong run. Safe here only because the guard above
+    // admits exactly one type (`desktop_stream_stop`) whose payload must be
+    // exactly `{sessionId, finalizationId}` — neither key is ever stripped.
+    // Widening that guard to another command type requires re-checking this.
     await db
       .update(deviceCommands)
       .set({
@@ -457,11 +469,17 @@ export async function queueCommand(
   deviceId: string,
   type: CommandType | string,
   payload: CommandPayload = {},
-  userId?: string
+  userId?: string,
+  // #3409 PR4a: the script secret envelope's AAD binds the command id, so the
+  // id has to exist BEFORE the payload is encrypted. Callers that seal a
+  // payload reserve a UUID and pass it here; everyone else keeps the column
+  // default. Never accept a client-supplied value.
+  options: { commandId?: string } = {}
 ): Promise<QueuedCommand> {
   const [command] = await db
     .insert(deviceCommands)
     .values({
+      ...(options.commandId ? { id: options.commandId } : {}),
       deviceId,
       type,
       payload,
@@ -578,7 +596,8 @@ export async function waitForCommandResult(
         result: {
           status: 'timeout',
           error: `Command timed out after ${timeoutMs}ms`
-        }
+        },
+        ...terminalPayloadErasureSet(),
       })
       .where(and(
         eq(deviceCommands.id, commandId),
@@ -658,10 +677,8 @@ export async function queueCommandForExecution(
       // Decrypt sensitive fields just-in-time; a decrypt failure returns null
       // (logged) and skips the send so the command is released for retry rather
       // than throwing out of the enqueue path.
-      const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
-      const sent = delivered
-        ? sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload })
-        : false;
+      const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
+      const sent = delivered ? sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered)) : false;
       if (sent) {
         return {
           command: {
@@ -929,10 +946,10 @@ export async function executeCommand(
       if (claimed) {
         // Decrypt once up-front; null means the payload can't be decrypted, so
         // there's nothing deliverable to retry — skip the send loop and release.
-        const delivered = decryptCommandForDelivery({ id: command.id, type, payload });
+        const delivered = decryptCommandForDelivery({ id: command.id, type, deviceId, payload });
         let sent = false;
         for (let attempt = 0; delivered && attempt < SEND_RETRY_ATTEMPTS; attempt++) {
-          sent = sendCommandToAgent(device.agentId, delivered as { id: string; type: string; payload: CommandPayload });
+          sent = sendCommandToAgent(device.agentId, toAgentCommandFrame(delivered));
           if (sent) {
             if (attempt > 0) {
               console.warn('[commandQueue] sendCommandToAgent recovered after retry', {
@@ -1046,7 +1063,8 @@ export async function submitCommandResult(
     .set({
       status: result.status === 'completed' ? 'completed' : 'failed',
       completedAt: new Date(),
-      result
+      result,
+      ...terminalPayloadErasureSet(),
     })
     .where(and(
       eq(deviceCommands.id, commandId),

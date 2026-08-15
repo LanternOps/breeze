@@ -388,6 +388,47 @@ describe('updateTenantVariable', () => {
     expect(captured.set).toMatchObject({ isSecret: false });
   });
 
+  it('refuses to promote a below-floor stored value to secret (schema cannot see it)', async () => {
+    // updateTenantVariableSchema is .partial(), so a body of `{isSecret:true}`
+    // carries no `value` for the shared cross-field refinement to measure.
+    // The floor has to be re-checked here against the STORED plaintext.
+    const row = makeRow({ id: ROW_A, value: encryptTenantVariableValue(ROW_A, 'ab') });
+    stubSelect([row]);
+    stubUpdate(row);
+    await expect(
+      updateTenantVariable(auth(), row.id, { isSecret: true })
+    ).rejects.toMatchObject({ status: 400 });
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
+  it('allows promoting to secret when the stored value clears the floor', async () => {
+    const row = makeRow();
+    stubSelect([row]);
+    const captured = stubUpdate(row);
+    await updateTenantVariable(auth(), row.id, { isSecret: true });
+    expect(captured.set).toMatchObject({ isSecret: true });
+  });
+
+  it('refuses a below-floor replacement value on an already-secret variable', async () => {
+    const row = makeRow({ isSecret: true });
+    stubSelect([row]);
+    stubUpdate(row);
+    await expect(
+      updateTenantVariable(auth(), row.id, { value: 'ab' })
+    ).rejects.toMatchObject({ status: 400 });
+    expect(dbMock.update).not.toHaveBeenCalled();
+  });
+
+  it('does not trap an operator whose stored secret is unreadable', async () => {
+    // A decrypt failure means the variable is already broken for dispatch;
+    // blocking the edit too would leave no way out.
+    const row = makeRow({ isSecret: true, value: 'enc:v3:missing-key:garbage' });
+    stubSelect([row]);
+    const captured = stubUpdate(row);
+    await updateTenantVariable(auth(), row.id, { description: 'still editable' });
+    expect(captured.set).toMatchObject({ description: 'still editable' });
+  });
+
   it('blocks a partner-wide edit from a partner admin without full org access', async () => {
     const row = makeRow({ orgId: null, partnerId: PARTNER });
     stubSelect([row]);

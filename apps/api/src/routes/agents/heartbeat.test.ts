@@ -1677,6 +1677,102 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg).toHaveProperty('watchdogStatus');
     expect(updateArg).not.toHaveProperty('outboundNetworkPolicyVersion');
   });
+
+  // ---------------------------------------------------------------------
+  // #3409 PR4a — scriptSecretEnvVersion capability handshake. Same contract as
+  // outboundNetworkPolicyVersion above (explicit version, non-sticky) because
+  // an agent that ignores `secretEnv` runs the script with the credential env
+  // var UNSET — anonymous access, auth fallback, or a destructive operation
+  // against the wrong target. PR4c gates dispatch on this value.
+  // ---------------------------------------------------------------------
+  it('records scriptSecretEnvVersion 1 from a capable heartbeat', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { scriptSecretEnvVersion: 1 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.scriptSecretEnvVersion).toBe(1);
+  });
+
+  it('records scriptSecretEnvVersion 0 when the heartbeat omits it (old build)', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.scriptSecretEnvVersion).toBe(0);
+  });
+
+  it('reports scriptSecretEnvVersion back down to 0 on a downgrade (non-sticky)', async () => {
+    // The write is unconditional every heartbeat, so a build that stops
+    // declaring the capability cannot leave a stale claim the PR4c dispatch
+    // gate would wrongly trust.
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, securityCapabilities: {} }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.scriptSecretEnvVersion).toBe(0);
+  });
+
+  it('records scriptSecretEnvVersion 0 for an unrecognized version rather than trusting it', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { scriptSecretEnvVersion: 99 },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.scriptSecretEnvVersion).toBe(0);
+  });
+
+  it('a malformed capability value does not 400 the whole heartbeat', async () => {
+    // Informational field: a bad value drops the object (.catch) rather than
+    // rejecting a heartbeat the fleet depends on.
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { scriptSecretEnvVersion: 'yes' },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.scriptSecretEnvVersion).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------

@@ -10,6 +10,11 @@ vi.mock('./commandDispatch', () => ({
 vi.mock('./sensitiveCommandPayload', () => ({
   encryptSensitivePayloadFields: vi.fn((_t: string, p: unknown) => p),
   decryptCommandForDelivery: vi.fn((c: unknown) => c),
+  toAgentCommandFrame: vi.fn((c: { id: string; type: string; payload: unknown }) => ({
+    id: c.id,
+    type: c.type,
+    payload: c.payload,
+  })),
 }));
 vi.mock('../routes/agentWs', () => ({ sendCommandToAgent: vi.fn().mockReturnValue(false) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -274,9 +279,28 @@ describe('dispatchScriptToDevice — rows and payload', () => {
 
   it('runs the payload through encryptSensitivePayloadFields before queueCommand', async () => {
     await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
-    expect(encryptSensitivePayloadFields).toHaveBeenCalledWith('script', expect.any(Object));
+    expect(encryptSensitivePayloadFields).toHaveBeenCalledWith(
+      'script',
+      expect.any(Object),
+      // #3409 PR4a: the secret envelope's AAD binds the command id, so the id
+      // is reserved BEFORE encryption and reused for the insert.
+      { commandId: expect.any(String), deviceId: device().id },
+    );
     expect(vi.mocked(encryptSensitivePayloadFields).mock.invocationCallOrder[0]!)
       .toBeLessThan(vi.mocked(queueCommand).mock.invocationCallOrder[0]!);
+  });
+
+  it('reserves ONE command id and uses it for both the AAD and the insert', async () => {
+    // A mismatch here would make every sealed envelope un-openable at delivery.
+    await dispatchScriptToDevice({ device: device(), source: { kind: 'saved', script: savedScript() } });
+    const encryptCtx = vi.mocked(encryptSensitivePayloadFields).mock.calls[0]![2] as
+      | { commandId: string; deviceId: string }
+      | undefined;
+    const queueOptions = vi.mocked(queueCommand).mock.calls[0]![4] as
+      | { commandId?: string }
+      | undefined;
+    expect(encryptCtx?.commandId).toBeTruthy();
+    expect(queueOptions?.commandId).toBe(encryptCtx?.commandId);
   });
 
   it('input runAs/timeoutSeconds override script defaults', async () => {

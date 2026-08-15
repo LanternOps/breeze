@@ -44,6 +44,7 @@ import {
   createSoftwareDeployment,
 } from '../services/softwareDeployment';
 import { detectionRulesSchema, softwareDownloadPolicySchema } from '@breeze/shared';
+import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
@@ -1571,6 +1572,7 @@ softwareRoutes.post(
             error: 'Deployment cancelled before delivery',
             cancelledBy: auth.user?.id ?? 'software-deployment-cancel',
           },
+          ...terminalPayloadErasureSet(),
         })
         .where(and(
           inArray(deviceCommands.id, queuedCommandIds),

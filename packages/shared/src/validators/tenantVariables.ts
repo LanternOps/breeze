@@ -15,6 +15,15 @@ export const TENANT_VARIABLE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 export const MAX_TENANT_VARIABLE_VALUE_LENGTH = 4096;
 export const MAX_TENANT_VARIABLE_DESCRIPTION_LENGTH = 500;
 /**
+ * A secret shorter than this cannot be exact-value-redacted from script output
+ * without shredding the output itself (imagine redacting every occurrence of
+ * "ab"). Dispatch refuses to ship such a variable rather than choosing between
+ * destroying the operator's output and leaking the credential, so it is also
+ * rejected at save time where the operator can still fix it. Non-secret
+ * variables are unaffected — "3" is a legitimate retry count.
+ */
+export const MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH = 4;
+/**
  * Per owner — per org, and per partner. Bounds the single per-org resolution
  * query PR 2 runs on every script dispatch, and the settings list page.
  */
@@ -57,6 +66,32 @@ const tenantVariableBaseSchema = z.object({
   description: z.string().max(MAX_TENANT_VARIABLE_DESCRIPTION_LENGTH).nullable().optional()
 });
 
+/**
+ * Cross-field: the redaction floor only applies to SECRET values, so it cannot
+ * live on `value` alone — a `.refine` there cannot see `isSecret`.
+ *
+ * On the update schema (`.partial()`) this only fires when BOTH fields are
+ * present. A request that flips `isSecret` to true without resending `value`
+ * slips past it by construction, so the service layer re-checks against the
+ * stored value — see assertSecretValueFloor in services/tenantVariables.ts.
+ */
+const secretValueFloor = (
+  data: { value?: string; isSecret?: boolean },
+  ctx: z.RefinementCtx
+): void => {
+  if (
+    data.isSecret === true &&
+    typeof data.value === 'string' &&
+    data.value.length < MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['value'],
+      message: `Secret values must be at least ${MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH} characters so they can be redacted from script output`
+    });
+  }
+};
+
 export const createTenantVariableSchema = tenantVariableBaseSchema.extend({
   // Ownership axis (Partner-Wide First, epic #2135). 'partner' = an all-orgs
   // variable; the server derives the partner from the caller's OWN token — a
@@ -68,7 +103,7 @@ export const createTenantVariableSchema = tenantVariableBaseSchema.extend({
   // the old {{var.<key>}} token, so there is no update path for it.
   key: tenantVariableKeySchema,
   isSecret: z.boolean().default(false)
-});
+}).superRefine(secretValueFloor);
 
 /**
  * ownerScope, orgId and key are immutable by omission — none of them is part
@@ -78,7 +113,9 @@ export const createTenantVariableSchema = tenantVariableBaseSchema.extend({
  * left byte-identical. That is the only way to edit a secret variable's
  * description, since secret values are never returned to the client.
  */
-export const updateTenantVariableSchema = tenantVariableBaseSchema.partial();
+export const updateTenantVariableSchema = tenantVariableBaseSchema
+  .partial()
+  .superRefine(secretValueFloor);
 
 export type CreateTenantVariableInput = z.infer<typeof createTenantVariableSchema>;
 export type UpdateTenantVariableInput = z.infer<typeof updateTenantVariableSchema>;

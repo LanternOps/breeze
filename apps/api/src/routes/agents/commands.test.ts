@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// #3409 PR4a: sealing a secret envelope requires v3 (AAD-bound) encryption,
+// which only happens when a key id and keyring are configured.
+process.env.APP_ENCRYPTION_KEY_ID = 'current';
+process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
+
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
@@ -106,6 +111,7 @@ import { handleCisCommandResult } from './helpers';
 import { commandsRoutes } from './commands';
 import { and, eq } from 'drizzle-orm';
 import { deploymentResults } from '../../db/schema';
+import { encryptSensitivePayloadFields } from '../../services/sensitiveCommandPayload';
 
 describe('agent commands routes', () => {
   let app: Hono;
@@ -353,6 +359,97 @@ describe('agent commands routes', () => {
     expect(serialized).not.toContain('END PRIVATE KEY');
     expect(serialized).not.toContain('MIIEvQ');
     expect(serialized).not.toContain('BODYb64lineTwo');
+  });
+
+  // #3409 PR4a — REST twin of the WS exact-value redaction test. The
+  // private-key redaction above is NAME/pattern-based; a bare echoed
+  // credential only falls to this layer.
+  it('redacts the exact secret values the command carried, from stdout/stderr/error', async () => {
+    // The AAD binds the command id and device id, so seal with the same pair
+    // the route reconstructs from the device_commands row.
+    const payload = encryptSensitivePayloadFields(
+      'script',
+      { scriptId: 's', secretEnv: { api_token: 'sup3r-s3cret-token' } },
+      { commandId, deviceId: 'device-1' },
+    );
+    expect(payload.secretEnvEnvelope).toBeDefined();
+
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload,
+        },
+      ])
+    );
+    const updateChain = chainMock([{ id: 'cmd-1' }]);
+    updateMock.mockReturnValueOnce(updateChain);
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'echoed sup3r-s3cret-token here',
+        stderr: 'also sup3r-s3cret-token',
+        error: 'failed using sup3r-s3cret-token',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const stored = updateChain.set.mock.calls[0][0];
+    for (const field of ['stdout', 'stderr', 'error'] as const) {
+      expect(stored.result[field]).not.toContain('sup3r-s3cret-token');
+      expect(stored.result[field]).toContain('[REDACTED]');
+    }
+  });
+
+  it('discards all output when the command envelope will not open', async () => {
+    // Sealed against a DIFFERENT device: the AAD will not verify, so the
+    // server cannot know what to redact and must not persist raw output.
+    const payload = encryptSensitivePayloadFields(
+      'script',
+      { scriptId: 's', secretEnv: { api_token: 'sup3r-s3cret-token' } },
+      { commandId, deviceId: 'some-other-device' },
+    );
+
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload,
+        },
+      ])
+    );
+    const updateChain = chainMock([{ id: 'cmd-1' }]);
+    updateMock.mockReturnValueOnce(updateChain);
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commandId,
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'echoed sup3r-s3cret-token here',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const stored = updateChain.set.mock.calls[0][0];
+    expect(stored.result.stdout).toBe('[OUTPUT_REDACTED:VERIFICATION_FAILED]');
+    // Status survives — the operator still learns the script completed.
+    expect(stored.status).toBe('completed');
   });
 
   it('stores capture_pprof stdout byte-for-byte (secret redaction would corrupt the base64 profiles, #2401)', async () => {
