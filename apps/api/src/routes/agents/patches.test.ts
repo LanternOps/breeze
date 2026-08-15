@@ -288,9 +288,25 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
       packageId: 'Mozilla.Firefox',
       source: 'third_party',
     }));
-    expect(patchUpsertSet).toEqual(expect.objectContaining({
-      vendor: 'Mozilla',
-      packageId: 'Mozilla.Firefox',
+    // `patches` is a global, un-tenanted catalog row, so an uncurated (raw
+    // agent) report may only FILL the identity columns, never rewrite them: the
+    // conflict update has to render as COALESCE(existing, incoming) rather than
+    // a bare assignment. The real SQL semantics are proven against Postgres in
+    // patches.integration.test.ts; this only pins the generated shape.
+    expect(patchUpsertSet?.packageId).toEqual(expect.objectContaining({
+      op: 'sql',
+      strings: ['COALESCE(', ', ', ')'],
+      values: ['patches.packageId', 'Mozilla.Firefox'],
+    }));
+    expect(patchUpsertSet?.vendor).toEqual(expect.objectContaining({
+      op: 'sql',
+      strings: ['COALESCE(', ', ', ')'],
+      values: ['patches.vendor', 'Mozilla'],
+    }));
+    // Title is not rewritten at all without curation — it keeps the stored value.
+    expect(patchUpsertSet?.title).toEqual(expect.objectContaining({
+      op: 'sql',
+      values: ['patches.title'],
     }));
   });
 
@@ -506,7 +522,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).toHaveBeenCalledWith(tables.devicePatches);
     expect(tx.insert).not.toHaveBeenCalled();
 
@@ -530,7 +546,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });
@@ -556,7 +572,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, installed: 1, ignored: 0 });
+    expect(body).toEqual({ success: true, installed: 1, ignored: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).toHaveBeenCalledWith(tables.patches);
     expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
@@ -583,7 +599,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, installed: 0, ignored: 1 });
+    expect(body).toEqual({ success: true, installed: 0, ignored: 1, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });
@@ -634,7 +650,7 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 1 });
+    expect(body).toEqual({ success: true, pending: 1, rejected: 0 });
 
     expect(tx.update).toHaveBeenCalledTimes(1);
     expect(tx.update).toHaveBeenCalledWith(tables.devicePatches);
@@ -692,7 +708,7 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });

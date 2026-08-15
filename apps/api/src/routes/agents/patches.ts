@@ -10,12 +10,77 @@ import { envInt } from '../../utils/envInt';
 import { enrichFromCatalog } from '../../services/thirdPartyEnrichment';
 import { submitInstalledPatchesSchema, submitPatchesSchema, submitPendingPatchesSchema } from './schemas';
 import { inferPatchOsType, parseDate, sanitizeDate } from './helpers';
+import { admitPatchBatch, type AdmittedPatch, type PatchAdmission } from './patchIngestIdentity';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 
 type PendingPatchData = z.infer<typeof submitPendingPatchesSchema>['patches'][number];
 type InstalledPatchData = z.infer<typeof submitInstalledPatchesSchema>['installed'][number];
 type PatchIngestDevice = { id: string; orgId: string; osType: string | null };
 type PatchIngestExecutor = Pick<Database, 'insert' | 'update'>;
+/**
+ * A refused row means the sweep can no longer be trusted for this submission:
+ * the sweep tombstones every pending row for the covered sources on the
+ * assumption that everything still applicable is about to be re-upserted, and a
+ * row we refused to ingest is not. Skipping the sweep leaves stale rows for one
+ * cycle (self-healing on the next clean scan); sweeping anyway would tombstone
+ * a patch that is genuinely still pending. Same conservatism as the
+ * covered-zero-sources branch below (#2217).
+ */
+function sweepIsSafe(admission: PatchAdmission<unknown>): boolean {
+  return admission.rejected === 0;
+}
+
+function logRejections(agentId: string, kind: string, admission: PatchAdmission<unknown>): void {
+  if (admission.rejected === 0) return;
+  console.warn(
+    `[PATCHES] Agent ${agentId} ${kind}: refused ${admission.rejected} malformed row(s) ` +
+    `${JSON.stringify(admission.reasons)}`,
+  );
+}
+
+/**
+ * `patches` rows are GLOBAL: the table is deduped on `(source, external_id)`
+ * with no tenant column, so every device that reports a colliding key writes the
+ * same row, and every tenant's UI, `patch_approvals` and patch jobs read it.
+ * The two upserts below therefore classify each column:
+ *
+ * - **Volatile / operational** (`severity`, `category`, `description`,
+ *   `requires_reboot`, `os_types`): these genuinely change between scans and
+ *   keep refreshing. They are only hardened against *null downgrades* — a scan
+ *   that omits a field must not blank a value an earlier scan established.
+ * - **Identity-bearing** (`title`, `vendor`, `package_id`, `version`): these say
+ *   *what the row is* and, for `package_id`, what actually gets installed
+ *   (`routes/devices/patches.ts` forwards it into the `install_patches` command
+ *   payload). Raw agent strings may only **fill** them, never rewrite them;
+ *   overwriting is reserved for server-side catalog enrichment.
+ *
+ * `patches.version` is the one asymmetric case. On the pending path it is the
+ * *available* upgrade version and legitimately advances, so it keeps updating.
+ * The installed path carries the *currently-installed* version — a different
+ * value with the same shape — so letting it write this column drags the shared
+ * row backwards (and defeats the version pins in `patchApprovalEvaluator`); the
+ * installed path may only fill it when unset.
+ */
+
+/**
+ * `download_size_mb` is a Postgres `integer` and the request schema puts no
+ * upper bound on `size`, so an absurd byte count overflows the column and aborts
+ * the whole scan transaction. Clamp instead of failing the batch.
+ */
+function toDownloadSizeMb(size: number | undefined): number | null {
+  if (!size || !Number.isFinite(size) || size <= 0) return null;
+  return Math.min(Math.ceil(size / (1024 * 1024)), 2147483647);
+}
+
+/** Keep the stored value; only write when the column is currently NULL. */
+function fillIfNull(column: unknown, value: string | null) {
+  return value === null ? sql`${column}` : sql`COALESCE(${column}, ${value})`;
+}
+
+/** Refresh when this scan reported a value; keep the stored one when it didn't. */
+function updateIfReported<T>(column: unknown, value: T | null | undefined) {
+  return value === null || value === undefined ? sql`${column}` : value;
+}
 
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
 function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
@@ -81,22 +146,25 @@ async function markPendingDevicePatchesMissing(
 async function upsertPendingPatches(
   executor: PatchIngestExecutor,
   device: PatchIngestDevice,
-  patchList: PendingPatchData[],
-): Promise<void> {
-  for (const patchData of patchList) {
-    const externalId = patchData.externalId ||
-      patchData.kbNumber ||
-      `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
+  admitted: AdmittedPatch<PendingPatchData>[],
+): Promise<number> {
+  let processed = 0;
+  for (const { data: patchData, identity } of admitted) {
+    const { externalId, packageId, title, version, vendor, category, description } = identity;
     const inferredOsType = inferPatchOsType(patchData.source, device.osType);
-    const derivedVendor = deriveVendor(patchData.packageId, patchData.vendor);
+    const derivedVendor = deriveVendor(packageId, vendor);
     const enriched = await enrichFromCatalog({
       source: patchData.source,
-      packageId: patchData.packageId ?? null,
-      title: patchData.name,
+      packageId: packageId,
+      title: title,
       vendor: derivedVendor,
       severity: patchData.severity ?? null,
-      category: patchData.category ?? null,
+      category: category,
     });
+    // `matchedCatalogId` is non-null exactly when title/vendor/category came
+    // from the server-side catalog rather than the agent's own strings — the
+    // only case in which an identity-bearing column may be rewritten.
+    const curated = enriched.matchedCatalogId !== null;
 
     const [patch] = await executor
       .insert(patches)
@@ -104,28 +172,39 @@ async function upsertPendingPatches(
         source: patchData.source,
         externalId: externalId,
         title: enriched.title,
-        description: patchData.description || null,
+        description: description,
         severity: enriched.severity ?? 'unknown',
         category: enriched.category,
         releaseDate: sanitizeDate(patchData.releaseDate),
         requiresReboot: patchData.requiresRestart || false,
-        downloadSizeMb: patchData.size ? Math.ceil(patchData.size / (1024 * 1024)) : null,
+        downloadSizeMb: toDownloadSizeMb(patchData.size),
         vendor: enriched.vendor,
-        packageId: patchData.packageId ?? null,
-        version: patchData.version ?? null,
+        packageId: packageId,
+        version: version,
         ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
       })
       .onConflictDoUpdate({
         target: [patches.source, patches.externalId],
         set: {
-          title: enriched.title,
-          description: patchData.description || null,
-          severity: enriched.severity ?? 'unknown',
-          category: enriched.category,
-          requiresReboot: patchData.requiresRestart || false,
-          vendor: enriched.vendor ?? sql`${patches.vendor}`,
-          packageId: patchData.packageId ?? sql`${patches.packageId}`,
-          version: patchData.version ?? sql`${patches.version}`,
+          // Identity: curated catalog values may rewrite, raw agent strings may not.
+          title: curated ? enriched.title : sql`${patches.title}`,
+          vendor: curated
+            ? (enriched.vendor ?? sql`${patches.vendor}`)
+            : fillIfNull(patches.vendor, enriched.vendor),
+          packageId: fillIfNull(patches.packageId, packageId),
+          // Volatile: refresh, but never blank out what an earlier scan set.
+          description: updateIfReported(patches.description, description),
+          // `'unknown'` is the agent's "I couldn't tell", not an assessment —
+          // treat it as unreported so a scan that can't classify a patch doesn't
+          // reset a severity an earlier scan (or the CVE enrichment worker,
+          // which only ever raises severity) established.
+          severity: enriched.severity && enriched.severity !== 'unknown'
+            ? enriched.severity
+            : sql`COALESCE(${patches.severity}, 'unknown'::patch_severity)`,
+          category: updateIfReported(patches.category, enriched.category),
+          requiresReboot: updateIfReported(patches.requiresReboot, patchData.requiresRestart),
+          // The available upgrade version legitimately advances between scans.
+          version: updateIfReported(patches.version, version),
           ...(inferredOsType
             ? {
                 osTypes: sql`CASE
@@ -146,13 +225,13 @@ async function upsertPendingPatches(
 
     if (
       enriched.matchedCatalogId &&
-      patchData.version &&
+      version &&
       process.env.ENABLE_AI_PATCH_TESTING === '1'
     ) {
       // Fire-and-forget - don't block the patch submit on test queueing.
       enqueueWingetReleaseTest({
         catalogId: enriched.matchedCatalogId,
-        version: patchData.version,
+        version: version,
       }).catch((err) => {
         console.error('[ReleaseTest] enqueue failed', err);
       });
@@ -175,16 +254,18 @@ async function upsertPendingPatches(
           updatedAt: new Date()
         }
       });
+    processed++;
   }
+  return processed;
 }
 
 async function upsertInstalledPatches(
   executor: PatchIngestExecutor,
   device: PatchIngestDevice,
-  patchList: InstalledPatchData[],
+  admitted: AdmittedPatch<InstalledPatchData>[],
 ): Promise<number> {
   let processed = 0;
-  for (const patchData of patchList) {
+  for (const { data: patchData, identity } of admitted) {
     // Linux package-manager inventories are owned by software_inventory. They
     // are not installed patch/update records and must not be allowed to flip
     // actionable Linux update rows from pending to installed.
@@ -192,32 +273,35 @@ async function upsertInstalledPatches(
       continue;
     }
 
-    const externalId = patchData.externalId ||
-      patchData.kbNumber ||
-      `${patchData.source}:${patchData.name}:${patchData.version || 'latest'}`;
+    const { externalId, packageId, title, version, vendor, category } = identity;
     const inferredOsType = inferPatchOsType(patchData.source, device.osType);
+    const derivedVendor = deriveVendor(packageId, vendor);
 
     const [patch] = await executor
       .insert(patches)
       .values({
         source: patchData.source,
         externalId: externalId,
-        title: patchData.name,
+        title: title,
         severity: 'unknown',
-        category: patchData.category || null,
-        vendor: deriveVendor(patchData.packageId, patchData.vendor),
-        packageId: patchData.packageId ?? null,
-        version: patchData.version ?? null,
+        category: category,
+        vendor: derivedVendor,
+        packageId: packageId,
+        version: version,
         ...(inferredOsType ? { osTypes: [inferredOsType] } : {})
       })
       .onConflictDoUpdate({
         target: [patches.source, patches.externalId],
         set: {
-          title: patchData.name,
-          category: patchData.category || null,
-          vendor: deriveVendor(patchData.packageId, patchData.vendor) ?? sql`${patches.vendor}`,
-          packageId: patchData.packageId ?? sql`${patches.packageId}`,
-          version: patchData.version ?? sql`${patches.version}`,
+          // Installed inventory is the lowest-authority writer on this shared
+          // row: it carries no catalog enrichment, and its `version` is the
+          // *installed* version rather than the available one. It may only fill
+          // columns that are still unset — never rewrite them. `title` is NOT
+          // NULL, so it is simply never updated from this path.
+          category: fillIfNull(patches.category, category),
+          vendor: fillIfNull(patches.vendor, derivedVendor),
+          packageId: fillIfNull(patches.packageId, packageId),
+          version: fillIfNull(patches.version, version),
           ...(inferredOsType
             ? {
                 osTypes: sql`CASE
@@ -258,7 +342,7 @@ async function upsertInstalledPatches(
         patchId: patch.id,
         status: 'installed',
         installedAt: installedAt,
-        installedVersion: patchData.version || null,
+        installedVersion: version,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
@@ -266,7 +350,7 @@ async function upsertInstalledPatches(
         set: {
           status: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
           installedAt: sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
-          installedVersion: patchData.version || null,
+          installedVersion: version,
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }
@@ -328,9 +412,15 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
   }
 
   const sources = data.source ? [data.source] : uniqueSourcesFromPendingPatches(data.patches);
+  // Admit BEFORE the sweep — see sweepIsSafe.
+  const pending = admitPatchBatch(data.patches);
+  logRejections(agentId, 'pending scan', pending);
 
+  let pendingCount = 0;
   await db.transaction(async (tx) => {
-    if (data.full) {
+    if (!sweepIsSafe(pending)) {
+      console.warn(`[PATCHES] Agent ${agentId} pending scan had refused rows — skipping tombstone sweep this cycle`);
+    } else if (data.full) {
       if (data.coveredSources === undefined) {
         // Legacy agents send full scans without coverage info: sweep all sources.
         // Log the path so an operator can tell a legacy sweep-all from a
@@ -354,7 +444,7 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
     } else if (sources.length > 0) {
       await markPendingDevicePatchesMissing(tx, device.id, sources);
     }
-    await upsertPendingPatches(tx, device, data.patches);
+    pendingCount = await upsertPendingPatches(tx, device, pending.admitted);
   });
 
   await pruneStaleTombstones(db, device.id, device.orgId);
@@ -367,14 +457,16 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
     resourceType: 'device',
     resourceId: device.id,
     details: {
-      pendingCount: data.patches.length,
+      pendingCount,
+      rejectedCount: pending.rejected,
+      rejectedReasons: pending.reasons,
       source: data.source ?? null,
       full: data.full,
       coveredSources: data.coveredSources ?? null,
     },
   });
 
-  return c.json({ success: true, pending: data.patches.length });
+  return c.json({ success: true, pending: pendingCount, rejected: pending.rejected });
 });
 
 patchesRoutes.put('/:id/patches/installed', zValidator('json', submitInstalledPatchesSchema), async (c) => {
@@ -388,9 +480,12 @@ patchesRoutes.put('/:id/patches/installed', zValidator('json', submitInstalledPa
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const installed = admitPatchBatch(data.installed);
+  logRejections(agentId, 'installed inventory', installed);
+
   let installedCount = 0;
   await db.transaction(async (tx) => {
-    installedCount = await upsertInstalledPatches(tx, device, data.installed);
+    installedCount = await upsertInstalledPatches(tx, device, installed.admitted);
   });
 
   writeAuditEvent(c, {
@@ -402,11 +497,18 @@ patchesRoutes.put('/:id/patches/installed', zValidator('json', submitInstalledPa
     resourceId: device.id,
     details: {
       installedCount,
-      ignoredLinuxPackageCount: data.installed.length - installedCount,
+      rejectedCount: installed.rejected,
+      rejectedReasons: installed.reasons,
+      ignoredLinuxPackageCount: installed.admitted.length - installedCount,
     },
   });
 
-  return c.json({ success: true, installed: installedCount, ignored: data.installed.length - installedCount });
+  return c.json({
+    success: true,
+    installed: installedCount,
+    ignored: installed.admitted.length - installedCount,
+    rejected: installed.rejected,
+  });
 });
 
 patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async (c) => {
@@ -421,11 +523,22 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
     return c.json({ error: 'Device not found' }, 404);
   }
 
+  const pending = admitPatchBatch(data.patches);
+  const installed = admitPatchBatch(data.installed ?? []);
+  logRejections(agentId, 'combined scan', pending);
+  logRejections(agentId, 'combined scan (installed)', installed);
+  const rejectedCount = pending.rejected + installed.rejected;
+
+  let pendingCount = 0;
   let installedCount = 0;
   await db.transaction(async (tx) => {
-    await markAllDevicePatchesMissing(tx, device.id);
-    await upsertPendingPatches(tx, device, data.patches);
-    installedCount = await upsertInstalledPatches(tx, device, data.installed ?? []);
+    if (sweepIsSafe(pending)) {
+      await markAllDevicePatchesMissing(tx, device.id);
+    } else {
+      console.warn(`[PATCHES] Agent ${agentId} combined scan had refused rows — skipping tombstone sweep this cycle`);
+    }
+    pendingCount = await upsertPendingPatches(tx, device, pending.admitted);
+    installedCount = await upsertInstalledPatches(tx, device, installed.admitted);
   });
 
   // Prune stale tombstones after the scan commits. Outside the txn on purpose:
@@ -441,16 +554,19 @@ patchesRoutes.put('/:id/patches', zValidator('json', submitPatchesSchema), async
     resourceType: 'device',
     resourceId: device.id,
     details: {
-      pendingCount: data.patches.length,
+      pendingCount,
       installedCount,
-      ignoredLinuxPackageCount: submittedInstalledCount - installedCount,
+      rejectedCount,
+      rejectedReasons: { ...pending.reasons, ...installed.reasons },
+      ignoredLinuxPackageCount: installed.admitted.length - installedCount,
     },
   });
 
   return c.json({
     success: true,
-    pending: data.patches.length,
+    pending: pendingCount,
     installed: installedCount,
-    ignored: submittedInstalledCount - installedCount
+    ignored: installed.admitted.length - installedCount,
+    rejected: rejectedCount
   });
 });
