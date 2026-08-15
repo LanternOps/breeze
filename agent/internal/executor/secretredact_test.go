@@ -48,6 +48,19 @@ func TestBuildSecretRedactor_MergesOverlappingMatchesIntoOneMarker(t *testing.T)
 	}
 }
 
+func TestBuildSecretRedactor_AbuttingMatchesEarnSeparateMarkers(t *testing.T) {
+	// "abcd" matches [0,4) and "efgh" matches [4,8) in "abcdefgh" — they
+	// abut (end == next start) but do not overlap. The server's
+	// exactSecretRedaction.ts treats abutting ranges as two distinct
+	// occurrences, each earning its own marker, rather than merging them.
+	redact := BuildSecretRedactor([]string{"abcd", "efgh"})
+	got := redact("abcdefgh")
+	want := "[REDACTED][REDACTED]"
+	if got != want {
+		t.Fatalf("redact() = %q, want %q (abutting-but-non-overlapping matches must NOT merge)", got, want)
+	}
+}
+
 func TestBuildSecretRedactor_DoesNotRescanItsOwnMarker(t *testing.T) {
 	// "REDACTED" is itself a supplied secret value. The text "secret" does not
 	// contain "REDACTED" until AFTER redaction, so matching must happen only
@@ -68,7 +81,13 @@ func TestBuildSecretRedactor_Idempotent(t *testing.T) {
 	}
 }
 
-func TestBuildSecretRedactor_DedupesIdenticalValues(t *testing.T) {
+func TestBuildSecretRedactor_DuplicateValuesStillYieldOneMarker(t *testing.T) {
+	// Dedup is a performance guard (fewer redundant Index scans), not an
+	// observable-output guard: the two identical spans this would produce
+	// without dedup are identical ranges, which the merge step collapses to
+	// one marker regardless. This only proves duplicates don't crash or
+	// double-process — it does not pin dedup itself, which isn't otherwise
+	// observable from the output.
 	redact := BuildSecretRedactor([]string{"hunter2000", "hunter2000"})
 	got := redact("token=hunter2000")
 	want := "token=[REDACTED]"

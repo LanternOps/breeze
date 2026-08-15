@@ -14,7 +14,8 @@ import (
 // marked secret, delivered to the agent encrypted in transit (the server seals
 // them into one AAD-bound envelope and opens it only at delivery — see
 // apps/api/src/services/scriptSecretEnvelope.ts) and injected here as process
-// environment.
+// environment. That file ships in PR4a (#3557), not present on this branch's
+// base yet — the citation is a forward reference, not an error.
 //
 // Environment, deliberately, and NOT parameter substitution: the substituted
 // script is written to a temp file on the customer's disk (shell.go
@@ -26,7 +27,9 @@ const (
 	SecretEnvPayloadKey = "secretEnv"
 
 	// MinSecretValueLength mirrors MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH in
-	// packages/shared/src/validators/tenantVariables.ts. A secret shorter than
+	// packages/shared/src/validators/tenantVariables.ts. That file already
+	// exists on this branch's base, but the constant itself ships in PR4a
+	// (#3557) — a forward reference, not an error. A secret shorter than
 	// this cannot be exact-value-redacted from script output without shredding
 	// the output itself (imagine redacting every "ab"), so rather than choose
 	// between destroying the operator's output and leaking the credential, the
@@ -35,8 +38,9 @@ const (
 	MinSecretValueLength = 4
 
 	// MaxSecretEnvEntries mirrors MAX_SECRET_ENV_ENTRIES in
-	// apps/api/src/services/scriptSecretEnvelope.ts. Bounds the redactor's work
-	// and the environment block.
+	// apps/api/src/services/scriptSecretEnvelope.ts (ships in PR4a, #3557 —
+	// not present on this branch's base yet). Bounds the redactor's work and
+	// the environment block.
 	MaxSecretEnvEntries = 32
 
 	// SecretEnvPrefix is the environment-variable namespace. A script reads a

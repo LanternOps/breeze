@@ -29,8 +29,9 @@ const SecretRedactionMarker = "[REDACTED]"
 // leave an unmatched fragment behind. Inherent to redact-last; the alternative
 // (redact first) would let the pattern layer re-mangle the markers.
 //
-// Mirrors apps/api/src/services/exactSecretRedaction.ts so the agent and the
-// server produce identical redacted text for the same input.
+// Mirrors apps/api/src/services/exactSecretRedaction.ts (ships in PR4a,
+// #3557 — not present on this branch's base yet) so the agent and the server
+// produce identical redacted text for the same input.
 func BuildSecretRedactor(values []string) func(string) string {
 	seen := make(map[string]struct{}, len(values))
 	filtered := make([]string, 0, len(values))
@@ -83,9 +84,14 @@ func BuildSecretRedactor(values []string) func(string) string {
 		merged := spans[:1]
 		for _, s := range spans[1:] {
 			last := &merged[len(merged)-1]
-			if s.start <= last.end {
-				// Overlapping or adjacent — extend the current run rather
-				// than starting a new one, so they collapse into one marker.
+			// `<` (not `<=`): two ranges that merely ABUT (s.start == last.end)
+			// are distinct occurrences and each earns its own marker — mirrors
+			// the server's exactSecretRedaction.ts merge condition exactly, so
+			// abutting-but-non-overlapping secrets redact to two markers on
+			// both ends, not one.
+			if s.start < last.end {
+				// Genuinely overlapping — extend the current run rather than
+				// starting a new one, so they collapse into one marker.
 				if s.end > last.end {
 					last.end = s.end
 				}
