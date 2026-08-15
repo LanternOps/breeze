@@ -162,6 +162,12 @@ offers user-scope will not surface under `--scope machine`; if one slips through
 and a machine install is impossible, mark the result skipped with a reason rather
 than failing the job.
 
+> **REVERSED 2026-08-14 — see the amendment at the end of this document (#2727).**
+> The "accepted" above did not survive contact with real workstations: the
+> machine-scope-only scan reports **zero** third-party updates on a typical
+> user's PC. Detection is now dual-context; the SYSTEM machine-scope pass
+> described here is unchanged and remains authoritative.
+
 ## Component 3 — provider wiring (`defaults_windows.go` + heartbeat)
 
 - In `NewDefaultManager` (or heartbeat init), run **ensure-winget**; on success
@@ -238,3 +244,81 @@ than failing the job.
 - Whether to ship the optional phase-2 per-device "engine status" surface in v1
   (recommended: emit the status field now, add UI later).
 - Confirm the artifact-refresh cadence/owner for the MS bundle mirror.
+
+---
+
+## Amendment — 2026-08-14: per-user detection reinstated (#2727)
+
+**Status:** implemented. **Supersedes:** the "per-user apps do not appear
+(accepted)" decision in Component 2, and the clause in Component 3 that
+"exactly one winget provider is ever registered → no duplicate scans, no dedup
+logic".
+
+### Why the original decision failed
+
+The accepted limitation was reasoned about as a *coverage gap on a minority of
+packages*. In the field it is closer to a total loss of the feature: Chrome,
+Zoom, Slack, Discord, Teams (personal), Spotify and most of the everyday app
+surface default to **per-user** installs. Their ARP entries live in the user's
+own registry hive, and SYSTEM's `HKCU` is `HKU\S-1-5-18`, which contains none of
+them. So on a typical workstation `winget upgrade --scope machine` as SYSTEM
+returns an empty table and the device reports **clean third-party posture while
+being materially out of date** — and it does so with a successful exit code, so
+nothing looks wrong. Dropping `--scope machine` does not fix this: the packages
+are not in the process's view at any scope.
+
+Two things also changed the calculus after the original spec:
+
+- **Winget-AutoUpdate precedent** (raised by @JonathanPitre on #2727): WAU has
+  shipped a SYSTEM machine pass plus a separate user-context pass for years.
+  Session-dependent coverage is a known, accepted operating point for this
+  problem, not an unexplored risk.
+- The `run_as_user` **exec transport survived** the original cleanup. Only the
+  winget-specific wrapper was deleted (`d61ffe57a`, PR #2224); broker →
+  `Session.SendCommand` → helper `executeProcess` is still live and exercised by
+  the script path today.
+
+### What was implemented
+
+- **One provider, two passes.** `SystemWingetProvider` keeps ID `winget` and
+  runs the SYSTEM machine-scope pass exactly as specified in Component 2, then a
+  best-effort `winget upgrade --scope user` inside the interactive user's
+  session via the helper. Results are merged and deduped by package ID with the
+  machine entry winning.
+- **Not a second provider — deliberately.** Scan coverage is computed per source
+  *bucket* and a bucket only counts as covered when every provider feeding it
+  succeeded (`heartbeat.coveredPatchSources`). A separate `winget-user` provider
+  would map to the shared `third_party` bucket and be skipped on every machine
+  with nobody logged in, so the API would stop reconciling third-party patches
+  for the entire unattended fleet. Keeping the pass internal makes coverage
+  byte-identical to before: `winget` is covered iff the machine pass parsed.
+- **`--scope user`, not unscoped-and-filter.** The helper runs on the user's
+  filtered token and can read HKLM, so an unscoped run returns machine packages
+  too — and `winget upgrade` has no scope column, so nothing in the output would
+  let us label the rows. Asking for user scope makes the label truthful by
+  construction.
+- **Scope is recorded, not inferred.** `AvailablePatch.Scope` →
+  `device_patches.scope` (`machine` | `user`; NULL = provider has no scope
+  concept).
+- **A second coverage axis.** The pending upload carries `userScopeScanned`. The
+  ingest route only sweeps user-scope rows to `missing` when that is explicitly
+  `true` — otherwise a scan taken while nobody was logged in would tombstone
+  rows it never looked at, which is #2217 one axis down.
+- **Detection only.** Installing a package the last scan saw *only* at user
+  scope is refused with an explicit error rather than silently running a
+  machine-scope install that would fail or install a second, machine-wide copy.
+
+### Limitations, stated rather than hidden
+
+- **Session-dependent.** Only the interactive console user is covered. Nobody
+  logged in → machine scope only. Other logged-in users' per-user apps stay
+  invisible; `PreferredRunAsUserSession` binds to the console session by design
+  (#1009), and per-user rows are not keyed by SID, so a multi-user box reports
+  whichever user was at the console. Surfaced, not silent: the UI says per-user
+  apps were not scanned.
+- **Unknown-scope packages.** `--scope` filters on the *installed* scope winget
+  recorded; packages it cannot classify are dropped by both passes. That is a
+  pre-existing winget under-report affecting machine scope too, tracked
+  separately.
+- **Remediation gap.** Per-user packages are now visible but not patchable. A
+  user-context install path (and per-SID identity on the rows) is the follow-up.

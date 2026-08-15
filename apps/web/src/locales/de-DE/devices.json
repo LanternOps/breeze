@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Diese Organisation hat {{name}} nicht genehmigt. Genehmigen Sie den Patch vor der Installation.",
+    "installPatchUserScopeTitle": "{{name}} ist im Profil des angemeldeten Benutzers installiert. Benutzerbezogene Apps können noch nicht aus dem Systemkontext gepatcht werden.",
     "installPatchTitle": "Installieren Sie {{name}}",
     "loading": "Patch-Status wird geladen...",
     "notDownloadedTitle": "Noch nicht heruntergeladen – die Installation dauert länger",
@@ -1271,6 +1272,9 @@
       "queued": "{{label}} in der Warteschlange",
       "queuedDetail": "{{label}} in der Warteschlange{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Pro Benutzer",
+    "perUserBadgeTitle": "Im Profil des angemeldeten Benutzers installiert; kann derzeit nicht aus dem Systemkontext gepatcht werden",
+    "perUserNotScanned": "Benutzerbezogene Apps wurden nicht gescannt (keine interaktive Benutzersitzung) – benutzerbezogene Updates fehlen möglicherweise.",
     "rebootRequired": "Neustart erforderlich",
     "table": {
       "approval": "Zustimmung",

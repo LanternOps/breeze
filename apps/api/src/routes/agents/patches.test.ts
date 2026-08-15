@@ -43,6 +43,7 @@ const tables = vi.hoisted(() => ({
     lastCheckedAt: 'devicePatches.lastCheckedAt',
     installedAt: 'devicePatches.installedAt',
     installedVersion: 'devicePatches.installedVersion',
+    scope: 'devicePatches.scope',
     updatedAt: 'devicePatches.updatedAt',
   },
 }));
@@ -148,6 +149,7 @@ function mockDeviceLookup(osType = 'linux') {
 
 function mockPatchInsertTx() {
   const insertedRows: Array<Record<string, unknown>> = [];
+  const devicePatchValues: Array<Record<string, unknown>> = [];
   const tx = {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -165,6 +167,7 @@ function mockPatchInsertTx() {
             };
           }
 
+          devicePatchValues.push(values as Record<string, unknown>);
           return {
             returning: vi.fn().mockResolvedValue([]),
           };
@@ -172,7 +175,7 @@ function mockPatchInsertTx() {
       })),
     })),
   };
-  return { tx, insertedRows };
+  return { tx, insertedRows, devicePatchValues };
 }
 
 describe('PUT /agents/:id/patches - third-party fields', () => {
@@ -738,12 +741,69 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     expect(tx.update).toHaveBeenCalledTimes(1);
-    // No source scoping: only the deviceId + pending-status conditions.
+    // No source scoping: deviceId + pending-status, plus the user-scope guard
+    // (#2727) — a legacy payload carries no userScopeScanned, so per-user rows
+    // are never tombstoned by it.
     const conditions = (updateWheres[0] as { conds?: unknown[] }).conds ?? [];
-    expect(conditions).toHaveLength(2);
+    expect(conditions).toHaveLength(3);
     expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.deviceId, right: DEVICE_ID });
     expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.status, right: 'pending' });
+    expect(JSON.stringify(updateWheres[0])).toContain('IS DISTINCT FROM');
     expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
+  });
+
+  // #2727 — per-user winget results are a second coverage axis: the user-context
+  // pass only runs when somebody is logged in, so user-scope pending rows must
+  // only be swept when the agent explicitly says that pass ran.
+  it('spares user-scope rows unless userScopeScanned is explicitly true', async () => {
+    for (const [payloadFlag, wantGuard] of [[undefined, true], [false, true], [true, false]] as const) {
+      const { tx } = mockPatchInsertTx();
+      const updateWheres = captureUpdateWhere(tx);
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+      const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full: true,
+          coveredSources: ['third_party'],
+          ...(payloadFlag === undefined ? {} : { userScopeScanned: payloadFlag }),
+          patches: [{ name: 'Chrome', source: 'third_party', externalId: 'Google.Chrome', scope: 'user' }],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const serialized = JSON.stringify(updateWheres[0]);
+      if (wantGuard) {
+        expect(serialized, `userScopeScanned=${String(payloadFlag)} must spare user-scope rows`).toContain('IS DISTINCT FROM');
+
+        // Assert the OPERAND too, not just the operator: comparing against the
+        // wrong literal would leave the substring above intact while sparing
+        // the wrong rows.
+        expect(serialized).toContain("IS DISTINCT FROM 'user'");
+        expect(serialized).toContain('devicePatches.scope');
+      } else {
+        expect(serialized, 'a scan that covered user scope may sweep user-scope rows').not.toContain('IS DISTINCT FROM');
+      }
+    }
+  });
+
+  it('persists the reported install scope on the device_patches row', async () => {
+    const { tx, devicePatchValues } = mockPatchInsertTx();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'third_party',
+        userScopeScanned: true,
+        patches: [{ name: 'Chrome', source: 'third_party', externalId: 'Google.Chrome', scope: 'user' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(devicePatchValues[0]).toMatchObject({ scope: 'user' });
   });
 
   it('full scan with empty coveredSources tombstones nothing', async () => {

@@ -92,11 +92,22 @@ func handlePatchScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
-	return tools.NewSuccessResult(map[string]any{
+	result := map[string]any{
 		"pendingCount":   len(pendingItems),
 		"installedCount": len(installedItems),
 		"warning":        errorString(err),
-	}, time.Since(start).Milliseconds())
+	}
+	// Report the per-user winget coverage axis explicitly. Without it a device
+	// where nobody was logged in is indistinguishable from one with no per-user
+	// updates, and the UI would under-report rather than say "per-user apps not
+	// scanned" (#2727). Only present on devices with a winget provider.
+	if userScan, present := h.wingetUserScopeStatus(); present {
+		result["userScopeScanned"] = userScan.Scanned
+		if !userScan.Scanned && userScan.Reason != "" {
+			result["userScopeSkipReason"] = userScan.Reason
+		}
+	}
+	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }
 
 func filterPatchInventoryItemsBySource(items []map[string]any, source string) []map[string]any {

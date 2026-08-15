@@ -112,22 +112,42 @@ function uniqueSourcesFromPendingPatches(patchList: PendingPatchData[]): string[
   return [...new Set(patchList.map((patch) => patch.source))];
 }
 
+/**
+ * Rows discovered only inside a logged-in user's session (#2727) must not be
+ * tombstoned by a scan that could not look at user scope — a machine with
+ * nobody logged in reports machine scope only, and sweeping its (necessarily
+ * absent) per-user results would wipe rows the scan never inspected. Same
+ * failure mode as #2217, one axis down.
+ *
+ * NULL scope is deliberately sweepable: it means "no scope concept" (Windows
+ * Update, apt, homebrew) or a row written before this column existed, and both
+ * are machine-wide.
+ */
+const notUserScoped = sql`${devicePatches.scope} IS DISTINCT FROM 'user'`;
+
 async function markAllDevicePatchesMissing(executor: PatchIngestExecutor, deviceId: string): Promise<void> {
+  // No userScopeScanned signal exists on this legacy combined-submit route, so
+  // it can never prove the user pass ran — user-scope rows are always spared.
   await executor
     .update(devicePatches)
     .set({ status: 'missing', lastCheckedAt: new Date() })
-    .where(eq(devicePatches.deviceId, deviceId));
+    .where(and(eq(devicePatches.deviceId, deviceId), notUserScoped));
 }
 
 async function markPendingDevicePatchesMissing(
   executor: PatchIngestExecutor,
   deviceId: string,
   sources: string[],
+  sweepUserScope = false,
 ): Promise<void> {
   const conditions = [
     eq(devicePatches.deviceId, deviceId),
     eq(devicePatches.status, 'pending'),
   ];
+
+  if (!sweepUserScope) {
+    conditions.push(notUserScoped);
+  }
 
   if (sources.length > 0) {
     conditions.push(sql`${devicePatches.patchId} IN (
@@ -244,12 +264,18 @@ async function upsertPendingPatches(
         orgId: device.orgId,
         patchId: patch.id,
         status: 'pending',
+        scope: patchData.scope ?? null,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
           status: 'pending',
+          // A scope-less report must not erase a scope an earlier scan
+          // established: the same device keeps reporting machine-scope rows
+          // from providers with no scope concept, and blanking the column
+          // would re-expose user-scope rows to the sweep.
+          scope: patchData.scope ?? sql`${devicePatches.scope}`,
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }
@@ -415,6 +441,13 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
   // Admit BEFORE the sweep — see sweepIsSafe.
   const pending = admitPatchBatch(data.patches);
   logRejections(agentId, 'pending scan', pending);
+  // Only an explicit true unlocks sweeping user-scope rows. Absent (legacy
+  // agent, non-Windows, no winget provider) means the user pass demonstrably
+  // did not run, so those rows are left alone (#2727).
+  const sweepUserScope = data.userScopeScanned === true;
+  if (!sweepUserScope && data.full) {
+    console.log(`[PATCHES] Agent ${agentId} full scan did not cover per-user installs; user-scope pending rows preserved`);
+  }
 
   let pendingCount = 0;
   await db.transaction(async (tx) => {
@@ -426,13 +459,13 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
         // Log the path so an operator can tell a legacy sweep-all from a
         // coverage-scoped sweep when diagnosing lingering-pending rows (#2217).
         console.log(`[PATCHES] Agent ${agentId} full scan (legacy, no coverage): sweeping ALL pending sources`);
-        await markPendingDevicePatchesMissing(tx, device.id, []);
+        await markPendingDevicePatchesMissing(tx, device.id, [], sweepUserScope);
       } else if (data.coveredSources.length > 0) {
         // Coverage-aware full scan (#2217): only sweep sources whose providers
         // actually ran. Skipped providers (e.g. winget without a helper
         // session) keep their pending rows instead of being tombstoned.
-        console.log(`[PATCHES] Agent ${agentId} full scan (coverage-scoped): sweeping only [${data.coveredSources.join(', ')}]`);
-        await markPendingDevicePatchesMissing(tx, device.id, data.coveredSources);
+        console.log(`[PATCHES] Agent ${agentId} full scan (coverage-scoped): sweeping only [${data.coveredSources.join(', ')}]${sweepUserScope ? ' (incl. user scope)' : ''}`);
+        await markPendingDevicePatchesMissing(tx, device.id, data.coveredSources, sweepUserScope);
       } else {
         // full with coveredSources: [] means EVERY registered provider on the
         // device was skipped or failed — a genuinely degraded agent. We sweep
@@ -442,7 +475,7 @@ patchesRoutes.put('/:id/patches/pending', zValidator('json', submitPendingPatche
         console.warn(`[PATCHES] Agent ${agentId} full scan covered ZERO sources — every provider skipped/failed; no tombstoning performed`);
       }
     } else if (sources.length > 0) {
-      await markPendingDevicePatchesMissing(tx, device.id, sources);
+      await markPendingDevicePatchesMissing(tx, device.id, sources, sweepUserScope);
     }
     pendingCount = await upsertPendingPatches(tx, device, pending.admitted);
   });

@@ -1254,6 +1254,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Esta organização não aprovou {{name}}. Aprove o patch antes de instalá-lo.",
+    "installPatchUserScopeTitle": "{{name}} está instalado no perfil do usuário conectado. Apps por usuário ainda não podem ser corrigidos a partir do contexto do sistema.",
     "installPatchTitle": "Instalar {{name}}",
     "loading": "Carregando o status dos patches...",
     "notDownloadedTitle": "Ainda não foi baixado — a instalação demorará mais",
@@ -1271,6 +1272,9 @@
       "queued": "{{label}} adicionado à fila",
       "queuedDetail": "{{label}} adicionado à fila{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Por usuário",
+    "perUserBadgeTitle": "Instalado no perfil do usuário conectado; ainda não pode ser corrigido a partir do contexto do sistema",
+    "perUserNotScanned": "Os aplicativos por usuário não foram verificados (nenhuma sessão de usuário interativa) — atualizações por usuário podem estar ausentes.",
     "rebootRequired": "Reinicialização necessária",
     "table": {
       "approval": "Aprovação",
