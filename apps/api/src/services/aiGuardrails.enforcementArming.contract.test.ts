@@ -48,6 +48,14 @@ const ARMING_FIELDS = [
   'remediationOptions',
   'autoUninstall',
   'autoApprove',
+  // Peripheral control: `action_type: allow | block | read_only | alert` is
+  // the arming input — `block`/`read_only` cut off USB / Bluetooth /
+  // Thunderbolt across the target scope. Named `action_type` rather than
+  // `action` only to avoid colliding with the dispatch discriminator, and it
+  // is unique to manage_peripheral_policies repo-wide, so listing it here
+  // brings that tool under the structural sweep instead of leaving it
+  // protected by name-pinning alone.
+  'action_type',
 ] as const;
 
 /**
@@ -96,12 +104,18 @@ function schemaPropertyDescriptions(toolName: string): Record<string, string> {
  * record of them.
  *
  * `actions` narrows the field to the operations that can actually carry it,
- * using the repo's "(for <action>)" description convention — e.g.
+ * using the repo's "(for <action>)" APPLICABILITY convention — e.g.
  * manage_patches' `autoApprove` is documented "(for setup_auto_approval)" and
- * is inert on approve/decline/defer. Narrowing only happens on action names
- * that are REAL enum members of that tool, so a stale or misspelled name in a
- * description cannot silently shrink the sweep; with no recognised name the
- * field applies to every non-read action.
+ * is inert on approve/decline/defer.
+ *
+ * Two deliberate guards against a narrowing that under-covers:
+ *   - only a parenthetical opening with "for " counts. "(required for create)"
+ *     is a REQUIREDNESS note, not an applicability one — `action_type` is
+ *     required on create but equally settable on update — so it does not
+ *     narrow, and the field keeps applying to every non-read action.
+ *   - only names that are REAL enum members of that tool are honoured, so a
+ *     stale or misspelled action in a description cannot shrink the sweep.
+ * With no recognised annotation the field applies to every non-read action.
  */
 function armingFieldsOf(toolName: string): Array<{ field: string; actions: Set<string> | null }> {
   const propertyNames = new Set(schemaPropertyNames(toolName).map((n) => n.toLowerCase()));
@@ -116,11 +130,14 @@ function armingFieldsOf(toolName: string): Array<{ field: string; actions: Set<s
     );
     if (!propertyNames.has(lower) && carriers.length === 0) continue;
 
-    // Union of real action names named by every property that carries the field.
+    // Union of real action names named in an applicability clause — a
+    // parenthetical that OPENS with "for", e.g. "(for setup_auto_approval)".
     const named = new Set<string>();
     for (const [, description] of carriers) {
-      for (const action of enumActions) {
-        if (new RegExp(`\\b${action}\\b`).test(description)) named.add(action);
+      for (const clause of description.matchAll(/\(for ([^)]*)\)/gi)) {
+        for (const action of enumActions) {
+          if (new RegExp(`\\b${action}\\b`).test(clause[1] ?? '')) named.add(action);
+        }
       }
     }
     found.push({ field, actions: named.size > 0 ? named : null });
@@ -167,7 +184,21 @@ describe('enforcement-arming tools require approval (#3552)', () => {
     // instead of the whole suite silently passing over an empty set.
     expect(tools).toContain('manage_software_policies');
     expect(tools).toContain('manage_software_policy');
-    expect(tools.length).toBeGreaterThanOrEqual(2);
+    // All three re-tiered prereq tools must be inside the STRUCTURAL sweep,
+    // not merely name-pinned in the second describe block below.
+    expect(tools).toContain('manage_update_rings');
+    expect(tools).toContain('manage_peripheral_policies');
+    expect(tools.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('a requiredness note does not narrow a field away from update', () => {
+    // manage_peripheral_policies' action_type is "(required for create)" —
+    // a requiredness note, not an applicability one. It must stay applicable
+    // to `update` too, or the sweep would quietly stop covering the action
+    // that flips an existing policy to block.
+    const actionType = armingFieldsOf('manage_peripheral_policies').find((f) => f.field === 'action_type');
+    expect(actionType, 'action_type must be detected').toBeDefined();
+    expect(actionType!.actions, 'must not narrow to create only').toBeNull();
   });
 
   it('nested arming keys are detected through free-form object properties', () => {
@@ -273,6 +304,16 @@ describe('policy-prerequisite mutators are Tier 3 supervised (#3552)', () => {
     });
     expect(check.tier).toBe(3);
     expect(check.requiresApproval).toBe(true);
+  });
+
+  it('manage_patches:setup_auto_approval is Tier 3 supervised', () => {
+    // Pinned by name alongside RETIERED even though its handler is currently
+    // hard-disabled: the gate exists so re-enabling the handler cannot
+    // silently reopen the hole, which only holds if the gate is pinned.
+    const check = checkGuardrails('manage_patches', { action: 'setup_auto_approval', autoApprove: true });
+    expect(check.tier).toBe(3);
+    expect(check.requiresApproval).toBe(true);
+    expect(check.tier === 3 ? check.approvalScope : undefined).toBe('supervised');
   });
 
   it('backup prereq tools are deliberately left at Tier 2 — change this consciously', () => {
