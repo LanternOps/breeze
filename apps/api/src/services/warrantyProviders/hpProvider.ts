@@ -1,4 +1,5 @@
 import type { WarrantyProvider, WarrantyLookupResult, WarrantyEntitlement } from './types';
+import { hpRateLimiter } from './throttle';
 
 export const hpProvider: WarrantyProvider = {
   name: 'hp',
@@ -17,8 +18,11 @@ export const hpProvider: WarrantyProvider = {
   async lookup(serialNumbers: string[]): Promise<Map<string, WarrantyLookupResult>> {
     const results = new Map<string, WarrantyLookupResult>();
 
-    // HP unofficial API — single serial lookup, no batching
+    // HP unofficial API — single serial lookup, no batching. Rate-limit at the
+    // request boundary so a whole-fleet sync (one single-serial call per device,
+    // across concurrent workers) doesn't burst the endpoint (#3201).
     for (const sn of serialNumbers) {
+      await hpRateLimiter.acquire();
       try {
         const response = await fetch(
           `https://support.hp.com/hp-pps-api/os/getWarrantyInfo?serialNumber=${encodeURIComponent(sn)}&country=US`,
