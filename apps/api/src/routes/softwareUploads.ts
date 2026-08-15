@@ -64,7 +64,7 @@ import {
   insertLatestSoftwareVersion,
   resolveScopedOrgId,
 } from '../services/softwareVersionShared';
-import { detectionRulesSchema } from '@breeze/shared';
+import { detectionRulesSchema, defaultSilentArgsForFileType } from '@breeze/shared';
 
 export const softwareUploadRoutes = new Hono();
 
@@ -652,11 +652,12 @@ softwareUploadRoutes.post(
       // Auto-detect MSI silent args (parity with the legacy multipart route).
       let silentInstallArgs = meta.silentInstallArgs ?? null;
       let silentUninstallArgs = meta.silentUninstallArgs ?? null;
-      if (fileType === 'msi' && !silentInstallArgs) {
-        silentInstallArgs = 'msiexec /i "{file}" /qn /norestart';
+      const silentDefaults = defaultSilentArgsForFileType(fileType);
+      if (silentDefaults && !silentInstallArgs) {
+        silentInstallArgs = silentDefaults.install;
       }
-      if (fileType === 'msi' && !silentUninstallArgs) {
-        silentUninstallArgs = 'msiexec /x "{file}" /qn /norestart';
+      if (silentDefaults && !silentUninstallArgs) {
+        silentUninstallArgs = silentDefaults.uninstall;
       }
 
       const versionId = randomUUID();

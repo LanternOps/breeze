@@ -1211,7 +1211,11 @@
       "uploading": "Subiendo…",
       "creating": "Creando…",
       "retryAddingVersion": "Reintentar agregar versión",
-      "createPackage": "Crear paquete"
+      "createPackage": "Crear paquete",
+      "installerType": "Tipo de instalador",
+      "autoDetectFromUrl": "Detectar automáticamente desde la URL",
+      "autoDetectedType": "Detección automática ({{type}})",
+      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Gestionado integrado",
@@ -1706,7 +1710,11 @@
       "saving": "Guardando...",
       "uploadSave": "Cargar y guardar",
       "saveVersion": "Guardar versión",
-      "setAsLatest": "Establecer como más reciente"
+      "setAsLatest": "Establecer como más reciente",
+      "installerType": "Tipo de instalador",
+      "autoDetectFromUrl": "Detectar automáticamente desde la URL",
+      "autoDetectedType": "Detección automática ({{type}})",
+      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insertar una variable de tiempo de implementación",
