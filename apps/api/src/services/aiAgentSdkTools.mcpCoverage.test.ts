@@ -334,11 +334,14 @@ describe("get_quote's MCP declaration matches its canonical schema (#3485)", () 
       /tool\(\s*'get_quote',[\s\S]*?registryDescription\('get_quote'\),[\s\S]*?\{([\s\S]*?)\},\s*makeHandler\('get_quote'/,
     );
     expect(shape, "tool('get_quote', registryDescription(...), { ... }) not found").not.toBeNull();
-    const shapeBody = shape![1]
+    const shapeBody = (shape![1] ?? '')
       .split('\n')
       .filter((line) => !line.trim().startsWith('//'))
       .join('\n');
-    const declaredKeys = [...shapeBody.matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
+    const declaredKeys = [...shapeBody.matchAll(/^\s*(\w+):/gm)]
+      .map((m) => m[1])
+      .filter((k): k is string => k !== undefined)
+      .sort();
 
     const canonicalKeys = Object.keys(
       (toolInputSchemas['get_quote'] as z.ZodObject<z.ZodRawShape>).shape,
