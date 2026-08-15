@@ -209,9 +209,16 @@ export type VpnDetectionSource = 'interface' | 'service' | 'process' | 'adapter'
 export interface VpnPresence {
   /** Normalized provider id; 'generic' = unknown tunnel adapter fallback. */
   provider: VpnProvider;
-  /** Whether the tunnel interface is currently up / connected. */
+  /**
+   * Whether the tunnel interface is currently up / connected. `false` means the
+   * VPN client is installed and running but has no tunnel up — those entries
+   * carry no interface or IPs, only the provider and detection source (#2139).
+   */
   active: boolean;
-  /** OS interface/adapter name backing the tunnel (e.g. utun3, wg0, ztabc123). */
+  /**
+   * OS interface/adapter name backing the tunnel (e.g. utun3, wg0, ztabc123).
+   * Empty string on an inactive entry — there is no tunnel to name.
+   */
   interfaceName: string;
   /** Overlay IPv4 assigned on the tunnel, when present. */
   ipv4?: string;

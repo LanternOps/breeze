@@ -14,3 +14,10 @@ func vpnServiceSignals() map[string]bool {
 	}
 	return matchVPNServiceTokens(string(out))
 }
+
+// vpnInterfaceAttributions is unnecessary on Windows: gopsutil reports the
+// friendly adapter name (e.g. "Tailscale", "OpenVPN TAP-Windows Adapter V9"),
+// so per-interface attribution already happens by name in classifyVPNInterface.
+func vpnInterfaceAttributions() map[string]string {
+	return nil
+}

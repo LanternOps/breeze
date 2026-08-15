@@ -21,7 +21,8 @@ import {
   createScriptSchema,
   executeScriptSchema,
   alertQuerySchema,
-  agentHeartbeatSchema
+  agentHeartbeatSchema,
+  vpnPresenceIngestSchema
 } from './index';
 
 describe('validators', () => {
@@ -579,5 +580,51 @@ describe('alertSeverityValueSchema', () => {
   it('rejects null at the standalone level', () => {
     // The mapping schema wraps with .nullable(); this base schema does not.
     expect(alertSeverityValueSchema.safeParse(null).success).toBe(false);
+  });
+});
+
+describe('vpnPresenceIngestSchema', () => {
+  it('accepts an inactive entry with empty interfaceName and no ipv4/ipv6', () => {
+    const r = vpnPresenceIngestSchema.safeParse({
+      provider: 'tailscale',
+      active: false,
+      interfaceName: '',
+      detectionSource: 'service'
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects an active entry with an empty interfaceName', () => {
+    const r = vpnPresenceIngestSchema.safeParse({
+      provider: 'tailscale',
+      active: true,
+      interfaceName: '',
+      detectionSource: 'interface'
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues[0]?.path).toEqual(['interfaceName']);
+    }
+  });
+
+  it('accepts an active entry with a non-empty interfaceName', () => {
+    const r = vpnPresenceIngestSchema.safeParse({
+      provider: 'wireguard',
+      active: true,
+      interfaceName: 'wg0',
+      ipv4: '10.0.0.2',
+      detectionSource: 'interface'
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejects an interfaceName longer than 128 characters', () => {
+    const r = vpnPresenceIngestSchema.safeParse({
+      provider: 'openvpn',
+      active: true,
+      interfaceName: 'a'.repeat(129),
+      detectionSource: 'interface'
+    });
+    expect(r.success).toBe(false);
   });
 });
