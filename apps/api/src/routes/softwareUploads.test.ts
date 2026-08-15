@@ -59,6 +59,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'organization',
       orgId: 'org-123',
       partnerId: null,
+      canAccessOrg: (orgId: string) => orgId === 'org-123',
     });
     return next();
   }),
@@ -318,6 +319,7 @@ describe('software upload-session routes', () => {
             scope: 'system',
             orgId: null,
             partnerId: null,
+            canAccessOrg: () => true,
           });
           return next();
         });
@@ -453,6 +455,21 @@ describe('software upload-session routes', () => {
         body: JSON.stringify(validBody),
       });
       expect(res.status).toBe(404);
+    });
+
+    // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
+    // partner-wide package (#2135, org_id NULL) cannot book a session yet —
+    // the route must fail up front with an actionable message, not a 500.
+    it('400s with a URL-only hint for a partner-wide catalog item', async () => {
+      selectQueue([{ id: CATALOG_ID, orgId: null, partnerId: 'partner-123', name: 'Shared Installer' }]);
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBody),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/partner-wide packages/);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
     // GET/DELETE validate `:id` as a UUID (uploadParamSchema); create must too

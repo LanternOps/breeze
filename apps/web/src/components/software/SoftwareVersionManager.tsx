@@ -19,7 +19,9 @@ import {
 import { applySilentArgsPrefill } from "@/lib/installerArgsPrefill";
 import { cn } from "@/lib/utils";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePackageUploadsGate } from "../../stores/featuresStore";
 import { findUnknownTokens } from "@/lib/installerVariables";
+import { applyOsHint } from "@/lib/installerPackageHints";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
@@ -108,6 +110,7 @@ export default function SoftwareVersionManager({
   const [error, setError] = useState<string>();
   const [latestId, setLatestId] = useState<string>("");
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [promotingVersionId, setPromotingVersionId] = useState<string>("");
@@ -116,6 +119,9 @@ export default function SoftwareVersionManager({
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   // Tenant variables (#3409) — offered as `{{var.<key>}}` in the same picker.
   const tenantVariables = useTenantVariables();
+  // Without S3 configured the upload routes 503, so gray the file picker out
+  // up front instead of failing after the user chose a file.
+  const { enabled: uploadsEnabled } = usePackageUploadsGate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Owns the in-flight chunked upload so Cancel (and unmount) can actually stop
   // it. A ref, not state: it must survive re-renders without causing one, and
@@ -264,6 +270,7 @@ export default function SoftwareVersionManager({
       fileName: file.name,
       // Auto-populate MSI silent args (retractable — see applySilentArgsPrefill).
       ...applySilentArgsPrefill(prev, deriveSoftwareFileTypeFromUrl(file.name)),
+      ...applyOsHint(prev, file.name),
     }));
   };
   /** The URL source carries no filename, so the installer type has to come from
@@ -278,6 +285,7 @@ export default function SoftwareVersionManager({
         prev,
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
+      ...applyOsHint(prev, value),
     }));
   };
   const handleFileTypeChange = (value: "" | SoftwareFileType) => {
@@ -468,6 +476,7 @@ export default function SoftwareVersionManager({
       });
       if (fileInputRef.current) fileInputRef.current.value = "";
       setIsFormOpen(false);
+      setAdvancedOpen(false);
     } catch (err) {
       // uploadPackageVersion REJECTS on abort. A cancel the user asked for is
       // not a failure — exit quietly, leaving `versions` untouched and no
@@ -738,91 +747,133 @@ export default function SoftwareVersionManager({
               />
               <button
                 type="button"
+                disabled={!uploadsEnabled}
+                title={
+                  uploadsEnabled
+                    ? undefined
+                    : i18n.t(
+                        "policies:software.softwareVersionManager.uploadsRequireS3Storage",
+                      )
+                }
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex h-10 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+                className="inline-flex h-10 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-background"
               >
                 <Upload className="h-4 w-4" />
                 {i18n.t("policies:software.softwareVersionManager.chooseFile")}
               </button>
               <span className="text-sm text-muted-foreground">
-                {formState.fileName ||
-                  i18n.t(
-                    "policies:software.softwareVersionManager.noFileSelectedMsiExeDmgDeb",
-                  )}
+                {uploadsEnabled
+                  ? formState.fileName ||
+                    i18n.t(
+                      "policies:software.softwareVersionManager.noFileSelectedMsiExeDmgDeb",
+                    )
+                  : i18n.t(
+                      "policies:software.softwareVersionManager.uploadsRequireS3Storage",
+                    )}
               </span>
             </div>
           </div>
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground">
-                {i18n.t(
-                  "policies:software.softwareVersionManager.silentInstallArgs",
+          <div className="mt-4">
+            <label className="text-xs font-semibold uppercase text-muted-foreground">
+              {i18n.t(
+                "policies:software.softwareVersionManager.silentInstallArgs",
+              )}
+            </label>
+            <div className="mt-2">
+              <VariableInput
+                value={formState.silentInstallArgs}
+                onChange={(value) =>
+                  setFormState((prev) => ({
+                    ...prev,
+                    silentInstallArgs: value,
+                  }))
+                }
+                placeholder={i18n.t(
+                  "policies:software.softwareVersionManager.eGMsiexecIFileQnNorestart",
                 )}
-              </label>
-              <div className="mt-2">
-                <VariableInput
-                  value={formState.silentInstallArgs}
-                  onChange={(value) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      silentInstallArgs: value,
-                    }))
-                  }
-                  placeholder={i18n.t(
-                    "policies:software.softwareVersionManager.eGMsiexecIFileQnNorestart",
-                  )}
-                  customFields={customFields}
-                  tenantVariables={tenantVariables}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-semibold uppercase text-muted-foreground">
-                {i18n.t(
-                  "policies:software.softwareVersionManager.silentUninstallArgs",
-                )}
-              </label>
-              <div className="mt-2">
-                <VariableInput
-                  value={formState.silentUninstallArgs}
-                  onChange={(value) =>
-                    setFormState((prev) => ({
-                      ...prev,
-                      silentUninstallArgs: value,
-                    }))
-                  }
-                  placeholder={i18n.t(
-                    "policies:software.softwareVersionManager.eGMsiexecXFileQnNorestart",
-                  )}
-                  customFields={customFields}
-                  tenantVariables={tenantVariables}
-                />
-              </div>
+                customFields={customFields}
+                tenantVariables={tenantVariables}
+              />
             </div>
           </div>
 
-          <DetectionRulesEditor
-            rules={formState.detectionRules}
-            onChange={(detectionRules) =>
-              setFormState((prev) => ({ ...prev, detectionRules }))
-            }
-          />
-
-          <div className="mt-4">
-            <label className="text-xs font-semibold uppercase text-muted-foreground">
-              {i18n.t("policies:software.softwareVersionManager.releaseNotes")}
-            </label>
-            <textarea
-              value={formState.notes}
-              onChange={(event) =>
-                setFormState((prev) => ({ ...prev, notes: event.target.value }))
-              }
-              placeholder={i18n.t(
-                "policies:software.softwareVersionManager.oneItemPerLine",
+          {/* Advanced disclosure mirrors AddPackageModal: uninstall args,
+              detection rules and release notes stay out of the default view so
+              install args no longer reads as a duplicated field. */}
+          <div className="mt-4 border-t pt-3">
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              aria-expanded={advancedOpen}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 transition-transform",
+                  advancedOpen && "rotate-180",
+                )}
+              />
+              {i18n.t(
+                "policies:software.softwareVersionManager.advancedOptions",
               )}
-              className="mt-2 u-min-h-px-96 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
+            </button>
+
+            {advancedOpen && (
+              <div className="mt-4 space-y-4">
+                <div>
+                  <label className="text-xs font-semibold uppercase text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.softwareVersionManager.silentUninstallArgs",
+                    )}
+                  </label>
+                  <div className="mt-2">
+                    <VariableInput
+                      value={formState.silentUninstallArgs}
+                      onChange={(value) =>
+                        setFormState((prev) => ({
+                          ...prev,
+                          silentUninstallArgs: value,
+                        }))
+                      }
+                      placeholder={i18n.t(
+                        "policies:software.softwareVersionManager.eGMsiexecXFileQnNorestart",
+                      )}
+                      customFields={customFields}
+                      tenantVariables={tenantVariables}
+                    />
+                  </div>
+                </div>
+
+                <DetectionRulesEditor
+                  rules={formState.detectionRules}
+                  onChange={(detectionRules) =>
+                    setFormState((prev) => ({ ...prev, detectionRules }))
+                  }
+                />
+
+                <div>
+                  <label className="text-xs font-semibold uppercase text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.softwareVersionManager.releaseNotes",
+                    )}
+                  </label>
+                  <textarea
+                    value={formState.notes}
+                    onChange={(event) =>
+                      setFormState((prev) => ({
+                        ...prev,
+                        notes: event.target.value,
+                      }))
+                    }
+                    placeholder={i18n.t(
+                      "policies:software.softwareVersionManager.oneItemPerLine",
+                    )}
+                    className="mt-2 u-min-h-px-96 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Shown for the whole file transfer, including at 0%. The old

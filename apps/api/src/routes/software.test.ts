@@ -86,7 +86,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  softwareCatalog: { id: 'id', orgId: 'org_id', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
+  softwareCatalog: { id: 'id', orgId: 'org_id', partnerId: 'partner_id', integrationProvider: 'integration_provider', name: 'name', vendor: 'vendor', description: 'description', category: 'category' },
   softwareVersions: { id: 'id', catalogId: 'catalog_id', isLatest: 'is_latest' },
   softwareDeployments: { id: 'id', orgId: 'org_id', softwareVersionId: 'software_version_id', createdAt: 'created_at', dispatchedAt: 'dispatched_at' },
   deploymentResults: { id: 'dr_id', deploymentId: 'deployment_id', deviceId: 'device_id', status: 'status', startedAt: 'started_at', completedAt: 'completed_at', exitCode: 'exit_code', output: 'output', errorMessage: 'error_message', retryCount: 'retry_count', deviceCommandId: 'device_command_id' },
@@ -348,6 +348,85 @@ describe('software routes', () => {
         pagination: { page: 1, limit: 50, total: 0 }
       });
       expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /software/catalog (create)', () => {
+    const setPartnerAuth = (partnerOrgAccess: 'all' | 'selected' | 'none') => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          partnerOrgAccess,
+          accessibleOrgIds: ['org-a', 'org-b'],
+        });
+        return next();
+      });
+    };
+
+    it('creates an org-owned package by default (org scope)', async () => {
+      const row = { id: 'cat-1', name: 'Chrome', vendor: null, orgId: 'org-123', partnerId: null };
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn(async () => [row]) })),
+      } as any);
+
+      const res = await app.request('/software/catalog', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Chrome' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect((await res.json()).data.orgId).toBe('org-123');
+    });
+
+    it('creates a partner-wide package for a full-partner admin (#2135)', async () => {
+      setPartnerAuth('all');
+      const row = { id: 'cat-2', name: 'Chrome', vendor: null, orgId: null, partnerId: 'partner-123' };
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn(async () => [row]) })),
+      } as any);
+
+      const res = await app.request('/software/catalog', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Chrome', ownerScope: 'partner' }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.orgId).toBeNull();
+      expect(body.data.partnerId).toBe('partner-123');
+    });
+
+    it('rejects partner-wide creation without full partner org access', async () => {
+      setPartnerAuth('selected');
+
+      const res = await app.request('/software/catalog', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Chrome', ownerScope: 'partner' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/full partner org access/);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('still requires an org for org-owned creation in All-orgs scope', async () => {
+      setPartnerAuth('all');
+
+      const res = await app.request('/software/catalog', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Chrome' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('orgId is required for this scope');
     });
   });
 

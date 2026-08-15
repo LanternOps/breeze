@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeploymentWizard from './DeploymentWizard';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) } }));
 vi.mock('../filters/DeviceTargetSelector', () => ({ DeviceTargetSelector: () => null }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 const fetchMock = vi.mocked(fetchWithAuth);

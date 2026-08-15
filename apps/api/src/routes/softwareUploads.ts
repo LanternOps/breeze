@@ -190,9 +190,6 @@ softwareUploadRoutes.post(
   zValidator('json', createUploadSessionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const payload = c.req.valid('json');
 
@@ -210,8 +207,20 @@ softwareUploadRoutes.post(
 
     const { id: catalogId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
-    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+      .where(eq(softwareCatalog.id, catalogId));
+    if (!catalogItem || (catalogItem.orgId !== null && !auth.canAccessOrg(catalogItem.orgId))) {
+      return c.json({ error: 'Catalog item not found' }, 404);
+    }
+    // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
+    // partner-wide package (#2135, org_id NULL) has no org to book the session
+    // under yet. Fail up front with an actionable message instead of a 500.
+    if (catalogItem.orgId === null) {
+      return c.json(
+        { error: 'File upload is not yet available for partner-wide packages — provide a download URL instead.' },
+        400,
+      );
+    }
+    const orgId = catalogItem.orgId;
 
     const {
       fileName, fileSize, chunkSize,

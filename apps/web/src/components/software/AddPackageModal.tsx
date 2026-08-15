@@ -18,7 +18,13 @@ import { cn } from "@/lib/utils";
 import { Dialog } from "../shared/Dialog";
 import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePackageUploadsGate } from "../../stores/featuresStore";
+import {
+  useDefaultOwnerScope,
+  type OwnerScope,
+} from "../../hooks/useDefaultOwnerScope";
 import { runAction, ActionError } from "../../lib/runAction";
+import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
@@ -102,6 +108,33 @@ export default function AddPackageModal({
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   // Tenant variables (#3409) — offered as `{{var.<key>}}` in the same picker.
   const tenantVariables = useTenantVariables(open);
+  // File uploads need S3 storage on the server; without it the upload routes
+  // 503, so gray the "Upload file" source out entirely instead (#config gate).
+  const { enabled: s3UploadsEnabled } = usePackageUploadsGate(open);
+  // Ownership axis (#2135): partner admins can create the package once for all
+  // their orgs. Chunked upload sessions are org-tenanted, so partner-wide
+  // packages are URL-only for now — the file source is disabled in that mode.
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const [ownerScope, setOwnerScopeState] = useState<OwnerScope>("organization");
+  const uploadsEnabled = s3UploadsEnabled && ownerScope !== "partner";
+  const uploadDisabledReason = !s3UploadsEnabled
+    ? i18n.t("policies:software.addPackageModal.uploadsRequireS3Storage")
+    : ownerScope === "partner"
+      ? i18n.t("policies:software.addPackageModal.partnerWideUrlOnly")
+      : null;
+  const setOwnerScope = (next: OwnerScope) => {
+    setOwnerScopeState(next);
+    // Partner-wide packages are URL-only (see above): drop a picked file and
+    // fall back to the URL source rather than submitting a doomed upload.
+    if (next === "partner") {
+      setForm((prev) =>
+        prev.source === "file" || prev.file
+          ? { ...prev, source: "url", file: null, fileName: "" }
+          : prev,
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
   // a retry continues from the version step instead of creating a duplicate.
@@ -128,6 +161,7 @@ export default function AddPackageModal({
   useEffect(() => {
     if (!open) return;
     setForm(blankForm);
+    setOwnerScopeState(defaultOwnerScope);
     setAdvancedOpen(false);
     createdCatalogId.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -159,6 +193,9 @@ export default function AddPackageModal({
     return () => {
       cancelled = true;
     };
+    // Intentionally keyed on `open` alone: defaultOwnerScope is read once per
+    // open as the initial value — a mid-edit store hydration must not wipe the
+    // user's in-progress form.
   }, [open]);
   const update = <K extends keyof typeof blankForm>(
     key: K,
@@ -174,6 +211,7 @@ export default function AddPackageModal({
       file,
       fileName: file.name,
       ...applySilentArgsPrefill(prev, derived),
+      ...applyOsHint(prev, file.name),
     }));
   };
   /** URL-source counterpart to handleFile: the extension in the URL is the only
@@ -189,6 +227,7 @@ export default function AddPackageModal({
         // An explicit selector choice outranks the URL for prefill purposes too.
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
+      ...applyOsHint(prev, value),
     }));
   };
   /** Selector changes retract or install the prefill the same way a URL edit does. */
@@ -325,6 +364,9 @@ export default function AddPackageModal({
                 vendor: form.vendor.trim() || undefined,
                 category: form.category,
                 description: form.description.trim() || undefined,
+                // Only partner-scope users ever see the selector; org tokens
+                // always create org-owned (the server default).
+                ownerScope: isPartnerScope ? ownerScope : undefined,
               }),
             }),
           parseSuccess: (d) => {
@@ -487,6 +529,47 @@ export default function AddPackageModal({
             <h3 className="text-sm font-semibold text-foreground">
               {i18n.t("policies:software.addPackageModal.package")}
             </h3>
+            {/* Ownership scope — partner-scope creators only (#2135, same
+                pattern as PolicyForm). */}
+            {isPartnerScope && (
+              <fieldset
+                className="space-y-2 rounded-md border p-4"
+                data-testid="software-package-owner"
+              >
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+                  {i18n.t("policies:software.addPackageModal.scope")}
+                </legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="pkg-owner-scope"
+                    value="partner"
+                    checked={ownerScope === "partner"}
+                    onChange={() => setOwnerScope("partner")}
+                    data-testid="software-package-owner-partner"
+                  />
+                  {i18n.t("policies:software.addPackageModal.allOrganizations")}
+                  <span className="text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.addPackageModal.sharedAcrossAllYourOrganizations",
+                    )}
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="pkg-owner-scope"
+                    value="organization"
+                    checked={ownerScope === "organization"}
+                    onChange={() => setOwnerScope("organization")}
+                    data-testid="software-package-owner-org"
+                  />
+                  {i18n.t(
+                    "policies:software.addPackageModal.thisOrganizationOnly",
+                  )}
+                </label>
+              </fieldset>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className={labelCls} htmlFor="pkg-name">
@@ -616,9 +699,15 @@ export default function AddPackageModal({
                     type="button"
                     role="tab"
                     aria-selected={form.source === val}
+                    disabled={val === "file" && !uploadsEnabled}
+                    title={
+                      val === "file" && uploadDisabledReason
+                        ? uploadDisabledReason
+                        : undefined
+                    }
                     onClick={() => update("source", val)}
                     className={cn(
-                      "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                       form.source === val
                         ? "bg-background text-foreground shadow-xs"
                         : "text-muted-foreground hover:text-foreground",
@@ -629,6 +718,11 @@ export default function AddPackageModal({
                   </button>
                 ))}
               </div>
+              {uploadDisabledReason && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {uploadDisabledReason}
+                </p>
+              )}
 
               {form.source === "url" ? (
                 <div className="mt-3">

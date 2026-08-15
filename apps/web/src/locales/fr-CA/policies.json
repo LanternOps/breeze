@@ -1215,7 +1215,13 @@
       "installerType": "Type d'installateur",
       "autoDetectFromUrl": "Détecter automatiquement depuis l'URL",
       "autoDetectedType": "Détection automatique ({{type}})",
-      "installerTypeUndetected": "Cette URL n'a pas d'extension d'installateur reconnaissable. Choisissez le type explicitement — sinon le fichier téléchargé est exécuté directement, ce qui échoue pour un MSI."
+      "installerTypeUndetected": "Cette URL n'a pas d'extension d'installateur reconnaissable. Choisissez le type explicitement — sinon le fichier téléchargé est exécuté directement, ce qui échoue pour un MSI.",
+      "uploadsRequireS3Storage": "Le téléversement de fichiers nécessite la configuration d'un stockage objet S3 sur le serveur.",
+      "scope": "Portée",
+      "allOrganizations": "Toutes les organisations",
+      "sharedAcrossAllYourOrganizations": "— partagé entre toutes vos organisations",
+      "thisOrganizationOnly": "Cette organisation uniquement",
+      "partnerWideUrlOnly": "Les paquets partenaire utilisent une URL de téléchargement — le téléversement de fichiers n'est pas encore disponible pour eux."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Intégré géré",
@@ -1435,7 +1441,11 @@
       "deviceCount_other": "{{count}} dispositifs",
       "groupCount_one": "{{count}} groupe",
       "groupCount_other": "{{count}} groupes",
-      "viewDeployment": "Voir le déploiement"
+      "viewDeployment": "Voir le déploiement",
+      "deployingTo": "Déploiement vers",
+      "customer": "Client",
+      "allTargetsBelongToThisCustomer": "Toutes les cibles sélectionnées appartiennent à ce client.",
+      "allOrgsSelectCustomer": "Vous consultez toutes les organisations. Choisissez un client dans le sélecteur d'organisation pour cibler ce déploiement."
     },
     "detectionRulesEditor": {
       "detectionRules": "Règles de détection",
@@ -1714,7 +1724,9 @@
       "installerType": "Type d'installateur",
       "autoDetectFromUrl": "Détecter automatiquement depuis l'URL",
       "autoDetectedType": "Détection automatique ({{type}})",
-      "installerTypeUndetected": "Cette URL n'a pas d'extension d'installateur reconnaissable. Choisissez le type explicitement — sinon le fichier téléchargé est exécuté directement, ce qui échoue pour un MSI."
+      "installerTypeUndetected": "Cette URL n'a pas d'extension d'installateur reconnaissable. Choisissez le type explicitement — sinon le fichier téléchargé est exécuté directement, ce qui échoue pour un MSI.",
+      "advancedOptions": "Options avancées",
+      "uploadsRequireS3Storage": "Le téléversement de fichiers nécessite la configuration d'un stockage objet S3 sur le serveur."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insérer une variable de temps de déploiement",
