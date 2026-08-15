@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bumpVersionString } from "./versionBump";
+import { bumpVersionString, substituteVersionInUrl } from "./versionBump";
 
 describe("bumpVersionString", () => {
   it("bumps the last numeric segment", () => {
@@ -18,5 +18,26 @@ describe("bumpVersionString", () => {
   it("returns empty for strings without digits", () => {
     expect(bumpVersionString("")).toBe("");
     expect(bumpVersionString("latest")).toBe("");
+  });
+});
+
+describe("substituteVersionInUrl", () => {
+  it("rewrites embedded versions", () => {
+    expect(
+      substituteVersionInUrl("https://dl.example.com/app-1.2.3.msi", "1.2.3", "1.2.4"),
+    ).toBe("https://dl.example.com/app-1.2.4.msi");
+  });
+
+  it("leaves URLs without the version untouched", () => {
+    expect(
+      substituteVersionInUrl("https://dl.example.com/latest.msi", "1.2.3", "1.2.4"),
+    ).toBe("https://dl.example.com/latest.msi");
+  });
+
+  it("is a no-op for empty or unchanged versions", () => {
+    expect(substituteVersionInUrl("https://x/app-1.2.3.msi", "1.2.3", "")).toBe(
+      "https://x/app-1.2.3.msi",
+    );
+    expect(substituteVersionInUrl("", "1.2.3", "1.2.4")).toBe("");
   });
 });

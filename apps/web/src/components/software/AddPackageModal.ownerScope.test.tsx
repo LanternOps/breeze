@@ -76,4 +76,20 @@ describe('AddPackageModal owner scope (#2135)', () => {
     fireEvent.click(screen.getByTestId('software-package-owner-org'));
     expect(screen.getByRole('tab', { name: /upload file/i })).toBeEnabled();
   });
+
+  it('tells the user when switching to partner-wide drops a picked file', () => {
+    render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+
+    // Org-owned first, pick a file…
+    fireEvent.click(screen.getByTestId('software-package-owner-org'));
+    fireEvent.click(screen.getByRole('tab', { name: /upload file/i }));
+    const file = new File([new Uint8Array(8)], 'bigapp.msi');
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    // …then flip to partner-wide: the file is dropped, and the UI says so.
+    fireEvent.click(screen.getByTestId('software-package-owner-partner'));
+    const notice = screen.getByTestId('pkg-file-dropped-notice');
+    expect(notice.textContent).toContain('bigapp.msi');
+  });
 });

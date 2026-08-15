@@ -422,9 +422,11 @@ function safeUrlHost(rawUrl: string): string {
   }
 }
 
-// PATCH body: only provided keys change; explicit null clears a field. The
-// binary-describing fields (checksum, fileSize, s3Key) and scripts are not
-// editable — replacing the installer means adding a new version.
+// PATCH body: only provided keys change; explicit null clears a nullable
+// field (notes, URL, OS, args, detection rules — version/releaseDate/
+// architecture reject null). The binary-describing fields (checksum, fileSize,
+// s3Key) and scripts are not editable — replacing the installer means adding
+// a new version.
 const updateVersionSchema = z.object({
   version: z.string().min(1).max(100).optional(),
   releaseDate: z.string().datetime().optional(),
@@ -689,8 +691,15 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
+    // Same dual-axis widening as GET /catalog: built-ins for everyone, the
+    // caller's own partner-wide custom packages for partner scope (#2135) —
+    // search must not return a narrower set than the list it searches.
+    const scopeBranches: SQL[] = [eq(softwareCatalog.orgId, orgId), isNotNull(softwareCatalog.integrationProvider)];
+    if (auth.scope === 'partner' && auth.partnerId) {
+      scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+    }
     const conditions = [
-      eq(softwareCatalog.orgId, orgId),
+      or(...scopeBranches)!,
       or(
         like(softwareCatalog.name, term),
         like(softwareCatalog.vendor, term),
@@ -716,10 +725,12 @@ softwareRoutes.get(
     const auth = c.get('auth');
 
     const { id } = c.req.valid('param');
-    // Look up by id alone, then authorize in JS. RLS restricts visibility to the
-    // caller's org rows + their partner's rows (built-ins and partner-wide
-    // packages); the org guard below rejects a (visible) org-scoped row from a
-    // different accessible org context. Partner rows have org_id NULL, so an
+    // Look up by id alone, then authorize in JS. RLS bounds what is visible:
+    // the caller's org rows, plus NULL-org partner rows — built-ins for any
+    // caller, but partner-wide custom packages only for partner-scope tokens
+    // (org tokens never pass breeze_has_partner_access, so those rows are
+    // simply invisible here and 404). The org guard below rejects a (visible)
+    // org row the caller can't access. Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
     // No resolveScopedOrgId here: the All-organizations view has no org to
     // resolve, and a partner-wide row is exactly what it should still see.
@@ -1487,9 +1498,11 @@ softwareRoutes.post(
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
       .where(eq(softwareCatalog.id, versionRecord.catalogId));
-    // RLS already restricts visibility to the caller's org rows + their partner's
-    // built-ins. Extra guard: an org-scoped (non-built-in) row must match the
-    // authenticated org; built-in packages have org_id NULL and are allowed.
+    // RLS already restricts visibility to the caller's org rows + partner-scoped
+    // NULL-org rows (built-in EDR packages, and — for partner-scope tokens —
+    // partner-wide custom packages, #2135). Extra guard: an org-owned row must
+    // match the authenticated org; NULL-org rows are allowed and the deployment
+    // itself is stamped with the resolved context org.
     if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
       return c.json({ error: 'Catalog item not found or access denied' }, 404);
     }
@@ -1591,8 +1604,9 @@ softwareRoutes.post(
     const deviceIds = body.targets?.deviceIds ?? [];
 
     // Look up the catalog item + version. RLS restricts visibility to the caller's
-    // org rows + their partner's built-ins; the org guard below rejects a (visible)
-    // org-scoped row that belongs to a different org. Built-ins have org_id NULL.
+    // org rows + partner-scoped NULL-org rows (built-in EDR packages, and — for
+    // partner-scope tokens — partner-wide custom packages, #2135); the org guard
+    // below rejects a (visible) org-owned row that belongs to a different org.
     const [catalogItem] = await db.select({
       id: softwareCatalog.id,
       orgId: softwareCatalog.orgId,

@@ -22,7 +22,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { usePackageUploadsGate } from "../../stores/featuresStore";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { applyOsHint } from "@/lib/installerPackageHints";
-import { bumpVersionString } from "@/lib/versionBump";
+import { bumpVersionString, substituteVersionInUrl } from "@/lib/versionBump";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
@@ -45,7 +45,6 @@ type VersionEntry = {
   silentUninstallArgs: string;
   supportedOs: string[];
   detectionRules: DetectionRule[];
-  hasFile: boolean;
 };
 function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
@@ -97,7 +96,6 @@ function normalizeVersion(
     detectionRules: Array.isArray(detectionRulesRaw)
       ? (detectionRulesRaw as DetectionRule[])
       : [],
-    hasFile: Boolean(raw.s3Key ?? raw.originalFileName),
   };
 }
 /**
@@ -320,7 +318,10 @@ export default function SoftwareVersionManager({
         prev,
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
-      ...applyOsHint(prev, value),
+      // OS hint only when ADDING: on an existing version, empty supportedOs
+      // means "all OS" at dispatch, so auto-checking one as a side effect of a
+      // URL edit would silently narrow the version's targeting.
+      ...(editingVersionId ? {} : applyOsHint(prev, value)),
     }));
   };
   const handleFileTypeChange = (value: "" | SoftwareFileType) => {
@@ -344,20 +345,27 @@ export default function SoftwareVersionManager({
     setIsFormOpen(false);
     setAdvancedOpen(false);
   };
-  /** Open the add form, seeded from the latest version so a routine "new
-   *  release, same install shape" needs only a glance: version bumped, URL,
-   *  args, OS and detection rules carried over. Release notes start empty. */
+  /** Open the add form, seeded from the latest (or first) version so a
+   *  routine "new release, same install shape" needs only a glance: version
+   *  bumped, URL (with the old version substituted for the new one when
+   *  embedded), args, architecture, OS and detection rules carried over.
+   *  Release notes start empty. */
   const openAddForm = () => {
     setEditingVersionId("");
     const seed = versions.find((v) => v.id === latestId) ?? versions[0];
+    const bumped = seed ? bumpVersionString(seed.version) : "";
     setFormState(
       seed
         ? {
             ...EMPTY_FORM,
-            version: bumpVersionString(seed.version),
+            version: bumped,
             architecture: seed.architecture,
             fileType: asFileType(seed.fileType),
-            downloadUrl: seed.downloadUrl,
+            downloadUrl: substituteVersionInUrl(
+              seed.downloadUrl,
+              seed.version,
+              bumped,
+            ),
             silentInstallArgs: seed.silentInstallArgs,
             silentUninstallArgs: seed.silentUninstallArgs,
             supportedOs: [...seed.supportedOs],
@@ -678,10 +686,15 @@ export default function SoftwareVersionManager({
             </p>
           </div>
         )}
+        {/* Locked while a save/upload is in flight (same for the per-row Edit
+            buttons): repurposing the shared form mid-upload would let the
+            completing upload's resetForm() wipe whatever the user started
+            typing. */}
         <button
           type="button"
+          disabled={saving}
           onClick={() => (isFormOpen ? handleCancelForm() : openAddForm())}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
           {i18n.t("policies:software.softwareVersionManager.addVersion")}
@@ -947,8 +960,10 @@ export default function SoftwareVersionManager({
           </div>
 
           {/* Advanced disclosure mirrors AddPackageModal: uninstall args,
-              detection rules and release notes stay out of the default view so
-              install args no longer reads as a duplicated field. */}
+              detection rules and release notes stay out of the default view.
+              (Install/uninstall args previously sat side-by-side with
+              near-identical truncated placeholders and read as the same field
+              rendered twice.) */}
           <div className="mt-4 border-t pt-3">
             <button
               type="button"
@@ -1191,8 +1206,9 @@ export default function SoftwareVersionManager({
                       <button
                         type="button"
                         data-testid={`version-edit-${entry.id}`}
+                        disabled={saving}
                         onClick={() => openEditForm(entry)}
-                        className="text-sm font-medium text-primary hover:underline"
+                        className="text-sm font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline"
                       >
                         {i18n.t("common:actions.edit")}
                       </button>

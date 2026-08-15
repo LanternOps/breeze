@@ -457,6 +457,35 @@ describe('software upload-session routes', () => {
       expect(res.status).toBe(404);
     });
 
+    // The chunk/status/complete routes resolve the org from the request
+    // context; a session whose org they can't recompute would be created and
+    // then orphaned by a failing first chunk. The create must fail up front
+    // instead — here, a multi-org partner in the All-organizations view (no
+    // ?orgId=) can't resolve a context org at all.
+    it('400s up front when the request context cannot resolve the catalog org (All-orgs view)', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-123', 'org-456'],
+          canAccessOrg: (orgId: string) => ['org-123', 'org-456'].includes(orgId),
+        });
+        return next();
+      });
+      selectQueue([catalogRow]);
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validBody),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('orgId is required for this scope');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
     // partner-wide package (#2135, org_id NULL) cannot book a session yet —
     // the route must fail up front with an actionable message, not a 500.

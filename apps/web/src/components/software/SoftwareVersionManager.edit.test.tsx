@@ -52,6 +52,11 @@ describe('SoftwareVersionManager edit & prefill', () => {
     expect(
       (screen.getByPlaceholderText('e.g. 1.0.0') as HTMLInputElement).value,
     ).toBe('1.2.4');
+    // The carried-over URL gets the OLD version substituted for the bumped one
+    // so the prefill can't silently point 1.2.4 at the 1.2.3 binary.
+    expect(
+      (screen.getByPlaceholderText('https://example.com/package-v1.0.0.msi') as HTMLInputElement).value,
+    ).toBe('https://dl.example.com/app-1.2.4.msi');
     expect(
       (screen.getByPlaceholderText(/msiexec \/i/i) as HTMLInputElement).value,
     ).toBe('msiexec /i "{file}" /qn');
@@ -90,5 +95,30 @@ describe('SoftwareVersionManager edit & prefill', () => {
     });
     // Form closed after a successful save.
     expect(screen.queryByTestId('version-form-editing')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a PATCH failure inline and keeps the edit form open', async () => {
+    await renderLoaded();
+    fireEvent.click(screen.getByTestId('version-edit-ver-1'));
+
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        jsonResponse(
+          { error: 'This version has no uploaded file — it needs a download URL' },
+          false,
+          400,
+        ),
+      ),
+    );
+    const versionInput = screen.getByPlaceholderText('e.g. 1.0.0') as HTMLInputElement;
+    fireEvent.submit(versionInput.closest('form')!);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/needs a download URL/),
+      ).toBeInTheDocument();
+    });
+    // The form stays open in edit mode so the user can correct and retry.
+    expect(screen.getByTestId('version-form-editing')).toBeInTheDocument();
   });
 });

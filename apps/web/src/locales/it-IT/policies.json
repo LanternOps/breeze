@@ -1221,7 +1221,9 @@
       "allOrganizations": "Tutte le organizzazioni",
       "sharedAcrossAllYourOrganizations": "— condiviso tra tutte le tue organizzazioni",
       "thisOrganizationOnly": "Solo questa organizzazione",
-      "partnerWideUrlOnly": "I pacchetti a livello di partner usano un URL di download — il caricamento di file non è ancora disponibile per loro."
+      "partnerWideUrlOnly": "I pacchetti a livello di partner usano un URL di download — il caricamento di file non è ancora disponibile per loro.",
+      "selectedFileRemoved": "Il file selezionato è stato rimosso — i pacchetti a livello di partner usano un URL di download.",
+      "scopeLockedAfterCreate": "Il pacchetto è già stato creato con questo ambito — la proprietà non può cambiare dopo la creazione."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Integrato gestito",

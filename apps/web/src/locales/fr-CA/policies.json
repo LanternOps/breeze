@@ -1221,7 +1221,9 @@
       "allOrganizations": "Toutes les organisations",
       "sharedAcrossAllYourOrganizations": "— partagé entre toutes vos organisations",
       "thisOrganizationOnly": "Cette organisation uniquement",
-      "partnerWideUrlOnly": "Les paquets partenaire utilisent une URL de téléchargement — le téléversement de fichiers n'est pas encore disponible pour eux."
+      "partnerWideUrlOnly": "Les paquets partenaire utilisent une URL de téléchargement — le téléversement de fichiers n'est pas encore disponible pour eux.",
+      "selectedFileRemoved": "Le fichier sélectionné a été retiré — les paquets partenaire utilisent une URL de téléchargement.",
+      "scopeLockedAfterCreate": "Le paquet a déjà été créé avec cette portée — la propriété ne peut pas changer après la création."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Intégré géré",

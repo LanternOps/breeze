@@ -1221,7 +1221,9 @@
       "allOrganizations": "All organizations",
       "sharedAcrossAllYourOrganizations": "— shared across all your organizations",
       "thisOrganizationOnly": "This organization only",
-      "partnerWideUrlOnly": "Partner-wide packages use a download URL — file upload is not available for them yet."
+      "partnerWideUrlOnly": "Partner-wide packages use a download URL — file upload is not available for them yet.",
+      "selectedFileRemoved": "The selected file was removed — partner-wide packages use a download URL.",
+      "scopeLockedAfterCreate": "The package was already created with this scope — ownership cannot change after creation."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Managed built-in",

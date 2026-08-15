@@ -221,6 +221,18 @@ softwareUploadRoutes.post(
       );
     }
     const orgId = catalogItem.orgId;
+    // The chunk/status/complete/delete routes all resolve the org from the
+    // REQUEST context (resolveScopedOrgId on ?orgId=) and filter the session
+    // by it. If that resolution won't land on this catalog's org — e.g. the
+    // All-organizations view injects no orgId, or a different org is selected
+    // — the session would be created successfully and then every chunk would
+    // fail with a misleading "not found", leaving an orphaned session counting
+    // against the org's quota. Fail the create up front instead.
+    const contextOrg = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in contextOrg) return c.json({ error: contextOrg.error }, contextOrg.status);
+    if (contextOrg.orgId !== orgId) {
+      return c.json({ error: 'Catalog item not found' }, 404);
+    }
 
     const {
       fileName, fileSize, chunkSize,

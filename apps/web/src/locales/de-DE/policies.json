@@ -1221,7 +1221,9 @@
       "allOrganizations": "Alle Organisationen",
       "sharedAcrossAllYourOrganizations": "— für alle Ihre Organisationen freigegeben",
       "thisOrganizationOnly": "Nur diese Organisation",
-      "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar."
+      "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar.",
+      "selectedFileRemoved": "Die ausgewählte Datei wurde entfernt — partnerweite Pakete verwenden eine Download-URL.",
+      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",

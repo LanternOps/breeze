@@ -12,7 +12,7 @@ import { captureException, captureMessage } from '../services/sentry';
 import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
 import { authMiddleware } from '../middleware/auth';
-import { inArray, eq } from 'drizzle-orm';
+import { inArray, eq, isNull } from 'drizzle-orm';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import { createSoftwareDeployment } from '../services/softwareDeployment';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -41,7 +41,7 @@ vi.mock('../services/softwareDeployment', () => ({
 // `vi.clearAllMocks()` clears call records but keeps these implementations.
 vi.mock('drizzle-orm', async () => {
   const actual = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
-  return { ...actual, inArray: vi.fn(actual.inArray), eq: vi.fn(actual.eq) };
+  return { ...actual, inArray: vi.fn(actual.inArray), eq: vi.fn(actual.eq), isNull: vi.fn(actual.isNull) };
 });
 
 // Chain-friendly mock builder for Drizzle query builder patterns
@@ -275,6 +275,41 @@ describe('software routes', () => {
       expect(db.select).not.toHaveBeenCalled();
     });
 
+    it('adds the partner-wide branch for partner scope and only for partner scope (#2135)', async () => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a', 'org-b'],
+        });
+        return next();
+      });
+
+      let res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(200);
+      // Partner scope: the widened WHERE must include the caller's own
+      // partner-wide custom rows — `org_id IS NULL AND partner_id = <own>`.
+      expect(isNull).toHaveBeenCalledWith('org_id');
+      expect(eq).toHaveBeenCalledWith('partner_id', 'partner-123');
+
+      // Org scope (the default auth mock): the branch must be ABSENT — org
+      // tokens never pass breeze_has_partner_access, so an app-layer partner
+      // condition would promise rows RLS won't return.
+      vi.mocked(isNull).mockClear();
+      res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(200);
+      expect(isNull).not.toHaveBeenCalledWith('org_id');
+    });
+
     it('allows system scope to list a requested orgId', async () => {
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', {
@@ -483,6 +518,148 @@ describe('software routes', () => {
       const res = await patchReq({});
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBe('No fields to update');
+    });
+  });
+
+  // The eq(orgId) WHERE filter that used to make cross-tenant writes
+  // structurally impossible is gone from these routes; authorizeCatalogItemWrite
+  // is the only app-layer guard left. These tests pin its deny outcomes on each
+  // route so dropping the call from any one of them fails loudly.
+  describe('catalog dual-axis write authorization (deny paths)', () => {
+    const CAT_ID = '55555555-5555-4555-8555-555555555555';
+    const VER_ID = '66666666-6666-4666-8666-666666666666';
+    const partnerRow = { id: CAT_ID, orgId: null, partnerId: 'partner-123', integrationProvider: null, name: 'Shared Pkg' };
+    const builtinRow = { ...partnerRow, integrationProvider: 'huntress', name: 'Huntress Agent' };
+    const foreignOrgRow = { id: CAT_ID, orgId: 'other-org', partnerId: null, integrationProvider: null, name: 'Foreign Pkg' };
+
+    const setAuth = (overrides: Record<string, unknown>) => {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          userId: 'user-123',
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a'],
+          canAccessOrg: (orgId: string) => orgId === 'org-a',
+          ...overrides,
+        });
+        return next();
+      });
+    };
+    const selectOnce = (rows: unknown[]) =>
+      vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ where: async () => rows }) } as any);
+
+    it('403s a limited partner admin editing a partner-wide package', async () => {
+      setAuth({ partnerOrgAccess: 'selected' });
+      selectOnce([partnerRow]);
+      const res = await app.request(`/software/catalog/${CAT_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/full partner org access/);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('403s editing/deleting a built-in integration package even for a full partner admin', async () => {
+      setAuth({ partnerOrgAccess: 'all' });
+      selectOnce([builtinRow]);
+      const patch = await app.request(`/software/catalog/${CAT_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(patch.status).toBe(403);
+      expect((await patch.json()).error).toMatch(/Built-in integration packages/);
+
+      setAuth({ partnerOrgAccess: 'all' });
+      selectOnce([builtinRow]);
+      const del = await app.request(`/software/catalog/${CAT_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(del.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('403s a limited partner admin on version create/PATCH/promote against a partner-wide package', async () => {
+      setAuth({ partnerOrgAccess: 'selected' });
+      selectOnce([partnerRow]);
+      const create = await app.request(`/software/catalog/${CAT_ID}/versions`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '2.0.0' }),
+      });
+      expect(create.status).toBe(403);
+
+      setAuth({ partnerOrgAccess: 'selected' });
+      selectOnce([partnerRow]);
+      const patch = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '2.0.0' }),
+      });
+      expect(patch.status).toBe(403);
+
+      setAuth({ partnerOrgAccess: 'selected' });
+      selectOnce([partnerRow]);
+      const promote = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}/promote`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(promote.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('404s a version PATCH against an org row outside the caller orgs', async () => {
+      // Default org-scope auth (org-123) fetches a visible row owned by another
+      // org — must 404, not edit.
+      selectOnce([foreignOrgRow]);
+      const res = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '2.0.0' }),
+      });
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a full partner admin to PATCH a built-in package VERSION (S1 installer flow)', async () => {
+      // Version-level writes on built-ins are intentionally allowed: the
+      // documented SentinelOne flow has partner admins uploading the installer
+      // via the Versions tab, and the 2026-07-02 RLS migration grants exactly
+      // this. Only the catalog row itself is immutable.
+      setAuth({ partnerOrgAccess: 'all' });
+      selectOnce([builtinRow]);
+      selectOnce([{ id: VER_ID, catalogId: CAT_ID, version: '23.1.0', s3Key: 's3/some-key' }]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: () => ({ where: () => ({ returning: async () => [{ id: VER_ID, version: '23.2.0' }] }) }),
+      } as any);
+      const res = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '23.2.0' }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.version).toBe('23.2.0');
+    });
+
+    it('allows system scope to PATCH a built-in catalog row', async () => {
+      setAuth({ scope: 'system', partnerId: null, partnerOrgAccess: undefined, canAccessOrg: () => true });
+      selectOnce([builtinRow]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: () => ({ where: () => ({ returning: async () => [{ ...builtinRow, name: 'Renamed' }] }) }),
+      } as any);
+      const res = await app.request(`/software/catalog/${CAT_ID}`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
     });
   });
 
