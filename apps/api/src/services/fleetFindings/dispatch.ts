@@ -630,6 +630,10 @@ export async function pollRunProgress(runId: string): Promise<void> {
   // the poll would never catch up with the fleet it is meant to be tracking.
   const resolved: { deviceId: string; status: FleetTargetStatus; summary: string }[] = [];
   const timedOut: string[] = [];
+  // device_command ids for timed-out targets whose command is still `pending`
+  // (never delivered) — cancelled below so a late-reconnecting agent can't run
+  // a remediation the run already gave up on.
+  const timedOutCommandIds: string[] = [];
 
   for (const target of inFlight) {
     const command = target.deviceCommandId ? commandsById.get(target.deviceCommandId) : undefined;
@@ -652,6 +656,14 @@ export async function pollRunProgress(runId: string): Promise<void> {
 
     const referenceTime = target.queuedAt ?? run.createdAt;
     if (now.getTime() - new Date(referenceTime).getTime() > REMEDIATION_TIMEOUT_MS) {
+      // A command still `pending` was never delivered — cancel it (below) so an
+      // agent that reconnects after the run timed out can't claim and run it. A
+      // command already `sent` is in the agent's hands and can't be recalled;
+      // its target still times out here, and surfacing that honestly is a
+      // documented follow-up (#3302).
+      if (target.deviceCommandId && command?.status === 'pending') {
+        timedOutCommandIds.push(target.deviceCommandId);
+      }
       timedOut.push(target.targetDeviceUuid);
       target.status = 'failed';
     }
@@ -674,6 +686,29 @@ export async function pollRunProgress(runId: string): Promise<void> {
       FROM (VALUES ${values}) AS v(device_id, status, summary)
       WHERE t.run_id = ${runId} AND t.target_device_uuid = v.device_id
     `);
+  }
+
+  // Cancel the still-queued commands for timed-out targets BEFORE terminalizing
+  // those targets. Ordering matters for crash safety: a timed-out target is
+  // dropped from the next tick's `inFlight` set (only pending/queued targets are
+  // reconciled), so if the process died AFTER the target write but BEFORE the
+  // cancel, the pending command would be orphaned and a late-reconnecting agent
+  // could still run it — the exact bug. Cancelling first is recoverable: a crash
+  // after the cancel leaves the target in flight, and the next poll observes the
+  // now-`cancelled` command and reconciles the target via the terminal-status
+  // branch above. The `status = 'pending'` predicate also makes this race-safe
+  // against claimPendingCommandForDelivery (a CAS on the same predicate): if the
+  // agent claims first (pending → sent) this matches 0 rows and never clobbers
+  // an in-flight delivery; if we cancel first, the agent's later claim matches 0.
+  for (const chunk of chunkArray(timedOutCommandIds, TARGET_INSERT_CHUNK_SIZE)) {
+    await db
+      .update(deviceCommands)
+      .set({
+        status: 'cancelled',
+        completedAt: now,
+        result: { cancelReason: 'remediation_run_timeout' },
+      })
+      .where(and(inArray(deviceCommands.id, chunk), eq(deviceCommands.status, 'pending')));
   }
 
   // Timeouts are uniform, so one statement per chunk covers them.

@@ -1097,6 +1097,48 @@ describe('pollRunProgress', () => {
 
     const targetUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).skipReason === 'timeout')!;
     expect(targetUpdate.values).toMatchObject({ status: 'failed', skipReason: 'timeout' });
+
+    // #3302: the still-`pending` command is cancelled so a late-reconnecting
+    // agent can't claim and run a remediation the run already gave up on.
+    const cancel = h.capturedUpdates.find(
+      (u) => (u.values as Record<string, unknown>).status === 'cancelled',
+    );
+    expect(cancel).toBeDefined();
+    expect((cancel!.values as Record<string, unknown>).result).toMatchObject({
+      cancelReason: 'remediation_run_timeout',
+    });
+    // Crash safety: the command must be cancelled BEFORE the target is
+    // terminalized. A crash after the target write (but before cancel) would
+    // drop the target from the next tick's reconciliation set while leaving the
+    // command runnable — the exact #3302 defect. Cancel-first is recoverable.
+    const cancelIdx = h.capturedUpdates.findIndex(
+      (u) => (u.values as Record<string, unknown>).status === 'cancelled',
+    );
+    const timeoutIdx = h.capturedUpdates.findIndex(
+      (u) => (u.values as Record<string, unknown>).skipReason === 'timeout',
+    );
+    expect(cancelIdx).toBeLessThan(timeoutIdx);
+  });
+
+  it('does NOT cancel a command already sent to the agent when its target times out', async () => {
+    const staleQueuedAt = new Date(Date.now() - 31 * 60 * 1000);
+    h.selectQueue.push([runRow()]);
+    h.selectQueue.push([
+      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'queued', deviceCommandId: 'cmd-1', queuedAt: staleQueuedAt },
+    ]);
+    // Already delivered — the agent may run it; it can't be recalled.
+    h.selectQueue.push([{ id: 'cmd-1', status: 'sent', result: null }]);
+
+    await pollRunProgress(RUN_1);
+
+    // The target still times out...
+    expect(
+      h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).skipReason === 'timeout'),
+    ).toBeDefined();
+    // ...but a `sent` command must not be cancelled (only `pending` is).
+    expect(
+      h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'cancelled'),
+    ).toBeUndefined();
   });
 
   it('does NOT time out a target queued less than 30 minutes ago', async () => {
