@@ -76,6 +76,13 @@ async function putJson(app: Hono, orgId: string, path: string, body: unknown) {
   );
 }
 
+async function getPatchRow(externalId: string) {
+  return withSystemDbAccessContext(async () => {
+    const [row] = await db.select().from(patches).where(eq(patches.externalId, externalId));
+    return row ?? null;
+  });
+}
+
 async function getDevicePatchRow(deviceId: string, externalId: string) {
   return withSystemDbAccessContext(async () => {
     const [row] = await db
@@ -141,5 +148,256 @@ describe('patch ingest — installed inventory must not erase pending rows (real
     expect(healed?.status).toBe('installed');
     expect(healed?.installedVersion).toBe('2.55.0.3');
     expect(healed?.installedAt).not.toBeNull();
+  });
+});
+
+/**
+ * `patches` is a GLOBAL, un-tenanted catalog table deduped on
+ * `(source, external_id)`: every device that reports a colliding key writes the
+ * SAME row, and every tenant's UI, `patch_approvals` and patch jobs read it.
+ * The conflict-update classification (identity columns fill-only, operational
+ * columns refresh) is expressed as raw `COALESCE`/`CASE` fragments inside
+ * Drizzle's `onConflictDoUpdate`, which the mocked unit suite can only inspect
+ * as an object shape. These cases drive the real endpoints against Postgres so
+ * the fragments are proven to point the right way.
+ */
+describe('patch ingest — shared catalog metadata must not be clobbered (real Postgres)', () => {
+  runDb('keeps identity columns from the first report while operational columns keep refreshing', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const first = await insertDevice(env.organization.id, env.site.id);
+    const second = await insertDevice(env.organization.id, env.site.id);
+    const externalId = `itest.clobber.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const firstRes = await putJson(
+      mountRoutes(env.organization.id, first.agentId),
+      env.organization.id,
+      `/agents/${first.agentId}/patches/pending`,
+      {
+        source: 'third_party',
+        patches: [{
+          name: 'Mozilla Firefox',
+          source: 'third_party',
+          externalId,
+          packageId: 'Mozilla.Firefox',
+          vendor: 'Mozilla',
+          version: '121.0',
+          severity: 'critical',
+          category: 'security',
+          requiresRestart: true,
+          description: 'Original vendor description',
+        }],
+      },
+    );
+    expect(firstRes.status).toBe(200);
+
+    // A second device reports the same (source, externalId) with entirely
+    // different metadata — the shape that used to rewrite the shared row.
+    const secondRes = await putJson(
+      mountRoutes(env.organization.id, second.agentId),
+      env.organization.id,
+      `/agents/${second.agentId}/patches/pending`,
+      {
+        source: 'third_party',
+        patches: [{
+          name: 'Totally Different Product',
+          source: 'third_party',
+          externalId,
+          packageId: 'Attacker.Package',
+          vendor: 'Someone Else',
+          version: '122.0',
+          severity: 'low',
+          category: 'application',
+          requiresRestart: false,
+          description: 'Rewritten description',
+        }],
+      },
+    );
+    expect(secondRes.status).toBe(200);
+
+    const row = await getPatchRow(externalId);
+    // Identity: unchanged by the second report.
+    expect(row?.packageId).toBe('Mozilla.Firefox');
+    expect(row?.title).toBe('Mozilla Firefox');
+    expect(row?.vendor).toBe('Mozilla');
+    // Operational: refreshed, exactly as the legitimate rescan flow needs.
+    expect(row?.version).toBe('122.0');
+    expect(row?.severity).toBe('low');
+    expect(row?.category).toBe('application');
+    expect(row?.requiresReboot).toBe(false);
+    expect(row?.description).toBe('Rewritten description');
+  });
+
+  runDb('does not blank operational columns when a later scan simply omits them', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.nulldown.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Deliberately a package the curated third-party catalog does NOT know, so
+    // this case isolates the null-downgrade guard from catalog enrichment
+    // (which legitimately overwrites title/vendor/category on a hit).
+    const packageId = 'AcmeCorp.InternalTool';
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [{
+        name: 'Acme Internal Tool', source: 'third_party', externalId, packageId,
+        version: '2.55.0', severity: 'critical', category: 'security',
+        requiresRestart: true, description: 'Security fix',
+      }],
+    });
+
+    // A sparser rescan: no description, no category, no reboot flag, and the
+    // agent's "I couldn't classify this" severity of 'unknown'.
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [{ name: 'Acme Internal Tool', source: 'third_party', externalId, packageId, version: '2.55.1', severity: 'unknown' }],
+    });
+    expect(res.status).toBe(200);
+
+    const row = await getPatchRow(externalId);
+    expect(row?.description).toBe('Security fix');
+    expect(row?.category).toBe('security');
+    expect(row?.requiresReboot).toBe(true);
+    expect(row?.severity).toBe('critical');
+    // The one thing the sparser scan did report still lands.
+    expect(row?.version).toBe('2.55.1');
+  });
+
+  runDb('lets a later scan FILL columns the first report left empty', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.fill.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'microsoft',
+      patches: [{ name: 'Cumulative Update', source: 'microsoft', externalId }],
+    });
+    expect((await getPatchRow(externalId))?.packageId).toBeNull();
+
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'microsoft',
+      patches: [{
+        name: 'Cumulative Update', source: 'microsoft', externalId,
+        packageId: 'KB5034441', vendor: 'Microsoft', version: '10.0.1',
+      }],
+    });
+
+    const row = await getPatchRow(externalId);
+    expect(row?.packageId).toBe('KB5034441');
+    expect(row?.vendor).toBe('Microsoft');
+    expect(row?.version).toBe('10.0.1');
+  });
+
+  runDb('installed inventory cannot drag the shared row back to the installed version', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.installed.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [{ name: 'Git', source: 'third_party', externalId, packageId: 'Git.Git', version: '2.55.0.3', vendor: 'Git' }],
+    });
+
+    // The paired installed submit carries the *installed* version and no catalog
+    // enrichment at all — it is the lowest-authority writer on this row.
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/installed`, {
+      installed: [{
+        name: 'Something Else', source: 'third_party', externalId,
+        packageId: 'Other.Package', vendor: 'Other', version: '2.51.0.2',
+        category: 'application', installedAt: '2026-01-05T00:00:00Z',
+      }],
+    });
+    expect(res.status).toBe(200);
+
+    const row = await getPatchRow(externalId);
+    expect(row?.version).toBe('2.55.0.3');
+    expect(row?.title).toBe('Git');
+    expect(row?.packageId).toBe('Git.Git');
+    expect(row?.vendor).toBe('Git');
+    // The per-device observation is tenant-scoped and still records what is
+    // actually installed on this box.
+    expect((await getDevicePatchRow(dev.id, externalId))?.installedVersion).toBe('2.51.0.2');
+  });
+
+  runDb('refuses a malformed row, still ingests the rest, and skips the sweep that cycle', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const keptId = `itest.kept.${stamp}`;
+    const freshId = `itest.fresh.${stamp}`;
+
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [{ name: 'Kept', source: 'third_party', externalId: keptId, packageId: 'Kept.Pkg' }],
+    });
+    expect((await getDevicePatchRow(dev.id, keptId))?.status).toBe('pending');
+
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [
+        { name: 'Fresh', source: 'third_party', externalId: freshId, packageId: 'Fresh.Pkg' },
+        // An option-like local segment behind a provider prefix: the agent
+        // splits on ':' and would install `--all`.
+        { name: 'Malformed', source: 'third_party', externalId: `itest.bad.${stamp}`, packageId: 'winget:--all' },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, pending: 1, rejected: 1 });
+
+    // The good row landed...
+    expect((await getDevicePatchRow(dev.id, freshId))?.status).toBe('pending');
+    // ...and the sweep was skipped, so the earlier row was not tombstoned by a
+    // scan we know to be incomplete.
+    expect((await getDevicePatchRow(dev.id, keptId))?.status).toBe('pending');
+  });
+
+  runDb('combined scan: a refused INSTALLED row also suppresses the full sweep', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const installedId = `itest.combined.installed.${stamp}`;
+
+    // Establish a genuinely-installed row via the combined endpoint.
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches`, {
+      patches: [],
+      installed: [{
+        name: 'Installed Thing', source: 'third_party', externalId: installedId,
+        packageId: 'Installed.Thing', version: '1.0', installedAt: '2026-01-05T00:00:00Z',
+      }],
+    });
+    expect((await getDevicePatchRow(dev.id, installedId))?.status).toBe('installed');
+
+    // The combined route's sweep is markAllDevicePatchesMissing — it flips
+    // INSTALLED rows too — so a refusal on the installed list must suppress it.
+    // Gating on the pending list alone stranded this row at 'missing'.
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches`, {
+      patches: [],
+      installed: [{ name: 'Malformed', source: 'third_party', externalId: `itest.bad.${stamp}`, packageId: 'winget:--all' }],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).rejected).toBe(1);
+    expect((await getDevicePatchRow(dev.id, installedId))?.status).toBe('installed');
+  });
+
+  runDb('still accepts Apple softwareupdate labels, which legitimately contain spaces', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `macOS Sonoma 14.5-23F79 ${Date.now()}`;
+
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'apple',
+      patches: [{
+        name: 'macOS Sonoma 14.5', source: 'apple', externalId,
+        packageId: `apple-softwareupdate:${externalId}`, version: '14.5',
+      }],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, pending: 1, rejected: 0 });
+    expect((await getPatchRow(externalId))?.packageId).toBe(`apple-softwareupdate:${externalId}`);
   });
 });

@@ -130,7 +130,13 @@ export function sanitizeDate(value: unknown): string | null {
   const trimmed = value.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
   const d = new Date(trimmed + 'T00:00:00Z');
-  return Number.isNaN(d.getTime()) ? null : trimmed;
+  if (Number.isNaN(d.getTime())) return null;
+  // `new Date()` silently rolls impossible calendar dates over ('2026-02-31'
+  // becomes 2026-03-03) and is therefore NOT a validity check on its own. The
+  // original string would then reach a Postgres `date` column and raise 22008,
+  // aborting the entire enclosing ingest transaction. Round-trip to confirm the
+  // date the caller wrote is the date we parsed.
+  return d.toISOString().slice(0, 10) === trimmed ? trimmed : null;
 }
 
 /**
