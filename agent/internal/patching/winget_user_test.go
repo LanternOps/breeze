@@ -352,6 +352,37 @@ func TestUserWingetScanNilExecutor(t *testing.T) {
 	}
 }
 
+// TestInstallGuardSurvivesUserPassFailure is the regression guard for the
+// window a logged-out user opens: once a scan has proved a package is
+// user-scope, a later scan where the helper is gone must NOT silently re-enable
+// the machine-scope install path for it.
+func TestInstallGuardSurvivesUserPassFailure(t *testing.T) {
+	userAvailable := true
+	p := NewSystemWingetProviderWithUserScan(`C:\wg\winget.exe`, machineRunner(t),
+		func(string, []string, time.Duration) (string, string, int, error) {
+			if !userAvailable {
+				return "", "", -1, errors.New("no user helper session connected")
+			}
+			return userTable, "", 0, nil
+		})
+
+	if _, err := p.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Install("Google.Chrome"); err == nil {
+		t.Fatal("want refusal after the user-scope scan")
+	}
+
+	// The user logs out; the next scan cannot reach a helper.
+	userAvailable = false
+	if _, err := p.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Install("Google.Chrome"); err == nil {
+		t.Fatal("refusal must survive a failed user pass")
+	}
+}
+
 func TestUserScopeIDSet(t *testing.T) {
 	ids := userScopeIDSet([]AvailablePatch{
 		{ID: "Mozilla.Firefox", Scope: PatchScopeMachine},

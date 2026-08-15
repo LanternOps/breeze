@@ -3,9 +3,15 @@ package heartbeat
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/httputil"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/patching"
@@ -247,4 +253,90 @@ func TestWingetUserScopeStatus(t *testing.T) {
 			t.Fatalf("Reason = %q", status.Reason)
 		}
 	})
+}
+
+// TestPendingPayloadCarriesUserScopeCoverage asserts the second coverage axis
+// reaches the API. Without it the server cannot tell a device with no per-user
+// updates from one where nobody was logged in, and would sweep user-scope
+// pending rows a scan never looked at (#2727, the #2217 failure mode one axis
+// down).
+func TestPendingPayloadCarriesUserScopeCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		userExec   patching.UserExecFunc
+		wantScoped any
+	}{
+		{
+			name: "user pass ran",
+			userExec: func(string, []string, time.Duration) (string, string, int, error) {
+				return "No installed package found matching input criteria.\n", "", 0, nil
+			},
+			wantScoped: true,
+		},
+		{
+			name: "nobody logged in",
+			userExec: func(string, []string, time.Duration) (string, string, int, error) {
+				return "", "", -1, errors.New("no user helper session connected")
+			},
+			wantScoped: false,
+		},
+		{
+			name:       "no winget provider at all",
+			userExec:   nil,
+			wantScoped: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body []byte
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = b
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer ts.Close()
+
+			h := New(&config.Config{AgentID: "agent-1", ServerURL: ts.URL, AuthToken: "token"})
+			h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
+			if tt.name != "no winget provider at all" {
+				p := patching.NewSystemWingetProviderWithUserScan(`C:\wg\winget.exe`,
+					func(string, []string, time.Duration) (string, string, int, error) {
+						return "No installed package found matching input criteria.\n", "", 0, nil
+					}, tt.userExec)
+				if _, err := p.Scan(); err != nil {
+					t.Fatal(err)
+				}
+				h.patchMgr = patching.NewPatchManager(p)
+			} else {
+				h.patchMgr = patching.NewPatchManager()
+			}
+
+			pendingErr, _ := h.sendPatchInventoryData(
+				[]map[string]any{{"name": "Chrome", "source": "third_party"}},
+				nil, "", true, []string{"third_party"},
+			)
+			if pendingErr != nil {
+				t.Fatal(pendingErr)
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			got, present := payload["userScopeScanned"]
+			if tt.wantScoped == nil {
+				if present {
+					t.Fatalf("userScopeScanned = %#v, want omitted", got)
+				}
+				return
+			}
+			if !present || got != tt.wantScoped {
+				t.Fatalf("userScopeScanned = %#v (present=%v), want %#v", got, present, tt.wantScoped)
+			}
+		})
+	}
 }

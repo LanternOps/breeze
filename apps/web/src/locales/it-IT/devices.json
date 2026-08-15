@@ -1271,6 +1271,9 @@
       "queued": "{{label}} accodato",
       "queuedDetail": "{{label}} accodato{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Per utente",
+    "perUserBadgeTitle": "Installato nel profilo dell'utente connesso; non può ancora essere applicato dal contesto di sistema",
+    "perUserNotScanned": "Le app per utente non sono state analizzate (nessuna sessione utente interattiva) — alcuni aggiornamenti per utente potrebbero mancare.",
     "rebootRequired": "Riavvio richiesto",
     "table": {
       "approval": "Approvazione",

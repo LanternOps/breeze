@@ -2798,6 +2798,14 @@ func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[st
 	pendingPayload := map[string]any{
 		"patches": pendingItems,
 	}
+	// Second coverage axis (#2727): whether this scan could look at per-user
+	// installs at all. Sent on every pending upload, targeted or full, because
+	// both paths sweep. Omitted entirely when no scope-aware provider is
+	// registered, so the API can tell "not applicable" from "not scanned" and
+	// leaves user-scope rows alone in both cases.
+	if userScan, present := h.wingetUserScopeStatus(); present {
+		pendingPayload["userScopeScanned"] = userScan.Scanned
+	}
 	if source != "" {
 		pendingPayload["source"] = source
 	} else if full {

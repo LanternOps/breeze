@@ -1271,6 +1271,9 @@
       "queued": "{{label}} en cola",
       "queuedDetail": "{{label}} en cola{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Por usuario",
+    "perUserBadgeTitle": "Instalado en el perfil del usuario con sesión iniciada; todavía no se puede aplicar el parche desde el contexto del sistema",
+    "perUserNotScanned": "No se analizaron las aplicaciones por usuario (no hay sesión de usuario interactiva); es posible que falten actualizaciones por usuario.",
     "rebootRequired": "Se requiere reinicio",
     "table": {
       "approval": "Aprobación",

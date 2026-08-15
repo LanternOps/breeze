@@ -128,21 +128,24 @@ func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 // machine results are returned unchanged, exactly as before #2727.
 func (p *SystemWingetProvider) withUserScope(machine []AvailablePatch) []AvailablePatch {
 	if p.userExec == nil {
-		merged := mergeWingetScopes(machine, nil)
-		p.recordUserScan(UserScanStatus{
+		p.recordUserScanStatus(UserScanStatus{
 			Reason: "no user-context executor configured",
-		}, merged)
-		return merged
+		})
+		return mergeWingetScopes(machine, nil)
 	}
 
 	userPatches, err := userWingetScan(p.userExec)
 	if err != nil {
-		merged := mergeWingetScopes(machine, nil)
-		p.recordUserScan(UserScanStatus{
+		// recordUserScanStatus, NOT recordUserScan: a failed user pass is not
+		// evidence that the packages the last successful pass proved to be
+		// user-scope have become machine-scope. Clearing the remembered set
+		// here would silently re-open the install guard the moment the user
+		// logged out.
+		p.recordUserScanStatus(UserScanStatus{
 			Attempted: true,
 			Reason:    truncatePatchDescription(err.Error()),
-		}, merged)
-		return merged
+		})
+		return mergeWingetScopes(machine, nil)
 	}
 
 	merged := mergeWingetScopes(machine, userPatches)

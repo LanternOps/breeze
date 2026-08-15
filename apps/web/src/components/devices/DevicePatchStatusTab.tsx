@@ -41,6 +41,7 @@ type PatchItem = {
   requiresReboot?: boolean;
   isDownloaded?: boolean;
   approvalStatus?: string;
+  scope?: 'machine' | 'user' | null;
 };
 
 type PatchPayload = {
@@ -48,6 +49,8 @@ type PatchPayload = {
   compliance?: number;
   lastPatchScanAt?: string | null;
   lastPatchScanStatus?: string | null;
+  lastPatchScanUserScopeScanned?: boolean | null;
+  lastPatchScanUserScopeSkipReason?: string | null;
   pending?: PatchItem[];
   pendingPatches?: PatchItem[];
   missing?: PatchItem[];
@@ -794,6 +797,10 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const lastPatchScanStatus = payload?.lastPatchScanStatus
     ? payload.lastPatchScanStatus.charAt(0).toUpperCase() + payload.lastPatchScanStatus.slice(1)
     : null;
+  // Only surface the "not scanned" note when the agent explicitly reported false —
+  // null/undefined means the field isn't present (older agent, non-Windows device,
+  // or no winget provider), which is not the same as "we tried and failed".
+  const userScopeNotScanned = payload?.lastPatchScanUserScopeScanned === false;
 
   // -------------------------------------------------------------------------
   // Post-install polling: poll every 5s for up to 90s watching pending count
@@ -1044,6 +1051,11 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                 {lastPatchScanStatus && <span> ({lastPatchScanStatus})</span>}
               </span>
             </p>
+            {userScopeNotScanned && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t('devicePatchStatusTab.perUserNotScanned')}
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -1213,7 +1225,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   </span>
                                 )}
                               </div>
-                              {(severityBadge || (normalizedOsType !== 'windows' && kbLabel) || releaseLabel || patch.requiresReboot) && (
+                              {(severityBadge || (normalizedOsType !== 'windows' && kbLabel) || releaseLabel || patch.requiresReboot || patch.scope === 'user') && (
                                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                                   {severityBadge && (
                                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${severityBadge.className}`}>
@@ -1230,6 +1242,14 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                                   {patch.requiresReboot && (
                                     <span className="inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 chart-legend-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-200">
                                       {t('devicePatchStatusTab.rebootRequired')}
+                                    </span>
+                                  )}
+                                  {patch.scope === 'user' && (
+                                    <span
+                                      title={t('devicePatchStatusTab.perUserBadgeTitle')}
+                                      className="inline-flex items-center rounded-full border px-2 py-0.5 chart-legend-xs font-semibold tracking-wide text-muted-foreground"
+                                    >
+                                      {t('devicePatchStatusTab.perUserBadge')}
                                     </span>
                                   )}
                                 </div>

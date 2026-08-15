@@ -1271,6 +1271,9 @@
       "queued": "{{label}} adicionado à fila",
       "queuedDetail": "{{label}} adicionado à fila{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Por usuário",
+    "perUserBadgeTitle": "Instalado no perfil do usuário conectado; ainda não pode ser corrigido a partir do contexto do sistema",
+    "perUserNotScanned": "Os aplicativos por usuário não foram verificados (nenhuma sessão de usuário interativa) — atualizações por usuário podem estar ausentes.",
     "rebootRequired": "Reinicialização necessária",
     "table": {
       "approval": "Aprovação",

@@ -1271,6 +1271,9 @@
       "queued": "{{label}} en file d’attente",
       "queuedDetail": "{{label}} en file{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Par utilisateur",
+    "perUserBadgeTitle": "Installé dans le profil de l'utilisateur connecté; ne peut pas encore être corrigé depuis le contexte système",
+    "perUserNotScanned": "Les applications par utilisateur n'ont pas été analysées (aucune session utilisateur interactive) — des mises à jour par utilisateur pourraient manquer.",
     "rebootRequired": "Redémarrage nécessaire",
     "table": {
       "approval": "Approbation",

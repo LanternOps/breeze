@@ -90,6 +90,7 @@ async function getDevicePatchRow(deviceId: string, externalId: string) {
         status: devicePatches.status,
         installedAt: devicePatches.installedAt,
         installedVersion: devicePatches.installedVersion,
+        scope: devicePatches.scope,
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -399,5 +400,95 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true, pending: 1, rejected: 0 });
     expect((await getPatchRow(externalId))?.packageId).toBe(`apple-softwareupdate:${externalId}`);
+  });
+});
+
+/**
+ * #2727 — per-user winget results are a SECOND coverage axis.
+ *
+ * The agent's user-context pass only runs when somebody is logged in. A scan
+ * taken on an unattended machine therefore reports machine scope only, and
+ * sweeping its (necessarily absent) per-user results would tombstone rows that
+ * scan never inspected — #2217, one axis down. The route must only sweep
+ * user-scope rows when the agent explicitly reports `userScopeScanned: true`.
+ *
+ * This needs real Postgres: the guard is a raw `IS DISTINCT FROM` fragment and
+ * the mocked suite can only assert the shape of the generated SQL, not that the
+ * NULL-vs-'user' three-valued logic points the right way.
+ */
+describe('patch ingest — user-scope rows are only swept when the user pass ran (real Postgres, #2727)', () => {
+  runDb('preserves user-scope rows across a machine-only scan and sweeps them once the user pass runs', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userPkgId = `itest.winget.chrome-${stamp}`;
+    const machinePkgId = `itest.winget.firefox-${stamp}`;
+    const userPkg = { name: 'Chrome', source: 'third_party', externalId: userPkgId, packageId: userPkgId };
+    const machinePkg = { name: 'Firefox', source: 'third_party', externalId: machinePkgId, packageId: machinePkgId };
+
+    // 1. A scan WITH somebody logged in reports both scopes.
+    const bothRes = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      full: true,
+      coveredSources: ['third_party'],
+      userScopeScanned: true,
+      patches: [
+        { ...machinePkg, version: '2.0', scope: 'machine' },
+        { ...userPkg, version: '2.0', scope: 'user' },
+      ],
+    });
+    expect(bothRes.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, userPkgId))?.scope).toBe('user');
+    expect((await getDevicePatchRow(dev.id, machinePkgId))?.scope).toBe('machine');
+
+    // 2. The user logs out. The next scan covers third_party (the SYSTEM pass
+    //    succeeded) but could not look at user scope. The machine-scope package
+    //    is genuinely gone and must be tombstoned; the user-scope one must NOT
+    //    be, because nothing looked at it.
+    const machineOnlyRes = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      full: true,
+      coveredSources: ['third_party'],
+      userScopeScanned: false,
+      patches: [],
+    });
+    expect(machineOnlyRes.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, machinePkgId))?.status).toBe('missing');
+    expect((await getDevicePatchRow(dev.id, userPkgId))?.status).toBe('pending');
+
+    // 3. A scan that DID cover user scope and no longer reports the package is
+    //    real evidence it is gone — now it tombstones.
+    const userCoveredRes = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      full: true,
+      coveredSources: ['third_party'],
+      userScopeScanned: true,
+      patches: [],
+    });
+    expect(userCoveredRes.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, userPkgId))?.status).toBe('missing');
+  });
+
+  runDb('a scope-less re-report does not erase an established user scope', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const app = mountRoutes(env.organization.id, dev.agentId);
+    const externalId = `itest.winget.zoom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pkg = { name: 'Zoom', source: 'third_party', externalId, packageId: externalId };
+
+    await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      userScopeScanned: true,
+      patches: [{ ...pkg, version: '1.0', scope: 'user' }],
+    });
+    expect((await getDevicePatchRow(dev.id, externalId))?.scope).toBe('user');
+
+    // A downgraded agent (or a provider with no scope concept) re-reports the
+    // same package without a scope. Blanking the column would silently re-expose
+    // the row to the sweep.
+    const res = await putJson(app, env.organization.id, `/agents/${dev.agentId}/patches/pending`, {
+      source: 'third_party',
+      patches: [{ ...pkg, version: '1.1' }],
+    });
+    expect(res.status).toBe(200);
+    expect((await getDevicePatchRow(dev.id, externalId))?.scope).toBe('user');
   });
 });
