@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, AlertTriangle, ArrowLeft, Loader2, RefreshCcw } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowLeft,
+  Loader2,
+  RefreshCcw,
+  Wrench,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import ProgressBar from "../shared/ProgressBar";
 import { useTranslation } from "react-i18next";
@@ -87,6 +94,30 @@ const queuedOfflineStyle = {
   labelKey: "policies:software.deploymentProgress.queuedOffline",
   color: "bg-amber-500/20 text-amber-700 border-amber-500/40",
 };
+
+const managerUnavailableStyle = {
+  labelKey: "policies:software.deploymentProgress.setupNeeded",
+  color: "bg-amber-500/20 text-amber-700 border-amber-500/40",
+};
+
+/**
+ * Prefix the API stamps on a result whose device has no winget / Homebrew
+ * (`normalizeInstallError` in services/softwareDeploymentResult.ts). Matched
+ * against the NORMALIZED, user-facing string — the raw agent form
+ * (`manager_unavailable: …`) never reaches the client.
+ *
+ * These rows are a device SETUP gap, not a package failure: they will break
+ * every package-manager deployment to that device until the manager is
+ * installed, so they get an amber "setup needed" treatment and a grouped
+ * summary rather than sitting in the failure list looking like scattered
+ * per-package problems (#3604).
+ */
+export const MANAGER_UNAVAILABLE_PREFIX = "Package manager unavailable";
+
+export function isManagerUnavailable(errorMessage?: string | null): boolean {
+  return typeof errorMessage === "string" &&
+    errorMessage.startsWith(MANAGER_UNAVAILABLE_PREFIX);
+}
 
 function formatDateTime(value?: string | null): string {
   if (!value) return "—";
@@ -266,6 +297,11 @@ export default function DeploymentProgress({
     total: 0,
   };
   const finished = counts.completed + counts.failed + counts.cancelled;
+  // Grouped so a fleet-wide setup gap reads as ONE problem rather than N
+  // scattered package failures (#3604).
+  const managerUnavailableCount = results.filter((r) =>
+    isManagerUnavailable(r.errorMessage),
+  ).length;
   const percent =
     counts.total > 0 ? Math.round((finished / counts.total) * 100) : 0;
   const cancellable =
@@ -433,6 +469,21 @@ export default function DeploymentProgress({
           )}
         </p>
 
+        {managerUnavailableCount > 0 && (
+          <div
+            className="mt-4 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800"
+            data-testid="deployment-manager-unavailable-summary"
+          >
+            <Wrench className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              {t(
+                "policies:software.deploymentProgress.managerUnavailableSummary",
+                { count: managerUnavailableCount },
+              )}
+            </p>
+          </div>
+        )}
+
         <div className="mt-4 overflow-x-auto rounded-md border">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
@@ -455,9 +506,14 @@ export default function DeploymentProgress({
             </thead>
             <tbody className="divide-y">
               {results.map((result) => {
+                const managerUnavailable = isManagerUnavailable(
+                  result.errorMessage,
+                );
                 const style = result.queuedOffline
                   ? queuedOfflineStyle
-                  : resultStatusStyles[result.status];
+                  : managerUnavailable
+                    ? managerUnavailableStyle
+                    : resultStatusStyles[result.status];
                 return (
                   <tr
                     key={result.id}
@@ -491,8 +547,24 @@ export default function DeploymentProgress({
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {result.errorMessage ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-destructive">
-                          <AlertTriangle className="h-3.5 w-3.5" />
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 text-xs",
+                            managerUnavailable
+                              ? "text-amber-700"
+                              : "text-destructive",
+                          )}
+                          data-testid={
+                            managerUnavailable
+                              ? `deployment-result-setup-needed-${result.id}`
+                              : undefined
+                          }
+                        >
+                          {managerUnavailable ? (
+                            <Wrench className="h-3.5 w-3.5" />
+                          ) : (
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                          )}
                           {result.errorMessage}
                         </span>
                       ) : (

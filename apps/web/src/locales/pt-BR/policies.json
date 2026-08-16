@@ -1389,7 +1389,10 @@
       "deploymentCancelled": "Implantação cancelada",
       "failedToLoadDeployment": "Falha ao carregar a implantação",
       "loadingDeployment": "Carregando implantação…",
-      "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos"
+      "devicesFinished": "{{finished}} de {{total}} dispositivos concluídos",
+      "setupNeeded": "Configuração necessária",
+      "managerUnavailableSummary_one": "Falta o gerenciador de pacotes em {{count}} dispositivo. É uma configuração única do dispositivo: instale o winget (Windows) ou o Homebrew (macOS) nele; até lá, toda implantação por gerenciador de pacotes vai falhar.",
+      "managerUnavailableSummary_other": "Falta o gerenciador de pacotes em {{count}} dispositivos. É uma configuração única dos dispositivos: instale o winget (Windows) ou o Homebrew (macOS) neles; até lá, toda implantação por gerenciador de pacotes vai falhar."
     },
     "deploymentWizard": {
       "selectSoftware": "Selecionar Software",
