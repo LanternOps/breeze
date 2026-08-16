@@ -217,7 +217,12 @@ type HeartbeatResponse struct {
 }
 
 type HelperSettings struct {
-	Enabled            bool   `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// ShowTrayIcon is a POINTER so that an omitted field (an older server that
+	// predates #3202) is distinguishable from an explicit false. A plain bool
+	// would decode a missing key as false and silently hide the tray icon on
+	// every device talking to an older API — see trayIconVisible().
+	ShowTrayIcon       *bool  `json:"showTrayIcon,omitempty"`
 	ShowOpenPortal     bool   `json:"showOpenPortal"`
 	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
 	ShowRequestSupport bool   `json:"showRequestSupport"`
@@ -226,6 +231,14 @@ type HelperSettings struct {
 	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
 	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
 	LifecycleMode string `json:"lifecycleMode,omitempty"`
+}
+
+// trayIconVisible resolves HelperSettings.ShowTrayIcon to the value the helper
+// manager consumes. Nil (field absent — pre-#3202 server) means "show it",
+// matching the API's showTrayIcon default of true and the Tauri helper's
+// #[serde(default = "default_true")]. Only an explicit false hides the icon.
+func trayIconVisible(v *bool) bool {
+	return v == nil || *v
 }
 
 type Command struct {
@@ -4433,6 +4446,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
+			ShowTrayIcon:       trayIconVisible(response.HelperSettings.ShowTrayIcon),
 			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
 			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
 			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,

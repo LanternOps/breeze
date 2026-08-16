@@ -705,6 +705,8 @@
         "trayMenuOptions": "Optionen im Fachmenü",
         "configureWhichItemsAppearInTheBreeze": "Konfigurieren Sie, welche Elemente im Breeze Assist-Kontextmenü mit der rechten Maustaste angezeigt werden. Der Ausgang ist immer verfügbar.",
         "enableDeployBreezeAssistToDevicesAbove": "Aktivieren Sie oben „Breeze Assist auf Geräten bereitstellen“, um diese Optionen anzuwenden.",
+        "systemTrayIcon": "Symbol in der Taskleiste",
+        "showsTheBreezeAssistIconInThe": "Zeigt das Breeze Assist-Symbol in der Taskleiste an. Deaktivieren Sie dies, um Assist unsichtbar auszuführen — Chat, Zustimmung zum Fernzugriff und PAM-Abfragen funktionieren weiterhin.",
         "openBreezePortal": "Breeze Portal öffnen",
         "opensTheWebPortalInTheUser": "Öffnet das Webportal im Browser des Benutzers.",
         "deviceInfo": "Geräteinformationen",

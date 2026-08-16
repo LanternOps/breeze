@@ -181,6 +181,13 @@ fn load_agent_config_full() -> Result<AgentConfigFull, String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HelperConfig {
+    /// Whether the system-tray icon is drawn at all (#3202). Independent of the
+    /// menu-item toggles below: with this false the helper keeps serving chat,
+    /// remote-access consent and PAM dialogs, it just has no tray presence.
+    /// Defaults to true so a config written by an agent that predates the
+    /// setting — or a partially-written file — never blanks the tray.
+    #[serde(default = "default_true")]
+    show_tray_icon: bool,
     #[serde(default = "default_true")]
     show_open_portal: bool,
     #[serde(default = "default_true")]
@@ -204,6 +211,7 @@ fn default_true() -> bool {
 impl Default for HelperConfig {
     fn default() -> Self {
         Self {
+            show_tray_icon: true,
             show_open_portal: true,
             show_device_info: true,
             show_request_support: true,
@@ -972,6 +980,32 @@ fn uuid_v4() -> String {
 // Tray menu builder
 // ---------------------------------------------------------------------------
 
+/// Apply the policy's `show_tray_icon` value to the live tray icon (#3202).
+///
+/// Best-effort by design, and deliberately non-fatal:
+///
+/// - **Windows / macOS** — `set_visible` maps onto a native show/hide of the
+///   notification-area / status-bar item and is reliable.
+/// - **Linux** — the tray is a StatusNotifierItem exported through
+///   libappindicator, where hiding sets the item's status to `Passive` rather
+///   than withdrawing it. Most SNI hosts (KDE Plasma, the GNOME AppIndicator
+///   extension) stop drawing passive items, but a host is free to keep
+///   rendering them, so on some desktops the icon can persist. There is no
+///   stronger primitive available without dropping the tray registration
+///   entirely, which would make re-showing it on a later policy change
+///   impossible within the 60s reload loop.
+///
+/// The worst case is therefore a still-visible icon, never a broken helper:
+/// chat, remote-access consent and PAM dialogs do not go through the tray.
+fn apply_tray_visibility<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, visible: bool) {
+    if let Err(e) = tray.set_visible(visible) {
+        log_helper_error(&format!(
+            "[helper] failed to set tray icon visibility to {}: {}",
+            visible, e
+        ));
+    }
+}
+
 fn build_tray_menu(
     app: &AppHandle,
     config: &HelperConfig,
@@ -1099,6 +1133,11 @@ pub fn run() {
             // Load initial config and build tray context menu
             let config = load_helper_config();
             if let Some(tray) = app.tray_by_id("main") {
+                // Honor the policy's tray-icon visibility before anything else —
+                // Tauri auto-creates the icon from tauri.conf.json, so without
+                // this it is unconditionally visible (#3202).
+                apply_tray_visibility(&tray, config.show_tray_icon);
+
                 // Set tray tooltip with version
                 let _ = tray.set_tooltip(Some(&format!(
                     "Breeze Helper v{}",
@@ -1186,6 +1225,7 @@ pub fn run() {
                     if new_yaml != last_config {
                         eprintln!("[helper] Config changed, rebuilding tray menu");
                         if let Some(tray) = reload_handle.tray_by_id("main") {
+                            apply_tray_visibility(&tray, new_config.show_tray_icon);
                             match build_tray_menu(&reload_handle, &new_config) {
                                 Ok(menu) => {
                                     if let Err(e) = tray.set_menu(Some(menu)) {
@@ -1232,6 +1272,29 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #3202: a config written by an agent that predates show_tray_icon must
+    // leave the icon VISIBLE. A bare `#[serde(default)]` would decode the
+    // missing key as false and blank the tray on every such device.
+    #[test]
+    fn helper_config_defaults_show_tray_icon_to_true_when_absent() {
+        let cfg: HelperConfig =
+            serde_yaml::from_str("show_open_portal: true\nshow_device_info: true\n")
+                .expect("parse legacy helper config");
+        assert!(cfg.show_tray_icon);
+        assert!(HelperConfig::default().show_tray_icon);
+    }
+
+    #[test]
+    fn helper_config_honors_explicit_show_tray_icon_false() {
+        let cfg: HelperConfig = serde_yaml::from_str("show_tray_icon: false\n")
+            .expect("parse helper config with tray icon disabled");
+        assert!(!cfg.show_tray_icon);
+        // The menu-item toggles keep their own defaults — hiding the icon does
+        // not implicitly disable the items behind it.
+        assert!(cfg.show_open_portal);
+        assert!(cfg.show_request_support);
+    }
 
     #[test]
     fn serialized_agent_config_omits_bearer_token() {

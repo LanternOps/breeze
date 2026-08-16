@@ -705,6 +705,8 @@
         "trayMenuOptions": "Opciones del menú de bandeja",
         "configureWhichItemsAppearInTheBreeze": "Configure qué elementos aparecen en el menú contextual del botón derecho de la Breeze Assist. La salida siempre está disponible.",
         "enableDeployBreezeAssistToDevicesAbove": "Habilite \"Implementar Breeze Assist en dispositivos\" arriba para aplicar estas opciones.",
+        "systemTrayIcon": "Ícono de la bandeja del sistema",
+        "showsTheBreezeAssistIconInThe": "Muestra el ícono de Breeze Assist en la bandeja del sistema. Desactive esta opción para ejecutar Assist de forma invisible: el chat, el consentimiento de acceso remoto y las solicitudes de PAM siguen funcionando.",
         "openBreezePortal": "Abrir Breeze Portal",
         "opensTheWebPortalInTheUser": "Abre el portal web en el navegador del usuario.",
         "deviceInfo": "Información del dispositivo",

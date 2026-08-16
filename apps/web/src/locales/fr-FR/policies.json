@@ -705,6 +705,8 @@
         "trayMenuOptions": "Options du menu du plateau",
         "configureWhichItemsAppearInTheBreeze": "Configurer les éléments affichés dans le menu contextuel de Breeze Assist. L’option Quitter reste toujours disponible.",
         "enableDeployBreezeAssistToDevicesAbove": "Activez « Déployer Breeze Assist sur les appareils » ci-dessus pour appliquer ces options.",
+        "systemTrayIcon": "Icône de la zone de notification",
+        "showsTheBreezeAssistIconInThe": "Affiche l’icône Breeze Assist dans la zone de notification. Désactivez cette option pour exécuter Assist de façon invisible — la conversation, le consentement d’accès à distance et les invites PAM continuent de fonctionner.",
         "openBreezePortal": "Ouvrir Breeze Portal",
         "opensTheWebPortalInTheUser": "Ouvrir le portail web dans le navigateur de l’utilisateur.",
         "deviceInfo": "Informations sur l’appareil",

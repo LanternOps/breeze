@@ -705,6 +705,8 @@
         "trayMenuOptions": "Tray Menu Options",
         "configureWhichItemsAppearInTheBreeze": "Configure which items appear in the Breeze Assist right-click context menu. Exit is always available.",
         "enableDeployBreezeAssistToDevicesAbove": "Enable \"Deploy Breeze Assist to devices\" above to apply these options.",
+        "systemTrayIcon": "System tray icon",
+        "showsTheBreezeAssistIconInThe": "Shows the Breeze Assist icon in the system tray. Turn this off to run Assist invisibly — chat, remote-access consent, and PAM prompts still work.",
         "openBreezePortal": "Open Breeze Portal",
         "opensTheWebPortalInTheUser": "Opens the web portal in the user's browser.",
         "deviceInfo": "Device Info",
