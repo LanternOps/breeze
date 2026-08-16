@@ -545,7 +545,12 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} uyarısı?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} uyarısı?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} uyarıları var mı?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} uyarıları var mı?",
+    "noDevicesTitle": "Henüz rapor veren cihaz yok",
+    "noDevicesInstallAgentToSeeAlerts": "Burada uyarıları görmeye başlamak için ilk cihazınıza aracıyı yükleyin.",
+    "installYourFirstDevice": "İlk cihazınızı yükleyin",
+    "noActiveAlerts": "Etkin uyarı yok",
+    "deviceStatusUnavailable": "Cihaz durumunuz yüklenemedi. Yeniden denemek için sayfayı yenileyin."
   },
   "alertsSummary": {
     "activeAlerts": "Aktif Uyarılar",

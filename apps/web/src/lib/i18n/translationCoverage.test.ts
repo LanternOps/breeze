@@ -320,7 +320,12 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 25,
     'auth.json': 14,
     'backup.json': 25,
-    'billing.json': 16,
+    // +2: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
+    // pure interpolation with no prose to translate, so they are necessarily
+    // identical to English. They arrived from #3501 after tr-TR (#3497) forked,
+    // which is why the PR was green on its base and this baseline was short by
+    // two on main.
+    'billing.json': 18,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,
