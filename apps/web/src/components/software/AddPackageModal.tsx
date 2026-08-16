@@ -5,6 +5,7 @@ import {
   Upload,
   Link2,
   HardDriveUpload,
+  PackageSearch,
 } from "lucide-react";
 import { asList } from '@/lib/asList';
 import type { DetectionRule } from "@breeze/shared";
@@ -16,12 +17,18 @@ import { runAction, ActionError } from "../../lib/runAction";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import PackageManagerPicker, {
+  type SelectedPackageMethod,
+} from "./PackageManagerPicker";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
 import { useTenantVariables } from "@/lib/tenantVariableTokens";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type Architecture = "x64" | "arm64" | "x86";
-type Source = "url" | "file";
+/** `manager` = winget/Homebrew: Breeze never hosts a binary for it, so that
+ *  source has no version, architecture, installer args or detection rules —
+ *  the package manager owns all of it. */
+type Source = "url" | "file" | "manager";
 export interface CreatedPackage {
   id: string;
   name: string;
@@ -79,6 +86,7 @@ const blankForm = {
   notes: "",
   file: null as File | null,
   fileName: "",
+  managerMethods: [] as SelectedPackageMethod[],
 };
 export default function AddPackageModal({
   open,
@@ -199,14 +207,35 @@ export default function AddPackageModal({
     knownKeys,
     knownVariableKeys,
   ]);
+  const isManager = form.source === "manager";
   const hasSource =
-    form.source === "url" ? form.downloadUrl.trim() !== "" : form.file != null;
+    form.source === "url"
+      ? form.downloadUrl.trim() !== ""
+      : isManager
+        ? form.managerMethods.length > 0
+        : form.file != null;
   const canSubmit =
     form.name.trim() !== "" &&
-    form.version.trim() !== "" &&
+    // A package-manager package has no Breeze-hosted version to name: the
+    // package manager resolves (and updates) the version on the device.
+    (isManager || form.version.trim() !== "") &&
     hasSource &&
     tokenErrors.length === 0 &&
     !saving;
+  /** Prefill identity from the first pick, but never overwrite what the user
+   *  typed. */
+  const handleManagerMethods = (next: SelectedPackageMethod[]) => {
+    setForm((prev) => {
+      const first = next[0];
+      return {
+        ...prev,
+        managerMethods: next,
+        name: prev.name.trim() === "" && first?.name ? first.name : prev.name,
+        vendor:
+          prev.vendor.trim() === "" && first?.vendor ? first.vendor : prev.vendor,
+      };
+    });
+  };
   const buildVersionRequest = (
     catalogId: string,
     controller: AbortController | null,
@@ -262,9 +291,85 @@ export default function AddPackageModal({
         }),
       });
   };
+  /**
+   * Package-manager source: ONE call. `/software/catalog/import-package`
+   * creates the catalog item and all of its install methods in a single
+   * transaction, so there is no half-created state to retry from and no
+   * `createdCatalogId` orphan to surface (that ref stays null on this path).
+   */
+  const submitManagerImport = async () => {
+    setSaving(true);
+    try {
+      const created = await runAction<{ id: string }>({
+        request: () =>
+          fetchWithAuth("/software/catalog/import-package", {
+            method: "POST",
+            body: JSON.stringify({
+              name: form.name.trim(),
+              vendor: form.vendor.trim() || undefined,
+              category: form.category,
+              description: form.description.trim() || undefined,
+              homepageUrl: form.managerMethods[0]?.homepageUrl || undefined,
+              methods: form.managerMethods.map(
+                ({ platform, kind, packageId }) => ({
+                  platform,
+                  kind,
+                  packageId,
+                }),
+              ),
+            }),
+          }),
+        parseSuccess: (d) => {
+          const payload = (d as { data?: { catalogItem?: { id?: unknown } } })
+            .data;
+          return { id: String(payload?.catalogItem?.id ?? "") };
+        },
+        errorFallback: i18n.t(
+          "policies:software.addPackageModal.failedToImportPackage",
+        ),
+        successMessage: () =>
+          i18n.t("policies:software.addPackageModal.addedPackage", {
+            name: form.name.trim(),
+          }),
+      });
+      onCreated({
+        id: created.id,
+        name: form.name.trim(),
+        vendor: form.vendor.trim(),
+        category: form.category,
+        description: form.description.trim(),
+        createdAt: new Date().toISOString(),
+        // Package-manager packages carry install methods, not Breeze-hosted
+        // versions — the manager resolves the version on the device.
+        versionCount: 0,
+      });
+      onClose();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : i18n.t(
+                  "policies:software.addPackageModal.failedToImportPackage",
+                ),
+        });
+      }
+      // Non-401 ActionError already toasted by runAction; the modal stays open.
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
+    if (isManager) {
+      await submitManagerImport();
+      return;
+    }
     // A FRESH controller per submit: a retry after a cancelled attempt must not
     // inherit the previous (already aborted) signal, or the next genuine failure
     // would be silently swallowed as "the user cancelled". Only the file branch
@@ -505,8 +610,11 @@ export default function AddPackageModal({
           {/* First version */}
           <section className="space-y-4 border-t pt-5">
             <h3 className="text-sm font-semibold text-foreground">
-              {i18n.t("policies:software.addPackageModal.firstVersion")}
+              {isManager
+                ? i18n.t("policies:software.addPackageModal.installMethods")
+                : i18n.t("policies:software.addPackageModal.firstVersion")}
             </h3>
+            {!isManager && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className={labelCls} htmlFor="pkg-version">
@@ -547,8 +655,9 @@ export default function AddPackageModal({
                 </select>
               </div>
             </div>
+            )}
 
-            {/* Source: URL or file, one control */}
+            {/* Source: URL, file or package manager — one control */}
             <div>
               <span className={labelCls}>
                 {i18n.t("policies:software.addPackageModal.source")}
@@ -572,6 +681,11 @@ export default function AddPackageModal({
                       i18n.t("policies:software.addPackageModal.uploadFile"),
                       HardDriveUpload,
                     ],
+                    [
+                      "manager",
+                      i18n.t("policies:software.addPackageModal.packageManager"),
+                      PackageSearch,
+                    ],
                   ] as const
                 ).map(([val, label, Icon]) => (
                   <button
@@ -593,7 +707,21 @@ export default function AddPackageModal({
                 ))}
               </div>
 
-              {form.source === "url" ? (
+              {form.source === "manager" ? (
+                <div className="mt-3">
+                  <PackageManagerPicker
+                    methods={form.managerMethods}
+                    onChange={handleManagerMethods}
+                  />
+                  {form.managerMethods.length === 0 && (
+                    <p className="mt-2 text-xs text-destructive">
+                      {i18n.t(
+                        "policies:software.addPackageModal.selectAtLeastOnePackage",
+                      )}
+                    </p>
+                  )}
+                </div>
+              ) : form.source === "url" ? (
                 <div className="mt-3">
                   <VariableInput
                     id="pkg-url"
@@ -642,6 +770,11 @@ export default function AddPackageModal({
               )}
             </div>
 
+            {/* Supported OS and installer args belong to a Breeze-hosted
+                installer. A package-manager package has neither: the platform
+                comes from the chosen methods and winget/brew own the install
+                invocation. */}
+            {!isManager && (
             <div>
               <span className={labelCls}>
                 {i18n.t("policies:software.addPackageModal.supportedOS")}
@@ -673,7 +806,9 @@ export default function AddPackageModal({
                 })}
               </div>
             </div>
+            )}
 
+            {!isManager && (
             <div>
               <label className={labelCls} htmlFor="pkg-install">
                 {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
@@ -691,6 +826,7 @@ export default function AddPackageModal({
                 />
               </div>
             </div>
+            )}
           </section>
 
           {/* Advanced */}
@@ -712,6 +848,11 @@ export default function AddPackageModal({
 
             {advancedOpen && (
               <div className="mt-4 space-y-4">
+                {/* Uninstall args, detection rules and release notes describe a
+                    Breeze-hosted VERSION; the package-manager path creates no
+                    version row, so they'd be silently discarded. */}
+                {!isManager && (
+                <>
                 <div>
                   <label className={labelCls} htmlFor="pkg-uninstall">
                     {i18n.t(
@@ -753,6 +894,8 @@ export default function AddPackageModal({
                     className="mt-2 min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
+                </>
+                )}
 
                 <div>
                   <label className={labelCls} htmlFor="pkg-desc">
