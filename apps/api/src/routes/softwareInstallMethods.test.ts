@@ -112,16 +112,9 @@ describe('softwareInstallMethodRoutes', () => {
     permissionGate.deny = false;
     mfaGate.deny = false;
     app = new Hono();
-    app.use('*', (c, next) => {
-      c.set('auth', {
-        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-        userId: 'user-123',
-        scope: 'organization',
-        orgId: 'org-123',
-        partnerId: null,
-      });
-      return next();
-    });
+    // No extra auth-setting middleware needed here: softwareInstallMethodRoutes
+    // applies its own `use('*', authMiddleware)` (mocked above), which already
+    // sets `auth` on every request.
     app.route('/software', softwareInstallMethodRoutes);
   });
 

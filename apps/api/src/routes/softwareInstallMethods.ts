@@ -87,7 +87,7 @@ softwareInstallMethodRoutes.get(
     const auth = c.get('auth') as AuthScopeContext;
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const item = await loadOwnedCatalogItem(c.req.param('id'), orgResult.orgId);
+    const item = await loadOwnedCatalogItem(c.req.param('id')!, orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
 
     const methods = await db.select().from(softwareInstallMethods)
@@ -274,9 +274,9 @@ softwareInstallMethodRoutes.delete(
     const auth = c.get('auth') as AuthScopeContext;
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const item = await loadOwnedCatalogItem(c.req.param('id'), orgResult.orgId);
+    const item = await loadOwnedCatalogItem(c.req.param('id')!, orgResult.orgId);
     if (!item) return c.json({ error: 'Catalog item not found or access denied' }, 404);
-    const existing = await loadInstallMethod(item.id, c.req.param('methodId'));
+    const existing = await loadInstallMethod(item.id, c.req.param('methodId')!);
     if (!existing) return c.json({ error: 'Install method not found' }, 404);
 
     await db.delete(softwareInstallMethods)
