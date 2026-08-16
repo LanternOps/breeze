@@ -240,6 +240,12 @@ describe('computeEffectDigestOutcome', () => {
           },
         ]);
 
+      // Task 3b (#3409 PR4c-1): `digestOf` now records the exact `database`
+      // it handed `computeEffectDigest`, so the pinning test below can assert
+      // `loadScope` (== `loadTenantVariableScope`) was called with THAT SAME
+      // connection reused — not a second, freshly-escaped one.
+      let lastDatabase: Database;
+
       /** One pinning pass: the scope the loader returns + the script row on disk. */
       async function digestOf(
         scope: TenantVariableScope,
@@ -247,19 +253,24 @@ describe('computeEffectDigestOutcome', () => {
         devices: Array<{ id: string; orgId: string }> = [deviceRow('device-1', 'org-1')],
       ): Promise<string | null> {
         loadScope.mockResolvedValueOnce(scope);
+        lastDatabase = runScriptDb(script, devices).database;
         return computeEffectDigest(
           'run_script',
           { scriptId: 'script-1', deviceIds: devices.map((d) => d.id) },
-          runScriptDb(script, devices).database,
+          lastDatabase,
         );
       }
 
       it('pins a digest at all for a variable-referencing script, and it is stable', async () => {
         const before = await digestOf(baselineScope());
+        // Task 3b: the digest path reuses the ambient connection rather than
+        // acquiring a second pooled one — `loadTenantVariableScope` is called
+        // with `{ database }` (the SAME database this call was handed),
+        // never bare `orgIds` alone.
+        expect(loadScope).toHaveBeenCalledWith(['org-1'], { database: lastDatabase });
         const after = await digestOf(baselineScope());
         expect(before).toMatch(/^[0-9a-f]{64}$/);
         expect(before).toBe(after);
-        expect(loadScope).toHaveBeenCalledWith(['org-1']);
       });
 
       it.each<[string, () => Promise<string | null>]>([
@@ -343,9 +354,10 @@ describe('computeEffectDigestOutcome', () => {
       // The overwhelming majority of scripts reference nothing, and must not
       // pay for a variable query at intent creation.
       it('loads no variable scope for a script that references none', async () => {
-        const digest = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+        const database = runScriptDb(scriptRow()).database;
+        const digest = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, database);
         expect(digest).toMatch(/^[0-9a-f]{64}$/);
-        expect(loadScope).toHaveBeenCalledWith([]);
+        expect(loadScope).toHaveBeenCalledWith([], { database });
       });
     });
   });

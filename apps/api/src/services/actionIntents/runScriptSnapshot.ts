@@ -111,15 +111,27 @@ export type BuildRunScriptSnapshotResult =
 
 /**
  * Test seam, mirroring why `effectDigest.ts` takes `database` rather than
- * importing it: `loadTenantVariableScope` reads the module-level `db`
- * singleton, so injecting it is what lets the unit suite build snapshots
- * without a live or mocked database module. Production callers pass nothing.
+ * importing it: production `loadScope` (below) forwards `buildRunScriptSnapshot`'s
+ * own `database` argument straight into `loadTenantVariableScope`'s
+ * `opts.database` (#3409 PR4c-1 Task 3b) — every call into this module
+ * already runs inside a system-scoped transaction (see the three
+ * `computeEffectDigestOutcome` call sites in effectDigest.ts's header), so
+ * reusing that connection is what avoids acquiring a second pooled one while
+ * the caller's transaction is still held. Injecting `loadScope` is what lets
+ * the unit suite build snapshots without a live or mocked database module at
+ * all. Production callers pass nothing.
  */
 export interface RunScriptSnapshotDeps {
-  loadScope: (orgIds: string[]) => Promise<TenantVariableScope>;
+  loadScope: (orgIds: string[], database: Database) => Promise<TenantVariableScope>;
 }
 
-const DEFAULT_DEPS: RunScriptSnapshotDeps = { loadScope: loadTenantVariableScope };
+const DEFAULT_DEPS: RunScriptSnapshotDeps = {
+  // Reuses the caller's already-system-scoped `database` (see the interface
+  // doc above) rather than letting `loadTenantVariableScope` escape to a
+  // second pooled connection — that escape buys nothing here, since every
+  // caller of `buildRunScriptSnapshot` is already system-scoped.
+  loadScope: (orgIds, database) => loadTenantVariableScope(orgIds, { database }),
+};
 
 /**
  * UTF-16 code point order, NEVER `localeCompare`.
@@ -230,7 +242,7 @@ export async function buildRunScriptSnapshot(
   // dispatch would have loaded — including the empty, query-free scope for the
   // overwhelming majority of scripts that reference nothing.
   const needsScope = scriptNeedsVariableScope({ content, parameters: script.parameters });
-  const variableScope = await deps.loadScope(needsScope ? deviceOrgIds : []);
+  const variableScope = await deps.loadScope(needsScope ? deviceOrgIds : [], database);
 
   // `keys` non-empty implies `needsScope` (a key comes either from a content
   // token or from a parsed `tenantVariable` binding, and each of those is one

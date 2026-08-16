@@ -7,16 +7,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // plain strings would make those assertions vacuous (see
 // services/tenantVariables.test.ts, whose `boundParams` helper this file
 // copies for the same reason).
+// runOutsideDbContext / withSystemDbAccessContext are mocked as flag-tracking
+// passthroughs (vi.fn() wrapping the real behaviour), not bare identity
+// functions, specifically so Task 3b's "database supplied -> escape hatch
+// NOT invoked" tests can assert on call counts rather than merely on side
+// effects. Same pattern as aiToolsScripts.runScript.orgEquality.test.ts.
 vi.mock('../db', () => {
   const dbMock = { select: vi.fn() };
   return {
     db: dbMock,
-    runOutsideDbContext: <T>(fn: () => T): T => fn(),
-    withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn()
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
+    withSystemDbAccessContext: vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => fn())
   };
 });
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
 import { encryptTenantVariableValue } from './tenantVariables';
 import {
   describeVariableFailure,
@@ -28,6 +33,8 @@ import {
 } from './tenantVariableResolution';
 
 const dbMock = db as unknown as { select: ReturnType<typeof vi.fn> };
+const runOutsideDbContextMock = runOutsideDbContext as unknown as ReturnType<typeof vi.fn>;
+const withSystemDbAccessContextMock = withSystemDbAccessContext as unknown as ReturnType<typeof vi.fn>;
 
 const ORG_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -99,9 +106,9 @@ function encryptedRow(id: string, plaintext: string, overrides: Partial<StubRow>
 }
 
 /** Chainable select stub matching `.select().from().innerJoin().where()`. */
-function stubSelect(rows: StubRow[]) {
+function stubSelectOn(select: ReturnType<typeof vi.fn>, rows: StubRow[]) {
   const captured: { on?: unknown; where?: unknown } = {};
-  dbMock.select.mockReturnValue({
+  select.mockReturnValue({
     from: () => ({
       innerJoin: (_table: unknown, on: unknown) => {
         captured.on = on;
@@ -115,6 +122,10 @@ function stubSelect(rows: StubRow[]) {
     })
   });
   return captured;
+}
+
+function stubSelect(rows: StubRow[]) {
+  return stubSelectOn(dbMock.select, rows);
 }
 
 function mapWith(entry: Partial<ResolvedVariable> & { key: string }): Map<string, ResolvedVariable> {
@@ -295,6 +306,58 @@ describe('loadTenantVariableScope', () => {
     expect(resolved.get('k')?.value).not.toBe('partner-value');
     expect(unreadableForOrg(scope, ORG_A).has('k')).toBe(true);
     warn.mockRestore();
+  });
+});
+
+// Task 3b (#3409 PR4c-1): the digest path computes inside an
+// already-open, already-system-scoped transaction (intentService.ts:385-408)
+// and must reuse THAT connection rather than acquiring a second pooled one
+// via the escape hatch — see tenantVariableResolution.ts's doc comment on
+// `opts.database` for the caller contract this enforces.
+describe('loadTenantVariableScope given an explicit database', () => {
+  it('queries the supplied database directly and does NOT call the escape helpers', async () => {
+    const suppliedSelect = vi.fn();
+    stubSelectOn(suppliedSelect, []);
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    const scope = await loadTenantVariableScope([ORG_A], { database: suppliedDb });
+
+    expect(scope.orgIds.has(ORG_A)).toBe(true);
+    expect(suppliedSelect).toHaveBeenCalledTimes(1);
+    // The module-level `db` (today's ambient escape target) must be
+    // untouched — the query ran on the supplied connection, not a second one.
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(runOutsideDbContextMock).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns an empty scope without querying ANYTHING for an empty input, database or not', async () => {
+    const suppliedSelect = vi.fn();
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    const scope = await loadTenantVariableScope([], { database: suppliedDb });
+
+    expect(scope.orgIds.size).toBe(0);
+    expect(suppliedSelect).not.toHaveBeenCalled();
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(runOutsideDbContextMock).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+});
+
+// Byte-for-byte-unaffected proof for the five existing callers (Step 3 of
+// Task 3b): omitting `opts` — exactly what all five call sites do — must
+// still ride the escape hatch, on the module's own `db`, exactly as before
+// this task.
+describe('loadTenantVariableScope with no explicit database (today\'s five callers)', () => {
+  it('escapes via runOutsideDbContext + withSystemDbAccessContext and queries the module-level db', async () => {
+    stubSelect([]);
+
+    await loadTenantVariableScope([ORG_A]);
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
   });
 });
 

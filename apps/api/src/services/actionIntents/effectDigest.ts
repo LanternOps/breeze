@@ -117,8 +117,8 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // The pinned set — and the reads that produce it — live in
   // runScriptSnapshot.ts rather than inline here: #3409 PR4c-1 makes the
   // digest and dispatch derivable from ONE observation instead of two copies
-  // free to drift apart (the release side consumes the snapshot's scope; this
-  // creation-side call needs only the material).
+  // free to drift apart (the release side will consume the snapshot's scope;
+  // this creation-side call needs only the material).
   // `runScriptDigestMaterial` is a `v: 2` envelope, so a digest pinned before
   // this change can never compare equal to a recomputed one: a pre-PR4c
   // intent fails closed at release rather than revalidating against a

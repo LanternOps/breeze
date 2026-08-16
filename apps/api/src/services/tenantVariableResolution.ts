@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { replaceVariableTokens } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
 import { organizations, tenantVariables } from '../db/schema';
 import { decryptTenantVariableValue } from './tenantVariables';
 
@@ -122,6 +122,38 @@ function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
  * is empty — the common case for a dispatch batch with no `{{var.*}}` tokens
  * at all, via the `hasVariableTokens` short-circuit at the call site.
  *
+ * ## `opts.database` — an escape from the escape hatch, for ONE caller
+ *
+ * By default (`opts` omitted — what all five dispatch call sites do, and
+ * what MUST stay true for them), this function elevates to a genuinely fresh
+ * system context: see "Why the escape hatch" below.
+ *
+ * `opts.database`, when supplied, skips that elevation entirely and runs the
+ * query directly on the given connection instead — no `runOutsideDbContext`,
+ * no `withSystemDbAccessContext`. **Supplying a database is a caller
+ * assertion, not a request: it asserts the caller is ALREADY running inside
+ * a system-scoped context** (e.g. its own already-open
+ * `withSystemDbAccessContext`), typically because it is computing atomically
+ * inside a transaction it cannot afford to leave (a second pooled connection
+ * held alongside the first is exactly the #1105 connection-hold class this
+ * option exists to avoid — see #3409 PR4c-1 Task 3b). This function does not
+ * itself elevate privilege when a database is supplied, so if the caller's
+ * assertion is false — an unprivileged, RLS-constrained connection handed in
+ * under the belief that it "would still be safe" — the query below silently
+ * runs UNDER that connection's RLS instead of the intended system scope.
+ * Because system scope is what makes the `WHERE o.id = ANY($1)` clause below
+ * the query's ONLY tenancy boundary (see below), an RLS-constrained
+ * connection wouldn't widen access — worse, it can silently NARROW the
+ * result set (e.g. an org token whose JWT lacks `partnerId` losing every
+ * partner-wide row) without erroring, which is a correctness bug wearing a
+ * safety costume. Only pass `opts.database` when you can point at the
+ * specific system-scoping call that is already open around your call site
+ * (today: `computeEffectDigestOutcome`'s three call sites, all of which run
+ * inside `withSystemDbAccessContext` — see effectDigest.ts and
+ * runScriptSnapshot.ts).
+ *
+ * ## Why the escape hatch (the `opts.database`-omitted path)
+ *
  * MUST run inside `runOutsideDbContext(() => withSystemDbAccessContext(...))`
  * — BOTH wrappers, in that order. The route path calls this from inside a
  * held ORG-SCOPED request transaction (e.g. a script-run request), and a bare
@@ -144,102 +176,114 @@ function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
  * already permitted to target) — this function does not itself authorize
  * anything, it only fetches exactly the rows for the orgs it is told about.
  */
-export async function loadTenantVariableScope(orgIds: string[]): Promise<TenantVariableScope> {
+export async function loadTenantVariableScope(
+  orgIds: string[],
+  opts?: { database?: Database }
+): Promise<TenantVariableScope> {
   const uniqueOrgIds = [...new Set(orgIds)];
   if (uniqueOrgIds.length === 0) {
     return emptyScope();
   }
 
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      // ONE query for every org in the snapshot, joining `organizations` so a
-      // partner-wide row (tenant_variables.org_id IS NULL) can be matched to
-      // each inheriting org's partner_id. A partner-wide row therefore comes
-      // back once PER inheriting org, each tagged with the org it is FOR
-      // (`forOrgId`) — never once globally, which is what makes attributing
-      // rows back to the right org below possible without a second query.
-      const rows: RawResolvedRow[] = await db
-        .select({
-          id: tenantVariables.id,
-          key: tenantVariables.key,
-          value: tenantVariables.value,
-          isSecret: tenantVariables.isSecret,
-          version: tenantVariables.version,
-          ownerOrgId: tenantVariables.orgId,
-          forOrgId: organizations.id
-        })
-        .from(organizations)
-        .innerJoin(
-          tenantVariables,
-          or(
-            eq(tenantVariables.orgId, organizations.id),
-            and(isNull(tenantVariables.orgId), eq(tenantVariables.partnerId, organizations.partnerId))
-          )
-        )
-        .where(inArray(organizations.id, uniqueOrgIds));
+  if (opts?.database) {
+    return queryScope(opts.database, uniqueOrgIds);
+  }
 
-      const byOrg = new Map<string, Map<string, ResolvedVariable>>();
-      for (const id of uniqueOrgIds) byOrg.set(id, new Map());
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => queryScope(db, uniqueOrgIds)));
+}
 
-      // Org-owned rows always win over a same-key partner-wide row (resolution
-      // precedence: org > partner). Track which (org, key) pairs an org-owned
-      // row has already claimed so the partner-wide pass below never
-      // overwrites one, REGARDLESS of the order Postgres returns rows in (no
-      // ORDER BY is specified, and none is needed — precedence is enforced
-      // here, not by row order).
-      const orgOwnedKeys = new Map<string, Set<string>>();
-      for (const id of uniqueOrgIds) orgOwnedKeys.set(id, new Set());
-
-      // Rows whose winning precedence pass failed to decrypt — kept separate
-      // from `byOrg` so an unreadable key is never confused with one that was
-      // simply never defined (see {@link unreadableForOrg}).
-      const unreadableByOrg = new Map<string, Set<string>>();
-      for (const id of uniqueOrgIds) unreadableByOrg.set(id, new Set());
-
-      for (const row of rows) {
-        if (row.ownerOrgId === null) continue; // partner-wide; handled in the second pass
-        // Claim this (org, key) for org-precedence BEFORE attempting the
-        // decrypt, regardless of whether it succeeds. An org row that fails
-        // to decrypt still WON the precedence contest against a same-key
-        // partner-wide row — it must shadow that partner value, not leave it
-        // exposed to the second pass below. Marking the claim only on a
-        // successful decrypt (the previous behaviour) let the partner-wide
-        // pass resolve right over an unreadable org override: this org's own
-        // partner-wide DEFAULT would win over this org's own unreadable
-        // OVERRIDE — the very value the override exists to replace. (Not a
-        // cross-tenant leak: the join and every write below are keyed by
-        // `forOrgId`, so a different org's or partner's data can never reach
-        // this org's map.) Still a real tenancy bug — an override that fails
-        // to decrypt must fail the device, never quietly fall back to the
-        // default it was meant to shadow.
-        orgOwnedKeys.get(row.forOrgId)?.add(row.key);
-        const resolved = decryptRow(row);
-        if (!resolved) {
-          unreadableByOrg.get(row.forOrgId)?.add(row.key);
-          continue;
-        }
-        byOrg.get(row.forOrgId)?.set(row.key, resolved);
-      }
-
-      for (const row of rows) {
-        if (row.ownerOrgId !== null) continue; // org-owned; already handled above
-        if (orgOwnedKeys.get(row.forOrgId)?.has(row.key)) continue; // shadowed by an org override (readable or not)
-        const resolved = decryptRow(row);
-        if (!resolved) {
-          unreadableByOrg.get(row.forOrgId)?.add(row.key);
-          continue;
-        }
-        byOrg.get(row.forOrgId)?.set(row.key, resolved);
-      }
-
-      const scope: InternalTenantVariableScope = {
-        orgIds: new Set(uniqueOrgIds),
-        byOrg,
-        unreadableKeysByOrg: unreadableByOrg
-      };
-      return scope;
+/**
+ * The query + precedence-resolution body shared by both `loadTenantVariableScope`
+ * paths (escaped and caller-supplied `database`) — identical work, different
+ * connection. See `loadTenantVariableScope`'s doc comment for the tenancy
+ * contract this relies on (`WHERE o.id = ANY($1)` as the sole boundary).
+ */
+async function queryScope(database: Database, uniqueOrgIds: string[]): Promise<InternalTenantVariableScope> {
+  // ONE query for every org in the snapshot, joining `organizations` so a
+  // partner-wide row (tenant_variables.org_id IS NULL) can be matched to
+  // each inheriting org's partner_id. A partner-wide row therefore comes
+  // back once PER inheriting org, each tagged with the org it is FOR
+  // (`forOrgId`) — never once globally, which is what makes attributing
+  // rows back to the right org below possible without a second query.
+  const rows: RawResolvedRow[] = await database
+    .select({
+      id: tenantVariables.id,
+      key: tenantVariables.key,
+      value: tenantVariables.value,
+      isSecret: tenantVariables.isSecret,
+      version: tenantVariables.version,
+      ownerOrgId: tenantVariables.orgId,
+      forOrgId: organizations.id
     })
-  );
+    .from(organizations)
+    .innerJoin(
+      tenantVariables,
+      or(
+        eq(tenantVariables.orgId, organizations.id),
+        and(isNull(tenantVariables.orgId), eq(tenantVariables.partnerId, organizations.partnerId))
+      )
+    )
+    .where(inArray(organizations.id, uniqueOrgIds));
+
+  const byOrg = new Map<string, Map<string, ResolvedVariable>>();
+  for (const id of uniqueOrgIds) byOrg.set(id, new Map());
+
+  // Org-owned rows always win over a same-key partner-wide row (resolution
+  // precedence: org > partner). Track which (org, key) pairs an org-owned
+  // row has already claimed so the partner-wide pass below never
+  // overwrites one, REGARDLESS of the order Postgres returns rows in (no
+  // ORDER BY is specified, and none is needed — precedence is enforced
+  // here, not by row order).
+  const orgOwnedKeys = new Map<string, Set<string>>();
+  for (const id of uniqueOrgIds) orgOwnedKeys.set(id, new Set());
+
+  // Rows whose winning precedence pass failed to decrypt — kept separate
+  // from `byOrg` so an unreadable key is never confused with one that was
+  // simply never defined (see {@link unreadableForOrg}).
+  const unreadableByOrg = new Map<string, Set<string>>();
+  for (const id of uniqueOrgIds) unreadableByOrg.set(id, new Set());
+
+  for (const row of rows) {
+    if (row.ownerOrgId === null) continue; // partner-wide; handled in the second pass
+    // Claim this (org, key) for org-precedence BEFORE attempting the
+    // decrypt, regardless of whether it succeeds. An org row that fails
+    // to decrypt still WON the precedence contest against a same-key
+    // partner-wide row — it must shadow that partner value, not leave it
+    // exposed to the second pass below. Marking the claim only on a
+    // successful decrypt (the previous behaviour) let the partner-wide
+    // pass resolve right over an unreadable org override: this org's own
+    // partner-wide DEFAULT would win over this org's own unreadable
+    // OVERRIDE — the very value the override exists to replace. (Not a
+    // cross-tenant leak: the join and every write below are keyed by
+    // `forOrgId`, so a different org's or partner's data can never reach
+    // this org's map.) Still a real tenancy bug — an override that fails
+    // to decrypt must fail the device, never quietly fall back to the
+    // default it was meant to shadow.
+    orgOwnedKeys.get(row.forOrgId)?.add(row.key);
+    const resolved = decryptRow(row);
+    if (!resolved) {
+      unreadableByOrg.get(row.forOrgId)?.add(row.key);
+      continue;
+    }
+    byOrg.get(row.forOrgId)?.set(row.key, resolved);
+  }
+
+  for (const row of rows) {
+    if (row.ownerOrgId !== null) continue; // org-owned; already handled above
+    if (orgOwnedKeys.get(row.forOrgId)?.has(row.key)) continue; // shadowed by an org override (readable or not)
+    const resolved = decryptRow(row);
+    if (!resolved) {
+      unreadableByOrg.get(row.forOrgId)?.add(row.key);
+      continue;
+    }
+    byOrg.get(row.forOrgId)?.set(row.key, resolved);
+  }
+
+  return {
+    orgIds: new Set(uniqueOrgIds),
+    byOrg,
+    unreadableKeysByOrg: unreadableByOrg
+  };
 }
 
 /**

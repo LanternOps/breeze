@@ -415,12 +415,30 @@ describe('buildRunScriptSnapshot variable references', () => {
     expect(snapshot.variableReferences.map((r) => r.key)).toEqual(['from_content', 'from_param']);
   });
 
+  // Task 3b (#3409 PR4c-1): the non-empty (`needsScope: true`) path is the
+  // one that matters in production — this is the call that would otherwise
+  // acquire a second pooled connection. Assert the SAME `database` the
+  // builder was handed is the one forwarded to `loadScope`, not merely that
+  // some database-shaped value was.
+  it('forwards its own database argument to loadScope on the needs-scope path', async () => {
+    const built = build({
+      script: scriptRow({ content: 'echo {{var.k}}' }),
+      scope: fakeScope([{ orgId: 'org-1', present: [variable({ key: 'k' })] }]),
+    });
+    await built.result;
+    expect(built.loadScope).toHaveBeenCalledWith(['org-1'], built.database);
+  });
+
   it('produces no references and loads no variable scope for a script with neither', async () => {
     const built = build({ script: scriptRow({ content: 'echo hi', parameters: [] }) });
     const outcome = await built.result;
     expect(outcome.kind).toBe('snapshot');
     expect(outcome.kind === 'snapshot' && outcome.snapshot.variableReferences).toEqual([]);
-    expect(built.loadScope).toHaveBeenCalledWith([]);
+    // Task 3b (#3409 PR4c-1): `loadScope` now also receives the caller's
+    // `database` (so it can reuse the already-held connection instead of
+    // escaping to a second one) — asserted here rather than just "was
+    // called", so a regression that drops the second argument goes red.
+    expect(built.loadScope).toHaveBeenCalledWith([], built.database);
   });
 
   it('emits one reference per (org, key) — the same key resolving differently in two orgs', async () => {
