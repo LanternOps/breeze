@@ -161,10 +161,14 @@ export const actionIntents = pgTable(
     /** Version of the classification ruleset that produced approvalScope. Immutable. */
     classificationVersion: integer('classification_version').notNull().default(0),
     /**
-     * Content-pinning digest for four_eyes intents (script content hash /
-     * quote-invoice revision / target state-version), pinned at creation and
-     * revalidated by the release worker (content_changed on drift).
-     * Supervised intents leave this NULL. Immutable.
+     * Content-pinning digest (script content hash / quote-invoice revision /
+     * target state-version), pinned at creation whenever a resolver exists
+     * for the tool/action — regardless of approval scope (changed
+     * 2026-08-06; see services/actionIntents/effectDigest.ts's header).
+     * Revalidated by both release paths (content_changed on drift). NULL
+     * only when no resolver exists for the tool/action, or a resolver
+     * exists but couldn't resolve the target at creation — not an indicator
+     * of approval scope. Immutable.
      */
     effectDigest: char('effect_digest', { length: 64 }),
 

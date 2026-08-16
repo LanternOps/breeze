@@ -1170,9 +1170,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // approver approves a REFERENCE ("run script <id>"), and the referenced
           // content can drift during the approval window while the intent's own
           // arguments/argumentDigest stay byte-identical. `intentRow.effectDigest`
-          // is NULL for supervised intents (never pinned) and unpinnable four_eyes
-          // intents (no resolver, or target didn't exist yet at creation) — both
-          // skip this check by design, same as the worker. Wrapped in
+          // is NULL only when the tool/action had no resolver at creation
+          // (`not_applicable`) or a resolver existed but couldn't resolve the
+          // target (`unresolved`) — approval scope plays no part: pinning is
+          // scope-independent (changed 2026-08-06, see effectDigest.ts's
+          // header), so a SUPERVISED intent whose tool has a resolver
+          // (run_script is the flagship case) IS pinned and DOES run this
+          // check, same as a four_eyes intent. It used to be skipped for
+          // every supervised intent when pinning was gated on
+          // `approvalScope === 'four_eyes'`; that gate is gone. Wrapped in
           // withSystemDbAccessContext (via runOutsideDbContext, same discipline as
           // the intentRow/winningApproval read above) because the resolver needs
           // to read the current target row, which the ambient request context may

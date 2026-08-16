@@ -353,9 +353,17 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // ("possibly minutes to (for `mcp_api` intents) a day"). Do not restate the
   // chat numbers as if they were universal.
   //
-  // A pinned digest is ABSENT for supervised intents (never pinned) and for
-  // legacy/unpinnable four_eyes intents (no resolver existed, or the target
-  // didn't exist yet, at creation); both skip this check by design.
+  // A pinned digest is ABSENT only when no resolver existed for the intent's
+  // tool/action at creation (`not_applicable`), or a resolver existed but
+  // couldn't resolve the target (`unresolved` — legacy pre-pinning rows, or a
+  // missing/deleted target); both skip this check by design. Approval scope
+  // is NOT a factor: pinning is scope-independent (changed 2026-08-06, see
+  // effectDigest.ts's header) — a SUPERVISED intent whose tool has a
+  // resolver (run_script is the flagship case) IS pinned and DOES run this
+  // check below, same as a four_eyes intent. It used to be skipped for every
+  // supervised intent when pinning was gated on
+  // `approvalScope === 'four_eyes'`; that gate is gone — don't assume it's
+  // still there and conclude this branch is unreachable for supervised.
   // `hasPinnedDigest` is the SHARED predicate with the inline chat release
   // path (services/aiAgentSdk.ts): the two previously guarded the same
   // invariant with different predicates (`!== null` here, truthiness there),
