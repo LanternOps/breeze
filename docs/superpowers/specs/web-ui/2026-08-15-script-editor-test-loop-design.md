@@ -41,7 +41,18 @@ editor test-device picker, Save & Test Run button + results strip, `scriptId`/`t
 
 ### C. `get_script_execution` (tier 1, both tool surfaces) — v1
 
-New read-only tool: `{ executionId: uuid }` → status, exitCode, stdout, stderr, errorMessage, timing; same access checks as `GET /scripts/executions/:id`. Closes the "run outlived the 60s tool window and there is no recovery" gap. Register in `aiToolsScripts.ts` (tier 1) and the script-builder allowlist.
+New read-only tool: `{ executionId: uuid }` → status, exitCode, stdout, stderr, errorMessage, timing; same access checks as `GET /scripts/executions/:id`. Register in `aiToolsScripts.ts` (tier 1) and the script-builder allowlist.
+
+> **Correction (2026-08-16, PR #3605).** This section originally claimed the tool
+> "closes the *run outlived the 60s tool window and there is no recovery* gap".
+> **It does not, and cannot as built.** When `run_script`'s 60s wait expires, the
+> command row is terminalized and the agent's late result is then dropped before
+> `handleScriptResult` ever runs — so `stdout`/`stderr`/`exitCode` are never
+> written to `script_executions` and there is nothing for this tool to read back.
+> #3605 rewrote the four AI-facing descriptions that acted on the false premise.
+> The tool's real use is reading a run started *outside* the current tool call
+> (the editor's Test Run button, or an id from `get_script_execution_history`).
+> The underlying loss is tracked in #3607.
 
 ### D. `test_script` — AI-initiated run of the working draft — v2
 
@@ -52,7 +63,7 @@ Replaces `execute_script_on_device` in the script-builder allowlist (the global-
 - **Audit:** the resolved content's SHA-256, revision, effective `runAs`, and canonical parameters are stamped into the `ai_tool_executions` record for the call (which already stores tool input), alongside `executionId`. Full content is recoverable from the chat transcript + revision; we do not add a content column to `script_executions` (avoids a new export-policy classification for v1-adjacent work). If ops experience shows hash+transcript is insufficient for reproduction, add an encrypted snapshot store as a follow-up.
 - Requires the script to have been saved at least once (`script_executions.script_id` is NOT NULL). New scripts: the v1 Save & Test Run flow creates the draft.
 - Executes through the same guarded pipeline as `run_script`: `verifyDeviceAccess`, script↔device org/partner equality, dispatch, redaction. Wire via `makeExistingHandler` so `onPreToolUse` runs (never `makeApplyHandler`).
-- **Timeout handling (corrected per quorum):** `waitForCommandResult` *terminalizes* the command at its deadline (marks it failed/timeout, after which the late agent result loses the CAS in `agentWs.ts` and is dropped). `test_script` must instead use a non-mutating poll capped at ~50s (inside the 60s MCP tool timeout) and, if still running, return `{ status: 'running', executionId }` without touching the command row, directing the model to `get_script_execution`.
+- **Timeout handling (corrected per quorum; mechanism re-corrected 2026-08-16):** `waitForCommandResult` *terminalizes* the command at its deadline (marks it failed/timeout), after which the late agent result is dropped. The original text attributed the drop to a lost CAS in `agentWs.ts`; verification in #3605 found it happens one step earlier — the row **lookup** filters on `status IN ('pending','sent')` (`agentWs.ts:87`, `:1598-1610`), so no row is found at all and the code branches into `processOrphanedCommandResult` before the CAS at `:1739` is ever reached. This matters for anyone fixing it: patching only the CAS would not work. `test_script` must still use a non-mutating poll capped at ~50s (inside the 60s MCP tool timeout) and, if still running, return `{ status: 'running', executionId }` without touching the command row. Note it can only direct the model to `get_script_execution` once #3607 makes the late result actually land.
 - **Default resolution before approval:** the guardrail/approval hook currently sees raw tool arguments; `test_script` must resolve the effective device, `runAs`, and parameters *before* the approval/grant check so the user approves (and the grant matches) what actually executes.
 
 ### E. Approval model — scoped session tool grants — v2

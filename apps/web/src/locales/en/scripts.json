@@ -1246,6 +1246,7 @@
     "title": "Test run",
     "devicePlaceholder": "Select a test device…",
     "noDevices": "No compatible devices",
+    "devicesLoadFailed": "Couldn't load devices",
     "deviceStatus": {
       "offline": "offline",
       "maintenance": "maintenance"

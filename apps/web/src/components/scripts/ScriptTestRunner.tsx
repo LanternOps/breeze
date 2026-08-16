@@ -46,6 +46,14 @@ type ScriptTestRunnerProps = {
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_STATUSES: TestRunStatus[] = ['completed', 'failed', 'timeout', 'cancelled'];
 
+// GET /devices caps page size at DEVICES_LIST_HARD_MAX (1000) and defaults to
+// 500, so an unparameterised fetch silently truncates any fleet over 500 —
+// devices past the cut simply cannot be picked. We ask for the hard max AND
+// filter server-side by osType (one request per target OS), so the cap applies
+// per-OS to an already-compatible set rather than fleet-wide to a set we then
+// throw most of away.
+const DEVICE_PAGE_LIMIT = 1000;
+
 const storageKey = (scriptId: string) => `breeze:script-test-device:${scriptId}`;
 
 export default function ScriptTestRunner({
@@ -59,7 +67,23 @@ export default function ScriptTestRunner({
   onExecutionChange,
 }: ScriptTestRunnerProps) {
   const { t } = useTranslation('scripts');
-  const [devices, setDevices] = useState<TestDevice[]>([]);
+  // One state object, not three correlated ones, and it carries the `key` (the
+  // OS targets) it was fetched for. The pin reconcile below must only act on a
+  // fleet list that is settled AND belongs to the CURRENT targets: on the render
+  // where `osTypes` changes, separate state would still read as 'loaded' from
+  // the previous fetch, and the reconcile would clear the pin against a device
+  // list that no longer applies.
+  type FleetState = {
+    key: string;
+    status: 'loading' | 'loaded' | 'error';
+    devices: TestDevice[];
+    /** A full page means the fleet exceeded the cap — this is NOT the complete set. */
+    truncated: boolean;
+  };
+  const [fleet, setFleet] = useState<FleetState>({
+    key: '', status: 'loading', devices: [], truncated: false,
+  });
+  const devices = fleet.devices;
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
   const [phase, setPhase] = useState<'idle' | 'saving' | 'starting' | 'polling'>('idle');
   const [execution, setExecution] = useState<TestRunExecution | null>(null);
@@ -69,32 +93,66 @@ export default function ScriptTestRunner({
   const [retryExecutionId, setRetryExecutionId] = useState<string | null>(null);
   const pollTokenRef = useRef(0);
 
+  // Stable key for the OS target list — `osTypes` is a prop array whose identity
+  // changes every render, so it can't be an effect dep directly.
+  const osTypesKey = useMemo(() => [...(osTypes ?? [])].sort().join(','), [osTypes]);
+
   useEffect(() => {
     // The runner is disabled for never-saved scripts — don't fetch the fleet
     // list for /scripts/new.
     if (!scriptId) return;
+    const key = osTypesKey;
+    const targets = key ? key.split(',') : [];
+    if (targets.length === 0) {
+      // No OS targets means nothing can be compatible. That's a settled answer,
+      // not a failure — mark it loaded so the pin reconcile can act on it.
+      setFleet({ key, status: 'loaded', devices: [], truncated: false });
+      return;
+    }
     let cancelled = false;
+    // Park the previous result immediately: it was fetched for different OS
+    // targets and must not be reconciled against the new ones.
+    setFleet(prev => ({ ...prev, key, status: 'loading' }));
     (async () => {
       try {
-        const response = await fetchWithAuth('/devices');
-        if (!response.ok || cancelled) return;
-        const data = await response.json();
-        if (!cancelled) {
-          // GET /devices emits `osType`; normalise so the OS filter below works
-          // (other consumers do the same, see ScriptsPage's device mapping).
-          setDevices(asList<Record<string, unknown>>(data, 'devices').map(d => ({
-            id: String(d.id),
-            hostname: String(d.hostname ?? ''),
-            os: (d.osType ?? d.os ?? '') as TestDevice['os'],
-            status: (d.status ?? 'offline') as TestDevice['status'],
-          })));
+        const responses = await Promise.all(targets.map(osType =>
+          fetchWithAuth(`/devices?osType=${encodeURIComponent(osType)}&limit=${DEVICE_PAGE_LIMIT}`)
+        ));
+        if (cancelled) return;
+        // Any failed page means we'd be rendering a silently partial fleet.
+        // Surface it rather than showing an empty picker the operator would
+        // read as "no compatible devices".
+        if (responses.some(r => !r.ok)) {
+          setFleet(prev => ({ ...prev, key, status: 'error' }));
+          return;
         }
+        const pages = await Promise.all(responses.map(r => r.json()));
+        if (cancelled) return;
+        // GET /devices emits `osType`; normalise so the OS filter below works
+        // (other consumers do the same, see ScriptsPage's device mapping).
+        const byId = new Map<string, TestDevice>();
+        let truncated = false;
+        for (const page of pages) {
+          const rows = asList<Record<string, unknown>>(page, 'devices');
+          if (rows.length >= DEVICE_PAGE_LIMIT) truncated = true;
+          for (const d of rows) {
+            const id = String(d.id);
+            if (byId.has(id)) continue;
+            byId.set(id, {
+              id,
+              hostname: String(d.hostname ?? ''),
+              os: (d.osType ?? d.os ?? '') as TestDevice['os'],
+              status: (d.status ?? 'offline') as TestDevice['status'],
+            });
+          }
+        }
+        setFleet({ key, status: 'loaded', devices: [...byId.values()], truncated });
       } catch {
-        // Non-fatal: the picker just shows the empty state.
+        if (!cancelled) setFleet(prev => ({ ...prev, key, status: 'error' }));
       }
     })();
     return () => { cancelled = true; };
-  }, [scriptId]);
+  }, [scriptId, osTypesKey]);
 
   const compatibleDevices = useMemo(() => {
     const matching = devices.filter(device => osTypes?.includes(device.os));
@@ -124,17 +182,23 @@ export default function ScriptTestRunner({
   // button stays enabled and would still POST the hidden device id.
   useEffect(() => {
     if (!selectedDeviceId) return;
-    // `devices` empty means the /devices fetch hasn't resolved (or failed), not
-    // that the pin is incompatible — never clear a legitimate selection during
-    // the initial load window, or this would fight the restore effect above.
-    if (devices.length === 0) return;
+    // Only act on a settled, complete view of the fleet that was fetched for the
+    // CURRENT OS targets. While loading, after a failed fetch, or on the render
+    // where the targets just changed, "not in the list" carries no information
+    // about the pin — clearing on that would fight the restore effect above and
+    // would silently discard the operator's pin whenever the network hiccuped.
+    if (fleet.key !== osTypesKey || fleet.status !== 'loaded') return;
+    // Same reasoning for a truncated page: the pin may simply be past the cap.
+    // Leaving a stale pin selected is the lesser harm — it stays visible in the
+    // <select>, whereas deleting it destroys the operator's choice for good.
+    if (fleet.truncated) return;
     if (compatibleDevices.some(d => d.id === selectedDeviceId)) return;
     setSelectedDeviceId('');
     if (scriptId) localStorage.removeItem(storageKey(scriptId));
     onTestDeviceChange?.(null);
     // onTestDeviceChange is deliberately not a dep — callers pass an inline
     // closure, and re-running on its identity would re-check needlessly.
-  }, [devices, compatibleDevices, selectedDeviceId, scriptId]);
+  }, [fleet, osTypesKey, compatibleDevices, selectedDeviceId, scriptId]);
 
   // Cancel any in-flight poll loop on unmount.
   useEffect(() => () => { pollTokenRef.current += 1; }, []);
@@ -350,9 +414,11 @@ export default function ScriptTestRunner({
           className="h-9 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60 sm:flex-none"
         >
           <option value="">
-            {compatibleDevices.length === 0
-              ? t('testRunner.noDevices')
-              : t('testRunner.devicePlaceholder')}
+            {fleet.status === 'error'
+              ? t('testRunner.devicesLoadFailed')
+              : compatibleDevices.length === 0
+                ? t('testRunner.noDevices')
+                : t('testRunner.devicePlaceholder')}
           </option>
           {compatibleDevices.map(device => (
             <option key={device.id} value={device.id}>

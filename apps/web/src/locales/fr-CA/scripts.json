@@ -1246,6 +1246,7 @@
     "title": "Exécution de test",
     "devicePlaceholder": "Sélectionner un appareil de test…",
     "noDevices": "Aucun appareil compatible",
+    "devicesLoadFailed": "Impossible de charger les appareils",
     "deviceStatus": {
       "offline": "hors ligne",
       "maintenance": "en maintenance"

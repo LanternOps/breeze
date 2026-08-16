@@ -1246,6 +1246,7 @@
     "title": "Esecuzione di prova",
     "devicePlaceholder": "Seleziona un dispositivo di prova…",
     "noDevices": "Nessun dispositivo compatibile",
+    "devicesLoadFailed": "Impossibile caricare i dispositivi",
     "deviceStatus": {
       "offline": "non in linea",
       "maintenance": "manutenzione"
