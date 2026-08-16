@@ -112,7 +112,12 @@ async function findAddressMatches(
       })
       .from(portalUsers)
       .innerJoin(organizations, eq(portalUsers.orgId, organizations.id))
-      .where(and(eq(portalUsers.email, email), eq(organizations.partnerId, tech.partnerId)))
+      .where(
+        and(
+          sql`lower(${portalUsers.email}) = ${email}`,
+          eq(organizations.partnerId, tech.partnerId)
+        )
+      )
       .limit(20),
     db
       .select({

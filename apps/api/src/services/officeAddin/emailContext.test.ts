@@ -11,18 +11,23 @@ const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 // queried more than once, e.g. `organizations`).
 type Responses = Record<string, unknown[][]>;
 
+let capturedWhereArgs: { table: string; args: unknown[] }[] = [];
+
 function primeDb(responses: Responses) {
   const counters: Record<string, number> = {};
   const chain = (table: { __table: string }): any => ({
     innerJoin: () => chain(table),
-    where: () => ({
-      limit: () => {
-        const key = table.__table;
-        const idx = counters[key] ?? 0;
-        counters[key] = idx + 1;
-        return Promise.resolve(responses[key]?.[idx] ?? []);
-      },
-    }),
+    where: (...args: unknown[]) => {
+      capturedWhereArgs.push({ table: table.__table, args });
+      return {
+        limit: () => {
+          const key = table.__table;
+          const idx = counters[key] ?? 0;
+          counters[key] = idx + 1;
+          return Promise.resolve(responses[key]?.[idx] ?? []);
+        },
+      };
+    },
   });
   vi.mocked(mockDb.select).mockImplementation(
     ((_cols?: unknown) => ({ from: (table: { __table: string }) => chain(table) })) as never
@@ -118,6 +123,7 @@ describe('buildEmailContext', () => {
     vi.clearAllMocks();
     mocks.getConfig.mockReturnValue({ TICKETS_INBOUND_DOMAIN: null });
     mocks.listOrgTicketsForAddin.mockResolvedValue({ openTickets: [], recentTickets: [] });
+    capturedWhereArgs = [];
   });
 
   it('resolves org via a single portal_users address match; sender is ignored', async () => {
@@ -141,6 +147,35 @@ describe('buildEmailContext', () => {
     ]);
     expect(result.itemGeneration).toBe(7);
     expect(result.orgSummary).toEqual({ name: 'Acme', siteCount: 2, deviceCount: 5, openTicketCount: 1 });
+  });
+
+  it('matches a mixed-case stored portal_users email against the lowercased sender address', async () => {
+    primeDb({
+      organizations: [[{ id: ORG_A, name: 'Acme' }]],
+      // Stored with mixed case (no DB-level normalization on portal_users.email) —
+      // the query must still match via lower(email), same as the contacts path.
+      portalUsers: [[{ id: 'pu-1', name: 'Alice', email: 'Customer@Acme.com', orgId: ORG_A }]],
+      contacts: [[]],
+      sites: [[{ count: 0 }]],
+      devices: [[{ count: 0 }]],
+      tickets: [[{ count: 0 }]],
+    });
+
+    const result = await buildEmailContext(baseInput, makeTech());
+
+    expect(result.org).toEqual({ id: ORG_A, name: 'Acme' });
+    expect(result.contacts).toEqual([
+      { kind: 'portal_user', id: 'pu-1', name: 'Alice', email: 'Customer@Acme.com', orgId: ORG_A, provenance: 'address_match' },
+    ]);
+
+    // The mocked db returns canned rows regardless of the WHERE predicate, so
+    // assert the real (unmocked drizzle-orm) predicate actually normalizes
+    // case on both sides — `lower(portal_users.email) = <lowercased sender>` —
+    // rather than a case-sensitive `eq()` that would silently miss a
+    // mixed-case stored row against a real database.
+    const portalUsersWhere = capturedWhereArgs.find((c) => c.table === 'portalUsers');
+    const serialized = JSON.stringify(portalUsersWhere?.args);
+    expect(serialized).toContain('lower(');
   });
 
   it('portal_users address match wins over a domain mapping', async () => {
