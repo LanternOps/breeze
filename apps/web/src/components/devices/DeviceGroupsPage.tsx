@@ -48,7 +48,6 @@ type GroupType = "static" | "dynamic";
 type DeviceGroup = {
   id: string;
   name: string;
-  description?: string;
   type: GroupType;
   deviceCount?: number;
   deviceIds?: string[];
@@ -89,9 +88,7 @@ type ModalMode =
 
 type GroupFormState = {
   name: string;
-  description: string;
   type: GroupType;
-  policyId: string;
   deviceIds: string[];
   filterConditions: FilterConditionGroup;
 };
@@ -200,9 +197,7 @@ export default function DeviceGroupsPage() {
 
   const [groupForm, setGroupForm] = useState<GroupFormState>({
     name: "",
-    description: "",
     type: "static",
-    policyId: "",
     deviceIds: [],
     filterConditions: EMPTY_FILTER,
   });
@@ -380,9 +375,7 @@ export default function DeviceGroupsPage() {
 
       setGroupForm({
         name: group.name ?? "",
-        description: group.description ?? "",
         type: group.type ?? "static",
-        policyId: group.policyId ?? "",
         deviceIds: group.deviceIds
           ? [...group.deviceIds]
           : (group.devices?.map((device) => device.id) ?? []),
@@ -391,9 +384,7 @@ export default function DeviceGroupsPage() {
     } else {
       setGroupForm({
         name: "",
-        description: "",
         type: "static",
-        policyId: "",
         deviceIds: [],
         filterConditions: EMPTY_FILTER,
       });
@@ -459,10 +450,8 @@ export default function DeviceGroupsPage() {
     // legacy column leaves whatever a pre-FilterBuilder group already had.
     const payload = {
       name: nextGroup.name,
-      description: nextGroup.description ?? "",
       type: nextGroup.type,
       deviceIds: nextGroup.type === "static" ? (nextGroup.deviceIds ?? []) : [],
-      policyId: nextGroup.policyId || null,
     };
 
     const response = await fetchWithAuth(`/device-groups/${nextGroup.id}`, {
@@ -511,23 +500,21 @@ export default function DeviceGroupsPage() {
 
       const payload: Record<string, unknown> = {
         name: trimmedName,
-        description: groupForm.description.trim(),
         type: groupForm.type,
-        policyId: groupForm.policyId || null,
       };
 
       if (isDynamic) {
         payload.filterConditions = groupForm.filterConditions;
-      } else {
+      } else if (isEdit) {
         // A static group carries no filter, and the two verbs want that said
-        // differently (#3159). CREATE omits the key — the documented create
-        // payload, and what CreateGroupModal already sends. EDIT must send an
-        // explicit `null`, because the update route reads `undefined` as "leave
-        // the filter alone"; omitting it would strand a stale filter on a group
-        // converted from dynamic to static.
-        if (isEdit) {
-          payload.filterConditions = null;
-        }
+        // differently (#3159). EDIT must send an explicit `null`, because the
+        // update route reads `undefined` as "leave the filter alone"; omitting
+        // it would strand a stale filter on a group converted from dynamic to
+        // static. Membership is NOT sent on edit: the PATCH route ignores
+        // deviceIds, so sending it would silently no-op (#3554 follow-up) — the
+        // static device chooser is create-only for the same reason.
+        payload.filterConditions = null;
+      } else {
         // Devices are only meaningful for a static group. The create route
         // rejects a non-empty list on a dynamic one rather than ignoring it.
         payload.deviceIds = groupForm.deviceIds;
@@ -536,7 +523,9 @@ export default function DeviceGroupsPage() {
       const url = isEdit
         ? `/device-groups/${selectedGroup!.id}`
         : "/device-groups";
-      const method = isEdit ? "PUT" : "POST";
+      // The update route is PATCH /:id — the frontend historically sent PUT,
+      // which has no handler and 404s on every edit (#3554). Create stays POST.
+      const method = isEdit ? "PATCH" : "POST";
 
       const response = await fetchWithAuth(url, {
         method,
@@ -898,11 +887,6 @@ export default function DeviceGroupsPage() {
                               : t("deviceGroupsPage.static")}
                           </span>
                         </div>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {group.description?.trim().length
-                            ? group.description
-                            : t("deviceGroupsPage.noDescriptionProvided")}
-                        </p>
                         <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
                           <span className="rounded-full border bg-muted px-2 py-0.5">
                             {deviceCount} {t("deviceGroupsPage.device")}
@@ -1061,7 +1045,7 @@ export default function DeviceGroupsPage() {
             </div>
 
             <form className="mt-6 space-y-6" onSubmit={handleSubmitGroup}>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div>
                 <div>
                   <label className="text-sm font-medium">
                     {t("deviceGroupsPage.groupName")}
@@ -1079,49 +1063,6 @@ export default function DeviceGroupsPage() {
                     placeholder={t("deviceGroupsPage.eGProductionLinux")}
                   />
                 </div>
-                <div>
-                  <label className="text-sm font-medium">
-                    {t("deviceGroupsPage.policyAssignment")}
-                  </label>
-                  <select
-                    value={groupForm.policyId}
-                    onChange={(event) =>
-                      setGroupForm((prev) => ({
-                        ...prev,
-                        policyId: event.target.value,
-                      }))
-                    }
-                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  >
-                    <option value="">
-                      {t("deviceGroupsPage.noPolicyAssigned")}
-                    </option>
-                    {policies.map((policy) => (
-                      <option key={policy.id} value={policy.id}>
-                        {policy.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-sm font-medium">
-                  {t("deviceGroupsPage.description")}
-                </label>
-                <textarea
-                  value={groupForm.description}
-                  onChange={(event) =>
-                    setGroupForm((prev) => ({
-                      ...prev,
-                      description: event.target.value,
-                    }))
-                  }
-                  className="mt-2 u-min-h-px-96 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  placeholder={t(
-                    "deviceGroupsPage.optionalDescriptionToHelpYourTeam",
-                  )}
-                />
               </div>
 
               <div>
@@ -1198,7 +1139,10 @@ export default function DeviceGroupsPage() {
                     onRefresh={formPreviewRefresh}
                   />
                 </div>
-              ) : (
+              ) : modalMode === "create" ? (
+                // Static membership is editable on CREATE only: the update route
+                // ignores deviceIds (#3554), so offering the chooser on edit
+                // would let a "Save" silently drop membership changes.
                 <div className="rounded-md border bg-muted/20 p-4">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -1280,7 +1224,7 @@ export default function DeviceGroupsPage() {
                     )}
                   </div>
                 </div>
-              )}
+              ) : null}
 
               {formError && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
