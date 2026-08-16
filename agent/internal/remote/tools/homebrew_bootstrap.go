@@ -39,6 +39,21 @@ const (
 	homebrewInstallerPathRoot = "/Homebrew/install/"
 )
 
+// bootstrapTempBaseDir is "/tmp" ON PURPOSE — do not "fix" this back to
+// os.MkdirTemp("") / the default TMPDIR.
+//
+// The agent runs as a root LaunchDaemon, whose $TMPDIR is a per-user confined
+// directory (/var/folders/<xx>/<yyy>/T/) that is 0700 and owned by root. The
+// verified installer is executed as the CONSOLE user via sudo, and that user
+// cannot traverse root's confined TMPDIR — bash would fail with "permission
+// denied" on the parent no matter how permissive the leaf file is. /tmp is
+// world-traversable and sticky, and MkdirTemp still creates a fresh
+// root-owned directory with O_EXCL and an unguessable name, so every
+// hardening property of the original placement survives.
+//
+// A var, not a const, only so tests can point it at t.TempDir().
+var bootstrapTempBaseDir = "/tmp"
+
 // bootstrapDeps isolates every OS- and network-facing thing
 // BootstrapHomebrew needs, so the whole command is unit-testable without
 // touching the network, sudo, or a real console session.
@@ -134,7 +149,7 @@ func bootstrapHomebrew(payload map[string]any, deps bootstrapDeps) (result Comma
 
 	// Only now — after the bytes are proven to be the pinned installer — does
 	// anything touch the filesystem or a shell.
-	tempDir, err := os.MkdirTemp("", "breeze-brew-bootstrap-*")
+	tempDir, err := os.MkdirTemp(bootstrapTempBaseDir, "breeze-brew-bootstrap-*")
 	if err != nil {
 		return fail(fmt.Errorf("failed to create temp dir: %w", err))
 	}

@@ -190,7 +190,28 @@ func TestBootstrapHomebrewRequiresConsoleUser(t *testing.T) {
 	}
 }
 
+// useTempBaseDir points the installer scratch dir at the test's own temp dir
+// so unit tests never litter the real /tmp. The production value is asserted
+// separately by TestBootstrapTempBaseDirIsWorldTraversable.
+func useTempBaseDir(t *testing.T) {
+	t.Helper()
+	prev := bootstrapTempBaseDir
+	bootstrapTempBaseDir = t.TempDir()
+	t.Cleanup(func() { bootstrapTempBaseDir = prev })
+}
+
+// The agent is a root LaunchDaemon whose $TMPDIR is a 0700 root-owned
+// /var/folders/... directory the console user cannot traverse — the installer
+// is executed as that user via sudo, so the scratch dir MUST live somewhere
+// world-traversable or bash fails on the parent regardless of the leaf's mode.
+func TestBootstrapTempBaseDirIsWorldTraversable(t *testing.T) {
+	if bootstrapTempBaseDir != "/tmp" {
+		t.Fatalf("bootstrapTempBaseDir = %q, want /tmp (see the comment on the var)", bootstrapTempBaseDir)
+	}
+}
+
 func TestBootstrapHomebrewSuccess(t *testing.T) {
+	useTempBaseDir(t)
 	deps, log := bootstrapTestDeps()
 
 	res := bootstrapHomebrew(map[string]any{
@@ -221,12 +242,16 @@ func TestBootstrapHomebrewSuccess(t *testing.T) {
 	if _, err := os.Stat(log.ranPath); err == nil {
 		t.Fatalf("temp installer %q was not cleaned up", log.ranPath)
 	}
+	if !strings.HasPrefix(log.ranPath, bootstrapTempBaseDir+string(os.PathSeparator)) {
+		t.Fatalf("installer ran from %q, want a scratch dir under %q", log.ranPath, bootstrapTempBaseDir)
+	}
 	if res.StartedAt == "" {
 		t.Fatal("StartedAt must be stamped")
 	}
 }
 
 func TestBootstrapHomebrewInstallerFailureIsReported(t *testing.T) {
+	useTempBaseDir(t)
 	deps, _ := bootstrapTestDeps()
 	deps.runScript = func(string, *user.User) (string, int, error) {
 		return "boom", 1, fmt.Errorf("exit status 1")
@@ -249,6 +274,7 @@ func TestBootstrapHomebrewInstallerFailureIsReported(t *testing.T) {
 }
 
 func TestBootstrapHomebrewFailsWhenBrewStillMissingAfterInstall(t *testing.T) {
+	useTempBaseDir(t)
 	deps, _ := bootstrapTestDeps()
 	deps.brewPath = func() (string, error) { return "", fmt.Errorf("brew binary not found") }
 
@@ -286,6 +312,7 @@ func TestBootstrapHomebrewIsDarwinOnly(t *testing.T) {
 }
 
 func TestBootstrapHomebrewTruncatesInstallerOutput(t *testing.T) {
+	useTempBaseDir(t)
 	deps, _ := bootstrapTestDeps()
 	deps.runScript = func(string, *user.User) (string, int, error) {
 		return strings.Repeat("x", maxInstallerOutputBytes+4096), 0, nil

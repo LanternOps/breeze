@@ -93,7 +93,9 @@ describe('DeviceDetails Homebrew bootstrap action', () => {
 
     expect(
       screen.getByText(
-        'Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session.',
+        'Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of ' +
+          'the official installer. Requires an admin console session with an active or passwordless ' +
+          'sudo credential; otherwise the install fails and the error is reported back.',
       ),
     ).toBeTruthy();
     // Nothing dispatched until the user confirms.

@@ -194,7 +194,7 @@
       },
       "installHomebrew": {
         "title": "Installer Homebrew",
-        "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur.",
+        "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur et une autorisation sudo active ou sans mot de passe; sinon, l’installation échoue et l’erreur est rapportée.",
         "confirm": "Installer Homebrew"
       }
     },

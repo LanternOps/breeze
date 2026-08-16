@@ -194,7 +194,7 @@
       },
       "installHomebrew": {
         "title": "Instalar o Homebrew",
-        "message": "Instala o Homebrew como o usuário conectado no momento, usando uma cópia fixada e verificada por checksum do instalador oficial. Requer uma sessão de console com privilégios de administrador.",
+        "message": "Instala o Homebrew como o usuário conectado no momento, usando uma cópia fixada e verificada por checksum do instalador oficial. Requer uma sessão de console com privilégios de administrador e uma credencial sudo ativa ou sem senha; caso contrário, a instalação falha e o erro é informado de volta.",
         "confirm": "Instalar o Homebrew"
       }
     },
