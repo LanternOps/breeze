@@ -54,7 +54,10 @@ export const installMethodBodySchema = z.object({
 const installMethodPatchSchema = z.object({
   packageId: z.string().min(1).max(256).optional(),
   enabled: z.boolean().optional(),
-});
+}).refine(
+  (data) => data.packageId !== undefined || data.enabled !== undefined,
+  { message: 'At least one of packageId or enabled must be provided' },
+);
 
 export const softwareInstallMethodRoutes = new Hono();
 softwareInstallMethodRoutes.use('*', authMiddleware);

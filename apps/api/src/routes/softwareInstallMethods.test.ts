@@ -280,6 +280,20 @@ describe('softwareInstallMethodRoutes', () => {
       expect(res.status).toBe(400);
       expect(db.update).not.toHaveBeenCalled();
     });
+
+    it('rejects an empty PATCH body as a no-op', async () => {
+      // No db.select mock needed: zValidator's refine rejects the empty body
+      // before the handler (and thus loadOwnedCatalogItem) ever runs.
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({}),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
   });
 
   describe('DELETE /software/catalog/:id/install-methods/:methodId', () => {
