@@ -39,6 +39,19 @@
  * the calls (5000 req/h) would make a per-vendor split affordable and let the
  * prune run again — tracked as a follow-up.
  *
+ * Truncation has a second, quieter consequence: a truncated response's version
+ * list is a SUBSET of reality, so the `latest_version` computed from it can be
+ * lower than the value already stored. Upserts are therefore split in two. Rows
+ * from complete buckets overwrite `latest_version` outright; rows from a
+ * truncated bucket update the identity columns and the generation marker but
+ * PRESERVE the stored `latest_version`, so the column can never walk backwards.
+ * A package seen for the first time in a truncated response still inserts with
+ * the partial value — there is no better prior — and self-corrects on the next
+ * complete run. The tradeoff: for as long as a bucket keeps truncating, genuine
+ * new releases of packages in that bucket are not picked up either. Version
+ * intent at deploy time is `latest` (resolved on the device by winget itself),
+ * so this column is display metadata, not the thing that decides what installs.
+ *
  * Structure copied from jobs/cveEnrichmentWorker.ts.
  */
 import { Job, Queue, Worker } from 'bullmq';
@@ -287,7 +300,7 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   } catch (err) {
     if (err instanceof WingetRateLimitError) {
       console.warn('[WingetIndexSync] rate limited; skipping run', { error: err.message });
-      return { ...summary, skipped: 'rate_limited' };
+      return { ...summary, complete: false, skipped: 'rate_limited' };
     }
     throw err;
   }
@@ -312,6 +325,9 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   if (buckets.length === 0) throw new WingetFetchError('GitHub manifests tree listed no buckets');
 
   const merged = new Map<string, ParsedWingetPackage>();
+  // Packages whose version list came from a truncated response, and is
+  // therefore possibly missing the newest versions. See the upsert below.
+  const partialPackageIds = new Set<string>();
 
   for (const bucket of buckets) {
     await sleep(REQUEST_SPACING_MS);
@@ -324,7 +340,7 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
           bucket,
           error: err.message,
         });
-        return { ...summary, skipped: 'rate_limited' };
+        return { ...summary, complete: false, skipped: 'rate_limited' };
       }
       throw err;
     }
@@ -346,6 +362,7 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     }
 
     for (const [pkgId, parsed] of parseWingetTreePaths(tree.tree ?? [])) {
+      if (tree.truncated) partialPackageIds.add(pkgId);
       const existing = merged.get(pkgId);
       if (existing) {
         for (const v of parsed.versions) {
@@ -364,32 +381,55 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   }
 
   const now = new Date();
-  const rows = Array.from(merged.entries()).map(([packageId, parsed]) => ({
+  const toRow = ([packageId, parsed]: [string, ParsedWingetPackage]) => ({
     packageId,
     vendorSegment: parsed.vendor,
     nameSegment: parsed.name,
     latestVersion: pickLatestVersion(parsed.versions)?.slice(0, 128) ?? null,
     syncedCommitSha: treeSha,
     updatedAt: now,
-  }));
+  });
 
-  for (let i = 0; i < rows.length; i += UPSERT_CHUNK_SIZE) {
-    const chunk = rows.slice(i, i + UPSERT_CHUNK_SIZE);
-    await db
-      .insert(wingetPackageIndex)
-      .values(chunk)
-      .onConflictDoUpdate({
-        target: wingetPackageIndex.packageId,
-        set: {
-          vendorSegment: sql`excluded.vendor_segment`,
-          nameSegment: sql`excluded.name_segment`,
-          latestVersion: sql`excluded.latest_version`,
-          syncedCommitSha: sql`excluded.synced_commit_sha`,
-          updatedAt: sql`excluded.updated_at`,
-        },
-      });
-    summary.upserted += chunk.length;
-  }
+  const entries = Array.from(merged.entries());
+  const completeRows = entries.filter(([id]) => !partialPackageIds.has(id)).map(toRow);
+  const partialRows = entries.filter(([id]) => partialPackageIds.has(id)).map(toRow);
+
+  const upsertRows = async (
+    rows: typeof completeRows,
+    latestVersionSet: ReturnType<typeof sql>,
+  ): Promise<void> => {
+    for (let i = 0; i < rows.length; i += UPSERT_CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + UPSERT_CHUNK_SIZE);
+      await db
+        .insert(wingetPackageIndex)
+        .values(chunk)
+        .onConflictDoUpdate({
+          target: wingetPackageIndex.packageId,
+          set: {
+            vendorSegment: sql`excluded.vendor_segment`,
+            nameSegment: sql`excluded.name_segment`,
+            latestVersion: latestVersionSet,
+            syncedCommitSha: sql`excluded.synced_commit_sha`,
+            updatedAt: sql`excluded.updated_at`,
+          },
+        });
+      summary.upserted += chunk.length;
+    }
+  };
+
+  // Rows from a complete bucket response: the version list is authoritative,
+  // so `latest_version` is overwritten outright.
+  await upsertRows(completeRows, sql`excluded.latest_version`);
+
+  // Rows from a TRUNCATED bucket response: the version list is a subset of
+  // reality, so its computed max can be LOWER than what we already stored —
+  // overwriting would silently walk `latest_version` backwards (a truncated
+  // `m` that only sees old Microsoft.Edge version directories would downgrade
+  // a previously-correct value). For these we update the identity columns and
+  // the generation marker but PRESERVE the existing `latest_version`. A row
+  // that does not exist yet still inserts with the partial value, since no
+  // better prior exists; it self-corrects on the next complete run.
+  await upsertRows(partialRows, sql`${wingetPackageIndex.latestVersion}`);
 
   // Prune ONLY on a provably complete walk. Every bucket fetch succeeded (any
   // failure returned or threw above) AND no response was truncated, so a row

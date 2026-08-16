@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../db', () => ({
   db: {
@@ -8,16 +9,14 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../db/schema', () => ({
-  wingetPackageIndex: {
-    id: 'id',
-    packageId: 'package_id',
-    vendorSegment: 'vendor_segment',
-    nameSegment: 'name_segment',
-    latestVersion: 'latest_version',
-    syncedCommitSha: 'synced_commit_sha',
-    updatedAt: 'updated_at',
-  },
+// Use the REAL Drizzle table (not a stub object) so the ON CONFLICT `set`
+// clauses below compile to actual SQL we can assert on — that is the only way
+// to prove the truncated-bucket path preserves `latest_version` rather than
+// overwriting it from `excluded`.
+vi.mock('../db/schema', async () => ({
+  wingetPackageIndex: (
+    (await vi.importActual('../db/schema/wingetIndex')) as typeof import('../db/schema/wingetIndex')
+  ).wingetPackageIndex,
 }));
 
 vi.mock('../services/redis', () => ({
@@ -153,17 +152,37 @@ function treeResponse(body: unknown, init: { status?: number; headers?: Record<s
   } as unknown as Response;
 }
 
+/** Renders a Drizzle SQL fragment to the string Postgres would receive. */
+const dialect = new PgDialect();
+const renderSql = (fragment: unknown): string => dialect.sqlToQuery(fragment as never).sql;
+
+interface UpsertCall {
+  rows: Array<Record<string, unknown>>;
+  latestVersionSet: string;
+}
+
 describe('runWingetIndexSync', () => {
   let insertMock: ReturnType<typeof vi.fn>;
   let deleteMock: ReturnType<typeof vi.fn>;
-  let onConflictDoUpdate: ReturnType<typeof vi.fn>;
+  let upserts: UpsertCall[];
+
+  /** All rows written this run, across the complete/partial upsert split. */
+  const allRows = () => upserts.flatMap((u) => u.rows);
+  const upsertFor = (packageId: string) =>
+    upserts.find((u) => u.rows.some((r) => r.packageId === packageId));
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
 
-    onConflictDoUpdate = vi.fn(async () => undefined);
-    insertMock = vi.fn(() => ({ values: vi.fn(() => ({ onConflictDoUpdate })) }));
+    upserts = [];
+    insertMock = vi.fn(() => ({
+      values: vi.fn((rows: Array<Record<string, unknown>>) => ({
+        onConflictDoUpdate: vi.fn(async (cfg: { set: Record<string, unknown> }) => {
+          upserts.push({ rows, latestVersionSet: renderSql(cfg.set.latestVersion) });
+        }),
+      })),
+    }));
     deleteMock = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'stale-1' }]) })) }));
     (db as unknown as { insert: unknown }).insert = insertMock;
     (db as unknown as { delete: unknown }).delete = deleteMock;
@@ -231,8 +250,7 @@ describe('runWingetIndexSync', () => {
     // 1 bucket listing + 2 bucket subtrees.
     expect(fetchMock).toHaveBeenCalledTimes(3);
 
-    const rows = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
-    expect(rows).toEqual(
+    expect(allRows()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           packageId: 'Google.Chrome',
@@ -244,6 +262,8 @@ describe('runWingetIndexSync', () => {
         expect.objectContaining({ packageId: 'Vendor.App', latestVersion: '1.2' }),
       ]),
     );
+    // Nothing was truncated, so every row overwrites latest_version outright.
+    expect(upserts.every((u) => u.latestVersionSet === 'excluded.latest_version')).toBe(true);
     expect(deleteMock).toHaveBeenCalled();
   });
 
@@ -258,6 +278,8 @@ describe('runWingetIndexSync', () => {
     const summary = await runWithTimers(runWingetIndexSync());
 
     expect(summary.skipped).toBe('rate_limited');
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
     expect(deleteMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
   });
@@ -284,6 +306,8 @@ describe('runWingetIndexSync', () => {
     const summary = await runWithTimers(runWingetIndexSync());
 
     expect(summary.skipped).toBe('rate_limited');
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
     expect(insertMock).not.toHaveBeenCalled();
     expect(deleteMock).not.toHaveBeenCalled();
   });
@@ -352,11 +376,51 @@ describe('runWingetIndexSync', () => {
     // the index fresh for everything it *did* see.
     expect(summary.upserted).toBe(2);
     expect(insertMock).toHaveBeenCalled();
-    const rows = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
-    expect(rows.map((r: { packageId: string }) => r.packageId).sort()).toEqual([
-      'Google.Chrome',
-      'Microsoft.Edge',
-    ]);
+    expect(allRows().map((r) => r.packageId).sort()).toEqual(['Google.Chrome', 'Microsoft.Edge']);
+
+    // The two groups are written with DIFFERENT conflict clauses: the package
+    // from the complete `g` bucket overwrites latest_version, the one from the
+    // truncated `m` bucket keeps whatever is already stored.
+    expect(upsertFor('Google.Chrome')!.latestVersionSet).toBe('excluded.latest_version');
+    expect(upsertFor('Microsoft.Edge')!.latestVersionSet).toBe(
+      '"winget_package_index"."latest_version"',
+    );
+  });
+
+  it('never downgrades latest_version for a package seen only in a truncated bucket', async () => {
+    // The scenario the guard exists for: the stored row is at 130.0, and a
+    // truncated response happens to include only the older 120.0 version dir.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('manifests%2Fm')) {
+          return treeResponse({
+            sha: 'm-sha',
+            truncated: true,
+            tree: [{ path: 'Microsoft/Edge/120.0/Microsoft.Edge.yaml', type: 'blob' }],
+          });
+        }
+        return treeResponse({ sha: 'new-tree-sha', tree: [{ path: 'm', type: 'tree' }] });
+      }),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+    const upsert = upsertFor('Microsoft.Edge')!;
+
+    // The UPDATE branch re-reads the stored column instead of taking the
+    // partial value, so an existing 130.0 survives the run untouched.
+    expect(upsert.latestVersionSet).toBe('"winget_package_index"."latest_version"');
+    expect(upsert.latestVersionSet).not.toContain('excluded');
+
+    // The generation marker and identity columns DO still advance...
+    expect(upsert.rows[0]!.syncedCommitSha).toBe('new-tree-sha');
+    expect(upsert.rows[0]!.vendorSegment).toBe('Microsoft');
+    expect(upsert.rows[0]!.nameSegment).toBe('Edge');
+
+    // ...and the partial value is still carried for the INSERT branch, which
+    // is correct for a package that has no stored row yet.
+    expect(upsert.rows[0]!.latestVersion).toBe('120.0');
+    expect(summary.pruned).toBe(false);
   });
 
   it('suppresses the prune when the bucket listing itself is truncated', async () => {
