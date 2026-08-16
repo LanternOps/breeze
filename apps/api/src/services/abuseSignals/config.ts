@@ -119,6 +119,24 @@ export const SIGNAL_DEFAULTS = {
   'billing.card_testing.base_score': 50,
   'billing.card_testing.per_extra_method': 15,
   'billing.card_testing.per_failed_attempt': 5,
+  // Cross-signal corroboration (corroboration.ts). This is the "second signal"
+  // that the capped scores above (session_intensity, cardholder_name_mismatch,
+  // provider_default_hostname generic) have always referred to — it did not
+  // exist until 2026-08-16, which is why a partner could fire several capped
+  // watch signals and never notify anyone.
+  //
+  // min_axes counts DISTINCT EVIDENCE AXES, not signals: two detectors that
+  // restate one observation (the two IP-scatter signals) share an axis and
+  // cannot corroborate each other. 2 is the meaningful floor — one axis is a
+  // single detector, which is what the caps already decided is not enough.
+  //
+  // per_extra_axis is deliberately large enough that two watch-tier axes clear
+  // severity.alert_score at defaults (55 + 15 = 70), because the whole point is
+  // to make a corroborated pair reach an operator in real time. Raising
+  // severity.alert_score or lowering this demotes the result to watch rather
+  // than producing an alert its score contradicts.
+  'fraud.corroborated_watch.min_axes': 2,
+  'fraud.corroborated_watch.per_extra_axis': 15,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;
