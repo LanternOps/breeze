@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -610,14 +612,33 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 
 	case fileType == "dmg" && runtime.GOOS == "darwin":
 		// Mount, find .app or .pkg, install, unmount
-		exitCode, output, err := installDMG(ctx, localPath)
-		return exitCode, output, false, err
+		return installDMG(ctx, localPath)
 
 	default:
 		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
 	}
 
 	return runInstallerCommand(ctx, cmd, fileType)
+}
+
+// lockedBuffer collects an installer's merged stdout+stderr. CombinedOutput's
+// plain bytes.Buffer is not safe here: with WaitDelay, Wait can return while the
+// copy goroutine of a descendant that still holds the pipe is writing.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 // runInstallerCommand runs one installer command. Its third return says the
@@ -632,7 +653,25 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd, fileType string) (i
 	// 30-minute timeout. Mirrors scripts/runner.go and executor/executor.go.
 	cmd.WaitDelay = installerWaitDelay
 
-	output, err := cmd.CombinedOutput()
+	tree := newInstallerProcessTree()
+	defer tree.release()
+	tree.prepare(cmd)
+
+	// Start/Wait rather than CombinedOutput: the process must be adopted by the
+	// tree the moment it exists. One writer for both streams so os/exec collapses
+	// them onto a single pipe exactly as CombinedOutput does; the lock is because
+	// WaitDelay lets Wait return while an abandoned descendant's copy goroutine
+	// is still writing.
+	var buf lockedBuffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return 1, "", false, err
+	}
+	tree.adopt(cmd)
+	err := cmd.Wait()
+	output := buf.Bytes()
 
 	exitCode := 0
 	descendantsPending := false
@@ -659,6 +698,10 @@ func runInstallerCommand(ctx context.Context, cmd *exec.Cmd, fileType string) (i
 	// of the window is reported as a 30-minute hang.
 	if ctx.Err() == context.DeadlineExceeded &&
 		(cmd.ProcessState == nil || !cmd.ProcessState.Exited() || !installerExitIndicatesSuccess(fileType, exitCode)) {
+		// Only here: the deadline fired on an installer that never finished, so
+		// its descendants are part of a hang, not of a legitimate install still
+		// landing. Every other path leaves the tree alone.
+		tree.kill(cmd)
 		return -1, procoutput.BytesToUTF8(output), false,
 			fmt.Errorf("installer timed out after %s and was terminated", installTimeout)
 	}
@@ -715,35 +758,39 @@ func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
 	return parts
 }
 
-func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
+// dmgCommandContext builds installDMG's child processes. A var (not a direct
+// exec.CommandContext call) solely so tests can drive the DMG path without a
+// real disk image; production behavior is unchanged.
+var dmgCommandContext = exec.CommandContext
+
+func installDMG(ctx context.Context, dmgPath string) (int, string, bool, error) {
 	// Mount
 	mountPoint := filepath.Join(os.TempDir(), "breeze-dmg-mount")
 	os.MkdirAll(mountPoint, 0700)
 
-	mountCmd := exec.CommandContext(ctx, "hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet")
-	if out, err := mountCmd.CombinedOutput(); err != nil {
-		return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to mount DMG: %w", err)
+	// hdiutil and cp go through runInstallerCommand for its WaitDelay and its
+	// timeout labeling — hdiutil's helper daemon can hold the output pipes, and a
+	// wedged mount or a multi-gigabyte copy that hits the deadline must be
+	// reported as a timeout, not as the kill's exit code. Neither is an
+	// *installer*, so both are run with an empty fileType: only 0 means success,
+	// the Windows reboot-pending codes (3010/1641) have no meaning for them.
+	// Their descendantsPending is likewise dropped rather than propagated —
+	// nothing hdiutil or cp leaves behind is an install still landing on disk.
+	mountCmd := dmgCommandContext(ctx, "hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet")
+	if _, out, _, err := runInstallerCommand(ctx, mountCmd, ""); err != nil {
+		return 1, out, false, fmt.Errorf("failed to mount DMG: %w", err)
 	}
-	defer exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run()
+	defer dmgCommandContext(context.Background(), "hdiutil", "detach", mountPoint, "-quiet").Run()
 
 	// Look for .pkg first, then .app
 	entries, _ := os.ReadDir(mountPoint)
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".pkg") {
 			pkgPath := filepath.Join(mountPoint, entry.Name())
-			cmd := exec.CommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/")
-			out, err := cmd.CombinedOutput()
-			exitCode := 0
-			if err != nil {
-				if exitErr, ok := err.(*exec.ExitError); ok {
-					exitCode = exitErr.ExitCode()
-				}
-				if exitCode != 0 {
-					return exitCode, procoutput.BytesToUTF8(out), fmt.Errorf("pkg installer exited with code %d", exitCode)
-				}
-				return 1, procoutput.BytesToUTF8(out), err
-			}
-			return 0, procoutput.BytesToUTF8(out), nil
+			// A .pkg postinstall script routinely spawns a lingering child, so
+			// this is the DMG case that needs both the WaitDelay escape and the
+			// descendantsPending signal that makes detection settle.
+			return runInstallerCommand(ctx, dmgCommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/"), "pkg")
 		}
 	}
 
@@ -752,16 +799,15 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 		if strings.HasSuffix(entry.Name(), ".app") {
 			src := filepath.Join(mountPoint, entry.Name())
 			dst := filepath.Join("/Applications", entry.Name())
-			cmd := exec.CommandContext(ctx, "cp", "-R", src, dst)
-			out, err := cmd.CombinedOutput()
+			exitCode, out, _, err := runInstallerCommand(ctx, dmgCommandContext(ctx, "cp", "-R", src, dst), "")
 			if err != nil {
-				return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to copy app: %w", err)
+				return exitCode, out, false, fmt.Errorf("failed to copy app: %w", err)
 			}
-			return 0, procoutput.BytesToUTF8(out), nil
+			return exitCode, out, false, nil
 		}
 	}
 
-	return 1, "", fmt.Errorf("no .pkg or .app found in DMG")
+	return 1, "", false, fmt.Errorf("no .pkg or .app found in DMG")
 }
 
 // splitCommandLine splits a command-line string into arguments, respecting double-quoted strings.
