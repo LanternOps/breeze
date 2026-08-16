@@ -30,6 +30,7 @@ vi.mock('../db', () => ({
     insert: vi.fn(() => chainMock([])),
     update: vi.fn(() => chainMock([])),
     delete: vi.fn(() => chainMock(undefined)),
+    transaction: vi.fn(async (fn: any) => fn({ insert: vi.fn(() => chainMock([])) })),
   }
 }));
 
@@ -331,6 +332,110 @@ describe('softwareInstallMethodRoutes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+    });
+  });
+
+  describe('POST /software/catalog/import-package', () => {
+    const importedCatalogRow = () => ({
+      id: CATALOG_ID,
+      orgId: 'org-123',
+      name: 'New App',
+      vendor: null,
+      description: null,
+      category: 'application',
+      iconUrl: null,
+      websiteUrl: null,
+      integrationProvider: null,
+    });
+
+    const validMethodsPayload = [
+      { platform: 'windows', kind: 'winget', packageId: 'Vendor.App' },
+      { platform: 'macos', kind: 'homebrew_cask', packageId: 'vendor-app' },
+    ];
+
+    it('creates a catalog row + N method rows in one db.transaction', async () => {
+      const catalogRow = importedCatalogRow();
+      const methodRows = [
+        installedMethod({ id: 'm-1', platform: 'windows', kind: 'winget', packageId: 'Vendor.App' }),
+        installedMethod({ id: 'm-2', platform: 'macos', kind: 'homebrew_cask', packageId: 'vendor-app' }),
+      ];
+      const txInsert = vi.fn()
+        .mockReturnValueOnce(chainMock([catalogRow]))
+        .mockReturnValueOnce(chainMock(methodRows));
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({ insert: txInsert }));
+
+      const res = await app.request('/software/catalog/import-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'New App', methods: validMethodsPayload }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data.catalogItem).toMatchObject({ id: CATALOG_ID, name: 'New App' });
+      expect(body.data.methods).toHaveLength(2);
+      expect(db.transaction).toHaveBeenCalled();
+      expect(txInsert).toHaveBeenCalledTimes(2);
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'software.catalog.import', resourceId: CATALOG_ID }),
+      );
+    });
+
+    it('rejects duplicate platform+kind pairs in the body', async () => {
+      const res = await app.request('/software/catalog/import-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'New App',
+          methods: [
+            { platform: 'windows', kind: 'winget', packageId: 'Vendor.App' },
+            { platform: 'windows', kind: 'winget', packageId: 'Vendor.App2' },
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an empty methods array', async () => {
+      const res = await app.request('/software/catalog/import-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'New App', methods: [] }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('reuses validatePackageIdForKind for method validation', async () => {
+      const res = await app.request('/software/catalog/import-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'New App',
+          methods: [{ platform: 'windows', kind: 'winget', packageId: 'bad id;rm' }],
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects kind/platform mismatch within a method entry', async () => {
+      const res = await app.request('/software/catalog/import-package', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'New App',
+          methods: [{ platform: 'macos', kind: 'winget', packageId: 'Vendor.App' }],
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 });

@@ -178,6 +178,93 @@ softwareInstallMethodRoutes.patch(
   },
 );
 
+const importPackageSchema = z.object({
+  name: z.string().min(1).max(200),
+  vendor: z.string().max(200).optional(),
+  category: z.string().max(100).optional(),
+  description: z.string().max(2000).optional(),
+  homepageUrl: z.string().url().optional(),
+  iconUrl: z.string().url().optional(),
+  orgId: z.string().guid().optional(),
+  methods: z.array(
+    z.object({
+      platform: z.enum(['windows', 'macos']),
+      kind: z.enum(['winget', 'homebrew_cask', 'homebrew_formula']),
+      packageId: z.string().min(1).max(256),
+    })
+  ).min(1).max(4),
+}).superRefine((data, ctx) => {
+  const seen = new Set<string>();
+  data.methods.forEach((m, i) => {
+    const key = `${m.platform}:${m.kind}`;
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i], message: 'Duplicate platform+kind' });
+    }
+    seen.add(key);
+    const platformOk = (m.kind === 'winget') === (m.platform === 'windows');
+    if (!platformOk) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i, 'kind'], message: 'kind does not match platform' });
+    const err = validatePackageIdForKind(m.kind, m.packageId);
+    if (err) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['methods', i, 'packageId'], message: err });
+  });
+});
+
+// One-shot import: creates a catalog row and its install methods together, so
+// the web import modal (Task 9) never leaves a catalog row with zero install
+// methods (or vice versa) if the request is interrupted partway through.
+softwareInstallMethodRoutes.post(
+  '/catalog/import-package',
+  requireScope('organization', 'partner', 'system'),
+  requireInstallMethodWrite,
+  requireMfa(),
+  zValidator('json', importPackageSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthScopeContext;
+    const payload = c.req.valid('json');
+    // payload.orgId (if present) is the intended owner; otherwise fall back to
+    // the ?orgId= query param / auth default, same resolution Task 2 uses.
+    // Either way it's passed through resolveScopedOrgId so a caller can't
+    // smuggle in an org they don't have access to via the body.
+    const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+
+    const { catalogItem, methods } = await db.transaction(async (tx) => {
+      const [catalogItem] = await tx.insert(softwareCatalog).values({
+        orgId,
+        name: payload.name,
+        vendor: payload.vendor,
+        category: payload.category ?? 'application',
+        description: payload.description,
+        iconUrl: payload.iconUrl,
+        websiteUrl: payload.homepageUrl,
+      }).returning();
+
+      const methods = await tx.insert(softwareInstallMethods).values(
+        payload.methods.map((m) => ({
+          catalogId: catalogItem!.id,
+          platform: m.platform,
+          kind: m.kind,
+          packageId: m.packageId,
+          enabled: true,
+        }))
+      ).returning();
+
+      return { catalogItem: catalogItem!, methods };
+    });
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.catalog.import',
+      resourceType: 'software_catalog',
+      resourceId: catalogItem.id,
+      resourceName: catalogItem.name,
+      details: { methodCount: methods.length },
+    });
+
+    return c.json({ data: { catalogItem, methods } }, 201);
+  },
+);
+
 softwareInstallMethodRoutes.delete(
   '/catalog/:id/install-methods/:methodId',
   requireScope('organization', 'partner', 'system'),
