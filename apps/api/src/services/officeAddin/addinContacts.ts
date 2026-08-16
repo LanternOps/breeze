@@ -51,3 +51,24 @@ export async function createConfirmedContact(
   if (!row) throw new Error('failed to create add-in contact');
   return { portalUserId: row.id };
 }
+
+/**
+ * Look up (never create) the portal user a sender address resolves to within
+ * ONE org, for Task 17's link-email route. Mirrors
+ * `inboundEmailService.findPortalUserInPartner` but org-scoped (the caller
+ * already has the target ticket's org) rather than partner-scoped, and read-only
+ * — linking an email to an existing ticket is not licensed to mint a contact,
+ * unlike `createConfirmedContact` above which is a technician-confirmed action.
+ */
+export async function findPortalUserByEmail(
+  orgId: string,
+  email: string
+): Promise<{ id: string; name: string | null } | null> {
+  const lower = email.trim().toLowerCase();
+  const rows = await db
+    .select({ id: portalUsers.id, name: portalUsers.name })
+    .from(portalUsers)
+    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, lower)))
+    .limit(1);
+  return rows[0] ?? null;
+}

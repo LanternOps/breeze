@@ -6,9 +6,11 @@ import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
-import { createConfirmedContact } from '../../services/officeAddin/addinContacts';
+import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
+import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
+  addTicketComment,
   createTicket,
   getPortalUserForValidation,
   TicketServiceError,
@@ -16,7 +18,7 @@ import {
   type TicketActor,
 } from '../../services/ticketService';
 import type { OfficeAddinTechAuth } from '../../middleware/officeAddinTechAuth';
-import { fromEmailSchema } from './schemas';
+import { fromEmailSchema, linkEmailSchema } from './schemas';
 
 /**
  * Outlook tech add-in ticket creation (spec §3.2, Task 16).
@@ -87,12 +89,26 @@ export const officeAddinTicketRoutes = new Hono();
 
 officeAddinTicketRoutes.use('*', officeAddinTechAuthMiddleware);
 
-/** Thrown INSIDE the nested transaction to trigger the savepoint rollback. */
+/**
+ * Thrown INSIDE the nested transaction to trigger the savepoint rollback.
+ * `commentId` is optional because Task 16's create path never claims one
+ * (`addin_create` links carry no comment); Task 17's link path always does.
+ */
 class MessageClaimRaceError extends Error {
-  constructor(public readonly existing: { ticketId: string; orgId: string }) {
+  constructor(public readonly existing: { ticketId: string; orgId: string; commentId?: string | null }) {
     super('message-id claimed concurrently');
     this.name = 'MessageClaimRaceError';
   }
+}
+
+/** Comment length cap for a link-quoted email; ticket_comments.content has no DB-level limit, so
+ * this mirrors fromEmailSchema's description cap (spec §3.3) rather than relying on one. */
+const LINKED_COMMENT_MAX = 100_000;
+
+function buildQuotedEmail(input: { from: { email: string; name?: string | null }; subject: string; bodyText: string }): string {
+  const name = input.from.name?.trim() || input.from.email;
+  const quoted = `From: ${name} <${input.from.email}>\nSubject: ${input.subject}\n\n${input.bodyText}`;
+  return quoted.length > LINKED_COMMENT_MAX ? quoted.slice(0, LINKED_COMMENT_MAX) : quoted;
 }
 
 const SUMMARY_COLUMNS = {
@@ -196,6 +212,32 @@ async function respondToExistingLink(
   if (accessible && row && link.orgId === requestedOrgId) {
     return c.json({ ticket: summary, alreadyExisted: true }, 200);
   }
+  return c.json({ error: 'message_linked_elsewhere', ticket: summary }, 409);
+}
+
+/**
+ * Task 17's sibling of `respondToExistingLink` above, for a route that already
+ * targets ONE specific ticket (the `:id` in the URL) rather than an org. The
+ * match rule is therefore ticket-identity, not org-identity: a link that
+ * already points at THIS ticket is a true idempotent replay (200, no second
+ * comment); a link pointing anywhere else — even another ticket in the SAME
+ * org — is a conflict (409), because "link this message to ticket X" cannot
+ * silently resolve to ticket Y. Reuses `loadTicket`/`toSummary` for the
+ * accessibility + summary shape, same as `respondToExistingLink`.
+ */
+async function respondToLinkConflict(
+  c: Context,
+  existing: { ticketId: string; orgId: string; commentId?: string | null },
+  auth: OfficeAddinTechAuth,
+  targetTicketId: string,
+  submitterEmail: string
+): Promise<Response> {
+  if (existing.ticketId === targetTicketId) {
+    return c.json({ linked: true, alreadyLinked: true, commentId: existing.commentId ?? null }, 200);
+  }
+  const accessible = auth.canAccessOrg(existing.orgId);
+  const row = accessible ? await loadTicket(existing.ticketId, auth.partnerId) : null;
+  const summary = row ? toSummary(row, submitterEmail) : null;
   return c.json({ error: 'message_linked_elsewhere', ticket: summary }, 409);
 }
 
@@ -348,5 +390,145 @@ officeAddinTicketRoutes.post(
     });
 
     return c.json({ ticket: toSummary(created, input.from.email), alreadyExisted: false }, 201);
+  }
+);
+
+/**
+ * Attach an email (as a comment) to an EXISTING ticket (spec §3.3, Task 16
+ * covers the create case; this is the "add to this ticket instead" branch of
+ * the pane). Same ledger, same idempotency contract, same nested-transaction
+ * savepoint pattern as `/tickets/from-email` — see the file header for the
+ * full mechanism. The only new axis is `visibility`:
+ *   - 'public' goes through `insertEmailAuthoredComment` (email-authored,
+ *     portal-user-attributed when the sender resolves, no firstResponseAt
+ *     stamp — spec §4: email can never be the technician's first response).
+ *   - 'internal' goes through `addTicketComment` as a technician-authored
+ *     internal note (WILL stamp firstResponseAt on an unanswered ticket, same
+ *     as any other technician-written public/internal comment would).
+ */
+officeAddinTicketRoutes.post(
+  '/tickets/:id/link-email',
+  requireAddinCapability('ticket-link'),
+  zValidator('json', linkEmailSchema),
+  async (c) => {
+    const auth = c.get('officeAddinAuth');
+    const ticketId = c.req.param('id');
+    const input = c.req.valid('json');
+
+    // 1. Ticket must exist, not be soft-deleted (unlike the from-email fast
+    //    path, linking must never touch a deleted ticket), and live in an org
+    //    this technician can reach. 404 either way — never 403 — so the pane
+    //    can't probe ticket ids outside the grant.
+    const ticket = await loadTicket(ticketId, auth.partnerId, { excludeDeleted: true });
+    if (!ticket) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+    if (!auth.canAccessOrg(ticket.orgId)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    // 2. Idempotency pre-check. Mailbox hosts below requirement set 1.8 send no
+    //    internetMessageId; those links simply get no ledger row (spec §3.3).
+    const rawMessageId = input.internetMessageId?.trim() || null;
+    const messageId = rawMessageId ? normalizeMessageId(rawMessageId) : null;
+    if (messageId) {
+      const existing = await findLinkByMessageId(auth.partnerId, messageId);
+      if (existing) {
+        return respondToLinkConflict(c, existing, auth, ticket.id, input.from.email);
+      }
+    }
+
+    // 3. Ticket-state rule, checked BEFORE any comment is inserted — and only
+    //    reached once we know this message isn't already linked (a replay of
+    //    an existing link must stay a 200, even on a since-closed ticket). The
+    //    pane offers "create a linked follow-up" via Task 16's `followUpOf`.
+    if (ticket.status === 'closed') {
+      return c.json(
+        {
+          error: 'ticket_closed',
+          ticket: { id: ticket.id, internalNumber: ticket.internalNumber, emailThreadKey: ticket.emailThreadKey },
+        },
+        409
+      );
+    }
+
+    const content = buildQuotedEmail(input);
+    const actor: TicketActor = {
+      userId: auth.userId,
+      name: auth.user.name ?? undefined,
+      email: auth.user.email,
+    };
+
+    let commentId: string;
+    try {
+      // 4-5. Comment + claim, atomically discardable — same savepoint shape as
+      //      the create route. See the file header for the full mechanism.
+      commentId = await db.transaction(async () => {
+        let newCommentId: string;
+        if (input.visibility === 'public') {
+          const sender = await findPortalUserByEmail(ticket.orgId, input.from.email);
+          const authorName = sender?.name ?? input.from.name?.trim() ?? input.from.email;
+          const inserted = await insertEmailAuthoredComment({
+            ticketId: ticket.id,
+            orgId: ticket.orgId,
+            senderPortalUserId: sender?.id ?? null,
+            authorName,
+            content,
+          });
+          newCommentId = inserted.commentId;
+        } else {
+          const { comment } = await addTicketComment(ticket.id, { content, isPublic: false }, actor);
+          newCommentId = comment.id;
+        }
+
+        if (messageId) {
+          const claim = await claimMessageLink({
+            ticketId: ticket.id,
+            orgId: ticket.orgId,
+            partnerId: auth.partnerId,
+            messageId,
+            origin: 'addin_link',
+            visibility: input.visibility,
+            linkedBy: auth.userId,
+            commentId: newCommentId,
+          });
+          if (!claim.created) {
+            // Another pane (or the poller) claimed this message first. Unwind
+            // to the savepoint so this duplicate comment never existed.
+            throw new MessageClaimRaceError(claim.existing);
+          }
+        }
+
+        return newCommentId;
+      });
+    } catch (err) {
+      if (err instanceof MessageClaimRaceError) {
+        return respondToLinkConflict(c, err.existing, auth, ticket.id, input.from.email);
+      }
+      if (err instanceof TicketServiceError) {
+        return c.json({ error: err.message }, err.status as 400);
+      }
+      throw err;
+    }
+
+    writeAuditEvent(c, {
+      orgId: ticket.orgId,
+      action: 'office_addin.ticket.email_linked',
+      resourceType: 'ticket',
+      resourceId: ticket.id,
+      resourceName: ticket.internalNumber,
+      actorType: 'user',
+      actorId: auth.userId,
+      actorEmail: auth.user.email,
+      result: 'success',
+      details: {
+        principalType: 'user',
+        bindingId: auth.bindingId,
+        visibility: input.visibility,
+        hasMessageId: Boolean(messageId),
+      },
+    });
+
+    return c.json({ linked: true, commentId }, 201);
   }
 );

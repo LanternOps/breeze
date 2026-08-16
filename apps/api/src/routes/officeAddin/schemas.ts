@@ -62,3 +62,12 @@ export const fromEmailSchema = z.object({
   ]),
   followUpOf: z.object({ ticketId: z.string().uuid() }).nullish(), // closed-ticket continuation: carries thread key + prior number
 });
+
+/** Body of POST /office-addin/tickets/:id/link-email (spec §3.3, Task 17). */
+export const linkEmailSchema = z.object({
+  visibility: z.enum(['public', 'internal']),
+  from: z.object({ email: z.string().email().max(320), name: z.string().max(255).nullish() }),
+  internetMessageId: z.string().max(998).nullish(),
+  subject: z.string().max(1000),
+  bodyText: z.string().max(200_000), // quoted into the comment
+});

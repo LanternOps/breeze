@@ -18,9 +18,12 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
   hoisted: {
     createTicket: vi.fn(),
     getPortalUserForValidation: vi.fn(),
+    addTicketComment: vi.fn(),
     claimMessageLink: vi.fn(),
     findLinkByMessageId: vi.fn(),
     createConfirmedContact: vi.fn(),
+    findPortalUserByEmail: vi.fn(),
+    insertEmailAuthoredComment: vi.fn(),
     ticketThreadAnchor: vi.fn(),
     writeAuditEvent: vi.fn(),
   },
@@ -69,12 +72,17 @@ vi.mock('../../db/schema', () => ({
 vi.mock('../../services/ticketService', () => ({
   createTicket: hoisted.createTicket,
   getPortalUserForValidation: hoisted.getPortalUserForValidation,
+  addTicketComment: hoisted.addTicketComment,
   TicketServiceError: class TicketServiceError extends Error {
     constructor(message: string, public status = 400) {
       super(message);
       this.name = 'TicketServiceError';
     }
   },
+}));
+
+vi.mock('../../services/inboundEmail/emailComments', () => ({
+  insertEmailAuthoredComment: hoisted.insertEmailAuthoredComment,
 }));
 
 vi.mock('../../services/ticketEmailLinks', async () => {
@@ -90,6 +98,7 @@ vi.mock('../../services/ticketEmailLinks', async () => {
 
 vi.mock('../../services/officeAddin/addinContacts', () => ({
   createConfirmedContact: hoisted.createConfirmedContact,
+  findPortalUserByEmail: hoisted.findPortalUserByEmail,
 }));
 
 vi.mock('../../services/inboundEmail/outboundThreading', () => ({
@@ -151,6 +160,14 @@ function post(body: unknown) {
   });
 }
 
+function postLink(ticketId: string, body: unknown) {
+  return makeApp().request(`/tickets/${ticketId}/link-email`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 const MSG_ID = '<abc-123@customer.example>';
 
 const baseBody = {
@@ -188,6 +205,9 @@ beforeEach(() => {
   hoisted.ticketThreadAnchor.mockReturnValue('<ticket-' + NEW_TICKET_ID + '@tickets.example.com>');
   hoisted.createTicket.mockResolvedValue(ticketRow());
   hoisted.claimMessageLink.mockResolvedValue({ created: true, link: { id: 'link-1' } });
+  hoisted.findPortalUserByEmail.mockResolvedValue(null);
+  hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
+  hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
 });
 
 describe('POST /tickets/from-email', () => {
@@ -458,6 +478,176 @@ describe('POST /tickets/from-email', () => {
 
   it('400s on an invalid body', async () => {
     const res = await post({ ...baseBody, subject: '' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /tickets/:id/link-email', () => {
+  const linkBody = {
+    visibility: 'public' as const,
+    from: { email: 'customer@acme.com', name: 'Customer Person' },
+    internetMessageId: MSG_ID,
+    subject: 'Printer is on fire',
+    bodyText: 'Smoke everywhere.',
+  };
+
+  it('links a public email: insertEmailAuthoredComment, no firstResponseAt stamp, ledger row', async () => {
+    ticketSelectQueue.push([ticketRow()]); // loadTicket(NEW_TICKET_ID)
+    hoisted.findPortalUserByEmail.mockResolvedValue({ id: PORTAL_USER_ID, name: 'Stored Name' });
+    hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-42' });
+
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body).toEqual({ linked: true, commentId: 'comment-42' });
+
+    expect(hoisted.findPortalUserByEmail).toHaveBeenCalledWith(ORG_A, 'customer@acme.com');
+    expect(hoisted.insertEmailAuthoredComment).toHaveBeenCalledWith({
+      ticketId: NEW_TICKET_ID,
+      orgId: ORG_A,
+      senderPortalUserId: PORTAL_USER_ID,
+      authorName: 'Stored Name', // stored portal-user name preferred over the spoofable display name
+      content: `From: Customer Person <customer@acme.com>\nSubject: Printer is on fire\n\nSmoke everywhere.`,
+    });
+
+    // Public link must NEVER go through addTicketComment — no firstResponseAt stamp.
+    expect(hoisted.addTicketComment).not.toHaveBeenCalled();
+
+    expect(hoisted.claimMessageLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticketId: NEW_TICKET_ID,
+        orgId: ORG_A,
+        partnerId: PARTNER_ID,
+        messageId: MSG_ID,
+        origin: 'addin_link',
+        visibility: 'public',
+        linkedBy: USER_ID,
+        commentId: 'comment-42',
+      })
+    );
+    expect(hoisted.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: 'office_addin.ticket.email_linked', resourceId: NEW_TICKET_ID })
+    );
+  });
+
+  it('links an internal note via addTicketComment as a technician-authored comment', async () => {
+    ticketSelectQueue.push([ticketRow()]);
+    hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-99' }, firstResponseStamped: false });
+
+    const res = await postLink(NEW_TICKET_ID, { ...linkBody, visibility: 'internal' });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body).toEqual({ linked: true, commentId: 'comment-99' });
+
+    expect(hoisted.addTicketComment).toHaveBeenCalledWith(
+      NEW_TICKET_ID,
+      {
+        content: `From: Customer Person <customer@acme.com>\nSubject: Printer is on fire\n\nSmoke everywhere.`,
+        isPublic: false,
+      },
+      expect.objectContaining({ userId: USER_ID, email: 'tech@partner.example' })
+    );
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+
+    expect(hoisted.claimMessageLink).toHaveBeenCalledWith(
+      expect.objectContaining({ visibility: 'internal', origin: 'addin_link', commentId: 'comment-99' })
+    );
+  });
+
+  it('replays idempotently when the message is already linked to THIS ticket: 200, no second comment', async () => {
+    hoisted.findLinkByMessageId.mockResolvedValue({
+      id: 'link-1',
+      ticketId: NEW_TICKET_ID,
+      orgId: ORG_A,
+      partnerId: PARTNER_ID,
+      messageId: MSG_ID,
+      origin: 'addin_link',
+      visibility: 'public',
+      linkedBy: USER_ID,
+      commentId: 'comment-1',
+    });
+    ticketSelectQueue.push([ticketRow()]); // loadTicket(NEW_TICKET_ID)
+
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ linked: true, alreadyLinked: true, commentId: 'comment-1' });
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+    expect(hoisted.addTicketComment).not.toHaveBeenCalled();
+    expect(hoisted.claimMessageLink).not.toHaveBeenCalled();
+  });
+
+  it('409s when the message is already linked to a DIFFERENT ticket', async () => {
+    hoisted.findLinkByMessageId.mockResolvedValue({
+      id: 'link-1',
+      ticketId: OTHER_TICKET_ID,
+      orgId: ORG_A,
+      partnerId: PARTNER_ID,
+      messageId: MSG_ID,
+      origin: 'inbound',
+      visibility: 'public',
+      linkedBy: null,
+      commentId: null,
+    });
+    ticketSelectQueue.push([ticketRow()]); // loadTicket(NEW_TICKET_ID)
+    ticketSelectQueue.push([ticketRow({ id: OTHER_TICKET_ID, subject: 'Other ticket' })]); // respondToLinkConflict's loadTicket
+
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('message_linked_elsewhere');
+    expect(body.ticket.id).toBe(OTHER_TICKET_ID);
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+    expect(hoisted.addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('409s ticket_closed with NO comment inserted when the target ticket is closed', async () => {
+    ticketSelectQueue.push([
+      ticketRow({ status: 'closed', internalNumber: 'T-2026-0007', emailThreadKey: '<old@tickets.example.com>' }),
+    ]);
+
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: 'ticket_closed',
+      ticket: { id: NEW_TICKET_ID, internalNumber: 'T-2026-0007', emailThreadKey: '<old@tickets.example.com>' },
+    });
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+    expect(hoisted.addTicketComment).not.toHaveBeenCalled();
+    expect(hoisted.claimMessageLink).not.toHaveBeenCalled();
+  });
+
+  it('404s when the target ticket is soft-deleted', async () => {
+    ticketSelectQueue.push([]); // loadTicket excludeDeleted finds nothing
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(404);
+    expect(selectWhereArgs[0]).toContain('tickets.deleted_at');
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+  });
+
+  it('404s when the target ticket lives in an org the technician cannot access', async () => {
+    authRef.current = { accessibleOrgIds: [ORG_B] };
+    ticketSelectQueue.push([ticketRow({ orgId: ORG_A })]);
+    const res = await postLink(NEW_TICKET_ID, linkBody);
+    expect(res.status).toBe(404);
+    expect(hoisted.insertEmailAuthoredComment).not.toHaveBeenCalled();
+  });
+
+  it('creates the comment with no ledger row when the host supplies no internetMessageId, 201', async () => {
+    ticketSelectQueue.push([ticketRow()]);
+    const res = await postLink(NEW_TICKET_ID, { ...linkBody, internetMessageId: null });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body).toEqual({ linked: true, commentId: 'comment-1' });
+    expect(hoisted.findLinkByMessageId).not.toHaveBeenCalled();
+    expect(hoisted.claimMessageLink).not.toHaveBeenCalled();
+  });
+
+  it('400s on an invalid body', async () => {
+    ticketSelectQueue.push([ticketRow()]);
+    const res = await postLink(NEW_TICKET_ID, { ...linkBody, visibility: 'nope' });
     expect(res.status).toBe(400);
   });
 });
