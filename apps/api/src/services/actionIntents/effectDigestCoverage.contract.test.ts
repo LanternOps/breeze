@@ -22,9 +22,13 @@
  * No `vi.mock` — like intentReleaseWorker.durable.contract.test.ts and
  * aiGuardrails.approvalScope.contract.test.ts, this needs the REAL registries
  * on both sides (the tier-3 classification tables AND the live resolver map)
- * to be a meaningful contract. effectDigest.ts imports only Drizzle table
- * objects and takes its `Database` as a parameter, so importing it here pulls
- * in no live DB client.
+ * to be a meaningful contract. Importing effectDigest.ts is safe here because
+ * every resolver takes its `Database` as a PARAMETER — nothing in the module
+ * opens a connection at import time. (Since #3409 PR4c-1 the import graph does
+ * reach '../../db' transitively, via runScriptSnapshot -> tenantVariable-
+ * Resolution's `loadTenantVariableScope`; postgres.js constructs its client
+ * lazily and connects only on first query, so module load stays inert. This
+ * file never invokes a resolver, only `effectDigestResolverKey`.)
  */
 import { describe, it, expect } from 'vitest';
 import {

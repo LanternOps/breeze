@@ -2,9 +2,11 @@ import { createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Database } from '../../db';
 import {
-  scripts, quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
+  quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners,
 } from '../../db/schema';
+import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
 /**
  * Effect-digest pinning for tier-3 action intents (spec
@@ -81,7 +83,17 @@ import {
  * mean "nothing to pin", but for reasons the caller must be able to tell
  * apart (see the DESIGN CHOICE note above). */
 type ResolverResult =
-  | { kind: 'material'; material: string | Buffer }
+  | {
+      kind: 'material';
+      material: string | Buffer;
+      /**
+       * What the resolver ALREADY resolved in order to produce `material`,
+       * for a release path to hand to the tool handler instead of making it
+       * read the same rows again (#3409 PR4c-1). Only `run_script` sets it;
+       * the creation path drops it (see `computeEffectDigestOutcome`).
+       */
+      verified?: VerifiedRunScript;
+    }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
@@ -111,44 +123,58 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // on four_eyes). Pins every field that changes WHAT ACTUALLY EXECUTES, not
   // just the body: `content` alone left `run_as` free to be flipped from
   // `user` to `system` between approval and release with a byte-identical
-  // digest. The pinned set mirrors exactly what aiToolsScripts.ts's
-  // run_script handler reads off the row and forwards to the agent
-  // (language / content / timeoutSeconds / runAs), plus `orgId`, which the
-  // handler uses for its org-equality invariant against the target device.
+  // digest.
   //
-  // `scripts.parameters` (the jsonb column) is deliberately NOT pinned: the
-  // handler passes `input.parameters ?? {}` from the tool call, never the
-  // column, so the column has no effect on execution and pinning it would
-  // manufacture spurious `content_changed` failures.
+  // The pinned set — and the reads that produce it — live in
+  // runScriptSnapshot.ts rather than inline here: #3409 PR4c-1 makes the
+  // digest and dispatch derivable from ONE observation instead of two copies
+  // free to drift apart (the release side consumes the snapshot's scope —
+  // `computeEffectDigestForRelease` carries it to dispatch; this creation-side
+  // call needs only the material).
+  // `runScriptDigestMaterial` is a `v: 2` envelope, so a digest pinned before
+  // this change can never compare equal to a recomputed one: a pre-PR4c
+  // intent fails closed at release rather than revalidating against a
+  // narrower pin.
+  //
+  // `scripts.parameters` (the jsonb column) IS pinned, reversing the earlier
+  // exclusion. That exclusion rested on "the handler passes
+  // `input.parameters ?? {}` from the tool call, never the column, so the
+  // column has no effect on execution" — TRUE before #3409 PR3, FALSE since:
+  // the column now drives `scriptNeedsVariableScope` and every per-parameter
+  // `tenantVariable` binding at scriptDispatch.ts. Rebinding a parameter to a
+  // different variable changes what the device runs with a byte-identical
+  // script body, so the column is exactly the kind of drift this module
+  // exists to catch. Pinned through the canonical serializer
+  // (`canonicalizeScriptParameterDefinitions`), which is schema-normalized and
+  // object-key-order independent — a jsonb round trip or a legacy
+  // `{name,type}` gaining its materialized defaults is NOT a change, so the
+  // spurious-`content_changed` worry the old comment raised does not survive
+  // the canonicalization either.
+  //
+  // The variables themselves are pinned by REFERENCE (variableId + version +
+  // isSecret + ownerScope, per (org, key)) and never by value —
+  // `effect_digest` is widely readable and must not be reconstructible into
+  // tenant plaintext.
   //
   // Filtered to non-deleted scripts, mirroring the handler — a script
   // soft-deleted after approval resolves to `target_absent` here too, which
   // correctly mismatches against the digest pinned at creation (the release
   // fails closed instead of trying to run a deleted script).
   run_script: async (args, database) => {
-    const scriptId = typeof args.scriptId === 'string' ? args.scriptId : null;
-    if (!scriptId) return MISSING_ARG;
-    const [script] = await database
-      .select({
-        orgId: scripts.orgId,
-        language: scripts.language,
-        content: scripts.content,
-        timeoutSeconds: scripts.timeoutSeconds,
-        runAs: scripts.runAs,
-      })
-      .from(scripts)
-      .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
-      .limit(1);
-    if (!script) return TARGET_ABSENT;
-    return material(
-      JSON.stringify({
-        orgId: script.orgId ?? null,
-        language: script.language,
-        content: script.content,
-        timeoutSeconds: script.timeoutSeconds,
-        runAs: script.runAs,
-      }),
-    );
+    const built = await buildRunScriptSnapshot(args, database);
+    if (built.kind === 'missing_arg') return MISSING_ARG;
+    if (built.kind === 'target_absent') return TARGET_ABSENT;
+    // The three siblings ride along as `verified` so a caller that also
+    // DISPATCHES can execute from the SAME observation the digest was
+    // computed over — the scope in particular, whose re-resolution is the
+    // fastest-moving part of a run_script release. `computeEffectDigestOutcome`
+    // (the CREATION path) projects it back off, so the plaintext-bearing scope
+    // never reaches a caller that has no use for it.
+    return {
+      kind: 'material',
+      material: runScriptDigestMaterial(built.snapshot),
+      verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
+    };
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
@@ -341,41 +367,114 @@ export function effectDigestResolverKey(toolName: string, action?: string): stri
  * passing that SAME singleton reference is what makes "compute inside the
  * creation transaction" work — the digest read lands on whatever transaction
  * the caller currently has open, without this module needing to import
- * '../../db' (and its real Postgres client construction) itself. That keeps
- * this module — and effectDigest.test.ts — free of any dependency on a
- * live/mocked database module; tests just pass a fake `database`.
+ * '../../db' (and its real Postgres client construction) itself. Tests just
+ * pass a fake `database`.
+ *
+ * ONE NUANCE since #3409 PR4c-1 (Task 3b): run_script's snapshot loads the
+ * tenant-variable scope through `loadTenantVariableScope`, and hands it THIS
+ * SAME `database` as `opts.database` so the load rides the caller's connection
+ * too. `loadTenantVariableScope`'s default path deliberately escapes to a
+ * genuinely fresh system context (see tenantVariableResolution.ts for why
+ * resolution must not depend on which of the five DISPATCH call sites is
+ * ambient); taking that escape here would acquire a SECOND pooled connection
+ * while the creation transaction still holds the first — the #1105
+ * connection-hold class. Reusing the caller's connection is sound only because
+ * every call site of this module is already system-scoped, which is the
+ * caller obligation `opts.database` carries and `loadTenantVariableScope`
+ * checks inside its `opts.database` branch — note that branch sits AFTER the
+ * empty-`orgIds` short-circuit, so a script referencing no variables never
+ * reaches the check (it issues no query either, so there is nothing to scope).
+ *
+ * The import graph therefore still reaches '../../db' transitively (through
+ * tenantVariableResolution), and effectDigest.test.ts seams that ONE function.
+ * The seam does not avoid LOADING the db module — `importOriginal()` loads it
+ * — it avoids needing a live database and a real system-scoped context behind
+ * it. Everything else still resolves purely against the injected `database`.
  */
 export async function computeEffectDigestOutcome(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
 ): Promise<EffectDigestOutcome> {
-  const action = typeof args.action === 'string' ? args.action : undefined;
-  const key = effectDigestResolverKey(toolName, action);
-  if (!key) return { kind: 'not_applicable' };
-
-  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
-  if (result.kind !== 'material') return { kind: 'unresolved', reason: result.kind };
-
-  return { kind: 'pinned', digest: createHash('sha256').update(result.material).digest('hex') };
+  const resolved = await resolveEffectDigest(toolName, args, database);
+  // Project `verified` back off. The creation path has no dispatch to feed and
+  // no business holding decrypted tenant plaintext one property access away —
+  // narrowing the declared return type alone would leave the object carrying
+  // it at runtime.
+  return resolved.outcome.kind === 'pinned'
+    ? { kind: 'pinned', digest: resolved.outcome.digest }
+    : resolved.outcome;
 }
 
 /**
- * Flattening wrapper: the pinned digest, or null for BOTH unpinnable outcomes.
- *
- * This is the shape the two RELEASE paths want and must keep — they compare
- * the recomputed value against the stored column, where `not_applicable` and
- * `unresolved` are indistinguishable by construction (both stored NULL). Only
- * the CREATION path (intentService.ts) uses computeEffectDigestOutcome, since
- * it is the only caller that can still observe the distinction.
+ * Everything one resolver produced: the outcome the creation path stores, plus
+ * the material a RELEASE path can execute from without reading it again.
  */
-export async function computeEffectDigest(
+async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
-): Promise<string | null> {
-  const outcome = await computeEffectDigestOutcome(toolName, args, database);
-  return outcome.kind === 'pinned' ? outcome.digest : null;
+): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript }> {
+  const action = typeof args.action === 'string' ? args.action : undefined;
+  const key = effectDigestResolverKey(toolName, action);
+  if (!key) return { outcome: { kind: 'not_applicable' } };
+
+  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
+  if (result.kind !== 'material') return { outcome: { kind: 'unresolved', reason: result.kind } };
+
+  return {
+    outcome: { kind: 'pinned', digest: createHash('sha256').update(result.material).digest('hex') },
+    verified: result.verified,
+  };
+}
+
+/** What a release path gets back: the digest to compare, and — when the
+ *  resolver produced one — the verified material to EXECUTE from. */
+export type EffectDigestReleaseResult = {
+  /**
+   * The pinned digest, or null for BOTH unpinnable outcomes. Flattened
+   * deliberately: a release path compares this against the stored column,
+   * where `not_applicable` and `unresolved` are indistinguishable by
+   * construction (both stored NULL). Only the CREATION path
+   * (`computeEffectDigestOutcome`, used by intentService.ts) can still observe
+   * the distinction, and it is the only caller that needs to.
+   */
+  digest: string | null;
+  /** Absent unless the resolver resolved something a handler can reuse. */
+  context?: ToolExecutionContext;
+};
+
+/**
+ * The RELEASE-path recompute (#3409 PR4c-1) — the sibling of
+ * `computeEffectDigestOutcome`, which stays the CREATION path.
+ *
+ * Both release paths (jobs/intentReleaseWorker.ts and the inline chat release
+ * in services/aiAgentSdk.ts) already read the target in order to recompute the
+ * digest. Before this existed they then threw that read away and let the tool
+ * handler read it AGAIN at dispatch — which reopens precisely the check/use
+ * window the digest exists to close: everything the digest just proved
+ * unchanged could change between the comparison and the handler's own query.
+ *
+ * So this returns the digest AND the resolved material, and the caller hands
+ * the latter to `executeTool` as its `ToolExecutionContext`. `context` is
+ * optional: a caller that ignores it gets exactly the digest comparison and
+ * nothing else, so a release path that has no handler to feed (or a tool with
+ * no reusable material) needs no separate entry point.
+ *
+ * The context is returned even on a MISMATCH (the digest is what decides), so
+ * a caller must compare first and only then dispatch. Both call sites fail
+ * closed before reaching `executeTool`, and their tests pin that.
+ */
+export async function computeEffectDigestForRelease(
+  toolName: string,
+  args: Record<string, unknown>,
+  database: Database,
+): Promise<EffectDigestReleaseResult> {
+  const resolved = await resolveEffectDigest(toolName, args, database);
+  const digest = resolved.outcome.kind === 'pinned' ? resolved.outcome.digest : null;
+  return resolved.verified
+    ? { digest, context: { verifiedRunScript: resolved.verified } }
+    : { digest };
 }
 
 /**

@@ -20,6 +20,12 @@ import {
   createExtensionStateStore,
   type ExtensionStateStore,
 } from '../extensions/stateStore';
+// Type-only, deliberately: `toolExecutionContext.ts` names a type from
+// `actionIntents/runScriptSnapshot.ts`, and sibling `actionIntents/*` modules
+// (intentService, revalidateRelease) already import back into this hub. Keeping
+// the edge type-only means it is erased at build time and no import cycle can
+// form.
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -88,7 +94,30 @@ export type AiToolTier = 1 | 2 | 3 | 4;
 export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
-  handler: (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+  /**
+   * `context` carries material a release path already verified against the
+   * approval's pinned effect digest (see `toolExecutionContext.ts`). It is
+   * OPTIONAL and trailing, so every handler declared `(input, auth)` — which
+   * is nearly all of them — is unaffected; only a handler that has a re-query
+   * worth skipping declares it,
+   * and it must behave identically when it is absent (direct chat, MCP and
+   * script-builder callers never supply one).
+   *
+   * TRAP — WRAPPERS SILENTLY TRUNCATE IT. A handler produced by a wrapper that
+   * returns `async (input, auth) => …` drops the third argument with NO compile
+   * error, because a two-parameter function is always assignable here. The
+   * `safeHandler` wrappers in `aiToolsBackupVm.ts`, `aiToolsPolicyPrereqs.ts`,
+   * `aiToolsC2C.ts` and `aiToolsConfigPolicy.ts` are all shaped that way. If a
+   * tool registered through one of those ever needs the context, the WRAPPER
+   * must accept and forward a third argument too — widening the inner handler
+   * alone will read `undefined` forever. (No current consumer is wrapped:
+   * `run_script` is a bare inline arrow in `aiToolsScripts.ts`.)
+   */
+  handler: (
+    input: Record<string, unknown>,
+    auth: AuthContext,
+    context?: ToolExecutionContext,
+  ) => Promise<string>;
   /**
    * Names of the tool's input properties that carry a device id (each a string
    * or string[]). When set, the central dispatch gates every supplied id
@@ -282,12 +311,13 @@ export type AiToolEnabledStore = Pick<ExtensionStateStore, 'isEnabled'>;
 /**
  * The shared, lazily-built store backing the extension AI-tool enable gate.
  *
- * Built once and memoized. Note this is `executeTool`'s DEFAULT PARAMETER, so it
- * is evaluated on every call — core-tool calls included — not only on the first
- * extension-tool call. That is deliberate and cheap: construction is a bare
- * `new` of a store around the shared `db` pool with no I/O, and after the first
- * call it is a memo read. No database work happens until `isEnabled` runs, which
- * only the extension branch of `executeTool` reaches.
+ * Built once and memoized. `executeTool` resolves it as
+ * `opts?.store ?? defaultExtensionEnabledStore()` INSIDE the extension branch,
+ * so a core-tool call never constructs one. (It used to be a default parameter,
+ * which is evaluated on every call — harmless, since construction is a bare
+ * `new` around the shared `db` pool with no I/O and every later call is a memo
+ * read, but pointless on the critical path of every AI tool call.) No database
+ * work happens until `isEnabled` runs, which only that branch reaches.
  */
 let extensionEnabledStore: AiToolEnabledStore | null = null;
 function defaultExtensionEnabledStore(): AiToolEnabledStore {
@@ -420,13 +450,34 @@ export function applyHelperDeviceScope(
   return { input: { ...input, [field]: value } };
 }
 
+/**
+ * Everything `executeTool` accepts beyond the three arguments every caller
+ * passes. A NAMED BAG, not trailing positionals: the members are unrelated to
+ * each other, and getting them in the wrong order used to fail SILENTLY — a
+ * context handed to the `registry` slot would break extension tool resolution
+ * and skip the enabled-store gate with no error anywhere. Named members make
+ * that same mistake a compile error.
+ */
+export type ExecuteToolOptions = {
+  /** Extension contribution snapshot to resolve extension-contributed tools from. */
+  registry?: ExtensionContributionRegistry;
+  /** Durable enabled-flag store for the extension gate (injectable for tests). */
+  store?: AiToolEnabledStore;
+  /**
+   * Pre-verified release material for THIS invocation. Supplied only by a
+   * release path that has already checked the approval's pinned effect digest;
+   * every other caller omits it and the handler sees `undefined`.
+   */
+  context?: ToolExecutionContext;
+};
+
 export async function executeTool(
   toolName: string,
   input: Record<string, unknown>,
   auth: AuthContext,
-  registry: ExtensionContributionRegistry = extensionContributionRegistry,
-  store: AiToolEnabledStore = defaultExtensionEnabledStore(),
+  opts?: ExecuteToolOptions,
 ): Promise<string> {
+  const registry = opts?.registry ?? extensionContributionRegistry;
   const coreTool = aiTools.get(toolName);
   const extensionTool = resolveExtensionTool(toolName, registry);
   const tool = coreTool ?? extensionTool;
@@ -443,6 +494,8 @@ export async function executeTool(
   // unresolvable, the same as a withdrawn one. Core tools never reach this
   // branch, so the core path takes no extra database read.
   if (!coreTool && extensionTool) {
+    // Resolved HERE, not up front: a core-tool call must not construct a store.
+    const store = opts?.store ?? defaultExtensionEnabledStore();
     const owner = registry.findAiToolOwner(toolName);
     if (!owner || !(await store.isEnabled(owner))) {
       throw new Error(`Unknown tool: ${toolName}`);
@@ -473,5 +526,11 @@ export async function executeTool(
   const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
-  return tool.handler(effectiveInput, auth);
+  // Only CORE handlers receive the execution context. Extension handlers are
+  // third-party code and are called with exactly two arguments — not merely
+  // typed without a third one, since a handler written `(input, auth, ...rest)`
+  // or reading `arguments` would otherwise capture pre-verified release
+  // material the host never intended to hand out.
+  if (coreTool) return coreTool.handler(effectiveInput, auth, opts?.context);
+  return (tool as RegistryAiTool).handler(effectiveInput, auth);
 }
