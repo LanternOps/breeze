@@ -227,14 +227,24 @@ vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponse
 // since it imports the same module) — stub it to "no link rows" so the existing
 // header/subject-token matching tests are unaffected; the widening itself has its
 // own coverage in the claim integration suite.
-const { claimMessageLinkMock, findTicketIdsByMessageIdsMock } = vi.hoisted(() => ({
+// findLinkByMessageId backs the (2b) cross-channel idempotency consult: it is
+// stubbed to "no existing claim" so every pre-existing dispatch-precedence test
+// keeps its original path byte-for-byte. The short-circuit it guards has its own
+// coverage in the claim integration suite.
+const { claimMessageLinkMock, findTicketIdsByMessageIdsMock, findLinkByMessageIdMock } = vi.hoisted(() => ({
   claimMessageLinkMock: vi.fn().mockResolvedValue({ created: true, link: {} }),
-  findTicketIdsByMessageIdsMock: vi.fn().mockResolvedValue([])
+  findTicketIdsByMessageIdsMock: vi.fn().mockResolvedValue([]),
+  findLinkByMessageIdMock: vi.fn().mockResolvedValue(null)
 }));
-vi.mock('../ticketEmailLinks', () => ({
-  claimMessageLink: claimMessageLinkMock,
-  findTicketIdsByMessageIds: findTicketIdsByMessageIdsMock
-}));
+vi.mock('../ticketEmailLinks', async () => {
+  const actual = await vi.importActual<typeof import('../ticketEmailLinks')>('../ticketEmailLinks');
+  return {
+    normalizeMessageId: actual.normalizeMessageId,
+    claimMessageLink: claimMessageLinkMock,
+    findTicketIdsByMessageIds: findTicketIdsByMessageIdsMock,
+    findLinkByMessageId: findLinkByMessageIdMock
+  };
+});
 
 import { processInboundEmail } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
@@ -285,6 +295,11 @@ beforeEach(() => {
   findOrCreateContactMock.mockReset();
   loadPolicyMock.mockReset();
   loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+  // (2b) cross-channel idempotency default: nobody has claimed this message id.
+  findLinkByMessageIdMock.mockReset();
+  findLinkByMessageIdMock.mockResolvedValue(null);
+  claimMessageLinkMock.mockReset();
+  claimMessageLinkMock.mockResolvedValue({ created: true, link: {} });
 });
 
 describe('processInboundEmail', () => {
@@ -1094,6 +1109,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
   });
 });
 
+
 // #3597 — the 'Enable email-to-ticket' switch was persisted and rendered but never
 // read by this pipeline, so turning the feature OFF did nothing. These assert the
 // gate is real, that it beats every downstream branch, and that it does not fire on
@@ -1334,5 +1350,62 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect(comments()).toHaveLength(1);
     expect(inboundOf()[0]!.parseStatus).toBe('matched');
     expect(inboundOf()[0]!.ticketId).toBe('t-victim');
+  });
+});
+
+
+describe('processInboundEmail — cross-channel claim ledger (spec §4)', () => {
+  beforeEach(() => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['organizations'] = [{ id: 'o-dom' }];
+  });
+
+  it('short-circuits a message the add-in already claimed: no ticket, no comment, matched audit row', async () => {
+    findLinkByMessageIdMock.mockResolvedValue({
+      id: 'link-1',
+      ticketId: 't-addin',
+      orgId: 'o-1',
+      partnerId: 'p-1',
+      messageId: '<msg-1@customer.com>',
+      commentId: null,
+      origin: 'addin_create',
+      visibility: 'public',
+      linkedBy: 'u-tech'
+    });
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(claimMessageLinkMock).not.toHaveBeenCalled();
+    expect(inboundOf('ticket_comments')).toHaveLength(0);
+    const rows = inboundOf();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parseStatus).toBe('matched');
+    expect(rows[0]!.ticketId).toBe('t-addin');
+    expect(String(rows[0]!.error)).toContain('addin_create');
+  });
+
+  it('does not consult the ledger when the message carries no Message-ID', async () => {
+    await processInboundEmail(email({ messageId: undefined }));
+    expect(findLinkByMessageIdMock).not.toHaveBeenCalled();
+  });
+
+  it('reports (never swallows) a lost claim on the create path', async () => {
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-dom', autoCreateContact: false });
+    claimMessageLinkMock.mockResolvedValue({
+      created: false,
+      existing: { id: 'link-9', ticketId: 't-winner', orgId: 'o-dom', partnerId: 'p-1' }
+    });
+
+    await processInboundEmail(email());
+
+    expect(captureMessageMock).toHaveBeenCalledWith(
+      expect.stringContaining('lost the message-id claim race'),
+      'warning',
+      expect.objectContaining({ ourTicketId: 't-new', winnerTicketId: 't-winner', path: 'create' })
+    );
+    const rows = inboundOf();
+    expect(rows[0]!.parseStatus).toBe('created');
+    expect(String(rows[0]!.error)).toContain('t-winner');
   });
 });

@@ -18,7 +18,7 @@ import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
-import { claimMessageLink } from '../ticketEmailLinks';
+import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -253,6 +253,41 @@ export async function processInboundEmail(
       return;
     }
 
+    // (2b) CROSS-CHANNEL idempotency — the `ticket_email_links` ledger (spec §4:
+    // ONE message-id, ONE canonical association, across BOTH channels).
+    //
+    // Why this must exist here and not only at the claim sites: a technician who
+    // links or creates from the Outlook add-in at t=0 claims the Message-ID, but
+    // the 90s mailbox poller then ingests that SAME message. For a FRESH email
+    // there is no thread header and no ticket token to match on, so without this
+    // consult the pipeline falls through to `createFromEmail` and mints a SECOND
+    // ticket, whose `claimMessageLink` then no-ops (onConflictDoNothing) and used
+    // to be swallowed — a duplicate ticket with no ledger row. The add-in route
+    // has the same consult (routes/officeAddin/tickets.ts, "idempotency fast
+    // path"); this is its inbound-side twin.
+    //
+    // PLACEMENT (deliberate, w.r.t. the R4 sender-auth gate below): this runs
+    // BEFORE the gate. That is safe because the short-circuit CREATES NOTHING —
+    // no ticket, no comment, no reopen, no autoresponse; it only writes the audit
+    // row. The gate exists to stop a spoofed From: from driving those writes, and
+    // there are none to drive: an existing claim means an AUTHENTICATED technician
+    // already decided what this message is. Quarantining it instead would just put
+    // an already-handled message in front of a human. Everything that must keep
+    // precedence still runs first — mailbox-generation locking, partner
+    // resolution, the partner-status gate, self-loop drop, and provider dedup —
+    // so no unclaimed message's path changes by so much as a query.
+    // `normalizeMessageId` throws on an empty id, so require a non-blank one —
+    // the same shape the add-in route's fast path uses (`?.trim() || null`).
+    if (n.messageId?.trim()) {
+      const claimed = await findLinkByMessageId(partnerId, normalizeMessageId(n.messageId));
+      if (claimed) {
+        // 'matched' is the honest terminal status: this message IS associated with
+        // that ticket, we simply didn't have to do the associating.
+        await logInbound(n, partnerId, 'matched', claimed.ticketId, `already claimed by ${claimed.origin}`);
+        return;
+      }
+    }
+
     // (R4) Sender authentication gate. The From header is spoofable and the per-partner
     // ticket token (T-YYYY-NNNN) is enumerable, so a token/thread match or a
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
@@ -317,8 +352,9 @@ export async function processInboundEmail(
       // ticket even though no header column carries it. Runs inside the same
       // outer transaction as the comment insert (NOT the durable outside-context
       // pattern) — a rollback must discard this together with the comment.
+      let lostClaimTo: string | null = null;
       if (n.messageId) {
-        await claimMessageLink({
+        const claim = await claimMessageLink({
           ticketId: matched.id,
           orgId: matched.orgId,
           partnerId,
@@ -327,8 +363,16 @@ export async function processInboundEmail(
           visibility: 'public',
           commentId
         });
+        lostClaimTo = claimRaceLoserTicketId(claim, matched.id);
+        if (lostClaimTo) warnLostClaim(n, partnerId, matched.id, lostClaimTo, 'matched-reply');
       }
-      await logInbound(n, partnerId, 'matched', matched.id);
+      await logInbound(
+        n,
+        partnerId,
+        'matched',
+        matched.id,
+        lostClaimTo ? `lost message-id claim to ticket ${lostClaimTo}` : undefined
+      );
       return;
     }
 
@@ -340,7 +384,7 @@ export async function processInboundEmail(
     const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -350,7 +394,7 @@ export async function processInboundEmail(
     const sender = await senderResolver.portalUser();
     if (sender) {
       const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -364,7 +408,7 @@ export async function processInboundEmail(
         ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
         : undefined;
       const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -385,7 +429,7 @@ export async function processInboundEmail(
     // is configured; otherwise fall through to quarantine).
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -423,6 +467,24 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
     }
   };
 }
+
+// Terminal audit row for a create-path result. `lostClaimTo` is normally null;
+// when set, the row names the ticket that already owned this message-id so the
+// duplicate is reconcilable without reading Sentry (see `warnLostClaim`).
+async function logCreated(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  result: { id: string; lostClaimTo: string | null }
+): Promise<void> {
+  await logInbound(
+    n,
+    partnerId,
+    'created',
+    result.id,
+    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : undefined
+  );
+}
+
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
 async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null } | null> {
@@ -490,11 +552,16 @@ async function createFromEmail(
 
   // Record the originating Message-ID as a claimed link row (Task 4) — same
   // idempotent claim as the matched-reply path, covering the create path (fresh
-  // ticket + closed-continuation). Swallow created:false (a poller retry that
-  // reaches here again would just re-observe its own prior claim). Runs inside
-  // the pipeline's outer transaction — a rollback discards it with the ticket.
+  // ticket + closed-continuation). Runs inside the pipeline's outer transaction
+  // — a rollback discards it with the ticket.
+  //
+  // A created:false whose winner is a DIFFERENT ticket means we just minted a
+  // duplicate: someone (the add-in, or a concurrent worker) claimed this
+  // message between the (2b) ledger consult and here. It is reported, never
+  // swallowed — see `warnLostClaim`.
+  let lostClaimTo: string | null = null;
   if (n.messageId) {
-    await claimMessageLink({
+    const claim = await claimMessageLink({
       ticketId: ticket.id,
       orgId,
       partnerId,
@@ -502,6 +569,8 @@ async function createFromEmail(
       origin: 'inbound',
       visibility: 'public'
     });
+    lostClaimTo = claimRaceLoserTicketId(claim, ticket.id);
+    if (lostClaimTo) warnLostClaim(n, partnerId, ticket.id, lostClaimTo, 'create');
   }
 
   // Stamp the threading key so future replies match. Precedence:
@@ -559,7 +628,56 @@ async function createFromEmail(
       subject: persisted[0]?.subject ?? '',
     });
   }
-  return ticket;
+  return { id: ticket.id, lostClaimTo };
+}
+
+/**
+ * A `claimMessageLink` result that lost the (partner_id, message_id) race to a
+ * DIFFERENT ticket. `created:false` pointing at the ticket we just wrote to is
+ * an ordinary idempotent replay (a retry re-observing its own prior claim) and
+ * returns null; anything else is the lost race.
+ */
+function claimRaceLoserTicketId(
+  claim: Awaited<ReturnType<typeof claimMessageLink>>,
+  ourTicketId: string
+): string | null {
+  if (claim.created) return null;
+  return claim.existing.ticketId === ourTicketId ? null : claim.existing.ticketId;
+}
+
+/**
+ * Report a lost message-id claim. With the (2b) ledger consult in place this is
+ * near-unreachable (it needs a claim committed in the window between that SELECT
+ * and this INSERT), which is exactly why it must be loud rather than deleted:
+ * it is the invariant alarm for "one message-id, one canonical association".
+ *
+ * We report rather than throw deliberately. `processInboundEmail`'s catch
+ * SWALLOWS and returns, so the worker's transaction would COMMIT anyway — a
+ * throw would buy no rollback here, only a `failed` audit row that hides which
+ * two tickets are involved. The comment/ticket we already wrote therefore
+ * stands, and the audit row plus this Sentry warning name both sides so the
+ * duplicate is reconcilable by a human.
+ */
+function warnLostClaim(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  ourTicketId: string,
+  winnerTicketId: string,
+  path: 'matched-reply' | 'create'
+): void {
+  captureMessage(
+    'Inbound email lost the message-id claim race: duplicate ticket/comment written',
+    'warning',
+    {
+      path,
+      partnerId,
+      provider: n.provider,
+      providerMessageId: n.providerMessageId,
+      messageId: n.messageId,
+      ourTicketId,
+      winnerTicketId,
+    }
+  );
 }
 
 async function appendInboundComment(

@@ -371,6 +371,79 @@ describe('add-in create vs. inbound poller (Task 16)', () => {
     expect(links[0].origin).toBe('inbound');
   });
 
+  /**
+   * FINAL-REVIEW REGRESSION (finding 2). The add-in acts FIRST and commits its
+   * claim; the 90s poller then ingests the very same message. A fresh email
+   * carries no In-Reply-To/References and no [T-...] token, so nothing in the
+   * thread matcher can connect it to the add-in's ticket — before the (2b)
+   * ledger consult the pipeline fell through to createFromEmail and minted a
+   * SECOND ticket whose losing claim was silently swallowed.
+   */
+  it('poller ingest of a message the add-in already claimed creates no second ticket or comment', async () => {
+    const { suffix, domain, senderEmail } = await seedTechAndSender();
+    const messageId = `<addin-first-${suffix}@customer.test>`;
+    const addinSubject = `Addin ${suffix}`;
+
+    // t=0 — the technician creates the ticket from the add-in.
+    const res = await callAddin({
+      orgId: fx.orgId,
+      subject: addinSubject,
+      description: 'Technician-composed body.',
+      from: { email: senderEmail, name: 'Known Sender' },
+      internetMessageId: messageId,
+      requester: { kind: 'raw' },
+    });
+    expect(res.status).toBe(201);
+    const addinTicketId = (await res.json()).ticket.id as string;
+
+    const ticketsBefore = await admin()
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(eq(tickets.partnerId, fx.partnerId));
+    const commentsBefore = await admin()
+      .select({ id: ticketComments.id })
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, addinTicketId));
+
+    // t=90s — the poller ingests the SAME message.
+    await withSystemDbAccessContext(() =>
+      processInboundEmail(pollerEmail({ domain, senderEmail, messageId, suffix }))
+    );
+
+    // No second ticket anywhere in the partner, and no new comment on the add-in's.
+    const ticketsAfter = await admin()
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(eq(tickets.partnerId, fx.partnerId));
+    expect(ticketsAfter).toHaveLength(ticketsBefore.length);
+    expect(await ticketsWithSubject(addinSubject)).toBe(1);
+
+    const commentsAfter = await admin()
+      .select({ id: ticketComments.id })
+      .from(ticketComments)
+      .where(eq(ticketComments.ticketId, addinTicketId));
+    expect(commentsAfter).toHaveLength(commentsBefore.length);
+
+    // Still exactly ONE association, still the add-in's.
+    const links = await admin()
+      .select()
+      .from(ticketEmailLinks)
+      .where(and(eq(ticketEmailLinks.partnerId, fx.partnerId), eq(ticketEmailLinks.messageId, messageId)));
+    expect(links).toHaveLength(1);
+    expect(links[0].origin).toBe('addin_create');
+    expect(links[0].ticketId).toBe(addinTicketId);
+
+    // The inbound audit row is terminal, non-'failed', and points at the add-in's ticket.
+    const inbound = await admin().execute(
+      sql`SELECT parse_status, ticket_id FROM ticket_email_inbound
+          WHERE partner_id = ${fx.partnerId} AND message_id = ${messageId}`
+    );
+    const rows = Array.from(inbound as Iterable<{ parse_status: string; ticket_id: string | null }>);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.parse_status).toBe('matched');
+    expect(rows[0]!.ticket_id).toBe(addinTicketId);
+  });
+
   it('concurrent add-in create and poller ingest of the same message yield exactly one association', async () => {
     const { suffix, domain, senderEmail } = await seedTechAndSender();
     const messageId = `<addin-concurrent-${suffix}@customer.test>`;
