@@ -728,7 +728,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'get_script_execution',
-      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this to fetch the result of a run you or the user started (e.g. after a run outlived the tool call, or after the user clicked Test Run in the editor).',
+      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this for runs started OUTSIDE the current tool call — e.g. the user clicked Test Run in the script editor, or you have an execution id from get_script_execution_history. It is not a way to recover a run_script call that timed out: run_script already returns that run\'s final recorded outcome.',
       input_schema: {
         type: 'object' as const,
         properties: {

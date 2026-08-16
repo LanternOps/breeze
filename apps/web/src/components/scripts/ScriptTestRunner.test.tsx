@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import ScriptTestRunner from './ScriptTestRunner';
 
@@ -32,7 +32,13 @@ describe('ScriptTestRunner', () => {
   });
   afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
+
+  // Fake timers let the poll loop (POLL_INTERVAL_MS = 2000) run to its deadline
+  // in milliseconds of wall clock instead of minutes — the deadline path is
+  // untestable with real timers.
+  const flush = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
   it('disables test runs and explains why when the script was never saved', async () => {
     render(
@@ -225,5 +231,149 @@ describe('ScriptTestRunner', () => {
 
     await waitFor(() => expect(onTestDeviceChange).toHaveBeenCalledWith(DEVICE_ID));
     expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe(DEVICE_ID);
+  });
+
+  it('terminalises the run on a permanent poll failure and re-polls the same execution on retry', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    let pollGone = true;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        polls += 1;
+        if (pollGone) return jsonResponse({ error: 'gone' }, 404);
+        return jsonResponse({ id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: 'recovered output', stderr: '' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+    await flush();
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await flush(4000);
+
+    expect(polls).toBe(1);
+    expect(screen.getByText(/could not read the run result/i)).toBeInTheDocument();
+    // The run must not still be presented as in flight: no spinning status chip,
+    // and the Run button is only re-enabled because nothing is running.
+    expect(screen.queryByText('Queued')).toBeNull();
+    expect(screen.queryByText('Running')).toBeNull();
+    expect(screen.getByTestId('test-run-button')).not.toBeDisabled();
+
+    // Recovery must re-read the SAME execution, never start a second run.
+    pollGone = false;
+    fireEvent.click(screen.getByTestId('test-poll-retry'));
+    await flush(4000);
+
+    expect(screen.getByText('recovered output')).toBeInTheDocument();
+    expect(polls).toBe(2);
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => String(url).includes('/execute')).length).toBe(1);
+  });
+
+  it('keeps polling through a 429 — a rate limit is not a permanent failure', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        polls += 1;
+        if (polls <= 2) return jsonResponse({ error: 'rate limited' }, 429);
+        return jsonResponse({ id: EXECUTION_ID, status: 'completed', exitCode: 0, stdout: 'after the limit', stderr: '' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+    await flush();
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    await flush(10000);
+
+    expect(polls).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText('after the limit')).toBeInTheDocument();
+    expect(screen.queryByText(/could not read the run result/i)).toBeNull();
+  });
+
+  it('terminalises the run when the poll deadline expires', async () => {
+    vi.useFakeTimers();
+    fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
+        return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
+      }
+      if (url === `/scripts/executions/${EXECUTION_ID}`) {
+        return jsonResponse({ id: EXECUTION_ID, status: 'running' });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        timeoutSeconds={1}
+        isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+    await flush();
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    fireEvent.click(screen.getByTestId('test-run-button'));
+    // Deadline is timeoutSeconds + 120s of slack.
+    await flush(130_000);
+
+    expect(screen.getByText(/still no result/i)).toBeInTheDocument();
+    expect(screen.queryByText('Running')).toBeNull();
+    expect(screen.queryByText('Queued')).toBeNull();
+    expect(screen.getByTestId('test-run-button')).not.toBeDisabled();
+    // Recovery is still possible without starting a second run.
+    expect(screen.getByTestId('test-poll-retry')).toBeInTheDocument();
+  });
+
+  it('clears a pinned device that the new OS targets no longer allow', async () => {
+    const onTestDeviceChange = vi.fn();
+    const { rerender } = render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('test-device-select'), { target: { value: DEVICE_ID } });
+    expect(screen.getByTestId('test-run-button')).not.toBeDisabled();
+    expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBe(DEVICE_ID);
+
+    rerender(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['macos']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+
+    await waitFor(() =>
+      expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe('')
+    );
+    // Run must be blocked, not silently targeting the now-hidden device.
+    expect(screen.getByTestId('test-run-button')).toBeDisabled();
+    expect(onTestDeviceChange).toHaveBeenLastCalledWith(null);
+    expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBeNull();
   });
 });
