@@ -25,3 +25,25 @@ export const bindSchema = z.object({
 
 /** Per-IP bind rate limit — tighter than exchange since this path does a real password + MFA check. */
 export const BIND_RATE_LIMIT = { limit: 10, windowSeconds: 900 } as const;
+
+/** Body of POST /office-addin/email-context (spec §3.1, Task 15). No message identifiers in URLs. */
+export const emailContextSchema = z.object({
+  from: z.object({ email: z.string().email().max(320), name: z.string().max(255).nullish() }),
+  // Provenance only — never used for resolution (send-on-behalf-of).
+  sender: z
+    .object({ email: z.string().email().max(320), name: z.string().max(255).nullish() })
+    .nullish(),
+  internetMessageId: z.string().max(998).nullish(),
+  references: z.array(z.string().max(998)).max(100).nullish(),
+  inReplyTo: z.string().max(998).nullish(),
+  subject: z.string().max(1000),
+  conversationId: z.string().max(256).nullish(),
+  // Echoed back so the pane can reject a stale response (a later item may
+  // have been selected before this request resolved).
+  itemGeneration: z.number().int(),
+});
+
+/** Body of POST /office-addin/orgs/search (Task 15, moved from Task 22). */
+export const orgSearchSchema = z.object({
+  query: z.string().min(1).max(200),
+});
