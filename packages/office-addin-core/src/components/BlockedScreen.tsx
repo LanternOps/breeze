@@ -21,6 +21,10 @@ const COPY: Record<AuthBlockKind, { title: string; body: string }> = {
     title: 'Temporarily unavailable',
     body: 'Something went wrong talking to Breeze. Try again in a moment.',
   },
+  unsupported_persona: {
+    title: 'Not available',
+    body: 'This session type is not supported here. Please reload the add-in.',
+  },
 };
 
 export function BlockedScreen({ kind, onRetry }: { kind: AuthBlockKind; onRetry?: () => void }) {

@@ -1,8 +1,13 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { render, cleanup, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
+import { __resetSessionForTests, type TechPersonaSession } from '../auth/session';
 import type { HostAdapter } from '../host/types';
 
+beforeEach(() => {
+  __resetSessionForTests();
+  sessionStorage.clear();
+});
 afterEach(cleanup);
 
 /**
@@ -41,4 +46,57 @@ describe('App (core, host-parameterized)', () => {
   // ChatController reads context + name FRESH at send time (covered in
   // chatController.test.ts) and the Outlook adapter's switchItem re-read is
   // covered in apps/outlook-addin. App only forwards host/clientHost to ChatPane.
+
+  function seedClientSession() {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'client',
+        sessionToken: 'tok',
+        expiresAt: Date.now() + 60_000,
+        user: { id: 'u-1', email: 'a@b.com', name: 'A B' },
+        org: null,
+        branding: null,
+      }),
+    );
+  }
+
+  function seedTechSession() {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'tech',
+        sessionToken: 'tech-tok',
+        expiresAt: Date.now() + 60_000,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+  }
+
+  it('persona client renders ChatPane exactly as before', async () => {
+    seedClientSession();
+    render(<App host={fakeHost()} clientHost="word" />);
+    await waitFor(() => expect(screen.getByTestId('new-chat-button')).toBeTruthy());
+  });
+
+  it('persona tech with a techPane prop renders techPane, not ChatPane', async () => {
+    seedTechSession();
+    function TechPane({ session }: { session: TechPersonaSession }) {
+      return <div data-testid="tech-pane">{session.partner.id}</div>;
+    }
+    render(<App host={fakeHost()} clientHost="outlook" techPane={TechPane} />);
+    await waitFor(() => expect(screen.getByTestId('tech-pane')).toBeTruthy());
+    expect(screen.getByTestId('tech-pane').textContent).toBe('p-1');
+    expect(screen.queryByTestId('new-chat-button')).toBeNull();
+  });
+
+  it('persona tech with NO techPane falls back to BlockedScreen (defensive)', async () => {
+    seedTechSession();
+    render(<App host={fakeHost()} clientHost="word" />);
+    await waitFor(() => expect(screen.getByTestId('blocked-unsupported_persona')).toBeTruthy());
+    expect(screen.queryByTestId('new-chat-button')).toBeNull();
+  });
 });
