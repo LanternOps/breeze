@@ -191,6 +191,19 @@ describe('officeAddinTechAuthMiddleware', () => {
     expect(redisMock.del).toHaveBeenCalledWith(`techaddin:session:${TOKEN}`);
   });
 
+  it('401s when the session userId disagrees with the binding userId', async () => {
+    const OTHER_USER_ID = 'dddddddd-1111-4222-8333-444455556666';
+    findActiveBindingByIdMock.mockResolvedValue({
+      binding: { ...BOUND.binding, userId: OTHER_USER_ID },
+      user: { ...BOUND.user, id: OTHER_USER_ID },
+    });
+    const res = await buildApp().request(authed());
+    expect(res.status).toBe(401);
+    // Confused deputy: must never vet one identity and authorize another.
+    expect(computeAccessibleOrgIdsMock).not.toHaveBeenCalled();
+    expect(getUserPermissionsMock).not.toHaveBeenCalled();
+  });
+
   it('401s when the user was deactivated mid-session', async () => {
     findActiveBindingByIdMock.mockResolvedValue({
       ...BOUND,

@@ -110,6 +110,16 @@ export async function officeAddinTechAuthMiddleware(
     return c.json(UNAUTHORIZED, 401);
   }
 
+  // Confused-deputy guard: everything below vets the BINDING's user (status,
+  // epoch, partner) while steps 5-6 authorize `session.userId`. Assert the two
+  // are the same identity here rather than trusting the mint site to have kept
+  // them in sync — a forged/corrupt session payload or future drift in
+  // routes/officeAddin/auth.ts would otherwise check one user and hand out
+  // another user's permissions.
+  if (bound.binding.userId !== session.userId) {
+    return c.json(UNAUTHORIZED, 401);
+  }
+
   if (bound.user.status !== 'active') {
     return c.json(UNAUTHORIZED, 401);
   }
