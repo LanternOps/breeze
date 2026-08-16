@@ -61,7 +61,11 @@ describe('SoftwareVersionManager installer type (URL source)', () => {
       if (/\/versions$/.test(String(url)) && opts?.method === 'POST') {
         return Promise.resolve(jsonResponse({ data: { ...EXISTING_VERSION, id: 'ver-2' } }));
       }
-      return Promise.resolve(jsonResponse({ data: [EXISTING_VERSION] }));
+      // No existing versions: "Add version" seeds itself from the latest one
+      // when there is one (see openAddForm), and every case below is about how
+      // a BLANK form derives the installer type from the URL. The seeded path
+      // is covered by its own case at the bottom of this file.
+      return Promise.resolve(jsonResponse({ data: [] }));
     });
   });
 
@@ -130,5 +134,30 @@ describe('SoftwareVersionManager installer type (URL source)', () => {
   it('does not warn before a URL has been entered', async () => {
     await renderLoaded();
     expect(screen.queryByText(/no recognizable installer extension/i)).toBeNull();
+  });
+
+  // The add form seeds itself from the latest version so a routine "new release,
+  // same install shape" needs one glance. The installer type has to ride along:
+  // carrying the URL and args but dropping fileType would store file_type NULL,
+  // and the dispatcher then falls back to 'exe' and execs an MSI directly —
+  // exactly the bug the selector exists to prevent.
+  it('carries the installer type over when seeding a new version from the latest', async () => {
+    fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+      if (String(url).startsWith('/custom-fields')) {
+        return Promise.resolve(jsonResponse({ data: [] }));
+      }
+      if (/\/versions$/.test(String(url)) && opts?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ data: { ...EXISTING_VERSION, id: 'ver-2' } }));
+      }
+      return Promise.resolve(jsonResponse({ data: [EXISTING_VERSION] }));
+    });
+
+    await renderLoaded();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('version-file-type')).toHaveValue('msi'),
+    );
+    submitForm();
+    await waitFor(() => expect(versionBody().fileType).toBe('msi'));
   });
 });

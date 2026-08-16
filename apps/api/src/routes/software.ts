@@ -920,7 +920,10 @@ softwareRoutes.post(
     // scripted clients.
     if (payload.downloadUrl && fileType === null) {
       captureMessage('software version created with undetermined installer type', 'warning', {
-        orgId,
+        // Dual-axis (#2135): a partner-wide package has org_id NULL, so log both
+        // axes — orgId alone would attribute those rows to nothing at all.
+        orgId: catalogItem.orgId,
+        partnerId: catalogItem.partnerId,
         catalogId: id,
         version: payload.version,
         // Host only — a managed-software URL can carry a presigned capability

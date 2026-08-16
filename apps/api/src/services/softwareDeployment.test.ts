@@ -101,7 +101,6 @@ import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
   dispatchSoftwareInstallToDevice,
-  inferFileTypeFromUrl,
 } from './softwareDeployment';
 import { resolveEdrInstaller } from './edrInstallerResolver';
 import { inArray } from 'drizzle-orm';
@@ -1512,17 +1511,3 @@ describe('dispatchSoftwareInstallToDevice', () => {
   });
 });
 
-describe('inferFileTypeFromUrl', () => {
-  it('derives the installer type from the URL extension', () => {
-    expect(inferFileTypeFromUrl('https://dl.example.com/app-1.2.3.msi')).toBe('msi');
-    expect(inferFileTypeFromUrl('https://dl.example.com/app.MSI?sig=abc#f')).toBe('msi');
-    expect(inferFileTypeFromUrl('https://dl.example.com/pkg.deb')).toBe('deb');
-  });
-
-  it('returns null for unknown or missing extensions and empty input', () => {
-    expect(inferFileTypeFromUrl('https://dl.example.com/download')).toBeNull();
-    expect(inferFileTypeFromUrl('https://dl.example.com/archive.zip')).toBeNull();
-    expect(inferFileTypeFromUrl(null)).toBeNull();
-    expect(inferFileTypeFromUrl('')).toBeNull();
-  });
-});

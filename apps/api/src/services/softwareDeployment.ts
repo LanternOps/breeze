@@ -130,20 +130,6 @@ export async function dispatchSoftwareInstallToDevice(
   return { transport: 'queued', deviceCommandId };
 }
 
-/**
- * Infer the installer type from a download URL's extension. URL-only versions
- * never get a `file_type` stamped (that happens on file upload), and the old
- * blanket `?? 'exe'` fallback made the agent execute a downloaded .msi as a
- * program instead of routing it through msiexec (and mis-dispatched
- * .deb/.pkg/.dmg the same way). Query strings and fragments are ignored.
- */
-export function inferFileTypeFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const path = url.split(/[?#]/, 1)[0] ?? '';
-  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-  return ['msi', 'exe', 'dmg', 'deb', 'pkg'].includes(ext) ? ext : null;
-}
-
 /** Structural subset of a software_versions row the install fan-out needs. */
 export interface SoftwareInstallFanoutVersionRecord {
   downloadUrl: string | null;
@@ -486,18 +472,20 @@ export async function buildAndDispatchSoftwareInstalls(
     // the sw-install-<deployment>-<device>-<attempt> command id, but the
     // queued fallback's device_commands row only has the payload to key
     // result reconciliation on (deploymentId AND retryCount).
-    // Prefer the stamped file_type (uploaded binaries), fall back to the
-    // resolved per-device URL's extension for URL-only versions, and only then
-    // to 'exe' — see inferFileTypeFromUrl.
+    // file_type is a plain nullable varchar with no CHECK constraint, so the
+    // column can hold anything a future route, import or manual UPDATE puts
+    // there. Narrow on read: an unrecognized value would otherwise be
+    // dispatched verbatim and only rejected by the agent AFTER the download,
+    // as `unsupported fileType`. 'exe' remains the historical fallback for a
+    // NULL — see deriveSoftwareFileTypeFromUrl on why we never guess better.
     //
-    // The stamped value is NARROWED, not trusted: file_type is a plain nullable
-    // varchar with no CHECK constraint, so the column can hold anything a
-    // future route, import or manual UPDATE puts there. An unrecognized value
-    // would otherwise be dispatched verbatim and only rejected by the agent
-    // AFTER the download, as `unsupported fileType`.
+    // Deliberately NOT inferred from deviceDownloadUrl here. Doing so would fix
+    // dispatch for legacy URL-only rows created before #3571 stamped file_type,
+    // but it reverses an explicit decision in that PR, so it is left as a
+    // separate call rather than smuggled in by a rebase.
     const effectiveFileType = isSoftwareFileType(versionRecord.fileType)
       ? versionRecord.fileType
-      : (inferFileTypeFromUrl(deviceDownloadUrl) ?? 'exe');
+      : 'exe';
     const payload: AgentCommand['payload'] = {
       deploymentId,
       retryCount,
