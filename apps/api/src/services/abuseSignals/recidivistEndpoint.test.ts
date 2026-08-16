@@ -109,7 +109,7 @@ describe('syncEndpointFingerprints', () => {
     await syncEndpointFingerprints(now);
 
     expect(db.execute).toHaveBeenCalledTimes(3);
-    const upsertCall = vi.mocked(db.execute).mock.calls[2]![0] as { strings: string[]; queryChunks?: unknown };
+    const upsertCall = vi.mocked(db.execute).mock.calls[2]![0] as unknown;
     const upsertSql = JSON.stringify(upsertCall);
     expect(upsertSql).toContain('remote_tool_guid');
     expect(upsertSql).toContain('0123456789abcdef');

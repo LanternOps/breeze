@@ -61,9 +61,11 @@ both regions: `VM-1128dd88-…` (Coastal Titles↔Jzac Legal, both suspended),
 mecanico [active]**).
 
 The last one is the proof of the "finds unflagged accounts" claim: it surfaced a
-surviving sibling of the suspended concretcimento operator (login
-`financeiro2@concretcimento.com.br`, same domain, created 07-02, never flagged)
-that the 08-12 containment missed entirely.
+surviving sibling of the suspended operator — a login on the *same email domain*
+as the suspended account, created 07-02 and never flagged — that the 08-12
+containment missed entirely. (The address itself is deliberately not reproduced
+here: this repo is public, and `check-customer-pii.sh` blocks real customer
+domains. The concrete identifiers live in the incident record.)
 
 **Rule B false positives: zero**, but the sample is small and the mechanism is
 weaker than Rule A — see Scoring.
