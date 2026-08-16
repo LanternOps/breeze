@@ -163,9 +163,13 @@ export const SIGNAL_DEFAULTS = {
   //
   // per_extra_axis is deliberately large enough that two watch-tier axes clear
   // severity.alert_score at defaults (55 + 15 = 70), because the whole point is
-  // to make a corroborated pair reach an operator in real time. Raising
-  // severity.alert_score or lowering this demotes the result to watch rather
-  // than producing an alert its score contradicts.
+  // to make a corroborated pair reach an operator in real time.
+  //
+  // Reaching min_axes is necessary but NOT sufficient: the aggregate must also
+  // cross severity.alert_score or nothing is emitted at all. Two weak axes can
+  // sum below it (45 + 15 = 60), and a synthetic *watch* row would notify
+  // nobody while crowding out the weekly digest's 20-row watch list. Lowering
+  // this value therefore silences the signal rather than demoting it.
   'fraud.corroborated_watch.min_axes': 2,
   'fraud.corroborated_watch.per_extra_axis': 15,
 } as const satisfies Record<string, number>;

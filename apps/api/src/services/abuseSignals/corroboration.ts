@@ -44,22 +44,44 @@ import type { ComputedSignal } from './types';
  * key this sweep can emit is mapped.
  */
 export const SIGNAL_AXIS: Record<string, string> = {
-  'rmm.session_intensity': 'session',
+  // `session_intensity` is "fast enroll-to-remote" and `enrollment_velocity` is
+  // the enrollment burst itself — the same episode measured twice. An MSP
+  // onboarding a customer bulk-enrolls and immediately connects to each box,
+  // firing both. One axis.
+  'rmm.session_intensity': 'enrollment_burst',
+  'rmm.enrollment_velocity': 'enrollment_burst',
   'rmm.consumer_devices': 'fleet_shape',
   'rmm.provider_default_hostname': 'fleet_shape',
   'rmm.enrollment_ip_spread': 'ip_scatter',
   'rmm.device_ip_scatter': 'ip_scatter',
-  'rmm.enrollment_velocity': 'enrollment_velocity',
   'rmm.remote_access_installer': 'script',
   'rmm.unbranded_installer': 'script',
   'rmm.shared_installer_host': 'script',
   'billing.cardholder_name_mismatch': 'billing_identity',
   'billing.card_testing': 'billing_identity',
   'billing.shared_card_fingerprint': 'billing_identity',
-  'fraud.failed_login_cluster': 'auth',
-  'resource.enrollment_denied': 'resource',
-  'resource.volume_outlier': 'resource',
 };
+
+/**
+ * Signals that may NOT corroborate, no matter how strongly they fire.
+ *
+ * `fraud.failed_login_cluster` is not directional: a burst of failed logins
+ * usually means the partner is being ATTACKED, not that it is the attacker.
+ * Treating it as evidence against the partner would page us about victims.
+ *
+ * `resource.*` measures volume, and heavy automation is a normal reason to be
+ * loud. It is a capacity/abuse-of-plan concern, not evidence of fraud, and
+ * folding it in would let two non-fraud observations manufacture a page.
+ *
+ * These are listed explicitly rather than matched by prefix so a NEW detector
+ * in either namespace has to make a deliberate choice rather than silently
+ * inheriting paging-grade weight.
+ */
+export const CORROBORATION_INELIGIBLE = new Set([
+  'fraud.failed_login_cluster',
+  'resource.enrollment_denied',
+  'resource.volume_outlier',
+]);
 
 export const CORROBORATED_SIGNAL_KEY = 'fraud.corroborated_watch';
 
@@ -82,11 +104,19 @@ export function computeCorroborationSignals(
   const minAxes = cfg['fraud.corroborated_watch.min_axes'];
   const perExtraAxis = cfg['fraud.corroborated_watch.per_extra_axis'];
 
+  // A partner that already has a real alert this sweep is being paged about
+  // anyway; a second synthetic page for the same account is noise.
+  const alreadyAlerting = new Set(
+    computed.filter((s) => s.severity === 'alert').map((s) => s.partnerId),
+  );
+
   const byPartner = new Map<string, ComputedSignal[]>();
   for (const s of computed) {
     if (s.severity !== 'watch') continue;
     if (s.signalKey.startsWith('invariant.')) continue;
     if (s.signalKey === CORROBORATED_SIGNAL_KEY) continue;
+    if (CORROBORATION_INELIGIBLE.has(s.signalKey)) continue;
+    if (alreadyAlerting.has(s.partnerId)) continue;
     const list = byPartner.get(s.partnerId);
     if (list) list.push(s);
     else byPartner.set(s.partnerId, [s]);
@@ -109,21 +139,30 @@ export function computeCorroborationSignals(
       .sort((a, b) => b.score - a.score || a.axis.localeCompare(b.axis));
 
     // Anchor on the strongest single axis, then add for each INDEPENDENT
-    // corroborating axis. Deriving severity through the normal
-    // scoreToSeverity keeps score and severity consistent, so lowering
-    // per_extra_axis (or raising severity.alert_score) demotes this to watch
-    // rather than producing an 'alert' that its own score contradicts.
+    // corroborating axis. Severity is derived through the normal
+    // scoreToSeverity so score and severity never contradict each other.
     const base = contributors[0]?.score ?? 0;
     const score = Math.min(100, Math.round(base + perExtraAxis * (bestByAxis.size - 1)));
+    const severity = scoreToSeverity(score, cfg);
+
+    // Emit ONLY when the aggregate actually reaches alert. Two weak axes can
+    // sum below the threshold (45 + 15 = 60), and a synthetic *watch* row
+    // would be pure cost: it notifies nobody, duplicates evidence already
+    // visible on the constituent rows, and crowds out the weekly digest's
+    // 20-row watch list. The whole purpose of this signal is to page.
+    if (severity !== 'alert') continue;
 
     out.push({
       partnerId,
       signalKey: CORROBORATED_SIGNAL_KEY,
       score,
-      severity: scoreToSeverity(score, cfg),
-      // partnerName must lead: index.ts formatSignalAlert reads it.
+      severity,
+      // Key order matters: index.ts formatSignalAlert reads partnerName, and
+      // truncates the serialised evidence at 800 chars — so the human-readable
+      // axis summary goes near the front, before the detailed contributors.
       evidence: {
         partnerName: signals.find((s) => s.evidence.partnerName)?.evidence.partnerName ?? 'unknown',
+        summary: contributors.map((c) => `${c.axis}:${c.signalKey}=${c.score}`).join(' + '),
         axisCount: bestByAxis.size,
         contributors,
       },
