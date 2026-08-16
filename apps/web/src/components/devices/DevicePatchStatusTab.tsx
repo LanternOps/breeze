@@ -1571,7 +1571,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                               </span>
                             )}
                           </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone, 'Installed (date unknown)')}</td>
                         </tr>
                       );
                     })
@@ -1634,7 +1634,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                             <span className="text-xs text-muted-foreground">--</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatDate(patch.installedAt, effectiveTimezone, 'Installed (date unknown)')}</td>
                       </tr>
                     );
                   })}
