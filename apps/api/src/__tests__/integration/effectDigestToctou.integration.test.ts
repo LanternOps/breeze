@@ -77,6 +77,7 @@ vi.mock('../../services/aiTools', async (importOriginal) => {
 import { db, withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { actionIntents } from '../../db/schema/actionIntents';
+import { devices } from '../../db/schema/devices';
 import { scripts } from '../../db/schema/scripts';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { computeEffectDigest } from '../../services/actionIntents/effectDigest';
@@ -88,6 +89,7 @@ import {
   createOrganization,
   createPartner,
   createRole,
+  createSite,
   createUser,
   grantRolePermissions,
 } from './db-utils';
@@ -164,13 +166,21 @@ interface Scenario {
   requester: { id: string; email: string };
   requesterRoleId: string;
   scriptId: string;
+  deviceId: string;
 }
 
 /**
  * One org, one requester holding scripts:execute (supervised needs no
- * approvals:decide — the requester self-approves), and one REAL org-owned
- * script row. Inserted through the superuser test client because the
- * fixture predates any request context.
+ * approvals:decide — the requester self-approves), one REAL org-owned script
+ * row and one REAL device to target. Inserted through the superuser test
+ * client because the fixture predates any request context.
+ *
+ * The device became load-bearing in #3409 PR4c-1: the digest now pins the set
+ * of ORGS the run fans out to (they determine which tenant variables resolve),
+ * so the snapshot builder resolves every `deviceIds` entry to an org and fails
+ * closed — `target_absent`, unpinned intent — on any it cannot. A synthetic
+ * UUID, which is what this fixture used to pass, would silently make every
+ * assertion below vacuous.
  */
 async function seedScenario(): Promise<Scenario> {
   const partner = await createPartner();
@@ -199,12 +209,30 @@ async function seedScenario(): Promise<Scenario> {
     })
     .returning({ id: scripts.id });
 
+  const site = await createSite({ orgId: org.id });
+  const [device] = await getTestDb()
+    .insert(devices)
+    .values({
+      orgId: org.id,
+      siteId: site!.id,
+      agentId: randomUUID(),
+      hostname: `toctou-${randomUUID().slice(0, 8)}`,
+      osType: 'linux',
+      osVersion: '24.04',
+      architecture: 'x86_64',
+      agentVersion: '0.0.0-test',
+      status: 'online',
+      enrolledAt: new Date(),
+    })
+    .returning({ id: devices.id });
+
   return {
     partnerId: partner.id,
     orgId: org.id,
     requester: { id: requester.id, email: requester.email },
     requesterRoleId: role.id,
     scriptId: script!.id,
+    deviceId: device!.id,
   };
 }
 
@@ -216,9 +244,11 @@ async function createPinnedIntent(s: Scenario): Promise<{ intentId: string; appr
   const auth = orgAuth(s.requester, s.orgId, s.partnerId, s.requesterRoleId);
   const snapshot = await createActionIntent(auth, {
     toolName: TOOL_NAME,
-    // createActionIntent never verifies the device exists (that is the tool
-    // handler's job at execution time), so a bare UUID is fine.
-    input: { scriptId: s.scriptId, deviceIds: [randomUUID()] },
+    // A REAL device: the digest pins the orgs the run fans out to, so the
+    // snapshot resolves each id and refuses to pin when one does not exist.
+    // (createActionIntent still does not AUTHORIZE the device — that stays the
+    // tool handler's job at execution time.)
+    input: { scriptId: s.scriptId, deviceIds: [s.deviceId] },
     source: 'chat',
   });
   expect(snapshot.status).toBe('pending_approval');
@@ -361,7 +391,9 @@ describe('effect-digest TOCTOU chain (real Postgres, real resolver, real release
   runDb('the resolver round-trips against the real scripts schema', async () => {
     const s = seeded!;
     const { digest } = await createPinnedIntent(s);
-    const args = { scriptId: s.scriptId, deviceIds: [randomUUID()] };
+    // Same args the intent carries — the pinned org set is derived from these,
+    // so a different device id would legitimately produce a different digest.
+    const args = { scriptId: s.scriptId, deviceIds: [s.deviceId] };
 
     const recomputed = await withSystemDbAccessContext(() => computeEffectDigest(TOOL_NAME, args, db));
     expect(recomputed).toBe(digest);

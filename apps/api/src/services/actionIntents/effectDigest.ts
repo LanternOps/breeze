@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Database } from '../../db';
 import {
-  scripts, quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
+  quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners,
 } from '../../db/schema';
+import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 
 /**
  * Effect-digest pinning for tier-3 action intents (spec
@@ -111,44 +112,53 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // on four_eyes). Pins every field that changes WHAT ACTUALLY EXECUTES, not
   // just the body: `content` alone left `run_as` free to be flipped from
   // `user` to `system` between approval and release with a byte-identical
-  // digest. The pinned set mirrors exactly what aiToolsScripts.ts's
-  // run_script handler reads off the row and forwards to the agent
-  // (language / content / timeoutSeconds / runAs), plus `orgId`, which the
-  // handler uses for its org-equality invariant against the target device.
+  // digest.
   //
-  // `scripts.parameters` (the jsonb column) is deliberately NOT pinned: the
-  // handler passes `input.parameters ?? {}` from the tool call, never the
-  // column, so the column has no effect on execution and pinning it would
-  // manufacture spurious `content_changed` failures.
+  // The pinned set — and the reads that produce it — live in
+  // runScriptSnapshot.ts rather than inline here: #3409 PR4c-1 makes the
+  // digest and dispatch derivable from ONE observation instead of two copies
+  // free to drift apart (the release side consumes the snapshot's scope; this
+  // creation-side call needs only the material).
+  // `runScriptDigestMaterial` is a `v: 2` envelope, so a digest pinned before
+  // this change can never compare equal to a recomputed one: a pre-PR4c
+  // intent fails closed at release rather than revalidating against a
+  // narrower pin.
+  //
+  // `scripts.parameters` (the jsonb column) IS pinned, reversing the earlier
+  // exclusion. That exclusion rested on "the handler passes
+  // `input.parameters ?? {}` from the tool call, never the column, so the
+  // column has no effect on execution" — TRUE before #3409 PR3, FALSE since:
+  // the column now drives `scriptNeedsVariableScope` and every per-parameter
+  // `tenantVariable` binding at scriptDispatch.ts. Rebinding a parameter to a
+  // different variable changes what the device runs with a byte-identical
+  // script body, so the column is exactly the kind of drift this module
+  // exists to catch. Pinned through the canonical serializer
+  // (`canonicalizeScriptParameterDefinitions`), which is schema-normalized and
+  // object-key-order independent — a jsonb round trip or a legacy
+  // `{name,type}` gaining its materialized defaults is NOT a change, so the
+  // spurious-`content_changed` worry the old comment raised does not survive
+  // the canonicalization either.
+  //
+  // The variables themselves are pinned by REFERENCE (variableId + version +
+  // isSecret + ownerScope, per (org, key)) and never by value —
+  // `effect_digest` is widely readable and must not be reconstructible into
+  // tenant plaintext.
   //
   // Filtered to non-deleted scripts, mirroring the handler — a script
   // soft-deleted after approval resolves to `target_absent` here too, which
   // correctly mismatches against the digest pinned at creation (the release
   // fails closed instead of trying to run a deleted script).
   run_script: async (args, database) => {
-    const scriptId = typeof args.scriptId === 'string' ? args.scriptId : null;
-    if (!scriptId) return MISSING_ARG;
-    const [script] = await database
-      .select({
-        orgId: scripts.orgId,
-        language: scripts.language,
-        content: scripts.content,
-        timeoutSeconds: scripts.timeoutSeconds,
-        runAs: scripts.runAs,
-      })
-      .from(scripts)
-      .where(and(eq(scripts.id, scriptId), isNull(scripts.deletedAt)))
-      .limit(1);
-    if (!script) return TARGET_ABSENT;
-    return material(
-      JSON.stringify({
-        orgId: script.orgId ?? null,
-        language: script.language,
-        content: script.content,
-        timeoutSeconds: script.timeoutSeconds,
-        runAs: script.runAs,
-      }),
-    );
+    const built = await buildRunScriptSnapshot(args, database);
+    if (built.kind === 'missing_arg') return MISSING_ARG;
+    if (built.kind === 'target_absent') return TARGET_ABSENT;
+    // `built.scope` (plaintext-bearing) is deliberately dropped: this path
+    // only needs the digest, and this map's `ResolverResult` has nowhere to
+    // put a scope. Keeping it is the release side's job — see
+    // buildRunScriptSnapshot's `{ snapshot, scope }` return, which lets a
+    // caller that also DISPATCHES reuse the exact scope the digest was
+    // checked against rather than re-resolving it.
+    return material(runScriptDigestMaterial(built.snapshot));
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
@@ -341,9 +351,17 @@ export function effectDigestResolverKey(toolName: string, action?: string): stri
  * passing that SAME singleton reference is what makes "compute inside the
  * creation transaction" work — the digest read lands on whatever transaction
  * the caller currently has open, without this module needing to import
- * '../../db' (and its real Postgres client construction) itself. That keeps
- * this module — and effectDigest.test.ts — free of any dependency on a
- * live/mocked database module; tests just pass a fake `database`.
+ * '../../db' (and its real Postgres client construction) itself. Tests just
+ * pass a fake `database`.
+ *
+ * ONE EXCEPTION since #3409 PR4c-1: run_script's snapshot loads the tenant-
+ * variable scope through `loadTenantVariableScope`, which deliberately does
+ * NOT ride the caller's transaction (it elevates to a fresh system context —
+ * see tenantVariableResolution.ts for why resolution must not depend on which
+ * of the five dispatch call sites is ambient) and therefore reads the module-
+ * level `db`. So this module's import graph now reaches '../../db'
+ * transitively, and effectDigest.test.ts seams that ONE function. Everything
+ * else still resolves purely against the injected `database`.
  */
 export async function computeEffectDigestOutcome(
   toolName: string,

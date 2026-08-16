@@ -17,8 +17,8 @@ import {
 /**
  * The verified `run_script` snapshot (#3409 PR4c-1) — everything an approval
  * pins about a script run, gathered once so the effect digest
- * (`effectDigest.ts`, wired in Task 3) and dispatch can be built from the SAME
- * observation.
+ * (`effectDigest.ts`'s `run_script` resolver) and dispatch can be built from
+ * the SAME observation.
  *
  * WHY THIS EXISTS. `effect_digest` used to pin five script fields (orgId,
  * language, content, timeoutSeconds, runAs) and nothing else. Since #3409 PR3,
@@ -40,10 +40,18 @@ import {
  * THE INVARIANT: a resolved variable's VALUE never enters this module's
  * digest material. `action_intents.effect_digest` is a widely-readable column
  * and its input must not be reconstructible into tenant plaintext; identity is
- * sufficient to detect drift, so identity is all that is pinned. The snapshot
- * object itself carries the loaded `variableScope` (values included) for
- * dispatch to reuse in-process — `runScriptDigestMaterial` deliberately does
- * not read it.
+ * sufficient to detect drift, so identity is all that is pinned.
+ *
+ * WHY THE SCOPE IS A SIBLING, NOT A FIELD. The loaded `TenantVariableScope`
+ * holds decrypted PLAINTEXT, and dispatch wants to reuse the very scope the
+ * digest was pinned against rather than re-loading (and possibly re-resolving)
+ * it. Both are true, so it is returned ALONGSIDE the snapshot
+ * (`{ kind: 'snapshot', snapshot, scope }`) instead of hanging off it. Nesting
+ * it made `RunScriptSnapshot` a plaintext-bearing object one stray
+ * `JSON.stringify(snapshot)` in a log or audit path away from a leak, and made
+ * "the digest material never reads the scope" a matter of discipline. With the
+ * split, `RunScriptSnapshot` is pure digest material — the leak is not guarded
+ * against, it is structurally absent.
  */
 
 /**
@@ -88,12 +96,16 @@ export type RunScriptSnapshot = {
   deviceOrgIds: string[];
   /** Code-point sorted by (orgId, key). */
   variableReferences: PinnedVariableReference[];
-  /** The SAME scope dispatch will resolve against — carried, never digested. */
-  variableScope: TenantVariableScope;
 };
 
 export type BuildRunScriptSnapshotResult =
-  | { kind: 'snapshot'; snapshot: RunScriptSnapshot }
+  | {
+      kind: 'snapshot';
+      /** Digest material only — carries no variable VALUE (see the header). */
+      snapshot: RunScriptSnapshot;
+      /** The SAME scope dispatch will resolve against. Plaintext-bearing: never digested, never serialized. */
+      scope: TenantVariableScope;
+    }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
@@ -270,8 +282,8 @@ export async function buildRunScriptSnapshot(
         `unparseable:${JSON.stringify(script.parameters ?? null)}`,
       deviceOrgIds,
       variableReferences,
-      variableScope,
     },
+    scope: variableScope,
   };
 }
 
@@ -281,7 +293,8 @@ export async function buildRunScriptSnapshot(
  * Determinism is by construction, not by luck: fixed object-literal field
  * order (the same technique the rest of `effectDigest.ts` uses), explicitly
  * code-point-sorted arrays, and a canonical parameter serialization from
- * `@breeze/shared`. Nothing here reads `snapshot.variableScope`.
+ * `@breeze/shared`. The scope is not in reach of this function at all — it is
+ * a sibling of the snapshot, not a field on it (see the header).
  *
  * `v: 2` is load-bearing. The v1 material was a bare five-field object; the
  * envelope guarantees a v1 string can never accidentally equal a v2 one, so a

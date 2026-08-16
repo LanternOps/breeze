@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '../../db';
+import type { ResolvedVariable, TenantVariableScope } from '../tenantVariableResolution';
 import {
   computeEffectDigest,
   computeEffectDigestOutcome,
@@ -8,17 +10,44 @@ import {
 } from './effectDigest';
 
 /**
+ * The ONE seam this suite needs (#3409 PR4c-1).
+ *
+ * `run_script`'s resolver now builds the verified snapshot
+ * (`runScriptSnapshot.ts`), and that builder loads the tenant-variable scope
+ * through `loadTenantVariableScope` — the single function in this file's
+ * import graph that reaches the module-level `db` singleton. Everything else
+ * in `tenantVariableResolution` (notably `resolveForOrg` / `unreadableForOrg`,
+ * which the builder actually uses to shape the pinned references) is left
+ * REAL by the `importOriginal` spread, so this stays a seam over the loader
+ * rather than a mock of the resolution logic under test.
+ *
+ * The rest of the module's no-`vi.mock` stance is unchanged: every resolver
+ * still runs against whatever fake `Database` the test hands it.
+ */
+const { loadScope } = vi.hoisted(() => ({ loadScope: vi.fn() }));
+vi.mock('../tenantVariableResolution', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tenantVariableResolution')>()),
+  loadTenantVariableScope: loadScope,
+}));
+
+/**
  * Generic fake `Database`: every `.select(...).from(...).where(...)` chain
  * resolves to the next array shifted off `queue`, whether the resolver calls
- * `.limit(1)` (single-row lookups) or `.orderBy(...)` (the quote-lines
- * fetch, which has no limit). Resolvers that issue N sequential queries
- * (manage_quotes:send: quote then lines; void_payment: payment then invoice)
- * consume the queue in call order — tests supply rows in that same order.
+ * `.limit(1)` (single-row lookups), `.orderBy(...)` (the quote-lines fetch,
+ * which has no limit) or awaits the chain directly (run_script's device -> org
+ * lookup, whose `inArray` already bounds the row count so a `.limit()` there
+ * would exist only to satisfy a stub). Resolvers that issue N sequential
+ * queries (manage_quotes:send: quote then lines; void_payment: payment then
+ * invoice; run_script: script then devices) consume the queue in call order —
+ * tests supply rows in that same order.
  */
 function makeFakeDb(queue: unknown[][]): { database: Database; select: ReturnType<typeof vi.fn> } {
+  const take = async () => queue.shift() ?? [];
   const chain = {
-    limit: vi.fn(async () => queue.shift() ?? []),
-    orderBy: vi.fn(async () => queue.shift() ?? []),
+    limit: vi.fn(take),
+    orderBy: vi.fn(take),
+    then: (resolve: (rows: unknown[]) => unknown, reject: (err: unknown) => unknown) =>
+      take().then(resolve, reject),
   };
   const select = vi.fn(() => ({
     from: vi.fn(() => ({
@@ -28,14 +57,60 @@ function makeFakeDb(queue: unknown[][]): { database: Database; select: ReturnTyp
   return { database: { select } as unknown as Database, select };
 }
 
-/** A full `scripts` row as the run_script resolver selects it. */
+/** A full `scripts` row as the run_script snapshot builder selects it. */
 const scriptRow = (overrides: Record<string, unknown> = {}) => ({
+  id: 'script-1',
   orgId: 'org-1',
   language: 'bash',
   content: '#!/bin/bash\necho hi',
   timeoutSeconds: 300,
   runAs: 'user',
+  parameters: null,
   ...overrides,
+});
+
+const deviceRow = (id: string, orgId: string) => ({ id, orgId });
+
+/**
+ * run_script's two-query queue, in the order the builder issues them:
+ * the script lookup, then the device -> org lookup.
+ */
+function runScriptDb(
+  script: Record<string, unknown> | null,
+  devices: Array<{ id: string; orgId: string }> = [deviceRow('device-1', 'org-1')],
+) {
+  return makeFakeDb([script === null ? [] : [script], devices]);
+}
+
+const RUN_SCRIPT_ARGS = { scriptId: 'script-1', deviceIds: ['device-1'] };
+
+const variable = (overrides: Partial<ResolvedVariable> & { key: string }): ResolvedVariable => ({
+  value: 'ordinary-value',
+  isSecret: false,
+  variableId: 'var-1',
+  version: 1,
+  ownerScope: 'organization',
+  ...overrides,
+});
+
+/**
+ * A hand-built `TenantVariableScope` carrier — duplicated from
+ * `runScriptSnapshot.test.ts` rather than shared, since it is six lines and
+ * both suites are the only readers. `loadTenantVariableScope` is the sole
+ * sanctioned constructor and it reads the module-level `db`, hence the seam
+ * above; only the DATA is faked, the production accessors still run over it.
+ */
+function fakeScope(orgs: Array<{ orgId: string; present?: ResolvedVariable[]; unreadable?: string[] }>): TenantVariableScope {
+  return {
+    orgIds: new Set(orgs.map((o) => o.orgId)),
+    byOrg: new Map(orgs.map((o) => [o.orgId, new Map((o.present ?? []).map((v) => [v.key, v]))])),
+    unreadableKeysByOrg: new Map(orgs.map((o) => [o.orgId, new Set(o.unreadable ?? [])])),
+  } as unknown as TenantVariableScope;
+}
+
+beforeEach(() => {
+  loadScope.mockReset();
+  loadScope.mockResolvedValue(fakeScope([]));
 });
 
 describe('computeEffectDigestOutcome', () => {
@@ -73,17 +148,43 @@ describe('computeEffectDigestOutcome', () => {
     });
 
     it('reports target_absent when the referenced row does not exist (deleted/typoed id)', async () => {
-      const { database } = makeFakeDb([[]]);
-      const outcome = await computeEffectDigestOutcome('run_script', { scriptId: 'ghost' }, database);
+      const { database } = runScriptDb(null);
+      const outcome = await computeEffectDigestOutcome(
+        'run_script',
+        { ...RUN_SCRIPT_ARGS, scriptId: 'ghost' },
+        database,
+      );
+      expect(outcome).toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    });
+
+    // `deviceIds` is `required` in run_script's tool schema (aiToolsScripts.ts),
+    // so a call without it is MALFORMED, not a target that vanished — the same
+    // bucket a missing scriptId lands in.
+    it('reports missing_arg when deviceIds is absent, even with a valid scriptId', async () => {
+      const { database, select } = runScriptDb(scriptRow());
+      const outcome = await computeEffectDigestOutcome('run_script', { scriptId: 'script-1' }, database);
+      expect(outcome).toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      expect(select).not.toHaveBeenCalled();
+    });
+
+    // Fail closed on a device that no longer resolves: silently dropping it
+    // would shrink the pinned org set, and with it the reference set, letting
+    // a digest match while the approved fan-out no longer exists.
+    it('reports target_absent when a targeted device no longer resolves to an org', async () => {
+      const { database } = runScriptDb(scriptRow(), [deviceRow('device-1', 'org-1')]);
+      const outcome = await computeEffectDigestOutcome(
+        'run_script',
+        { scriptId: 'script-1', deviceIds: ['device-1', 'ghost-device'] },
+        database,
+      );
       expect(outcome).toEqual({ kind: 'unresolved', reason: 'target_absent' });
     });
   });
 
   describe('run_script', () => {
     it('produces the same digest for an unchanged script row', async () => {
-      const args = { scriptId: 'script-1', deviceIds: ['device-1'] };
-      const d1 = await computeEffectDigestOutcome('run_script', args, makeFakeDb([[scriptRow()]]).database);
-      const d2 = await computeEffectDigestOutcome('run_script', args, makeFakeDb([[scriptRow()]]).database);
+      const d1 = await computeEffectDigestOutcome('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+      const d2 = await computeEffectDigestOutcome('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
       expect(d1.kind).toBe('pinned');
       expect(d1).toEqual({ kind: 'pinned', digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
       expect(d1).toEqual(d2);
@@ -100,15 +201,152 @@ describe('computeEffectDigestOutcome', () => {
       ['timeoutSeconds', { timeoutSeconds: 9000 }],
       ['orgId', { orgId: 'org-2' }],
     ])('changes the digest when %s changes', async (_field, mutation) => {
-      const args = { scriptId: 'script-1', deviceIds: ['device-1'] };
-      const before = await computeEffectDigest('run_script', args, makeFakeDb([[scriptRow()]]).database);
+      const before = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
       const after = await computeEffectDigest(
         'run_script',
-        args,
-        makeFakeDb([[scriptRow(mutation)]]).database,
+        RUN_SCRIPT_ARGS,
+        runScriptDb(scriptRow(mutation)).database,
       );
       expect(before).not.toBeNull();
       expect(before).not.toBe(after);
+    });
+
+    /**
+     * #3409 PR4c-1 — the digest is now built from the VERIFIED SNAPSHOT
+     * (runScriptSnapshot.ts), so it pins the parameter definitions and a
+     * reference to every tenant variable the run will consult, not just the
+     * five script fields above.
+     *
+     * The TOCTOU these close: an approved run can be rebound to a different
+     * variable (parameter `variableKey` edited), or have the variable it
+     * resolves rotated / shadowed by an org override / reclassified secret /
+     * deleted — all with a byte-identical script body, and all previously
+     * invisible to the digest.
+     *
+     * These go end to end through computeEffectDigestOutcome deliberately:
+     * runScriptSnapshot.test.ts already proves the MATERIAL is drift-sensitive,
+     * but that says nothing about whether the resolver is wired to it.
+     */
+    describe('tenant-variable and parameter-definition pinning', () => {
+      const content = 'echo {{var.api_token}}';
+      const definitions = [
+        { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_token' },
+      ];
+      const baselineScope = (overrides: Partial<ResolvedVariable> = {}) =>
+        fakeScope([
+          {
+            orgId: 'org-1',
+            present: [variable({ key: 'api_token', variableId: 'var-a', version: 3, ...overrides })],
+          },
+        ]);
+
+      /** One pinning pass: the scope the loader returns + the script row on disk. */
+      async function digestOf(
+        scope: TenantVariableScope,
+        script: Record<string, unknown> = scriptRow({ content, parameters: definitions }),
+        devices: Array<{ id: string; orgId: string }> = [deviceRow('device-1', 'org-1')],
+      ): Promise<string | null> {
+        loadScope.mockResolvedValueOnce(scope);
+        return computeEffectDigest(
+          'run_script',
+          { scriptId: 'script-1', deviceIds: devices.map((d) => d.id) },
+          runScriptDb(script, devices).database,
+        );
+      }
+
+      it('pins a digest at all for a variable-referencing script, and it is stable', async () => {
+        const before = await digestOf(baselineScope());
+        const after = await digestOf(baselineScope());
+        expect(before).toMatch(/^[0-9a-f]{64}$/);
+        expect(before).toBe(after);
+        expect(loadScope).toHaveBeenCalledWith(['org-1']);
+      });
+
+      it.each<[string, () => Promise<string | null>]>([
+        ['the variable version is rotated', () => digestOf(baselineScope({ version: 4 }))],
+        ['isSecret is flipped false -> true', () => digestOf(baselineScope({ isSecret: true }))],
+        [
+          'an org override shadows a partner-wide row (same key and value, different variableId)',
+          () => digestOf(baselineScope({ variableId: 'var-override' })),
+        ],
+        ['the variable is deleted (present -> absent)', () => digestOf(fakeScope([{ orgId: 'org-1' }]))],
+        [
+          'the variable can no longer be decrypted (present -> unreadable)',
+          () => digestOf(fakeScope([{ orgId: 'org-1', unreadable: ['api_token'] }])),
+        ],
+        [
+          "a parameter's variableKey is rebound to a different variable",
+          () =>
+            digestOf(
+              baselineScope(),
+              scriptRow({
+                content,
+                parameters: [
+                  { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'other_token' },
+                ],
+              }),
+            ),
+        ],
+        [
+          'a parameter definition is added',
+          () =>
+            digestOf(
+              baselineScope(),
+              scriptRow({
+                content,
+                parameters: [...definitions, { name: 'level', type: 'string', source: 'runtime' }],
+              }),
+            ),
+        ],
+        [
+          'a parameter definition is removed',
+          () => digestOf(baselineScope(), scriptRow({ content, parameters: [] })),
+        ],
+        [
+          'the targeted device moved to another org (the variable resolves elsewhere)',
+          () =>
+            digestOf(
+              fakeScope([
+                { orgId: 'org-2', present: [variable({ key: 'api_token', variableId: 'var-a', version: 3 })] },
+              ]),
+              scriptRow({ content, parameters: definitions }),
+              [deviceRow('device-1', 'org-2')],
+            ),
+        ],
+      ])('changes the digest when %s', async (_case, drifted) => {
+        const baseline = await digestOf(baselineScope());
+        expect(baseline).not.toBeNull();
+        expect(baseline).not.toBe(await drifted());
+      });
+
+      // A digest pinned BEFORE this change hashed a bare five-field object.
+      // The v:2 envelope guarantees the recomputed value can never coincide
+      // with it, so a pre-PR4c intent fails closed (`content_changed`) at
+      // release instead of silently comparing equal against a narrower pin.
+      it('can never collide with a v1 (five-field) digest pinned before PR4c', async () => {
+        const v1 = createHash('sha256')
+          .update(
+            JSON.stringify({
+              orgId: 'org-1',
+              language: 'bash',
+              content: '#!/bin/bash\necho hi',
+              timeoutSeconds: 300,
+              runAs: 'user',
+            }),
+          )
+          .digest('hex');
+        const v2 = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+        expect(v2).toMatch(/^[0-9a-f]{64}$/);
+        expect(v2).not.toBe(v1);
+      });
+
+      // The overwhelming majority of scripts reference nothing, and must not
+      // pay for a variable query at intent creation.
+      it('loads no variable scope for a script that references none', async () => {
+        const digest = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+        expect(digest).toMatch(/^[0-9a-f]{64}$/);
+        expect(loadScope).toHaveBeenCalledWith([]);
+      });
     });
   });
 
@@ -360,15 +598,15 @@ describe('computeEffectDigest (flattening wrapper the release paths use)', () =>
   it('flattens BOTH unpinnable outcomes to null, which is what the stored column can express', async () => {
     expect(await computeEffectDigest('list_scripts', {}, makeFakeDb([]).database)).toBeNull();
     expect(await computeEffectDigest('run_script', {}, makeFakeDb([]).database)).toBeNull();
-    expect(await computeEffectDigest('run_script', { scriptId: 'ghost' }, makeFakeDb([[]]).database)).toBeNull();
+    // A genuine target_absent (not another missing_arg): well-formed args, no
+    // script row. Both reasons still flatten to the same stored NULL.
+    expect(
+      await computeEffectDigest('run_script', { ...RUN_SCRIPT_ARGS, scriptId: 'ghost' }, runScriptDb(null).database),
+    ).toBeNull();
   });
 
   it('returns the digest itself on pinned', async () => {
-    const result = await computeEffectDigest(
-      'run_script',
-      { scriptId: 'script-1' },
-      makeFakeDb([[scriptRow()]]).database,
-    );
+    const result = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
     expect(result).toMatch(/^[0-9a-f]{64}$/);
   });
 });

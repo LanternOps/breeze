@@ -124,10 +124,15 @@ function build(options: BuildOptions = {}) {
   };
 }
 
-async function snapshotOf(options: BuildOptions = {}): Promise<RunScriptSnapshot> {
+/** The `{ snapshot, scope }` pair, asserted to have resolved. */
+async function builtOf(options: BuildOptions = {}): Promise<{ snapshot: RunScriptSnapshot; scope: TenantVariableScope }> {
   const outcome = await build(options).result;
   if (outcome.kind !== 'snapshot') throw new Error(`expected a snapshot, got ${outcome.kind}`);
-  return outcome.snapshot;
+  return { snapshot: outcome.snapshot, scope: outcome.scope };
+}
+
+async function snapshotOf(options: BuildOptions = {}): Promise<RunScriptSnapshot> {
+  return (await builtOf(options)).snapshot;
 }
 
 const materialOf = async (options: BuildOptions = {}) => runScriptDigestMaterial(await snapshotOf(options));
@@ -151,7 +156,7 @@ describe('runScriptDigestMaterial', () => {
   // pins identity (variableId + version + isSecret), never value.
   it('never puts a resolved variable VALUE in the material', async () => {
     const plaintext = 'sup3r-secret-plaintext-do-not-pin';
-    const snapshot = await snapshotOf({
+    const { snapshot, scope } = await builtOf({
       script: scriptRow({ content: 'echo {{var.api_token}}' }),
       scope: fakeScope([
         {
@@ -163,10 +168,13 @@ describe('runScriptDigestMaterial', () => {
 
     const material = runScriptDigestMaterial(snapshot);
     expect(material).not.toContain(plaintext);
-    // The scope the snapshot carries DOES hold that plaintext — so the
-    // assertion above is about what the material selects, not about a value
-    // that was never in reach.
-    expect(resolveForOrg(snapshot.variableScope, 'org-1').get('api_token')?.value).toBe(plaintext);
+    // The SIBLING scope DOES hold that plaintext — so the assertion above is
+    // about what the material selects, not about a value that was never in
+    // reach. The scope is deliberately not a field of the snapshot: the
+    // snapshot is pure digest material, so `JSON.stringify(snapshot)` anywhere
+    // is structurally incapable of leaking a value.
+    expect(resolveForOrg(scope, 'org-1').get('api_token')?.value).toBe(plaintext);
+    expect(JSON.stringify(snapshot)).not.toContain(plaintext);
     // ...and the reference itself carries identity only.
     expect(snapshot.variableReferences).toEqual([
       {
