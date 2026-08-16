@@ -71,3 +71,38 @@ export const linkEmailSchema = z.object({
   subject: z.string().max(1000),
   bodyText: z.string().max(200_000), // quoted into the comment
 });
+
+/**
+ * Body of POST /office-addin/time/start (Task 18). Narrower than the web
+ * timeEntries `startTimerSchema` — `ticketId` is REQUIRED on this surface,
+ * since the add-in only ever starts a timer from a specific ticket context.
+ */
+export const addinStartTimerSchema = z.object({
+  ticketId: z.string().uuid(),
+  description: z.string().max(10_000).optional(),
+});
+
+/** Body of POST /office-addin/time/stop (Task 18). Same shape as the web `stopTimerSchema`. */
+export const addinStopTimerSchema = z.object({
+  description: z.string().max(10_000).optional(),
+  isBillable: z.boolean().optional(),
+});
+
+/**
+ * Body of POST /office-addin/time/log (Task 18). Narrower than the web
+ * `createTimeEntrySchema` — `ticketId` and `description` are REQUIRED (the
+ * add-in always logs against a ticket, and an undescribed entry is not a
+ * useful ticket-facing record).
+ */
+export const addinLogTimeSchema = z
+  .object({
+    ticketId: z.string().uuid(),
+    startedAt: z.coerce.date(),
+    endedAt: z.coerce.date(),
+    description: z.string().min(1).max(10_000),
+    isBillable: z.boolean().optional(),
+  })
+  .refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
+    message: 'endedAt must be after startedAt',
+    path: ['endedAt'],
+  });
