@@ -89,6 +89,7 @@ export * from './refreshTokenFamilies';
 export * from './tenantVariables';
 export * from './tickets';
 export * from './ticketConfig';
+export * from './ticketEmailLinks';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';
 export * from './ticketFormOrgLinks';

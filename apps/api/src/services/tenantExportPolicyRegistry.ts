@@ -315,6 +315,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // credential material, hence reviewedIncluded.
   "tenant_variables": tablePolicy("org_id", {"included":["id","partner_id","org_id","key","description","version","created_by","updated_by","created_at","updated_at"],"reviewedIncluded":["is_secret"],"excludedSensitive":["value"],"excludedOpen":[]}),
   "ticket_alert_links": tablePolicy("org_id", {"included":["id","ticket_id","org_id","alert_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_email_links": tablePolicy("org_id", {
+    included: ["id", "ticket_id", "org_id", "partner_id", "message_id", "comment_id", "origin", "visibility", "linked_by", "created_at"],
+    reviewedIncluded: [],
+    excludedSensitive: [],
+    excludedOpen: [],
+  }),
   "ticket_form_org_links": tablePolicy("org_id", {"included":["id","form_id","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_forms": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","description","category_id","title_template","description_intro","default_priority","default_tags","show_in_portal","is_active","sort_order","version","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["fields"]}),
   "ticket_parts": tablePolicy("org_id", {"included":["id","ticket_id","org_id","description","part_number","vendor","quantity","unit_price","cost_basis","is_billable","billing_status","added_by","catalog_item_id","notes","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
