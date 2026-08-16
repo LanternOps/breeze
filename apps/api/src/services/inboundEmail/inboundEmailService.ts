@@ -3,7 +3,6 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketEmailInbound,
   tickets,
-  ticketComments,
   portalUsers,
   organizations,
   partners,
@@ -13,7 +12,7 @@ import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
-import { emitTicketEvent } from '../ticketEvents';
+import { insertEmailAuthoredComment } from './emailComments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
@@ -569,42 +568,20 @@ async function appendInboundComment(
   partnerId: string,
   senderResolver: SenderResolver
 ): Promise<string> {
-  // Inserted directly (NOT via addTicketComment, which forces authorType:'internal' /
-  // user_id=actor). Under system scope the ticket_comments INSERT policy permits user_id IS
-  // NULL. Email-sourced comments are ALWAYS public (spec §4: email can never create an internal note).
   const sender = await senderResolver.portalUser();
   // appendInboundComment is only reached on the verified-sender match path (R4 gate
   // upstream), so a matched portal user is an authenticated identity: prefer their
   // STORED name over the spoofable From display name. Fall back to the header only
   // when the sender isn't a known portal user (still verified by SPF/DKIM/DMARC).
   const authorName = sender?.name ?? n.fromName ?? n.from;
-  const inserted = await db.insert(ticketComments).values({
+  const { commentId } = await insertEmailAuthoredComment({
     ticketId,
-    userId: null,
-    portalUserId: sender?.id ?? null,
+    orgId: '', // existing wart, preserved — see EmailCommentInput
+    senderPortalUserId: sender?.id ?? null,
     authorName,
-    authorType: 'email',
-    commentType: 'comment',
-    content: n.text,
-    isPublic: true,
-    oldValue: null,
-    newValue: null
-  }).returning();
-  const comment = inserted[0];
-  if (!comment) throw new Error('failed to insert inbound comment');
-
-  // inbound:true -> the notify worker's ticket.commented branch skips the requester
-  // echo when event.payload.inbound is set (its guard is `isPublic && !inbound`), so the
-  // email is never bounced back to the same sender — preventing a mail loop.
-  await emitTicketEvent({
-    type: 'ticket.commented',
-    ticketId,
-    orgId: '',
-    partnerId,
-    actorUserId: null,
-    payload: { commentId: comment.id, isPublic: true, inbound: true }
+    content: n.text
   });
-  return comment.id;
+  return commentId;
 }
 
 // Reopen a resolved ticket via a direct partner-scoped UPDATE (FK-safe — see SYSTEM_ACTOR note).
