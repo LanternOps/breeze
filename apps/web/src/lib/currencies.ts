@@ -42,6 +42,8 @@ const labelCache = new Map<string, string>();
  */
 export function currencyLabel(code: string, locale: string): string {
   const normalized = code.trim().toUpperCase();
+  // Separator is '|', which appears in neither a BCP-47 tag nor an ISO 4217
+  // code, so the two halves cannot run together into a colliding key.
   const cacheKey = `${locale}|${normalized}`;
   const cached = labelCache.get(cacheKey);
   if (cached !== undefined) return cached;
