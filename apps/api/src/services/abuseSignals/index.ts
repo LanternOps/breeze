@@ -8,6 +8,7 @@ import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators 
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
 import { loadBillingIdentityAggregates, computeBillingIdentitySignals } from './billingIdentity';
 import { syncEndpointFingerprints, loadRecidivistMatches, computeRecidivistSignals } from './recidivistEndpoint';
+import { computeCorroborationSignals } from './corroboration';
 import { persistSignals, markDelivered } from './persistence';
 import type { ComputedSignal } from './types';
 
@@ -81,6 +82,14 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
     // is more suspicious, not less (see the scorer's own header comment).
     ...computeRecidivistSignals(recidivist.matches, cfg),
   ];
+  // Corroboration runs LAST and reads only what the detectors above produced —
+  // no extra queries. It promotes a partner whose evidence spans two or more
+  // independent axes, which is the mechanism the capped watch scores in
+  // config.ts have always assumed. Deliberately not added to
+  // evaluatedPartnerIds below: every partner it can fire on already got there
+  // via the detector that produced the underlying watch signal, and widening
+  // that set would change stale-resolution for OTHER signals on that partner.
+  computed.push(...computeCorroborationSignals(computed, cfg));
   // Script-scanned and billing-scanned partners join the evaluated set so open
   // rows for those detectors stale-resolve when the evidence disappears
   // (script edited/deleted, cardholder name corrected). persistSignals only
