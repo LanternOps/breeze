@@ -40,6 +40,7 @@ import {
   pickLatestVersion,
   compareWingetVersions,
   runWingetIndexSync,
+  buildTreeUrl,
   WingetRateLimitError,
 } from './wingetIndexSyncWorker';
 import { db } from '../db';
@@ -222,6 +223,9 @@ describe('runWingetIndexSync', () => {
     expect(summary.packages).toBe(2);
     expect(summary.upserted).toBe(2);
     expect(summary.treeSha).toBe('tree-sha-abc');
+    expect(summary.complete).toBe(true);
+    expect(summary.truncatedBuckets).toEqual([]);
+    expect(summary.pruned).toBe(true);
     expect(summary.deleted).toBe(1);
 
     // 1 bucket listing + 2 bucket subtrees.
@@ -302,6 +306,114 @@ describe('runWingetIndexSync', () => {
 
     await expect(runWithTimers(runWingetIndexSync())).rejects.toThrow(/zero packages/);
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Truncation. GitHub caps a recursive tree response and reports it with
+  // `truncated: true` on a 200 — the `manifests/m` bucket does this in
+  // production TODAY (58k entries / 16MB, verified 2026-08-15). The entries it
+  // silently drops are exactly the rows a prune would delete.
+  // -------------------------------------------------------------------------
+
+  it('suppresses the prune when a bucket response is truncated, but still upserts', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('manifests%2Fm')) {
+          return treeResponse({
+            sha: 'm-sha',
+            truncated: true,
+            tree: [{ path: 'Microsoft/Edge/1.0/Microsoft.Edge.yaml', type: 'blob' }],
+          });
+        }
+        if (url.includes('manifests%2Fg')) {
+          return treeResponse({
+            sha: 'g-sha',
+            tree: [{ path: 'Google/Chrome/126.0/Google.Chrome.yaml', type: 'blob' }],
+          });
+        }
+        return treeResponse({
+          sha: 'tree-sha',
+          tree: [{ path: 'g', type: 'tree' }, { path: 'm', type: 'tree' }],
+        });
+      }),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    // The prune is the whole point of this test.
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(summary.pruned).toBe(false);
+    expect(summary.deleted).toBe(0);
+    expect(summary.complete).toBe(false);
+    expect(summary.truncatedBuckets).toEqual(['m']);
+
+    // Upserts are additive and must still land — a truncated run should keep
+    // the index fresh for everything it *did* see.
+    expect(summary.upserted).toBe(2);
+    expect(insertMock).toHaveBeenCalled();
+    const rows = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(rows.map((r: { packageId: string }) => r.packageId).sort()).toEqual([
+      'Google.Chrome',
+      'Microsoft.Edge',
+    ]);
+  });
+
+  it('suppresses the prune when the bucket listing itself is truncated', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.includes('manifests%2F')
+          ? treeResponse({
+              sha: 'g-sha',
+              tree: [{ path: 'Google/Chrome/126.0/Google.Chrome.yaml', type: 'blob' }],
+            })
+          : treeResponse({ sha: 'tree-sha', truncated: true, tree: [{ path: 'g', type: 'tree' }] }),
+      ),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
+    // The listing, not a bucket, was truncated — so no bucket is named.
+    expect(summary.truncatedBuckets).toEqual([]);
+    expect(summary.upserted).toBe(1);
+  });
+
+  it('records every truncated bucket, not just the first', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('manifests%2F')) {
+          const bucket = url.includes('manifests%2Fg') ? 'g' : 'm';
+          return treeResponse({
+            sha: `${bucket}-sha`,
+            truncated: true,
+            tree: [{ path: `Vendor${bucket}/App/1.0/Vendor.App.yaml`, type: 'blob' }],
+          });
+        }
+        return treeResponse({
+          sha: 'tree-sha',
+          tree: [{ path: 'g', type: 'tree' }, { path: 'm', type: 'tree' }],
+        });
+      }),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+    expect(summary.truncatedBuckets).toEqual(['g', 'm']);
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('builds the tree URL in a form the live GitHub API accepts', () => {
+    // Verified against api.github.com on 2026-08-15: this exact URL returns 200.
+    expect(buildTreeUrl('HEAD:manifests/q', true)).toBe(
+      'https://api.github.com/repos/microsoft/winget-pkgs/git/trees/HEAD%3Amanifests%2Fq?recursive=1',
+    );
+    expect(buildTreeUrl('HEAD:manifests', false)).toBe(
+      'https://api.github.com/repos/microsoft/winget-pkgs/git/trees/HEAD%3Amanifests',
+    );
   });
 
   it('exports a typed rate-limit error', () => {

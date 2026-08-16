@@ -8,15 +8,36 @@
  * and per-package detail is fetched lazily at import time.
  *
  * The Git Trees API truncates on a repo this size, so we walk one subtree per
- * single-character bucket under `manifests/` (a-z plus the digit buckets like
- * `manifests/7`) rather than asking for the whole tree at once. That is
- * 1 (bucket listing) + ~26 (per-bucket) unauthenticated requests, against a
- * 60 req/h anonymous limit, hence the 24h repeat and 2s inter-request spacing.
+ * single-character bucket under `manifests/` rather than asking for the whole
+ * tree at once. The bucket list is DISCOVERED from a non-recursive listing of
+ * `manifests/` rather than hardcoded: upstream currently has 36 buckets (a-z
+ * AND 0-9 — `manifests/7/7zip/…` is real), so a hardcoded a-z would silently
+ * drop ten of them. That is 1 (bucket listing) + 36 (per-bucket) = 37
+ * unauthenticated requests against a 60 req/h anonymous limit, hence the 24h
+ * repeat and the 2s inter-request spacing.
  *
  * Generation semantics without a second table: every row written by a run is
  * stamped with the run's tree SHA; rows still carrying an older SHA are stale
- * and deleted — but ONLY after every bucket fetch succeeded, so a partial run
- * can never wipe the index.
+ * and deleted — but ONLY after a run we can prove was COMPLETE, so a partial
+ * run can never wipe the index. Three things make a run incomplete, and each
+ * suppresses the prune while still allowing the (purely additive) upserts:
+ * a rate-limited or failed fetch, and — the subtle one — a `truncated: true`
+ * response.
+ *
+ * Truncation is NOT a rare edge case here, it is the steady state: a recursive
+ * fetch of `manifests/m` returns 58k entries / ~16MB and comes back
+ * `truncated: true` today (verified 2026-08-15). GitHub truncates below our
+ * byte guard and still answers 200, and the entries it drops are exactly the
+ * rows a prune would then delete — for `m` that is most of the 27k-entry
+ * Microsoft namespace. Splitting a truncated bucket by vendor is not an option
+ * inside the anonymous request budget (`m` alone holds 351 vendor directories),
+ * and the truncation cut point is not a clean alphabetical boundary, so the
+ * complete subset cannot be identified either. We therefore upsert what we got
+ * and skip the prune. Consequence to be aware of: while any bucket truncates,
+ * withdrawn packages are never pruned and linger in the typeahead. That is a
+ * cosmetic staleness; deleting 27k live packages every run is not. Authenticating
+ * the calls (5000 req/h) would make a per-vendor split affordable and let the
+ * prune run again — tracked as a follow-up.
  *
  * Structure copied from jobs/cveEnrichmentWorker.ts.
  */
@@ -178,10 +199,25 @@ interface GitTreeResponse {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fetchGitTree(pathExpr: string, recursive: boolean): Promise<GitTreeResponse> {
-  const url =
+/**
+ * Build the Trees API URL for a `<ref>:<path>` expression.
+ *
+ * Verified against the live API on 2026-08-15 (see task-8 report): GitHub
+ * accepts the fully percent-encoded form (`HEAD%3Amanifests%2Fq`), the
+ * colon-only-encoded form (`HEAD%3Amanifests/q`) and the fully literal form
+ * (`HEAD:manifests/q`) — all three return 200 with an identical body. We keep
+ * the fully-encoded form since it is the one that cannot be confused by a path
+ * segment containing reserved characters.
+ */
+export function buildTreeUrl(pathExpr: string, recursive: boolean): string {
+  return (
     `${GITHUB_API}/repos/${REPO}/git/trees/${encodeURIComponent(pathExpr)}` +
-    (recursive ? '?recursive=1' : '');
+    (recursive ? '?recursive=1' : '')
+  );
+}
+
+async function fetchGitTree(pathExpr: string, recursive: boolean): Promise<GitTreeResponse> {
+  const url = buildTreeUrl(pathExpr, recursive);
 
   const res = await fetch(url, {
     headers: {
@@ -224,6 +260,12 @@ export interface WingetIndexSyncSummary {
   upserted: number;
   deleted: number;
   treeSha: string | null;
+  /** False when any response was truncated — suppresses the stale-row prune. */
+  complete: boolean;
+  /** Buckets GitHub answered with `truncated: true` (data silently incomplete). */
+  truncatedBuckets: string[];
+  /** Whether the stale-generation delete actually ran. */
+  pruned: boolean;
   skipped?: 'rate_limited';
 }
 
@@ -234,6 +276,9 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     upserted: 0,
     deleted: 0,
     treeSha: null,
+    complete: true,
+    truncatedBuckets: [],
+    pruned: false,
   };
 
   let root: GitTreeResponse;
@@ -250,6 +295,14 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   const treeSha = (root.sha ?? '').slice(0, 64);
   if (!treeSha) throw new WingetFetchError('GitHub manifests tree returned no sha');
   summary.treeSha = treeSha;
+
+  // A truncated bucket LISTING means we don't even know every bucket, so the
+  // walk cannot be authoritative. (Not expected at 36 entries, but the flag is
+  // free to honour and the failure mode would be silent.)
+  if (root.truncated) {
+    summary.complete = false;
+    console.warn('[WingetIndexSync] manifests bucket listing was truncated; prune suppressed');
+  }
 
   const buckets = (root.tree ?? [])
     .filter((e) => e.type === 'tree' && /^[a-z0-9]$/i.test(e.path))
@@ -276,6 +329,22 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
       throw err;
     }
     summary.buckets++;
+
+    // GitHub caps a recursive tree response and reports it with `truncated:
+    // true` on an otherwise-normal 200 — the byte guard above cannot catch it
+    // because truncation happens well below that ceiling. The dropped entries
+    // are precisely the packages a prune would then delete, so a truncated
+    // bucket makes the whole run non-authoritative. Upserts still proceed
+    // (they are additive and cannot lose data); only the prune is suppressed.
+    if (tree.truncated) {
+      summary.complete = false;
+      summary.truncatedBuckets.push(bucket);
+      console.warn('[WingetIndexSync] bucket response truncated; prune suppressed for this run', {
+        bucket,
+        entries: (tree.tree ?? []).length,
+      });
+    }
+
     for (const [pkgId, parsed] of parseWingetTreePaths(tree.tree ?? [])) {
       const existing = merged.get(pkgId);
       if (existing) {
@@ -322,13 +391,25 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     summary.upserted += chunk.length;
   }
 
-  // Every bucket succeeded (any failure returned/threw above), so anything
-  // still carrying an older generation marker no longer exists upstream.
+  // Prune ONLY on a provably complete walk. Every bucket fetch succeeded (any
+  // failure returned or threw above) AND no response was truncated, so a row
+  // still carrying an older generation marker genuinely no longer exists
+  // upstream. If anything was truncated we keep the stale rows: an outdated
+  // typeahead entry is harmless, deleting a live package is not.
+  if (!summary.complete) {
+    console.warn('[WingetIndexSync] walk incomplete; skipping stale-row prune', {
+      truncatedBuckets: summary.truncatedBuckets,
+      packages: summary.packages,
+    });
+    return summary;
+  }
+
   const deleted = await db
     .delete(wingetPackageIndex)
     .where(ne(wingetPackageIndex.syncedCommitSha, treeSha))
     .returning({ id: wingetPackageIndex.id });
   summary.deleted = Array.isArray(deleted) ? deleted.length : 0;
+  summary.pruned = true;
 
   return summary;
 }
@@ -355,7 +436,17 @@ export function createWingetIndexSyncWorker(): Worker<WingetIndexSyncJobData> {
     async (job: Job<WingetIndexSyncJobData>) => {
       if (job.name !== JOB_NAME) {
         console.warn(`[WingetIndexSync] Ignoring unknown job name: ${job.name}`);
-        return { buckets: 0, packages: 0, upserted: 0, deleted: 0, treeSha: null, skipped: true };
+        return {
+          buckets: 0,
+          packages: 0,
+          upserted: 0,
+          deleted: 0,
+          treeSha: null,
+          complete: false,
+          truncatedBuckets: [],
+          pruned: false,
+          skipped: true,
+        };
       }
       return runWithSystemDbAccess(() => runWingetIndexSync());
     },
