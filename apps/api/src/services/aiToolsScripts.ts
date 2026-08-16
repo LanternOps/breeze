@@ -152,6 +152,58 @@ function verifiedRunScriptFor(
   return verified;
 }
 
+/**
+ * Whether `auth` may run a script row that a RELEASE path resolved under a
+ * SYSTEM DB context (#3409 PR4c-1 fix round 1).
+ *
+ * The query this replaces was protected TWICE, and skipping it drops BOTH
+ * layers, so both have to be re-expressed here:
+ *
+ *  1. APP LAYER — `or(isNull(orgId), auth.orgCondition(orgId))`.
+ *     `canAccessOrg` and `orgCondition` are built by the same
+ *     `buildOrgAccessClosures` from the same `accessibleOrgIds`
+ *     (middleware/auth.ts), so the check below is that filter exactly:
+ *     unrestricted for `accessibleOrgIds === null`, membership otherwise, and
+ *     an org-less row passes (it is constrained per-device by the partner
+ *     guard in the handler).
+ *
+ *  2. RLS — the query ran inside the CALLER's context
+ *     (`withAuthDbAccessContext` on the durable worker, `withDbAccessContext`
+ *     inline), so Postgres filtered it too. The pinned row is read
+ *     system-scoped, so that layer is simply gone. The `scripts` SELECT policy
+ *     (migration `2026-06-13-catalog-partner-read-branch.sql`) is:
+ *
+ *       breeze_has_org_access(org_id)
+ *       OR breeze_has_partner_access(partner_id)
+ *       OR is_system                       -- the COLUMN, not a session flag
+ *       OR (org_id IS NULL AND partner_id = breeze_current_partner_id())
+ *
+ *     Every row that policy hides is already refused by layer 1 or by the
+ *     per-device partner guard — EXCEPT ONE SHAPE:
+ *     `(org_id NULL, partner_id NULL, is_system false)`. That orphan is
+ *     representable today (`resolveScriptCreateScope`'s system-scope branch
+ *     yields `{orgId: null, partnerId: null}` and `insertScriptRow` clamps
+ *     `is_system` to false; there is no XOR CHECK on `scripts`), it is
+ *     invisible to every non-system caller, and it would sail straight past
+ *     layer 1 (org id is null) and past the partner guard (partner id is
+ *     null). It is refused below.
+ *
+ * THE NULL CHECK IS NOT REDUNDANT — deleting it re-opens exactly the RLS
+ * clause the system-scoped read skipped. It is also deliberately
+ * unconditional: `breeze_has_org_access(NULL)` is TRUE for a system-scope
+ * SESSION, so this is marginally stricter than RLS for a system-scope token
+ * (the membership-less caller the handler's own comment warns about) — the
+ * orphan shape is a data bug, and refusing to execute one through an approved
+ * intent is the right direction to be wrong in.
+ */
+function callerMayUseVerifiedScript(
+  script: typeof scripts.$inferSelect,
+  auth: AuthContext,
+): boolean {
+  if (script.orgId !== null) return auth.canAccessOrg(script.orgId);
+  return script.partnerId !== null || script.isSystem;
+}
+
 export function registerScriptTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -237,15 +289,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       // target was unchanged as of THAT read, and a second read proves nothing.
       const verified = verifiedRunScriptFor(context, input.scriptId);
 
-      // AUTHORIZATION, NOT CACHING. The query the verified branch skips carried
-      // `or(isNull(orgId), auth.orgCondition(orgId))`, and the release path
-      // resolved its row under a SYSTEM context with no org filter at all.
-      // `canAccessOrg` is that same filter expressed in code (both derive from
-      // `accessibleOrgIds` — middleware/auth.ts's buildOrgAccessClosures), so an
-      // org the caller cannot reach is refused here exactly as the query would
-      // have returned no row. The digest verifies CONTENT IDENTITY; it says
-      // nothing about this caller's authority.
-      if (verified && verified.scriptRow.orgId !== null && !auth.canAccessOrg(verified.scriptRow.orgId)) {
+      // AUTHORIZATION, NOT CACHING. The skipped query was filtered by BOTH its
+      // app-layer org condition AND by RLS (it ran in the caller's own DB
+      // context); the pinned row is read system-scoped, so both layers are
+      // re-expressed in `callerMayUseVerifiedScript`. The digest verifies
+      // CONTENT IDENTITY; it says nothing about this caller's authority.
+      if (verified && !callerMayUseVerifiedScript(verified.scriptRow, auth)) {
         return JSON.stringify({ error: 'Script not found or has no content' });
       }
 
@@ -276,6 +325,26 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           const access = await verifyDeviceAccess(deviceId, auth);
           if ('error' in access) {
             results[deviceId] = { error: access.error };
+            continue;
+          }
+
+          // Identity hardening for the verified path (#3409 PR4c-1 fix round
+          // 1). `verifiedRunScriptFor` re-checks the pinned scriptId; this is
+          // the same check on the OTHER argument. The snapshot's
+          // `deviceOrgIds` is built from every id in `args.deviceIds`, and
+          // this loop dispatches a subset of that same array, so the device's
+          // org is always a member when the context and the arguments came
+          // from the same intent. If it is not, the pinned SCOPE may not cover
+          // this device's org — dispatch would resolve its tenant variables
+          // against a scope that was never loaded for it and quietly render
+          // "no value set". Fail this device closed rather than dispatch on
+          // unverified material; log + capture so the plumbing bug is visible.
+          if (verified && !verified.snapshot.deviceOrgIds.includes(access.device.orgId)) {
+            const message =
+              '[aiToolsScripts] run_script verified snapshot does not cover the dispatched device org';
+            console.error(message, { deviceId, deviceOrgId: access.device.orgId });
+            captureException(new Error(message));
+            results[deviceId] = { error: 'Device not found or access denied' };
             continue;
           }
 

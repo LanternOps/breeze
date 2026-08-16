@@ -473,6 +473,7 @@ describe('run_script consumes a verified release snapshot instead of re-querying
     id: SCRIPT_ID,
     orgId: ORG_B,
     partnerId: null,
+    isSystem: false,
     language: 'powershell',
     content: 'echo pinned',
     timeoutSeconds: 60,
@@ -487,7 +488,11 @@ describe('run_script consumes a verified release snapshot instead of re-querying
    * SIBLINGS — the scope must never be reachable from the digest material.
    * Cast because the fixtures are deliberately partial rows.
    */
-  function contextFor(scriptRow: any, scope: any = pinnedScope): ToolExecutionContext {
+  function contextFor(
+    scriptRow: any,
+    scope: any = pinnedScope,
+    deviceOrgIds: string[] = [ORG_B],
+  ): ToolExecutionContext {
     return {
       verifiedRunScript: {
         snapshot: {
@@ -500,7 +505,7 @@ describe('run_script consumes a verified release snapshot instead of re-querying
             runAs: scriptRow.runAs,
           },
           parameterDefinitions: '[]',
-          deviceOrgIds: [ORG_B],
+          deviceOrgIds,
           variableReferences: [],
         },
         scriptRow,
@@ -604,6 +609,59 @@ describe('run_script consumes a verified release snapshot instead of re-querying
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
     // And it must NOT quietly fall back to the query to try again.
     expect(selectedTables).not.toContain(scripts);
+  });
+
+  // Fix round 1, Finding 1. The skipped query ran inside the CALLER's DB
+  // context, so RLS filtered it as well as the app-layer org condition. The
+  // pinned row is read system-scoped, so RLS is simply absent on this path.
+  // Every row the `scripts` SELECT policy hides is caught by canAccessOrg or by
+  // the per-device partner guard EXCEPT the orphan below, which has no org to
+  // check and no partner to guard — it must be refused explicitly.
+  it('refuses a pinned orphan row (org NULL, partner NULL, not is_system) that RLS would have hidden', async () => {
+    mockDb(null, deviceRow);
+
+    const out = JSON.parse(
+      await runScriptTool().handler(
+        { scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] },
+        makeAuth(),
+        contextFor(pinnedRow({ orgId: null, partnerId: null, isSystem: false })),
+      ),
+    );
+
+    expect(out.error).toMatch(/not found/i);
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    // No quiet fallback to the query either — the refusal is terminal.
+    expect(selectedTables).not.toContain(scripts);
+  });
+
+  it('still runs a genuine system script (org NULL, partner NULL, is_system) — the refusal is not a blanket null check', async () => {
+    mockDb(null, deviceRow);
+
+    await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] },
+      makeAuth(),
+      contextFor(pinnedRow({ orgId: null, partnerId: null, isSystem: true })),
+    );
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix round 1, Finding 2. Identity is re-checked on `scriptId`; this is the
+  // same check on the other argument. A context built from different arguments
+  // would hand dispatch a scope that never covered this device's org.
+  it('fails a device the pinned snapshot never covered instead of dispatching against an unrelated scope', async () => {
+    mockDb(null, deviceRow); // device is in ORG_B
+
+    const out = JSON.parse(
+      await runScriptTool().handler(
+        { scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] },
+        makeAuth(),
+        contextFor(pinnedRow({ orgId: null, partnerId: null, isSystem: true }), pinnedScope, [ORG_A]),
+      ),
+    );
+
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(out.results[DEVICE_B].error).toMatch(/not found or access denied/i);
   });
 
   it('ignores a context pinned to a DIFFERENT script and falls back to the query', async () => {
