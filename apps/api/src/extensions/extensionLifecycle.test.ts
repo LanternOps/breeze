@@ -127,16 +127,14 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 42 },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     ));
     expect(invalid.error).toMatch(/invalid input/i);
     expect(await executeTool(
       'lifecycle_lookup_v1',
       { query: 'hello' },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     )).toBe('v1:hello');
 
     registry.activate(stage(
@@ -155,14 +153,13 @@ describe('extension route and AI lifecycle', () => {
       .toEqual({ version: 'v2' });
     expect(getToolDefinitions(registry).some((tool) => tool.name === 'lifecycle_lookup_v1'))
       .toBe(false);
-    await expect(executeTool('lifecycle_lookup_v1', {}, makeAuth(), registry, enabledStore()))
+    await expect(executeTool('lifecycle_lookup_v1', {}, makeAuth(), { registry, store: enabledStore() }))
       .rejects.toThrow(/unknown tool/i);
     expect(await executeTool(
       'lifecycle_lookup_v2',
       { query: 'new' },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     )).toBe('v2:new');
 
     registry.withdraw('lifecycle-demo');
@@ -172,7 +169,7 @@ describe('extension route and AI lifecycle', () => {
     expect(getToolDefinitions(registry).some((tool) => tool.name === 'lifecycle_lookup_v2'))
       .toBe(false);
     expect(getToolTier('lifecycle_lookup_v2', registry)).toBeUndefined();
-    await expect(executeTool('lifecycle_lookup_v2', {}, makeAuth(), registry, enabledStore()))
+    await expect(executeTool('lifecycle_lookup_v2', {}, makeAuth(), { registry, store: enabledStore() }))
       .rejects.toThrow(/unknown tool/i);
   });
 
@@ -198,8 +195,7 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 'old' },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     );
     await started;
     registry.activate(stage(
@@ -215,8 +211,7 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 'next' },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     )).toBe('v2:next');
   });
 
@@ -242,8 +237,7 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 'still-old' },
       makeAuth(),
-      registry,
-      enabledStore(),
+      { registry, store: enabledStore() },
     )).toBe('v1:still-old');
   });
 
@@ -271,8 +265,7 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 'hello' },
       makeAuth(),
-      registry,
-      enabledStore(false),
+      { registry, store: enabledStore(false) },
     )).rejects.toThrow(/unknown tool/i);
 
     expect(handler).not.toHaveBeenCalled();
@@ -292,8 +285,7 @@ describe('extension route and AI lifecycle', () => {
       'lifecycle_lookup_v1',
       { query: 'hello' },
       makeAuth(),
-      registry,
-      enabledStore(true),
+      { registry, store: enabledStore(true) },
     )).toBe('ran');
     expect(handler).toHaveBeenCalledTimes(1);
   });
@@ -309,8 +301,7 @@ describe('extension route and AI lifecycle', () => {
       'get_device_details',
       { deviceId: 'not-a-uuid' },
       makeAuth(),
-      registry,
-      { isEnabled },
+      { registry, store: { isEnabled } },
     ));
 
     expect(result.error).toBeTruthy();

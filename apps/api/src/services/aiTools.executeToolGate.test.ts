@@ -207,7 +207,7 @@ describe('executeTool carries an explicit ToolExecutionContext', () => {
     const input = { foo: 'bar' };
     const context: ToolExecutionContext = { verifiedRunScript: VERIFIED_SNAPSHOT };
 
-    await executeTool(CONTEXT_PROBE, input, auth, undefined, undefined, context);
+    await executeTool(CONTEXT_PROBE, input, auth, { context });
 
     expect(contextHandler).toHaveBeenCalledWith(input, auth, context);
     // Identity, not a structural copy: the release path's verified material must
@@ -239,9 +239,7 @@ describe('executeTool carries an explicit ToolExecutionContext', () => {
       CONTEXT_PROBE,
       { foo: 'bar' },
       makeAuth(),
-      undefined,
-      undefined,
-      { verifiedRunScript: VERIFIED_SNAPSHOT },
+      { context: { verifiedRunScript: VERIFIED_SNAPSHOT } },
     ));
     const withoutContext = JSON.parse(
       await executeTool(CONTEXT_PROBE, { foo: 'bar' }, makeAuth()),
@@ -274,9 +272,11 @@ describe('executeTool carries an explicit ToolExecutionContext', () => {
       'context_probe_ext',
       {},
       makeAuth(),
-      registry,
-      { isEnabled: async () => true },
-      { verifiedRunScript: VERIFIED_SNAPSHOT },
+      {
+        registry,
+        store: { isEnabled: async () => true },
+        context: { verifiedRunScript: VERIFIED_SNAPSHOT },
+      },
     );
 
     expect(out).toBe('ext-ok');
