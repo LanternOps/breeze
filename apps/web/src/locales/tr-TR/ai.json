@@ -1,0 +1,446 @@
+{
+  "aiApprovalDialog": {
+    "idleFor": "boşta {{duration}}",
+    "justNow": "az önce",
+    "offlineFor": "çevrimdışı {{duration}}",
+    "sessionStates": {
+      "active": "aktif",
+      "idle": "boşta",
+      "locked": "kilitli",
+      "away": "uzakta",
+      "disconnected": "bağlantısı kesildi",
+      "unknown": "bilinmiyor"
+    },
+    "ariaLabel": "Araç onayı gerekli: {{toolName}}",
+    "title": "Onay Gerekli",
+    "pendingApproverTitle": "Onaylayıcı Bekleniyor",
+    "selfApproveTitle": "Onayınız Gerekli",
+    "pendingApproverDescription": "Bu işlemin Onaylar alanında veya Breeze mobil uygulamasında onaylanması gerekiyor.",
+    "timeRemaining": "{{minutes}} dakika {{seconds}} saniye kaldı",
+    "urgentWarning": "30 saniyeden az kaldı. Bu istek otomatik olarak reddedilecek.",
+    "progressLabel": "Otomatik reddetmeden önce kalan süre",
+    "showParameters": "Parametreleri göster",
+    "approve": "Onayla",
+    "reject": "Reddet",
+    "approveVerify": "Doğrula ve Onayla",
+    "verifying": "Doğrulama bekleniyor…",
+    "deny": "Reddet",
+    "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
+    "alreadyDecided": "Bu talebe zaten karar verildi.",
+    "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
+    "expired": "Bu isteğin süresi, karar verilmeden doldu.",
+    "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
+    "noApproverDevice": "Kendi isteğinizi onaylamak için Touch ID / Windows Hello gerekir.",
+    "registerDevice": "Bu cihazı kaydedin",
+    "decideFailed": "Karar gönderilemedi",
+    "approvedToast": "İşlem onaylandı",
+    "deniedToast": "İşlem reddedildi"
+  },
+  "aiChatInput": {
+    "waiting": "Yanıt bekleniyor...",
+    "placeholder": "Cihazlarınız hakkında bilgi alın...",
+    "stopResponse": "Yanıtı durdur",
+    "thinking": "AI düşünüyor... İptal etmek için durdur'a tıklayın",
+    "sendShortcut": "Göndermek için Cmd+Enter"
+  },
+  "aiChatMessages": {
+    "title": "Breeze Yapay Zeka Asistanı",
+    "description": "Cihazlarınız, uyarılarınız, ölçümleriniz hakkında bilgi alın veya sorunları giderin.",
+    "unknownTool": "Bilinmeyen araç",
+    "toolResult": "Araç sonucu",
+    "pauseAi": "AI'yi duraklat",
+    "quickActions": {
+      "serverHealth": {
+        "label": "Sunucu sağlığını kontrol edin",
+        "prompt": "Tüm Windows sunucularının sağlık durumunu kontrol edin — CPU, RAM, disk kullanımını ve tüm uyarıları gösterin"
+      },
+      "criticalAlerts": {
+        "label": "Kritik uyarıları göster",
+        "prompt": "Son 24 saatteki tüm kritik ve yüksek önem derecesine sahip uyarıları cihaz ayrıntılarıyla birlikte listeleyin"
+      },
+      "offlineDevices": {
+        "label": "Çevrimdışı cihazları bulun",
+        "prompt": "Şu anda çevrimdışı olan tüm cihazları ve en son ne zaman görüldüklerini göster"
+      },
+      "securityOverview": {
+        "label": "Güvenliğe genel bakış",
+        "prompt": "Bana güvenlik hakkında genel bilgi verin — tüm aktif tehditler, son taramalar ve ilgilenilmesi gereken cihazlar"
+      },
+      "diskSpace": {
+        "label": "Disk alanı raporu",
+        "prompt": "Hangi cihazların disk alanı azalıyor? %80'in üzerinde disk kullanımına sahip cihazları göster"
+      },
+      "recentActivity": {
+        "label": "Son etkinlik",
+        "prompt": "Bana en son denetim günlüğü girişlerini göster — son birkaç saat içinde hangi işlemler yapıldı?"
+      }
+    }
+  },
+  "aiChatSidebar": {
+    "history": "Geçmiş",
+    "title": "Breeze AI",
+    "conversationHistory": "Konuşma geçmişi",
+    "newConversation": "Yeni görüşme",
+    "unflagConversation": "Konuşmanın işaretini kaldır",
+    "flagConversation": "Konuşmayı incelenmek üzere işaretle",
+    "closeShortcut": "Kapat (Cmd+Shift+A)",
+    "searchPlaceholder": "Konuşmaları arayın...",
+    "noResults": "Sonuç bulunamadı",
+    "untitledConversation": "Başlıksız görüşme",
+    "noConversations": "Henüz görüşme yok",
+    "m365Customer": "M365 müşterisi",
+    "noM365Customer": "M365 müşterisi yok",
+    "dismiss": "Kapat"
+  },
+  "aiContextBadge": {
+    "context": "Bağlam",
+    "dashboard": "Kontrol Paneli"
+  },
+  "aiCostIndicator": {
+    "messageCount": "{{count}} msjlar",
+    "messageCount_one": "{{count}} msj",
+    "messageCount_other": "{{count}} msjlar"
+  },
+  "aiPlanProgressBar": {
+    "completed": "Plan tamamlandı ({{completed}}/{{total}})",
+    "aborted": "Plan {{step}} adımında iptal edildi",
+    "executing": "Yürütülüyor: {{step}} / {{total}} Adımı",
+    "stop": "Durdur",
+    "stepTitle": "Adım {{step}}: {{name}}"
+  },
+  "aiPlanReviewCard": {
+    "title": "Eylem Planı",
+    "stepCount": "{{count}} adımlar",
+    "stepCount_one": "{{count}} adım",
+    "stepCount_other": "{{count}} adımlar",
+    "approveAll": "Tümünü Onayla",
+    "reject": "Reddet"
+  },
+  "aiToolCallCard": {
+    "running": "Koşuyor...",
+    "input": "Giriş:",
+    "error": "Hata:",
+    "output": "Çıktı:"
+  },
+  "aiForOfficePage": {
+    "title": "Office için AI",
+    "description": "Müşterilerinizin Excel'inde yönetilen yapay zeka asistanı — sağlama, politika, denetim, kullanım ve şablonlar",
+    "tabs": {
+      "orgs": "Organizasyonlar",
+      "sessions": "Oturumlar",
+      "usage": "Kullanım",
+      "templates": "Şablonlar"
+    }
+  },
+  "orgsTab": {
+    "status": {
+      "active": "Aktif",
+      "consentPending": "Onay bekleniyor",
+      "notProvisioned": "Temel hazırlığı yapılmadı"
+    },
+    "errors": {
+      "removeMapping": "Kiracı eşlemesi kaldırılamadı",
+      "loadStatus": "Kuruluş durumu yüklenemedi.",
+      "saveMapping": "Kiracı eşlemesi kaydedilemedi",
+      "copyConsent": "Kopyalanamadı — URL'yi manuel olarak seçin",
+      "enableAi": "Office için AI etkinleştirilemedi",
+      "loadConsent": "İzin URL'si yüklenemedi. Kapatıp yeniden deneyin."
+    },
+    "messages": {
+      "mappingRemoved": "Kiracı eşlemesi {{orgName}} için kaldırıldı",
+      "mappingSaved": "Kiracı eşlemesi kaydedildi",
+      "consentCopied": "İzin URL'si kopyalandı",
+      "aiEnabled": "Office için AI {{orgName}} için etkinleştirildi"
+    },
+    "notEnabled": {
+      "title": "Breeze AI for Office bu örnekte etkin değil.",
+      "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (Entra eklenti uygulaması kaydı) API üzerinde ayarlayın ve yeniden yükleyin."
+    },
+    "title": "Müşteri kuruluşları",
+    "description": "Müşteri kuruluşu başına Excel AI asistanını sağlayın: Entra kiracısını eşleyin, yönetici onayı verin, politikayı etkinleştirin, eklentiyi dağıtın.",
+    "columns": {
+      "aiEnabled": "AI etkin",
+      "entraTenant": "Entra kiracı",
+      "costMtd": "Maliyet (MTD)",
+      "messagesMtd": "Mesajlar (MTD)"
+    },
+    "manage": "Yönet",
+    "setUp": "Kurulum",
+    "policy": "Politika",
+    "unmap": "Haritayı kaldır",
+    "noOrganizations": "Kuruluş yok",
+    "removeMapping": {
+      "title": "Kiracı eşlemesini kaldır",
+      "message": "{{orgName}}'nin Entra kiracısındaki kullanıcılar artık Excel asistanında oturum açamayacak. Kuruluş politikası ve kullanım geçmişi tutulur.",
+      "confirm": "Eşlemeyi kaldır"
+    },
+    "wizard": {
+      "steps": {
+        "tenant": "Kiracı",
+        "consent": "Onay",
+        "enable": "Etkinleştir",
+        "deploy": "Dağıt"
+      },
+      "title": "Office için AI kurulumu — {{orgName}}",
+      "mapDescription": "Bu kuruluşu Microsoft Entra kiracısıyla (Dizin Kimliği) eşleyin. Eşleme, kiracı izolasyonunun temel taşıdır; bu kiracının her Excel oturum açma işlemi bu kuruluşa ulaşır.",
+      "prefilled": "Kuruluşun mevcut Microsoft 365 bağlantısından önceden doldurulmuş.",
+      "entraTenantId": "Entra kiracı kimliği",
+      "guidError": "Bir GUID olmalıdır (Entra yönetim merkezi → Genel Bakış → Kiracı Kimliği).",
+      "saveContinue": "Kaydet ve devam et",
+      "consentDescription": "Müşteri kiracısının Microsoft 365 yöneticisinin, Breeze AI for Office uygulaması için yönetici izni vermesi gerekir. Onlara bu bağlantıyı gönderin (veya istemci kiracısında Global Admin'e sahipseniz bağlantıyı kendiniz açın):",
+      "loadingConsent": "İzin URL'si yükleniyor…",
+      "copyUrl": "URL'yi kopyala",
+      "openNewTab": "Yeni sekmede aç",
+      "afterConsent": "Verdikten sonra Microsoft, Breeze onay sayfasına yönlendirir. Onay, ilk kullanıcı Excel'den oturum açtığında burada verildiği gibi görünür - Microsoft'a karşı canlı bir anket yoktur (Plan-4 karar 1).",
+      "consentGranted": "İzin verdim",
+      "enableDescription": "Bu kuruluş için asistanı etkinleştirin. Bu, güvenli varsayılanlarla (tüm kullanıcılar, son kullanıcı onayıyla okuma/yazma, finansal/kimlik bilgisi türleri için DLP düzenlemesi) kuruluş politikasına <code>enabled: true</code> yazar. Daha sonra politika düzenleyicide her şeyi ayarlayın.",
+      "enabling": "Etkinleştiriliyor…",
+      "alreadyEnabled": "Zaten etkin — devam et",
+      "enableAi": "Office için AI'yı etkinleştirin",
+      "deployTitle": "Excel eklentisini Microsoft 365 merkezi dağıtım yoluyla dağıtın",
+      "deploySteps": {
+        "signIn": "Müşteri kiracısının <strong>Microsoft 365 yönetici merkezinde</strong> → Ayarlar → Tümleşik uygulamalarda oturum açın.",
+        "upload": "<strong>Özel uygulamalar yükle</strong> → Office eklentisini seçin → Breeze örneğinizden Breeze AI for Office bildirim URL'sini sağlayın.",
+        "assign": "Eklentiyi herkese veya bu kuruluşun erişim politikası kapsamındaki kullanıcı gruplarına atayın.",
+        "wait": "Dağıtımın kullanıcıların Excel şeridinde (Ana Sayfa → Eklentiler) görünmesi 24 saat kadar sürebilir.",
+        "signInAutomatically": "Kullanıcılar Microsoft iş hesaplarıyla otomatik olarak oturum açar; ekstra kimlik bilgileri gerekmez."
+      },
+      "openPolicyEditor": "Politika düzenleyiciyi aç"
+    }
+  },
+  "policyEditor": {
+    "errors": {
+      "ruleNameRequired": "Her özel Veri Kaybını Önleme kuralının bir ada ihtiyacı vardır",
+      "invalidPattern": "DLP kuralı \"{{ruleName}}\" geçersiz bir kalıp içeriyor; kaydetmeden önce düzeltin",
+      "save": "Politika kaydedilemedi",
+      "load": "Kuruluş politikası yüklenemedi."
+    },
+    "messages": {
+      "saved": "Politika kaydedildi"
+    },
+    "organizations": "Organizasyonlar",
+    "title": "Kuruluş politikası",
+    "description": "Bu müşteri kuruluşunun Excel asistanının yapmasına izin verilen her şey.",
+    "sections": {
+      "general": "Genel",
+      "userAccess": "Kullanıcı erişimi",
+      "budgets": "Bütçeler ve ücret sınırları",
+      "branding": "Markalama",
+      "dlp": "Veri kaybını önleme"
+    },
+    "assistant": "Asistan",
+    "workbookAccess": "Çalışma kitabına erişim",
+    "workbookAccessOptions": {
+      "readWrite": "Okuma ve yazma (son kullanıcı tarafından onaylanarak yazar)",
+      "readOnly": "Salt okunur (yazma araçları modelden kaldırıldı)"
+    },
+    "workbookWrites": "Çalışma kitabı yazıyor",
+    "writeOptions": {
+      "ask": "Her zaman sor (son kullanıcı her yazmayı onaylar)",
+      "allowAuto": "Otomatik uygulamaya izin ver (son kullanıcı otomatik uygulamayı tercih edebilir)"
+    },
+    "autoApplyHint": "Otomatik uygulama varsayılan olarak kapalıdır ve yalnızca burada izin verildiğinde mümkündür.",
+    "allowedModels": "İzin verilen modeller",
+    "allModelsHint": "Seçim yok = mevcut tüm modeller.",
+    "whoCanUse": "Asistanı kimler kullanabilir?",
+    "userAccessOptions": {
+      "all": "Eşlenen kiracıdaki tüm kullanıcılar",
+      "selected": "Yalnızca seçilen kullanıcılar"
+    },
+    "noUsersHint": "Henüz hiçbir kullanıcı Excel'den oturum açmadı; kullanıcılar ilk oturum açtıktan sonra burada görünür. O zamana kadar erişimi \"Tüm kullanıcılar\"da bırakın.",
+    "dailyBudget": "Günlük bütçe ($)",
+    "monthlyBudget": "Aylık bütçe ($)",
+    "noLimit": "Sınır yok",
+    "messagesPerMinute": "Kullanıcı başına mesaj/dakika",
+    "messagesPerHour": "Mesaj/kuruluş başına saat",
+    "retentionDays": "Transkript saklama (gün)",
+    "keepForever": "Sonsuza kadar sakla",
+    "brandingDescription": "Eklenti altbilgisinde gösterilir: \"BT sağlayıcınız tarafından yönetilir\" — beyaz etiket kancası (özellik §11).",
+    "displayName": "Görünen ad",
+    "mspNamePlaceholder": "MSP adınız",
+    "logoUrl": "Logo URL'si",
+    "dlpDescription": "Model için Breeze'den ayrılan her yük taranır (spec §6). Düzeltilmiş değerler, düzenlenmiş olarak saklanır; denetim takibi hiçbir zaman hassas formu saklamaz.",
+    "builtins": {
+      "creditCard": "Kredi kartı numaraları (Luhn onaylı)",
+      "ssn": "SSN / ulusal kimlikler",
+      "iban": "IBAN hesap numaraları",
+      "apiKey": "API anahtarlar ve jetonlar",
+      "email": "E-posta adresleri",
+      "phone": "Telefon numaraları"
+    },
+    "actions": {
+      "redact": "Düzelt",
+      "block": "İsteği engelle",
+      "log": "Yalnızca oturum aç",
+      "off": "Kapalı"
+    },
+    "customRules": "Özel kurallar",
+    "addRule": "Kural ekle",
+    "testSample": "Test örneği (temsili hücre verilerini yapıştırın — yerel olarak değerlendirilir, hiçbir zaman hiçbir yere gönderilmez)",
+    "ruleName": "Kural adı",
+    "regexPlaceholder": "Normal ifade, ör. PRJ-\\d{4}",
+    "removeRule": "Kuralı kaldır",
+    "matchCount": "{{count}} örnekte eşleşiyor",
+    "matchCount_one": "{{count}} örnekte eşleşiyor",
+    "matchCount_other": "{{count}} örnekte eşleşiyor",
+    "patternCompiles": "Desen derlenir — eşleşmeleri görmek için yukarıya bir test örneği ekleyin",
+    "patternError": "Desen hatası: {{error}}",
+    "savePolicy": "Kaydetme politikası"
+  },
+  "sessionsTab": {
+    "toolStatus": {
+      "pending": "beklemede",
+      "approved": "onaylandı",
+      "rejected": "reddedildi",
+      "completed": "tamamlandı",
+      "failed": "başarısız oldu"
+    },
+    "errors": {
+      "flag": "Oturum işaretlenemedi",
+      "unflag": "Oturumun işareti kaldırılamadı",
+      "load": "Oturumlar yüklenemedi.",
+      "loadTranscript": "Oturum dökümü yüklenemedi."
+    },
+    "messages": {
+      "flagged": "Oturum işaretlendi",
+      "unflagged": "Oturumun işareti kaldırıldı"
+    },
+    "allOrganizations": "Tüm kuruluşlar",
+    "allUsers": "Tüm kullanıcılar",
+    "from": "Gönderen",
+    "to": "Kime",
+    "flaggedOnly": "Yalnızca işaretlendi",
+    "columns": {
+      "started": "Başlatıldı",
+      "title": "Başlık",
+      "turns": "Dönüşler",
+      "cost": "Maliyet",
+      "flagged": "İşaretlendi"
+    },
+    "untitled": "Başlıksız",
+    "flagged": "İşaretlendi",
+    "empty": "Filtrelerle eşleşen istemci AI oturumu yok",
+    "pagination": "{{from}}–{{to}} / {{total}}",
+    "prev": "Önceki",
+    "transcriptTitle": "Oturum transkripti",
+    "untitledSession": "Başlıksız oturum",
+    "flagReason": "İşaretleme nedeni: {{reason}}",
+    "unflag": "İşareti kaldır",
+    "flag": "Bayrak",
+    "redacted": "düzeltildi: {{type}} ×{{count}}",
+    "noMessages": "Bu oturum için kayıtlı mesaj yok.",
+    "approvalTrail": "Takım onay takibi",
+    "tokenCounts": "{{input}} giriş / {{output}} çıkış",
+    "requestedAt": "talep edildi {{time}}",
+    "approvedAt": "onaylandı {{time}}",
+    "rejectedAt": "reddedildi {{time}}",
+    "appliedAt": "uygulandı {{time}}",
+    "flagDialog": {
+      "title": "Oturumu işaretle",
+      "description": "İşaretleme, oturumu takip için işaretler ve denetim günlüğüne kaydedilir.",
+      "reason": "Sebep (isteğe bağlı)",
+      "flagging": "İşaretleniyor…"
+    },
+    "unflagDialog": {
+      "title": "Oturumun işaretini kaldır",
+      "message": "Bu oturumdaki işaret kaldırılsın mı? İşaretleme/işareti kaldırma geçmişi denetim günlüğünde kalır."
+    }
+  },
+  "templatesTab": {
+    "allApps": "Tüm uygulamalar",
+    "allOrgs": "İş ortağı çapında",
+    "org": "Kuruluş",
+    "errors": {
+      "delete": "Şablon silinemedi",
+      "load": "Şablonlar yüklenemedi.",
+      "update": "Şablon güncellenemedi",
+      "create": "Şablon oluşturulamadı"
+    },
+    "messages": {
+      "deleted": "Şablon \"{{name}}\" silindi",
+      "updated": "Şablon güncellendi",
+      "created": "Şablon oluşturuldu"
+    },
+    "title": "Bilgi istemi şablonları",
+    "description": "Eklentinin boş sohbet seçicisinde gösterilir. \"Tüm kuruluşlar\" şablonları her müşteri kuruluşuna ulaşır; org şablonları yalnızca kendilerine aittir.",
+    "newTemplate": "Yeni şablon",
+    "columns": {
+      "scope": "Kapsam",
+      "apps": "Uygulamalar",
+      "category": "Kategori",
+      "updated": "Güncellendi"
+    },
+    "empty": "Henüz şablon yok — ilkini oluşturun",
+    "deleteDialog": {
+      "title": "Şablonu sil",
+      "message": "\"{{name}}\" silinsin mi? Eklentinin şablon seçicisinden hemen kaybolur."
+    },
+    "editTemplate": "Şablonu düzenle",
+    "categoryPlaceholder": "ör. finans",
+    "promptBody": "Hızlı yanıt",
+    "partnerWide": "Tüm kuruluşlar (iş ortağı çapında)",
+    "scopeImmutable": "Kapsam oluşturulduktan sonra değiştirilemez; taşımak için silin ve yeniden oluşturun.",
+    "appsHint": "Bu şablonun her uygulamada gösterilmesi için tümünü işaretlemeden bırakın.",
+    "saveChanges": "Değişiklikleri kaydet",
+    "createTemplate": "Şablon oluştur"
+  },
+  "usageTab": {
+    "errors": {
+      "export": "Dışa aktarma başarısız oldu",
+      "load": "Kullanım raporu yüklenemedi."
+    },
+    "fromMonth": "Aydan itibaren",
+    "toMonth": "Aya kadar",
+    "allOrganizations": "Tüm kuruluşlar",
+    "exporting": "Dışa aktarılıyor…",
+    "exportCsv": "CSV'yi dışa aktar",
+    "rangeError": "Aydan aya kadar ≤ olmalıdır",
+    "columns": {
+      "orgUser": "Kuruluş / kullanıcı",
+      "month": "Ay",
+      "messages": "Mesajlar",
+      "sessions": "Oturumlar",
+      "tokens": "Jetonlar (giriş/çıkış)",
+      "cost": "Maliyet"
+    },
+    "rowCount": "{{count}} satırlar",
+    "rowCount_one": "{{count}} satır",
+    "rowCount_other": "{{count}} satırlar",
+    "empty": "Bu aralıkta herhangi bir kullanım kaydedilmedi",
+    "total": "Toplam"
+  },
+  "workspaceChatPanel": {
+    "errors": {
+      "autoDraft": "Bu görüşmeden otomatik olarak taslak oluşturulamadı; bileti manuel olarak doldurabilirsiniz.",
+      "createTicket": "Bilet oluşturulamadı."
+    },
+    "createTicket": "Bilet Oluştur",
+    "dismiss": "Kapat"
+  },
+  "workspaceEmptyState": {
+    "title": "Yapay Zeka Çalışma Alanı",
+    "description": "Aynı anda birden fazla AI görüşmesini çalıştırın. Bir sekmede cihaz sorununu araştırırken diğerinde politika yapılandırın.",
+    "newConversation": "Yeni Konuşma",
+    "limit": "5'e kadar eşzamanlı görüşme"
+  },
+  "workspaceTab": {
+    "approvalPending": "Onay bekleniyor"
+  },
+  "workspaceTabBar": {
+    "newTabShortcut": "Yeni sekme (Cmd+Shift+N)",
+    "new": "Yeni"
+  },
+  "createTicketFromChatModal": {
+    "title": "Konuşmadan bilet oluştur",
+    "subject": "Konu",
+    "problem": "Sorun",
+    "open": "Aç",
+    "resolved": "Çözüldü",
+    "resolution": "Çözünürlük",
+    "resolutionRequired": "Çözüm için bir çözüm notu gereklidir.",
+    "timeMinutes": "Süre (dak)",
+    "timeMinutesAria": "Zaman (dakika)",
+    "billable": "Faturalandırılabilir",
+    "createTicket": "Bilet oluştur"
+  }
+}

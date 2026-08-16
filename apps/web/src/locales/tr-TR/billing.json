@@ -1,0 +1,1732 @@
+{
+  "contracts": {
+    "shared": {
+      "status": {
+        "draft": "Taslak",
+        "active": "Aktif",
+        "paused": "Duraklatıldı",
+        "cancelled": "İptal edildi",
+        "expired": "Süresi dolmuş"
+      },
+      "cadence": {
+        "monthly": "Aylık",
+        "quarterly": "Üç ayda bir",
+        "annual": "Yıllık",
+        "custom": "Her {{count}} ayda bir"
+      },
+      "billingTiming": {
+        "advance": "Önceden",
+        "arrears": "Gecikmiş"
+      },
+      "lineType": {
+        "flat": "Sabit ücret",
+        "perDevice": "Cihaz başına",
+        "perSeat": "Koltuk başına",
+        "manual": "Manuel miktar"
+      },
+      "transition": {
+        "activate": "Etkinleştir",
+        "pause": "Duraklat",
+        "resume": "Devam Et",
+        "cancel": "İptal"
+      },
+      "values": {
+        "auto": "otomatik"
+      }
+    },
+    "contractDetail": {
+      "fields": {
+        "billingTiming": "Faturalandırma zamanlaması",
+        "cadence": "Ritim",
+        "startDate": "Başlangıç tarihi",
+        "endDate": "Bitiş tarihi",
+        "nextBilling": "Sonraki faturalandırma",
+        "autoIssue": "Otomatik yayın",
+        "renewal": "Yenileme",
+        "estimatedPerPeriod": "Tah. / dönem",
+        "notes": "Notlar"
+      },
+      "values": {
+        "noDrafts": "Hayır (taslaklar)"
+      },
+      "renewal": {
+        "autoRenews": "Otomatik yenilenir",
+        "everyMonths": "her {{count}} ayda bir",
+        "currentTermEnds": "· mevcut dönem sona eriyor {{date}}",
+        "noticeDays": "· {{count}}-günlük bildirim",
+        "doesNotAutoRenew": "Otomatik olarak yenilenmez"
+      },
+      "table": {
+        "unitPrice": "Birim fiyatı",
+        "qty": "Adet",
+        "tax": "Vergi",
+        "empty": "Bu sözleşmede satır yoktur."
+      },
+      "billingHistory": {
+        "title": "Faturalandırma geçmişi",
+        "period": "Dönem",
+        "generated": "Oluşturuldu",
+        "invoice": "Fatura",
+        "empty": "Henüz fatura oluşturulmadı.",
+        "viewInvoice": "Faturayı görüntüle"
+      },
+      "summary": {
+        "active": "Bu sözleşme aktiftir ve kendi ritmine göre faturalar oluşturacaktır.",
+        "inactive": "Faturalar sözleşme etkinken oluşturulur."
+      },
+      "actions": {
+        "generateInvoiceNow": "Şimdi fatura oluştur",
+        "deleteDraft": "Taslağı sil"
+      },
+      "errors": {
+        "transition": {
+          "activate": "Sözleşme etkinleştirilemedi.",
+          "pause": "Sözleşme duraklatılamadı.",
+          "resume": "Sözleşme devam ettirilemedi.",
+          "cancel": "Sözleşme iptal edilemedi."
+        },
+        "generateInvoice": "Fatura oluşturulamadı.",
+        "deleteDraft": "Taslak silinemedi."
+      },
+      "toast": {
+        "transition": {
+          "activate": "Sözleşme etkinleştirildi",
+          "pause": "Sözleşme duraklatıldı",
+          "resume": "Sözleşme devam ettirildi",
+          "cancel": "Sözleşme iptal edildi"
+        },
+        "invoiceGenerated": "Fatura oluşturuldu",
+        "draftDeleted": "Taslak silindi"
+      },
+      "cancelConfirm": {
+        "title": "Bu sözleşme iptal edilsin mi?",
+        "message": "İptal işlemi, bu sözleşmeye ilişkin gelecekteki tüm faturalandırmaları durdurur. Bu işlem geri alınamaz; faturalandırmayı devam ettirmek için yeni bir sözleşme oluşturmanız gerekir.",
+        "confirm": "Sözleşmeyi iptal et"
+      },
+      "deleteConfirm": {
+        "title": "Taslak sözleşmeyi sil",
+        "message": "Bu, sözleşme taslağını kalıcı olarak siler. Bu geri alınamaz.",
+        "confirm": "Taslağı sil"
+      },
+      "documents": {
+        "title": "Yürütülen belgeler",
+        "columns": {
+          "template": "Şablon",
+          "signer": "İmzalayan",
+          "signedAt": "İmzalandı",
+          "quote": "Alıntı"
+        },
+        "templateVersion": "{{name}} — v{{number}}",
+        "empty": "Henüz yürütülmüş belge yok.",
+        "loadError": "Yürütülen belgeler yüklenemedi.",
+        "downloadError": "PDF indirilemedi.",
+        "download": "PDF'yi indir",
+        "preparing": "Hazırlanıyor…",
+        "viewQuote": "Teklifi görüntüle"
+      }
+    },
+    "contractEditor": {
+      "validation": {
+        "enterMonths": "Ay sayısını girin",
+        "enterRenewalTermBeforeSaving": "Kaydetmeden önce bir yenileme dönemi (ay) girin.",
+        "enterContractName": "Bir sözleşme adı girin.",
+        "enterStartDate": "Bir başlangıç ​​tarihi girin.",
+        "renewalTermRange": "1 ila 120 ay arasında bir yenileme süresi girin.",
+        "advanceNoticeRange": "0 ila 365 gün arasında önceden bildirim girin."
+      },
+      "errors": {
+        "loadOrganizations": "Kuruluşlar yüklenemedi.",
+        "loadSites": "Siteler yüklenemedi.",
+        "createContract": "Sözleşme oluşturulamadı.",
+        "saveContract": "Sözleşme kaydedilemedi.",
+        "addLine": "Satır eklenemedi.",
+        "removeLine": "Satır kaldırılamadı.",
+        "activateContract": "Sözleşme etkinleştirilemedi."
+      },
+      "toast": {
+        "contractCreated": "Sözleşme oluşturuldu",
+        "lineAdded": "Satır eklendi",
+        "lineRemoved": "Hat kaldırıldı",
+        "contractActivated": "Sözleşme etkinleştirildi"
+      },
+      "schedule": {
+        "title": "Program",
+        "selectOrganization": "Bir kuruluş seçin…",
+        "namePlaceholder": "ör. Yönetilen Hizmetler – Acme Co",
+        "billingTiming": "Faturalandırma zamanlaması",
+        "billingCadence": "Faturalandırma temposu",
+        "customCadence": "Özel…",
+        "intervalMonths": "Aralık (ay)",
+        "startDate": "Başlangıç tarihi"
+      },
+      "renewal": {
+        "title": "Yenileme",
+        "endDateOptional": "Bitiş tarihi (isteğe bağlı)",
+        "autoIssue": "Oluşturulan faturaları otomatik olarak düzenleyin (aksi takdirde taslak olarak gönderilirler)",
+        "autoRenewAtEnd": "Dönem sonunda otomatik olarak yenilenir",
+        "autoRenewSetEndDate": "Dönem sonunda otomatik olarak yenile (önce bir bitiş tarihi belirleyin)",
+        "renewalTermMonths": "Yenileme süresi (ay)",
+        "advanceNoticeDays": "Önceden bildirim (gün)"
+      },
+      "content": {
+        "title": "İçerik",
+        "notesOptional": "Notlar (isteğe bağlı)",
+        "termsOptional": "Şartlar (isteğe bağlı, faturada gösterilir)",
+        "termsPlaceholder": "ör. Net 30. 30 gün önceden iptal edilmediği sürece otomatik olarak yenilenir."
+      },
+      "lines": {
+        "unitPrice": "Birim fiyatı",
+        "qty": "Adet",
+        "tax": "Vergi",
+        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin."
+      },
+      "addLine": {
+        "integrationHint": "Entegrasyondan ekleme — bir satırı önceden doldurur.",
+        "linkPax8Subscription": "Pax8 aboneliğini bağlayın",
+        "addFromPax8Catalog": "Pax8 kataloğundan ekle",
+        "importFromTdSynnex": "TD SYNNEX'ten içe aktar",
+        "lineType": "Hat türü",
+        "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
+        "unitPrice": "Birim fiyatı",
+        "quantity": "Adet",
+        "siteOptional": "Site (isteğe bağlı — cihaz sayısını kapsar)",
+        "allSites": "Tüm siteler",
+        "linkCatalogItemOptional": "Katalog öğesine bağlantı (isteğe bağlı)",
+        "itemFallback": "Öğe",
+        "clearCatalogLink": "Katalog bağlantısını temizle",
+        "searchCatalog": "Katalogda ara…",
+        "taxable": "Vergiye tabi",
+        "quantityResolvedAutomatically": "Miktar, faturalama sırasında otomatik olarak çözümlenir.",
+        "lineTotal": "Satır toplamı: {{total}}",
+        "addLine": "Satır ekle"
+      },
+      "estimate": {
+        "title": "Tahmini bu dönem",
+        "saveFirst": "Sözleşmeyi kaydedin, ardından bir tahmin görmek için satır ekleyin.",
+        "plusAuto": "+ otomatik",
+        "includesLiveCounts": "Bugün itibarıyla canlı cihaz/koltuk sayılarını içerir.",
+        "loadLiveCountsFailed": "Canlı sayımlar yüklenemedi.",
+        "loadLiveCountsFailedWithAuto": "Canlı sayımlar yüklenemedi — cihaz/koltuk başına sıralar bu toplama dahil değildir."
+      },
+      "actions": {
+        "createContract": "Sözleşme oluştur",
+        "activateContract": "Sözleşmeyi etkinleştir",
+        "activateHint": "Etkinleştirmek için en az bir satır ekleyin."
+      },
+      "removeLineConfirm": {
+        "title": "Satırı kaldır",
+        "message": "Bu, \"{{description}}\" ifadesini sözleşmeden kaldırır. Bu geri alınamaz.",
+        "thisLine": "bu satır",
+        "confirm": "Satırı kaldır"
+      }
+    },
+    "contractWorkspace": {
+      "errors": {
+        "missingContractId": "Sözleşme kimliği eksik",
+        "notFound": "Sözleşme bulunamadı.",
+        "loadContract": "Sözleşme yüklenemedi",
+        "unavailable": "Sözleşme mevcut değil."
+      },
+      "backToContracts": "← Sözleşmeler",
+      "backToContractsText": "Sözleşmelere geri dön",
+      "newContract": "Yeni sözleşme",
+      "doneEditing": "Düzenleme tamamlandı"
+    },
+    "contractsList": {
+      "title": "Sözleşmeler",
+      "description": "Taslak faturaları belirli aralıklarla otomatik olarak oluşturan yinelenen anlaşmalar.",
+      "newContract": "Yeni sözleşme",
+      "accessDenied": "Sözleşmeleri görüntüleme izniniz yok.",
+      "errors": {
+        "loadOrganizations": "Kuruluşlar yüklenemedi.",
+        "loadContracts": "Sözleşmeler yüklenemedi"
+      },
+      "filters": {
+        "allStatuses": "Tüm durumlar",
+        "searchPlaceholder": "Adı veya kuruluşu arayın",
+        "searchAria": "Arama sözleşmeleri"
+      },
+      "stats": {
+        "estimatedMonthlyRecurring": "Tah. aylık yinelenen",
+        "activeContractCount": "{{count}} aktif sözleşmeler",
+        "activeContractCount_one": "{{count}} aktif sözleşme",
+        "activeContractCount_other": "{{count}} aktif sözleşmeler"
+      },
+      "actions": {
+        "tryAgain": "Tekrar deneyin",
+        "clearFilters": "Filtreleri temizle"
+      },
+      "empty": {
+        "noMatches": "Bu filtrelerle eşleşen sözleşme yok.",
+        "title": "Henüz sözleşme yok",
+        "description": "Sözleşmeler, bir kuruluşa tekrarlanan bir ritimle fatura keser ve faturaları sizin için otomatik olarak oluşturur.",
+        "createFirst": "İlk sözleşmenizi oluşturun"
+      },
+      "table": {
+        "selectAllAria": "Tüm sözleşmeleri seçin",
+        "startDate": "Başlangıç tarihi",
+        "cadence": "Ritim",
+        "nextBill": "Sonraki fatura",
+        "estimatedPerPeriod": "Tah. / dönem",
+        "selectContractAria": "Sözleşmeyi seçin {{name}}"
+      },
+      "bulk": {
+        "deleteDrafts": "Taslakları sil",
+        "deleteDrafts_one": "Taslağı sil",
+        "deleteDrafts_other": "Taslakları sil"
+      },
+      "toast": {
+        "bulkLimit": "Bir seferde en fazla {{limit}} öğesini seçin.",
+        "bulkFailed": "Toplu {{verb}} başarısız oldu. Tekrar dene.",
+        "bulkPartial": "{{succeeded}} {{verb}}, {{skipped}} atlandı{{failedText}}",
+        "failedSuffix": ", {{failed}} başarısız oldu",
+        "bulkSuccess": "{{succeeded}} {{verb}}"
+      },
+      "cancelConfirm": {
+        "title": "Sözleşmeleri iptal et",
+        "message": "Seçilen {{count}} sözleşme/sözleşmeler iptal edilsin mi? Aktif ve duraklatılmış sözleşmeler iptal edilecek; bu geri alınamaz.",
+        "confirm": "Sözleşmeleri iptal et"
+      },
+      "deleteConfirm": {
+        "title": "Taslak sözleşmeleri sil",
+        "message": "{{count}} taslak sözleşmeler silinsin mi? Yalnızca taslaklar silinir{{untouched}}; bu geri alınamaz.",
+        "message_one": "{{count}} taslak sözleşme silinsin mi? Yalnızca taslaklar silinir{{untouched}}; bu geri alınamaz.",
+        "message_other": "{{count}} taslak sözleşmeler silinsin mi? Yalnızca taslaklar silinir{{untouched}}; bu geri alınamaz.",
+        "untouchedSuffix": "— seçiminizdeki tüm aktif veya duraklatılmış sözleşmelere dokunulmaz",
+        "confirm": "Taslakları sil"
+      }
+    },
+    "contractPax8Drawer": {
+      "title": "Pax8 aboneliğini bağlayın",
+      "subtitlePicked": "Bağlantı oluşturmak için bu sözleşmede bir satır seçin (veya bir satır oluşturun).",
+      "subtitleChoose": "Bu sözleşmeye eklemek için senkronize edilmiş bir abonelik seçin.",
+      "loadingSubscriptions": "Abonelikler yükleniyor…",
+      "empty": "Bu kuruluş için henüz hiçbir Pax8 aboneliği senkronize edilmedi. Bunları Entegrasyonlar → Pax8 altında senkronize edin.",
+      "subscriptionFallback": "Pax8 aboneliği",
+      "quantity": "adet {{quantity}}",
+      "priceEach": "{{currency}} {{price}}/ea",
+      "alreadyLinked": "zaten bağlı",
+      "relink": "Yeniden bağlantı oluştur",
+      "link": "Bağlantı",
+      "errors": {
+        "loadSubscriptions": "Bu kuruluş için Pax8 abonelikleri yüklenemedi."
+      }
+    },
+    "tabs": {
+      "contracts": "Sözleşmeler",
+      "templates": "Şablonlar",
+      "documents": "Belgeler"
+    },
+    "templatesTab": {
+      "title": "Sözleşme şablonları",
+      "description": "Kabul edilen fiyat tekliflerine ekleyebileceğiniz yeniden kullanılabilir sözleşme belgeleri.",
+      "newTemplate": "Yeni şablon",
+      "includeArchived": "Arşivlenenleri göster",
+      "allOrgs": "Tüm kuruluşlar",
+      "ownerOrg": "Organizasyon",
+      "noVersions": "Henüz sürüm yok",
+      "versionLabel": "v{{number}} · {{status}}",
+      "archive": "Arşiv",
+      "loadError": "Sözleşme şablonları yüklenemedi",
+      "createError": "Şablon oluşturulamadı",
+      "created": "Şablon oluşturuldu",
+      "archiveError": "Şablon arşivlenemedi",
+      "archiveSuccess": "Şablon arşivlendi",
+      "columns": {
+        "name": "Ad",
+        "owner": "Sahip",
+        "status": "Durum",
+        "latestVersion": "En son sürüm"
+      },
+      "status": {
+        "active": "Aktif",
+        "archived": "Arşivlendi"
+      },
+      "empty": {
+        "title": "Henüz şablon yok",
+        "description": "Başlamak için ilk sözleşme şablonunuzu oluşturun."
+      },
+      "createDialog": {
+        "title": "Yeni sözleşme şablonu",
+        "name": "Ad",
+        "namePlaceholder": "ör. Ana Hizmet Sözleşmesi",
+        "description": "Açıklama",
+        "descriptionPlaceholder": "Bu şablonun isteğe bağlı özeti",
+        "scope": "Mülkiyet",
+        "allOrganizations": "Tüm kuruluşlar",
+        "partnerWide": "İş ortağı çapında şablon",
+        "thisOrgOnly": "Yalnızca bu kuruluş",
+        "organization": "Organizasyon",
+        "selectOrg": "Bir kuruluş seçin",
+        "orgRequired": "Kuruluşa ait şablon için bir kuruluş seçin.",
+        "nameRequired": "Bir şablon adı girin.",
+        "cancel": "İptal",
+        "create": "Şablon oluştur",
+        "creating": "Oluşturuluyor…"
+      }
+    },
+    "documentsTab": {
+      "title": "Belgeler",
+      "description": "Henüz bir sözleşmeye bağlanmamış, yürütülen sözleşme belgeleri.",
+      "empty": {
+        "title": "Eklenmemiş belge yok",
+        "description": "Yürütülen belgeler bir sözleşmeye bağlanana kadar burada görünür."
+      },
+      "loadError": "Belgeler yüklenemedi.",
+      "columns": {
+        "template": "Şablon",
+        "signer": "İmzalayan",
+        "signedAt": "İmzalandı",
+        "quote": "Alıntı",
+        "organization": "Organizasyon"
+      },
+      "download": "PDF'yi indir",
+      "preparing": "Hazırlanıyor…",
+      "viewQuote": "Teklifi görüntüle",
+      "linkAction": "Sözleşme bağlantısı",
+      "linkDialog": {
+        "title": "Bir sözleşmeye bağlantı",
+        "contractLabel": "Sözleşme",
+        "selectContract": "Bir sözleşme seçin",
+        "noContracts": "Bu kuruluş için sözleşme bulunamadı.",
+        "loadContractsError": "Sözleşmeler yüklenemedi. Lütfen tekrar deneyin.",
+        "cancel": "İptal",
+        "confirm": "Bağlantı",
+        "linking": "Bağlanıyor…"
+      },
+      "linkSuccess": "Sözleşmeye bağlı belge.",
+      "linkError": "Belge bu sözleşmeye bağlanamadı."
+    },
+    "templateEditor": {
+      "back": "Geri",
+      "loadError": "Şablon yüklenemedi",
+      "newVersion": "Yeni sürüm",
+      "newVersionConfirm": {
+        "title": "Kaydedilmemiş değişiklikler silinsin mi?",
+        "message": "Yeni bir sürüm başlatmak düzenleyiciyi temizleyecektir. Bu taslakta yaptığınız kaydedilmemiş düzenlemeler kaybolacak.",
+        "confirm": "Yeni sürümü başlat"
+      },
+      "uploadPdf": "PDF Yükle",
+      "versions": "Sürümler",
+      "noVersions": "Henüz sürüm yok",
+      "versionNumber": "v{{number}}",
+      "versionStatus": {
+        "draft": "Taslak",
+        "published": "Yayınlandı"
+      },
+      "sourceType": {
+        "authored": "Yazıldı",
+        "uploaded": "Yüklenen PDF"
+      },
+      "publish": "Yayınla",
+      "publishDirtyHint": "Taslağınızı yayınlamadan önce kaydedin",
+      "body": "Gövde",
+      "bodyAria": "Sözleşme şablonu metni",
+      "preview": "Önizleme",
+      "edit": "Düzenle",
+      "saveDraft": "Taslağı kaydet",
+      "saving": "Kaydediliyor…",
+      "emptyBody": "Kaydetmeden önce biraz içerik ekleyin.",
+      "autoVariables": "Otomatik değişkenler",
+      "manualVariables": "Manüel değişkenler",
+      "noManualVariables": "Hiçbiri algılanmadı",
+      "archivedNotice": "Bu şablon arşivlendi. Yeni sürümler eklenemez.",
+      "saveError": "Taslak sürüm kaydedilemedi",
+      "saveSuccess": "Taslak sürüm kaydedildi",
+      "uploadError": "PDF yüklenemedi",
+      "uploadSuccess": "PDF sürümü yüklendi",
+      "publishError": "Sürüm yayınlanamadı",
+      "publishSuccess": "Sürüm yayınlandı"
+    }
+  },
+  "quotes": {
+    "editor": {
+      "actions": {
+        "addImage": "Resim ekle",
+        "addLine": "Satır ekle",
+        "addSection": "Bölüm ekle",
+        "adding": "Ekleniyor…",
+        "cancel": "İptal",
+        "collapseSection": "Bölümü daralt",
+        "dragLine": "Satırı yeniden sıralamak için sürükleyin",
+        "dragLineTitle": "Bu tabloda yeniden sıralamak için sürükleyin. Klavye: satır menüsünün Yukarı taşı / Aşağı taşı seçeneğini kullanın.",
+        "dragSection": "Bölümü yeniden sıralamak için sürükleyin",
+        "expandSection": "Bölümü genişlet",
+        "fetch": "Getir",
+        "fetchAddImage": "Resmi getir ve ekle",
+        "fromUrl": "URL'den",
+        "hideCostMargin": "Maliyeti ve marjı gizle",
+        "imageFromUrl": "URL'den resim ekle…",
+        "lineActions": "Hat işlemleri",
+        "moveLineDown": "Satırı aşağı taşı",
+        "moveLineTo": "Satırı şuraya taşı:",
+        "moveLineToAnotherTable": "Satırı başka bir fiyatlandırma tablosuna taşıyın",
+        "moveLineUp": "Sırayı yukarı taşı",
+        "moveSectionDown": "Bölümü aşağı taşı",
+        "moveSectionUp": "Bölümü yukarı taşı",
+        "moveTo": "Şuraya taşı:",
+        "remove": "Kaldır",
+        "removeImage": "Resmi kaldır",
+        "removeLine": "Satırı kaldır",
+        "removeSection": "Bölümü kaldır",
+        "replaceImage": "Resmi değiştir",
+        "sectionActions": "Bölüm işlemleri",
+        "showCostMargin": "Maliyeti ve marjı göster",
+        "tidyAllDescriptions": "Tüm açıklamaları düzenleyin",
+        "uploadAddImage": "Resim yükleyin ve ekleyin",
+        "uploading": "Yükleniyor…"
+      },
+      "addLine": {
+        "addFromCatalog": "Katalogdan ekle",
+        "aiLookupAction": "AI araması",
+        "catalogItem": "Katalog öğesi",
+        "manualLine": "Manuel hat",
+        "moreDetails": "Daha fazla ayrıntı",
+        "searchDistributor": "Distribütör arayın",
+        "searchPax8": "Pax8'i arayın"
+      },
+      "addSection": {
+        "captionPlaceholder": "Altyazı (isteğe bağlı)",
+        "headingPlaceholder": "Başlık metni",
+        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageUrlPlaceholder": "https://example.com/photo.png",
+        "insertHere": "Bölüm ekle",
+        "richTextPlaceholder": "Teklif metni…",
+        "title": "Bölüm ekle",
+        "uploadFile": "Dosya yükle"
+      },
+      "autoFill": {
+        "filledDescription": "açıklama",
+        "filledEstimatedCost": "tahmini maliyet {{amount}}",
+        "filledName": "isim",
+        "filledPriceWithDefaultMarkup": "fiyat {{amount}} (varsayılan {{markup}}% kâr)",
+        "filledTaxableOff": "vergiye tabi: kapalı",
+        "filledTaxableOn": "vergiye tabi: açık",
+        "help": "Web'de arama yapar ve adı, açıklamayı, vergiyi ve tahmini maliyeti doldurur. Fiyatı siz belirlersiniz.",
+        "helpWithDefaultMarkup": "Web'de arama yapar, adı, açıklamayı ve vergiyi doldurur, maliyetinizi tahmin eder ve satırı varsayılan %{{markup}} kâr marjınıza göre fiyatlandırır.",
+        "label": "Otomatik doldurulmuş:",
+        "review": "Eklemeden önce inceleyin ve ayarlayın."
+      },
+      "autosaveHint": "Değişiklikler otomatik olarak kaydedilir. Sarı renkli bir çerçeve, kaydedilmemiş bir düzenlemeyi işaret eder.",
+      "block": {
+        "imageSectionPdf": "Resim bölümü (PDF'de oluşturulmuştur).",
+        "richTextContentAria": "Zengin metin içeriği",
+        "tableEmpty": "Boş tablo.",
+        "calloutEmpty": "Boş çağrı kutusu."
+      },
+      "blockTypes": {
+        "heading": "Başlık",
+        "image": "Resim",
+        "pricingTable": "Fiyatlandırma tablosu",
+        "richText": "Zengin metin",
+        "contract": "Sözleşme",
+        "table": "Tablo",
+        "callout": "Çağrı kutusu"
+      },
+      "callout": {
+        "variantLabel": "Stil",
+        "variantInfo": "Bilgi",
+        "variantAccent": "Vurgu",
+        "variantWarn": "Uyarı",
+        "titlePlaceholder": "Başlık (isteğe bağlı)",
+        "bodyAria": "Çağrı kutusu metni"
+      },
+      "bulk": {
+        "applied_one": "{{count}} hattı güncellendi.",
+        "applied_other": "{{count}} satır güncellendi.",
+        "apply": "Başvuru",
+        "barAria": "Seçili satırları toplu düzenleme",
+        "clearSelection": "Seçimi temizle",
+        "invalidMarkup": "Geçerli bir kâr payı yüzdesi girin.",
+        "markupHint": "Ücretli seçili hatlar için geçerlidir.",
+        "partialFailure": "{{failed}} / {{total}} satır güncellenemedi.",
+        "selectAllAria": "{{label}} içindeki tüm satırları seç",
+        "selectLineAria": "{{name}} seçeneğini seçin",
+        "selectedCount_one": "{{count}} satırı seçildi",
+        "selectedCount_other": "{{count}} satır seçildi",
+        "setCost": "Maliyeti ayarla",
+        "setMarkup": "İşaretleme yüzdesini ayarla",
+        "skippedNoCost_one": "{{count}} hattını ücretsiz olarak atladı.",
+        "skippedNoCost_other": "Hiçbir ücret ödemeden {{count}} satır atlandı.",
+        "taxableOff": "Vergiye tabidir",
+        "taxableOn": "Vergiye tabi"
+      },
+      "catalog": {
+        "addSome": "Ürün Kataloğuna biraz ekleyin",
+        "empty": "Katalog öğesi yok.",
+        "loadError": "Katalog yüklenemedi. Yeniden denemek için düzenleyiciyi yeniden açın; mevcut öğeleriniz güvende.",
+        "searchPlaceholder": "Kataloğu ada veya SKU'ya göre arayın",
+        "capNote": "İlk {{count}} katalog öğeleri gösteriliyor — geri kalanını bulmak için arama yapın."
+      },
+      "categories": {
+        "hardware": "Donanım",
+        "other": "Diğer",
+        "service": "Servis",
+        "software": "Yazılım"
+      },
+      "confirm": {
+        "removeLineMessage": "Bu, \"{{name}}\" ifadesini alıntıdan kaldırır. Bu geri alınamaz.",
+        "removeLineTitle": "Satırı kaldır",
+        "removeSectionMessage": "Bu, bu bölümü kaldırır. Bu geri alınamaz.",
+        "removeSectionTitle": "Bölümü kaldır",
+        "removeSectionWithLines_one": "Bu, fiyatlandırma tablosunu ve onun {{count}} satır öğesini kaldırır. Bu geri alınamaz.",
+        "removeSectionWithLines_other": "Bu, fiyatlandırma tablosunu ve onun {{count}} satır öğelerini kaldırır. Bu geri alınamaz.",
+        "thisLine": "bu satır",
+        "removeSectionWithLines": "Bu, fiyatlandırma tablosunu ve satırlarını kaldırır. Bu geri alınamaz."
+      },
+      "customer": {
+        "confirmLabel": "Alıntıyı taşı",
+        "confirmMessage": "Bu alıntı {{name}}'ye taşınsın mı? Bu, site atamasını ve fatura adresini geçersiz kılmayı temizler ve yeni şirketin vergi oranını uygular.",
+        "confirmTitle": "Müşteri değiştirilsin mi?",
+        "help": "Bir taslağın başka bir şirkete taşınması, site atamasını kaldırır ve o şirketin vergi oranını uygular.",
+        "label": "Müşteri",
+        "success": "Alıntı {{name}}'ye taşındı."
+      },
+      "deposit": {
+        "due": "Depozito ödenmesi gerekiyor",
+        "dueUpFront": "Ön ödemeli depozito",
+        "eligibleAria": "Para yatırmaya uygun",
+        "label": "Para Yatırma",
+        "none": "Depozito yok",
+        "percent": "Yüzde",
+        "percentOfDue": "Ödenecek tutarın yüzdesi",
+        "selectedLines": "Seçilen satırlar",
+        "selectedLinesHelp": "Her fiyatlandırma tablosunda para yatırmaya uygun tek seferlik hatları kontrol edin.",
+        "selectedLinesStagedHint": "Aşağıdaki tek seferlik en az bir satırı para yatırmaya uygun olarak işaretleyin — mod, bir satır işaretlendiğinde kaydedilir.",
+        "short": "Para Yatırma"
+      },
+      "emptyBlocks": "Henüz içerik yok. Aşağıya bir başlık, zengin metin veya fiyat tablosu ekleyin.",
+      "errors": {
+        "addCatalogItem": "Katalog öğesi eklenemedi.",
+        "addContractSection": "Sözleşme bölümü eklenemedi",
+        "addDistributorItem": "Dağıtıcı öğesi eklenemedi.",
+        "addImageSection": "Resim bölümü eklenemedi.",
+        "addLine": "Satır eklenemedi.",
+        "addPax8Product": "Pax8 ürünü eklenemedi.",
+        "addSection": "Bölüm eklenemedi.",
+        "costZeroOrMore": "0 veya daha fazla bir maliyet girin.",
+        "depositPercentRange": "0,01 ile 99,99 arasında bir yüzde değeri girin.",
+        "fetchImageFromUrl": "Resim bu URL'den getirilemedi.",
+        "imageAddedSectionFailed": "Resim eklendi, ancak bölümün eklenmesi başarısız oldu.",
+        "imageTooLarge": "Resim 5 MB veya daha küçük olmalıdır.",
+        "importDistributorItem": "Distribütör öğesi içe aktarılamadı.",
+        "importPax8Product": "Pax8 ürünü içe aktarılamadı.",
+        "lineAddedCatalogSaveFailed": "Satır eklendi ancak kataloğa kaydedilemedi.",
+        "lineNeedsNameOrDescription": "Bir satırın bir isme veya açıklamaya ihtiyacı vardır.",
+        "loadContractTemplates": "Sözleşme şablonları yüklenemedi",
+        "moveLine": "Satır taşınamadı.",
+        "quantityWholeGreaterThanZero": "0'dan büyük bir tam sayı miktarı girin.",
+        "removeLine": "Satır kaldırılamadı.",
+        "removeSection": "Bölüm kaldırılamadı.",
+        "reorderBlocks": "Bloklar yeniden sıralanamadı.",
+        "reorderLines": "Satırlar yeniden sıralanamadı.",
+        "reorderSections": "Bölümler yeniden sıralanamadı.",
+        "saveCoverPage": "Kapak sayfası kaydedilemedi",
+        "saveCustomer": "Müşteri değiştirilemedi.",
+        "saveTerms": "Şartlar kaydedilemedi.",
+        "saveTitle": "Başlık kaydedilemedi.",
+        "unitPriceZeroOrMore": "0 veya daha fazla birim fiyat girin.",
+        "updateBlock": "Blok güncellenemedi.",
+        "updateDeposit": "Ödeme güncellenemedi.",
+        "updateLine": "Hat güncellenemedi.",
+        "updateSection": "Bölüm güncellenemedi.",
+        "uploadImage": "Resim yüklenemedi."
+      },
+      "image": {
+        "alt": "Alıntı görseli",
+        "previewUnavailable": "Resim önizlemesi kullanılamıyor."
+      },
+      "internal": {
+        "full": "Dahili · müşteriye gösterilmiyor",
+        "short": "Dahili"
+      },
+      "lastSaved": {
+        "saved": "Kaydedildi {{time}}",
+        "saving": "Kaydediliyor…"
+      },
+      "line": {
+        "addDescription": "açıklama",
+        "billing": "Faturalandırma",
+        "billingFrequencyAria": "Faturalandırma sıklığı",
+        "cost": "Maliyet",
+        "costMissingAria": "Maliyet girilmedi — bu satır kar tahmininden hariç tutulur.",
+        "descriptionAria": "Satır açıklaması",
+        "descriptionOptional": "Açıklama (isteğe bağlı)",
+        "enterCostFirstMarkup": "İşaretleme yüzdesini ayarlamak için önce bir maliyet girin",
+        "enterCostFirstMarkupSentence": "İşaretleme yüzdesini ayarlamak için önce bir maliyet girin.",
+        "imageUrlAria": "Resim URL'si",
+        "markup": "İşaretleme",
+        "markupPercent": "İşaretleme %'si",
+        "nameAria": "Satır adı",
+        "namePlaceholder": "Ad",
+        "noCost": "Ücretsiz",
+        "noCostHelp": "Bu satırı kasıtlı olarak hiçbir maliyeti olmayacak şekilde işaretleyin (örneğin işçilik veya hizmet) — onu eksik maliyet uyarısının dışında bırakır.",
+        "partNumberAbbr": "PN",
+        "partNumberHelp": "Bu öğenin üreticisinin parça numarası.",
+        "partNumberOptional": "Parça No (isteğe bağlı)",
+        "profit": "Kâr",
+        "quantityAria": "Adet",
+        "saveToCatalog": "Kataloğa kaydet",
+        "showLess": "Daha az göster",
+        "showMore": "Daha fazlasını göster",
+        "sku": "Ürün Kodu",
+        "skuHelp": "Bu ürüne ait katalog veya distribütör stok numaranız.",
+        "skuOptional": "SKU (isteğe bağlı)",
+        "tidyWithAi": "AI ile düzenli",
+        "unitCost": "Birim maliyeti"
+      },
+      "liveTotals": {
+        "annualRecurring": "Yıllık yinelenen",
+        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
+        "firstPeriodSubtotal": "İlk dönem ara toplamı",
+        "firstPeriodTotal": "Birinci dönem toplamı (tekrarlananlar dahil)",
+        "monthlyRecurring": "Aylık olarak yinelenen",
+        "oneTime": "Bir kerelik (vergi öncesi)",
+        "srUpdated": "Toplamlar güncellendi. Tek seferlik {{oneTime}}, aylık yinelenen {{monthly}}, yıllık yinelenen {{annual}}, kabul üzerine {{due}}.",
+        "srUpdatedWithTax": "Toplamlar güncellendi. Tek seferlik {{oneTime}}, aylık yinelenen {{monthly}}, yıllık yinelenen {{annual}}, vergi {{tax}}, kabul üzerine {{due}} ödenecektir.",
+        "subtotal": "Ara Toplam",
+        "tax": "Vergi",
+        "taxRate": "Vergi oranı",
+        "taxRateHelp": "Vergiye tabi olarak işaretlenen satırlar için geçerlidir. Kuruluşun vergi ayarlarında ayarlayın.",
+        "title": "Canlı toplamlar",
+        "total": "Toplam"
+      },
+      "outline": {
+        "aria": "Alıntı içeriği",
+        "shortcutHint": "Alt+Down / Alt+Up düzenleme sırasında sonraki veya önceki bölüme atlar.",
+        "title": "İçindekiler"
+      },
+      "recurrence": {
+        "annual": "Yıllık",
+        "monthly": "Aylık",
+        "one_time": "Tek seferlik"
+      },
+      "status": {
+        "saved": "Kaydedildi"
+      },
+      "success": {
+        "imageSectionAdded": "Resim bölümü eklendi",
+        "itemAdded": "Öğe eklendi",
+        "lineAdded": "Satır eklendi",
+        "lineMoved": "Hat taşındı",
+        "lineRemoved": "Hat kaldırıldı",
+        "savedToCatalog": "Kataloğa kaydedildi",
+        "sectionAdded": "Bölüm eklendi",
+        "sectionRemoved": "Bölüm kaldırıldı",
+        "contractSectionAdded": "Sözleşme bölümü eklendi"
+      },
+      "symbols": {
+        "check": "✓",
+        "notAvailable": "—",
+        "percent": "%",
+        "plusSeparator": "+ "
+      },
+      "table": {
+        "collapsedSummary": "{{count}} satır · {{amount}}",
+        "collapsedSummary_one": "{{count}} satır · {{amount}}",
+        "collapsedSummary_other": "{{count}} satır · {{amount}}",
+        "emptyLines": "Henüz hat yok. Aşağıya bir katalog öğesi veya kılavuz satırı ekleyin.",
+        "fallbackName": "Fiyatlandırma tablosu {{number}}",
+        "item": "Öğe",
+        "labelAria": "Fiyatlandırma tablosu etiketi",
+        "labelPlaceholder": "Tablo etiketi (isteğe bağlı, örneğin Aylık hizmetler)",
+        "notTaxable": "Vergiye tabi değildir",
+        "qty": "Adet",
+        "recurrence": "Faturalandırma",
+        "scrollAria": "Fiyatlandırma tablosu — toplamlar ve satır işlemleri için dar ekranlarda yana doğru kaydırılır",
+        "showSubtotal": "Ara toplam satırını göster",
+        "tax": "Vergi",
+        "taxSuffix": "+ {{amount}} vergi",
+        "taxTitle": "Satır başına vergi. Vergi toplamı başlığı geçerli bir başlıktır ve bir kuruşluk yuvarlama kadar farklılık gösterebilir.",
+        "taxable": "Vergiye tabi",
+        "total": "Toplam",
+        "unitPrice": "Birim fiyatı",
+        "columnLabelPlaceholder": "Sütun etiketi",
+        "columnAlignAria": "Sütun hizalaması",
+        "alignLeft": "Sol",
+        "alignCenter": "Orta",
+        "alignRight": "Sağ",
+        "removeColumn": "Sütunu kaldır",
+        "addColumn": "Sütun ekle",
+        "removeRow": "Satırı kaldır",
+        "addRow": "Satır ekle",
+        "cellAria": "Satır {{row}}, sütun {{column}}",
+        "captionPlaceholder": "Başlık (isteğe bağlı)",
+        "zebra": "Zebra şeritleri",
+        "headerStyle": "Başlık stili",
+        "headerStylePlain": "Düz",
+        "headerStyleAccent": "Vurgulu"
+      },
+      "terms": {
+        "placeholder": "Ödeme koşulları, garanti hükümleri vb.",
+        "title": "Şartlar ve Koşullar"
+      },
+      "tidyAll": {
+        "complete": "{{count}} açıklama(lar)ın incelenmesi tamamlandı.",
+        "noDescriptions": "Bu bölümde düzenlenmesi gereken satır açıklamaları yok."
+      },
+      "undo": {
+        "lineDeleted": "Hat silindi",
+        "sectionDeleted": "Bölüm silindi"
+      },
+      "title": {
+        "label": "Alıntı başlığı",
+        "placeholder": "ör. Ofis ağını yenileme"
+      },
+      "units": {
+        "perMonth": "/ay",
+        "perYear": "/yıl"
+      },
+      "contract": {
+        "templateLabel": "Sözleşme şablonu",
+        "templatePlaceholder": "Bir şablon seçin…",
+        "noTemplates": "Henüz sözleşme şablonu yok. Sözleşmeler → Şablonlar altında bir tane oluşturun.",
+        "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Eklemeden önce yayınlayın.",
+        "pinnedVersion": "v{{version}}'ye sabitlendi",
+        "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
+        "manualVariablesTitle": "Bu teklifi doldurun",
+        "labelFieldLabel": "Bölüm etiketi",
+        "labelPlaceholder": "İsteğe bağlı etiket (örn. Ana Hizmet Sözleşmesi)",
+        "variableRequired": "Bir değer girin",
+        "variableUnresolved": "Bu değişken hala çözümlenmedi",
+        "untitledTemplate": "Sözleşme",
+        "readOnlyHint": "Şablonu, sürümü veya değişkenleri değiştirmek için bu bölümü kaldırıp yeniden ekleyin.",
+        "updateToVersion": "v{{version}} Güncellemesi",
+        "saveVariables": "Değişkenleri kaydet",
+        "unresolvedWarning": "Çözümlenmemiş değişkenler (göndermeyi engelleyecek): {{names}}"
+      },
+      "coverPage": {
+        "title": "Kapak sayfası",
+        "enable": "Kapak sayfasını göster",
+        "summaryOn": "Teklifin ilk sayfası olarak gösterilir.",
+        "summaryOff": "Kapak sayfası yok — teklif içeriğiyle başlar.",
+        "titleLabel": "Kapak başlığı",
+        "titlePlaceholder": "ör. Yönetilen BT Hizmetleri Teklifi",
+        "preparedForLabel": "için hazırlandı",
+        "preparedForPlaceholder": "Müşteri adını geçersiz kılın",
+        "showPreparedBy": "“Şirketiniz tarafından hazırlanan”ı göster",
+        "imageLabel": "Kapak resmi",
+        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "removeImage": "Resmi kaldır"
+      },
+      "ghost": {
+        "add": "Ekle",
+        "nameAria": "Yeni satır adı",
+        "placeholder": "Bir öğe adı yazın…"
+      },
+      "unassigned": {
+        "explainer": "Bu satırlar herhangi bir fiyatlandırma bölümünde yer almaz ancak yine de müşterinin teklifinde görünür ve toplamlara dahil edilir. Nerede görüneceğini kontrol etmek için her birini bir fiyatlandırma bölümüne taşıyın.",
+        "moveAria": "{{line}} öğesini fiyatlandırma bölümüne taşıyın",
+        "movePlaceholder": "Taşı…",
+        "noTargets": "Bir fiyatlandırma bölümü ekleyin ve ardından bu satırları bu bölüme taşıyın.",
+        "qtyPrice": "{{qty}} × {{price}}",
+        "title": "Atanmamış satırlar"
+      },
+      "unsavedField": {
+        "lines": "Satır öğeleri"
+      }
+    },
+    "actions": {
+      "cloneDialog": {
+        "companyLabel": "Şirket",
+        "confirm": "Klon oluştur",
+        "defaultTitle": "{{name}} klonu",
+        "message": "Aynı içeriğe sahip yeni bir taslak oluşturur. Şirketini seçin ve ona bir unvan verin.",
+        "retargetHint": "Yeni taslakta bu şirketin fatura ayrıntıları ve vergi oranı kullanılacak; site ataması temizlenir.",
+        "title": "Klon alıntısı",
+        "titleLabel": "Başlık"
+      },
+      "cloneError": "Alıntı kopyalanamadı.",
+      "cloneQuote": "Klon alıntısı",
+      "cloneSavingTitle": "Klonlamadan önce değişikliklerin kaydedilmesinin tamamlanmasını bekleyin.",
+      "cloneSuccess": "Alıntı kopyalandı.",
+      "cloning": "Klonlanıyor…",
+      "deleteConfirm": {
+        "message": "Bu, taslak alıntıyı kalıcı olarak siler. Bu geri alınamaz.",
+        "title": "Taslak teklifi sil"
+      },
+      "deleteDraft": "Taslağı sil",
+      "deleteError": "Taslak silinemedi.",
+      "deleteSuccess": "Taslak silindi",
+      "downloadPdf": "PDF'yi indir",
+      "emptyHint": "Göndermeden önce en az bir öğe ekleyin.",
+      "moreActions": "Diğer işlemler",
+      "savingHint": "Değişiklikler kaydediliyor… Her şey kaydedildiğinde Gönder özelliğinin kilidi açılır.",
+      "savingTitle": "Değişiklikleriniz kaydediliyor — Her şey kaydedildiğinde Gönder özelliğinin kilidi açılır.",
+      "sendConfirm": {
+        "ccLabel": "Bilgi",
+        "ccToggle": "Bilgi",
+        "includePdfLabel": "Teklifin PDF'sini ekleyin",
+        "invalidEmail": "Geçersiz e-posta adresi: {{addresses}}",
+        "message": "Bu teklifi {{orgName}} adresine e-postayla göndereceğiz ve kabul edildiğinde {{amount}} olarak Gönderildi olarak işaretleyeceğiz. Onayladıktan sonra geri almak için 30 saniyeniz olacak.",
+        "messageLabel": "Kişisel bir mesaj ekleyin (isteğe bağlı)",
+        "messagePlaceholder": "Kısa bir not ekleyin — e-postada kabul et bağlantısının üzerinde görünür.",
+        "paymentEnabled": "Çevrimiçi ödeme etkinleştirildi — müşteri, kabul ettikten sonra kartla ödeme yapabilir.",
+        "paymentNoteNoStripe": "Müşteri kabul ettiğinde çevrimiçi ödeme seçeneğine sahip olmayacaktır. Bir teklif sunmak için <integrationsLink>Ayarlar → Entegrasyonlar</integrationsLink> bölümünden Stripe'yi bağlayın.",
+        "paymentWarningDeposit": "Bu teklif bir depozito istiyor ancak müşteriler henüz çevrimiçi ödeme yapamıyor — <integrationsLink>Ayarlar → Entegrasyonlar</integrationsLink> bölümünden Stripe'yi bağlayın, böylece depozito kabul edildiğinde tahsil edilebilir.",
+        "recipientRequired": "Gönderilecek en az bir alıcı girin.",
+        "signaturePreviewLabel": "İmza (Ayarlar → Markalama bölümünde ayarlanır):",
+        "subjectLabel": "Konu",
+        "subjectPlaceholder": "Şirketinizden {{number}} teklifi",
+        "subjectPlaceholderNoNumber": "Şirketinizden teklif",
+        "title": "Bu teklif gönderilsin mi?",
+        "toLabel": "Kime",
+        "toPlaceholder": "Alıcı ekle…",
+        "tooManyRecipients": "En fazla {{max}} adresi kullanın.",
+        "zeroTotalWarning": "Bu fiyat teklifinin toplamı 0,00 ABD dolarıdır — göndermeden önce öğelerinin fiyatlandırıldığını kontrol edin.",
+        "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
+      },
+      "sendEmailWarning": {
+        "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin veya kabul bağlantısını manuel olarak paylaşın.",
+        "noEmailService": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — e-posta bu sunucuda yapılandırılmadı.",
+        "pdfRenderFailed": "Teklif Gönderildi olarak işaretlendi, ancak PDF oluşturulamadığı için e-posta teslim edilmedi. Ekteki sözleşme dosyalarını kontrol edin ve yeniden gönderin.",
+        "sendFailed": "Teklif Gönderildi olarak işaretlendi, ancak e-posta teslim edilemedi. Adresi kontrol edin ve kabul bağlantısını manuel olarak paylaşmayı deneyin."
+      },
+      "sendError": "Teklif gönderilemedi.",
+      "sendProposal": "Teklifi gönder",
+      "sendScheduled": "{{orgName}} adresine 30 saniye içinde gönderiliyor — yine de geri alabilirsiniz.",
+      "sendSuccess": "Teklif gönderildi — {{orgName}} açılıp imzalandığında teklifi Görüntülendi ve Kabul Edildi olarak işaretleyeceğiz.",
+      "sending": "Gönderiliyor…",
+      "sendingIn": "{{seconds}}s içinde gönderiliyor…",
+      "undoError": "Gönderim iptal edilemedi.",
+      "undoSend": "Gönderimi geri al",
+      "undoSuccess": "Gönderim iptal edildi — teklif hâlâ taslak halinde.",
+      "undoTooLate": "Geri almak için çok geç; teklif zaten gönderildi.",
+      "sendNow": "Şimdi gönder",
+      "savingTimeout": "Değişiklikleriniz hâlâ kaydediliyor — Gönderme iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
+      "sendNowCancelError": "Hemen gönderilemedi; teklif planlandığı gibi gönderilmeye devam edecek.",
+      "sendNowAlready": "Zaten yolda — teklif şu anda gönderiliyor.",
+      "sendCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Gönderme iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
+      "sendBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin ve ardından Gönderin.",
+      "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Gönderim, kaydedildiğinde kilidi açılır.",
+      "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Gönderim, kaydedildiğinde kilidi açılır.",
+      "resend": "Yeniden gönder",
+      "resendError": "Teklif yeniden gönderilemedi.",
+      "resendSuccess": "Teklif {{orgName}} kuruluşuna yeniden gönderildi — aynı bağlantı, aynı belge.",
+      "resendNotDelivered": "Yeniden gönderim kaydedildi ancak e-posta teslim edilmedi. Adresi kontrol edin ya da paylaşım bağlantısını kopyalayıp kendiniz gönderin.",
+      "copyShareLink": "Paylaşım bağlantısını kopyala",
+      "copyingShareLink": "Kopyalanıyor…",
+      "shareLinkCopied": "Paylaşım bağlantısı kopyalandı — müşteriye e-postayla gönderilen bağlantı da budur.",
+      "shareLinkCopyFailed": "Otomatik olarak kopyalanamadı. Paylaşım bağlantısı: {{url}}",
+      "shareLinkError": "Paylaşım bağlantısı alınamadı.",
+      "resendConfirm": {
+        "title": "Teklifi yeniden gönder",
+        "message": "Bu teklifin başka bir kopyasını {{orgName}} kuruluşuna gönderin. Teklifte hiçbir şey değişmez ve kabul bağlantısı aynı kalır."
+      },
+      "resendNewLinkOriginalLive": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı yenisiyle birlikte çalışmaya devam eder.",
+      "resendNewLinkOriginalDead": "Teklif yeniden gönderildi — ancak YENİ bir bağlantıyla. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes yeni bağlantıyı kullanmalıdır.",
+      "shareLinkNewLinkOriginalLive": "YENİ bir bağlantı kopyalandı. Bu teklif bağlantı izleme özelliğinden önce oluşturulduğu için müşterinin mevcut bağlantısı yeniden kullanılamadı; eski bağlantı bununla birlikte çalışmaya devam eder.",
+      "shareLinkNewLinkOriginalDead": "YENİ bir bağlantı kopyalandı. Önceki bağlantı artık açılamaz; bağlantıya sahip olan herkes bu bağlantıyı kullanmalıdır."
+    },
+    "detail": {
+      "addContentInEditor": "Editör'e içerik ekleyin",
+      "created": "Oluşturuldu",
+      "customer": "Müşteri",
+      "empty": "Bu alıntının henüz içeriği yok.",
+      "expires": "Süresi doluyor {{date}}",
+      "from": "Gönderen",
+      "imageUnavailable": "Resim kullanılamıyor",
+      "issued": "Verildi",
+      "lifecycle": {
+        "accepted": "Kabul edildi",
+        "declined": "Reddedildi",
+        "sent": "Gönderildi",
+        "viewed": "Görüntülendi"
+      },
+      "orderBreakdown": {
+        "copied": "Kopyalandı",
+        "copyFailed": "Panoya kopyalanamadı.",
+        "copyTsv": "Elektronik tablo için kopyala",
+        "costTotal": "Toplam maliyet",
+        "exportCsv": "CSV'yi indir",
+        "fulfillment": {
+          "allocation": {
+            "cancelled": "İptal edildi",
+            "eta": "Geliyor {{date}}",
+            "ordered": "Sipariş Edildi {{qty}}",
+            "received": "{{qty}} aldı",
+            "tracking": "Takip {{number}}"
+          },
+          "cancel": "Hattı iptal et",
+          "cancelError": "Bu sipariş satırı iptal edilemedi.",
+          "cancelSuccess": "Sipariş satırı iptal edildi",
+          "dialog": {
+            "cancel": "İptal",
+            "empty": "Seçilen her şey zaten siparişte.",
+            "error": "Sipariş kaydedilemedi.",
+            "eta": "Beklenen varış",
+            "notes": "Notlar",
+            "orderRef": "Sipariş referansı",
+            "qtyAria": "{{item}} için sipariş edilecek miktar",
+            "submit": "Kayıt sırası",
+            "success": "Sipariş kaydedildi",
+            "title": "Sipariş edilen ürünleri işaretleyin",
+            "tracking": "Takip numarası",
+            "vendor": "Satıcı"
+          },
+          "markOrdered": "İşaretleme emri verildi",
+          "receive": "İşaret alındı",
+          "receiveQtyAria": "Alınan miktar",
+          "receiveError": "Bu sipariş satırı güncellenemedi.",
+          "receiveSuccess": "Alındı olarak işaretlendi",
+          "select": "{{item}} öğesini seçin",
+          "selectColumn": "Sipariş için seçin",
+          "status": {
+            "ordered": "Sipariş verildi",
+            "partiallyReceived": "Kısmen alındı",
+            "received": "Alındı"
+          }
+        },
+        "itemCount_one": "{{count}} öğe",
+        "itemCount_other": "{{count}} öğe",
+        "missingCost_one": "{{count}} öğenin kayıtlı hiçbir maliyeti yok",
+        "missingCost_other": "{{count}} öğelerinin kayıtlı maliyeti yok",
+        "pax8Badge": {
+          "failed": "Pax8 başarısız oldu",
+          "ordered": "Pax8 aracılığıyla sipariş edildi",
+          "reconcile": "Pax8'in incelenmesi gerekiyor",
+          "staged": "Pax8'de Sahnelendi"
+        },
+        "table": {
+          "extCost": "Dahili. maliyet",
+          "item": "Öğe",
+          "markup": "İşaretleme",
+          "partNumber": "Bölüm #",
+          "qty": "Adet",
+          "sku": "Stok Kodu",
+          "unitCost": "Birim maliyeti",
+          "vendor": "Satıcı"
+        },
+        "title": "Sipariş edilecek",
+        "unknownVendor": "Diğer / bilinmeyen satıcı"
+      },
+      "pax8Order": {
+        "message_one": "Bu alıntı, ön hazırlık ayrıntılarını bekleyen bir Pax8 siparişini ({{count}} öğesi) sahneledi",
+        "message_other": "Bu alıntı, ön hazırlık ayrıntılarını bekleyen bir Pax8 siparişini ({{count}} öğeler) sahneledi",
+        "open": "Pax8 siparişini aç"
+      },
+      "pricing": "Fiyatlandırma",
+      "proposalImageAlt": "Teklif resmi",
+      "scheduledSendFailed": "Planlanan gönderme başarısız oldu — bu teklif GÖNDERİLMEDİ ve hâlâ taslak halinde. İnceleyin ve tekrar göndermeyi deneyin.",
+      "sentTo": "Gönderildi:",
+      "table": {
+        "item": "Ürün",
+        "noLines": "Bu tabloda satır yok.",
+        "qty": "Adet",
+        "recurrence": "Faturalandırma",
+        "tax": "Vergi",
+        "total": "Toplam",
+        "unitPrice": "Birim fiyatı"
+      },
+      "tableScrollAria": "{{label}} — daha fazla sütun için yana doğru kaydırın",
+      "terms": "Şartlar",
+      "totals": {
+        "annualRecurring": "Yıllık yinelenen",
+        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
+        "firstPeriod": "Birinci dönem toplamı (tekrarlananlar dahil)",
+        "monthlyRecurring": "Aylık olarak yinelenen",
+        "oneTime": "Tek seferlik",
+        "tax": "Vergi",
+        "title": "Toplamlar"
+      },
+      "viewInvoice": "Faturayı görüntüle"
+    },
+    "distributorLookup": {
+      "available": "{{count}} mevcut",
+      "cost": "maliyet {{currency}} {{amount}}",
+      "endOfLife": "Hayatın sonu",
+      "importAndAdd": "İçe aktar ve ekle",
+      "inStockOnly": "Yalnızca stokta var",
+      "lookupFailed": "Arama başarısız oldu.",
+      "mfgPart": "Mfg bölümü {{part}}",
+      "msrp": "MSRP {{amount}}",
+      "nightlyHint": "Gece kataloğunda arama yapmak için en az {{count}} karakter yazın.",
+      "nightlyPlaceholder": "Ada, SKU'ya, mfg parça numarasına veya üreticiye göre arayın",
+      "noResults": "Eşleşen ürün yok.",
+      "outOfStock": "Stokta yok",
+      "placeholder": "SYNNEX SKU'su veya mfg parçası #",
+      "searching": "Aranıyor…",
+      "sellPrice": "Satış fiyatı",
+      "sku": "SKU {{sku}}",
+      "source": "Kaynak",
+      "sourceEcExpress": "EC Express (tam SKU / parça numarası)",
+      "sourceNightly": "TD SYNNEX kataloğu (gecelik dosya)",
+      "syncedDaysAgo": "{{count}} gün önce senkronize edildi",
+      "syncedHoursAgo": "{{count}} saat önce senkronize edildi",
+      "syncedJustNow": "az önce senkronize edildi",
+      "syncedMinutesAgo": "{{count}} dakika önce senkronize edildi",
+      "syncedUnknown": "senkronizasyon zamanı bilinmiyor",
+      "toBeDiscontinued": "Üretimi durdurulacak",
+      "warehouses": "Depolar: {{list}}"
+    },
+    "document": {
+      "additionalItems": "Ek öğeler",
+      "contract": {
+        "download": "Sözleşmeyi indirin",
+        "previewTitle": "{{name}} sözleşme belgesi",
+        "unavailable": "Sözleşme dosyası mevcut değil",
+        "versionFooter": "{{name}} — v{{version}}"
+      },
+      "draft": "Taslak",
+      "empty": "Bu teklifin henüz içeriği yok.",
+      "imageUnavailable": "Resim kullanılamıyor",
+      "issued": "Verildi",
+      "preparedFor": "için hazırlandı",
+      "taxId": "Vergi Numarası: {{id}}",
+      "imageZoomAria": "Daha büyük resmi görüntüle",
+      "preview": {
+        "description": "Bu, müşterinizin teklif bağlantısında gördüğü şeydir.",
+        "downloadPdf": "PDF'yi indir",
+        "preparing": "Hazırlanıyor…"
+      },
+      "pricing": "Fiyatlandırma",
+      "pricingScrollAria": "Fiyatlandırma — daha fazla sütun için yana doğru kaydırın",
+      "proposal": "Teklif",
+      "proposalImageAlt": "Teklif resmi",
+      "recurrence": {
+        "annual": "Yıllık",
+        "monthly": "Aylık"
+      },
+      "table": {
+        "amount": "Tutar",
+        "description": "Açıklama",
+        "qty": "Adet",
+        "tax": "Vergi",
+        "unitPrice": "Birim fiyatı"
+      },
+      "terms": "Şartlar",
+      "totals": {
+        "annualRecurring": "Yıllık yinelenen",
+        "depositDue": "Depozito ödenmesi gerekiyor",
+        "depositDueNow": "Depozito ödemesinin şimdi yapılması gerekiyor",
+        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
+        "firstPeriodSubtotal": "İlk dönem ara toplamı",
+        "firstPeriodTotal": "Birinci dönem toplamı",
+        "monthlyRecurring": "Aylık olarak yinelenen",
+        "recurringNote": "Bu teklifi kabul ettiğinizde tek seferlik ücretler artık faturalandırılır. Yinelenen hatlar kendi programlarına göre faturalandırılır.",
+        "remainingBalance": "Kalan bakiye (şartlara göre vadesi gelecek)",
+        "subtotal": "Ara Toplam",
+        "tax": "Vergi"
+      },
+      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
+      "validUntil": "Geçerlilik tarihi:"
+    },
+    "page": {
+      "accessDenied": "Alıntıları görüntüleme izniniz yok.",
+      "bulk": {
+        "deleteDrafts": "Taslakları sil",
+        "deletedVerb": "silindi",
+        "failed": "Toplu {{verb}} başarısız oldu. Tekrar dene.",
+        "limit": "Bir seferde en fazla {{limit}} öğesini seçin.",
+        "partial": "{{succeeded}} {{verb}}, {{skipped}} atlandı{{failedText}}",
+        "send": "Gönder",
+        "sentVerb": "gönderildi",
+        "success": "{{succeeded}} {{verb}}"
+      },
+      "bulkDelete": {
+        "message_one": "Seçilen alıntı silinsin mi? Yalnızca TASLAK teklifleri silinir; bu geri alınamaz.",
+        "message_other": "Seçilen {{count}} alıntı silinsin mi? Yalnızca TASLAK teklifleri silinir; bu geri alınamaz.",
+        "skippedNotDraft": "Taslak değil (atlandı)",
+        "title": "Taslak alıntıları sil"
+      },
+      "bulkSend": {
+        "message_one": "Seçilen teklif müşterisine e-postayla gönderilsin mi? Bu geri alınamaz.",
+        "message_other": "Seçilen teklifler müşterilerine {{count}} e-postayla gönderilsin mi? Bu geri alınamaz.",
+        "recipients": "Her teklif, kuruluşunun faturalandırma sorumlusuna e-postayla gönderilir ve Gönderildi olarak işaretlenir.",
+        "title": "Teklif gönder",
+        "unnumbered": "Taslak"
+      },
+      "create": {
+        "description": "Bu teklifin yönelik olduğu müşteriyi seçin. Daha sonra bloklar ve fiyatlandırma ekleyebilirsiniz.",
+        "error": "Taslak fiyat teklifi oluşturulamadı.",
+        "genericError": "Teklif oluşturulamadı.",
+        "noSpecificSite": "Belirli bir site yok",
+        "selectOrganization": "Bir kuruluş seçin…",
+        "siteClearedOnClone": "Mevcut bir tekliften başlatıldığında site temizlenir.",
+        "siteOptional": "Sitesi (isteğe bağlı)",
+        "startBlank": "Boş alıntı",
+        "startFrom": "Başlangıç noktası (isteğe bağlı)",
+        "submit": "Taslak oluştur",
+        "success": "Taslak teklif oluşturuldu",
+        "title": "Yeni teklif",
+        "titleOptional": "Başlık (isteğe bağlı)",
+        "titlePlaceholder": "ör. Ofis ağını yenileme",
+        "working": "Çalışıyor…"
+      },
+      "deposit": {
+        "deposit": "Para Yatırma",
+        "paid": "Depozito ödendi",
+        "unpaid": "Ödenmemiş depozito"
+      },
+      "duplicate": "Yinelenen alıntı",
+      "duplicateAria": "Yinelenen alıntı {{quote}}",
+      "duplicateError": "Alıntı kopyalanamadı.",
+      "empty": {
+        "clearFilters": "Filtreleri temizle",
+        "description": "Başlıklar, zengin metin ve fiyat tablosu içeren bir teklif taslağı hazırlayın ve ardından bunu kabul için gönderin.",
+        "filtered": "Bu filtrelerle eşleşen tırnak işareti yok.",
+        "title": "Henüz alıntı yok"
+      },
+      "errors": {
+        "loadOrganizations": "Kuruluşlar yüklenemedi.",
+        "loadQuotes": "Fiyat teklifleri yüklenemedi",
+        "loadSites": "Siteler yüklenemedi."
+      },
+      "filters": {
+        "allStatuses": "Tüm durumlar",
+        "searchAria": "Fiyat tekliflerini ara",
+        "searchPlaceholder": "Numarayı veya kuruluşu arayın",
+        "statusAria": "Duruma göre filtrele"
+      },
+      "newQuote": "Yeni teklif",
+      "stats": {
+        "awaiting": "{{count}} bekleniyor",
+        "drafts": "Taslaklar",
+        "notYetSent": "henüz gönderilmedi",
+        "outForSignature": "İmzaya çıktı"
+      },
+      "subtitle": "Zengin bloklara ve yinelenen fiyatlara sahip teklifler oluşturun ve bunları müşterilere gönderin.",
+      "table": {
+        "created": "Oluşturuldu",
+        "draftQuote": "Taslak alıntı",
+        "firstPeriodSuffix": "ilk dönem",
+        "number": "Numara",
+        "selectAll": "Tüm alıntıları seç",
+        "selectQuote": "Teklifi seçin {{quote}}",
+        "total": "Toplam"
+      },
+      "title": "Alıntılar",
+      "tryAgain": "Tekrar deneyin"
+    },
+    "pax8ProductLookup": {
+      "cost": "maliyet {{currency}} {{amount}}",
+      "importAndAdd": "İçe aktar ve ekle",
+      "option": "Seçenek {{number}}",
+      "placeholder": "Ürün, satıcı veya SKU",
+      "searchFailed": "Arama başarısız oldu.",
+      "searching": "Aranıyor…",
+      "sellPrice": "Satış fiyatı",
+      "term": "Dönem"
+    },
+    "recurrence": {
+      "one_time": "Tek seferlik",
+      "monthly": "Aylık",
+      "annual": "Yıllık"
+    },
+    "status": {
+      "draft": "Taslak",
+      "sent": "Gönderildi",
+      "viewed": "Görüntülendi",
+      "accepted": "Kabul edildi",
+      "declined": "Reddedildi",
+      "expired": "Süresi Doldu",
+      "converted": "Dönüştürüldü"
+    },
+    "workspace": {
+      "backLabel": "Alıntılar",
+      "backToQuotes": "Alıntılara geri dön",
+      "draftTitle": "Taslak alıntı",
+      "errors": {
+        "loadFailed": "Teklif yüklenemedi",
+        "missingId": "Eksik teklif kimliği",
+        "notFound": "Alıntı bulunamadı.",
+        "unavailable": "Teklif kullanılamıyor."
+      },
+      "tabs": {
+        "editor": "Editör",
+        "preview": "Önizleme",
+        "detail": "Ayrıntılar"
+      },
+      "loading": "Teklif yükleniyor…"
+    }
+  },
+  "billingUi": {
+    "margin": {
+      "cost": "Maliyet",
+      "missingCost": "Kâr tahmini eksik — {{count}} satırında maliyet eksik.",
+      "missingCost_one": "Kâr tahmini eksik — {{count}} satırında maliyet eksik.",
+      "missingCost_other": "Kâr tahmini eksik — {{count}} satırlarda maliyet eksik.",
+      "profitAnnual": "Kâr (yıllık)",
+      "profitMonthly": "Kâr (aylık)",
+      "profitOneTime": "Kâr (tek seferlik)",
+      "title": "Marj (dahili)"
+    },
+    "recurringBillingNote": "Bu teklifin kabul edilmesi artık yalnızca tek seferlik ücretleri faturalandırmaktadır. Yinelenen hatlar (aylık + yıllık) daha sonra kendi programlarına göre faturalandırılır. İlk periyot toplamı, tek seferlik şarjları her yinelenen ritmin ilk periyoduyla birleştirir.",
+    "units": {
+      "perMonth": "/ay",
+      "perYear": "/yıl"
+    },
+    "unsaved": "Kaydedilmemiş",
+    "showCostMargin": "Maliyeti ve marjı göster",
+    "hideCostMargin": "Maliyeti ve marjı gizle",
+    "orgCombobox": {
+      "searchPlaceholder": "Kuruluşları arayın…",
+      "noResults": "Eşleşen kuruluş yok.",
+      "capNote": "İlk {{count}} eşleşmeleri gösteriliyor — daraltmak için yazmaya devam edin."
+    }
+  },
+  "bulk": {
+    "bulkActionBar": {
+      "selected": "{{count}} seçildi"
+    }
+  },
+  "invoice": {
+    "status": {
+      "draft": "Taslak",
+      "sent": "Gönderildi",
+      "issued": "Verildi",
+      "partially_paid": "Kısmen ödendi",
+      "overdue": "Gecikmiş",
+      "paid": "Ücretli",
+      "void": "Geçersiz"
+    }
+  },
+  "invoiceEditor": {
+    "addLine": {
+      "add": "Ekle",
+      "addInCatalog": "Ürün Kataloğuna biraz ekleyin",
+      "bundle": "Paket",
+      "catalogItem": "Katalog öğesi",
+      "clearSelection": "Seçimi temizle",
+      "manualLine": "Manuel hat",
+      "noCatalogItems": "Katalog öğesi yok.",
+      "searchCatalog": "Kataloğu ada veya SKU'ya göre arayın",
+      "sourceAria": "Satır kaynağı ekle",
+      "catalogLoadFailed": "Katalog yüklenemedi, dolayısıyla hiçbir öğe gösterilemiyor.",
+      "retry": "Tekrar deneyin"
+    },
+    "billTo": {
+      "addInSettings": "Kuruluş ayarlarından bir tane ekleyin",
+      "noContact": "Faturalandırma için iletişim kişisi ayarlanmadı.",
+      "title": "Fatura Alıcısı"
+    },
+    "errors": {
+      "addLine": "Satır eklenemedi.",
+      "loadCatalog": "Katalog yüklenemedi.",
+      "nameOrDescription": "Bir satırın bir isme veya açıklamaya ihtiyacı vardır.",
+      "nonNegativeUnitPrice": "0 veya daha fazla birim fiyat girin.",
+      "quantityGreaterThanZero": "0'dan büyük bir miktar girin.",
+      "removeLine": "Satır kaldırılamadı.",
+      "saveNotes": "Notlar kaydedilemedi.",
+      "saveTerms": "Şartlar kaydedilemedi.",
+      "updateLine": "Satır güncellenemedi."
+    },
+    "fields": {
+      "descriptionOptional": "Açıklama (isteğe bağlı)",
+      "lineDescription": "Satır açıklaması",
+      "lineName": "Satır adı",
+      "name": "Ad",
+      "quantity": "Adet",
+      "taxable": "Vergiye tabi",
+      "unitPrice": "Birim fiyatı"
+    },
+    "hiddenSuffix": "(gizli)",
+    "notes": {
+      "placeholder": "Dahili veya müşteri notları…",
+      "title": "Notlar"
+    },
+    "remove": "Kaldır",
+    "saved": "Kaydedildi",
+    "success": {
+      "lineAdded": "Satır eklendi",
+      "notesSaved": "Notlar kaydedildi",
+      "termsSaved": "Şartlar kaydedildi"
+    },
+    "summary": {
+      "noTaxRate": "Hatlar vergiye tabi olarak işaretlenmiştir ancak herhangi bir vergi oranı belirlenmemiştir.",
+      "setTaxRate": "Faturalandırma ayarlarında bir tane belirleyin",
+      "subtotal": "Ara Toplam",
+      "tax": "Vergi",
+      "title": "Özet",
+      "total": "Toplam"
+    },
+    "table": {
+      "customerVisible": "Müşteri tarafından görülebilir",
+      "customerVisibleTitle": "Bu satırın müşterinin faturasında görünüp görünmediği",
+      "empty": "Henüz satır yok. Aşağıya katalog öğeleri, bir paket veya manuel bir satır ekleyin.",
+      "item": "Öğe",
+      "price": "Fiyat",
+      "qty": "Adet",
+      "tax": "Vergi",
+      "total": "Toplam"
+    },
+    "terms": {
+      "placeholder": "Ödeme koşulları, garanti hükümleri vb.",
+      "title": "Şartlar ve Koşullar"
+    },
+    "unapprovedTime": "{{count}} satırları onaylanmamış zamana referans veriyor. Yayınlamadan önce inceleyin.",
+    "unapprovedTime_one": "{{count}} satır referansı onaylanmamış zaman. Yayınlamadan önce inceleyin.",
+    "unapprovedTime_other": "{{count}} satırları onaylanmamış zamana referans veriyor. Yayınlamadan önce inceleyin.",
+    "autosaveHint": "Değişiklikler otomatik olarak kaydedilir. Sarı renkli bir çerçeve, kaydedilmemiş bir düzenlemeyi işaret eder.",
+    "lastSaved": {
+      "saved": "Kaydedildi {{time}}",
+      "saving": "Kaydediliyor…"
+    },
+    "undo": {
+      "lineDeleted": "Hat silindi",
+      "tooLate": "Geri almak için çok geç; bu satır zaten silinmiş.",
+      "partialFlush": "{{applied}} satır silme işlemleri uygulandı; {{failed}} başarısız oldu ve geri yüklendi."
+    },
+    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
+    "unsavedField": {
+      "lines": "Satır öğeleri"
+    }
+  },
+  "invoiceActions": {
+    "deleteConfirm": {
+      "message": "Bu, taslak faturayı kalıcı olarak siler. Bu geri alınamaz.",
+      "title": "Taslak faturayı sil"
+    },
+    "deleteDraft": "Taslağı sil",
+    "deleteError": "Taslak silinemedi.",
+    "deleteSuccess": "Taslak silindi",
+    "downloadPdf": "PDF'yi indir",
+    "downloadPdfError": "Fatura PDF'si indirilemedi.",
+    "issue": "Sayı",
+    "issueAndSend": "Düzenle ve Gönder",
+    "issueError": "Fatura düzenlenemedi.",
+    "issueNoEmailWarning": "Fatura düzenlendi — ancak e-posta gönderilmedi (faturalandırmayla ilgili kişi yok / e-posta yapılandırılmadı)",
+    "issueSendConfirm": {
+      "customerFallback": "müşteri",
+      "message": "Bu, faturayı düzenler ve {{amount}} için {{customer}} adresine e-postayla gönderir. Bu geri alınamaz.",
+      "title": "Bu fatura düzenlenip gönderilsin mi?"
+    },
+    "issueSendError": "Fatura düzenlendi, ancak gönderim başarısız oldu.",
+    "issueSentSuccess": "Fatura düzenlendi ve gönderildi",
+    "issueSuccess": "Fatura düzenlendi",
+    "issuing": "Veriliyor…",
+    "noVisibleLineHint": "Düzenlemeye müşterinin görebileceği en az bir satır ekleyin.",
+    "preparing": "Hazırlanıyor…",
+    "savingHint": "Değişiklikler kaydediliyor… Her şey kaydedildiğinde sorunun kilidi açılır.",
+    "savingTitle": "Değişiklikleriniz kaydediliyor — Her şey kaydedildiğinde sorunun kilidi açılır.",
+    "issueCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Sorun iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
+    "issueCanceledStillSaving": "Değişiklikleriniz hâlâ kaydediliyor — Sorun iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
+    "issueBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin, ardından Sorun.",
+    "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
+    "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
+  },
+  "invoiceDetail": {
+    "deposit": {
+      "duePrefix": "Depozito",
+      "dueSuffix": "ödenmesi gereken — {{total}} tutarından {{paid}} ödendi.",
+      "paid": "Depozito ödendi — kalan bakiye {{balance}}."
+    },
+    "dueDate": {
+      "aria": "Son tarih",
+      "display": "Vadesi {{date}}",
+      "updateError": "Son tarih güncellenemedi.",
+      "updateSuccess": "Son tarih güncellendi"
+    },
+    "from": "Gönderen",
+    "lines": {
+      "cost": "Maliyet",
+      "description": "Açıklama",
+      "hiddenMarker": "(gizli)",
+      "margin": "Marj",
+      "price": "Fiyat",
+      "qty": "Adet",
+      "tax": "Vergi",
+      "total": "Toplam",
+      "allHidden": "Tüm hatlar yalnızca dahilidir. Bunları görüntülemek için \"Maliyet ve marjı göster\" seçeneğini kullanın."
+    },
+    "paymentMethods": {
+      "cash": "Nakit",
+      "check": "Kontrol et",
+      "bank_transfer": "Banka havalesi",
+      "card": "Kart",
+      "other": "Diğer"
+    },
+    "payments": {
+      "amount": "Tutar",
+      "amountRequired": "Kaydetmek için bir ödeme tutarı girin",
+      "connectStripe": "Çevrimiçi ödemeleri kabul etmek için Stripe bağlanın.",
+      "date": "Ödeme tarihi",
+      "draftHint": "Ödemeleri kaydetmek için bu faturayı düzenleyin.",
+      "empty": "Hiçbir ödeme kaydedilmedi.",
+      "linkCopied": "Ödeme bağlantısı panoya kopyalandı",
+      "linkError": "Ödeme bağlantısı oluşturulamadı.",
+      "loadFailed": "Ödemeler yüklenemedi.",
+      "method": "Ödeme yöntemi",
+      "noLinkReturned": "Ödeme bağlantısı döndürülmedi. Tekrar deneyin.",
+      "online": "Çevrimiçi",
+      "record": "Ödemeyi kaydedin",
+      "recordConfirm": {
+        "message": "{{date}} tarihli bir {{amount}} ödemesi ({{method}}) kaydedilsin mi?",
+        "title": "Ödemeyi kaydedin"
+      },
+      "recordError": "Ödeme kaydedilemedi.",
+      "recordSuccess": "Ödeme kaydedildi",
+      "reference": "Referans",
+      "referencePlaceholder": "Referans (isteğe bağlı)",
+      "reverse": "Ters",
+      "reverseAria": "{{amount}} tutarındaki ters ödeme",
+      "reverseConfirm": {
+        "label": "Ters ödeme",
+        "message": "Bu, {{amount}} {{method}} ödemesini tersine çevirir ve fatura bakiyesinden çıkarır. Bu geri alınamaz.",
+        "title": "Bu ödeme geri alınsın mı?"
+      },
+      "reverseError": "Ödeme geri alınamadı.",
+      "reverseSuccess": "Ödeme geri alındı",
+      "sendLink": "Ödeme bağlantısını gönder",
+      "setUp": "Kurulum",
+      "shareLinkPrompt": "Bu ödeme bağlantısını müşterinizle paylaşın:",
+      "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
+      "title": "Ödemeler",
+      "viaStripe": "Stripe aracılığıyla"
+    },
+    "requestPayment": {
+      "invoiceSent": "Fatura gönderildi",
+      "noEmailWarning": "Hiçbir e-posta gönderilmedi (faturalandırmayla ilgili kişi yok / e-posta yapılandırılmadı)",
+      "paymentRequestSent": "Ödeme talebi gönderildi",
+      "requestPayment": "Ödeme talep et",
+      "sendError": "Fatura gönderilemedi.",
+      "sendInvoice": "Faturayı gönder"
+    },
+    "summary": {
+      "balanceDue": "Bakiyenin ödenmesi gerekiyor",
+      "paid": "Ücretli",
+      "subtotal": "Ara Toplam",
+      "tax": "Vergi",
+      "total": "Toplam"
+    },
+    "terms": "Şartlar ve Koşullar",
+    "void": {
+      "button": "Geçersiz fatura",
+      "description": "İptal etme, faturalanan işi serbest bırakır, böylece yeniden faturalandırılabilir. Bu geri alınamaz.",
+      "error": "Fatura geçersiz kılınamadı.",
+      "reason": "Sebep",
+      "reissue": "Yeni taslak olarak yeniden yayınlayın",
+      "reissuedSuccess": "Fatura geçersiz kılındı ve taslak olarak yeniden düzenlendi",
+      "success": "Fatura geçersiz kılındı",
+      "title": "Geçersiz fatura"
+    },
+    "empty": "Bu faturada henüz satır yok.",
+    "addContentInEditor": "Editör'e satır ekleme",
+    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın"
+  },
+  "invoiceDocument": {
+    "billTo": "Fatura Alıcısı",
+    "documentType": "Fatura",
+    "due": "Vadesi geldi",
+    "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
+    "fallbackTitle": "Fatura",
+    "issued": "Verildi",
+    "preview": {
+      "description": "Müşterinizin faturasında gördüğü şey budur.",
+      "downloadError": "Fatura PDF'si indirilemedi.",
+      "downloadPdf": "PDF'yi indir",
+      "preparing": "Hazırlanıyor…"
+    },
+    "table": {
+      "amount": "Tutar",
+      "description": "Açıklama",
+      "qty": "Adet",
+      "tax": "Vergi",
+      "unitPrice": "Birim fiyatı"
+    },
+    "terms": "Şartlar ve Koşullar",
+    "totals": {
+      "amountDue": "Ödenecek tutar",
+      "paid": "Ücretli",
+      "subtotal": "Ara Toplam",
+      "tax": "Vergi",
+      "total": "Toplam"
+    }
+  },
+  "invoiceWorkspace": {
+    "backLabel": "Faturalar",
+    "backToInvoices": "Faturalara geri dön",
+    "draftTitle": "Taslak fatura",
+    "errors": {
+      "loadFailed": "Fatura yüklenemedi",
+      "missingId": "Eksik fatura kimliği",
+      "notFound": "Fatura bulunamadı.",
+      "unavailable": "Fatura mevcut değil."
+    },
+    "tabs": {
+      "editor": "Editör",
+      "preview": "Önizleme",
+      "detail": "Detay"
+    }
+  },
+  "invoicesPage": {
+    "accessDenied": "Faturaları görüntüleme izniniz yok.",
+    "bulk": {
+      "deleteDrafts": "Taslakları sil",
+      "deletedVerb": "silindi",
+      "failed": "Toplu {{verb}} başarısız oldu. Tekrar dene.",
+      "issue": "Sorun",
+      "issuedVerb": "yayınlandı",
+      "limit": "Bir seferde en fazla {{limit}} öğesini seçin.",
+      "partial": "{{succeeded}} {{verb}}, {{skipped}} atlandı{{failedText}}",
+      "success": "{{succeeded}} {{verb}}",
+      "void": "Geçersiz",
+      "voidedVerb": "geçersiz kılındı"
+    },
+    "bulkDelete": {
+      "message": "Seçilen {{count}} fatura(lar) silinsin mi? Yalnızca TASLAK faturalar silinecektir; bu geri alınamaz.",
+      "title": "Taslak faturaları sil"
+    },
+    "bulkVoid": {
+      "description": "İptal etme, faturalanan işi serbest bırakır, böylece yeniden faturalandırılabilir. Bu geri alınamaz.",
+      "reason": "Sebep",
+      "submit": "Faturaların geçersiz olması",
+      "title": "Faturaların geçersiz olması"
+    },
+    "deposit": {
+      "paid": "Depozito ödendi",
+      "unpaid": "Ödenmemiş depozito"
+    },
+    "dialog": {
+      "allSites": "Tüm siteler",
+      "assemble": "Birleştirin",
+      "assembleError": "Bu aralık için fatura oluşturulamadı.",
+      "assembleFromWork": "İşten toplanma",
+      "assembleSuccess": "Taslak fatura toplandı",
+      "blankInvoice": "Boş fatura",
+      "createDraft": "Taslak oluştur",
+      "createError": "Taslak fatura oluşturulamadı.",
+      "createGenericError": "Fatura oluşturulamadı.",
+      "createSuccess": "Taslak fatura oluşturuldu",
+      "description": "Faturalandırılmamış çalışmaları bir taslakta birleştirin veya boş bir fatura başlatın.",
+      "from": "Gönderen",
+      "selectOrganization": "Bir kuruluş seçin…",
+      "siteOptional": "Sitesi (isteğe bağlı)",
+      "sourceAria": "Fatura kaynağı",
+      "title": "Yeni fatura",
+      "to": "Kime",
+      "working": "Çalışıyor…"
+    },
+    "empty": {
+      "description": "Faturalandırılmamış zamanları ve parçaları bir taslakta birleştirin veya boş bir fatura başlatın.",
+      "filtered": "Bu filtrelerle eşleşen fatura yok.",
+      "title": "Henüz fatura yok"
+    },
+    "errors": {
+      "loadInvoices": "Faturalar yüklenemedi",
+      "loadOrganizations": "Kuruluşlar yüklenemedi.",
+      "loadSites": "Siteler yüklenemedi."
+    },
+    "filters": {
+      "allStatuses": "Tüm durumlar",
+      "issuedFrom": "Gönderen:",
+      "issuedTo": "Verildi",
+      "searchAria": "Faturaları arayın",
+      "searchPlaceholder": "Numarayı veya kuruluşu arayın",
+      "statusAria": "Duruma göre filtrele"
+    },
+    "newInvoice": "Yeni fatura",
+    "stats": {
+      "drafts": "Taslaklar",
+      "needsFollowUp": "'nin takip edilmesi gerekiyor",
+      "notYetIssued": "henüz yayınlanmadı",
+      "open": "{{count}} açık",
+      "outstanding": "Olağanüstü",
+      "overdue": "Gecikmiş"
+    },
+    "subtitle": "Müşteri faturalarını toplayın, düzenleyin ve takip edin.",
+    "table": {
+      "balance": "Bakiye",
+      "draftInvoice": "Taslak fatura",
+      "due": "Vadesi geldi",
+      "issued": "Verildi",
+      "number": "Numara",
+      "selectAll": "Tüm faturaları seç",
+      "selectInvoice": "Faturayı seçin {{invoice}}",
+      "total": "Toplam"
+    },
+    "title": "Faturalar",
+    "tryAgain": "Tekrar deneyin"
+  },
+  "orgBillingSettings": {
+    "address": {
+      "city": "Şehir",
+      "country": "Ülke",
+      "line1": "Adres satırı 1",
+      "line2": "Adres satırı 2",
+      "postal": "Posta kodu",
+      "region": "Bölge / eyalet",
+      "title": "Fatura adresi"
+    },
+    "contact": {
+      "description": "Fiyat teklifleri ve faturalar bu adrese e-postayla gönderilir. Bu olmadan, bir teklif gönderildiğinde, teklif Gönderildi olarak işaretlenir ancak hiçbir şey e-postayla gönderilmez.",
+      "email": "İletişim e-postası",
+      "emailInvalid": "Geçerli bir e-posta adresi girin",
+      "emailPlaceholder": "faturalama@müşteri.örnek",
+      "name": "Kişi adı",
+      "title": "Faturalandırma iletişim kişisi"
+    },
+    "loadError": "Faturalandırma ayarları yüklenemedi.",
+    "loading": "Faturalandırma ayarları yükleniyor…",
+    "saveButton": "Faturalandırma ayarlarını kaydet",
+    "saveError": "Kuruluşun faturalandırma ayarları kaydedilemedi.",
+    "saveSuccess": "Kuruluşun faturalandırma ayarları kaydedildi",
+    "tax": {
+      "partnerDefault": "İş ortağı varsayılanı",
+      "taxExempt": "Vergiden muaf",
+      "taxId": "Vergi Numarası",
+      "taxRate": "Vergi oranı (%)",
+      "title": "Vergi"
+    }
+  },
+  "partnerBillingSettings": {
+    "company": {
+      "addressLine1": "Adres satırı 1",
+      "addressLine2": "Adres satırı 2",
+      "city": "Şehir",
+      "country": "Ülke",
+      "defaultTerms": "Varsayılan şartlar ve koşullar",
+      "defaultTermsPlaceholder": "Ödeme koşulları, sorumluluk reddi beyanları, garanti dili vb.",
+      "description": "Tekliflerde ve faturalarda satıcı olarak gösterilir.",
+      "name": "Şirket adı",
+      "phone": "Telefon",
+      "postal": "Posta kodu",
+      "region": "Eyalet / bölge",
+      "title": "Şirket iletişim bilgileri",
+      "website": "Web sitesi"
+    },
+    "defaults": {
+      "aiStyle": "AI ürün kopyalama stili",
+      "aiStyleHelp": "\"Web'den otomatik doldurma\" ve \"Yapay zeka ile cilalama\"nın fiyat tekliflerine, faturalara ve katalog öğelerine ürün adlarını ve açıklamalarını nasıl yazacağını şekillendirir. Varsayılan format için boş bırakın.",
+      "aiStylePlaceholder": "Varsayılan: öğe adı kısa, genel, müşteri dostu bir addır (\"Kablosuz Erişim Noktası\"); Açıklama tam ürün adıyla başlar, ardından siparişi doğrulamaya yetecek kadar kesin olan maddeler halinde spesifikasyonlar belirtilir. Geçersiz kılmak için kendi stilinizi burada tanımlayın.",
+      "autoTaxHardware": "Donanım öğelerini otomatik olarak vergilendirin",
+      "autoTaxHardwareHelp": "Yeni içe aktarılan donanım varsayılan olarak vergiye tabidir.",
+      "currencyCode": "Para birimi kodu",
+      "defaultMarkup": "Varsayılan işaretleme (%)",
+      "defaultTaxRate": "Varsayılan vergi oranı (%)",
+      "description": "Müşterileriniz genelinde yeni fiyat tekliflerine ve faturalara uygulanan para birimi, vergi, numaralandırma ve koşullar.",
+      "documentPageSize": "Sayfa boyutu",
+      "documentPageSizeA4": "A4",
+      "documentPageSizeLetter": "Letter",
+      "documentTheme": "Belge teması",
+      "documentThemeClassic": "Klasik",
+      "documentThemeCondensed": "Yoğun",
+      "invoiceFooter": "Fatura altbilgisi",
+      "invoiceFooterPlaceholder": "Ödeme talimatları, teşekkür notu vb.",
+      "invoiceNumberPrefix": "Fatura numarası öneki",
+      "markupHelp": "Katalog ürünlerini içe aktarırken satış fiyatını önceden doldurmak için kullanılan, distribütör maliyeti üzerinden varsayılan kar marjı. Ortaya çıkan brüt kar marjı siz içe aktardıkça gösterilir.",
+      "paymentTermsDays": "Ödeme koşulları (gün)",
+      "title": "Faturalandırma varsayılanları"
+    },
+    "loadError": "Faturalandırma ayarları yüklenemedi.",
+    "loading": "Faturalandırma ayarları yükleniyor…",
+    "saveButton": "Faturalandırma ayarlarını kaydet",
+    "saveError": "Faturalandırma ayarları kaydedilemedi.",
+    "saveSuccess": "Faturalandırma ayarları kaydedildi"
+  },
+  "shared": {
+    "documentWorkspace": {
+      "backAria": "{{label}}'e geri dön"
+    },
+    "sortableTh": {
+      "ascending": "Artan",
+      "descending": "Azalan",
+      "sortBy": "Şuna göre sırala: {{label}}",
+      "sortByWithDirection": "Şuna göre sırala: {{label}}, {{direction}}"
+    },
+    "statusPill": {
+      "prefix": "Durum:"
+    }
+  }
+}

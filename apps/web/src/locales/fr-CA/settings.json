@@ -55,7 +55,9 @@
     "deDELabel": "Deutsch (Deutschland)",
     "deDEDescription": "Allemand (Allemagne)",
     "itITLabel": "Italiano (Italia)",
-    "itITDescription": "Italien (Italie)"
+    "itITDescription": "Italien (Italie)",
+    "trTRLabel": "Türkçe (Türkiye)",
+    "trTRDescription": "Turc (Turquie)"
   },
   "partner": {
     "regional": {

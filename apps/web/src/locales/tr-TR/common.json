@@ -1,0 +1,2369 @@
+{
+  "nav": {
+    "fleetPosture": "Filo Duruşu",
+    "dashboard": "Kontrol Paneli",
+    "devices": "Cihazlar",
+    "alerts": "Uyarılar",
+    "tickets": "Biletler",
+    "incidents": "Olaylar",
+    "remoteAccess": "Uzaktan Erişim",
+    "scripts": "Komut Dosyaları",
+    "patches": "Yamalar",
+    "vulnerabilities": "Güvenlik Açıkları",
+    "oneDrive": "OneDrive",
+    "fleet": "Filo",
+    "aiWorkspace": "Yapay Zeka Çalışma Alanı",
+    "aiForOffice": "Office için AI",
+    "networkMonitor": "Ağ İzleyicisi",
+    "networkDiscovery": "Ağ Keşfi",
+    "security": "Güvenlik",
+    "edr": "EDR",
+    "dnsSecurity": "DNS Güvenlik",
+    "pam": "PAM",
+    "userRisk": "Kullanıcı Riski",
+    "sensitiveData": "Hassas Veriler",
+    "peripherals": "Çevre Birimleri",
+    "aiRiskEngine": "Yapay Zeka Risk Motoru",
+    "cisBenchmarks": "CIS Benchmarks",
+    "complianceBaselines": "Uyumluluk Esasları",
+    "quotes": "Alıntılar",
+    "invoices": "Faturalar",
+    "contracts": "Sözleşmeler",
+    "timesheets": "Zaman Çizelgeleri",
+    "productCatalog": "Ürün Kataloğu",
+    "softwareLibrary": "Yazılım Kitaplığı",
+    "softwarePolicies": "Yazılım Politikaları",
+    "deviceGroups": "Cihaz Grupları",
+    "configPolicies": "Yapılandırma Politikaları",
+    "integrations": "Entegrasyonlar",
+    "backup": "Yedekleme",
+    "cloudBackup": "Bulut Yedekleme",
+    "disasterRecovery": "Olağanüstü Durum Kurtarma",
+    "reports": "Raporlar",
+    "analytics": "Analitik",
+    "auditTrail": "Denetim İzi",
+    "eventLogs": "Olay Günlükleri",
+    "partner": "Ortak",
+    "organizations": "Organizasyonlar",
+    "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
+    "customFields": "Özel Alanlar",
+    "variables": "Değişkenler",
+    "savedFilters": "Kayıtlı Filtreler",
+    "users": "Kullanıcılar",
+    "roles": "Roller",
+    "sso": "TOA",
+    "accessReviews": "İncelemelere Erişim",
+    "enrollmentKeys": "Kayıt Anahtarları",
+    "deletionRequests": "Silme istekleri",
+    "quarantinedDevices": "Karantinaya Alınmış Cihazlar",
+    "thirdPartyCatalog": "Üçüncü Taraf Kataloğu",
+    "connectedAppsAdmin": "Bağlantılı Uygulamalar (yönetici)",
+    "sectionAiFleet": "Yapay Zeka ve Filo",
+    "sectionMonitoring": "İzleme",
+    "sectionSecurity": "Güvenlik",
+    "sectionOperations": "İşlemler",
+    "sectionBackup": "Yedekleme",
+    "sectionReporting": "Raporlama",
+    "sectionSettings": "Ayarlar",
+    "sectionExtensions": "Uzantılar"
+  },
+  "documentTitles": {
+    "dashboard": "Kontrol Paneli",
+    "profileSettings": "Profil Ayarları"
+  },
+  "richTextEditor": {
+    "toolbarAria": "Biçimlendirme",
+    "bold": "Kalın",
+    "italic": "İtalik",
+    "underline": "Altı çizili",
+    "heading3": "Başlık",
+    "heading4": "Alt başlık",
+    "bulletList": "Madde işaretli liste",
+    "orderedList": "Numaralı liste",
+    "link": "Bağlantı",
+    "linkPrompt": "Bir URL girin (http:// veya https://)",
+    "linkInvalid": "Yalnızca http:// ve https:// bağlantılarına izin verilir"
+  },
+  "actions": {
+    "save": "Kaydet",
+    "cancel": "İptal",
+    "delete": "Sil",
+    "edit": "Düzenle",
+    "create": "Oluştur",
+    "add": "Ekle",
+    "remove": "Kaldır",
+    "close": "Kapat",
+    "confirm": "Onayla",
+    "search": "Ara",
+    "filter": "Filtre",
+    "refresh": "Yenile",
+    "export": "Dışa aktar",
+    "download": "İndir",
+    "upload": "Yükle",
+    "copy": "Kopyala",
+    "retry": "Tekrar dene",
+    "back": "Geri",
+    "next": "Sonraki",
+    "previousPage": "Önceki sayfa",
+    "nextPage": "Sonraki sayfa",
+    "done": "Bitti",
+    "apply": "Uygula",
+    "enable": "Etkinleştir",
+    "disable": "Devre dışı bırak",
+    "view": "Görüntüle",
+    "run": "Çalıştır",
+    "clear": "Temizle"
+  },
+  "states": {
+    "loading": "Yükleniyor…",
+    "saving": "Kaydediliyor…",
+    "saved": "Kaydedildi",
+    "error": "Bir şeyler ters gitti",
+    "empty": "Sonuç bulunamadı",
+    "enabled": "Etkin",
+    "disabled": "Devre Dışı",
+    "active": "Aktif",
+    "inactive": "Etkin Değil",
+    "online": "Çevrimiçi",
+    "offline": "Çevrimdışı",
+    "pending": "Beklemede",
+    "unknown": "Bilinmiyor",
+    "processing": "İşleniyor…",
+    "copied": "Kopyalandı",
+    "resolving": "Çözülüyor…"
+  },
+  "labels": {
+    "name": "İsim",
+    "description": "Açıklama",
+    "status": "Durum",
+    "type": "Tür",
+    "organization": "Organizasyon",
+    "site": "Sitesi",
+    "device": "Cihaz",
+    "user": "Kullanıcı",
+    "createdAt": "Oluşturuldu",
+    "updatedAt": "Güncellendi",
+    "actions": "Eylemler",
+    "all": "Hepsi",
+    "yes": "Evet",
+    "no": "Hayır",
+    "none": "Hiçbiri",
+    "optional": "İsteğe bağlı",
+    "required": "Gerekli"
+  },
+  "shared": {
+    "accessDenied": {
+      "title": "Erişim engellendi",
+      "message": "Bunu görüntüleme izniniz yok.",
+      "contactAdmin": "Erişiminizin olması gerektiğini düşünüyorsanız yöneticinizle iletişime geçin."
+    },
+    "help": "Yardım",
+    "more": "Daha Fazla",
+    "alpha": {
+      "label": "Alfa",
+      "disclaimer": "Bu özellik erken erişim aşamasındadır. İşlevsellik değişebilir ve bazı işlemler beklendiği gibi çalışmayabilir. Test edilmeden üretimde kullanılması önerilmez."
+    },
+    "mcp": {
+      "connecting": "Bir yapay zeka temsilcisine mi bağlanıyorsunuz?",
+      "title": "AI temsilcinizi buraya yönlendirin",
+      "description": "Bu URL'yi MCP istemcinize (Claude.ai, ChatGPT, Cursor,…) yapıştırın. Bağlantıyı OAuth aracılığıyla yetkilendirmek için buraya geri gönderileceksiniz."
+    },
+    "progress": {
+      "count": "{{current}} / {{total}}",
+      "remaining": "ve {{count}} daha fazlası…",
+      "remaining_one": "ve {{count}} daha fazlası…",
+      "remaining_other": "ve {{count}} daha fazlası…",
+      "status": {
+        "pending": "Beklemede",
+        "running": "Çalışıyor",
+        "success": "Başarılı",
+        "failed": "Başarısız"
+      }
+    },
+    "scope": {
+      "system": "Sistem",
+      "partnerWide": "İş ortağı çapında"
+    },
+    "toast": {
+      "undo": "Geri al",
+      "dismiss": "Kapat"
+    },
+    "timezoneSelect": {
+      "searchPlaceholder": "Saat dilimlerini arayın…",
+      "noResults": "Eşleşen saat dilimi yok",
+      "invalidStored": "“{{value}}” tanınan bir saat dilimi değil. Listeden birini seçin; siz bunu yapana kadar bu ayar kaydedilemez."
+    }
+  },
+  "dashboard": {
+    "greeting": {
+      "welcome": "Hoş geldiniz",
+      "morning": "Günaydın",
+      "afternoon": "İyi günler",
+      "evening": "İyi akşamlar"
+    },
+    "updated": {
+      "justNow": "Az önce",
+      "secondsAgo": "{{count}}s önce",
+      "secondsAgo_one": "{{count}}s önce",
+      "secondsAgo_other": "{{count}}s önce",
+      "minutesAgo": "{{count}}m önce",
+      "minutesAgo_one": "{{count}}m önce",
+      "minutesAgo_other": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "hoursAgo_one": "{{count}}h önce",
+      "hoursAgo_other": "{{count}}h önce"
+    },
+    "refresh": "Kontrol panelini yenile",
+    "stats": {
+      "totalDevices": "Toplam Cihaz Sayısı",
+      "warnings": "Uyarılar",
+      "critical": "Kritik",
+      "openTickets": "Açık biletler",
+      "unassignedCount": "{{count}} atanmamış",
+      "unassignedCount_one": "{{count}} atanmamış",
+      "unassignedCount_other": "{{count}} atanmamış",
+      "patchCompliance": "Yama uyumluluğu",
+      "loadFailed": "Yüklenemedi"
+    },
+    "emptyDevices": {
+      "title": "Henüz kayıtlı cihaz yok",
+      "description": "Filonuzu izlemeye başlamak için ilk cihazınızı kaydedin.",
+      "add": "Cihaz Ekle"
+    },
+    "fleetStatus": {
+      "title": "Filo Durumu",
+      "onlineCount": "{{online}}/{{total}} çevrimiçi",
+      "allOnline": "Tüm cihazlar çevrimiçi",
+      "healthy": "Filonuz sağlıklı",
+      "viewOffline": "Tümünü görüntüle {{count}} çevrimdışı",
+      "other": "Diğer"
+    },
+    "activity": {
+      "title": "Son Etkinlik",
+      "viewAuditLog": "Denetim günlüğünü görüntüle",
+      "empty": "Henüz etkinlik yok",
+      "emptyDescription": "Cihaz kaydı, komut dosyası çalıştırmaları ve yapılandırma değişiklikleri gibi eylemler burada görünecektir.",
+      "action": "Eylem",
+      "target": "Hedef",
+      "time": "Zaman"
+    },
+    "alerts": {
+      "title": "Son Uyarılar",
+      "viewAll": "Tümünü görüntüle",
+      "allClear": "Her şey temiz",
+      "empty": "Filonuzda aktif uyarı yok",
+      "fallbackTitle": "Uyarı"
+    },
+    "customizer": {
+      "title": "Kontrol Paneli Özelleştirici",
+      "newName": "Yeni kontrol paneli adı",
+      "widgetLibrary": "Widget Kitaplığı",
+      "widgetLibraryHint": "Widget'ları ızgaraya sürükleyin veya eklemek için dokunun.",
+      "emailPlaceholder": "e-posta@şirket.com",
+      "noSharedUsers": "Henüz paylaşılan kullanıcı yok.",
+      "grid": "Kontrol Paneli Izgarası",
+      "gridHint": "Taşımak için sürükleyin. Köşe tutamacından yeniden boyutlandırın.",
+      "emptyGrid": "Kontrol panelinizi oluşturmaya başlamak için widget'ları buraya sürükleyin.",
+      "trendChart": "Trend tablosu",
+      "revertLayout": "Düzeni geri al",
+      "saveDashboards": "Gösterge tablolarını kaydet",
+      "saveFailed": "Kaydetme başarısız oldu",
+      "shareDashboard": "Kontrol panelini paylaş",
+      "widgetsPlaced": "{{count}} widget'lar yerleştirildi",
+      "widgetsPlaced_one": "{{count}} widget'ı yerleştirildi",
+      "widgetsPlaced_other": "{{count}} widget'lar yerleştirildi",
+      "dashboardSettings": "Kontrol Paneli Ayarları",
+      "layout": "Düzen",
+      "dashboardName": "Kontrol paneli adı",
+      "widgetSettings": "Widget Ayarları",
+      "widgetTitle": "Başlık",
+      "refreshInterval": "Yenileme aralığı (dakika)",
+      "severityFilter": "Önem filtresi",
+      "chartType": "Grafik türü",
+      "timeRange": "Zaman aralığı",
+      "showTrend": "Cihaz trend çizgisini göster",
+      "showLegend": "Göstergeyi göster",
+      "removeWidget": "Widget'ı kaldır",
+      "selectWidget": "Ayarlarını yapılandırmak için bir widget seçin.",
+      "summary": "Widget'lar: {{widgets}} · Paylaşılanlar: {{shared}}",
+      "preview": {
+        "devices": "{{count}} cihazlar",
+        "online": "{{percent}}% çevrimiçi",
+        "activeAlerts": "{{count}} aktif uyarılar",
+        "filter": "Filtre: {{filter}}",
+        "lastRefresh": "Son yenileme {{minutes}}m"
+      },
+      "severity": {
+        "all": "Tüm önem dereceleri",
+        "critical": "Yalnızca kritik",
+        "high": "Yalnızca Yüksek",
+        "medium": "Yalnızca orta",
+        "low": "Yalnızca düşük"
+      },
+      "chart": {
+        "line": "Hat",
+        "bar": "Bar",
+        "area": "Alan"
+      },
+      "ranges": {
+        "24h": "Son 24 saat",
+        "7d": "Son 7 gün",
+        "30d": "Son 30 gün"
+      },
+      "defaultPerRole": "Rol başına varsayılan kontrol paneli"
+    },
+    "attention": {
+      "title": "İlgilenmesi gerekiyor"
+    },
+    "security": {
+      "title": "Güvenlik duruşu",
+      "good": "İyi durumda",
+      "fair": "Çalışmaya ihtiyaç var",
+      "poor": "Risk altında",
+      "empty": "Henüz güvenlik verisi yok",
+      "trendLabel": "30 günlük puan trendi",
+      "atRiskCount": "{{count}} cihazlar risk altında",
+      "atRiskCount_one": "{{count}} cihaz risk altında",
+      "atRiskCount_other": "{{count}} cihazlar risk altında",
+      "threatsCount": "{{count}} aktif tehditler",
+      "threatsCount_one": "{{count}} aktif tehdit",
+      "threatsCount_other": "{{count}} aktif tehditler"
+    },
+    "patch": {
+      "title": "Yama uyumluluğu",
+      "installed": "Yüklendi",
+      "failed": "Başarısız",
+      "devicesCompliant": "{{total}} cihazdan {{compliant}} tamamen yama uygulandı",
+      "criticalPending": "{{count}} kritik yamalar beklemede",
+      "criticalPending_one": "{{count}} kritik yama bekleniyor",
+      "criticalPending_other": "{{count}} kritik yamalar beklemede",
+      "empty": "Henüz yama verisi yok"
+    },
+    "vuln": {
+      "title": "Güvenlik Açıkları",
+      "criticalOpen": "Kritik açık",
+      "kev": "Kullanıldığı biliniyor",
+      "patchReady": "Yama mevcut",
+      "totalOpen": "{{count}} açık bulgular",
+      "totalOpen_one": "{{count}} açık bulgu",
+      "totalOpen_other": "{{count}} açık bulgular",
+      "allClear": "Açık güvenlik açığı yok",
+      "kevCves": "{{count}} CVE'ler",
+      "kevCves_one": "{{count}} CVE",
+      "kevCves_other": "{{count}} CVE'ler",
+      "kevDevices": "{{count}} cihazlar",
+      "kevDevices_one": "{{count}} cihaz",
+      "kevDevices_other": "{{count}} cihazlar"
+    },
+    "refreshFailed": "Yenilenemedi — eski veriler gösteriliyor"
+  },
+  "filters": {
+    "advanced": "Gelişmiş Filtre",
+    "collapse": "Daralt",
+    "computed": "Bilgisayarlı",
+    "match": "Eşleşme",
+    "allConditions": "Tüm koşullar (VE)",
+    "anyCondition": "Herhangi bir koşul (VEYA)",
+    "condition": "Durum",
+    "addCondition": "Koşul Ekle",
+    "removeCondition": "Koşulu kaldır",
+    "addGroup": "Grup Ekle",
+    "conditionCount": "{{count}} koşullar",
+    "conditionCount_one": "{{count}} durumu",
+    "conditionCount_other": "{{count}} koşullar",
+    "activeConditionCount": "{{count}} koşullar etkin",
+    "activeConditionCount_one": "{{count}} koşulu etkin",
+    "activeConditionCount_other": "{{count}} koşullar etkin",
+    "selectField": "Alanı seçin",
+    "searchFields": "Arama alanları…",
+    "noFields": "Aramanızla eşleşen alan yok",
+    "group": {
+      "label": "Grup",
+      "match": "Grup: Eşleşme",
+      "all": "Hepsi (VE)",
+      "any": "Herhangi biri (VEYA)",
+      "remove": "Grubu kaldır"
+    },
+    "saved": {
+      "title": "Kayıtlı Filtreler",
+      "edit": "Filtreyi Düzenle",
+      "create": "Filtre Oluştur",
+      "new": "Yeni Filtre",
+      "nameRequired": "İsim gerekli",
+      "namePlaceholder": "örneğin, Windows Sunucular",
+      "description": "Açıklama (isteğe bağlı)",
+      "descriptionPlaceholder": "Bu filtrenin neyle eşleştiğini açıklayın",
+      "conditions": "Koşullar",
+      "saveChanges": "Değişiklikleri Kaydet",
+      "search": "Arama filtreleri…",
+      "noMatches": "Aramanızla eşleşen filtre yok",
+      "empty": "Henüz kayıtlı filtre yok. Gruplar ve dağıtımlar arasında yeniden kullanılacak bir tane oluşturun.",
+      "createFirst": "İlk filtrenizi oluşturun",
+      "created": "Oluşturuldu {{date}}",
+      "deleteConfirm": "Bu filtre silinsin mi?",
+      "duplicate": "Çoğalt"
+    },
+    "targets": {
+      "modes": {
+        "all": "Tüm Cihazlar",
+        "manual": "Cihazları Seçin",
+        "groups": "Cihaz Grupları",
+        "filter": "Gelişmiş Filtre"
+      },
+      "allManaged": "Yönetilen tüm cihazları hedefler\nToplam ",
+      "totalDevices": "{{count}} cihaz",
+      "selectedDevices": "{{count}} cihaz seçildi",
+      "searchDevices": "Cihazları arayın…",
+      "noDevices": "Cihaz bulunamadı",
+      "selectedGroups": "{{count}} grup seçildi",
+      "noGroups": "Kullanılabilir cihaz grubu yok",
+      "deviceCount": "{{count}} cihazlar",
+      "loadSaved": "Kaydedilen filtreyi yükle:",
+      "select": "Seç"
+    },
+    "preview": {
+      "title": "Eşleşen Cihazlar",
+      "addConditions": "Eşleşen cihazları görmek için filtre koşulları ekleyin",
+      "matchCount": "cihazlar eşleşiyor",
+      "matchCount_one": "cihaz eşleşmesi",
+      "matchCount_other": "cihazlar eşleşiyor",
+      "showing": "{{total}} / {{shown}} gösteriliyor",
+      "noMatches": "Mevcut filtre kriterleriyle eşleşen cihaz yok"
+    },
+    "operators": {
+      "equals": "eşittir",
+      "notEquals": "eşit değil",
+      "greaterThan": "büyüktür",
+      "greaterThanOrEquals": "büyük veya eşittir",
+      "lessThan": "daha az",
+      "lessThanOrEquals": "küçük veya eşittir",
+      "contains": "içerir",
+      "notContains": "içermiyor",
+      "startsWith": "ile başlar",
+      "endsWith": "ile biter",
+      "matches": "normal ifadeyle eşleşir",
+      "in": "bunlardan biri",
+      "notIn": "bunlardan biri değil",
+      "hasAny": "aşağıdakilerden herhangi birine sahip",
+      "hasAll": "hepsine sahip",
+      "isEmpty": "boş",
+      "isNotEmpty": "boş değil",
+      "isNull": "boş",
+      "isNotNull": "boş değil",
+      "before": "öncedir",
+      "after": "peşinde",
+      "between": "arasındadır",
+      "withinLast": "sonuncu içinde",
+      "notWithinLast": "sonuncusu içinde değil"
+    },
+    "value": {
+      "noValue": "Değere gerek yok",
+      "enterNumber": "Bir sayı girin",
+      "to": "'ye",
+      "typeAndEnter": "Yazıp Enter'a basın",
+      "regex": "Normal ifade",
+      "ipExample": "örneğin 192.168.1.",
+      "macExample": "örneğin, AA:BB:CC",
+      "hostnameExample": "örneğin, srv-web-01",
+      "softwareExample": "örneğin Chrome",
+      "enterValue": "Değeri girin",
+      "units": {
+        "minutes": "dakika",
+        "hours": "saat",
+        "days": "gün",
+        "weeks": "hafta",
+        "months": "ay"
+      }
+    }
+  },
+  "account": {
+    "nav": {
+      "label": "Hesap bölümleri",
+      "devices": "Güvenilir cihazlar",
+      "connectedApps": "Bağlı uygulamalar",
+      "delete": "Hesabı sil"
+    },
+    "backToSettings": "Ayarlara geri dön",
+    "returnDashboard": "Kontrol paneline dön",
+    "signedInAs": "olarak oturum açıldı",
+    "email": "E-posta",
+    "reason": "Sebep (isteğe bağlı)",
+    "revoke": "İptal Et",
+    "revoked": "İptal edildi",
+    "revoking": "İptal ediliyor…",
+    "errors": {
+      "network": "Ağ hatası. Lütfen tekrar deneyin.",
+      "revokeNetwork": "İptal sırasında ağ hatası"
+    },
+    "approval": {
+      "title": "Onay akışını test edin",
+      "description": "Kendi Breeze Mobil cihazlarınıza bir korumalı alan onay mesajı gönderin. Basmaya dokunduğunuzda, telefonunuzu 60 saniye boyunca onay ekranıyla devralırsınız. Onaylamak veya reddetmek herhangi bir gerçek eylem gerçekleştirmez; yalnızca test amaçlıdır.",
+      "sendTitle": "Telefonunuza bir test onayı gönderin",
+      "sendDescription": "Birkaç saniye içinde bir bildirim göndereceğiz. Herhangi bir işlem yapmazsanız onay 60 saniye sonra otomatik olarak sona erer.",
+      "sending": "Gönderiliyor…",
+      "send": "Test onayını telefonuma gönder",
+      "sent": "Gönderildi. Telefonunuzu birkaç saniye içinde kontrol edin.",
+      "delivered": "Push, {{count}} kayıtlı cihazdan {{sent}} cihazına teslim edildi. Onayın süresi 60 saniye içinde dolar.",
+      "delivered_one": "Push, {{count}} kayıtlı cihazın {{sent}} adresine teslim edildi. Onayın süresi 60 saniye içinde dolar.",
+      "delivered_other": "Push, {{count}} kayıtlı cihazdan {{sent}} cihazına teslim edildi. Onayın süresi 60 saniye içinde dolar.",
+      "noDevices": "Hesabınızda kayıtlı bir Breeze Mobil cihaz görmüyoruz. Uygulamada en az bir kez oturum açın ve ardından tekrar deneyin.",
+      "tip": "İpucu: Bu sayfanın App Store incelemecileriyle paylaşılması güvenlidir. Sağlanan test hesabıyla oturum açabilir, düğmeye tıklayabilir ve onay devralma işlemini uçtan uca doğrulayabilirler.",
+      "errors": {
+        "send": "Test onayı gönderemedik. Lütfen tekrar deneyin."
+      }
+    },
+    "deletion": {
+      "title": "Hesabınızı silin",
+      "description": "Bir silme isteği gönderdiğinizde kuruluşunuzdaki yöneticiye bilgi verilir. Hesabınız 30 gün içinde işleme koyulacak ve kaldırılacaktır. Bu tarihten önce istediğiniz zaman iptal edebilirsiniz.",
+      "warningTitle": "Bu bir istektir, anında silme işlemi değildir.",
+      "warningDescription": "Gönderildikten sonra kuruluşunuzdaki bir yönetici e-postayla bilgilendirilir. Hesabınız 30 gün içinde işleme alınacaktır. Bu tarihten önce istediğiniz zaman oturum açabilir ve iptal edebilirsiniz.",
+      "confirmPassword": "Şifrenizi doğrulayın",
+      "typePrefix": "Tür\nOnaylamak için ",
+      "typeSuffix": "",
+      "reason": "Sebep (isteğe bağlı)",
+      "reasonPlaceholder": "Gelişmemize yardımcı olun — ayrılmaya karar vermenize ne sebep oldu?",
+      "submitting": "Gönderiliyor…",
+      "submit": "Hesabın silinmesini talep et",
+      "received": "Silme isteği alındı",
+      "processedByPrefix": "Kuruluşunuzdaki bir yöneticiyi bilgilendirdik. Hesabınız şu kişi tarafından işlenecektir:",
+      "reference": "Referans",
+      "submitted": "Gönderildi",
+      "processesBy": "İşlemler:",
+      "cancelling": "İptal ediliyor…",
+      "cancelRequest": "Silme isteğini iptal et",
+      "errors": {
+        "load": "Hesap durumunuz yüklenemiyor. Lütfen yenileyin.",
+        "submit": "İsteğinizi gönderemedik. Lütfen tekrar deneyin.",
+        "cancel": "İsteğinizi iptal edemedik. Lütfen tekrar deneyin."
+      }
+    },
+    "devices": {
+      "title": "Güvenilir cihazlar",
+      "description": "Breeze mobil uygulamasıyla eşleştirdiğiniz telefonlar ve tabletler. Bu cihazlar sizin adınıza yüksek riskli MCP isteklerini onaylayabilir. Artık kullanmadığınız tüm cihazları iptal edin.",
+      "empty": "Eşleştirilmiş cihaz yok",
+      "emptyDescription": "Breeze mobil uygulamasını yükleyin ve bir cihazı eşleştirmek için oturum açın. Onaylar daha sonra telefonunuzda görünecektir.",
+      "thisDevice": "Bu cihaz",
+      "blocked": "Engellendi",
+      "platform": "Platform",
+      "lastActive": "Son aktif",
+      "revokeElsewhere": "Başka bir cihazdan iptal et",
+      "revokedToast": "Cihaz iptal edildi.",
+      "revokeTitle": "{{device}} iptal edilsin mi?",
+      "revokeDescription": "Cihazın push jetonları hemen silinir ve uçuş sırasındaki onaylar başarısız olur. Uygulamayı tekrar kullanmak için oturum açarak yeniden eşleştirme yapmanız gerekir.",
+      "onlyDeviceTitle": "Bu sizin tek güvenilir cihazınızdır.",
+      "onlyDeviceDescription": "Yeni bir oturum açma işlemiyle yeniden eşleştirme yapana kadar telefonunuzdan hiçbir şeyi onaylayamazsınız.",
+      "reasonPlaceholder": "Telefon kayboldu, cihaz değiştirildi, …",
+      "revokeAction": "Cihazı iptal et"
+    },
+    "apps": {
+      "title": "Bağlı uygulamalar",
+      "description": "AI asistanları ve diğer MCP istemcileri (Claude.ai, ChatGPT, Cursor,…) sizin adınıza hareket etme yetkisine sahipsiniz. Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
+      "empty": "Bağlı uygulama yok",
+      "emptyDescription": "Bir Claude.ai sohbetine, ChatGPT'ye, Cursor'a veya başka bir MCP istemcisine yetki verdiğinizde, daha sonra iptal edebilmeniz için burada görünecektir.",
+      "authorized": "Yetkili",
+      "lastUsed": "Son kullanılan",
+      "lastDecision": "Son karar",
+      "revokedToast": "{{app}} erişim iptal edildi. Jetonlar 10 dakika içinde çalışmayı durdurur.",
+      "revokeTitle": "{{app}} iptal edilsin mi?",
+      "revokeDescription": "Bu müşteriye yönelik tüm hibeler ve yenileme jetonları silinecek. Jetonlar 10 dakika içinde çalışmayı durdurur. Bir sonraki kullanımınızda yeniden yetkilendirmeniz gerekecektir.",
+      "onlyAppTitle": "Bu sizin tek yetkili uygulamanızdır.",
+      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI asistanının kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
+      "reasonPlaceholder": "Artık gerekmiyor, şüpheli etkinlik, …",
+      "revokeAction": "Erişimi iptal et"
+    }
+  },
+  "layout": {
+    "logoAlt": "{{brand}} logosu",
+    "breadcrumb": "Ekmek kırıntısı",
+    "redirectingToLogin": "Oturum açmaya yönlendiriliyorsunuz…",
+    "scope": {
+      "catalogLine": "Katalog — her kuruluş için aynı",
+      "fleetLine": "Tüm kuruluşlar gösteriliyor · {{count}}",
+      "orgRequiredLine": "Bu sayfada aynı anda tek bir kuruluş gösterilmektedir; devam etmek için birini seçin."
+    },
+    "org": {
+      "allOrganizations": "Tüm kuruluşlar",
+      "selectTitle": "Kuruluşu Seçin (Cmd+O)",
+      "switching": "Değiştiriliyor…",
+      "organizations": "Kuruluşlar",
+      "noneAvailable": "Mevcut kuruluş yok",
+      "status": {
+        "active": "Aktif",
+        "trial": "Deneme",
+        "suspended": "Askıya alındı",
+        "inactive": "Etkin Değil"
+      },
+      "toast": {
+        "showingAll": "Tüm kuruluşlar gösteriliyor",
+        "showing": "{{name}} gösteriliyor",
+        "switched": "{{name}} olarak değiştirildi"
+      },
+      "fleetView": "Filo görünümü · {{count}} kuruluş",
+      "noSelection": "Kuruluşu seçin",
+      "searchOrganizations": "Arama kuruluşları…",
+      "noMatches": "Hiçbir kuruluş eşleşmiyor",
+      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor."
+    },
+    "header": {
+      "menu": "Menü",
+      "openMenu": "Gezinme menüsünü aç",
+      "ai": "Yapay Zeka Asistanı",
+      "aiTitle": "Yapay Zeka Asistanı (Cmd+Shift+A)",
+      "help": "Yardım ve dokümanlar",
+      "helpTitle": "Yardım ve Belgeler (Cmd+Shift+H)",
+      "theme": "Tema",
+      "themeOptions": {
+        "light": "Işık",
+        "dark": "Karanlık",
+        "system": "Sistem"
+      },
+      "density": "Arayüz yoğunluğu",
+      "densityOptions": {
+        "comfortable": "Rahat",
+        "compact": "Kompakt",
+        "dense": "Yoğun"
+      },
+      "densityOptionLabel": "{{label}} arayüz yoğunluğu",
+      "densityDescription": "Uygulamanın tamamında geçerlidir.",
+      "accountMenu": "Hesap menüsü",
+      "userAvatar": "Kullanıcı avatarı",
+      "guest": "Misafir",
+      "notSignedIn": "Oturum açılmadı",
+      "mfaEnabled": "2FA etkin",
+      "account": "Hesap",
+      "profile": "Profili",
+      "apiKeys": "API Anahtarlar",
+      "partnerServicePrincipals": "Hizmet Sorumluları",
+      "billingSupport": "Faturalandırma ve destek",
+      "opening": "Açılış…",
+      "billing": "Faturalandırma",
+      "contactSupport": "Destek ekibiyle iletişime geçin",
+      "activityLog": "Etkinlik Günlüğü",
+      "signingOut": "Oturum kapatılıyor…",
+      "signOut": "Oturumu kapat",
+      "billingErrors": {
+        "noRecord": "Aktif abonelik yok. Desteğe başvurun.",
+        "notConfigured": "Faturalandırma bu dağıtımda mevcut değil.",
+        "unavailable": "Faturalandırma hizmeti geçici olarak kullanılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.",
+        "rateLimited": "Çok fazla istek var. Lütfen birkaç dakika bekleyip tekrar deneyin.",
+        "open": "Faturalandırma portalı açılamadı",
+        "missingUrl": "Faturalandırma portalı URL'si yanıtta eksik"
+      }
+    },
+    "search": {
+      "prompt": "Ara Breeze",
+      "placeholder": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları, ayarları arayın…",
+      "searching": "Aranıyor…",
+      "startTyping": "Cihazlar, komut dosyaları, uyarılar, kullanıcılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
+      "noResults": "Sonuç bulunamadı. Farklı bir sorgu deneyin.",
+      "navigationHint": "Gezinmek için okları kullanın, açmak için Enter'ı kullanın",
+      "closeHint": "Esc kapatılacak",
+      "sections": {
+        "quick-actions": "Hızlı işlemler",
+        "recent": "En son",
+        "devices": "Cihazlar",
+        "scripts": "Komut Dosyaları",
+        "alerts": "Uyarılar",
+        "users": "Kullanıcılar",
+        "settings": "Ayarlar"
+      }
+    },
+    "notifications": {
+      "title": "Bildirimler",
+      "ariaUnread": "Bildirimler, {{count}} okunmamış",
+      "ariaUnread_one": "Bildirimler, {{count}} okunmamış",
+      "ariaUnread_other": "Bildirimler, {{count}} okunmamış",
+      "unread": "{{count}} okunmamış",
+      "unread_one": "{{count}} okunmamış",
+      "unread_other": "{{count}} okunmamış",
+      "markAllRead": "Tümünü okundu olarak işaretle",
+      "markAllUnread": "Tümünü okunmadı olarak işaretle",
+      "confirmClear": "Temizlemeyi onaylayın",
+      "clearAll": "Tümünü temizle",
+      "loading": "Bildirimler yükleniyor…",
+      "empty": "Henüz bildirim yok.",
+      "recently": "Son zamanlarda",
+      "markUnread": "Okunmadı olarak işaretle",
+      "markRead": "Okundu olarak işaretle",
+      "preferences": "Bildirim tercihleri"
+    },
+    "sidebar": {
+      "autoHide": "Kenar çubuğunu otomatik gizle",
+      "collapse": "Kenar çubuğunu daralt",
+      "expand": "Kenar çubuğunu genişlet",
+      "collapseSections": "Tüm bölümleri daralt",
+      "closeMenu": "Menüyü kapat"
+    },
+    "orgRequired": {
+      "title": "Bir kuruluş seçin",
+      "description": "Bu sayfada aynı anda tek bir kuruluş gösterilmektedir.",
+      "moreHint": "Başka bir kuruluş mu arıyorsunuz? Yukarıdaki değiştiriciyi kullanın (⌘O)."
+    },
+    "orgLoadFailed": {
+      "title": "Kuruluşlarınız yüklenemedi",
+      "description": "Kuruluş listeniz yüklenirken bir şeyler ters gitti. Bağlantınızı kontrol edip tekrar deneyin.",
+      "retry": "Tekrar dene"
+    }
+  },
+  "migrationBanner": {
+    "message": "{{count}} cihaz(lar), kendi kendine barındırılan bu sunucuda barındırılan aracı sürümünü çalıştırıyor. Kendi kendine barındırılan aracı sürümüne geçiş yapın.",
+    "cta": "Nasıl geçiş yapılır?"
+  },
+  "longTail": {
+    "catalog": {
+      "CatalogEnrichButton": {
+        "aiEstimate": "AI tahmini: {{guidance}}{{suffix}}",
+        "autoFill": "Ürüne bakın",
+        "busyMessage": "Ürün ayrıntılarına bakma — genellikle 5–15 saniye.",
+        "defaultGuidanceSuffix": "— fiyatınızı aşağıya girin.",
+        "errors": {
+          "autoFill": "Otomatik olarak doldurulamadı — ayrıntıları manuel olarak girin."
+        },
+        "placeholder": "Ürün adı veya SKU",
+        "searching": "Web'de arama yapılıyor…"
+      },
+      "CatalogItemPicker": {
+        "bundle": "Paket",
+        "itemTypes": {
+          "hardware": "Donanım",
+          "software": "Yazılım",
+          "service": "Servis"
+        },
+        "noResults": "Eşleşen katalog öğesi yok.",
+        "placeholder": "Kataloğu ada veya SKU'ya göre arayın"
+      },
+      "PolishButton": {
+        "actions": {
+          "applyChanges": "Değişiklikleri uygula"
+        },
+        "defaultLabel": "Düzenli açıklama",
+        "empty": "boş",
+        "errors": {
+          "enterText": "Önce cilalanacak bir ad veya açıklama girin.",
+          "polishFailed": "Bunu düzeltemedim; manuel olarak düzenlemeyi deneyin."
+        },
+        "messages": {
+          "applied": "Parlatılmış metin uygulandı.",
+          "noChanges": "Zaten iyi görünüyor; herhangi bir değişiklik önerilmedi."
+        },
+        "noChange": "Değişiklik yok",
+        "polishing": "Parlatma…",
+        "preview": {
+          "addedLabel": "Eklendi (bunların gerçek olduğunu doğrulayın):",
+          "description": "Bu, ifadeleri ve biçimlendirmeyi temizler. Rakamlarınız, ölçümleriniz ve fiyatlarınız girildiği gibi tutulur; başvurmadan önce aşağıdaki öncesi/sonrasını inceleyin.",
+          "dialogTitle": "Lehçe önizleme",
+          "removedLabel": "Kaldırıldı:",
+          "title": "Gösterişli metni inceleyin",
+          "warningDescription": "Otomatik kontrolümüz bir sayının, ölçümün veya kodun değişmiş olabileceğini düşünüyor. Öncesini/sonrasını dikkatli bir şekilde karşılaştırın; yapay zeka metni yeniden kelimelendirebilir ancak bir özelliği, fiyatı veya modeli değiştirmemelidir.",
+          "warningTitle": "⚠️ Başvuru yapmadan önce detayları bir kez daha kontrol edin."
+        },
+        "title": "İfadeleri AI ile temizleyin; numaralarınız ve bilgileriniz kalır; başvurmadan önce önizlemeyi inceleyin"
+      }
+    },
+    "monitors": {
+      "CreateMonitorForm": {
+        "actions": {
+          "createMonitor": "Monitör Oluştur",
+          "creating": "Oluşturuluyor..."
+        },
+        "errors": {
+          "createMonitor": "Monitör oluşturulamadı",
+          "generic": "Bir hata oluştu",
+          "nameRequired": "İsim gerekli",
+          "targetRequired": "Hedef gerekli"
+        },
+        "fields": {
+          "expectedBanner": "Beklenen Banner (isteğe bağlı)",
+          "expectedBody": "Beklenen Gövde İçeriği (isteğe bağlı)",
+          "expectedStatus": "Beklenen Durum",
+          "expectedValue": "Beklenen Değer (isteğe bağlı)",
+          "followRedirects": "Yönlendirmeleri Takip Et",
+          "hostname": "Çözümlenecek Ana Bilgisayar Adı",
+          "method": "Yöntem",
+          "monitorType": "Monitör Türü",
+          "nameserver": "Özel Ad Sunucusu (isteğe bağlı)",
+          "pingCount": "Ping Sayısı",
+          "pollingInterval": "Yoklama Aralığı (saniye)",
+          "port": "Bağlantı noktası",
+          "recordType": "Kayıt Türü",
+          "target": "Hedef (IP/Ana Bilgisayar Adı)",
+          "timeout": "Zaman aşımı (saniye)",
+          "url": "URL'si",
+          "verifySsl": "SSL'yi doğrulayın"
+        },
+        "monitorTypes": {
+          "dnsCheck": {
+            "description": "DNS kayıtlarının doğru şekilde çözümlendiğini doğrulayın",
+            "label": "DNS Kontrol et"
+          },
+          "httpCheck": {
+            "description": "HTTP/HTTPS uç noktalarını izleyin",
+            "label": "HTTP Kontrolü"
+          },
+          "icmpPing": {
+            "description": "Bir ana bilgisayara ping yoluyla ulaşılıp ulaşılamadığını kontrol edin",
+            "label": "ICMP Ping'i"
+          },
+          "tcpPort": {
+            "description": "TCP bağlantı noktasının açık olup olmadığını ve yanıt verip vermediğini kontrol edin",
+            "label": "TCP Bağlantı Noktası"
+          }
+        },
+        "placeholders": {
+          "expectedBanner": "ör. SSH-",
+          "expectedBody": "ör. \"durum\":\"tamam\"",
+          "expectedValue": "ör. 93.184.216.34",
+          "hostname": "example.com",
+          "name": "ör. Üretim Web Sunucusu",
+          "nameserver": "8.8.8.8",
+          "target": "192.168.1.1 veya sunucu.example.com",
+          "url": "https://example.com/health"
+        },
+        "subtitle": "Bir ağ hedefi için yeni bir izleme kontrolü ayarlayın.",
+        "title": "Ağ İzleyicisi Oluştur"
+      },
+      "MonitorDetailModal": {
+        "actions": {
+          "cancelEdit": "Düzenlemeyi İptal Et",
+          "checkNow": "Şimdi Kontrol Et",
+          "deleteMonitor": "Monitörü sil",
+          "deleting": "Siliniyor...",
+          "yesDelete": "Evet, sil"
+        },
+        "alertRules": {
+          "disabled": "(devre dışı)",
+          "title": "Uyarı Kuralları"
+        },
+        "consecutiveFailures": "{{count}} ardışık hata",
+        "consecutiveFailures_plural": "{{count}} ardışık hatalar",
+        "delete": {
+          "confirmShort": "Emin misin?"
+        },
+        "errors": {
+          "deleteMonitor": "Monitör silinemedi",
+          "generic": "Bir hata oluştu",
+          "loadDetails": "Monitör ayrıntıları yüklenemedi",
+          "triggerCheck": "Denetim tetiklenemedi",
+          "updateMonitor": "Monitör güncellenemedi"
+        },
+        "fallbackTitle": "Monitör",
+        "fields": {
+          "interval": "Aralık (lar)",
+          "timeout": "Zaman Aşımı (s)"
+        },
+        "labels": {
+          "lastChecked": "Son kontrol: {{time}}",
+          "response": "Yanıt: {{response}}",
+          "status": "Durum:"
+        },
+        "notFound": "Monitör bulunamadı",
+        "recentResults": {
+          "response": "Yanıt",
+          "time": "Zaman",
+          "title": "Son Sonuçlar"
+        },
+        "status": {
+          "degraded": "Bozulmuş"
+        },
+        "time": {
+          "daysAgo": "{{count}}d önce",
+          "hoursAgo": "{{count}}h önce",
+          "justNow": "Az önce",
+          "minutesAgo": "{{count}}m önce",
+          "never": "Hiçbir zaman"
+        },
+        "types": {
+          "dnsCheck": "DNS Kontrol et",
+          "httpCheck": "HTTP Kontrolü",
+          "icmpPing": "ICMP Ping'i",
+          "tcpPort": "TCP Bağlantı Noktası"
+        }
+      },
+      "NetworkMonitorList": {
+        "actions": {
+          "addMonitor": "Monitör Ekle",
+          "deleteMonitor": "Monitörü sil",
+          "runCheckNow": "Şimdi kontrolü çalıştır",
+          "viewDetails": "Ayrıntıları görüntüle"
+        },
+        "assetFilter": "Monitörler seçilen varlığa göre filtreleniyor.",
+        "delete": {
+          "confirmLabel": "Monitörü Sil",
+          "message": "Bu monitörü silmek istediğinizden emin misiniz? Bu aynı zamanda tüm sonuçları ve uyarı kurallarını da kaldıracaktır. Bu eylem geri alınamaz.",
+          "title": "Ağ İzleyicisini Sil"
+        },
+        "empty": {
+          "action": "Şimdi bir tane oluşturun.",
+          "prefix": "Yapılandırılmış ağ monitörü yok."
+        },
+        "errors": {
+          "deleteMonitor": "Monitör silinemedi",
+          "fetchMonitors": "Monitörler getirilemedi",
+          "generic": "Bir hata oluştu",
+          "triggerCheck": "Denetim tetiklenemedi"
+        },
+        "filters": {
+          "allStatus": "Tüm Durumlar",
+          "allTypes": "Tüm Türler"
+        },
+        "headers": {
+          "interval": "Aralık",
+          "lastChecked": "Son Kontrol Edildi",
+          "response": "Yanıt",
+          "target": "Hedef"
+        },
+        "loading": "Monitörler yükleniyor...",
+        "messages": {
+          "monitorDeleted": "Monitör silindi"
+        },
+        "status": {
+          "degraded": "Bozulmuş"
+        },
+        "time": {
+          "daysAgo": "{{count}}d önce",
+          "hoursAgo": "{{count}}h önce",
+          "justNow": "Az önce",
+          "minutesAgo": "{{count}}m önce",
+          "never": "Hiçbir zaman"
+        },
+        "types": {
+          "dnsCheck": "DNS Kontrol et",
+          "httpCheck": "HTTP Kontrolü",
+          "icmpPing": "ICMP Ping'i",
+          "tcpPort": "TCP Bağlantı Noktası"
+        }
+      }
+    },
+    "psa": {
+      "PsaCompanyImport": {
+        "title": "İthalat şirketleri",
+        "subtitle": "{{name}} şirketlerinden organizasyonlar oluşturun.",
+        "intro": "Şirketler öncelikle mevcut organizasyonlarınızla eşleştirilir. Aşağıdaki listeyi inceleyip onaylayana kadar hiçbir şey oluşturulmaz.",
+        "capHint": "İçe aktarma başına en fazla {{cap}} şirket getirilir.",
+        "empty": "Bu bağlantı hiçbir şirket döndürmedi.",
+        "alreadyLinked_one": "{{count}} şirketi bu bağlantıdan zaten içe aktarıldığı için atlandı.",
+        "alreadyLinked_other": "{{count}} şirketleri bu bağlantıdan zaten içe aktarıldıkları için atlandı.",
+        "malformed_one": "{{count}} kayıt okunamadı (kullanılabilir kimlik veya ad yok) ve atlandı.",
+        "malformed_other": "{{count}} kayıtları okunamadı (kullanılabilir kimlik veya ad yok) ve atlandı.",
+        "actions": {
+          "fetch": "Şirketleri getir",
+          "fetching": "Şirketler getiriliyor…",
+          "import": "İçe aktar {{count}} seçildi",
+          "importing": "İçe aktarılıyor…"
+        },
+        "truncated": {
+          "title": "Kısmi şirket listesi",
+          "body": "Şirket listesi, {{cap}} şirketten {{fetched}} sonra kısa kesildi, bu nedenle bu içe aktarma işlemi eksik olacak. Hiç okunmamış hiçbir şirkete bağlantı verilmeyecektir.",
+          "cap": "{{cap}} şirketlerinin ithalat başına sınırına {{fetched}} getirildikten sonra ulaşıldı, bu nedenle bu içe aktarma tamamlanmayacak. Bu sınırı aşan hiçbir şirket asla okunmaz ve bağlantı kurulmaz.",
+          "timeBudget": "Bu bağlantı çok yavaş yanıt verdi, bu nedenle şirket listesi {{fetched}} şirketlerinden sonra kısa kesildi. Bu içe aktarma işlemi eksik olacaktır; hiç okunmayan şirketlere bağlantı verilmeyecektir.",
+          "pageGuard": "Şirket listesi çok fazla sayfaya yayıldı ve {{fetched}} şirketten sonra durduruldu. Bu içe aktarma işlemi eksik olacaktır; hiç okunmayan şirketlere bağlantı verilmeyecektir."
+        },
+        "errors": {
+          "previewFailed": "Şirketler bu bağlantıdan yüklenemedi.",
+          "importFailed": "Şirketler içe aktarılamadı."
+        }
+      },
+      "PsaConnectionForm": {
+        "actions": {
+          "testConnection": "Bağlantıyı test edin",
+          "testing": "Test ediliyor...",
+          "toggleVisibility": "Bu değeri göster veya gizle"
+        },
+        "credentialsNote": {
+          "jira": "Bir kimlik doğrulama yöntemini girin: Jira Cloud için e-posta artı API jetonu, Jira Server için kullanıcı adı artı şifre veya kişisel erişim jetonu."
+        },
+        "defaultSubmitLabel": "Bağlantıyı kaydet",
+        "fields": {
+          "apiKey": "API tuşu",
+          "apiToken": "API jeton veya anahtar",
+          "clientId": "Müşteri Kimliği",
+          "clientSecret": "Müşteri Sırrı",
+          "companyId": "Şirket Kimliği",
+          "connectionName": "Bağlantı adı",
+          "defaultQueue": "Varsayılan proje veya kuyruk",
+          "email": "E-posta adresi",
+          "instanceUrl": "Örnek URL'si",
+          "integrationCode": "Entegrasyon kodu",
+          "password": "Şifre",
+          "personalAccessToken": "Kişisel erişim belirteci",
+          "privateKey": "Özel anahtar",
+          "provider": "Sağlayıcı",
+          "publicKey": "Genel anahtar",
+          "secret": "Gizli",
+          "syncDirection": "Senkronizasyon yönü",
+          "syncInterval": "Senkronizasyon aralığı",
+          "username": "Kullanıcı adı veya e-posta"
+        },
+        "help": {
+          "defaultQueue": "İsteğe bağlı. Breeze uyarılarından bilet oluştururken kullanılır."
+        },
+        "keepExisting": "(mevcut tutmak için boş bırakın)",
+        "placeholders": {
+          "apiKey": "API anahtarı",
+          "apiToken": "API belirteci",
+          "clientId": "oauth-istemci-kimliği",
+          "clientSecret": "istemci sırrı",
+          "companyId": "şirket kimliği",
+          "connectionName": "örneğin Jira Prodüksiyon",
+          "defaultQueue": "örneğin BT Desteği",
+          "email": "admin@example.com",
+          "existingCredential": "********",
+          "integrationCode": "entegrasyon kodu",
+          "password": "şifre",
+          "personalAccessToken": "kişisel erişim belirteci",
+          "privateKey": "özel anahtar",
+          "publicKey": "genel anahtar",
+          "secret": "API sırrı",
+          "username": "admin@example.com"
+        },
+        "providerHints": {
+          "autotask": "Otomatik Görev API kullanıcı kimlik bilgilerinizi kullanın.",
+          "connectwise": "ConnectWise Manage kimlik bilgilerinizi veya API anahtarlarınızı kullanın.",
+          "freshservice": "Freshservice API anahtarınızı veya OAuth kimlik bilgilerinizi kullanın.",
+          "jira": "Kimlik doğrulama için Atlassian API jetonunu ve Jira hesabınızın e-postasını kullanın.",
+          "servicenow": "REST API izinlerine sahip bir ServiceNow kullanıcısı kullanın.",
+          "zendesk": "API belirtecini veya OAuth istemci kimlik bilgilerini kullanın."
+        },
+        "sections": {
+          "basicInformation": "Temel Bilgiler",
+          "connectionDetails": "Bağlantı Detayları",
+          "credentials": "Kimlik Bilgileri",
+          "syncSettings": "Senkronizasyon Ayarları"
+        },
+        "sync": {
+          "autoClose": "PSA biletlerini otomatik kapatma",
+          "autoCloseHelp": "Breeze uyarıları çözümlendiğinde bağlantılı biletleri kapatın.",
+          "enable": "Senkronizasyonu etkinleştir",
+          "enableHelp": "Biletleri ve uyarı bağlantılarını bir programa göre güncel tutun.",
+          "notes": "Uyarı notlarını senkronize et",
+          "notesHelp": "Breeze yorumlarını ve güncellemelerini PSA destek zaman çizelgesine aktarın."
+        },
+        "syncDirections": {
+          "bidirectional": "Çift Yönlü",
+          "inbound": "PSA → Breeze",
+          "outbound": "Breeze → PSA"
+        },
+        "syncIntervals": {
+          "daily": "Günlük",
+          "every15Minutes": "Her 15 dakikada bir",
+          "every30Minutes": "Her 30 dakikada bir",
+          "every6Hours": "Her 6 saatte bir",
+          "everyHour": "Her saat"
+        },
+        "testDirtyHint": "Önce kaydet — Test, kaydedilmemiş düzenlemelerinizi değil, depolanan kimlik bilgilerini kontrol eder.",
+        "validation": {
+          "nameRequired": "Bağlantı adı gerekli",
+          "validUrl": "Geçerli bir URL olmalıdır"
+        },
+        "ownerScope": {
+          "legend": "Mülkiyet",
+          "allOrganizations": "Tüm kuruluşlar",
+          "partnerWideHint": "(iş ortağı çapında — MSP'ın kendi PSA'sı)",
+          "thisOrganizationOnly": "Yalnızca bu kuruluş",
+          "organization": "Organizasyon"
+        }
+      },
+      "PsaConnectionList": {
+        "actions": {
+          "pause": "Duraklat",
+          "resume": "Devam Et",
+          "syncNow": "Şimdi senkronize et",
+          "importCompanies": "İthalat şirketleri"
+        },
+        "connectionCount": "{{filtered}} / {{total}} bağlantı",
+        "empty": {
+          "noConnections": "Biletleri senkronize etmeye başlamak için bir PSA sağlayıcısına bağlanın.",
+          "noMatches": "Aramanızla veya filtrelerinizle eşleşen bağlantı yok.",
+          "title": "Yapılandırılmış PSA bağlantısı yok"
+        },
+        "filters": {
+          "allStatuses": "Tüm durumlar"
+        },
+        "headers": {
+          "connection": "Bağlantı",
+          "lastSync": "Son Senkronizasyon",
+          "provider": "Sağlayıcı"
+        },
+        "never": "Hiçbir zaman",
+        "searchPlaceholder": "Bağlantıları arayın",
+        "status": {
+          "paused": "Duraklatıldı",
+          "syncing": "Senkronizasyon"
+        },
+        "title": "PSA Bağlantıları",
+        "allOrgs": "Tüm kuruluşlar",
+        "partnerWideTitle": "İş ortağı çapında bağlantı — her kuruluş tarafından paylaşılır",
+        "partnerWideLocked": "İş ortağı çapında bağlantı — değişiklik yapmak için iş ortağı kuruluşunun tam erişimini gerektirir"
+      },
+      "PsaConnectionsPage": {
+        "actions": {
+          "addConnection": "Bağlantı ekle",
+          "createConnection": "Bağlantı oluştur",
+          "deleteConnection": "Bağlantıyı sil",
+          "deleting": "Siliniyor...",
+          "saveChanges": "Değişiklikleri kaydet",
+          "tryAgain": "Tekrar deneyin"
+        },
+        "delete": {
+          "activeWarning": "Bu bağlantı etkin. Bilet senkronizasyonu hemen durdurulacaktır.",
+          "confirm": "{{name}} silmek istediğinizden emin misiniz?",
+          "irreversible": "Bu işlem geri alınamaz.",
+          "title": "PSA Bağlantısını Sil",
+          "warningLabel": "Uyarı:"
+        },
+        "errors": {
+          "deleteConnection": "Bağlantı silinemedi",
+          "fetchConnections": "PSA bağlantıları getirilemedi",
+          "generic": "Bir hata oluştu",
+          "saveConnection": "Bağlantı kaydedilemedi",
+          "startSync": "Senkronizasyon başlatılamadı",
+          "testFailed": "Test başarısız oldu",
+          "updateStatus": "Bağlantı durumu güncellenemedi"
+        },
+        "loading": "PSA bağlantıları yükleniyor...",
+        "modal": {
+          "addDescription": "Kuruluşunuz için yeni bir PSA bağlantısı kurun.",
+          "addTitle": "PSA Bağlantısı Ekle",
+          "editDescription": "PSA bağlantı ayrıntılarını ve senkronizasyon tercihlerini güncelleyin.",
+          "editTitle": "PSA Bağlantısını Düzenle"
+        },
+        "subtitle": "Biletleri senkronize etmek ve uyarıları bağlamak için PSA'nızı bağlayın.",
+        "test": {
+          "failedMessage": "PSA sağlayıcısına bağlanılamıyor.",
+          "failedTitle": "Bağlantı başarısız oldu",
+          "successMessage": "PSA kimlik bilgileri geçerlidir.",
+          "successTitle": "Bağlantı başarılı",
+          "testing": "Test ediliyor {{name}}",
+          "title": "Bağlantı Testi Sonucu",
+          "verifyHelp": "Bu bağlantı için kimlik bilgilerini ve API izinlerini doğrulayın."
+        },
+        "title": "PSA Entegrasyonları"
+      },
+      "PsaTicketList": {
+        "empty": {
+          "noMatches": "Aramanızla veya filtrelerinizle eşleşen bilet yok.",
+          "noTickets": "Biletleri burada görmek için ilk PSA bağlantınızı senkronize edin.",
+          "title": "Senkronize edilen PSA bileti yok"
+        },
+        "filters": {
+          "allStatuses": "Tüm durumlar"
+        },
+        "headers": {
+          "linkedAlert": "Bağlantılı Uyarı",
+          "ticket": "Bilet",
+          "updated": "Güncellendi"
+        },
+        "searchPlaceholder": "Bilet arayın",
+        "status": {
+          "closed": "Kapalı",
+          "inProgress": "Devam Ediyor",
+          "open": "Aç",
+          "resolved": "Çözüldü",
+          "waiting": "Bekleniyor"
+        },
+        "ticketCount": "{{filtered}} / {{total}} bilet",
+        "title": "Senkronize Biletler",
+        "unlinked": "Bağlantı kaldırıldı"
+      }
+    },
+    "webhooks": {
+      "WebhookDeliveryHistory": {
+        "deliveryAttempts": "{{count}} teslimat denemeleri",
+        "empty": "Henüz teslimat girişimi yok.",
+        "headers": {
+          "action": "Eylem",
+          "event": "Etkinlik",
+          "response": "Yanıt",
+          "timestamp": "Zaman Damgası"
+        },
+        "retrying": "Yeniden deneniyor...",
+        "status": {
+          "failed": "Başarısız",
+          "pending": "Beklemede",
+          "success": "Başarılı"
+        },
+        "title": "Teslimat Geçmişi"
+      },
+      "WebhookForm": {
+        "actions": {
+          "addHeader": "Başlık Ekle",
+          "autoGenerate": "Otomatik oluştur"
+        },
+        "authentication": {
+          "bearer": {
+            "description": "Başlıkta statik bir belirteç gönderin.",
+            "title": "Hamiline ait jeton"
+          },
+          "hmac": {
+            "description": "İstekleri paylaşılan bir sırla imzalayın.",
+            "title": "HMAC imzası"
+          },
+          "subtitle": "Hedefinizin webhook orijinalliğini nasıl doğrulayacağını seçin.",
+          "title": "Kimlik Doğrulaması"
+        },
+        "defaultSubmitLabel": "Web kancasını kaydet",
+        "events": {
+          "alertCreated": {
+            "description": "Bir uyarı oluşturulduğunda tetiklenir.",
+            "label": "Uyarı Oluşturuldu"
+          },
+          "alertResolved": {
+            "description": "Bir uyarı çözümlendiğinde tetiklenir.",
+            "label": "Uyarı Çözümlendi"
+          },
+          "deviceOffline": {
+            "description": "Bir cihazın bağlantısı kesildiğinde tetiklenir.",
+            "label": "Cihaz Çevrimdışı"
+          },
+          "deviceOnline": {
+            "description": "Bir cihaz bağlandığında tetiklenir.",
+            "label": "Cihaz Çevrimiçi"
+          },
+          "scriptCompleted": {
+            "description": "Bir komut dosyası tamamlandığında tetiklenir.",
+            "label": "Komut Dosyası Tamamlandı"
+          },
+          "ticketCreated": {
+            "description": "Bir bilet oluşturulduğunda tetiklenir.",
+            "label": "Bilet Oluşturuldu"
+          }
+        },
+        "fields": {
+          "bearerToken": "Hamiline ait jeton",
+          "endpointUrl": "Uç Nokta URL'si",
+          "events": "Etkinlikler",
+          "jsonPreview": "JSON önizlemesi",
+          "name": "Web kancası adı",
+          "signingSecret": "İmzalama sırrı",
+          "templateJson": "Şablon (JSON)"
+        },
+        "headers": {
+          "empty": "Yapılandırılmış özel başlık yok.",
+          "subtitle": "Her istekle birlikte gönderilen isteğe bağlı başlıklar.",
+          "title": "Özel Başlıklar"
+        },
+        "help": {
+          "bearerToken": "Bu belirteç, Yetkilendirme başlığı olarak gönderilir.",
+          "signingSecret": "Webhook imzalarını doğrulamak için bu sırrı kullanın."
+        },
+        "invalidJsonPreview": "Şablonda geçersiz JSON.",
+        "payload": {
+          "previewEmpty": "JSON geçerli olduğunda önizleme görüntülenir.",
+          "subtitle": "Hedefinize gönderilen JSON verisi şeklini tanımlayın.",
+          "title": "Yük şablonu"
+        },
+        "placeholders": {
+          "bearerToken": "Bir hamiline jeton girin",
+          "endpointUrl": "https://api.example.com/webhooks",
+          "headerKey": "Başlık tuşu",
+          "headerValue": "Başlık değeri",
+          "name": "Prodüksiyon Web Kancası",
+          "signingSecret": "İmza sırrını girin"
+        },
+        "subtitle": "Teslimatı, kimlik doğrulamayı ve yük davranışını ayarlayın.",
+        "title": "Web kancası yapılandırması",
+        "validation": {
+          "eventRequired": "En az bir etkinlik seçin",
+          "headerKeyRequired": "Başlık anahtarı gerekli",
+          "invalidUrl": "Geçersiz URL",
+          "nameRequired": "Webhook adı gerekli",
+          "payloadJsonRequired": "Yük şablonu geçerli JSON olmalıdır",
+          "secretRequired": "HMAC kimlik doğrulaması için gizli bilgi gereklidir",
+          "tokenRequired": "Taşıyıcı kimlik doğrulaması için jeton gereklidir",
+          "urlRequired": "URL'si gerekli"
+        }
+      },
+      "WebhookList": {
+        "actions": {
+          "deleteWebhook": "Web kancasını sil",
+          "editWebhook": "Web kancasını düzenle",
+          "test": "Testi"
+        },
+        "empty": "Web kancası bulunamadı.",
+        "failedCount": "{{count}} başarısız oldu",
+        "filters": {
+          "allStatuses": "Tüm durumlar"
+        },
+        "headers": {
+          "events": "Etkinlikler",
+          "lastTriggered": "Son Tetikleme",
+          "url": "URL'si"
+        },
+        "moreEvents": "+{{count}} daha fazla",
+        "notAvailable": "Yok",
+        "searchPlaceholder": "Ada veya URL'ye göre arayın",
+        "successCount": "{{count}} başarı",
+        "title": "Web Kancaları",
+        "webhookCount": "{{filtered}} / {{total}} web kancası"
+      },
+      "WebhooksPage": {
+        "actions": {
+          "createWebhook": "Web Kancası Oluştur",
+          "deleting": "Siliniyor...",
+          "editWebhook": "Web kancasını düzenle",
+          "newWebhook": "Yeni Web Kancası",
+          "saveChanges": "Değişiklikleri Kaydet",
+          "testWebhook": "Web kancasını test edin",
+          "tryAgain": "Tekrar deneyin"
+        },
+        "auth": {
+          "bearerToken": "Hamiline ait jeton",
+          "header": "Başlık: {{header}}",
+          "hmacSignature": "HMAC imzası"
+        },
+        "delete": {
+          "confirm": "<strong>{{name}}</strong> silmek istediğinizden emin misiniz? Bu eylem geri alınamaz.",
+          "title": "Web Kancasını Sil"
+        },
+        "details": {
+          "authentication": "Kimlik Doğrulaması",
+          "endpoint": "Uç nokta",
+          "noPayloadTemplate": "Henüz kayıtlı yük şablonu yok.",
+          "payloadPreview": "Yük şablonu önizlemesi",
+          "testEvent": "Test etkinliği",
+          "testEventHelp": "Testler, seçilen etkinliği ve yük şablonunuzu kullanır.",
+          "title": "Web kancası ayrıntıları"
+        },
+        "emptySelection": "Teslimat geçmişini ve test araçlarını görüntülemek için bir web kancası seçin.",
+        "errors": {
+          "deleteWebhook": "Webhook silinemedi",
+          "disableWebhook": "Web kancası devre dışı bırakılamadı",
+          "enableWebhook": "Web kancası etkinleştirilemedi",
+          "fetchDeliveries": "Teslimat geçmişi getirilemedi",
+          "fetchWebhooks": "Web kancaları getirilemedi",
+          "generic": "Bir hata oluştu",
+          "invalidPayloadTemplate": "Yük şablonu geçerli JSON değil.",
+          "loadDeliveries": "Teslimat geçmişi yüklenemiyor",
+          "retryDelivery": "Teslimat yeniden denenemedi",
+          "saveWebhook": "Webhook kaydedilemedi",
+          "testFailed": "Test başarısız oldu"
+        },
+        "loading": "Web kancaları yükleniyor...",
+        "loadingDeliveryHistory": "Teslimat geçmişi yükleniyor...",
+        "modal": {
+          "createTitle": "Web Kancası Oluştur",
+          "editTitle": "Web Kancasını Düzenle"
+        },
+        "subtitle": "Olayları harici sistemlere iletin.",
+        "title": "Web kancaları"
+      }
+    },
+    "c2c": {
+      "C2CDashboard": {
+        "status": {
+          "active": "aktif",
+          "completed": "tamamlandı",
+          "failed": "başarısız oldu",
+          "error": "hatası",
+          "revoked": "iptal edildi",
+          "running": "çalışıyor",
+          "syncing": "senkronizasyon",
+          "pending": "beklemede"
+        },
+        "consentSuccess": "Microsoft 365 bağlantısı başarıyla oluşturuldu",
+        "errors": {
+          "fetchConnections": "Bağlantılar getirilemedi",
+          "loadConnections": "Bağlantılar yüklenemedi",
+          "fetchConfigs": "Yapılandırmalar getirilemedi",
+          "loadConfigs": "Yapılandırmalar yüklenemedi",
+          "fetchJobs": "İşler getirilemedi",
+          "loadJobs": "İşler yüklenemedi",
+          "fetchItems": "Öğeler getirilemedi",
+          "loadItems": "Öğeler yüklenemedi"
+        },
+        "tabs": {
+          "connections": "Bağlantılar",
+          "configs": "Yapılandırmalar",
+          "jobs": "İş İlanları",
+          "items": "Öğeler"
+        },
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace"
+        },
+        "loading": "Bulut yedekleme verileri yükleniyor...",
+        "alphaDisclaimer": "Buluttan buluta yedekleme erken erişim aşamasındadır. Bağlantı kurulumu değerlendirme için kullanılabilir ancak senkronizasyon ve geri yükleme işleri henüz uygulanmamıştır.",
+        "consentFailed": "M365 onayı başarısız oldu: {{error}}",
+        "title": "Buluttan Buluta Yedekleme",
+        "description": "Şimdi bulut bağlantılarını kurun; senkronizasyon ve geri yükleme yürütmesi hâlâ devam ediyor.",
+        "addConnection": "Bağlantı Ekle",
+        "table": {
+          "provider": "Sağlayıcı",
+          "displayName": "Görünen Ad",
+          "lastSync": "Son Senkronizasyon",
+          "scope": "Kapsam",
+          "targetUsers": "Hedef Kullanıcıları",
+          "jobId": "İş Kimliği",
+          "started": "Başlatıldı",
+          "completed": "Tamamlandı",
+          "transferred": "Aktarıldı",
+          "nameOrSubject": "İsim / Konu",
+          "path": "Yol",
+          "size": "Boyut",
+          "date": "Tarih"
+        },
+        "empty": {
+          "connections": "Henüz yapılandırılmış bağlantı yok. Başlamak için \"Bağlantı Ekle\"yi tıklayın.",
+          "configs": "Henüz yedekleme yapılandırması yok. Önce bir bağlantı ekleyin, ardından yedeklemeleri yapılandırın.",
+          "jobs": "Henüz hiçbir senkronizasyon işi çalıştırılmadı.",
+          "items": "Hiçbir öğe bulunamadı. Yedekleme öğelerini doldurmak için bir senkronizasyon çalıştırın."
+        },
+        "syncNotImplemented": "Senkronizasyon işleri henüz uygulanmadı",
+        "targetUsersCount": "{{count}} kullanıcı(lar)",
+        "searchItemsPlaceholder": "Öğeleri ara...",
+        "filters": {
+          "allTypes": "Tüm türler"
+        },
+        "itemTypes": {
+          "email": "E-posta",
+          "file": "Dosya",
+          "calendar": "Takvim",
+          "contact": "İletişim",
+          "chat": "Sohbet"
+        },
+        "filterByUserEmail": "Kullanıcı e-postasına göre filtrele",
+        "restoreSelected": "Seçileni Geri Yükle"
+      },
+      "C2CConnectionWizard": {
+        "errors": {
+          "generateConsentUrl": "İzin URL'si oluşturulamadı",
+          "noConsentUrl": "İzin URL'si döndürülmedi",
+          "initiateConsentFlow": "İzin akışı başlatılamadı",
+          "saveConnection": "Bağlantı kaydedilemedi"
+        },
+        "steps": {
+          "provider": "Sağlayıcı",
+          "grantAccess": "Erişim Ver",
+          "confirm": "Onayla",
+          "credentials": "Kimlik Bilgileri",
+          "scope": "Kapsam"
+        },
+        "title": "Bulut Bağlantısı Ekle",
+        "selectProvider": "Yedeklenecek bulut sağlayıcısını seçin.",
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace",
+          "azureAd": "Azure AD",
+          "googleCloud": "Google Bulut"
+        },
+        "oneClickTitle": "Tek tıklamayla Microsoft 365 entegrasyonu",
+        "oneClickDescription": "Breeze örneğinizde önceden yapılandırılmış bir Microsoft 365 uygulaması var. M365 kiracınıza yedek erişim yetkisi vermek için \"Erişim Ver\" seçeneğini tıklayın. Bir Genel Yöneticinin izin istemini onaylaması gerekir.",
+        "displayName": "Görünen Ad",
+        "displayNamePlaceholder": "Microsoft 365",
+        "manualDisplayNamePlaceholder": "M365 Bağlantım",
+        "selectBackupScope": "Neyin yedekleneceğini seçin",
+        "scopes": {
+          "mailbox": "Exchange Posta Kutusu",
+          "onedrive": "OneDrive",
+          "sharepoint": "SharePoint",
+          "teams": "Takımlar",
+          "gmail": "Gmail",
+          "drive": "Google Drive",
+          "calendar": "Takvim"
+        },
+        "useOwnAppRegistration": "Veya kendi uygulama kaydınızı kullanın",
+        "switchToManual": "Manuel kimlik bilgisi girişine geç",
+        "switchToGrantAccess": "Tek tıkla Erişim Verme moduna geçin (önerilir)",
+        "enterCredentials": "{{provider}} uygulama kimlik bilgilerinizi girin.",
+        "tenantId": "Kiracı Kimliği",
+        "clientId": "Müşteri Kimliği",
+        "clientIdPlaceholder": "Uygulama (istemci) kimliği",
+        "clientSecret": "Müşteri Sırrı",
+        "clientSecretPlaceholder": "İstemci gizli değeri",
+        "selectBackupScopeSentence": "Neyin yedekleneceğini seçin.",
+        "reviewGrantAccess": "İnceleyin ve erişim izni verin. Bağlantıyı yetkilendirmek için Microsoft'a yönlendirileceksiniz.",
+        "summary": {
+          "provider": "Sağlayıcı:",
+          "displayName": "Görünen Ad:",
+          "scopes": "Kapsamlar:",
+          "auth": "Yazar:",
+          "tenantId": "Kiracı Kimliği:"
+        },
+        "platformAppConsent": "Platform uygulaması (tek tıkla onay)",
+        "redirectingToMicrosoft": "Microsoft'a yönlendiriliyor...",
+        "grantAccessWithMicrosoft": "Microsoft ile Erişim Verme",
+        "validationUnavailable": "Bağlantı doğrulama henüz mevcut değil. Kurulumu tamamlamak için bağlantıyı kaydedin.",
+        "saveConnection": "Bağlantıyı Kaydet"
+      },
+      "C2CRestoreDialog": {
+        "providers": {
+          "microsoft365": "Microsoft 365",
+          "googleWorkspace": "Google Workspace"
+        },
+        "errors": {
+          "loadBackupItems": "Yedekleme öğeleri yüklenemedi",
+          "loadRestoreTargets": "Geri yükleme hedefleri yüklenemedi",
+          "startRestore": "Geri yükleme başlatılamadı"
+        },
+        "title": "Bulut Öğelerini Geri Yükle",
+        "description": "Yedeklenen öğeleri şimdi arayın; geri yükleme uygulaması henüz uygulanmadı.",
+        "searchItems": "Öğeleri ara",
+        "searchPlaceholder": "Konuyu veya dosya adını arayın",
+        "allTypes": "Tüm türler",
+        "itemTypes": {
+          "email": "E-posta",
+          "file": "Dosya",
+          "calendar_event": "Takvim",
+          "contact": "İletişim",
+          "chat_message": "Sohbet"
+        },
+        "filterByUserEmail": "Kullanıcı e-postasına göre filtrele",
+        "reset": "Sıfırla",
+        "selectItems": "Öğeleri seçin",
+        "resultCount": "{{count}} sonuçlar, {{selected}} seçildi",
+        "resultCount_one": "{{count}} sonuç, {{selected}} seçildi",
+        "resultCount_other": "{{count}} sonuçlar, {{selected}} seçildi",
+        "restoreSetReady": "Geri yükleme seti hazır",
+        "table": {
+          "item": "Öğe",
+          "path": "Yol",
+          "size": "Boyut",
+          "date": "Tarih"
+        },
+        "loadingItems": "Öğeler yükleniyor...",
+        "emptySearch": "Mevcut aramayla eşleşen hiçbir yedek öğe yok.",
+        "untitledItem": "Başlıksız öğe",
+        "restoreTarget": "Hedefi geri yükle",
+        "restoreOriginalTenant": "Orijinal kiracıya geri yükleme",
+        "restoreOriginalDescription": "Öğeleri orijinal olarak koruyan kaynak bağlantısını kullanın.",
+        "restoreAnotherConnection": "Başka bir bağlantıya geri yükleyin",
+        "restoreAnotherDescription": "Seçilen öğeleri farklı bir etkin bulut hedefine yönlendirin.",
+        "targetConnection": "Hedef bağlantı",
+        "selectConnection": "Bir bağlantı seçin",
+        "selectedItems": "Seçilen öğeler",
+        "originalConnection": "Orijinal bağlantı",
+        "selectTarget": "Bir hedef seçin",
+        "noUser": "Kullanıcı yok",
+        "restoreDisabled": "Buluttan buluta geri yükleme işlemi uygulanana kadar geri yükleme gönderimi devre dışı bırakılır.",
+        "restoreComingSoon": "Geri yükleme çok yakında"
+      }
+    },
+    "time": {
+      "TimerWidget": {
+        "errors": {
+          "stopFailed": "Zamanlayıcı durdurulamadı."
+        },
+        "ticketFallback": "bilet",
+        "stopTimer": "Zamanlayıcıyı durdur",
+        "descriptionPlaceholder": "Ne üzerinde çalıştınız?",
+        "billable": "Faturalandırılabilir",
+        "stopAndSave": "Durdur ve kaydet"
+      },
+      "TimesheetPage": {
+        "friendly": {
+          "adminRequired": "Zaman çizelgelerini onaylamak yönetici rolü gerektirir.",
+          "approvedImmutable": "Onaylanan girişler yalnızca yönetici tarafından değiştirilebilir.",
+          "notOwnEntry": "Yalnızca kendi zaman girişlerinizi düzenleyebilirsiniz."
+        },
+        "errors": {
+          "bulkApprovalFailed": "Toplu onay başarısız oldu. Tekrar dene.",
+          "saveEntryFailed": "Giriş kaydedilemedi. Tekrar dene.",
+          "loadTimesheetFailed": "Zaman çizelgesi yüklenemedi. Tekrar dene."
+        },
+        "toasts": {
+          "bulkSkipped": "{{updated}} güncellendi, {{skipped}} atlandı ({{reasons}})",
+          "bulkApproved": "{{count}} onaylandı",
+          "bulkUnapproved": "{{count}} onaylanmadı",
+          "entryUpdated": "Giriş güncellendi"
+        },
+        "title": "Zaman Çizelgesi",
+        "selectTechnician": "Teknisyeni seçin",
+        "myTimesheet": "Zaman çizelgem",
+        "previousWeek": "Önceki hafta",
+        "weekOf": "{{week}} Haftası",
+        "nextWeek": "Gelecek hafta",
+        "thisWeek": "Bu hafta",
+        "adminNotice": "Diğer teknisyenlerin zaman çizelgelerini görüntülemek, sizinkini gösteren bir yönetici rolü gerektirir.",
+        "selectedCount": "{{count}} seçildi",
+        "approveSelected": "Seçileni onayla",
+        "unapprove": "Onaylamayı kaldır",
+        "billableDuration": "· {{duration}} faturalandırılabilir",
+        "noEntries": "Giriş yok",
+        "billable": "Faturalandırılabilir",
+        "rate": "Oranı",
+        "selectEntry": "Girişi seçin {{id}}",
+        "noDescription": "Açıklama yok",
+        "approved": "Onaylandı",
+        "nonBillable": "faturalandırılamaz",
+        "running": "çalışıyor",
+        "editEntry": "Girişi düzenle {{id}}",
+        "total": "Toplam: {{duration}}",
+        "billableTotal": "Faturalandırılabilir: {{duration}}"
+      }
+    },
+    "snmp": {
+      "SNMPTemplateEditor": {
+        "errors": {
+          "copyOid": "OID panoya kopyalanamadı",
+          "templateNameRequired": "Şablon adı gerekli",
+          "oidRequired": "En az bir OID gerekli",
+          "validateOids": "OID'ler doğrulanamadı",
+          "oidValidationFailedFor": "OID doğrulaması {{oid}} için başarısız oldu",
+          "saveTemplate": "Şablon kaydedilemedi",
+          "fetchTemplates": "SNMP şablonları getirilemedi",
+          "loadTemplates": "Şablonlar yüklenemedi",
+          "loadOidBrowser": "OID tarayıcı sonuçları yüklenemedi"
+        },
+        "loading": "SNMP şablonları yükleniyor...",
+        "title": "SNMP Şablon Düzenleyici",
+        "description": "Bir cihaz türü için hangi OID'lerin toplandığını tanımlayın.",
+        "selectTemplate": "Şablonu seçin...",
+        "newTemplate": "Yeni Şablon",
+        "templateDetails": "Şablon ayrıntıları",
+        "vendor": "Satıcı",
+        "deviceType": "Cihaz türü",
+        "placeholders": {
+          "name": "Cisco Core",
+          "vendor": "Cisco",
+          "deviceType": "Çekirdek Anahtarı",
+          "description": "Çoklu yukarı bağlantılara sahip yüksek verimli anahtarlar",
+          "oidName": "Sistem Çalışma Süresi",
+          "oidDescription": "Bu OID neyi ölçer?"
+        },
+        "oidList": "OID listesi",
+        "oidListDescription": "Ölçümleri ve eşikleri destekleyen OID'leri yapılandırın.",
+        "importFromFile": "Dosyadan içe aktar",
+        "addOid": "OID ekle",
+        "emptyOids": "Yapılandırılmış OID yok. Başlamak için \"OID Ekle\"yi tıklayın.",
+        "oid": "OID",
+        "oidTypes": {
+          "gauge": "Ölçer",
+          "counter64": "Sayaç64",
+          "timeTicks": "TimeTicks",
+          "integer": "Tamsayı",
+          "octetString": "OctetString"
+        },
+        "validated": "Doğrulandı",
+        "oidValidationFailed": "OID doğrulaması başarısız oldu",
+        "notValidatedYet": "Henüz doğrulanmadı",
+        "oidBrowser": "OID tarayıcısı",
+        "oidBrowserDescription": "Mevcut OID'leri arayın ve bunları bu şablona ekleyin.",
+        "searchByOidOrName": "OID'ye veya isme göre arayın",
+        "loadingOidBrowser": "OID tarayıcısı yükleniyor...",
+        "noMatchingOids": "Eşleşen OID bulunamadı.",
+        "noDescriptionProvided": "Açıklama sağlanmadı.",
+        "validatingOids": "OID'ler doğrulanıyor...",
+        "saving": "Kaydediliyor...",
+        "saveTemplate": "Şablonu kaydet"
+      },
+      "SNMPTemplateList": {
+        "errors": {
+          "fetchTemplates": "SNMP şablonları getirilemedi",
+          "loadTemplates": "SNMP şablonları yüklenemedi",
+          "deleteTemplate": "Şablon silinemedi"
+        },
+        "toasts": {
+          "templateDeleted": "\"{{name}}\" şablonu silindi"
+        },
+        "builtIn": "Dahili",
+        "loading": "SNMP şablonları yükleniyor...",
+        "title": "SNMP Şablonlar",
+        "templatesAvailable": "{{count}} şablonları mevcut",
+        "addTemplate": "Şablon ekle",
+        "vendor": "Satıcı",
+        "deviceType": "Cihaz türü",
+        "oidCount": "OID sayısı",
+        "usage": "Kullanım",
+        "empty": "SNMP şablon bulunamadı.",
+        "deleteDialog": {
+          "title": "SNMP Şablonunu Sil",
+          "message": "\"{{name}}\" öğesini silmek istediğinizden emin misiniz? Bu şablonu kullanan tüm cihazların yeniden atanması gerekecektir.",
+          "confirmLabel": "Şablonu Sil"
+        }
+      }
+    },
+    "monitoring": {
+      "MonitoringAssetsDashboard": {
+        "status": {
+          "online": "Çevrimiçi",
+          "warning": "Uyarı",
+          "offline": "Çevrimdışı",
+          "maintenance": "Bakım",
+          "unknown": "Bilinmiyor"
+        },
+        "relative": {
+          "never": "Hiçbir zaman",
+          "justNow": "Az önce",
+          "minutesAgo": "{{count}}m önce",
+          "hoursAgo": "{{count}}h önce",
+          "daysAgo": "{{count}}d önce"
+        },
+        "errors": {
+          "fetchAssets": "İzleme varlıkları getirilemedi",
+          "generic": "Bir hata oluştu",
+          "loadDetails": "İzleme ayrıntıları yüklenemedi",
+          "update": "Güncellenemedi",
+          "disableMonitoring": "İzleme devre dışı bırakılamadı",
+          "communityRequired": "SNMP v1/v2c için topluluk dizesi gereklidir",
+          "usernameRequired": "SNMP v3 için kullanıcı adı gereklidir",
+          "saveSettings": "İzleme ayarları kaydedilemedi"
+        },
+        "configuredPaused": "Yapılandırıldı (Duraklatıldı)",
+        "notConfigured": "Yapılandırılmadı",
+        "paused": "Duraklatıldı",
+        "everyInterval": "her {{interval}}",
+        "lastPolled": "Son anket yapılan {{time}}",
+        "configureMonitoring": "İzlemeyi Yapılandırma",
+        "pauseSnmpPolling": "SNMP oylamayı duraklatın",
+        "resumeSnmpPolling": "SNMP oylamayı sürdürün",
+        "disableAllActiveMonitoring": "Bu varlık için tüm etkin izlemeyi devre dışı bırak",
+        "needsOrgSelection": "Ağ izleme varlıkları tek bir kuruluş kapsamına alınmıştır.",
+        "loadingAssets": "İzleme varlıkları yükleniyor...",
+        "showingAllDiscoveredAssets": "Keşfedilen tüm varlıklar gösteriliyor",
+        "showingMonitoredAssets": "İzlenen varlıklar gösteriliyor",
+        "manageNetworkChecks": "Ağ kontrollerini yönet",
+        "summary": {
+          "configured": "Yapılandırıldı",
+          "snmpWarnings": "SNMP Uyarılar",
+          "shown": "Gösterildi"
+        },
+        "assets": "Varlıklar",
+        "assetsDescription": "SNMP yoklamasının ve keşfedilen varlık başına ağ kontrollerinin birleşik görünümü.",
+        "table": {
+          "asset": "Varlık",
+          "overall": "Genel"
+        },
+        "ip": "IP",
+        "snmp": "SNMP",
+        "networkChecks": "Ağ Kontrolleri",
+        "emptyAssets": "Hiçbir öğe bulunamadı.",
+        "lastSeen": "Son görülme {{time}}",
+        "activeRatio": "{{active}}/{{total}} aktif",
+        "loadingDetails": "İzleme ayrıntıları yükleniyor...",
+        "statusLine": "Durum: {{status}}",
+        "createManageChecks": "Varlık başına çekler oluşturun ve yönetin.",
+        "addNetworkCheck": "Ağ kontrolü ekle",
+        "openChecks": "Çekleri aç",
+        "snmpPolling": "SNMP Oylama",
+        "snmpPollingDescription": "Varlık başına SNMP yoklamayı yapılandırın. Sırlar gösterilmiyor; Mevcut değerleri korumak için boş bırakın.",
+        "snmpVersion": "SNMP Sürüm",
+        "snmpVersions": {
+          "v1": "v1",
+          "v2c": "v2c",
+          "v3": "v3"
+        },
+        "pollingIntervalSeconds": "Yoklama Aralığı (saniye)",
+        "communityString": "Topluluk Dizini",
+        "leaveBlankToKeepCurrent": "(güncelliği korumak için boş bırakın)",
+        "communityPlaceholder": "herkese açık",
+        "username": "Kullanıcı adı",
+        "authProtocol": "Kimlik Doğrulama Protokolü",
+        "authProtocols": {
+          "md5": "MD5",
+          "sha": "SHA",
+          "sha256": "SHA-256"
+        },
+        "authPassword": "Kimlik Doğrulama Şifresi",
+        "leaveBlankToKeep": "Saklamak için boş bırakın",
+        "privacyProtocol": "Gizlilik Protokolü",
+        "privacyProtocols": {
+          "des": "DES",
+          "aes": "AES",
+          "aes256": "AES-256"
+        },
+        "privacyPassword": "Gizlilik Şifresi",
+        "template": "Şablon",
+        "noTemplate": "Şablon yok",
+        "recentSnmpMetrics": "Son SNMP Metrikler",
+        "oid": "OID",
+        "value": "Değer",
+        "time": "Zaman",
+        "disableActiveMonitoring": "Etkin izlemeyi devre dışı bırak",
+        "areYouSure": "Emin misin?",
+        "disabling": "Devre dışı bırakılıyor...",
+        "yesDisable": "Evet, devre dışı bırak",
+        "monitoringNotActive": "Bu varlık için izleme etkin değil.",
+        "saving": "Kaydediliyor..."
+      },
+      "MonitoringPage": {
+        "tabs": {
+          "assets": "Varlıklar",
+          "checks": "Ağ Kontrolleri",
+          "templates": "SNMP Şablonlar"
+        },
+        "title": "İzleme",
+        "description": "SNMP yoklama ve ağ kontrolleri. Keşif izlemeyi besleyebilir ancak izleme burada yönetilir."
+      }
+    },
+    "fleet": {
+      "FleetOrchestrationPage": {
+        "errors": {
+          "loadFailed": "Filo istatistikleri yüklenemedi"
+        },
+        "title": "Filo Düzenlemesi",
+        "description": "Filonuz genelinde politikaları, dağıtımları, yamaları ve otomasyonları yönetin",
+        "partialWarning": "Bazı veriler eksik olabilir. Yükleme başarısız oldu: {{endpoints}}",
+        "cards": {
+          "policies": "Politikalar",
+          "deployments": "Dağıtımlar",
+          "failedCount": "{{count}} başarısız oldu",
+          "patches": "Yamalar",
+          "alerts": "Uyarılar",
+          "groups": "Gruplar",
+          "automations": "Otomasyonlar",
+          "maintenance": "Bakım",
+          "reports": "Raporlar"
+        },
+        "aiFleetActions": "Yapay Zeka Filo Eylemleri",
+        "aiFleetActionsHint": "Yapay zeka asistanına sormak için tıklayın",
+        "quickActions": {
+          "checkCompliance": "Uyumluluğu kontrol edin",
+          "activeDeployments": "Etkin dağıtımlar",
+          "criticalPatches": "Kritik yamalar",
+          "alertOverview": "Uyarılara genel bakış",
+          "maintenanceWindows": "Bakım aralıkları",
+          "runAutomations": "Otomasyonları çalıştırın",
+          "deviceGroups": "Cihaz grupları",
+          "generateReport": "Rapor oluştur"
+        },
+        "deploymentStatus": "Dağıtım Durumu",
+        "alertBreakdown": "Uyarı Dağılımı",
+        "patchPosture": "Yama Duruşu",
+        "policyCompliance": "Politika Uyumluluğu",
+        "installed": "Yüklendi",
+        "nonCompliant": "Uyumlu Değil",
+        "status": {
+          "completed": "Tamamlandı",
+          "failed": "Başarısız"
+        },
+        "severity": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük"
+        }
+      },
+      "FindingsFeed": {
+        "title": "Filo Bulguları",
+        "description": "Cihazlar arası kalıplar birçok eylem yerine tek bir eyleme değer",
+        "filters": {
+          "orgLabel": "Kuruluşa göre filtrele",
+          "kindLabel": "Türü bularak filtreleyin",
+          "severityLabel": "Önem derecesine göre filtrele",
+          "statusLabel": "Duruma göre filtrele",
+          "allOrgs": "Tüm kuruluşlar",
+          "allKinds": "Tüm bulma türleri",
+          "allSeverities": "Tüm önem dereceleri"
+        },
+        "kinds": {
+          "metricAnomalyPattern": "Metrik anormallik",
+          "logCorrelation": "Günlük korelasyonu",
+          "reliabilityOffenders": "Güvenilirlik suçluları"
+        },
+        "severities": {
+          "critical": "Kritik",
+          "error": "Hata",
+          "warning": "Uyarı",
+          "info": "Bilgilendirici"
+        },
+        "statuses": {
+          "open": "Aç",
+          "acknowledged": "Onaylandı",
+          "dismissed": "Görevden alındı",
+          "resolved": "Çözüldü"
+        },
+        "status": {
+          "active": "Açık ve onaylandı",
+          "dismissed": "Görevden alındı",
+          "resolved": "Çözüldü"
+        },
+        "deviceCount": "{{count}} cihazlar",
+        "deviceCount_one": "{{count}} cihaz",
+        "deviceCount_other": "{{count}} cihazlar",
+        "showing": "{{total}} / {{shown}} gösteriliyor",
+        "loadMore": "Daha fazlasını yükle",
+        "empty": {
+          "title": "Filo temiz",
+          "noMatchesTitle": "Eşleşen bulgu yok",
+          "body": "Şu anda bu filtrelerle eşleşen bulgu yok."
+        },
+        "errors": {
+          "loadFailed": "Filo bulguları yüklenemedi",
+          "banner": "Filo bulgularını yükleyemedik"
+        }
+      },
+      "FindingDrawer": {
+        "heading": "Ayrıntıları bulma",
+        "meta": {
+          "firstSeen": "İlk görülme {{when}}",
+          "lastSeen": "Son görülme {{when}}"
+        },
+        "summaryHeading": "Özet",
+        "resolvedNote": {
+          "heading": "Burası neden kapalı?",
+          "body": "Bu bulgu, temel sinyali temizlendiğinden çözüldü. Desen tekrarlanırsa yeni bir bulgu olarak yeniden ortaya çıkacaktır.",
+          "reason": "Çözüm nedeni: {{reason}}"
+        },
+        "dismissNotesHeading": "İşten çıkarılma notu",
+        "evidenceHeading": "Kanıt",
+        "membersHeading": "Etkilenen cihazlar",
+        "membersEmpty": "Bu bulgu için hiçbir üye cihaz kaydedilmemiştir.",
+        "table": {
+          "device": "Cihaz",
+          "source": "Kaynak",
+          "lastSeen": "Son görülme"
+        },
+        "runsHeading": "Düzeltme geçmişi",
+        "runsEmpty": "Bu bulgu için henüz herhangi bir düzeltme yapılmadı.",
+        "runCounts": "{{succeeded}} başarılı oldu, {{failed}} başarısız oldu, {{skipped}} atlandı, {{targets}} hedeflendi",
+        "runStatuses": {
+          "queued": "Sıraya alındı",
+          "running": "Koşuyor",
+          "partial": "Kısmi",
+          "succeeded": "Başarılı",
+          "failed": "Başarısız",
+          "cancelled": "İptal edildi"
+        },
+        "dismiss": {
+          "notesLabel": "Bunu neden reddediyorsunuz? (gerekli)",
+          "notesPlaceholder": "Bilinen hatalı pozitif, başka yerde takip edilen, kabul edilen risk…",
+          "confirm": "Bulmayı reddet"
+        },
+        "actions": {
+          "remediate": "{{count}} cihazlarda düzeltme yapın",
+          "remediate_one": "{{count}} cihazında düzeltme yapın",
+          "remediate_other": "{{count}} cihazlarda düzeltme yapın",
+          "remediateDisabledReason": "Bu bulguda düzeltilecek cihaz kalmadı.",
+          "acknowledge": "Teşekkür ederim",
+          "dismiss": "Kapat",
+          "reopen": "Yeniden aç"
+        },
+        "errors": {
+          "loadFailed": "Bulgu yüklenemedi",
+          "lifecycleFailed": "Bulgu güncellenemedi"
+        },
+        "resolutionReasons": {
+          "sourceCleared": "temel sinyal temizlendi"
+        }
+      },
+      "FixPicker": {
+        "title": "Bulmayı düzeltin",
+        "actions": {
+          "script": "Bir komut dosyası çalıştır",
+          "scriptHint": "Kitaplığınızdan bir komut dosyası seçin ve parametrelerini girin.",
+          "restartService": "Bir hizmeti yeniden başlatın",
+          "restartServiceHint": "Seçilen her cihazda tek bir adlandırılmış hizmeti yeniden başlatır.",
+          "reboot": "Cihazları yeniden başlat",
+          "rebootHint": "Çalıştırma gönderilir gönderilmez seçilen cihazları yeniden başlatır."
+        },
+        "chooseScript": "Bir komut dosyası seçin…",
+        "changeScript": "Komut dosyasını değiştir",
+        "selectedScript": "Komut Dosyası: {{name}}",
+        "serviceNameLabel": "Hizmet adı",
+        "serviceNamePlaceholder": "ör. Biriktirici",
+        "rebootWarning": "Seçilen cihazlar, bu çalıştırma gönderildiğinde hemen yeniden başlatılır. Etkin oturumlar sona erer ve kaydedilmeyen çalışmalar kaybolur.",
+        "targetsHeading": "Düzeltilecek cihazlar",
+        "selectAll": "Tümünü seç",
+        "selectNone": "Seçimi temizle",
+        "selectedCount": "{{selected}} / {{total}} cihaz seçildi",
+        "noTargets": "Devam etmek için en az bir cihaz seçin.",
+        "osIncompatibleNotice": "{{count}} cihazlar bu komut dosyasını çalıştıramaz ve hariç tutuldu. Yalnızca {{os}}'yi destekler.",
+        "osIncompatibleNotice_one": "{{count}} cihaz bu betiği çalıştıramıyor ve hariç tutuldu. Yalnızca {{os}}'yi destekler.",
+        "osIncompatibleNotice_other": "{{count}} cihazlar bu komut dosyasını çalıştıramaz ve hariç tutuldu. Yalnızca {{os}}'yi destekler.",
+        "osIncompatibleReason": "{{os}} gerektirir",
+        "confirmAction": "Seçilen düzeltme",
+        "confirmTargets": "Cihazlar",
+        "confirmRestartService": "Hizmeti yeniden başlatın {{name}}",
+        "confirmRebootNotice": "{{count}} cihazlar hemen yeniden başlatılacak.",
+        "confirmRebootNotice_one": "{{count}} cihazı hemen yeniden başlatılacak.",
+        "confirmRebootNotice_other": "{{count}} cihazlar hemen yeniden başlatılacak.",
+        "confirm": "Düzeltmeyi başlat\nBu çalıştırmada ",
+        "dispatchedSummary": "{{count}} cihazlar hedeflendi.",
+        "dispatchedSummary_one": "{{count}} cihazı bu çalıştırmada hedeflendi.\nBu çalıştırmada ",
+        "dispatchedSummary_other": "{{count}} cihazlar hedeflendi.",
+        "skippedHeading": "Atlanan cihazlar",
+        "skipReasons": {
+          "siteDenied": "Siteye erişilemiyor",
+          "notMember": "Artık bu bulgudan etkilenmiyor",
+          "decommissioned": "Cihaz kullanımdan kaldırıldı",
+          "timeout": "30 dakika sonra zaman aşımına uğradı",
+          "dispatchEnqueueFailed": "Hiçbir zaman gönderilmedi — sıraya alma işlemi başarısız oldu"
+        },
+        "viewProgress": "İlerlemeyi görüntüle",
+        "errors": {
+          "dispatchFailed": "Düzeltme başlatılamadı"
+        }
+      },
+      "RunProgress": {
+        "heading": "Düzeltme çalıştırması",
+        "counts": "{{succeeded}} başarılı oldu, {{failed}} başarısız oldu, {{skipped}} atlandı, {{targets}} hedeflendi",
+        "polling": "Çalıştırma aktifken yenileniyor…",
+        "targetsEmpty": "Bu çalıştırmada hiçbir cihazı göremiyorsunuz.",
+        "targetStatuses": {
+          "pending": "Beklemede",
+          "queued": "Sıraya alındı",
+          "succeeded": "Başarılı",
+          "failed": "Başarısız",
+          "skipped": "Atlandı"
+        },
+        "errors": {
+          "loadFailed": "Düzeltme çalıştırması yüklenemedi"
+        }
+      }
+    },
+    "help": {
+      "HelpPanel": {
+        "documentation": "Belgeler",
+        "openInNewTab": "Yeni sekmede aç",
+        "closeShortcut": "Kapat (Cmd+Shift+H)",
+        "loadError": "Yan paneldeki belgeler yüklenemedi.",
+        "embedBlocked": "Katıştırılmış dokümanlar bu uygulama kaynağında engellendi. Bunun yerine sayfayı yeni bir sekmede açın."
+      }
+    },
+    "incidents": {
+      "IncidentsPage": {
+        "errors": {
+          "fetchFailed": "Olaylar getirilemedi"
+        },
+        "loading": "Olaylar yükleniyor...",
+        "tryAgain": "Tekrar deneyin",
+        "title": "Olaylar",
+        "description": "Kuruluşlarınız genelinde takip edilen olaylar ve EDR bulguları.",
+        "filters": {
+          "tracked": "Takip edildi",
+          "findings": "Bulgular"
+        },
+        "emptyTitle": "Hiçbir olay bulunamadı",
+        "emptyFiltered": "Mevcut filtrelerle eşleşen olay yok.",
+        "emptyDescription": "Henüz izlenen bir olay veya EDR bulgusu kaydedilmedi.",
+        "table": {
+          "title": "Başlık",
+          "source": "Kaynak",
+          "severity": "Önem",
+          "detected": "Algılandı"
+        },
+        "status": {
+          "detected": "algılandı",
+          "analyzing": "analiz ediliyor",
+          "contained": "mevcut",
+          "recovering": "iyileşiyor",
+          "closed": "kapalı"
+        },
+        "viewInSource": "{{source}}'da görüntüle",
+        "promoteFromEdr": "EDR görünümünden yükseltme",
+        "pagination": "Sayfa {{page}} / {{totalPages}} ({{total}} toplam)",
+        "previous": "Önceki"
+      },
+      "IncidentDetailPage": {
+        "errors": {
+          "notFound": "Olay bulunamadı",
+          "fetchFailed": "Olay getirilemedi"
+        },
+        "loading": "Olay yükleniyor...",
+        "backToIncidents": "← Olaylara geri dön",
+        "tryAgain": "Tekrar deneyin",
+        "dates": {
+          "detected": "Algılandı",
+          "contained": "Dahil",
+          "resolved": "Çözüldü",
+          "closed": "Kapalı"
+        },
+        "tabs": {
+          "timeline": "Zaman Çizelgesi",
+          "evidence": "Kanıt"
+        },
+        "status": {
+          "detected": "algılandı",
+          "analyzing": "analiz ediliyor",
+          "contained": "dahil",
+          "recovering": "iyileşiyor",
+          "closed": "kapalı"
+        },
+        "summary": "Özet",
+        "timeline": {
+          "empty": "Henüz zaman çizelgesi girişi yok."
+        },
+        "actions": {
+          "empty": "Hiçbir işlem kaydedilmedi.",
+          "action": "Eylem",
+          "by": "Yazan",
+          "when": "Ne zaman"
+        },
+        "evidence": {
+          "empty": "Kanıt toplanmadı.",
+          "collectedBy": "Toplayan",
+          "hash": "Karma"
+        }
+      }
+    },
+    "logs": {
+      "LogSearch": {
+        "errors": {
+          "invalidTimeRange": "Başlangıç zamanı, bitiş zamanından önce olmalıdır.",
+          "searchFailed": "Günlüklerde arama yapılamadı",
+          "saveFailed": "Sorgu kaydedilemedi",
+          "noRowsExport": "Dışa aktarılacak satır yok."
+        },
+        "savePrompt": "Bu kaydedilen sorguya ad verin:",
+        "title": "Olay Günlükleri",
+        "description": "Filonuzdaki günlükleri arayın ve analiz edin.",
+        "searchPlaceholder": "hata kodu, kaynak, yığın izleme...",
+        "source": "Kaynak",
+        "sourcePlaceholder": "ör. çekirdek",
+        "start": "Başlat",
+        "end": "Bitir",
+        "rows": "Satırlar",
+        "levels": {
+          "info": "Bilgi",
+          "warning": "Uyarı",
+          "error": "Hata",
+          "critical": "Kritik"
+        },
+        "searchFleetLogs": "Filo Kayıtlarını Ara",
+        "saveQuery": "Sorguyu Kaydet",
+        "exportCsv": "CSV'yi dışa aktar",
+        "resultsTitle": "Arama Sonuçları",
+        "loading": "Yükleniyor...",
+        "resultsCount": "{{shown}} toplam {{total}} içinden gösteriliyor",
+        "table": {
+          "timestamp": "Zaman Damgası",
+          "level": "Seviye",
+          "category": "Kategori",
+          "message": "Mesaj"
+        },
+        "unknownSite": "Bilinmeyen site",
+        "empty": "Mevcut filtrelerle eşleşen günlük yok.",
+        "pageCount": "Sayfa {{page}} / {{totalPages}}",
+        "previous": "Önceki"
+      }
+    },
+    "oauth": {
+      "ConsentForm": {
+        "errors": {
+          "requestFailed": "İstek başarısız oldu ({{status}})",
+          "submissionFailed": "Gönderim başarısız oldu ({{status}})",
+          "network": "Ağ hatası"
+        },
+        "loading": "Yetkilendirme isteği yükleniyor…",
+        "signInTitle": "Devam etmek için oturum açın",
+        "signInDescription": "Bu bağlantıya izin vermeden önce Breeze hesabınızda oturum açmanız gerekir.",
+        "signInAction": "Oturum aç",
+        "redirectLoopTitle": "Oturumunuzu açamıyoruz",
+        "redirectLoopDescription": "Tarayıcınız sizi oturum açma çerezi olmadan buraya geri gönderdi. Üçüncü taraf çerezleri veya site depolaması engellenmiş olabilir. Bu site için çerezlere izin verin ve tekrar deneyin veya MCP istemcinize dönüp baştan başlayın.",
+        "expiredTitle": "Yetkilendirme isteğinin süresi doldu",
+        "expiredDescription": "Bu yetkilendirme bağlantısı artık geçerli değil. MCP istemcinize dönün ve bağlantıyı yeniden başlatın.",
+        "noTenantsTitle": "Kiracı yok",
+        "noTenantsDescription": "Hesabınız herhangi bir iş ortağı kiracısının üyesi olmadığından MCP bağlantısına yetki veremez. Devam etmeden önce bir yöneticiden sizi bir iş ortağına eklemesini isteyin.",
+        "consentTitle": "{{displayName}}, Breeze kiracınıza erişmek istiyor",
+        "clientId": "Müşteri Kimliği: {{clientId}}",
+        "unverifiedLabel": "Doğrulanmamış entegrasyon",
+        "unverifiedDescription": "Breeze bu entegrasyonu doğrulamadı. Adı kendisi tarafından bildiriliyor ve güvenilir bir uygulamanın kimliğine bürünebiliyor. Yalnızca bu bağlantıyı başlattıysanız ve aşağıdaki geri arama hedefini tanıyorsanız onaylayın.",
+        "callbackLabel": "Yetki kodu şu adrese gönderilecek:",
+        "missingRedirectTitle": "Geri arama hedefi doğrulanamıyor",
+        "missingRedirectDescription": "Bu yetkilendirme isteği bir geri arama hedefi içermediğinden güvenli bir şekilde onaylanamaz. MCP istemcinize dönün ve bağlantıyı yeniden başlatın.",
+        "approving": "Onaylanıyor…",
+        "approve": "Onayla",
+        "deny": "Reddet",
+        "revokeHint": "Bu erişimi istediğiniz zaman Ayarlar → Bağlı uygulamalar'dan iptal edebilirsiniz.",
+        "scopeIntro": "Bu, uygulamanın şunları yapmasına olanak tanır:",
+        "scopes": {
+          "mcpRead": "Filo verilerinizi okuyun (cihazlar, uyarılar, komut dosyaları, otomasyonlar)",
+          "mcpWrite": "Filonuzda tahribatsız değişiklikler yapın (etiketler, uyarılar, yapılandırma)",
+          "mcpExecute": "Cihazlarda yüksek riskli eylemleri çalıştırın (komutlar, komut dosyaları, uzaktan işlemler)",
+          "openid": "Kimliğinizi doğrulayın",
+          "offlineAccess": "Yeniden oturum açmadan bağlantıda kalın (belirteçleri yenileyin)"
+        },
+        "tenantPickerLabel": "Hangi kiracıya bağlanılsın?"
+      }
+    },
+    "onboarding": {
+      "OnboardingTour": {
+        "steps": {
+          "navigate": {
+            "title": "Araçlarınızda gezinin",
+            "description": "En çok kullandığınız araçlarınız her zaman görünür. Daha fazlasını bulmak için Güvenlik veya Operasyonlar gibi bölümleri genişletin."
+          },
+          "search": {
+            "title": "İstediğiniz şeyi arayın",
+            "description": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
+          },
+          "switchOrgs": {
+            "title": "Kuruluşları değiştir",
+            "description": "Birden fazla müşteriyi mi yönetiyorsunuz? Burada kuruluşlar arasında geçiş yapın."
+          },
+          "aiHelp": {
+            "title": "Yapay zeka destekli yardım",
+            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman Cmd+Shift+A tuşlarına basın."
+          }
+        },
+        "skipTour": "Turu atla",
+        "progress": "{{current}} / {{total}}",
+        "gotIt": "Anladım"
+      }
+    },
+    "partner": {
+      "PartnerDashboard": {
+        "errors": {
+          "fetchFailed": "İş ortağı kontrol paneli getirilemedi"
+        },
+        "fallbackCustomer": "Müşteri {{index}}",
+        "fallbackDevice": "Cihaz {{index}}",
+        "loading": "İş ortağı verileri yükleniyor...",
+        "tryAgain": "Tekrar deneyin",
+        "title": "İş Ortağı Portalı",
+        "description": "Müşteri sağlığını, cihaz kapsamını ve faturalandırmayı tek görünümde izleyin.",
+        "addCustomer": "Müşteri ekle",
+        "viewAllAlerts": "Tüm uyarıları görüntüle",
+        "runReport": "Raporu çalıştır",
+        "customerHealth": "Müşteri sağlığı",
+        "customerCount": "{{filtered}} / {{total}} müşteri",
+        "searchCustomers": "Müşterileri arayın",
+        "allHealth": "Tüm sağlık",
+        "health": {
+          "healthy": "Sağlıklı",
+          "warning": "İlgilenmeniz gerekiyor",
+          "critical": "Risk altında"
+        },
+        "sort": {
+          "health": "Sağlık puanına göre sırala",
+          "devices": "Cihaz sayısına göre sırala",
+          "name": "Ada göre sırala"
+        },
+        "healthScore": "{{score}} sağlık puanı",
+        "healthScoreUnavailable": "Sağlık puanı mevcut değil",
+        "devices": "Cihazlar",
+        "alerts": "Uyarılar",
+        "compliance": "Uyumluluk",
+        "noCustomerMatches": "Henüz bu filtreyle eşleşen müşteri yok.",
+        "billingSummary": "Faturalandırma özeti",
+        "monthlyRecurringRevenue": "Aylık yinelenen gelir",
+        "customer": "Müşteri",
+        "mrr": "MRR",
+        "totalMrr": "Toplam MRR",
+        "portfolioSnapshot": "Portföy anlık görüntüsü",
+        "healthAndDeviceCoverage": "Sağlık ve cihaz kapsamı",
+        "customers": "Müşteriler",
+        "totalDevices": "Toplam cihaz",
+        "openAlerts": "Uyarıları aç",
+        "devicesAcrossCustomers": "Müşterilerdeki cihazlar",
+        "devicesTracked": "{{formattedCount}} cihazlar tüm müşteriler genelinde takip ediliyor",
+        "status": {
+          "online": "Çevrimiçi",
+          "offline": "Çevrimdışı",
+          "warning": "Uyarı",
+          "unknown": "Bilinmiyor"
+        },
+        "lastSeen": "Son görülme",
+        "noDeviceInventory": "Henüz müşterilerden gelen cihaz envanteri yok."
+      }
+    },
+    "remediation": {
+      "RemediationSuggestionsPanel": {
+        "targets": {
+          "script": "Komut Dosyası",
+          "template": "Şablon",
+          "playbook": "Başucu Kitabı",
+          "diagnostic": "Teşhis"
+        },
+        "targetIdentifiers": {
+          "script": "komut dosyası {{id}}\nKomut dosyası kimliği olmayan ",
+          "scriptMissing": "komut dosyası",
+          "template": "şablonu {{id}}\nŞablon kimliği olmayan ",
+          "templateMissing": "şablonu",
+          "playbook": "başucu kitabı {{id}}",
+          "playbookMissing": "Başucu kitabı kimliği olmayan başucu kitabı",
+          "diagnostic": "teşhis eylemi"
+        },
+        "targetDevices": {
+          "none": "Bu öneride hedef cihaz yok",
+          "one": "cihaz {{id}}",
+          "many": "{{count}} cihazlar: {{ids}}"
+        },
+        "errors": {
+          "loadFailed": "Önerilen düzeltmeler yüklenemedi",
+          "generateFailed": "Önerilen düzeltmeler oluşturulamadı",
+          "updateFailed": "Önerilen düzeltme güncellenemedi",
+          "executeFailed": "Önerilen düzeltme yürütülemedi",
+          "approvalFailed": "Onay istenemedi"
+        },
+        "messages": {
+          "disabled": "Önerilen düzeltmeler devre dışı bırakıldı",
+          "generated": "Önerilen düzeltmeler oluşturuldu",
+          "accepted": "Önerilen düzeltme kabul edildi",
+          "markedEdited": "Önerilen düzeltme düzenlendi olarak işaretlendi",
+          "rejected": "Önerilen düzeltme reddedildi",
+          "updated": "Önerilen düzeltme güncellendi",
+          "scriptQueued": "Komut dosyası sıraya alındı ve önerilen düzeltme güncellendi",
+          "approvalRequested": "Onay istendi"
+        },
+        "title": "Önerilen Düzeltmeler",
+        "refresh": "Önerilen düzeltmeleri yenileyin",
+        "disabledTitle": "Bu kuruluş için önerilen düzeltmeler devre dışı bırakıldı",
+        "suggestionsDisabled": "Öneriler devre dışı bırakıldı",
+        "generate": "Oluştur",
+        "empty": "Henüz önerilen bir düzeltme yok.",
+        "fields": {
+          "title": "Başlık",
+          "risk": "Risk",
+          "rationale": "Gerekçe",
+          "expectedAction": "Beklenen eylem"
+        },
+        "risk": {
+          "low": "düşük",
+          "medium": "orta",
+          "high": "yüksek",
+          "critical": "kritik"
+        },
+        "saveEdits": "Düzenlemeleri kaydet",
+        "status": {
+          "suggested": "önerildi",
+          "accepted": "kabul edildi",
+          "edited": "düzenlendi",
+          "rejected": "reddedildi",
+          "executed": "yürütüldü",
+          "failed": "başarısız oldu"
+        },
+        "statusLine": "Durum: {{status}}",
+        "executionPreview": "Yürütme önizlemesi",
+        "preview": {
+          "willRun": "Çalıştırılacak",
+          "where": "Nerede",
+          "source": "Kaynak",
+          "risk": "Risk",
+          "why": "Neden",
+          "expectedAction": "Beklenen eylem",
+          "parameters": "Parametreler"
+        },
+        "accept": "Kabul et",
+        "reject": "Reddet",
+        "execute": "Yürüt",
+        "requestApprovalTitle": "Yürütmeden önce PAM onayı isteyin",
+        "requesting": "İsteniyor...",
+        "requestApproval": "Onay iste",
+        "waitingApprovalTitle": "PAM onayı bekleniyor",
+        "approvalPending": "Onay bekleniyor"
+      }
+    },
+    "support": {
+      "SupportModal": {
+        "toasts": {
+          "sent": "Destek isteği gönderildi"
+        },
+        "errors": {
+          "notConfigured": "Bu dağıtımda destek mevcut değildir.",
+          "upstreamUnavailable": "Destek hizmeti geçici olarak kullanılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.",
+          "upstreamInvalidResponse": "Destek hizmeti beklenmeyen bir yanıt verdi. Lütfen tekrar deneyin.",
+          "rateLimited": "Çok fazla istek var. Lütfen birkaç dakika bekleyip tekrar deneyin.",
+          "invalidBody": "Lütfen konuyu ve mesajınızı girin.",
+          "sendFailed": "Destek isteği gönderilemedi. Lütfen tekrar deneyin.",
+          "requestFailed": "Destek isteği başarısız oldu"
+        },
+        "title": "Destek ekibiyle iletişime geçin",
+        "sendingAs": "Farklı olarak gönderiliyor",
+        "subject": "Konu",
+        "subjectPlaceholder": "Kısa açıklama",
+        "message": "Mesaj",
+        "messagePlaceholder": "Hangi konuda yardımcı olabiliriz?",
+        "sending": "Gönderiliyor…",
+        "send": "Gönder"
+      }
+    }
+  },
+  "whatsNew": {
+    "title": "{{version}}'deki yenilikler",
+    "gotIt": "Anladım",
+    "later": "Daha sonra göster",
+    "learnMore": "Daha fazlasını öğrenin",
+    "link": "Yenilikler"
+  }
+}

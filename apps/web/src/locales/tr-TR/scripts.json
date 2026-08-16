@@ -1,0 +1,1245 @@
+{
+  "automationEditPage": {
+    "errors": {
+      "fetch": "Otomasyon getirilemedi",
+      "generic": "Bir hata oluştu",
+      "save": "Otomasyon kaydedilemedi"
+    },
+    "loading": "Otomasyon yükleniyor...",
+    "breadcrumb": {
+      "automations": "Otomasyonlar",
+      "new": "Yeni Otomasyon",
+      "edit": "Otomasyonu Düzenle"
+    },
+    "title": {
+      "create": "Otomasyon Oluşturun",
+      "edit": "Otomasyonu Düzenle"
+    },
+    "description": {
+      "create": "Tetikleyiciler, koşullar ve eylemlerle otomatik bir iş akışı oluşturun.",
+      "edit": "Otomasyon yapılandırmasını değiştirin."
+    },
+    "actions": {
+      "create": "Otomasyon Oluşturun",
+      "saveChanges": "Değişiklikleri Kaydet"
+    }
+  },
+  "automationForm": {
+    "cron": {
+      "invalid": "Geçersiz cron ifadesi",
+      "everyHourAtMinuteZero": "Her saatin 0. dakikasında",
+      "everyFiveMinutes": "Her 5 dakikada bir",
+      "everyFifteenMinutes": "Her 15 dakikada bir",
+      "everyThirtyMinutes": "Her 30 dakikada bir",
+      "everyDayAtMidnight": "Her gün gece yarısı",
+      "everyDayAtNine": "Her gün sabah 9:00'da",
+      "weekdaysAtNine": "Hafta içi sabah 9:00'da",
+      "everySundayAtMidnight": "Her Pazar gece yarısı",
+      "firstDayEveryMonth": "Her ayın ilk günü gece yarısı",
+      "everyMinute": "Her dakika",
+      "everyNMinutes": "Her {{count}} dakikada bir",
+      "everyHourAtMinute": "Her saat her dakika {{minute}}",
+      "quickPresets": "Hızlı ön ayarlar:",
+      "presets": {
+        "everyFifteenMin": "Her 15 dakikada bir",
+        "everyHour": "Her saat",
+        "dailyNine": "Her gün 09.00",
+        "weekdaysNine": "Hafta içi sabah 9'da",
+        "weeklySunday": "Haftalık Pazar"
+      }
+    },
+    "validation": {
+      "valueRequired": "Değer gerekli",
+      "nameRequired": "Otomasyon adı gerekli",
+      "actionRequired": "En az bir işlem gerekli"
+    },
+    "triggerTypes": {
+      "schedule": {
+        "label": "Program",
+        "description": "Bir cron planına göre çalıştır"
+      },
+      "event": {
+        "label": "Etkinlik",
+        "description": "Bir olay meydana geldiğinde çalıştır"
+      },
+      "webhook": {
+        "label": "Web kancası",
+        "description": "HTTP web kancası aracılığıyla çalıştır"
+      },
+      "manual": {
+        "label": "Kılavuz",
+        "description": "Yalnızca manuel olarak çalıştır"
+      }
+    },
+    "eventTypes": {
+      "deviceOnline": "Cihaz Çevrimiçi",
+      "deviceOffline": "Cihaz Çevrimdışı",
+      "alertTriggered": "Uyarı Tetiklendi",
+      "alertResolved": "Uyarı Çözümlendi",
+      "scriptCompleted": "Komut Dosyası Tamamlandı",
+      "scriptFailed": "Komut Dosyası Başarısız",
+      "policyViolation": "Politika İhlali",
+      "huntressIncidentCreated": "Huntress Olay Oluşturuldu",
+      "huntressIncidentUpdated": "Huntress Olay Güncellendi",
+      "huntressAgentOffline": "Huntress Temsilci Çevrimdışı",
+      "sentinelOneThreatDetected": "SentinelOne Tehdidi Algılandı",
+      "sentinelOneDeviceIsolated": "SentinelOne Cihazı İzole Edildi",
+      "sentinelOneThreatActionCompleted": "SentinelOne Tehdit Eylemi Tamamlandı"
+    },
+    "conditionTypes": {
+      "group": "Grup",
+      "operatingSystem": "İşletim Sistemi",
+      "tag": "Etiket"
+    },
+    "operators": {
+      "is": "",
+      "isNot": "Değil",
+      "contains": "İçerir",
+      "doesNotContain": "içermez"
+    },
+    "actionTypes": {
+      "runScript": "Komut Dosyasını Çalıştır",
+      "sendNotification": "Bildirim Gönder",
+      "createAlert": "Uyarı Oluştur",
+      "executeCommand": "Komutu Yürüt",
+      "deploySoftware": "Yazılımı Dağıtın"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "failure": {
+      "stop": {
+        "label": "Yürütmeyi Durdur",
+        "description": "Kalan tüm işlemleri durdurun"
+      },
+      "continue": {
+        "label": "Devam et",
+        "description": "Kalan işlemlere devam edin"
+      },
+      "notify": {
+        "label": "Bildir ve Devam Et",
+        "description": "Bildirim gönder ve devam et"
+      }
+    },
+    "actions": {
+      "saveAutomation": "Otomasyonu kaydet",
+      "copyUrl": "URL'yi kopyala",
+      "addCondition": "Koşul Ekle",
+      "addAction": "Eylem Ekle"
+    },
+    "scope": {
+      "title": "Kapsam",
+      "allOrganizations": "Tüm kuruluşlar",
+      "partnerWide": "(iş ortağı çapında otomasyon)",
+      "organizationOnly": "Yalnızca bu kuruluş"
+    },
+    "fields": {
+      "name": "Otomasyon adı",
+      "cronExpression": "Cron İfadesi",
+      "eventType": "Etkinlik Türü",
+      "webhookUrl": "Web kancası URL'si",
+      "webhookSecret": "Webhook Sırrı (isteğe bağlı)",
+      "mode": "Modu",
+      "script": "Komut Dosyası",
+      "notificationChannel": "Bildirim Kanalı",
+      "severity": "Önem",
+      "message": "Mesaj",
+      "command": "Komut",
+      "software": "Yazılım",
+      "failureNotificationChannel": "Arıza Bildirim Kanalı"
+    },
+    "placeholders": {
+      "name": "Günlük bakım kontrolü",
+      "description": "Bu otomasyonun ne yaptığını açıklayın...",
+      "webhookSecret": "Otomatik olarak oluşturmak için boş bırakın",
+      "value": "Değer",
+      "selectScript": "Bir komut dosyası seçin...",
+      "selectChannel": "Bir kanal seçin...",
+      "alertMessage": "Uyarı Mesajı",
+      "selectSoftware": "Yazılımı seçin..."
+    },
+    "sections": {
+      "trigger": "Tetikleyici",
+      "deviceTargeting": "Cihaz Hedefleme (İsteğe bağlı)",
+      "deviceTargetingDescription": "Bu otomasyonun hangi cihazlara uygulanacağını filtreleyin",
+      "actions": "Eylemler",
+      "actionsDescription": "Bu otomasyon çalıştırıldığında ne olacağını tanımlayın",
+      "onFailure": "Başarısızlık Davranışı Üzerine"
+    },
+    "webhook": {
+      "generatedAfterSaving": "Kaydedildikten sonra bir webhook URL'si oluşturulacaktır.",
+      "postHint": "Otomasyonu tetiklemek için bu URL'ye bir POST isteği gönderin"
+    },
+    "manual": {
+      "hint": "Bu otomasyon yalnızca kullanıcı arayüzünden veya API üzerinden manuel olarak tetiklendiğinde çalışacaktır."
+    },
+    "modes": {
+      "simple": "Basit",
+      "advanced": "Gelişmiş"
+    },
+    "software": {
+      "installLatestHint": "Seçilen yazılımın en son sürümünü yükler; zaten buna sahip olan cihazları atlar."
+    },
+    "empty": {
+      "noActions": "Tanımlanmış eylem yok. Bir tane oluşturmak için \"Eylem Ekle\"yi tıklayın."
+    }
+  },
+  "automationList": {
+    "relativeTime": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "title": "Otomasyonlar",
+    "summary": "{{shown}} / {{total}} otomasyon",
+    "searchPlaceholder": "Arama otomasyonları...",
+    "filters": {
+      "allTriggers": "Tüm Tetikleyiciler",
+      "allStatus": "Tüm Durumlar"
+    },
+    "trigger": {
+      "schedule": "Program",
+      "event": "Etkinlik",
+      "webhook": "Web kancası",
+      "manual": "Kılavuz"
+    },
+    "headers": {
+      "trigger": "Tetikleyici",
+      "lastRun": "Son Çalıştırma"
+    },
+    "empty": "Otomasyon bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
+    "partnerWideTitle": "İş ortağı çapında otomasyon — her kuruluş için geçerlidir",
+    "allOrgs": "İş ortağı çapında",
+    "never": "Hiçbir zaman",
+    "actions": {
+      "viewHistory": "Geçmişi görüntüle",
+      "runNow": "Şimdi çalıştır",
+      "runHistory": "Çalıştırma Geçmişi"
+    },
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "page": "Sayfa {{page}} / {{total}}"
+    },
+    "status": {
+      "idle": "Boşta",
+      "running": "Çalışıyor",
+      "success": "Başarılı",
+      "failed": "Başarısız",
+      "partial": "Kısmi"
+    }
+  },
+  "automationRunHistory": {
+    "relativeTime": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "deviceCount": "{{count}} cihazlar",
+    "resultCount": {
+      "passed": "{{count}} geçti",
+      "failed": "{{count}} başarısız oldu",
+      "skipped": "{{count}} atlandı"
+    },
+    "duration": "Süre: {{duration}}\n__BREEZE_TOKEN_1__ cihazdan ",
+    "progress": {
+      "finished": "{{total}} cihazın {{finished}} tanesi tamamlandı"
+    },
+    "deviceResults": {
+      "title": "Cihaz Sonuçları",
+      "loading": "Cihaz sonuçları yükleniyor…",
+      "error": "Cihaz sonuçları yüklenemedi. Çalıştırmayı yeniden açmayı deneyin.",
+      "empty": "Bu çalıştırma için cihaz başına sonuç kaydedilmedi."
+    },
+    "actions": {
+      "hideLogs": "Günlükleri Gizle",
+      "viewLogs": "Günlükleri Görüntüle"
+    },
+    "timestamps": {
+      "started": "Başlangıç: {{date}}",
+      "completed": "Tamamlandı: {{date}}"
+    },
+    "title": "Çalıştırma Geçmişi",
+    "summary": "{{shown}} / {{total}} çalıştırma",
+    "filters": {
+      "allStatus": "Tüm Durumlar"
+    },
+    "status": {
+      "success": "Başarılı",
+      "failed": "Başarısız",
+      "partial": "Kısmi",
+      "running": "Koşuyor",
+      "pending": "Beklemede",
+      "skipped": "Atlandı"
+    },
+    "empty": "Çalıştırma geçmişi yok.",
+    "triggeredBy": {
+      "scheduled": "Planlandı",
+      "event": "Olay Tetiklendi",
+      "webhook": "Web kancası",
+      "manual": "Manuel",
+      "api": "API Ara"
+    },
+    "scriptOutput": {
+      "show_one": "Komut çıktısını göster",
+      "show_other": "Komut dosyası çıktısını göster ({{count}})",
+      "hide_one": "Komut dosyası çıktısını gizle",
+      "hide_other": "Komut dosyası çıktısını gizle ({{count}})",
+      "exitCode": "Çıkış kodu {{code}}",
+      "empty": "Çıkış yok",
+      "stderr": "stderr",
+      "untitled": "Komut Dosyası",
+      "awaiting": "Temsilcinin rapor vermesi bekleniyor…",
+      "truncated": "Çıktı kesildi — tam metin için cihazın komut dosyası geçmişine bakın."
+    }
+  },
+  "automationsPage": {
+    "fallback": {
+      "untitled": "Başlıksız Otomasyon"
+    },
+    "errors": {
+      "fetch": "Otomasyonlar getirilemedi",
+      "generic": "Bir hata oluştu",
+      "run": "Otomasyon çalıştırılamadı",
+      "enable": "Otomasyon etkinleştirilemedi",
+      "disable": "Otomasyon devre dışı bırakılamadı",
+      "delete": "Otomasyon silinemedi"
+    },
+    "loading": "Otomasyonlar yükleniyor...",
+    "title": "Otomasyonlar",
+    "description": "Otomatik iş akışları oluşturun ve yönetin.",
+    "actions": {
+      "new": "Yeni Otomasyon",
+      "deleting": "Siliniyor..."
+    },
+    "deleteDialog": {
+      "title": "Otomasyonu Sil",
+      "confirmPrefix": "Silmek istediğinizden emin misiniz?",
+      "confirmSuffix": "Bu işlem geri alınamaz."
+    }
+  },
+  "complianceDashboard": {
+    "relativeTime": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "noData": "Veri yok",
+    "status": {
+      "compliant": "Uyumlu",
+      "nonCompliant": "Uyumlu Değil",
+      "unknown": "Bilinmiyor"
+    },
+    "trend": {
+      "notEnoughData": "Trend için yeterli veri yok",
+      "noChange": "Değişiklik yok",
+      "vsLastPeriod": "vs son dönem"
+    },
+    "overview": {
+      "overall": "Genel Uyumluluk",
+      "deviceRatio": "{{compliant}} / {{total}} cihaz",
+      "passingAllPolicies": "tüm politikaları geçen cihazlar",
+      "withViolations": "ihlalleri olan cihazlar",
+      "pendingEvaluation": "değerlendirilmeyi bekleyen cihazlar"
+    },
+    "sections": {
+      "byStatus": "Duruma Göre Uyumluluk",
+      "trend": "Uyumluluk Trendi",
+      "policyBreakdown": "Politika Dökümü",
+      "nonCompliantDevices": "Uyumlu Olmayan Cihazlar"
+    },
+    "legend": {
+      "compliant": "Uyumlu ({{count}})",
+      "nonCompliant": "Uyumlu Değil ({{count}})",
+      "unknown": "Bilinmiyor ({{count}})"
+    },
+    "empty": {
+      "noPolicies": "Hiçbir politika yapılandırılmadı",
+      "allCompliant": "Tüm cihazlar uyumludur!",
+      "noMatchingDevices": "Eşleşen cihaz bulunamadı."
+    },
+    "policyComplianceRatio": "{{compliant}} / {{total}} uyumlu",
+    "searchDevices": "Cihazları arayın...",
+    "violationCount": "{{count}} ihlali",
+    "moreViolations": "+{{count}} daha fazla ihlal",
+    "lastChecked": "Son kontrol: {{date}}",
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "page": "Sayfa {{page}} / {{total}}"
+    }
+  },
+  "compliancePage": {
+    "errors": {
+      "fetch": "Uyumluluk verileri getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "loading": "Uyumluluk verileri yükleniyor...",
+    "policyTitle": "Uyumluluk: {{policy}}",
+    "policyFallback": "Politika",
+    "title": "Uyumluluk Kontrol Paneli",
+    "description": {
+      "policy": "Bu politikanın uyumluluk durumunu görüntüleyin.",
+      "overview": "Tüm cihazlarda politika uyumluluğuna genel bakış."
+    }
+  },
+  "policiesPage": {
+    "errors": {
+      "fetch": "Politikalar getirilemedi",
+      "generic": "Bir hata oluştu",
+      "enable": "Politika etkinleştirilemedi",
+      "disable": "Politika devre dışı bırakılamadı",
+      "delete": "Politika silinemedi"
+    },
+    "loading": "Politikalar yükleniyor...",
+    "title": "Politikalar",
+    "description": "Cihazlarınız genelinde uyumluluk politikalarını tanımlayın ve uygulayın.",
+    "actions": {
+      "complianceDashboard": "Uyumluluk Kontrol Paneli",
+      "new": "Yeni Politika",
+      "deleting": "Siliniyor..."
+    },
+    "stats": {
+      "activePolicies": "Aktif Politikalar",
+      "overallCompliance": "Genel Uyumluluk",
+      "devicesMonitored": "İzlenen Cihazlar"
+    },
+    "deleteDialog": {
+      "title": "Politikayı Sil",
+      "confirmPrefix": "Silmek istediğinizden emin misiniz?",
+      "confirmSuffix": "Bu işlem geri alınamaz."
+    }
+  },
+  "policyEditPage": {
+    "errors": {
+      "fetch": "Politika getirilemedi",
+      "generic": "Bir hata oluştu",
+      "save": "Politika kaydedilemedi"
+    },
+    "loading": "Politika yükleniyor...",
+    "breadcrumb": {
+      "policies": "Politikalar",
+      "new": "Yeni Politika",
+      "edit": "Politikayı Düzenle"
+    },
+    "title": {
+      "create": "Politika Oluştur",
+      "edit": "Politikayı Düzenle"
+    },
+    "description": {
+      "create": "Uyumluluk kurallarını ve yaptırım davranışını tanımlayın.",
+      "edit": "İlke yapılandırmasını değiştirin."
+    },
+    "actions": {
+      "create": "Politika Oluştur",
+      "saveChanges": "Değişiklikleri Kaydet"
+    }
+  },
+  "policyForm": {
+    "validation": {
+      "softwareNameRequired": "Yazılım adı gerekli",
+      "versionRequired": "Tam/minimum/maksimum operatörler için sürüm gereklidir",
+      "diskSpacePositive": "Minimum boş alan 0'dan büyük olmalıdır",
+      "registryPathRequired": "Kayıt defteri yolu gerekli",
+      "registryValueRequired": "Kayıt defteri değeri adı gerekli",
+      "configPathRequired": "Yapılandırma dosyası yolu gerekli",
+      "configKeyRequired": "Yapılandırma anahtarı gerekli",
+      "nameRequired": "Politika adı gerekli",
+      "ruleRequired": "En az bir kural gerekli",
+      "minimumInterval": "Minimum aralık 5 dakikadır",
+      "maximumInterval": "Maksimum aralık 24 saattir"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Monitör",
+        "description": "Herhangi bir işlem yapmadan uyumluluk durumunu takip edin. İlk politikanın kullanıma sunulması için idealdir."
+      },
+      "warn": {
+        "label": "Uyar",
+        "description": "İhlaller tespit edildiğinde uyarı oluşturun. Yöneticileri bilgilendirir ancak otomatik olarak düzeltme yapmaz."
+      },
+      "enforce": {
+        "label": "Zorunlu kıl",
+        "description": "İhlaller tespit edildiğinde otomatik olarak düzeltme komut dosyalarını çalıştırın. Dikkatli kullanın."
+      }
+    },
+    "ruleTypes": {
+      "requiredSoftware": "Gerekli Yazılım",
+      "prohibitedSoftware": "Yasaklı Yazılım",
+      "minimumDiskSpace": "Minimum Disk Alanı",
+      "osVersion": "İşletim Sistemi Versiyon Gereksinimi",
+      "registryCheck": "Kayıt Kontrolü (Windows)",
+      "configFileCheck": "Yapılandırma Dosyası Kontrolü"
+    },
+    "targetTypes": {
+      "allDevices": "Tüm Cihazlar",
+      "specificSites": "Belirli Siteler",
+      "specificGroups": "Belirli Gruplar",
+      "specificTags": "Belirli Etiketler"
+    },
+    "versionOperators": {
+      "any": "Herhangi bir sürüm",
+      "exact": "Tam sürüm",
+      "minimum": "Minimum sürüm",
+      "maximum": "Maksimum sürüm"
+    },
+    "osTypes": {
+      "any": "Herhangi bir işletim sistemi",
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "actions": {
+      "savePolicy": "Kaydetme politikası",
+      "addRule": "Kural Ekle"
+    },
+    "fields": {
+      "name": "Politika adı",
+      "targetType": "Hedef Türü",
+      "softwareName": "Yazılım Adı",
+      "versionCheck": "Sürüm Kontrolü",
+      "version": "Sürüm",
+      "minimumFreeSpace": "Minimum Boş Alan (GB)",
+      "diskPath": "Disk/Yol (isteğe bağlı)",
+      "operatingSystem": "İşletim Sistemi",
+      "minimumVersion": "Minimum Sürüm",
+      "registryPath": "Kayıt Defteri Yolu",
+      "valueName": "Değer Adı",
+      "expectedValue": "Beklenen Değer",
+      "configFilePath": "Yapılandırma Dosyası Yolu",
+      "configKey": "Yapılandırma Anahtarı",
+      "remediationScript": "Düzeltme Komut Dosyası",
+      "evaluateEvery": "Her Şeyi Değerlendirin"
+    },
+    "placeholders": {
+      "name": "Güvenlik temel politikası",
+      "description": "Bu politikanın neyi zorunlu kıldığını açıklayın...",
+      "softwareNameRequired": "örneğin, Google Chrome",
+      "version": "Sürüm",
+      "softwareNameProhibited": "örneğin BitTorrent",
+      "diskPath": "C: veya /home",
+      "minimumVersion": "örneğin, 10,0 veya 22,04",
+      "registryPath": "HKLM\\SOFTWARE\\Policies\\...",
+      "remediationScript": "Bir düzeltme komut dosyası seçin..."
+    },
+    "sections": {
+      "targetDevices": "Hedef Cihazlar",
+      "targetDevicesDescription": "Bu politikanın hangi cihazlara uygulanacağını seçin",
+      "rules": "Politika Kuralları",
+      "rulesDescription": "Bu politikanın neyi kontrol ettiğini tanımlayın",
+      "enforcement": "Yaptırım Düzeyi",
+      "enforcementDescription": "İhlallerin nasıl ele alınacağını seçin",
+      "checkInterval": "Kontrol Aralığı"
+    },
+    "selectTargets": "{{target}} seçeneğini seçin",
+    "targetLabels": {
+      "sites": "Siteler",
+      "groups": "Gruplar",
+      "tags": "Etiketler",
+      "sitesLower": "siteler",
+      "groupsLower": "gruplar",
+      "tagsLower": "etiketleri"
+    },
+    "empty": {
+      "noTargets": "{{target}} mevcut değil.",
+      "noRules": "Tanımlanmış kural yok. Bir tane oluşturmak için \"Kural Ekle\"ye tıklayın."
+    },
+    "hints": {
+      "prohibitedSoftware": "Bu yazılımın yüklü olduğu tespit edilirse ihlal",
+      "checkInterval": "Cihazların uyumluluk açısından ne sıklıkta kontrol edilmesi gerekir?"
+    },
+    "remediation": {
+      "title": "Otomatik Düzeltme",
+      "description": "Uygulama etkinleştirildiğinde, uyumlu olmayan cihazlarda otomatik olarak bir düzeltme komut dosyası çalıştırılacaktır."
+    }
+  },
+  "policyList": {
+    "relativeTime": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "notAvailable": "Yok",
+    "title": "Politikalar",
+    "summary": "{{shown}} / {{total}} politikaları",
+    "searchPlaceholder": "Arama politikaları...",
+    "filters": {
+      "allEnforcement": "Tüm Yaptırımlar",
+      "allStatus": "Tüm Durumlar"
+    },
+    "enforcement": {
+      "monitor": {
+        "label": "Monitör"
+      },
+      "warn": {
+        "label": "Uyar"
+      },
+      "enforce": {
+        "label": "Zorunlu kıl"
+      }
+    },
+    "headers": {
+      "enforcement": "Yaptırım",
+      "compliance": "Uyumluluk",
+      "lastEvaluated": "Son Değerlendirilen"
+    },
+    "empty": "Hiçbir politika bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
+    "partnerWideTitle": "İş ortağı çapında politika — her kuruluştaki cihazları değerlendirir",
+    "allOrgs": "İş ortağı çapında",
+    "ruleCount": "{{count}} kuralı",
+    "moreTargets": "+{{count}} daha fazla",
+    "actions": {
+      "viewDetails": "Ayrıntıları görüntüle",
+      "viewCompliance": "Uyumluluğu görüntüle"
+    },
+    "never": "Hiçbir zaman",
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "page": "Sayfa {{page}} / {{total}}"
+    }
+  },
+  "executionDetails": {
+    "output": {
+      "emptyMarker": "(boş)",
+      "noOutput": "Çıkış yok",
+      "title": "Çıkış",
+      "stdout": "Standart Çıkış (stdout)",
+      "stderr": "Standart Hata (stderr)"
+    },
+    "actions": {
+      "copyToClipboard": "Panoya kopyala"
+    },
+    "title": "Yürütme Ayrıntıları",
+    "statusDescription": {
+      "running": "Komut dosyası şu anda yürütülüyor...",
+      "completed": "Komut dosyası başarıyla tamamlandı",
+      "failed": "Komut dosyası yürütme başarısız oldu",
+      "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
+      "pending": "Komut dosyası çalıştırılmayı bekliyor"
+    },
+    "fields": {
+      "startedAt": "Başlangıç Tarihi",
+      "duration": "Süre",
+      "exitCode": "Çıkış Kodu",
+      "completedAt": "Tamamlanma Tarihi"
+    },
+    "status": {
+      "running": "Koşuyor...",
+      "pending": "Beklemede",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "timeout": "Zaman Aşımı"
+    }
+  },
+  "executionHistory": {
+    "relativeTime": {
+      "yesterday": "Dün {{time}}"
+    },
+    "searchPlaceholder": "Ara...",
+    "filters": {
+      "allStatus": "Tüm Durumlar",
+      "allTime": "Tüm Zamanlar",
+      "lastHour": "Son Saat",
+      "lastDay": "Son 24 Saat",
+      "lastWeek": "Son 7 Gün",
+      "lastMonth": "Son 30 Gün"
+    },
+    "status": {
+      "pending": "Beklemede",
+      "running": "Koşuyor...",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "timeout": "Zaman Aşımı"
+    },
+    "summary": "{{shown}} / {{total}}",
+    "headers": {
+      "script": "Komut Dosyası",
+      "started": "Başlatıldı",
+      "duration": "Süre",
+      "exitCode": "Çıkış Kodu"
+    },
+    "empty": "Hiçbir yürütme bulunamadı. Filtrelerinizi ayarlamayı deneyin.",
+    "actions": {
+      "viewDetails": "Ayrıntıları görüntüle"
+    },
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "page": "Sayfa {{page}} / {{total}}"
+    }
+  },
+  "scriptAiInput": {
+    "placeholder": {
+      "ready": "İhtiyacınız olan komut dosyasını açıklayın...",
+      "opening": "Yapay zeka asistanı açılıyor..."
+    },
+    "actions": {
+      "stopGenerating": "Oluşturmayı durdur",
+      "sendMessage": "Mesaj gönder"
+    }
+  },
+  "scriptAiMessages": {
+    "tool": {
+      "applyFailed": "Editöre başvuru yapılamadı",
+      "applied": "Editöre uygulandı",
+      "call": "Araç çağrısı"
+    },
+    "approval": {
+      "title": "Onay Gerekli",
+      "approve": "Onayla",
+      "reject": "Reddet"
+    },
+    "empty": {
+      "title": "Komut Dosyası Yapay Zekası Asistanı",
+      "description": "Neye ihtiyacınız olduğunu açıklayın, ben de sizin için senaryoyu yazayım."
+    }
+  },
+  "scriptAiPanel": {
+    "title": "AI Komut Dosyası Yardımcısı",
+    "actions": {
+      "redoTitle": "AI değişikliğini yeniden uygulayın",
+      "redo": "Yinele",
+      "revertTitle": "Son AI değişikliğini geri al",
+      "revert": "Geri al",
+      "dismiss": "Kapat"
+    }
+  },
+  "scriptCategoryTree": {
+    "errors": {
+      "fetch": "Komut dosyaları getirilemedi",
+      "generic": "Bir hata oluştu",
+      "rename": "Kategori yeniden adlandırılamadı"
+    },
+    "allScripts": "Tüm Komut Dosyaları",
+    "selectedCategory": "Seçilen Kategori",
+    "loading": "Kategoriler yükleniyor...",
+    "title": "Komut Dosyası Kategorileri",
+    "description": "Komut dosyalarını iç içe geçmiş klasörler halinde düzenleyin.",
+    "actions": {
+      "newCategory": "Yeni Kategori",
+      "rename": "Yeniden adlandır",
+      "addSubcategory": "Alt Kategori Ekle"
+    },
+    "empty": {
+      "categories": "Kategori bulunamadı. Başlamak için bir tane oluşturun.",
+      "scripts": "Komut dosyası bulunamadı."
+    },
+    "highlightDescription": "{{category}} ve alt kategorileri altında etiketlenen komut dosyaları",
+    "selectDescription": "Komut dosyalarını vurgulamak için bir kategori seçin.",
+    "idLabel": "Kimlik: {{id}}",
+    "renameDialog": {
+      "title": "Kategoriyi Yeniden Adlandır",
+      "description": "Kategori başlığını güncelleyin."
+    },
+    "newDialog": {
+      "title": "Yeni Kategori",
+      "subcategoryTitle": "Alt Kategori Ekle",
+      "description": "Yeni bir üst düzey kategori oluşturun.",
+      "subcategoryDescription": "Yeni alt kategoriyi adlandırın."
+    },
+    "deleteDialog": {
+      "title": "Kategoriyi Sil",
+      "description": "Bu, kategoriyi ve alt kategorilerini kaldıracaktır. Komut dosyaları kalacak ancak kategorize edilmeyecek."
+    },
+    "status": {
+      "active": "Aktif",
+      "draft": "Taslak",
+      "archived": "Arşivlendi"
+    }
+  },
+  "scriptEditPage": {
+    "errors": {
+      "fetch": "Komut dosyası getirilemedi",
+      "generic": "Bir hata oluştu",
+      "save": "Komut dosyası kaydedilemedi"
+    },
+    "toast": {
+      "created": "Komut dosyası oluşturuldu",
+      "saved": "Komut dosyası kaydedildi"
+    },
+    "loading": "Komut dosyası yükleniyor...",
+    "actions": {
+      "backToScripts": "Komut Dosyalarına Geri Dön",
+      "executionHistory": "Yürütme Geçmişi",
+      "create": "Komut Dosyası Oluştur",
+      "saveChanges": "Değişiklikleri Kaydet"
+    },
+    "breadcrumb": {
+      "scripts": "Komut Dosyaları",
+      "new": "Yeni Komut Dosyası",
+      "edit": "Komut Dosyasını Düzenle"
+    },
+    "title": {
+      "new": "Yeni Komut Dosyası",
+      "edit": "Komut Dosyasını Düzenle"
+    }
+  },
+  "scriptExecutionModal": {
+    "errors": {
+      "selectDevice": "Lütfen en az bir cihaz seçin",
+      "executionFailed": "Yürütme başarısız oldu"
+    },
+    "title": "Komut Dosyasını Çalıştır",
+    "fields": {
+      "language": "Dil",
+      "category": "Kategori",
+      "targetOs": "Hedef İşletim Sistemi",
+      "runAs": "Farklı Çalıştır"
+    },
+    "runAs": {
+      "system": "Sistem",
+      "user": "Oturum açmış kullanıcı",
+      "systemDescription": "Aracı hizmeti bağlamında çalışır.",
+      "userDescription": "Bir kullanıcı yardımcısı bağlandığında, halihazırda oturum açmış olan kullanıcı bağlamında çalışır."
+    },
+    "sections": {
+      "selectDevices": "Cihazları Seçin"
+    },
+    "actions": {
+      "selectAllOnline": "Tümünü çevrimiçi seç",
+      "clear": "Temizle ({{count}})",
+      "advancedFilters": "Gelişmiş Filtreler",
+      "executing": "Yürütülüyor...",
+      "started": "Başladı!",
+      "confirmExecute": "Yürütmeyi Onayla",
+      "execute": "Yürüt"
+    },
+    "searchPlaceholder": "Ana bilgisayar adına göre ara...",
+    "filters": {
+      "allSites": "Tüm Siteler",
+      "allStatus": "Tüm Durumlar"
+    },
+    "status": {
+      "maintenance": "Bakım"
+    },
+    "matchCount": "{{count}} eşleşmesi",
+    "empty": {
+      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir."
+    },
+    "orSeparator": "veya ",
+    "progress": {
+      "submitting": "{{count}} cihazlara gönderiliyor...",
+      "submitted": "{{count}} cihazlara gönderildi"
+    },
+    "confirm": {
+      "title": "Yürütmeyi Onayla",
+      "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar."
+    },
+    "selectedCount": "{{count}} cihaz seçildi",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    }
+  },
+  "scriptExecutionsPage": {
+    "errors": {
+      "fetchScript": "Komut dosyası getirilemedi",
+      "generic": "Bir hata oluştu",
+      "fetchExecutions": "Yürütmeler getirilemedi",
+      "execute": "Komut dosyası yürütülemedi"
+    },
+    "loading": "Yürütmeler yükleniyor...",
+    "actions": {
+      "backToScripts": "Komut Dosyalarına Geri Dön",
+      "runScript": "Komut Dosyasını Çalıştır"
+    },
+    "breadcrumb": {
+      "scripts": "Komut Dosyaları",
+      "script": "Komut Dosyası",
+      "executions": "İnfazlar"
+    },
+    "title": "Yürütme Geçmişi",
+    "fields": {
+      "language": "Dil",
+      "category": "Kategori",
+      "targetOs": "Hedef İşletim Sistemi"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "status": {
+      "active": "Aktif",
+      "draft": "Taslak",
+      "archived": "Arşivlendi"
+    }
+  },
+  "scriptForm": {
+    "editor": {
+      "loadError": "Kod düzenleyici yüklenemedi. Sayfayı yenilemeyi deneyin.",
+      "refreshPage": "Sayfayı yenile",
+      "loading": "Düzenleyici yükleniyor..."
+    },
+    "unsavedConfirm": "Kaydedilmemiş değişiklikleriniz var. Bu sayfadan ayrılmak mı istiyorsunuz?",
+    "actions": {
+      "saveScript": "Komut dosyasını kaydet",
+      "removeParameter": "Parametreyi kaldır",
+      "addParameter": "Parametre ekle",
+      "removeMapping": "Eşlemeyi kaldır",
+      "addExitCode": "Çıkış kodunu ekleyin"
+    },
+    "availability": {
+      "title": "Kullanılabilir",
+      "description": "Bu komut dosyasını hangi kuruluşların görebileceğini ve çalıştırabileceğini değiştirin. \"Tüm kuruluşlarım\" bunu iş ortağı çapında yapar.",
+      "partner": "Tüm kuruluşlarım",
+      "organization": "Belirli bir kuruluş",
+      "selectOrganization": "Bir kuruluş seçin",
+      "requiresFullPartnerAccess": "Tam iş ortağı kuruluş erişimi gerektirir. Tüm kuruluşlara erişimi olan bir iş ortağı yöneticisine sorun.",
+      "partnerWideReadOnly": "Bu komut dosyası tüm kuruluşlarınız için geçerlidir. Düzenlemek için tam iş ortağı kuruluşu erişimi gerekir."
+    },
+    "fields": {
+      "name": "Komut dosyası adı",
+      "category": "Kategori",
+      "language": "Dil",
+      "targetOs": "Hedef İşletim Sistemi",
+      "defaultValue": "Varsayılan Değer",
+      "options": "Seçenekler",
+      "timeoutSeconds": "Zaman aşımı (saniye)",
+      "runAs": "Farklı Çalıştır",
+      "exitCode": "Çıkış kodu",
+      "severity": "Önem",
+      "source": "Kaynak",
+      "fallbackValue": "Yedek değer"
+    },
+    "placeholders": {
+      "name": "Geçici Dosyaları Temizle",
+      "description": "Bu komut dosyasının ne yaptığını açıklayın...",
+      "parameterName": "parametreAdı",
+      "defaultValue": "Varsayılan",
+      "options": "seçenek1, seçenek2, seçenek3",
+      "exitCode": "ör. 1"
+    },
+    "sections": {
+      "content": "Komut Dosyası İçeriği",
+      "parameters": "Parametreler",
+      "executionSettings": "Yürütme Ayarları",
+      "exitCodeSeverity": "Çıkış Kodu Önem Derecesi"
+    },
+    "ai": {
+      "toggleTitle": "AI Komut Dosyası Yardımcısını Aç/Kapat (⌘⇧I)",
+      "button": "Yapay Zeka Asistanı"
+    },
+    "parameters": {
+      "emptyPrefix": "Henüz parametre yok. Parametreler, kullanıcıların çalışma zamanında değerler sağlamasına olanak tanır; komut dosyanızda bunlara şu şekilde başvurun:",
+      "emptyMiddle": "(PowerShell/Bash) veya",
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "{{index}} parametresinin kaynağı"
+    },
+    "parameterBinding": {
+      "variableLabel": "Değişken anahtarı",
+      "variablePlaceholder": "ör. vendor_token",
+      "fieldLabel": "Özel alan anahtarı",
+      "fieldPlaceholder": "ör. asset_tag",
+      "builtinLabel": "Özellik",
+      "chooseTitle": "Bir değişken seçin",
+      "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",
+      "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
+    },
+    "parameterSources": {
+      "runtime": "Çalışma anında sorulur",
+      "tenantVariable": "Bir değişkenden",
+      "deviceCustomField": "Cihaz özel alanından",
+      "builtin": "Cihaz özelliğinden"
+    },
+    "execution": {
+      "timeoutHint": "Komut dosyası bu sürenin sonunda sonlandırılır. Varsayılan 300 saniye (5 dakika) çoğu görev için uygundur. Maksimum 3600s (1 saat).",
+      "elevatedHint": "macOS/Linux'ta sudo'yu, Windows'de runas'ı kullanır."
+    },
+    "exitCodeSeverity": {
+      "emptyPrefix": "Önem derecelerini uyarmak için belirli çıkış kodlarını eşleyin. Betik bu kodlardan birini döndürdüğünde, yapılandırılan önem derecesine göre bir uyarı verilir. Seç",
+      "suppressAlert": "Uyarıyı bastır\nBir kodu bilgi amaçlı olarak işaretlemek için ",
+      "emptySuffix": "(hiçbir olay yaşanmadı). Burada listelemediğiniz çıkış kodları, varsayılan sonuç işlemeyi kullanır.",
+      "suppressHint": "Uyarıyı gizle — çıkış kodu bilgi amaçlı olarak değerlendirilir, herhangi bir olay ortaya çıkmaz."
+    },
+    "keyboardSave": "{{shortcut}} kaydetmek için",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD (Toplu)"
+    },
+    "runAs": {
+      "system": {
+        "label": "Sistem",
+        "description": "Sistem/kök hesap olarak çalıştır"
+      },
+      "user": {
+        "label": "Mevcut Kullanıcı",
+        "description": "Oturum açmış kullanıcı olarak çalıştır"
+      },
+      "elevated": {
+        "label": "Yükseltilmiş",
+        "description": "Yönetici ayrıcalıklarıyla çalıştırın"
+      }
+    },
+    "parameterTypes": {
+      "string": "Metin",
+      "number": "Numara",
+      "boolean": "Boolean",
+      "select": "Seç"
+    },
+    "severity": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi",
+      "__suppress__": "Uyarıyı bastır"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "variables": {
+      "button": "Değişkenler",
+      "insertTitle": "Bir değişken ekleyin",
+      "empty": "Henüz değişken yok.",
+      "secretUnavailable": "Secret — daha sonraki bir sürüm bunu bir ortam değişkeni olarak sunar.",
+      "unknown": "{{keys}} için değişken yok — hedeflenen cihazlar siz onu oluşturana kadar başarısız olacaktır."
+    }
+  },
+  "scriptList": {
+    "never": "Hiçbir zaman",
+    "relativeTime": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "searchPlaceholder": "Arama komut dosyaları...",
+    "filters": {
+      "allCategories": "Tüm Kategoriler",
+      "allLanguages": "Tüm Diller",
+      "allOs": "Tüm İşletim Sistemi"
+    },
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "summary": "{{shown}} / {{total}}",
+    "headers": {
+      "language": "Dil",
+      "category": "Kategori",
+      "os": "İşletim Sistemi",
+      "lastRun": "Son Çalıştırma"
+    },
+    "empty": "Komut dosyası bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
+    "actions": {
+      "runTitle": "Komut dosyasını çalıştır",
+      "editTitle": "Komut dosyasını düzenle",
+      "deleteTitle": "Komut dosyasını sil"
+    },
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "page": "Sayfa {{page}} / {{total}}"
+    },
+    "status": {
+      "active": "Aktif",
+      "draft": "Taslak",
+      "archived": "Arşivlendi"
+    }
+  },
+  "scriptParametersForm": {
+    "validation": {
+      "required": "\"{{name}}\" parametresi gerekli",
+      "number": "\"{{name}}\" parametresi geçerli bir sayı olmalıdır"
+    },
+    "title": "Parametreler",
+    "selectPlaceholder": "Seç...",
+    "allSupplied": "Her parametre otomatik sağlanır — doldurulacak bir şey yok.",
+    "suppliedBy": {
+      "tenantVariable": "{{key}} değişkeninden otomatik sağlanır",
+      "deviceCustomField": "{{key}} cihaz özel alanından otomatik sağlanır",
+      "builtin": "{{key}} değerinden otomatik sağlanır"
+    }
+  },
+  "scriptTagManager": {
+    "errors": {
+      "fetch": "Komut dosyaları getirilemedi",
+      "generic": "Bir hata oluştu",
+      "add": "Etiket eklenemedi",
+      "delete": "Etiket silinemedi",
+      "assign": "Etiketler atanamadı"
+    },
+    "loading": "Etiketler yükleniyor...",
+    "title": "Komut Dosyası Etiketleri\n__BREEZE_TOKEN_1__ komut dosyalarında ",
+    "summary": "{{scriptCount}} betikte {{tagCount}} etiket",
+    "description": "Yeniden kullanılabilir etiketleri yönetin",
+    "sections": {
+      "allTags": "Tüm Etiketler",
+      "addNew": "Yeni Etiket Ekle",
+      "bulkAssign": "Etiketleri Toplu Ata"
+    },
+    "empty": {
+      "tags": "Etiket bulunamadı. Aşağıda bir tane oluşturun.",
+      "scripts": "Komut dosyası bulunamadı."
+    },
+    "usedOn": "{{count}} komut dosyalarında kullanılır",
+    "actions": {
+      "deleteTag": "Etiketi sil",
+      "applyTags": "Seçili komut dosyalarına etiket uygulama"
+    },
+    "placeholders": {
+      "tagName": "Etiket adı"
+    },
+    "bulkDescription": "Komut dosyalarını seçin, ardından uygulanacak etiketleri seçin.",
+    "deleteDialog": {
+      "title": "Etiketi Sil",
+      "confirmPrefix": "Sil",
+      "confirmSuffix": "etiketi? Bu onu tüm komut dosyalarından kaldıracaktır."
+    }
+  },
+  "scriptTemplateGallery": {
+    "errors": {
+      "fetch": "Şablonlar getirilemedi",
+      "load": "Şablonlar yüklenemedi"
+    },
+    "title": "Şablon Galerisi",
+    "description": "Yeniden kullanılabilir komut dosyası şablonlarına göz atın.",
+    "searchPlaceholder": "Arama şablonları",
+    "languages": {
+      "powershell": "PowerShell",
+      "bash": "Bash",
+      "python": "Python",
+      "cmd": "CMD"
+    },
+    "empty": "Kriterlerinizle eşleşen şablon bulunamadı.",
+    "downloadCount": "{{count}} indirmeler",
+    "actions": {
+      "useTemplate": "Şablonu Kullan"
+    }
+  },
+  "scriptVersionHistory": {
+    "errors": {
+      "fetch": "Komut dosyası sürümleri getirilemedi",
+      "generic": "Bir hata oluştu",
+      "rollback": "Komut dosyası geri alınamadı",
+      "rollbackFailed": "Geri alma başarısız oldu"
+    },
+    "currentVersion": "Güncel sürüm",
+    "loading": "Sürüm geçmişi yükleniyor...",
+    "title": "Sürüm Geçmişi",
+    "description": "Komut dosyası revizyonlarını izleyin ve değişiklikleri karşılaştırın.",
+    "activeVersion": "Aktif sürüm:",
+    "empty": "Sürüm geçmişi yok.",
+    "actions": {
+      "rollback": "Geri alma",
+      "rollingBack": "Geri alınıyor...",
+      "confirmRollback": "Geri Alma İşlemini Onayla"
+    },
+    "compare": {
+      "title": "Sürümleri Karşılaştır",
+      "onlyOne": "Yalnızca tek bir sürüm mevcuttur. Farkları görmek için değişiklik yapın.",
+      "selectTwo": "Farkı görüntülemek için iki versiyon seçin."
+    },
+    "rollbackDialog": {
+      "title": "Geri Alma Komut Dosyası",
+      "confirmPrefix": "Sürüme geri dön",
+      "confirmSuffix": "Bu onu aktif revizyon haline getirecektir."
+    }
+  },
+  "scriptsPage": {
+    "errors": {
+      "fetch": "Komut dosyaları getirilemedi",
+      "generic": "Bir hata oluştu",
+      "execute": "Komut dosyası yürütülemedi",
+      "delete": "Komut dosyası silinemedi",
+      "deleteTryAgain": "Komut dosyası silinemedi. Lütfen tekrar deneyin.",
+      "alreadyInLibrary": "\"{{name}}\" zaten kitaplığınızda",
+      "import": "Komut dosyası içe aktarılamadı"
+    },
+    "toast": {
+      "deleting": "\"{{name}}\" siliniyor...",
+      "deleteCancelled": "Komut dosyasının silinmesi iptal edildi",
+      "deleted": "\"{{name}}\" silindi"
+    },
+    "loading": "Komut dosyaları yükleniyor...",
+    "title": "Komut Dosyası Kitaplığı",
+    "description": "Komut dosyalarını cihazlarınız arasında yönetin ve yürütün.",
+    "actions": {
+      "importFromLibrary": "Kütüphaneden İçe Aktar",
+      "newScript": "Yeni Komut Dosyası",
+      "createScript": "Komut dosyası oluştur",
+      "deleting": "Siliniyor..."
+    },
+    "empty": {
+      "title": "Henüz komut dosyası yok",
+      "description": "Filonuzdaki görevleri otomatikleştirmek için ilk komut dosyanızı oluşturun."
+    },
+    "deleteDialog": {
+      "title": "Komut Dosyasını Sil",
+      "confirmPrefix": "Silmek istediğinizden emin misiniz?",
+      "confirmSuffix": "Bu işlem geri alınamaz."
+    },
+    "library": {
+      "title": "Sistem Komut Dosyası Kitaplığı",
+      "description": "Komut dosyalarını kuruluşunuza aktarın",
+      "searchPlaceholder": "Sistem komut dosyalarını arayın...",
+      "empty": "Sistem komut dosyası yok",
+      "noMatches": "Aramanızla eşleşen komut dosyası yok",
+      "imported": "İçe aktarıldı",
+      "import": "İçe Aktar",
+      "availableCount": "{{count}} komut dosyaları mevcut"
+    }
+  },
+  "bundle": {
+    "exportButton": "Dışa aktar",
+    "importButton": "Paketi içe aktar",
+    "exportTitle": "Komut dosyası paketini dışa aktar",
+    "exportDescription": "Taşınabilir bir JSON paketi olarak indirilecek komut dosyalarını seçin.",
+    "selectAll": "Tümünü seç",
+    "clearSelection": "Seçimi temizle",
+    "exportSelected": "Dışa aktarma {{count}} seçildi",
+    "exportEmpty": "Dışa aktarılacak komut dosyası yok.",
+    "exportFailed": "Komut dosyaları dışa aktarılamadı",
+    "importTitle": "Komut dosyası paketini içe aktar",
+    "importDescription": "Bir paket (.json) veya gevşek komut dosyaları (.ps1, .sh, .py, .bat) yükleyin.",
+    "systemWarning": "İçe aktarılan komut dosyaları, yönetilen cihazlarda SİSTEM olarak çalıştırılabilir. Paketleri yalnızca güvendiğiniz bir kaynaktan içe aktarın.",
+    "chooseFiles": "Dosyaları seç",
+    "chooseFolder": "Klasör seç",
+    "parseErrors": "Bazı dosyalar okunamadı",
+    "previewFailed": "Paketin önizlemesi başarısız oldu",
+    "importFailed": "Paket içe aktarılamadı",
+    "nameColumn": "İsim",
+    "previewTitle": "Durum",
+    "statusNew": "Yeni",
+    "statusConflict": "Ad çakışması",
+    "modeLabel": "Aynı adda bir komut dosyası zaten mevcut olduğunda",
+    "modeSkip": "Atla",
+    "modeRename": "Yeni bir adla içe aktarın",
+    "modeNewVersion": "Mevcut komut dosyasının yeni bir sürümü olarak ekle",
+    "partnerWide": "Tüm kuruluşların kullanımına sunun (iş ortağı çapında)",
+    "importCommit": "{{count}} komut dosyalarını içe aktar",
+    "resultSummary": "{{imported}} içe aktarıldı, {{renamed}} yeniden adlandırıldı, {{versioned}} sürümü oluşturuldu, {{skipped}} atlandı, {{failed}} başarısız oldu",
+    "scriptCount": "{{count}} komut dosyaları pakette",
+    "statusInvalid": "Geçersiz",
+    "exportLimit": "Paket başına en fazla {{max}} komut dosyasını dışa aktarabilirsiniz."
+  }
+}

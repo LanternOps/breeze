@@ -45,7 +45,7 @@ import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 
 export const userRoutes = new Hono();
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const satisfies readonly SupportedLocale[];
 
 userRoutes.use('*', authMiddleware);
 userRoutes.use('*', async (c, next) => {
@@ -517,7 +517,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
           prefs,
           'locale',
           supportedLocales,
-          'en, pt-BR, es-419, fr-FR, fr-CA, de-DE, or it-IT'
+          'en, pt-BR, es-419, fr-FR, fr-CA, de-DE, it-IT, or tr-TR'
         );
       if (validationError) {
         return c.json({ error: validationError }, 400);

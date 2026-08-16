@@ -1,0 +1,2025 @@
+{
+  "aiRiskAiRiskDashboard": {
+    "aiRiskEngine": "Yapay Zeka Risk Motoru",
+    "analytics": "Analitik",
+    "approvals": "Onaylar",
+    "denials": "Reddediliyor",
+    "failedToLoadData": "Veri yüklenemedi",
+    "failedToLoadToolExecutions": "Araç uygulamaları yüklenemedi",
+    "guardrails": "Korkuluklar",
+    "rateLimits": "Hız Limitleri",
+    "refresh": "Yenile",
+    "securityEventsCouldNotBeLoadedDenialData": "Güvenlik olayları yüklenemedi. Reddetme verileri eksik olabilir.",
+    "tabs": "Sekmeler",
+    "toolExecutionGuardrailsApprovalHistoryAndAnalytics": "Takım yürütme korkulukları, onay geçmişi ve analizler",
+    "updated": "Güncellendi {{time}}",
+    "value24h": "24 saat",
+    "value30d": "30g",
+    "value7d": "7g"
+  },
+  "aiRiskApprovalHistoryFeed": {
+    "all2": "Hepsi",
+    "approved": "Onaylandı",
+    "error": "Hata",
+    "exec": "Yönetici: {{duration}}ms",
+    "noTier3ToolExecutionsFound": "Seviye 3 araç uygulaması bulunamadı.",
+    "pending": "Beklemede",
+    "rejected": "Reddedildi",
+    "session": "Oturum: {{sessionId}}",
+    "tempPasswordAlreadyRevealed": "Geçici şifre zaten açıklandı.",
+    "tempPasswordCopied": "Kopyalandı",
+    "tempPasswordCopy": "Kopyala",
+    "tempPasswordExpired": "Geçici şifrenin süresi açıklanmadan doldu.",
+    "tempPasswordForbidden": "Yalnızca bu sıfırlamayı talep eden teknisyen şifreyi açığa çıkarabilir.",
+    "tempPasswordReveal": "Geçici şifreyi göster",
+    "tempPasswordRevealFailed": "Geçici şifre ortaya çıkarılamadı",
+    "tempPasswordShownOnce": "Şimdi kaydedin; bir daha gösterilmeyecektir. Kullanıcının bir sonraki oturum açma işleminde bunu değiştirmesi gerekir.",
+    "tempPasswordTitle": "Geçici şifre",
+    "tier3ApprovalHistory": "Kademe 3 Onay Geçmişi",
+    "toolInput": "Araç Girişi",
+    "wait": "Bekle: {{duration}}"
+  },
+  "aiRiskRateLimitStatus": {
+    "filterRateLimits": "Filtre hızı sınırları...",
+    "limit": "Sınır",
+    "noRateLimitsMatchYourSearch": "Aramanızla eşleşen hız sınırı yok.",
+    "permission": "İzin",
+    "rateLimitConfiguration": "Hız Sınırı Yapılandırması",
+    "requestCount": "{{count}} talep",
+    "ruleCount": "{{count}} kuralları",
+    "ruleCount_one": "{{count}} kuralı",
+    "ruleCount_other": "{{count}} kuralları",
+    "t": "T{{tier}}",
+    "tier": "Seviye",
+    "tool": "Araç",
+    "window": "Pencere"
+  },
+  "aiRiskRejectionDenialLog": {
+    "all2": "Hepsi",
+    "denied": "Reddedildi",
+    "error": "Hata",
+    "failed": "Başarısız",
+    "noRejectionsOrDenialsFound": "Reddetme veya reddetme bulunamadı.",
+    "rejected": "Reddedildi",
+    "rejectionsAndDenials": "Reddetmeler ve İnkarlar",
+    "search": "Ara...",
+    "session": "Oturum",
+    "status": "Durum",
+    "timestamp": "Zaman Damgası",
+    "tool": "Araç"
+  },
+  "aiRiskTierOverviewMatrix": {
+    "filterTools": "Filtre araçları...",
+    "guardrailTierMatrix": "Korkuluk Katman Matrisi",
+    "tier": "Seviye {{tier}}",
+    "toolCount": "{{count}} araçlar",
+    "toolCount_one": "{{count}} aracı",
+    "toolCount_other": "{{count}} araçlar"
+  },
+  "aiRiskToolExecutionAnalytics": {
+    "avgDurationByToolMs": "Araca Göre Ortalama Süre (ms)",
+    "avgMs": "Ort ms",
+    "executionsOverTime": "Zaman İçinde İnfazlar",
+    "mostUsedToolsTop10": "En Çok Kullanılan Araçlar (İlk 10)",
+    "noDurationDataAvailable": "Süre verisi mevcut değil",
+    "noToolExecutionsInThisTimePeriod": "Bu zaman diliminde alet uygulaması yok.",
+    "statusDistribution": "Durum Dağılımı",
+    "toolExecutionAnalytics": "Araç Yürütme Analitiği"
+  },
+  "securityAdminAuditPage": {
+    "adminAccountAudit": "Yönetici Hesabı Denetimi",
+    "admins": "Yöneticiler",
+    "all": "Hepsi",
+    "allOS": "Tüm İşletim Sistemi",
+    "builtIn": "Dahili",
+    "custom": "Özel",
+    "default": "Varsayılan",
+    "defaultAccounts": "Varsayılan Hesaplar",
+    "defaultAccts": "Varsayılan Hesaplar",
+    "device": "Cihaz",
+    "enabled": "Etkin",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "issues": "Sorunlar",
+    "lastLogin": "Son Giriş",
+    "linux": "Linux",
+    "macos": "macOS",
+    "next": "Sonraki",
+    "no": "Hayır",
+    "noDevicesFound": "Cihaz bulunamadı.",
+    "noIssues": "Sorun Yok",
+    "none": "Hiçbiri",
+    "os": "İşletim Sistemi",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "passwordAge": "Şifre Yaşı",
+    "previous": "Önceki",
+    "privilegedAccountReviewAcrossAllDevices": "Tüm cihazlarda ayrıcalıklı hesap incelemesi",
+    "searchDevicesOrUsers": "Cihazları veya kullanıcıları arayın...",
+    "stale": "Bayat",
+    "staleAccounts": "Eski Hesaplar",
+    "staleAccts": "Eski Hesaplar",
+    "totalAdmins": "Toplam Yöneticiler",
+    "totalDevices": "Toplam Cihaz Sayısı",
+    "type": "Tür",
+    "username": "Kullanıcı adı",
+    "weakPassword": "Zayıf Şifre",
+    "weakPasswords": "Zayıf Şifreler",
+    "windows": "Windows",
+    "withIssues": "Sorunlu",
+    "yes": "Evet"
+  },
+  "securityAntivirusPage": {
+    "active": "Aktif",
+    "allOS": "Tüm İşletim Sistemi",
+    "allStatuses": "Tüm durumlar",
+    "antivirusCoverage": "Antivirüs Kapsamı",
+    "atRisk": "Risk Altında",
+    "coverage": "Kapsama Alanı",
+    "device": "Cihaz",
+    "endpointProtectionStatusAcrossAllDevices": "Tüm cihazlarda uç nokta koruma durumu",
+    "inactive": "Etkin değil",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "linux": "Linux",
+    "macos": "macOS",
+    "next": "Sonraki",
+    "noDevicesFound": "Cihaz bulunamadı.",
+    "offline": "Çevrimdışı",
+    "os": "İşletim Sistemi",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "previous": "Önceki",
+    "protected": "Korumalı",
+    "provider": "Sağlayıcı",
+    "providerDistribution": "Sağlayıcı Dağıtımı",
+    "realTime": "Gerçek zamanlı",
+    "searchDevices": "Cihazları arayın...",
+    "status": "Durum",
+    "totalDevices": "Toplam Cihaz Sayısı",
+    "unknown": "Bilinmiyor",
+    "unprotected": "Korumasız",
+    "windows": "Windows"
+  },
+  "securityDeviceSecurityStatus": {
+    "agentDefinitions": "Temsilci/Tanımlar",
+    "definitionsUpdated": "Tanımlar güncellendi {{time}}",
+    "detectedAV": "Algılanan AV",
+    "deviceSecurityStatus": "Cihaz Güvenlik Durumu",
+    "disabled": "Devre Dışı",
+    "diskEncryption": "Disk Şifreleme",
+    "enabled": "Etkin",
+    "firewall": "Güvenlik Duvarı",
+    "guardianGatekeeper": "Koruyucu (Gatekeeper)",
+    "lastScan": "Son Tarama",
+    "loadingSecurityStatus": "Güvenlik durumu yükleniyor...",
+    "noDeviceSecurityDataAvailable": "Cihaz güvenlik verisi yok.",
+    "policyEnforced": "Politika uygulandı",
+    "quickScan": "Hızlı tarama",
+    "realTimeProtection": "Gerçek Zamanlı Koruma",
+    "reviewThreats": "Tehditleri inceleyin",
+    "running": "Çalışıyor",
+    "threatsDetectedCount": "{{count}} tehditler",
+    "unknownProvider": "Bilinmeyen Sağlayıcı",
+    "unknownVendor": "Bilinmeyen satıcı"
+  },
+  "securityEdrPage": {
+    "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
+    "huntressIncidents": "Huntress Olaylar",
+    "sentineloneThreats": "SentinelOne Tehditleri",
+    "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar."
+  },
+  "securityEdrSummaryPanel": {
+    "edrStatusUnavailable": "EDR durumu yüklenemedi. Tekrar denemek için yenileyin.",
+    "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
+    "huntressAgents": "Huntress Temsilciler",
+    "huntressOpenIncidents": "Huntress Açık Olaylar",
+    "loadingEDRPosture": "EDR duruşu yükleniyor...",
+    "sentineloneActiveThreats": "SentinelOne Aktif Tehditler",
+    "sentineloneAgents": "SentinelOne Temsilcileri"
+  },
+  "securityEncryptionPage": {
+    "allEscrowStates": "Tüm emanet durumları",
+    "allOS": "Tüm İşletim Sistemi",
+    "allStatuses": "Tüm durumlar",
+    "bitlocker": "BitLocker",
+    "device": "Cihaz",
+    "diskEncryptionAcrossAllDevices": "Tüm cihazlarda disk şifreleme",
+    "encrypted": "Şifreli",
+    "encryptionStatus": "Şifreleme Durumu",
+    "escrowed": "Emanet edildi",
+    "filevault": "FileVault",
+    "fullyEncrypted": "Tamamen Şifrelenmiş",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "keyEscrowed": "Anahtar emanet edildi",
+    "keyMissing": "Anahtar eksik",
+    "linux": "Linux",
+    "luks": "LUKS",
+    "macos": "macOS",
+    "method": "Yöntem",
+    "missing": "Eksik",
+    "next": "Sonraki",
+    "no": "Hayır",
+    "noDevicesFound": "Cihaz bulunamadı.",
+    "none": "Hiçbiri",
+    "os": "İşletim Sistemi",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "partial": "Kısmi",
+    "previous": "Önceki",
+    "recoveryKey": "Kurtarma Anahtarı",
+    "searchDevices": "Cihazları arayın...",
+    "status": "Durum",
+    "totalDevices": "Toplam Cihaz Sayısı",
+    "tpm": "TPM",
+    "unencrypted": "Şifrelenmemiş",
+    "volume": "Ses seviyesi",
+    "windows": "Windows",
+    "yes": "Evet"
+  },
+  "securityFirewallPage": {
+    "active": "Aktif",
+    "allOS": "Tüm İşletim Sistemi",
+    "allStatuses": "Tüm durumlar",
+    "coverage": "Kapsam",
+    "device": "Cihaz",
+    "disabled": "Devre Dışı",
+    "enabled": "Etkin",
+    "firewall": "Güvenlik Duvarı",
+    "firewallStatus": "Güvenlik Duvarı Durumu",
+    "inactive": "Etkin Değil",
+    "inbound": "Gelen",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "linux": "Linux",
+    "macos": "macOS",
+    "networkProtectionAcrossAllDevices": "Tüm cihazlarda ağ koruması",
+    "next": "Sonraki",
+    "noDevicesFound": "Cihaz bulunamadı.",
+    "os": "İşletim Sistemi",
+    "outbound": "Giden",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "previous": "Önceki",
+    "profile": "Profil",
+    "rules": "Kurallar",
+    "searchDevices": "Cihazları arayın...",
+    "status": "Durum",
+    "totalDevices": "Toplam Cihaz Sayısı",
+    "windows": "Windows"
+  },
+  "securityHuntressIncidentList": {
+    "actions": "Eylemler",
+    "all": "hepsi",
+    "allSeverities": "Tüm önem dereceleri",
+    "allStatuses": "Tüm durumlar",
+    "category": "Kategori",
+    "critical": "Kritik",
+    "device": "Cihaz",
+    "dismissed": "Görevden alındı",
+    "failedToCreateIncident": "Olay oluşturulamadı",
+    "high": "Yüksek",
+    "huntressIncidents": "Huntress Olaylar",
+    "inProgress": "Devam ediyor",
+    "incidentsMatchYourFilters": "{{count}} olay filtrelerinizle eşleşiyor",
+    "loadingFleetIncidents": "Filo olayları yükleniyor...",
+    "loadingHuntressIncidents": "Huntress olay yükleniyor...",
+    "low": "Düşük",
+    "medium": "Orta",
+    "noHuntressIncidentsFound": "Huntress olay bulunamadı.",
+    "open": "Aç",
+    "promoteToIncident": "Olayı Tanıtın",
+    "refresh": "Yenile",
+    "reported": "Rapor edildi",
+    "resolved": "Çözüldü",
+    "searchIncidents": "Arama olayları",
+    "severity": "Önem",
+    "status": "Durum",
+    "title": "Başlık"
+  },
+  "securityPasswordPolicyPage": {
+    "adminAccts": "Yönetici Hesapları",
+    "all": "Hepsi",
+    "allOS": "Tüm İşletim Sistemi",
+    "commonFailures": "Yaygın Arızalar",
+    "compliance": "Uyumluluk",
+    "compliant": "Uyumlu",
+    "current": "Güncel",
+    "device": "Cihaz",
+    "fail": "Başarısız",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "linux": "Linux",
+    "localAccts": "Yerel Hesaplar",
+    "macos": "macOS",
+    "next": "Sonraki",
+    "noDevicesFound": "Cihaz bulunamadı.",
+    "nonCompliant": "Uyumlu değil",
+    "os": "İşletim Sistemi",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "pass": "Geçiş",
+    "passwordComplianceAcrossAllDevices": "Tüm cihazlarda şifre uyumluluğu",
+    "passwordPolicy": "Şifre Politikası",
+    "previous": "Önceki",
+    "required": "Gerekli",
+    "result": "Sonuç",
+    "rule": "Kural",
+    "searchDevices": "Cihazları arayın...",
+    "status": "Durum",
+    "totalDevices": "Toplam Cihaz Sayısı",
+    "windows": "Windows"
+  },
+  "securityRecommendationsPage": {
+    "adminAccounts": "Yönetici Hesapları",
+    "allCategories": "Tüm kategoriler",
+    "allPriorities": "Tüm öncelikler",
+    "allStatuses": "Tüm durumlar",
+    "antivirus": "Antivirüs",
+    "completed": "Tamamlandı",
+    "critical": "Kritik",
+    "criticalHigh": "Kritik + Yüksek",
+    "devices": "Cihazlar:",
+    "dismiss": "Kapat",
+    "dismissed": "Görevden alındı",
+    "effort": "Çaba:",
+    "encryption": "Şifreleme",
+    "firewall": "Güvenlik Duvarı",
+    "hideSteps": "Adımları gizle",
+    "high": "Yüksek",
+    "impact": "Etki:",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "low": "Düşük",
+    "markComplete": "Tamamlandı Olarak İşaretle",
+    "medium": "Orta",
+    "next": "Sonraki",
+    "noRecommendationsMatchYourFilters": "Filtrelerinizle eşleşen öneri yok.",
+    "open": "Aç",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "passwordPolicy": "Şifre Politikası",
+    "patchCompliance": "Yama Uyumluluğu",
+    "previous": "Önceki",
+    "prioritizedRemediationGuidance": "Öncelikli düzeltme kılavuzu",
+    "securityRecommendations": "Güvenlik Önerileri",
+    "total": "Toplam",
+    "vulnMgmt": "Vuln. Yönetim"
+  },
+  "securityRecoveryKeysPanel": {
+    "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
+    "bitlocker": "BitLocker",
+    "cancel": "İptal",
+    "collectNow": "Şimdi topla",
+    "copy": "Kopyala",
+    "currentRecoveryKey": "Mevcut kurtarma anahtarı",
+    "escrowed": "Emanet edildi {{time}}",
+    "failedToQueueKeyCollection": "Anahtar teslimi sıraya alınamadı",
+    "failedToQueueKeyRotation": "Anahtar yönlendirme sıraya alınamadı",
+    "failedToRevealRecoveryKey": "Kurtarma anahtarı gösterilemedi",
+    "filevault": "FileVault",
+    "filevaultKeysCanOnlyBeCapturedBy": "FileVault anahtarları yalnızca döndürülerek yakalanabilir — FileVault kullanıcısının kimlik bilgileriyle \"Döndürme anahtarını\" kullanın.",
+    "filevaultUsername": "FileVault kullanıcı adı",
+    "keyCollectionQueued": "Anahtar teslimi sıraya alındı",
+    "keyRotationQueuedTheNewKeyWill": "Anahtar rotasyonu sıraya alındı — temsilci bunu tamamladığında yeni anahtar emanet edilecek",
+    "macosOnlyRevealsTheFileVaultPersonalRecovery": "macOS yalnızca FileVault kişisel kurtarma anahtarını döndürüldüğünde ortaya çıkarır ve döndürmenin FileVault etkin bir kullanıcı (veya mevcut kurtarma anahtarı) tarafından yetkilendirilmesi gerekir. Kimlik bilgileri bir kez kullanılır ve saklanmaz.",
+    "noRecoveryKeysEscrowed": "Hiçbir kurtarma anahtarı emanet edilmedi.",
+    "or": "— veya —",
+    "password": "Şifre",
+    "recentAccess": "En son erişim",
+    "recoveryKeyEscrowIsNotSupportedOn": "Kurtarma anahtarı emaneti Linux'ta desteklenmez.",
+    "recoveryKeys": "Kurtarma Anahtarları",
+    "reveal": "Göster",
+    "rotate": "Döndür",
+    "rotateKey": "Döndürme tuşu",
+    "rotateRecoveryKey": "Kurtarma anahtarını döndür",
+    "thisAccessHasBeenRecordedInThe": "Bu erişim denetim takibine kaydedildi."
+  },
+  "securityS1ThreatList": {
+    "actions": "Eylemler",
+    "active": "Aktif",
+    "all": "hepsi",
+    "allSeverities": "Tüm önem dereceleri",
+    "allStatuses": "Tüm durumlar",
+    "critical": "Kritik",
+    "detected": "Algılandı",
+    "device": "Cihaz",
+    "endDate": "Bitiş tarihi",
+    "failedToCreateIncident": "Olay oluşturulamadı",
+    "high": "Yüksek",
+    "inProgress": "Devam ediyor",
+    "loadingFleetThreats": "Filo tehditleri yükleniyor...",
+    "loadingSentinelOneThreats": "SentinelOne tehditleri yükleniyor...",
+    "low": "Düşük",
+    "medium": "Orta",
+    "noSentinelOneThreatsFound": "Hiçbir SentinelOne tehdidi bulunamadı.",
+    "promoteToIncident": "Olayı Tanıtın",
+    "quarantined": "Karantinaya alındı",
+    "refresh": "Yenile",
+    "resolved": "Çözüldü",
+    "searchThreats": "Arama tehditleri",
+    "sentineloneThreats": "SentinelOne Tehditleri",
+    "severity": "Önem",
+    "startDate": "Başlangıç tarihi",
+    "status": "Durum",
+    "threat": "Tehdit",
+    "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
+    "unknownThreat": "Bilinmeyen tehdit"
+  },
+  "securityScoreDetailPage": {
+    "a": "A",
+    "a2": "A+",
+    "a3": "A-",
+    "affected": "Etkilendi",
+    "b": "B",
+    "b2": "B+",
+    "b3": "B-",
+    "c": "C",
+    "c2": "C+",
+    "c3": "C-",
+    "category": "Kategori",
+    "dataMayBeOutdated": "Veriler güncelliğini kaybetmiş olabilir — {{error}}",
+    "devicesAudited": "Denetlenen Cihazlar",
+    "grade": "Sınıf",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "overallScore": "Genel Puan",
+    "retry": "Tekrar dene",
+    "score": "Puan",
+    "scoreBreakdownByCategory": "Kategoriye göre puan dökümü",
+    "securityScore": "Güvenlik Puanı",
+    "status": "Durum",
+    "unableToLoadScoreData": "Puan verileri yüklenemiyor.",
+    "weight": "Ağırlık",
+    "weighted": "Ağırlıklı"
+  },
+  "securitySecurityDashboard": {
+    "acrossAllAssets": "Tüm varlıklarda",
+    "actionsPrioritized": "{{count}} işlemlere öncelik verildi",
+    "adminAccountAudit": "Yönetici Hesabı Denetimi",
+    "antivirusCoverage": "Antivirüs Kapsamı",
+    "bitlockerEnabled": "BitLocker etkin",
+    "complianceRate": "Uyumluluk oranı",
+    "compliant": "uyumlu",
+    "critical": "Kritik",
+    "dataUnavailable": "Veri mevcut değil",
+    "defaultAdmins": "Varsayılan yöneticiler",
+    "devicesAudited": "{{count}} cihazlar denetlendi",
+    "devicesFlagged": "{{count}} cihaz işaretlendi",
+    "devicesReviewed": "{{count}} cihazlar incelendi",
+    "devicesTracked": "{{count}} cihaz takip edildi",
+    "disabled": "Devre Dışı",
+    "diskProtection": "Disk koruması",
+    "elevated": "Yükseltilmiş",
+    "enabled": "Etkin",
+    "encryptionStatus": "Şifreleme Durumu",
+    "filevaultEnabled": "FileVault etkin",
+    "firewallStatus": "Güvenlik Duvarı Durumu",
+    "goToDevices": "Cihazlara git",
+    "high": "Yüksek",
+    "highRisk": "Yüksek risk",
+    "low": "Düşük",
+    "medium": "Orta",
+    "moreDevices": "+{{count}} daha fazla",
+    "networkDefense": "Ağ savunması",
+    "noDataAvailable": "Veri yok",
+    "noDevicesReportingYet": "Henüz rapor veren cihaz yok",
+    "noRecommendationsRightNowKeepMonitoringFor": "Şu anda öneri yok. Yeni rehberlik için izlemeye devam edin.",
+    "noWeakAdminAccountsDetected": "Zayıf yönetici hesabı algılanmadı.",
+    "openItems": "{{count}} açık öğeler",
+    "overallPosture": "Genel duruş",
+    "passwordPolicy": "Şifre Politikası",
+    "policyAdherence": "Politikaya bağlılık",
+    "privilegedAccess": "Ayrıcalıklı erişim",
+    "protected": "Korumalı",
+    "realTimeProtection": "Gerçek zamanlı koruma",
+    "refresh": "Yenile",
+    "remediationGuidance": "Düzeltme kılavuzu",
+    "retry": "Tekrar dene",
+    "scoreMovementOverTime": "Zaman içindeki hareketi puanlayın",
+    "security": "Güvenlik",
+    "securityDataCouldNotBeLoaded": "Güvenlik verileri yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
+    "securityPostureAppearsOnceDevicesReport": "Cihazlar kaydedilip raporlamaya başladığında güvenlik duruşu burada görünür.",
+    "securityRecommendations": "Güvenlik Önerileri",
+    "securityScore": "Güvenlik Puanı",
+    "securityScoreTrend": "Güvenlik Puanı Trendi",
+    "someSecurityDataCouldNotBeLoaded": "Bazı güvenlik verileri yüklenemedi. Gösterilen değerler eksik olabilir.",
+    "accessDeniedMessage": "Bu kuruluşun güvenlik verilerini görüntüleme izniniz yok.",
+    "someSecurityDataPermissionDenied": "Bazı güvenlik verileri size gösterilmiyor. Erişime ihtiyacınız olup olmadığını yöneticiye sorun.",
+    "strong": "Güçlü",
+    "trackProtectionCoverageVulnerabilitiesAndPolicyCompliance": "Koruma kapsamını, güvenlik açıklarını ve politika uyumluluğunu izleyin.",
+    "trendInsights": "Trend öngörüleri",
+    "unprotected": "Korumasız",
+    "updated": "Güncellendi {{time}}",
+    "viewDetails": "Ayrıntıları görüntüle",
+    "vulnerabilities": "Güvenlik Açıkları",
+    "weakAdmins": "Zayıf yöneticiler"
+  },
+  "securitySecurityPageHeader": {
+    "refresh": "Yenile",
+    "security": "Güvenlik"
+  },
+  "securitySecurityPolicyEditor": {
+    "actions": "Eylemler",
+    "add": "Ekle",
+    "addPathOrProcess": "Yol veya süreç ekleyin",
+    "allOrganizations": "Tüm kuruluşlar",
+    "autoQuarantine": "Otomatik karantina",
+    "behavioralMonitoring": "Davranış izleme",
+    "blockUntrustedUSBDevices": "Güvenilmeyen USB aygıtlarını engelle",
+    "cloudThreatLookup": "Bulut tehdidi araması",
+    "cron": "Cron:",
+    "dayOfMonth": "Ayın günü",
+    "dayOfWeek": "Haftanın günü",
+    "description": "Açıklama",
+    "detectSuspiciousProcessBehaviorAndScripts": "Şüpheli işlem davranışını ve komut dosyalarını tespit edin.",
+    "disabled": "Devre Dışı",
+    "enabled": "Etkin",
+    "exclusions": "Hariç Tutulanlar",
+    "failedToLoadPolicy": "Politika yüklenemedi",
+    "failedToSavePolicy": "Politika kaydedilemedi",
+    "fri": "Cuma",
+    "hour": "Saat",
+    "minute": "Dakika",
+    "mon": "Pazartesi",
+    "moveThreatsToQuarantineImmediately": "Tehditleri hemen karantinaya taşıyın.",
+    "notifyUserOnDetection": "Tespit durumunda kullanıcıyı bilgilendir",
+    "partnerWideTemplate": "(iş ortağı çapında şablon)",
+    "policyName": "Politika adı",
+    "preventUnknownRemovableMedia": "Bilinmeyen çıkarılabilir medyayı önleyin.",
+    "realTimeFileMonitoring": "Gerçek zamanlı dosya izleme",
+    "realTimeProtection": "Gerçek Zamanlı Koruma",
+    "sat": "Cumartesi",
+    "savePolicy": "Kaydetme politikası",
+    "saving": "Kaydediliyor...",
+    "scanNewAndModifiedFilesContinuously": "Yeni ve değiştirilmiş dosyaları sürekli olarak tarayın.",
+    "scheduledScans": "Zamanlanmış Taramalar",
+    "scope": "Kapsam",
+    "securityPolicyEditor": "Güvenlik Politikası Düzenleyicisi",
+    "sendDeviceNotificationsWhenThreatsAreFound": "Tehdit bulunduğunda cihaz bildirimleri gönderin.",
+    "skipTrustedLocationsDuringScans": "Taramalar sırasında güvenilir konumları atlayın.",
+    "sun": "Güneş",
+    "thisOrganizationOnly": "Yalnızca bu kuruluş",
+    "thu": "Per",
+    "tue": "Salı",
+    "tuneProtectionSettingsForDeviceGroups": "Cihaz grupları için koruma ayarlarını ayarlayın.",
+    "useCloudReputationForNewIndicators": "Yeni göstergeler için bulut itibarını kullanın.",
+    "wed": "Çar"
+  },
+  "securitySecurityScanManager": {
+    "activeScans": "Aktif taramalar",
+    "allScanRequestsFailed": "Tüm {{count}} tarama istekleri başarısız oldu",
+    "cData": "C:\\\\Data\\\\",
+    "customPath": "Özel yol",
+    "customScan": "Özel tarama",
+    "device": "Cihaz",
+    "devices": "Cihazlar",
+    "devicesSelected": "{{count}} cihaz seçildi",
+    "devicesSelected_one": "{{count}} cihaz seçildi",
+    "devicesSelected_other": "{{count}} cihaz seçildi",
+    "duration": "Süre",
+    "failed": "Başarısız",
+    "fullScan": "Tam tarama",
+    "historyShowsTheLatestCompletedAndFailed": "Geçmiş, en son tamamlanan ve başarısız olan taramaları gösterir.",
+    "loadingDevices": "Cihazlar yükleniyor...",
+    "multiSelect": "Çoklu seçim",
+    "noActiveScans": "Etkin tarama yok.",
+    "noScanHistoryYet": "Henüz tarama geçmişi yok.",
+    "quickScan": "Hızlı tarama",
+    "scanHistory": "Tarama geçmişi",
+    "scanHistoryPartiallyUnavailable": "{{total}} aygıtlardan {{failed}} için tarama geçmişi yüklenemedi — bu liste eksik.",
+    "scanHistoryUnavailable": "Tarama geçmişi yüklenemedi.",
+    "scanType": "Tarama türü",
+    "scanTypeLabel": "{{type}} tarama",
+    "scansAreQueuedImmediatelyOnSelectedDevices": "Taramalar seçilen cihazlarda anında sıraya alınır.",
+    "securityScanManager": "Güvenlik Tarama Yöneticisi",
+    "singleSelect": "Tek seçim",
+    "someScanRequestsFailed": "{{failed}} / {{total}} tarama isteği başarısız oldu",
+    "startAScan": "Tarama Başlat",
+    "startScan": "Taramayı başlat",
+    "startScansWatchProgressAndReviewScan": "Cihazlar arasında taramaları başlatın, ilerlemeyi izleyin ve tarama geçmişini inceleyin.",
+    "started": "Başlatıldı {{time}}",
+    "status": "Durum: {{status}}",
+    "status2": "Durum",
+    "type": "Tür"
+  },
+  "securityThreatDetail": {
+    "analystReview": "Analist incelemesi",
+    "detected": "Algılandı",
+    "device": "Cihaz",
+    "deviceInfo": "Cihaz Bilgisi",
+    "filePath": "Dosya Yolu",
+    "investigateContainAndResolveThisDetection": "Bu algılamayı araştırın, kontrol altına alın ve çözün.",
+    "loadingThreatDetails": "Tehdit ayrıntıları yükleniyor...",
+    "noRelatedThreats": "İlgili tehdit yok.",
+    "noThreatSelected": "Tehdit seçilmedi.",
+    "otherDetectionsOnThisDevice": "Bu cihazdaki diğer algılamalar.",
+    "provider": "Sağlayıcı",
+    "quarantine": "Karantina",
+    "relatedThreats": "İlgili Tehditler",
+    "remove": "Kaldır",
+    "restore": "Geri Yükle",
+    "reviewRemediationCompletenessAndEndpointHealth": "Düzeltmenin eksiksizliğini ve uç nokta durumunu inceleyin.",
+    "severity": "Önem",
+    "status": "Durum",
+    "threatDetail": "Tehdit Ayrıntısı",
+    "threatDetected": "Tehdit algılandı",
+    "threatFileWasRemovedFromEndpointStorage": "Tehdit dosyası uç nokta depolama alanından kaldırıldı.",
+    "threatID": "Tehdit Kimliği",
+    "threatQuarantined": "Tehdit karantinaya alındı",
+    "threatRemoved": "Tehdit kaldırıldı",
+    "threatStatus": "Tehdit durumu",
+    "threatWasMovedToQuarantineByPolicy": "Tehdit, politika veya operatör eylemi nedeniyle karantinaya taşındı.",
+    "timeline": "Zaman Çizelgesi"
+  },
+  "securityThreatList": {
+    "active": "Aktif",
+    "all": "hepsi",
+    "allDevices": "Tüm cihazlar",
+    "allSeverities": "Tüm önem dereceleri",
+    "allStatuses": "Tüm durumlar",
+    "clearSelection": "Seçimi temizle",
+    "critical": "Kritik",
+    "detected": "Algılandı",
+    "device": "Cihaz",
+    "high": "Yüksek",
+    "loadingThreats": "Tehditler yükleniyor...",
+    "low": "Düşük",
+    "medium": "Orta",
+    "noThreatsFound": "Tehdit bulunamadı.",
+    "quarantineSelected": "Karantina seçildi",
+    "quarantined": "Karantinaya alındı",
+    "refresh": "Yenile",
+    "removeSelected": "Seçileni kaldır",
+    "removed": "Kaldırıldı",
+    "searchByThreatName": "Tehdit adına göre ara",
+    "selectedCount": "{{count}} seçildi",
+    "severity": "Önem",
+    "status": "Durum",
+    "threat": "Tehdit",
+    "threats": "Tehditler",
+    "threatsMatchYourFilters": "{{count}} tehditler filtrelerinizle eşleşiyor",
+    "type": "Tür"
+  },
+  "securityTrendsPage": {
+    "adminAccounts": "Yönetici Hesapları",
+    "antivirus": "Antivirüs",
+    "change": "Değiştir",
+    "currentScore": "Mevcut Puan",
+    "dataMayBeOutdated": "Veriler güncelliğini kaybetmiş olabilir — {{error}}",
+    "encryption": "Şifreleme",
+    "firewall": "Güvenlik Duvarı",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "overall": "Genel",
+    "passwordPolicy": "Şifre Politikası",
+    "patchCompliance": "Yama Uyumluluğu",
+    "previousScore": "Önceki Skor",
+    "retry": "Tekrar dene",
+    "scoreMovementOverTime": "Zaman içindeki hareketi puanlayın",
+    "securityTrends": "Güvenlik Trendleri",
+    "trend": "Trend",
+    "unableToLoadTrendsData": "Trend verileri yüklenemiyor.",
+    "value30Days": "30 Gün",
+    "value7Days": "7 Gün",
+    "value90Days": "90 Gün",
+    "vulnMgmt": "Vuln. Yönetim"
+  },
+  "securityUserRiskPage": {
+    "atRiskUsers": "Risk altındaki kullanıcılar",
+    "couldNotSaveUserRiskFeedback": "Kullanıcı risk geri bildirimi kaydedilemedi",
+    "failedToLoadUserRisk": "Kullanıcı riski yüklenemedi",
+    "failedToLoadUserRiskDetail": "Kullanıcı riski ayrıntıları yüklenemedi",
+    "failedToLoadUserRiskEvaluation": "Kullanıcı risk değerlendirmesi yüklenemedi",
+    "failedToLoadUserRiskScores": "Kullanıcı risk puanları yüklenemedi",
+    "falsePositive": "Yanlış pozitif",
+    "falsePositiveLabelSaved": "Yanlış pozitif etiketi kaydedildi",
+    "labels": "Etiketler",
+    "loadingEvidence": "Kanıt yükleniyor",
+    "noRecentEvidenceFoundForThisScore": "Bu puan için yeni bir kanıt bulunamadı.",
+    "noUsersAreAboveTheCurrentRisk": "Hiçbir kullanıcı mevcut risk eşiğinin üzerinde değil.",
+    "precision": "Hassasiyet",
+    "recentEvidence": "Son kanıtlar",
+    "refresh": "Yenile",
+    "repeatSignalUsers": "Tekrar sinyali kullanıcıları",
+    "retry": "Tekrar dene",
+    "reviewRulesV0RiskScoresEvidenceAnd": "Kuralları-v0 risk puanlarını, kanıtları ve değerlendirme etiketlerini gözden geçirin.",
+    "scoreImpact": "{{value}} etki",
+    "scoresEvidenceAndLabelsWillAppearHere": "Kullanıcı riski v0 üreticisi etkinleştirildiğinde puanlar, kanıtlar ve etiketler burada görünecektir.",
+    "selectAUserToInspectRiskEvidence": "Risk kanıtlarını incelemek için bir kullanıcı seçin.",
+    "topDrivers": "En iyi sürücüler",
+    "trainingCompletion": "Eğitimin tamamlanması",
+    "truePositive": "Gerçek pozitif",
+    "truePositiveLabelSaved": "Gerçek pozitif etiketi kaydedildi",
+    "userRisk": "Kullanıcı Riski",
+    "userRiskScoringIsDisabledForThis": "Bu kuruluş için kullanıcı risk puanlaması devre dışı bırakıldı."
+  },
+  "securityVulnerabilitiesPage": {
+    "active": "Aktif",
+    "allCategories": "Tüm kategoriler",
+    "allSeverities": "Tüm önem dereceleri",
+    "allStatuses": "Tüm durumlar",
+    "category": "Kategori",
+    "clear": "Temizle",
+    "critical": "Kritik",
+    "detected": "Algılandı",
+    "detectedThreatsAcrossAllDevices": "Tüm cihazlarda algılanan tehditler",
+    "device": "Cihaz",
+    "high": "Yüksek",
+    "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
+    "low": "Düşük",
+    "malware": "Kötü amaçlı yazılım",
+    "medium": "Orta",
+    "next": "Sonraki",
+    "noThreatsFound": "Tehdit bulunamadı.",
+    "pageOfTotal": "Sayfa {{page}} / {{totalPages}} ({{total}} toplam)",
+    "previous": "Önceki",
+    "pup": "YAVRU",
+    "quarantine": "Karantina",
+    "quarantined": "Karantinaya alındı",
+    "ransomware": "Fidye yazılımı",
+    "remove": "Kaldır",
+    "removed": "Kaldırıldı",
+    "searchThreats": "Arama tehditleri...",
+    "selectThreat": "Tehdidi seçin {{name}}",
+    "selectedCount": "{{count}} seçildi",
+    "severity": "Önem",
+    "spyware": "Casus yazılım",
+    "status": "Durum",
+    "threat": "Tehdit",
+    "total": "Toplam",
+    "trojan": "Truva Atı",
+    "vulnerabilities": "Güvenlik Açıkları"
+  },
+  "pamPamAuditTab": {
+    "errors": {
+      "loadWithStatus": "Denetim geçmişi yüklenemedi (HTTP {{status}})",
+      "load": "Denetim geçmişi yüklenemedi",
+      "exportWithStatus": "Dışa aktarma başarısız oldu (HTTP {{status}})",
+      "export": "Dışa aktarma başarısız oldu"
+    },
+    "filters": {
+      "status": "Durum",
+      "allStatuses": "Tüm durumlar",
+      "flow": "Akış",
+      "allFlows": "Tüm akışlar",
+      "from": "Gönderen",
+      "to": "Kime"
+    },
+    "actions": {
+      "exporting": "Dışa aktarılıyor…",
+      "exportCsv": "CSV'yi dışa aktar"
+    },
+    "loading": "Denetim geçmişi yükleniyor…",
+    "empty": {
+      "title": "Eşleşme geçmişi yok",
+      "description": "Yükseltme isteği geçmişini görmek için filtreleri ayarlayın."
+    },
+    "table": {
+      "requested": "İstendi",
+      "device": "Cihaz",
+      "user": "Kullanıcı",
+      "target": "Hedef",
+      "flow": "Akış",
+      "status": "Durum",
+      "riskTierTitle": "Risk katmanı {{tier}}"
+    },
+    "pagination": {
+      "previous": "Önceki",
+      "pageOf": "Sayfa {{page}} / {{totalPages}}"
+    }
+  },
+  "pamPamOverviewTab": {
+    "errors": {
+      "loadWithStatus": "Genel bakış yüklenemedi (HTTP {{status}})",
+      "load": "Genel bakış yüklenemedi"
+    },
+    "loading": "Genel bakış yükleniyor…",
+    "setup": {
+      "title": "Ayrıcalıklı Erişimi kullanmaya başlama",
+      "step1BeforeLink": "UAC istemi yakalama varsayılan olarak açıktır. Bunu cihaz başına kapsam olarak belirleyin",
+      "configurationPolicyLink": "Yapılandırma Politikası → Ayrıcalıklı Erişim",
+      "step1AfterLink": "özellik bağlantısı.",
+      "step2": "Yükseklik istemleri, JIT yönetici istekleri ve AI aracı eylemleri İstekler sekmesinde sıralanır.",
+      "step3": "Her isteği onaylayın veya reddedin — ya da bundan bir kural oluşturarak bir dahaki sefere kararın otomatik olmasını sağlayın."
+    },
+    "stats": {
+      "activeElevations": "Aktif yükselmeler",
+      "pendingRequests": "Bekleyen istekler",
+      "recentDecisions": "Son kararlar"
+    },
+    "active": {
+      "title": "Aktif yükselmeler",
+      "emptyTitle": "Aktif yükselme yok",
+      "emptyDescription": "Onaylanan yükseltme pencereleri, süreleri dolana veya iptal edilene kadar burada görünecektir."
+    },
+    "table": {
+      "device": "Cihaz",
+      "user": "Kullanıcı",
+      "target": "Hedef",
+      "flow": "Akış",
+      "status": "Durum",
+      "expires": "Süresi doluyor"
+    },
+    "recent": {
+      "title": "Son kararlar",
+      "empty": "Henüz kararlaştırılan bir istek yok."
+    },
+    "expires": {
+      "expired": "süresi doldu"
+    }
+  },
+  "pamPamPage": {
+    "heading": "Ayrıcalıklı Erişim",
+    "description": "Filo genelinde yükseklik talepleri, onay kuralları ve denetim geçmişi.",
+    "liveStatus": {
+      "live": "Canlı",
+      "offline": "Çevrimdışı"
+    },
+    "tabs": {
+      "overview": "Genel Bakış",
+      "requests": "İstekler",
+      "rules": "Kurallar",
+      "signerGroups": "İmzacı Grupları",
+      "audit": "Denetim"
+    }
+  },
+  "pamPamRequestsTab": {
+    "errors": {
+      "loadWithStatus": "İstekler yüklenemedi (HTTP {{status}})",
+      "load": "İstekler yüklenemedi"
+    },
+    "filters": {
+      "status": "Durum",
+      "allStatuses": "Tüm durumlar",
+      "flow": "Akış",
+      "allFlows": "Tüm akışlar"
+    },
+    "summary": {
+      "requestCount": "{{count}} istekler",
+      "requestCount_one": "{{count}} isteği",
+      "requestCount_other": "{{count}} istekler"
+    },
+    "loading": "İstekler yükleniyor…",
+    "empty": {
+      "title": "Yükseltme isteği yok",
+      "pendingDescription": "Seni bekleyen hiçbir şey yok. Yeni UAC istemleri, JIT yönetici istekleri ve AI aracı eylemleri burada sıraya giriyor.",
+      "filteredDescription": "Mevcut filtrelerle eşleşen istekler burada görünecektir.",
+      "policyPrefix": "Beklenen istekleri göremiyor musunuz? UAC yakalama, cihaz başına şu şekilde kontrol edilir:",
+      "policyLink": "Yapılandırma Politikaları → Ayrıcalıklı Erişim"
+    },
+    "table": {
+      "requested": "İstendi",
+      "device": "Cihaz",
+      "user": "Kullanıcı",
+      "target": "Hedef",
+      "flow": "Akış",
+      "status": "Durum",
+      "riskTierTitle": "Risk katmanı {{tier}}",
+      "signer": "İmzalayan: {{signer}}"
+    },
+    "actions": {
+      "respond": "Yanıtla",
+      "revoke": "İptal Et",
+      "ruleTitle": "Bu istekten önceden doldurulmuş bir PAM kuralı oluşturun",
+      "rule": "Kural…"
+    },
+    "pagination": {
+      "previous": "Önceki",
+      "pageOf": "Sayfa {{page}} / {{totalPages}}"
+    }
+  },
+  "pamPamRespondModal": {
+    "errors": {
+      "windowsHello": "Windows Hello doğrulama başarısız oldu",
+      "actionFailed": "{{decision}} isteği yerine getirilemedi",
+      "network": "Ağ hatası"
+    },
+    "toasts": {
+      "approved": "Yükseklik onaylandı",
+      "denied": "Yükseklik reddedildi"
+    },
+    "title": "Yükseltme isteğine yanıt verin",
+    "summary": {
+      "reason": "Sebep: {{reason}}"
+    },
+    "decisions": {
+      "approve": "Onayla",
+      "deny": "Reddet"
+    },
+    "form": {
+      "approvalWindow": "Onay aralığı (dakika)",
+      "durationHelp": "1 - 1440 dakika (maks. 24 saat).",
+      "reasonRecommended": "Sebep (önerilir)",
+      "reasonOptional": "Sebep (isteğe bağlı)",
+      "reasonPlaceholder": "Denetim takibine kaydedildi"
+    },
+    "actions": {
+      "createRule": "Bu istekten kural oluştur…",
+      "submitting": "Gönderiliyor…",
+      "approveElevation": "Yükseltmeyi onayla",
+      "denyRequest": "İsteği reddet"
+    }
+  },
+  "pamPamRevokeModal": {
+    "errors": {
+      "revokeFailed": "Yükseltme iptal edilemedi",
+      "network": "Ağ hatası"
+    },
+    "toasts": {
+      "revoked": "Yükseklik iptal edildi"
+    },
+    "title": "Etkin yükseltmeyi iptal et",
+    "description": "<target>{{target}}</target> için <device>{{device}}</device> üzerinde yükselme penceresini hemen sonlandırır.",
+    "form": {
+      "reasonRequired": "Sebep (gerekli)",
+      "reasonPlaceholder": "Denetim takibine kaydedildi"
+    },
+    "actions": {
+      "revoking": "İptal ediliyor…",
+      "revokeElevation": "Yükseltmeyi iptal et"
+    }
+  },
+  "pamPamRuleModal": {
+    "days": {
+      "sun": "Güneş",
+      "mon": "Pazartesi",
+      "tue": "Salı",
+      "wed": "Çar",
+      "thu": "Per",
+      "fri": "Cuma",
+      "sat": "Cumartesi"
+    },
+    "notices": {
+      "siteScopeReset": "Orijinal istekteki site seçilen kuruluşta kullanılamıyor — kapsam kuruluş geneline sıfırlandı."
+    },
+    "errors": {
+      "matchCriterionRequired": "En az bir eşleşme kriteri gerekli.",
+      "timeWindowPairRequired": "Zaman penceresi başlangıcı ve bitişinin her ikisi de ayarlanmalıdır (veya her ikisi de boş bırakılmalıdır).",
+      "previewWithStatus": "Önizleme başarısız oldu (HTTP {{status}})",
+      "preview": "Önizleme başarısız oldu",
+      "toolIgnoreVerdict": "Araç eylemi kuralları Yoksay kararını kullanamaz.",
+      "updateRule": "Kural güncellenemedi",
+      "createRule": "Kural oluşturulamadı",
+      "network": "Ağ hatası"
+    },
+    "sections": {
+      "criteria": "Kriterleri eşleştir",
+      "window": "Zaman penceresi"
+    },
+    "toasts": {
+      "ruleSaved": "Kural \"{{name}}\" {{action}}",
+      "updated": "güncellendi",
+      "created": "oluşturuldu"
+    },
+    "title": {
+      "edit": "PAM kuralını düzenle",
+      "new": "Yeni PAM kuralı"
+    },
+    "form": {
+      "name": "Ad",
+      "priority": "Öncelik",
+      "descriptionOptional": "Açıklama (isteğe bağlı)",
+      "organization": "Organizasyon",
+      "scope": "Kapsam",
+      "orgWideAllSites": "Kuruluş çapında (tüm siteler)",
+      "verdict": "Karar",
+      "ruleShape": "Kural şekli",
+      "executable": "Çalıştırılabilir",
+      "aiToolAction": "AI aracı eylemi",
+      "negate": "Olumsuzla (eşleşmiyor)",
+      "none": "— yok —",
+      "daysNoneEveryDay": "Günler (yok = her gün)",
+      "timezoneOptional": "Saat Dilimi (isteğe bağlı)",
+      "enabled": "Etkin"
+    },
+    "fields": {
+      "signer": "İmzalayan",
+      "signerGroup": "İmzalayan grubu",
+      "sha256Hash": "SHA-256 karma",
+      "pathGlob": "Yol küresi",
+      "parentImage": "Ana resim",
+      "commandLine": "Komut satırı",
+      "toolName": "Araç adı",
+      "riskTier": "Risk katmanı (0-4)",
+      "userOptional": "Kullanıcı (isteğe bağlı)",
+      "adGroupOptional": "AD grubu (isteğe bağlı)",
+      "windowStart": "Pencere başlangıcı (SS:DD)",
+      "windowEnd": "Pencere sonu (SS:DD)",
+      "approvalMinsOptional": "Onay dakikası (isteğe bağlı)"
+    },
+    "placeholders": {
+      "microsoftCorporation": "ör. Microsoft Şirketi",
+      "hexChars": "64 onaltılık karakter",
+      "programFilesGlob": "C:\\Program Files\\**",
+      "explorer": "explorer.exe",
+      "printui": "printui.dll,PrintUIEntry",
+      "runScript": "run_script",
+      "riskTier": "2",
+      "domainUser": "ALAN\\kullanıcı",
+      "helpdeskTier1": "Yardım Masası Seviye 1",
+      "windowStart": "08:00",
+      "windowEnd": "18:00",
+      "approvalMins": "15",
+      "utc": "UTC"
+    },
+    "preview": {
+      "title": "Son isteklerin önizlemesi",
+      "previewing": "Önizleme yapılıyor…",
+      "action": "Maçları önizleyin",
+      "matchedPrefix": "Eşleşirdi\nSon __BREEZE_TOKEN_1__ gün içindeki __BREEZE_TOKEN_0__ istekten ",
+      "matchedSuffix": "son {{windowDays}} gündeki {{totalScanned}} isteğin",
+      "truncated": "(en yeni 5000 tarandı)",
+      "adGroupNote": "Not: geçmiş istekler AD gruplarını kaydetmez, dolayısıyla bir AD grubu kriteri içeren herhangi bir taslak, 0 eşleşme olarak önizlenir."
+    },
+    "actions": {
+      "saveChanges": "Değişiklikleri kaydet",
+      "createRule": "Kural oluştur"
+    }
+  },
+  "pamPamRulesTab": {
+    "errors": {
+      "updateDefaultVerdict": "Varsayılan karar güncellenemedi",
+      "loadWithStatus": "Kurallar yüklenemedi (HTTP {{status}})",
+      "load": "Kurallar yüklenemedi",
+      "updateRule": "Kural güncellenemedi",
+      "deleteRule": "Kural silinemedi"
+    },
+    "toasts": {
+      "defaultVerdictSet": "Varsayılan karar {{verdict}} olarak ayarlandı",
+      "ruleToggled": "Kural \"{{name}}\" {{state}}",
+      "ruleDeleted": "\"{{name}}\" kuralı silindi"
+    },
+    "states": {
+      "disabled": "devre dışı bırakıldı",
+      "enabled": "etkin"
+    },
+    "description": "İlk önce yazılım politikaları değerlendirilir; izin verilenler listesi/engellenenler listesi eşleşmesi bu kurallardan önce karar verir. Daha sonra kurallar öncelik sırasına göre (önce en düşük) çalıştırılır; ilk maç belirler.",
+    "actions": {
+      "addRule": "Kural ekle"
+    },
+    "defaultVerdict": {
+      "label": "Varsayılan karar",
+      "requireApproval": "Onay gerektir",
+      "autoDeny": "Otomatik reddet",
+      "help": "Bir yükseklik hiçbir politika veya kuralla eşleşmediğinde karar verin."
+    },
+    "loading": "Kurallar yükleniyor…",
+    "empty": {
+      "title": "Henüz PAM kuralı yok",
+      "description": "Kurallar olmadan, her yükseltme talebi manuel bir karar bekler."
+    },
+    "table": {
+      "priority": "Öncelik",
+      "name": "Ad",
+      "criteria": "Kriterler",
+      "scope": "Kapsam",
+      "verdict": "Karar",
+      "enabled": "Etkin",
+      "orgWide": "Kuruluş çapında"
+    },
+    "deleteDialog": {
+      "title": "PAM kuralını sil",
+      "message": "\"{{name}}\" kuralı silinsin mi? Yükseklik istekleri artık bununla eşleşmeyecek.",
+      "confirm": "Kuralı sil"
+    }
+  },
+  "pamPamSignerGroupsTab": {
+    "errors": {
+      "loadWithStatus": "İmzalayan grupları yüklenemedi (HTTP {{status}})",
+      "load": "İmzalayan grupları yüklenemedi",
+      "deleteGroup": "İmzalayan grubu silinemedi"
+    },
+    "toasts": {
+      "groupDeleted": "İmzalayan grubu \"{{name}}\" silindi"
+    },
+    "description": "İmzalayan grubu, güvenilir Authenticode imzalayanların adlandırılmış listesidir. Aynı yayıncıyı birçok kuralda tekrarlamak yerine, bir kuraldan birine referans verin.",
+    "actions": {
+      "addSignerGroup": "İmzalayan grubu ekle"
+    },
+    "loading": "İmzalayan grupları yükleniyor…",
+    "empty": {
+      "title": "Henüz imzalayan grubu yok",
+      "description": "Güvenilir yayıncı listesini birden çok kuralda yeniden kullanmak için bir tane oluşturun."
+    },
+    "table": {
+      "name": "Ad",
+      "signers": "İmzalayanlar"
+    },
+    "deleteDialog": {
+      "title": "İmzalayan grubunu sil",
+      "message": "\"{{name}}\" imzalayan grubu silinsin mi? Öncelikle buna atıfta bulunan kuralların güncellenmesi gerekir.",
+      "confirm": "Grubu sil"
+    },
+    "modal": {
+      "errors": {
+        "update": "İmzalayan grubu güncellenemedi",
+        "create": "İmzalayan grubu oluşturulamadı",
+        "network": "Ağ hatası"
+      },
+      "toasts": {
+        "saved": "İmzalayan grubu \"{{name}}\" {{action}}",
+        "updated": "güncellendi",
+        "created": "oluşturuldu"
+      },
+      "title": {
+        "edit": "İmzalayan grubunu düzenle",
+        "new": "Yeni imzalayan grubu"
+      },
+      "form": {
+        "name": "Ad",
+        "descriptionOptional": "Açıklama (isteğe bağlı)",
+        "signers": "İmzalayanlar",
+        "signersHelp": "Satır başına bir Authenticode imzalayan (konu CN); büyük/küçük harfe duyarlı olmadan eşleşir.",
+        "signerPlaceholder": "ör. Microsoft Şirketi"
+      },
+      "actions": {
+        "removeSigner": "İmzalayanı kaldır",
+        "addSigner": "İmzalayanı ekle",
+        "saveChanges": "Değişiklikleri kaydet",
+        "createGroup": "Grup oluştur"
+      }
+    }
+  },
+  "sensitiveDataCreateScanModal": {
+    "errors": {
+      "deviceRequired": "En az bir cihaz kimliğini girin",
+      "createScan": "Tarama oluşturulamadı"
+    },
+    "title": "Tarama Oluştur",
+    "form": {
+      "policyOptional": "Politika (isteğe bağlı)",
+      "noPolicy": "Politika yok (manuel yapılandırma)",
+      "deviceIds": "Cihaz Kimlikleri",
+      "deviceIdsHelp": "Satır başına bir UUID veya virgülle ayrılmış.",
+      "deviceIdsPlaceholder": "cihaz-uuid-1\ncihaz-uuid-2",
+      "detectionClasses": "Algılama Sınıfları"
+    },
+    "actions": {
+      "creating": "Oluşturuluyor...",
+      "createScan": "Tarama Oluştur"
+    }
+  },
+  "sensitiveDataDashboardTab": {
+    "empty": {
+      "noDataYet": "Henüz veri yok"
+    },
+    "errors": {
+      "fetchDashboard": "Kontrol paneli getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "stats": {
+      "totalFindings": "Toplam Bulgular",
+      "criticalOpen": "Kritik Açık",
+      "remediated24h": "Düzeltildi (24 saat)",
+      "openFindings": "Açık Bulgular"
+    },
+    "charts": {
+      "findingsByDataType": "Veri Türüne Göre Bulgular",
+      "riskDistribution": "Risk Dağılımı"
+    }
+  },
+  "sensitiveDataFindingsTab": {
+    "errors": {
+      "fetchFindings": "Bulgular getirilemedi",
+      "generic": "Bir hata oluştu",
+      "updateFinding": "Bulgu güncellenemedi",
+      "actionFailed": "İşlem başarısız oldu"
+    },
+    "filters": {
+      "allTypes": "Tüm Türler",
+      "allRisks": "Tüm Riskler",
+      "allStatuses": "Tüm Durumlar",
+      "searchPlaceholder": "Dosya yollarını ara..."
+    },
+    "actions": {
+      "remediateSelected": "Düzelt ({{count}})",
+      "acceptRiskTitle": "Riski Kabul Et",
+      "accept": "Kabul et",
+      "markFalsePositiveTitle": "Yanlış Pozitif Olarak İşaretle",
+      "fp": "FP"
+    },
+    "table": {
+      "filePath": "Dosya Yolu",
+      "type": "Tür",
+      "pattern": "Desen",
+      "risk": "Risk",
+      "confidence": "Güven",
+      "status": "Durum",
+      "device": "Cihaz",
+      "found": "Bulundu",
+      "actions": "Eylemler"
+    },
+    "empty": {
+      "noFilterMatches": "Mevcut filtrelerle eşleşen bulgu yok.",
+      "noSearchMatches": "Bu sayfada aramanızla eşleşen hiçbir bulgu yok."
+    },
+    "pagination": {
+      "showingSearch": "Bu sayfada {{pageCount}} / {{visible}} gösteriliyor (toplam {{total}})",
+      "showingTotal": "{{total}} bulgulardan {{visible}} gösteriliyor",
+      "pageOf": "Sayfa {{page}} / {{totalPages}}"
+    }
+  },
+  "sensitiveDataPoliciesTab": {
+    "errors": {
+      "fetchPolicies": "Politikalar getirilemedi",
+      "generic": "Bir hata oluştu",
+      "savePolicy": "Politika kaydedilemedi",
+      "saveFailed": "Kaydetme başarısız oldu",
+      "deletePolicy": "Politika silinemedi",
+      "deleteFailed": "Silinemedi",
+      "updatePolicy": "Politika güncellenemedi",
+      "updateFailed": "Güncelleme başarısız oldu"
+    },
+    "toasts": {
+      "policyUpdated": "Politika güncellendi",
+      "policyCreated": "Politika oluşturuldu",
+      "policyDeleted": "\"{{name}}\" Politikası silindi"
+    },
+    "heading": "Tarama Politikaları",
+    "descriptionPrefix": "Hassas veri tarama politikalarını yönetin. Hiyerarşik atama için şunu kullanın:",
+    "configurationPoliciesLink": "Yapılandırma Politikaları",
+    "actions": {
+      "newPolicy": "Yeni Politika",
+      "saving": "Kaydediliyor...",
+      "update": "Güncelle"
+    },
+    "form": {
+      "editPolicy": "Politikayı Düzenle",
+      "createPolicy": "Politika Oluştur",
+      "scope": "Kapsam",
+      "allOrganizations": "Tüm kuruluşlar",
+      "partnerWidePolicyParenthetical": "(iş ortağı çapında politika)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş",
+      "name": "Ad",
+      "policyNamePlaceholder": "Politika adı",
+      "detectionClasses": "Algılama Sınıfları",
+      "scheduleType": "Zamanlama Türü",
+      "intervalMinutes": "Aralık (dakika)",
+      "cronExpression": "Cron İfadesi",
+      "cronPlaceholder": "0 2 * * *"
+    },
+    "schedule": {
+      "manual": "Manuel",
+      "interval": "Aralık",
+      "cron": "Cron",
+      "everyMinutes": "Her {{minutes}}m"
+    },
+    "table": {
+      "name": "Ad",
+      "detectionClasses": "Algılama Sınıfları",
+      "schedule": "Program",
+      "active": "Aktif",
+      "actions": "Eylemler"
+    },
+    "empty": "Henüz politika yok. Başlamak için bir tane oluşturun.",
+    "badges": {
+      "partnerWideTitle": "İş ortağı çapında politika — her kuruluştaki cihazları tarar",
+      "allOrgs": "İş ortağı çapında"
+    },
+    "deleteDialog": {
+      "title": "Tarama Politikasını Sil",
+      "message": "\"{{name}}\" öğesini silmek istediğinizden emin misiniz? Bu eylem geri alınamaz ve bu politika kapsamında planlanmış taramalar durdurulacaktır.",
+      "confirm": "Politikayı Sil"
+    }
+  },
+  "sensitiveDataRemediationModal": {
+    "errors": {
+      "remediationFailed": "Düzeltme başarısız oldu"
+    },
+    "title": "Bulguları Düzeltin",
+    "selectedCount": "{{count}} bulgular seçildi",
+    "selectedCount_one": "{{count}} bulgu seçildi",
+    "selectedCount_other": "{{count}} bulgular seçildi",
+    "badges": {
+      "destructive": "Yıkıcı"
+    },
+    "actions": {
+      "processing": "İşleniyor...",
+      "continue": "Devam et",
+      "confirmSecureDelete": "Güvenli Silmeyi Onayla"
+    },
+    "confirm": {
+      "title": "Yıkıcı Eylem",
+      "beforeAction": "Şunu yapmak üzeresiniz:",
+      "findingCount": "{{count}} bulgular.",
+      "findingCount_one": "{{count}} bulma.",
+      "findingCount_other": "{{count}} bulgular.",
+      "afterCount": "Bu eylem, hedef cihazlardaki dosyaları değiştirebilir veya kaldırabilir."
+    },
+    "secondApproval": {
+      "notice": "Güvenli silme, ikinci bir onay belirteci gerektirir.",
+      "approvalToken": "Onay Jetonu",
+      "placeholder": "İkinci onay jetonunu girin"
+    },
+    "result": {
+      "success": "Düzeltme başarıyla başlatıldı.",
+      "updated": "{{count}} bulgu(lar) güncellendi",
+      "queued": "{{count}} komutları sıraya alındı",
+      "failed": "{{count}} başarısız oldu"
+    }
+  },
+  "sensitiveDataScansTab": {
+    "errors": {
+      "fetchScans": "Taramalar getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "duration": {
+      "running": "Koşuyor..."
+    },
+    "heading": "Taramalar",
+    "actions": {
+      "newScan": "Yeni Tarama"
+    },
+    "table": {
+      "scanId": "Tarama Kimliği",
+      "device": "Cihaz",
+      "status": "Durum",
+      "findings": "Bulgular",
+      "started": "Başlatıldı",
+      "duration": "Süre"
+    },
+    "empty": "Henüz tarama yok. Başlamak için yeni bir tarama oluşturun."
+  },
+  "sensitiveDataSensitiveDataPage": {
+    "tabs": {
+      "dashboard": "Kontrol Paneli",
+      "findings": "Bulgular",
+      "scans": "Taramalar",
+      "policies": "Politikalar"
+    },
+    "heading": "Hassas Veriler"
+  },
+  "dnsSecurityAddDnsIntegrationModal": {
+    "title": "DNS Entegrasyonunu ekleyin",
+    "description": "Sorgu günlüklerini ve tehdit olaylarını almak için bir DNS filtreleme sağlayıcısına bağlanın.",
+    "providers": {
+      "umbrella": {
+        "label": "Cisco Umbrella",
+        "helpText": "API anahtar + Şemsiye Raporlamasından gizli API; Umbrella kontrol paneli URL'nizden organizasyon kimliğiniz.",
+        "apiKeyPlaceholder": "raporlama-api-anahtarı",
+        "apiSecretPlaceholder": "raporlama-api-gizli",
+        "organizationIdPlaceholder": "1234567"
+      },
+      "cloudflare": {
+        "label": "Cloudflare Gateway",
+        "helpText": "API belirteci ile Sıfır Güven → Ağ Geçidi → Okuma kapsamı.",
+        "apiTokenPlaceholder": "cf-api-token",
+        "accountIdPlaceholder": "Cloudflare kontrol panelinden 32 karakterlik hex"
+      },
+      "dnsfilter": {
+        "label": "DNSFilter\n__BREEZE_TOKEN_1__ hesap ayarlarınızdan ",
+        "helpText": "DNSFilter hesap ayarlarınızdan API anahtarı; hesap kimliği yalnızca çok kiracılı kapsamlar için gereklidir.",
+        "apiKeyPlaceholder": "dnsfilter-api-anahtarı",
+        "accountIdPlaceholder": "tek kiracılı için boş bırakın"
+      },
+      "pihole": {
+        "label": "Pi-hole",
+        "helpText": "Pi-hole API bitiş noktası + API anahtarı. LAN tarafından yönlendirilebilen ana bilgisayar adını kullanın.\n/admin'den ",
+        "apiKeyPlaceholder": "pihole API anahtarı",
+        "apiEndpointPlaceholder": "http://pihole.local"
+      },
+      "adguardHome": {
+        "label": "AdGuard Home",
+        "helpText": "API uç nokta + HTTP Temel kimlik doğrulama kullanıcı adı (apiKey) + şifre (apiSecret).",
+        "usernamePlaceholder": "yönetici",
+        "passwordPlaceholder": "şifre",
+        "apiEndpointPlaceholder": "https://adguard.client.local"
+      }
+    },
+    "fields": {
+      "provider": "Sağlayıcı",
+      "displayName": "Görünen ad",
+      "descriptionOptional": "Açıklama (isteğe bağlı)",
+      "apiKey": "API tuşu",
+      "apiSecret": "API gizli",
+      "apiToken": "API belirteci",
+      "organizationId": "Kuruluş Kimliği",
+      "accountId": "Hesap Kimliği",
+      "accountIdOptional": "Hesap Kimliği (isteğe bağlı)",
+      "apiEndpoint": "API uç nokta",
+      "httpBasicUsername": "HTTP Temel kullanıcı adı",
+      "httpBasicPassword": "HTTP Temel şifresi"
+    },
+    "placeholders": {
+      "displayName": "ör. Acme Genel Merkez Ağ Geçidi",
+      "description": "Bu entegrasyonun kapsamı"
+    },
+    "actions": {
+      "cancel": "İptal",
+      "adding": "Ekleniyor…",
+      "addIntegration": "Entegrasyon ekle"
+    },
+    "messages": {
+      "createFailed": "Entegrasyon oluşturulamadı",
+      "createSuccess": "{{provider}} entegrasyonu \"{{name}}\" eklendi",
+      "networkError": "Ağ hatası"
+    }
+  },
+  "dnsSecurityAddDnsPolicyModal": {
+    "title": "Yeni DNS Politikası",
+    "description": "Engellenenler listesi veya izin verilenler listesi alan adları, bir sonraki senkronizasyon döngüsünde DNS sağlayıcınıza aktarıldı.",
+    "fields": {
+      "integration": "Entegrasyon",
+      "policyName": "Politika adı",
+      "type": "Tür",
+      "descriptionOptional": "Açıklama (isteğe bağlı)",
+      "initialDomainsOptional": "Başlangıç alanları (isteğe bağlı)"
+    },
+    "policyTypes": {
+      "blocklist": "Engellenenler listesi (reddet)",
+      "allowlist": "İzin verilenler listesi (izin)"
+    },
+    "placeholders": {
+      "policyName": "ör. Tehdit engellenenler listesi",
+      "domains": "kötü amaçlı yazılım.example.com\nphish.example.com\nc2.example.org"
+    },
+    "initialDomainsHelp": "(satır başına bir tane, virgülle ayrılmış olarak veya bir liste yapıştırın — en fazla 500)",
+    "loadingIntegrations": "Entegrasyonlar yükleniyor…",
+    "noIntegrations": "Yapılandırılan entegrasyon yok. Önce Entegrasyonlar sekmesine bir tane ekleyin.",
+    "actions": {
+      "cancel": "İptal",
+      "creating": "Oluşturuluyor…",
+      "createPolicy": "Politika oluştur"
+    },
+    "messages": {
+      "loadIntegrationsHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
+      "loadIntegrationsFailed": "Entegrasyonlar yüklenemedi",
+      "pickIntegrationFirst": "Önce bir entegrasyon seçin",
+      "createFailed": "Politika oluşturulamadı",
+      "createSuccess": "\"{{name}}\" Politikası oluşturuldu",
+      "networkError": "Ağ hatası"
+    }
+  },
+  "dnsSecurityDnsSecurityPage": {
+    "title": "DNS Güvenlik",
+    "description": "DNS filtreleme entegrasyonları, engellenenler listesi/izin verilenler listesi politikaları ve Umbrella, Cloudflare Gateway, DNSFilter, Pi-hole, OpenDNS, Quad9 ve tehdit olayları AdGuard Home.",
+    "tabs": {
+      "overview": "Genel Bakış",
+      "integrations": "Entegrasyonlar",
+      "policies": "Politikalar",
+      "events": "Etkinlikler"
+    }
+  },
+  "dnsSecurityDnsSecurityOverviewTab": {
+    "messages": {
+      "loadFailed": "Genel bakış yüklenemedi"
+    },
+    "stats": {
+      "totalQueries": "Toplam sorgu",
+      "blocked": "Engellendi",
+      "allowed": "İzin veriliyor",
+      "redirected": "Yönlendirildi"
+    },
+    "topBlocked": {
+      "title": "En çok engellenen alan adları",
+      "empty": "Geçerli pencerede engellenen alan adı yok."
+    },
+    "loading": "Yükleniyor…"
+  },
+  "dnsSecurityDnsSecurityIntegrationsTab": {
+    "title": "Yapılandırılmış entegrasyonlar",
+    "providers": {
+      "umbrella": "Cisco Umbrella",
+      "cloudflare": "Cloudflare Gateway",
+      "dnsfilter": "DNSFilter",
+      "pihole": "Pi-hole",
+      "opendns": "OpenDNS",
+      "quad9": "Quad9",
+      "adguardHome": "AdGuard Home"
+    },
+    "actions": {
+      "addIntegration": "Entegrasyon ekle",
+      "syncNow": "Şimdi senkronize et",
+      "deleteIntegration": "Entegrasyonu sil"
+    },
+    "messages": {
+      "loadHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
+      "loadFailed": "Entegrasyonlar yüklenemedi",
+      "syncFailed": "{{name}} için senkronizasyon tetiklenemedi",
+      "syncQueued": "Senkronizasyon {{name}} için sıraya alındı",
+      "deleteConfirm": "{{name}} silinsin mi? Saklanan etkinlikler, saklama ilkesi uyarınca saklanır.",
+      "deleteFailed": "{{name}} silinemedi",
+      "deleteSuccess": "Silindi {{name}}"
+    },
+    "loading": "Entegrasyonlar yükleniyor…",
+    "empty": {
+      "title": "DNS entegrasyonu yapılandırılmadı",
+      "description": "DNS sorgu günlüklerini almaya başlamak için desteklenen 7 sağlayıcıdan birine bağlanın."
+    },
+    "table": {
+      "name": "İsim",
+      "provider": "Sağlayıcı",
+      "lastSync": "Son senkronizasyon",
+      "events": "Etkinlikler",
+      "actions": "Eylemler"
+    },
+    "lastSyncFailedSuffix": "— başarısız oldu",
+    "never": "Hiçbir zaman"
+  },
+  "dnsSecurityDnsSecurityPoliciesTab": {
+    "title": "Politikaları Engelle / İzin Ver",
+    "actions": {
+      "newPolicy": "Yeni politika",
+      "hide": "Gizle",
+      "editDomains": "Alan adlarını düzenle",
+      "removeDomain": "Kaldır {{domain}}",
+      "add": "Ekle"
+    },
+    "messages": {
+      "loadHttpError": "Politikalar yüklenemedi (HTTP {{status}})",
+      "loadFailed": "Politikalar yüklenemedi",
+      "updateDomainsFailed": "Etki alanları güncellenemedi",
+      "domainsUpdated": "Alan adları güncellendi"
+    },
+    "loading": "Politikalar yükleniyor…",
+    "empty": {
+      "title": "DNS politikası yapılandırılmadı",
+      "description": "DNS entegrasyonlarınızdan birine bağlı bir engellenenler listesi veya izin verilenler listesi oluşturun."
+    },
+    "policyTypes": {
+      "blocklist": "engellenenler listesi",
+      "allowlist": "izin verilenler listesi"
+    },
+    "domainCount": "{{integrationName}} · {{count}} alan adları",
+    "domainCount_one": "{{integrationName}} · {{count}} alanı",
+    "domainCount_other": "{{integrationName}} · {{count}} alan adları",
+    "noDomains": "Henüz alan adı yok.",
+    "fields": {
+      "addDomains": "Alan ekle"
+    },
+    "addDomainsHelp": "(her satıra bir tane, virgülle ayrılmış olarak veya bir liste yapıştırın)",
+    "placeholders": {
+      "domains": "kötü amaçlı yazılım.example.com\nphish.example.com"
+    }
+  },
+  "dnsSecurityDnsSecurityEventsTab": {
+    "title": "DNS sorgu etkinlikleri",
+    "messages": {
+      "loadHttpError": "Etkinlikler yüklenemedi (HTTP {{status}})",
+      "loadFailed": "Etkinlikler yüklenemedi"
+    },
+    "loading": "Yükleniyor…",
+    "eventCount_one": "{{shown}} / {{total}} etkinliği (en son 100)",
+    "eventCount_other": "{{shown}} / {{total}} olay (en son 100)",
+    "blockedEventCount_one": "{{shown}} / {{total}} engellenen etkinlik (en son 100)",
+    "blockedEventCount_other": "{{shown}} / {{total}} engellenen etkinlikler (en son 100)",
+    "showAll": "Tümünü göster (yalnızca engellenenleri değil)",
+    "actions": {
+      "refresh": "Yenile",
+      "allowed": "izin verildi",
+      "blocked": "engellendi",
+      "redirected": "yönlendirildi"
+    },
+    "loadingEvents": "Etkinlikler yükleniyor…",
+    "empty": {
+      "allTitle": "DNS olay kaydedilmedi",
+      "blockedTitle": "Engellenen DNS etkinliği yok",
+      "allDescription": "Bir entegrasyon yapılandırın ve ilk 15 dakikalık senkronizasyonun tamamlanmasını bekleyin.",
+      "blockedDescription": "Son pencerede engellenen tehdit yok. İzin verilen trafiği görmek için \"Tümünü göster\" seçeneğini değiştirmeyi deneyin."
+    },
+    "table": {
+      "when": "Ne zaman",
+      "device": "Cihaz",
+      "domain": "Alan Adı",
+      "category": "Kategori",
+      "action": "Eylem"
+    },
+    "unknown": "bilinmiyor"
+  },
+  "cisHardeningCisHardeningPage": {
+    "title": "CIS Sertleştirme",
+    "description": "Yapılandırma temelleri, uyumluluk puanlaması ve iyileştirme takibi.",
+    "messages": {
+      "loadFailed": "CIS verileri yüklenemedi"
+    },
+    "actions": {
+      "refresh": "Yenile"
+    },
+    "tabs": {
+      "compliance": "Uyumluluk",
+      "baselines": "Temel Çizgiler",
+      "remediations": "Düzeltmeler"
+    }
+  },
+  "cisHardeningCisSummaryCards": {
+    "averageScore": "Ortalama Puan",
+    "averageScoreTooltip": "Tüm cihazlar ve temeller genelinde kontrollerden geçme yüzdesi. Daha yüksek daha iyidir.",
+    "failingDevices": "Arızalı Cihazlar",
+    "activeBaselines": "Aktif Temel Hatlar",
+    "pendingRemediations": "Bekleyen Düzeltmeler",
+    "pendingRemediationsTooltip": "Onay bekleyen otomatik düzeltmeler. Uygulamadan önce gözden geçirin; bazı değişiklikler sistem davranışını etkileyebilir."
+  },
+  "cisHardeningCisComplianceTab": {
+    "searchPlaceholder": "Ana bilgisayar adını veya taban çizgisini arayın...",
+    "os": {
+      "all": "Tüm işletim sistemi türleri",
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "table": {
+      "device": "Cihaz",
+      "baseline": "Temel",
+      "os": "İşletim Sistemi",
+      "score": "Puan",
+      "failedChecks": "Başarısız Kontroller",
+      "lastScanned": "Son Taranan"
+    },
+    "loading": "Uyumluluk verileri yükleniyor...",
+    "empty": "Uyumluluk sonucu bulunamadı."
+  },
+  "cisHardeningCisComplianceRow": {
+    "severity": {
+      "low": "düşük",
+      "medium": "orta",
+      "high": "yüksek",
+      "critical": "kritik"
+    },
+    "noFailedFindings": "Başarısız bulgu yok."
+  },
+  "cisHardeningCisBaselinesTab": {
+    "title": "Temel Çizgiler",
+    "actions": {
+      "newBaseline": "Yeni Temel",
+      "edit": "Düzenle",
+      "triggerScan": "Taramayı Tetikle"
+    },
+    "messages": {
+      "triggerScanFailed": "Tarama tetiklenemedi",
+      "triggerScanQueued": "Tarama {{name}} için sıraya alındı"
+    },
+    "table": {
+      "name": "Ad",
+      "os": "İşletim Sistemi",
+      "level": "Seviye",
+      "version": "Sürüm",
+      "schedule": "Program",
+      "status": "Durum",
+      "actions": "Eylemler"
+    },
+    "loading": "Taban çizgileri yükleniyor...",
+    "empty": "Yapılandırılmış taban çizgisi yok.",
+    "levels": {
+      "l1": "l1",
+      "l2": "l2",
+      "custom": "özel"
+    },
+    "schedule": {
+      "everyHours": "Her {{hours}}h",
+      "manual": "Kılavuz"
+    },
+    "status": {
+      "active": "Aktif",
+      "inactive": "Etkin değil"
+    },
+    "badges": {
+      "allOrgs": "Tüm kuruluşlar",
+      "partnerWideTitle": "İş ortağı çapında temel — her kuruluştaki cihazlar için geçerlidir"
+    }
+  },
+  "cisHardeningCisBaselineForm": {
+    "title": {
+      "edit": "Temel Çizgiyi Düzenle",
+      "new": "Yeni Temel"
+    },
+    "messages": {
+      "saveFailed": "Temel kaydedilemedi",
+      "saveSuccess": "Temel “{{name}}” kaydedildi"
+    },
+    "fields": {
+      "name": "Ad",
+      "osType": "İşletim Sistemi Türü",
+      "level": "Seviye",
+      "benchmarkVersion": "Karşılaştırma Sürümü",
+      "enableScheduledScans": "Zamanlanmış taramaları etkinleştir",
+      "active": "Aktif"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "levels": {
+      "l1": "L1",
+      "l2": "L2",
+      "custom": "Özel"
+    },
+    "tooltips": {
+      "level": "L1 kontrolleri çoğu ortam için pratiktir. L2 güvenlik derinliği ekler ancak işlevselliği etkileyebilir."
+    },
+    "placeholders": {
+      "benchmarkVersion": "ör. 3.0.0"
+    },
+    "hours": "saat",
+    "actions": {
+      "cancel": "İptal",
+      "saving": "Kaydediliyor...",
+      "save": "Kaydet"
+    },
+    "ownership": {
+      "scope": "Kapsam",
+      "allOrganizations": "Tüm kuruluşlar",
+      "partnerWideBaselineParenthetical": "(iş ortağı çapında temel)",
+      "thisOrganizationOnly": "Yalnızca bu kuruluş"
+    }
+  },
+  "cisHardeningCisRemediationsTab": {
+    "title": "Düzeltmeler",
+    "tooltip": "Başarısız CIS kontrolleri için otomatik düzeltmeler. Hedef cihazda yürütülmeden önce her birinin onaylanması gerekir.",
+    "filters": {
+      "allStatuses": "Tüm durumlar"
+    },
+    "status": {
+      "pendingApproval": "Onay Bekleniyor",
+      "pending_approval": "onay bekleniyor",
+      "queued": "sıraya alındı",
+      "inProgress": "Devam Ediyor",
+      "in_progress": "devam ediyor",
+      "completed": "tamamlandı",
+      "failed": "başarısız oldu",
+      "cancelled": "iptal edildi"
+    },
+    "approval": {
+      "pending": "beklemede",
+      "approved": "onaylandı",
+      "rejected": "reddedildi"
+    },
+    "actions": {
+      "apply": "başvur",
+      "rollback": "geri alma"
+    },
+    "table": {
+      "checkId": "Kimliği Kontrol Et",
+      "device": "Cihaz",
+      "baseline": "Temel",
+      "action": "Eylem",
+      "status": "Durum",
+      "approval": "Onay",
+      "requested": "İstendi",
+      "completed": "Tamamlandı"
+    },
+    "loading": "Düzeltmeler yükleniyor...",
+    "empty": "Hiçbir düzeltme bulunamadı."
+  },
+  "auditBaselinesAuditBaselinesPage": {
+    "title": "Denetim Esasları",
+    "description": "Uyumluluk temellerini tanımlayın, cihaz sapmasını değerlendirin ve onaya dayalı iş akışlarıyla sorunu düzeltin.",
+    "tabs": {
+      "dashboard": "Kontrol Paneli",
+      "baselines": "Temel Çizgiler",
+      "approvals": "Onaylar"
+    }
+  },
+  "auditBaselinesBaselineFormModal": {
+    "title": {
+      "edit": "Temel Çizgiyi Düzenle",
+      "new": "Yeni Temel"
+    },
+    "messages": {
+      "invalidJson": "Ayarlarda geçersiz JSON",
+      "saveFailed": "Temel kaydedilemedi",
+      "genericError": "Bir hata oluştu"
+    },
+    "fields": {
+      "name": "İsim",
+      "osType": "İşletim Sistemi Türü",
+      "profile": "Profil",
+      "active": "Aktif",
+      "settingsJson": "Ayarlar (JSON)"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "BDT Seviye 1",
+      "cisL2": "BDT Seviye 2",
+      "custom": "Özel"
+    },
+    "placeholders": {
+      "name": "ör. Windows CIS L1 Başlangıç Durumu",
+      "customSettings": "{\n  \"anahtar\": \"değer\"\n}",
+      "templateSettings": "İsteğe bağlı — şablon varsayılanları kullanılacaktır"
+    },
+    "activeHelp": "(İşletim sistemi türü başına yalnızca bir temel etkin olabilir)",
+    "templateDefaultsHelp": "Şablon varsayılanlarını kullanmak için boş bırakın",
+    "actions": {
+      "cancel": "İptal",
+      "update": "Güncelle",
+      "create": "Oluştur"
+    }
+  },
+  "auditBaselinesBaselineList": {
+    "messages": {
+      "fetchFailed": "Taban çizgileri getirilemedi",
+      "deleteFailed": "Taban çizgisi silinemedi",
+      "toggleFailed": "Taban çizgisi değiştirilemedi",
+      "genericError": "Bir hata oluştu"
+    },
+    "loading": "Taban çizgileri yükleniyor...",
+    "actions": {
+      "tryAgain": "Tekrar deneyin",
+      "newBaseline": "Yeni Temel",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "cancel": "İptal",
+      "deleting": "Siliniyor..."
+    },
+    "baselineCount": "{{count}} taban çizgileri",
+    "baselineCount_one": "{{count}} temel çizgi",
+    "baselineCount_other": "{{count}} taban çizgileri",
+    "table": {
+      "name": "Ad",
+      "os": "İşletim Sistemi",
+      "profile": "Profili",
+      "active": "Aktif",
+      "updated": "Güncellendi",
+      "actions": "Eylemler"
+    },
+    "empty": "Taban çizgisi bulunamadı. Başlamak için bir tane oluşturun.",
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "CIS L1",
+      "cisL2": "CIS L2",
+      "custom": "Özel"
+    },
+    "status": {
+      "active": "Aktif",
+      "inactive": "Etkin değil"
+    },
+    "deleteModal": {
+      "title": "Taban Çizgisini Sil",
+      "confirmPrefix": "Silmek istediğinizden emin misiniz?",
+      "confirmSuffix": "? Bu aynı zamanda tüm uyumluluk sonuçlarını da kaldıracaktır. Bu eylem geri alınamaz."
+    }
+  },
+  "auditBaselinesBaselineDetailPage": {
+    "tabs": {
+      "overview": "Genel Bakış",
+      "compliance": "Uyumluluk",
+      "apply": "Başvuru"
+    },
+    "messages": {
+      "fetchFailed": "Taban çizgisi getirilemedi",
+      "notFound": "Taban çizgisi bulunamadı",
+      "genericError": "Bir hata oluştu"
+    },
+    "loading": "Temel yükleniyor...",
+    "backToAuditBaselines": "Denetim Esaslarına Geri Dön",
+    "actions": {
+      "tryAgain": "Tekrar deneyin"
+    },
+    "breadcrumbs": {
+      "auditBaselines": "Denetim Esasları",
+      "baseline": "Temel"
+    },
+    "status": {
+      "active": "Aktif",
+      "inactive": "Etkin değil"
+    }
+  },
+  "auditBaselinesBaselineOverviewTab": {
+    "title": "Temel Ayrıntılar",
+    "actions": {
+      "edit": "Düzenle"
+    },
+    "fields": {
+      "name": "Ad",
+      "osType": "İşletim Sistemi Türü",
+      "profile": "Profil",
+      "status": "Durum",
+      "created": "Oluşturuldu",
+      "lastUpdated": "Son Güncelleme"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "profiles": {
+      "cisL1": "BDT Seviye 1",
+      "cisL2": "BDT Seviye 2",
+      "custom": "Özel"
+    },
+    "status": {
+      "active": "Aktif",
+      "inactive": "Etkin Değil"
+    },
+    "settings": "Ayarlar"
+  },
+  "auditBaselinesBaselineComplianceTab": {
+    "messages": {
+      "fetchFailed": "Uyumluluk verileri getirilemedi",
+      "genericError": "Bir hata oluştu"
+    },
+    "loading": "Uyumluluk sonuçları yükleniyor...",
+    "actions": {
+      "tryAgain": "Tekrar deneyin"
+    },
+    "empty": {
+      "title": "Uyumluluk sonucu yok",
+      "description": "Henüz hiçbir cihaz bu temele göre değerlendirilmedi.",
+      "inactiveSuffix": "Sürüklenme değerlendirmesine başlamak için bu temel çizgiyi etkinleştirin."
+    },
+    "cards": {
+      "devicesEvaluated": "Değerlendirilen Cihazlar",
+      "compliant": "Uyumlu",
+      "averageScore": "Ortalama Puan"
+    },
+    "deviceResults": "Cihaz Sonuçları",
+    "filters": {
+      "all": "Hepsi",
+      "compliant": "Uyumlu",
+      "nonCompliant": "Uyumlu Değil"
+    },
+    "summary": "Özet, {{compliant}} uyumlu ve {{nonCompliant}} uyumlu olmayan cihazları gösterir. Cihaz başına denetim temel ayrıntılarını görmek için Cihazlar sayfasında bir cihazı tıklayın."
+  },
+  "auditBaselinesComplianceDashboard": {
+    "messages": {
+      "fetchFailed": "Uyumluluk özeti getirilemedi",
+      "genericError": "Bir hata oluştu"
+    },
+    "loading": "Uyumluluk verileri yükleniyor...",
+    "actions": {
+      "tryAgain": "Tekrar deneyin"
+    },
+    "empty": {
+      "title": "Henüz uyumluluk verisi yok",
+      "description": "Bir taban çizgisini etkinleştirin ve sonuçları burada görmek için bir sonraki sapma değerlendirme döngüsünü bekleyin."
+    },
+    "cards": {
+      "devicesEvaluated": "Değerlendirilen Cihazlar",
+      "compliant": "Uyumlu",
+      "nonCompliant": "Uyumlu Değil",
+      "averageScore": "Ortalama Puan"
+    },
+    "byBaseline": "Temel Çizgiye Göre Uyumluluk",
+    "table": {
+      "baseline": "Temel",
+      "os": "İşletim Sistemi",
+      "devices": "Cihazlar",
+      "avgScore": "Ort. Puan",
+      "status": "Durum"
+    },
+    "os": {
+      "windows": "Windows",
+      "macos": "macOS",
+      "linux": "Linux"
+    },
+    "compliantRatio": "{{compliant}}/{{total}} uyumlu"
+  },
+  "auditBaselinesBaselineApplyTab": {
+    "status": {
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi",
+      "expired": "Süresi dolmuş",
+      "consumed": "Tüketilen"
+    },
+    "messages": {
+      "fetchApprovalsFailed": "Onay istekleri getirilemedi",
+      "fetchDevicesFailed": "Cihazlar getirilemedi",
+      "dryRunFailed": "Deneme çalıştırması başarısız oldu",
+      "createApprovalFailed": "Onay isteği oluşturulamadı",
+      "processDecisionFailed": "Karar işlenemedi",
+      "applyFailed": "Taban çizgisi uygulanamadı",
+      "genericError": "Bir hata oluştu"
+    },
+    "steps": {
+      "select": "1. Cihazları Seçin",
+      "preview": "2. Önizleme",
+      "requested": "3. Onay"
+    },
+    "noDevices": "Bu kuruluşta {{osType}} cihaz bulunamadı.",
+    "table": {
+      "hostname": "Ana Bilgisayar Adı",
+      "os": "İşletim Sistemi",
+      "status": "Durum"
+    },
+    "selectedDevices": "{{selected}} / {{total}} cihaz seçildi",
+    "actions": {
+      "previewChanges": "Değişiklikleri Önizle",
+      "back": "Geri",
+      "requestApproval": "Onay İste",
+      "approve": "Onayla",
+      "reject": "Reddet",
+      "execute": "Yürüt"
+    },
+    "dryRun": {
+      "title": "Kuru Çalışma Sonuçları",
+      "eligibleDevices": "Uygun Cihazlar",
+      "skipped": "Atlandı",
+      "skippedDevices": "Atlanan Cihazlar"
+    },
+    "approvalRequired": {
+      "title": "Onay Gerekli",
+      "description": "Bir temelin uygulanması, yürütmeden önce başka bir kullanıcının onayını gerektirir."
+    },
+    "emptyApprovals": {
+      "title": "Onay talebi yok",
+      "withBaselineDescription": "Cihazları seçin ve onay isteği oluşturmak için bir prova çalıştırın.",
+      "description": "Henüz herhangi bir temel başvuru isteği oluşturulmadı."
+    },
+    "approvalsTable": {
+      "baseline": "Temel",
+      "status": "Durum",
+      "devices": "Cihazlar",
+      "created": "Oluşturuldu",
+      "expires": "Süresi doluyor",
+      "actions": "Eylemler"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "peripheralPage": {
+    "title": "Çevresel Kontrol",
+    "tabs": {
+      "policies": "Politikalar",
+      "activity": "Etkinlik Günlüğü"
+    }
+  },
+  "peripheralActivityLog": {
+    "errors": {
+      "fetch": "Etkinlik getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "allEvents": "Tüm Etkinlikler",
+    "events": {
+      "connected": "Bağlandı",
+      "disconnected": "Bağlantı Kesildi",
+      "blocked": "Engellendi",
+      "mounted_read_only": "Salt Okunur",
+      "policy_override": "Politikayı Geçersiz Kılma"
+    },
+    "peripheralType": "Çevre birimi türü",
+    "vendor": "Satıcı",
+    "empty": "Çevre birimi etkinliği bulunamadı.",
+    "columns": {
+      "occurredAt": "Meydana Gelme Tarihi",
+      "eventType": "Etkinlik Türü",
+      "product": "Ürün",
+      "serialNumber": "Seri Numarası",
+      "device": "Cihaz",
+      "policy": "Politika"
+    },
+    "pagination": "{{from}}–{{to}} / {{total}} gösteriliyor",
+    "prev": "Önceki"
+  },
+  "peripheralPoliciesList": {
+    "errors": {
+      "fetch": "Politikalar getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "allClasses": "Tüm Sınıflar",
+    "classes": {
+      "storage": "Depolama",
+      "all_usb": "Tüm USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "allActions": "Tüm Eylemler",
+    "actions": {
+      "allow": "İzin ver",
+      "block": "Engelle",
+      "read_only": "Salt Okunur",
+      "alert": "Uyarı"
+    },
+    "allStatus": "Tüm Durumlar",
+    "createPolicy": "Politika Oluştur",
+    "empty": "Çevre birimi politikası bulunamadı. Başlamak için bir tane oluşturun.",
+    "columns": {
+      "deviceClass": "Cihaz Sınıfı",
+      "action": "Eylem",
+      "exceptions": "İstisnalar",
+      "created": "Oluşturuldu"
+    },
+    "partnerWideTitle": "İş ortağı çapında politika — her kuruluştaki cihazlarda uygulanır",
+    "allOrgs": "İş ortağı çapında"
+  },
+  "peripheralPolicyForm": {
+    "errors": {
+      "save": "Politika kaydedilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "editTitle": "Çevre Birim Politikasını Düzenle",
+    "createTitle": "Çevresel İlke Oluşturun",
+    "scope": "Kapsam",
+    "allOrganizations": "Tüm kuruluşlar",
+    "partnerWide": "(iş ortağı çapında politika)",
+    "thisOrganization": "Yalnızca bu kuruluş",
+    "deviceClass": "Cihaz Sınıfı",
+    "classes": {
+      "storage": "Depolama",
+      "all_usb": "Tüm USB",
+      "bluetooth": "Bluetooth",
+      "thunderbolt": "Thunderbolt"
+    },
+    "action": "Eylem",
+    "actions": {
+      "allow": "İzin Ver",
+      "block": "Engelle",
+      "read_only": "Salt Okunur",
+      "alert": "Uyarı"
+    },
+    "exceptions": "İstisnalar",
+    "addException": "İstisna Ekle",
+    "noExceptions": "Yapılandırılan istisna yok.",
+    "exceptionNumber": "İstisna {{number}}",
+    "vendor": "Satıcı",
+    "product": "Ürün",
+    "serialNumber": "Seri Numarası",
+    "allow": "İzin ver:",
+    "reason": "Sebep",
+    "updatePolicy": "Güncelleme Politikası",
+    "createPolicy": "Politika Oluştur"
+  }
+}
