@@ -143,3 +143,29 @@ export const softwarePolicyAudit = pgTable('software_policy_audit', {
   deviceIdIdx: index('software_policy_audit_device_id_idx').on(table.deviceId),
   timestampIdx: index('software_policy_audit_timestamp_idx').on(table.timestamp),
 }));
+
+// #3553: durable single-use authorization for a MANUAL software-remediation.
+// The MFA-gated remediate route creates one row per (policy, device) it
+// schedules and puts the id in the job data; the worker consumes it atomically
+// and refuses `trigger:'manual'` without a matching unconsumed, unexpired,
+// ownership-coherent row (falls back to the arming gate — fail-closed). Dual-axis
+// tenancy mirrors software_policy_audit. NOTE: org_id + device_id mean the
+// generic device-move trigger rewrites org_id on a device org change; the
+// worker's consume join re-checks CURRENT device/policy ownership, so a moved
+// device's stale request no longer matches.
+export const softwareRemediationRequests = pgTable('software_remediation_requests', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').references(() => organizations.id, { onDelete: 'cascade' }),
+  partnerId: uuid('partner_id').references(() => partners.id, { onDelete: 'cascade' }),
+  policyId: uuid('policy_id').notNull().references(() => softwarePolicies.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull().references(() => devices.id, { onDelete: 'cascade' }),
+  requestedByUserId: uuid('requested_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+}, (table) => ({
+  orgIdIdx: index('software_remediation_requests_org_id_idx').on(table.orgId),
+  partnerIdIdx: index('software_remediation_requests_partner_id_idx').on(table.partnerId),
+  policyIdIdx: index('software_remediation_requests_policy_id_idx').on(table.policyId),
+  deviceIdIdx: index('software_remediation_requests_device_id_idx').on(table.deviceId),
+}));

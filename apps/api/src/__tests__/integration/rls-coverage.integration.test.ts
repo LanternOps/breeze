@@ -331,6 +331,14 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // policy's partner_id so both admins can see it; CHECK
   // software_policy_audit_owner_chk requires at least one axis.
   'software_policy_audit',
+  // software_remediation_requests (#3553): dual-owned like software_policy_audit,
+  // NOT XOR — carries the device's org_id and (for a partner-wide policy) the
+  // policy's partner_id. The org_id column means org-tenant auto-discovery
+  // already asserts the breeze_has_org_access branch; this entry asserts the
+  // breeze_has_partner_access (partner-wide) branch. CHECK
+  // software_remediation_requests_owner_chk requires at least one axis. Functional
+  // cross-partner forge proof: softwareRemediationRequestsRls.integration.test.ts.
+  'software_remediation_requests',
   // security_policies (#2127, epic #2135): org-scoped OR partner-wide AV/EDR
   // baseline template. Converted from org-only to dual-axis in
   // 2026-07-01-security-policies-partner-ownership. CHECK

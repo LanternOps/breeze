@@ -48,12 +48,14 @@ vi.mock('../services/softwarePolicyService', async (orig) => {
   };
 });
 
-const { selectMock, updateMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, insertMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
+  insertMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
-  db: { select: selectMock, update: updateMock },
+  db: { select: selectMock, update: updateMock, insert: insertMock },
+  runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -65,7 +67,7 @@ const ORG_ID = 'org-1';
 
 function chain(result: unknown): any {
   const p: any = Promise.resolve(result);
-  for (const m of ['from', 'innerJoin', 'where', 'limit', 'orderBy']) p[m] = () => p;
+  for (const m of ['from', 'innerJoin', 'where', 'limit', 'orderBy', 'returning', 'values', 'for']) p[m] = () => p;
   return p;
 }
 
@@ -101,7 +103,7 @@ const COMPLIANCE_ROW = {
  * Drives db.select() through the worker's fixed call order:
  * policy → device → compliance → in-flight uninstall commands.
  */
-function primeDb(policy: unknown, opts: { compliance?: unknown } = {}) {
+function primeDb(policy: unknown, opts: { compliance?: unknown; consumeResult?: unknown[] } = {}) {
   const results = [
     [policy],
     [{ orgId: ORG_ID, isEphemeral: false }],
@@ -110,8 +112,13 @@ function primeDb(policy: unknown, opts: { compliance?: unknown } = {}) {
   ];
   let call = 0;
   selectMock.mockImplementation(() => chain(results[Math.min(call++, results.length - 1)]));
-  setSpy = vi.fn(() => chain([]));
+  // #3553: db.update() serves BOTH the manual-authorization consume
+  // (.set().where().returning() -> consumeResult) and the compliance-status
+  // writes (.set().where(), return ignored). An org-scoped policy (the default
+  // policyRow) needs no organizations SELECT in the consume path.
+  setSpy = vi.fn(() => chain(opts.consumeResult ?? []));
   updateMock.mockImplementation(() => ({ set: setSpy }));
+  insertMock.mockImplementation(() => chain([{ id: 'req-1', deviceId: DEVICE_ID }]));
 }
 
 function policyAuditActions(): string[] {
@@ -205,13 +212,19 @@ describe('processRemediateDevice — arming gate for automatic jobs (#3543)', ()
   });
 });
 
-describe('processRemediateDevice — explicit manual remediation (#3543)', () => {
-  it('still uninstalls for an unarmed policy but records a manual_override audit naming the requester', async () => {
-    primeDb(policyRow({ enforceMode: false }));
+describe('processRemediateDevice — explicit manual remediation (#3543, verified #3553)', () => {
+  // The consume returns the TRUSTED requester from the row (#3553); the audit
+  // actor comes from here, not job data.
+  const AUTHORIZED = { consumeResult: [{ requestedByUserId: 'admin-9' }] };
+
+  it('overrides an unarmed (enforce-off) policy when the manual claim has a valid authorization record, auditing the TRUSTED requester (not job data)', async () => {
+    // Record says admin-9; job data claims a forged requester. The audit must use
+    // the record's value (#3553 finding 3).
+    primeDb(policyRow({ enforceMode: false }), { consumeResult: [{ requestedByUserId: 'admin-9' }] });
 
     const result = await processRemediateDevice({
       type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
-      trigger: 'manual', requestedByUserId: 'admin-9',
+      trigger: 'manual', requestedByUserId: 'forged-attacker', manualRequestId: 'req-1',
     });
 
     expect(result.commandsQueued).toBe(1);
@@ -222,19 +235,86 @@ describe('processRemediateDevice — explicit manual remediation (#3543)', () =>
       .map((c: any[]) => c[0])
       .find((a: any) => a.action === 'remediation_manual_override');
     expect(override).toBeDefined();
+    // Trusted requester from the row, NOT the forged job-data field.
     expect(override).toMatchObject({ actor: 'user', actorId: 'admin-9', policyId: POLICY_ID, deviceId: DEVICE_ID });
     expect(override.details).toMatchObject({ reason: 'enforce_mode_off' });
   });
 
+  // #3553 finding 2: a verified manual action bypasses the auto-cooldown — a
+  // deliberate override must not be silently deferred (and its single-use token
+  // must not be burned by a cooldown skip).
+  it('bypasses the cooldown for a verified manual override', async () => {
+    primeDb(policyRow({ enforceMode: false }), {
+      compliance: { ...COMPLIANCE_ROW, lastRemediationAttempt: new Date() }, // within cooldown
+      consumeResult: [{ requestedByUserId: 'admin-9' }],
+    });
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
+      trigger: 'manual', requestedByUserId: 'admin-9', manualRequestId: 'req-1',
+    });
+
+    expect(result.commandsQueued).toBe(1);
+    expect(recordDecisionMock).not.toHaveBeenCalledWith('cooldown');
+  });
+
   it('does not record a manual_override when the policy is armed anyway', async () => {
-    primeDb(policyRow(ARMED));
+    primeDb(policyRow(ARMED), AUTHORIZED);
 
     await processRemediateDevice({
       type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
-      trigger: 'manual', requestedByUserId: 'admin-9',
+      trigger: 'manual', requestedByUserId: 'admin-9', manualRequestId: 'req-1',
     });
 
     expect(policyAuditActions()).not.toContain('remediation_manual_override');
+    expect(recordDecisionMock).not.toHaveBeenCalledWith('manual_override');
+  });
+
+  // #3553: a forged `trigger:'manual'` (no authorization record) must NOT skip
+  // the arming gate — it is downgraded to `auto` and refused on an unarmed policy.
+  it('downgrades an UNVERIFIED manual claim (no authorization record) to auto and refuses on an unarmed policy', async () => {
+    primeDb(policyRow({ enforceMode: false }));
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
+      trigger: 'manual', requestedByUserId: 'attacker', /* no manualRequestId */
+    });
+
+    expect(result.commandsQueued).toBe(0);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(recordDecisionMock).not.toHaveBeenCalledWith('manual_override');
+    expect(recordDecisionMock).toHaveBeenCalledWith('policy_not_armed');
+  });
+
+  // #3553: a record that fails to consume (already used / expired / foreign /
+  // device moved out of policy scope) is not authorization either.
+  it('downgrades a manual claim whose record does not consume to auto (refused on an unarmed policy)', async () => {
+    primeDb(policyRow({ enforceMode: false }), { consumeResult: [] });
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
+      // Well-formed but nonexistent UUID (real Postgres would 22P02 on a
+      // malformed one); the consume returns no row -> downgrade to auto.
+      trigger: 'manual', requestedByUserId: 'admin-9', manualRequestId: '00000000-0000-4000-8000-000000000000',
+    });
+
+    expect(result.commandsQueued).toBe(0);
+    expect(recordDecisionMock).not.toHaveBeenCalledWith('manual_override');
+    expect(recordDecisionMock).toHaveBeenCalledWith('policy_not_armed');
+  });
+
+  // #3553: manual NEVER overrides audit_mode, even with a valid record — a policy
+  // flipped to audit mode after authorization must not be bypassed.
+  it('never overrides audit_mode, even with a valid authorization record', async () => {
+    primeDb(policyRow({ mode: 'audit' }), AUTHORIZED);
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID,
+      trigger: 'manual', requestedByUserId: 'admin-9', manualRequestId: 'req-1',
+    });
+
+    expect(result.commandsQueued).toBe(0);
+    expect(queueCommandMock).not.toHaveBeenCalled();
     expect(recordDecisionMock).not.toHaveBeenCalledWith('manual_override');
   });
 });
@@ -247,10 +327,25 @@ describe('scheduleSoftwareRemediation — trigger propagation (#3543)', () => {
     expect(addMock.mock.calls[0]![1]).toMatchObject({ trigger: 'auto', requestedByUserId: null });
   });
 
-  it('propagates an explicit manual trigger with the requesting user', async () => {
+  it('propagates an explicit manual trigger + its authorization id, keyed on a manual-specific job id', async () => {
+    // createManualRemediationAuthorizations: policy tenancy -> devices -> insert.
+    const selectResults = [
+      [{ orgId: ORG_ID, partnerId: null }],
+      [{ id: DEVICE_ID, orgId: ORG_ID }],
+    ];
+    let call = 0;
+    selectMock.mockImplementation(() => chain(selectResults[Math.min(call++, selectResults.length - 1)]));
+    insertMock.mockImplementation(() => chain([{ id: 'req-77', deviceId: DEVICE_ID }]));
+
     await scheduleSoftwareRemediation(POLICY_ID, [DEVICE_ID], { trigger: 'manual', requestedByUserId: 'admin-9' });
 
-    expect(addMock.mock.calls[0]![1]).toMatchObject({ trigger: 'manual', requestedByUserId: 'admin-9' });
+    expect(addMock.mock.calls[0]![1]).toMatchObject({
+      trigger: 'manual',
+      requestedByUserId: 'admin-9',
+      manualRequestId: 'req-77',
+    });
+    // Manual jobs key on the authorization id, not (policy, device) — no auto dedup.
+    expect(addMock.mock.calls[0]![2]).toMatchObject({ jobId: 'software-remediation-manual-req-77' });
   });
 
   it('never stamps a requester onto an automatic job', async () => {

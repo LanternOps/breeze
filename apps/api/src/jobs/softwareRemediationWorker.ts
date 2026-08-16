@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, eq, gt, gte, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceCommands, devices, softwareComplianceStatus, softwarePolicies, type RemediationError } from '../db/schema';
+import { deviceCommands, devices, softwareComplianceStatus, softwarePolicies, softwareRemediationRequests, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -27,6 +27,10 @@ function fireAudit(input: Parameters<typeof recordSoftwarePolicyAudit>[0]): void
 }
 
 const SOFTWARE_REMEDIATION_QUEUE = 'software-remediation';
+// #3553: how long a minted manual authorization stays valid if its job never
+// runs. Generous vs the worker's retry/backoff (attempts=3, ≤30s) but bounded so
+// an unconsumed authorization cannot linger indefinitely.
+const MANUAL_REQUEST_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_REMEDIATION_COOLDOWN_MINUTES = 120;
 const IN_FLIGHT_LOOKBACK_MINUTES = 24 * 60;
 
@@ -56,6 +60,14 @@ type RemediateDeviceJobData = {
   trigger?: SoftwareRemediationTrigger;
   /** User id behind a `manual` trigger, for the audit trail. */
   requestedByUserId?: string | null;
+  /**
+   * #3553: id of the durable single-use software_remediation_requests row that
+   * authorizes this MANUAL job. `trigger:'manual'` is only honored when this id
+   * resolves to a matching, unconsumed, unexpired, ownership-coherent row —
+   * otherwise the job is downgraded to `auto` and re-checked against the arming
+   * gate. Absent on `auto` jobs and on pre-#3553 manual jobs (fail closed).
+   */
+  manualRequestId?: string;
 };
 
 type SoftwareRemediationJobData = RemediateDeviceJobData;
@@ -68,6 +80,65 @@ type SoftwareRemediationJobData = RemediateDeviceJobData;
  */
 function readTrigger(data: RemediateDeviceJobData): SoftwareRemediationTrigger {
   return data.trigger === 'manual' ? 'manual' : 'auto';
+}
+
+export type ManualAuthorizationResult = { authorized: boolean; requestedByUserId: string | null };
+
+/**
+ * #3553: verify a job's `trigger:'manual'` claim against its durable
+ * authorization row and CONSUME it (single use). A single atomic UPDATE does
+ * BOTH the consume and the ownership re-check, reading the CURRENT device + policy
+ * ownership INSIDE the statement (not a cached scalar) so there is no TOCTOU: a
+ * device that moves orgs concurrently cannot slip an uninstall through. Authorized
+ * only when the row is unconsumed, unexpired, bound to the exact (policy, device),
+ * AND the device is still governed by the policy's tenancy — org policy: the
+ * device's current org is the policy's org; partner-wide policy: the device's
+ * current org still belongs to the policy's partner. Any miss returns
+ * `authorized:false` and the caller downgrades to `auto` (fail closed). Returns
+ * the TRUSTED requester from the row (never job data) for the audit trail. Runs
+ * in the worker's system DB context (breeze_has_org_access short-circuits true),
+ * so RLS never silently zeroes the UPDATE.
+ *
+ * Exported for integration tests — this is the security boundary and must be
+ * exercised against real Postgres + RLS + the device-move trigger.
+ */
+export async function consumeManualRemediationAuthorization(input: {
+  manualRequestId?: string;
+  policyId: string;
+  deviceId: string;
+}): Promise<ManualAuthorizationResult> {
+  if (!input.manualRequestId) {
+    return { authorized: false, requestedByUserId: null };
+  }
+  const [row] = await db
+    .update(softwareRemediationRequests)
+    .set({ consumedAt: new Date() })
+    .where(and(
+      eq(softwareRemediationRequests.id, input.manualRequestId),
+      eq(softwareRemediationRequests.policyId, input.policyId),
+      eq(softwareRemediationRequests.deviceId, input.deviceId),
+      isNull(softwareRemediationRequests.consumedAt),
+      gt(softwareRemediationRequests.expiresAt, new Date()),
+      // Ownership coherence, atomic with the consume: read the device's and the
+      // policy's CURRENT owners inside the UPDATE so a concurrent device move
+      // cannot be raced past a cached org id.
+      sql`EXISTS (
+        SELECT 1 FROM devices d
+        JOIN software_policies p ON p.id = ${softwareRemediationRequests.policyId}
+        WHERE d.id = ${softwareRemediationRequests.deviceId}
+          AND (
+            (p.org_id IS NOT NULL AND d.org_id = p.org_id)
+            OR (p.partner_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM organizations o WHERE o.id = d.org_id AND o.partner_id = p.partner_id
+            ))
+          )
+      )`,
+    ))
+    .returning({ requestedByUserId: softwareRemediationRequests.requestedByUserId });
+  if (!row) {
+    return { authorized: false, requestedByUserId: null };
+  }
+  return { authorized: true, requestedByUserId: row.requestedByUserId ?? null };
 }
 
 let softwareRemediationQueue: Queue<SoftwareRemediationJobData> | null = null;
@@ -161,11 +232,19 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // Dual-owner audit rows (#2126): per-device events under a partner-wide
   // policy (policy.orgId NULL) must carry the DEVICE's org so the org admin
   // can see them, alongside the policy's partnerId.
+  //
+  // #3553: FOR UPDATE locks this device row for the worker's (single) system
+  // transaction, so a concurrent device org-move blocks until we commit. Without
+  // it, Read Committed lets a move commit between the manual consume's ownership
+  // EXISTS and command creation (the subquery reads a statement snapshot), which
+  // would let an old-tenant authorization act on a just-moved device. The lock
+  // makes the ownership check and the uninstall atomic w.r.t. device retenanting.
   const [deviceRow] = await db
     .select({ orgId: devices.orgId, isEphemeral: devices.isEphemeral })
     .from(devices)
     .where(eq(devices.id, data.deviceId))
-    .limit(1);
+    .limit(1)
+    .for('update');
 
   // Quick Support exclusion (defense in depth): ephemeral devices live in the
   // hidden per-partner 'quick_support' org and are a stranger's personal machine
@@ -219,28 +298,47 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // other. That cannot produce a wrong gate outcome — auto jobs are only ever
   // produced for armed policies, so on an unarmed policy every job is manual,
   // and on an armed policy both triggers pass the gate anyway.
-  const trigger = readTrigger(data);
-  const arming = evaluateSoftwarePolicyArming(policy);
-  if (trigger === 'manual') {
-    // Explicit human action: allowed regardless of arming, but never silent.
-    if (!arming.armed) {
-      fireAudit({
-        orgId: auditOrgId,
-        partnerId: policy.partnerId,
-        policyId: policy.id,
+  // #3553: `trigger:'manual'` is authorization state living in forgeable BullMQ
+  // job data. Verify+consume its durable single-use record; a claim that does
+  // not resolve to a matching, unconsumed, unexpired, ownership-coherent row is
+  // downgraded to 'auto' so the arming gate applies (fail closed). Placed after
+  // the policy/device/compliance early-returns so an ineligible job never burns
+  // the one-time authorization.
+  const claimedTrigger = readTrigger(data);
+  const manualAuth = claimedTrigger === 'manual'
+    ? await consumeManualRemediationAuthorization({
+        manualRequestId: data.manualRequestId,
+        policyId: data.policyId,
         deviceId: data.deviceId,
-        action: 'remediation_manual_override',
-        actor: 'user',
-        actorId: data.requestedByUserId ?? null,
-        details: {
-          policyName: policy.name,
-          reason: arming.reason,
-          mode: policy.mode,
-          enforceMode: policy.enforceMode,
-        },
-      });
-      recordSoftwareRemediationDecision('manual_override');
-    }
+      })
+    : { authorized: false, requestedByUserId: null };
+  const trigger: SoftwareRemediationTrigger = manualAuth.authorized ? 'manual' : 'auto';
+
+  const arming = evaluateSoftwarePolicyArming(policy);
+  // A verified manual action overrides `enforce_mode_off` / `auto_uninstall_off`
+  // ONLY — NEVER `audit_mode` (#3553). A policy flipped to audit mode after the
+  // operator authorized must not be bypassed; audit_mode falls through to the
+  // refusal branch below.
+  if (trigger === 'manual' && !arming.armed && arming.reason !== 'audit_mode') {
+    // Explicit, verified human action on an enforce/auto-uninstall-off policy:
+    // allowed, but never silent. Actor is the TRUSTED requester from the consumed
+    // authorization row (#3553), never the forgeable job-data field.
+    fireAudit({
+      orgId: auditOrgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: 'remediation_manual_override',
+      actor: 'user',
+      actorId: manualAuth.requestedByUserId,
+      details: {
+        policyName: policy.name,
+        reason: arming.reason,
+        mode: policy.mode,
+        enforceMode: policy.enforceMode,
+      },
+    });
+    recordSoftwareRemediationDecision('manual_override');
   } else if (!arming.armed) {
     console.warn('[SoftwareRemediationWorker] Policy is not armed for uninstall, skipping remediation', {
       policyId: policy.id,
@@ -292,7 +390,18 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
 
   const now = new Date();
   const cooldownMinutes = readCooldownMinutes(policy.remediationOptions);
-  if (compliance.lastRemediationAttempt) {
+  // #3553: the cooldown is an AUTO-remediation rate limit. A verified manual
+  // action is a deliberate operator override (it already bypasses arming), so it
+  // bypasses the cooldown too. This is also correctness-critical: the remediate
+  // route writes lastRemediationAttempt=now in its own request transaction, so a
+  // manual job that consumed its single-use token and then hit the cooldown would
+  // burn the authorization and skip with zero commands (no retry). Bypassing it
+  // for verified manual keeps the token and the operator's intent whole.
+  // Tradeoff (intended): an authenticated, MFA-gated operator can re-trigger
+  // manual remediation without a cooldown wait. Concurrent double-clicks still
+  // dedupe on the in-flight uninstall-command check below; there is deliberately
+  // no separate manual throttle — a manual run is an explicit human decision.
+  if (trigger !== 'manual' && compliance.lastRemediationAttempt) {
     const nextEligibleAt = new Date(compliance.lastRemediationAttempt.getTime() + (cooldownMinutes * 60 * 1000));
     if (nextEligibleAt.getTime() > now.getTime()) {
       const deferredMessage = `Remediation cooldown active until ${nextEligibleAt.toISOString()}`;
@@ -533,6 +642,62 @@ export async function shutdownSoftwareRemediationWorker(): Promise<void> {
   }
 }
 
+/**
+ * #3553: mint one durable single-use authorization row per device for a MANUAL
+ * run and COMMIT it before the caller enqueues, in a fresh system-context
+ * transaction OUTSIDE the request's long-lived transaction. That ordering
+ * closes the consume-before-commit race: the remediate route runs inside one
+ * request-long transaction (withDbAccessContext), so a row inserted there would
+ * be invisible to a fast worker that grabbed the Redis job first, and a
+ * legitimate unarmed manual remediation would be wrongly downgraded to `auto`
+ * and refused. Returns the minted (id, deviceId) pairs.
+ */
+async function createManualRemediationAuthorizations(
+  policyId: string,
+  deviceIds: string[],
+  requestedByUserId: string | null,
+): Promise<Array<{ id: string; deviceId: string }>> {
+  return dbModule.runOutsideDbContext(() =>
+    runWithSystemDbAccess(async () => {
+      const [policy] = await db
+        .select({ orgId: softwarePolicies.orgId, partnerId: softwarePolicies.partnerId })
+        .from(softwarePolicies)
+        .where(eq(softwarePolicies.id, policyId))
+        .limit(1);
+      if (!policy) {
+        return [];
+      }
+      const deviceRows = await db
+        .select({ id: devices.id, orgId: devices.orgId })
+        .from(devices)
+        .where(inArray(devices.id, deviceIds));
+      const orgByDevice = new Map(deviceRows.map((d) => [d.id, d.orgId]));
+
+      const expiresAt = new Date(Date.now() + MANUAL_REQUEST_TTL_MS);
+      const values = deviceIds
+        .filter((deviceId) => orgByDevice.has(deviceId))
+        .map((deviceId) => ({
+          // Dual-owner (mirrors the audit rows): org axis is the policy's org
+          // for an org policy, else the device's org for a partner-wide policy;
+          // partner axis is the policy's partner. At least one is always set.
+          orgId: policy.orgId ?? orgByDevice.get(deviceId) ?? null,
+          partnerId: policy.partnerId ?? null,
+          policyId,
+          deviceId,
+          requestedByUserId,
+          expiresAt,
+        }));
+      if (values.length === 0) {
+        return [];
+      }
+      return db
+        .insert(softwareRemediationRequests)
+        .values(values)
+        .returning({ id: softwareRemediationRequests.id, deviceId: softwareRemediationRequests.deviceId });
+    }),
+  );
+}
+
 export async function scheduleSoftwareRemediation(
   policyId: string,
   deviceIds: string[],
@@ -546,10 +711,39 @@ export async function scheduleSoftwareRemediation(
     return 0;
   }
 
+  // #3553: commit the manual authorizations BEFORE enqueuing (see helper).
+  const manualRequestIdByDevice = new Map<string, string>();
+  if (trigger === 'manual') {
+    const minted = await createManualRemediationAuthorizations(
+      policyId,
+      uniqueDeviceIds,
+      options.requestedByUserId ?? null,
+    );
+    for (const row of minted) {
+      manualRequestIdByDevice.set(row.deviceId, row.id);
+    }
+  }
+
   const queue = getSoftwareRemediationQueue();
   let queued = 0;
   for (const deviceId of uniqueDeviceIds) {
-    const jobId = `software-remediation-${policyId}-${deviceId}`;
+    const manualRequestId = trigger === 'manual' ? manualRequestIdByDevice.get(deviceId) : undefined;
+    // A manual device with no minted authorization is skipped, never enqueued
+    // unauthorized. This covers a device absent at mint time (filtered out of the
+    // batch) or a whole-batch mint failure (e.g. the policy vanished → empty
+    // result); both fail closed. (A device deleted in the tiny window between the
+    // mint SELECT and its INSERT would instead throw an FK error and abort the
+    // whole manual request — the operator simply retries; nothing is enqueued.)
+    if (trigger === 'manual' && !manualRequestId) {
+      continue;
+    }
+
+    // Separate identity domains (#3553): manual jobs key on their unique
+    // authorization id, so a manual request can never dedupe into (and lose its
+    // authorization to) an older auto job sharing the (policy, device) key.
+    const jobId = trigger === 'manual'
+      ? `software-remediation-manual-${manualRequestId}`
+      : `software-remediation-${policyId}-${deviceId}`;
     const existing = await queue.getJob(jobId);
     if (existing) {
       const state = await existing.getState();
@@ -570,6 +764,7 @@ export async function scheduleSoftwareRemediation(
         deviceId,
         trigger,
         requestedByUserId: trigger === 'manual' ? (options.requestedByUserId ?? null) : null,
+        manualRequestId,
       },
       {
         jobId,
