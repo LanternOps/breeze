@@ -275,3 +275,48 @@ describe('runAbuseSweep', () => {
     expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pRecidivist']);
   });
 });
+
+describe('runAbuseSweep — corroboration wiring', () => {
+  // The pure scorer is covered in corroboration.test.ts; these prove the sweep
+  // actually feeds it every detector's output and persists what it returns.
+  // './corroboration' is deliberately NOT mocked here.
+  function watch(signalKey: string, score: number, partnerId = 'p1'): ComputedSignal {
+    return { partnerId, signalKey, score, severity: 'watch', evidence: { partnerName: 'Acme' } };
+  }
+
+  it('emits a corroborated alert from watch signals produced by DIFFERENT detectors', async () => {
+    // session_intensity comes from heuristics, cardholder_name_mismatch from
+    // billingIdentity — the cross-detector case that motivated this.
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+    computeBillingIdentitySignals.mockReturnValue([watch('billing.cardholder_name_mismatch', 55)]);
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    const corroborated = persisted.filter((s) => s.signalKey === 'fraud.corroborated_watch');
+    expect(corroborated).toHaveLength(1);
+    expect(corroborated[0]!.severity).toBe('alert');
+    expect(corroborated[0]!.partnerId).toBe('p1');
+    // The underlying signals are still persisted at their own honest severity.
+    expect(persisted.filter((s) => s.severity === 'watch')).toHaveLength(2);
+  });
+
+  it('does not corroborate when only one axis fires', async () => {
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted.some((s) => s.signalKey === 'fraud.corroborated_watch')).toBe(false);
+  });
+
+  it('counts the corroborated signal in the fired total and the severity metric', async () => {
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+    computeBillingIdentitySignals.mockReturnValue([watch('billing.cardholder_name_mismatch', 55)]);
+
+    const result = await runAbuseSweep();
+
+    expect(result.fired).toBe(3);
+    expect(recordAbuseSignalFired).toHaveBeenCalledWith('alert');
+  });
+});
