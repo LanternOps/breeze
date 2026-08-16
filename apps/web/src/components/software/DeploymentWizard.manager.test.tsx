@@ -111,7 +111,7 @@ describe('DeploymentWizard — package-manager deploys', () => {
   it('offers Latest/Exact version modes when a winget method exists', async () => {
     mountWizard([WINGET_METHOD]);
     await waitForLoad();
-    expect(screen.getByRole('radio', { name: /Latest \(recommended\)/ })).toBeChecked();
+    expect(await screen.findByRole('radio', { name: /Latest \(recommended\)/ })).toBeChecked();
     expect(screen.getByRole('radio', { name: /Exact version/ })).toBeInTheDocument();
     // The uploaded-version <select> is replaced by the mode radios.
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
@@ -120,13 +120,16 @@ describe('DeploymentWizard — package-manager deploys', () => {
   it('hides the Exact option for a Homebrew-only item', async () => {
     mountWizard([BREW_METHOD]);
     await waitForLoad();
-    expect(screen.getByRole('radio', { name: /Latest \(recommended\)/ })).toBeInTheDocument();
+    expect(await screen.findByRole('radio', { name: /Latest \(recommended\)/ })).toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: /Exact version/ })).not.toBeInTheDocument();
   });
 
   it('posts catalogId + versionMode latest and never softwareVersionId', async () => {
     mountWizard([WINGET_METHOD], [WIN_DEVICE]);
     await waitForLoad();
+    // The mode radios only render once the install-methods fetch resolves;
+    // waitForLoad covers the catalog fetch alone, so gate on them explicitly.
+    await screen.findByRole('radio', { name: /Latest \(recommended\)/ });
     for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Deployment' }));
 
@@ -145,8 +148,8 @@ describe('DeploymentWizard — package-manager deploys', () => {
     mountWizard([WINGET_METHOD], [WIN_DEVICE]);
     await waitForLoad();
 
-    fireEvent.click(screen.getByRole('radio', { name: /Exact version/ }));
-    const input = screen.getByTestId('manager-exact-version');
+    fireEvent.click(await screen.findByRole('radio', { name: /Exact version/ }));
+    const input = await screen.findByTestId('manager-exact-version');
     // The step gate blocks an empty exact version.
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
     fireEvent.change(input, { target: { value: '3.0.20' } });
@@ -185,6 +188,7 @@ describe('DeploymentWizard — package-manager deploys', () => {
       <DeploymentWizard initialCatalogId="cat-m" initialDeviceIds={[WIN_DEVICE]} />,
     );
     await waitForLoad();
+    await screen.findByRole('radio', { name: /Latest \(recommended\)/ });
     for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Deployment' }));
 
@@ -200,6 +204,7 @@ describe('DeploymentWizard — package-manager deploys', () => {
   it('warns on the targets step about selected devices with no install method', async () => {
     mountWizard([WINGET_METHOD], [WIN_DEVICE, LINUX_DEVICE_A, LINUX_DEVICE_B]);
     await waitForLoad();
+    await screen.findByRole('radio', { name: /Latest \(recommended\)/ });
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
     const callout = await screen.findByTestId('manager-os-coverage');
@@ -212,7 +217,11 @@ describe('DeploymentWizard — package-manager deploys', () => {
   it('shows no coverage callout when every selected device is covered', async () => {
     mountWizard([WINGET_METHOD], [WIN_DEVICE]);
     await waitForLoad();
+    await screen.findByRole('radio', { name: /Latest \(recommended\)/ });
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    // Assert we actually reached the targets step — otherwise the negative
+    // assertion below would pass vacuously on a wizard still stuck on step 1.
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.queryByTestId('manager-os-coverage')).not.toBeInTheDocument();
   });
 });
