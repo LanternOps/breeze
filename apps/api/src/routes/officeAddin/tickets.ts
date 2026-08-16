@@ -1,10 +1,11 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { db } from '../../db';
-import { tickets } from '../../db/schema';
+import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
 import { resolveDefaultModel } from '../../services/aiAgent';
+import { recordUsage } from '../../services/aiCostTracker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
@@ -258,10 +259,32 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * Partner-level AI entitlement for the add-in's AI features (spec §6). This is
+ * the SAME flag the client-AI Entra exchange gates on
+ * (`services/clientAiExchange.ts`: `partners.ai_for_office_enabled`), so a
+ * partner who has not bought AI for Office cannot spend model tokens through
+ * the Outlook pane either. Read by partner id — the technician's binding
+ * already fixes the partner, so no org join is needed.
+ */
+async function partnerAiEnabled(partnerId: string): Promise<boolean> {
+  const rows = await db
+    .select({ enabled: partners.aiForOfficeEnabled })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  return rows[0]?.enabled === true;
+}
+
+/**
  * AI email -> ticket draft (spec Task 19). A prefill only: subject + a plain-
  * English summary + a suggested time estimate. Never blocks ticket creation —
- * any failure (no key, DLP block aside, timeout, model error) degrades to a
- * 503 so the pane falls back to a deterministic (non-AI) prefill.
+ * any failure (no entitlement, no key, DLP block aside, timeout, model error)
+ * degrades to a non-200 so the pane falls back to a deterministic (non-AI)
+ * prefill.
+ *
+ * Check order is entitlement -> API key -> DLP -> model: the cheapest and most
+ * authoritative "you may not do this at all" answer first, so an unentitled
+ * partner never reaches DLP evaluation or the model.
  */
 officeAddinTicketRoutes.post(
   '/tickets/draft',
@@ -275,6 +298,10 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'not_found' }, 404);
     }
 
+    if (!(await partnerAiEnabled(auth.partnerId))) {
+      return c.json({ error: 'ai_not_enabled' }, 403);
+    }
+
     if (!process.env.ANTHROPIC_API_KEY) {
       return c.json({ error: 'ai_unavailable' }, 503);
     }
@@ -285,17 +312,31 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'dlp_blocked' }, 422);
     }
 
+    const model = resolveDefaultModel();
     try {
       const draft = await withTimeout(
         draftTicketFromEmail({
           subject: input.subject,
           bodyText: dlpResult.text ?? input.bodyText,
-          model: resolveDefaultModel(),
+          model,
         }),
         DRAFT_TIMEOUT_MS
       );
+      // Usage accounting (spec §6). `recordUsage` takes a NULLABLE session id
+      // (aiCostTracker.ts:320) — this one-shot draft has no `ai_sessions` row,
+      // so the per-session totals update is skipped while the per-org budget
+      // aggregates (`ai_cost_usage`) still see the spend. Best-effort: a
+      // metering failure must never turn a good draft into a 503 for the pane.
+      try {
+        await recordUsage(null, input.orgId, model, draft.inputTokens, draft.outputTokens, false);
+      } catch (err) {
+        console.error('[office-addin] draft usage accounting failed', err);
+      }
       return c.json({ draft }, 200);
-    } catch {
+    } catch (err) {
+      // Blanket 503 for the pane's deterministic fallback, but never silent —
+      // a model/timeout/parse failure here is otherwise invisible in prod.
+      console.error('[office-addin] draft failed', err);
       return c.json({ error: 'ai_unavailable' }, 503);
     }
   }

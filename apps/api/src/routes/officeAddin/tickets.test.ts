@@ -29,6 +29,7 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     getOrgPolicy: vi.fn(),
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
+    recordUsage: vi.fn(),
   },
 }));
 
@@ -70,6 +71,15 @@ vi.mock('../../db/schema', () => ({
     emailMessageId: 'tickets.email_message_id',
     deletedAt: 'tickets.deleted_at',
   },
+  partners: {
+    __table: 'partners',
+    id: 'partners.id',
+    aiForOfficeEnabled: 'partners.ai_for_office_enabled',
+  },
+}));
+
+vi.mock('../../services/aiCostTracker', () => ({
+  recordUsage: hoisted.recordUsage,
 }));
 
 vi.mock('../../services/ticketService', () => ({
@@ -138,12 +148,19 @@ let updateSets: Record<string, unknown>[] = [];
 // One entry per ticket SELECT, in order — the real drizzle condition object, so
 // the presence/absence of the soft-delete predicate is inspectable.
 let selectWhereArgs: string[] = [];
+// The draft route's entitlement lookup (`select({ enabled: partners.aiForOfficeEnabled })`)
+// is answered from its own slot rather than the ticket queue, so it never
+// consumes a canned ticket row and the ticket-route tests are unaffected.
+let partnerAiEnabled = true;
 
 function primeDb() {
   mockDb.select.mockImplementation(
-    ((_cols?: unknown) => ({
+    ((cols?: Record<string, unknown>) => ({
       from: () => ({
         where: (...args: unknown[]) => {
+          if (cols && 'enabled' in cols) {
+            return { limit: () => Promise.resolve(partnerAiEnabled ? [{ enabled: true }] : [{ enabled: false }]) };
+          }
           selectWhereArgs.push(JSON.stringify(args));
           return { limit: () => Promise.resolve(ticketSelectQueue.shift() ?? []) };
         },
@@ -227,6 +244,7 @@ beforeEach(() => {
   ticketSelectQueue = [];
   updateSets = [];
   selectWhereArgs = [];
+  partnerAiEnabled = true;
   primeDb();
   hoisted.findLinkByMessageId.mockResolvedValue(null);
   hoisted.ticketThreadAnchor.mockReturnValue('<ticket-' + NEW_TICKET_ID + '@tickets.example.com>');
@@ -710,6 +728,27 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
       expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x' })
     );
+    // Usage accounting: sessionless (null session id), org-scoped, real token counts.
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 100, 50, false);
+  });
+
+  it('403s when the partner has no AI-for-Office entitlement, before the key/DLP/model', async () => {
+    partnerAiEnabled = false;
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'ai_not_enabled' });
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('still returns the draft when usage accounting throws', async () => {
+    hoisted.recordUsage.mockRejectedValue(new Error('meter down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(200);
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    errSpy.mockRestore();
   });
 
   it('404s when the technician cannot access the org', async () => {
@@ -738,12 +777,15 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
   });
 
-  it('503s when the model call throws', async () => {
+  it('503s when the model call throws, and logs it instead of swallowing', async () => {
     hoisted.draftTicketFromEmail.mockRejectedValue(new Error('model exploded'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body).toEqual({ error: 'ai_unavailable' });
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', expect.any(Error));
+    errSpy.mockRestore();
   });
 
   it('503s when the model call exceeds the timeout', async () => {
