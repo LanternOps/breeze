@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { officeAddinAuthRoutes } from './auth';
+import { officeAddinBindingsAdminRoutes } from './bindingsAdmin';
 
 // Mounted at /api/v1/office-addin (see apps/api/src/index.ts). Sub-routers are
 // attached by later tasks in the Outlook tech-persona plan:
@@ -9,3 +10,4 @@ import { officeAddinAuthRoutes } from './auth';
 export const officeAddinRoutes = new Hono();
 
 officeAddinRoutes.route('/', officeAddinAuthRoutes);
+officeAddinRoutes.route('/', officeAddinBindingsAdminRoutes);

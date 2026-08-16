@@ -3349,5 +3349,25 @@
       "deleted": "Variable deleted",
       "deleteFailed": "Could not delete the variable"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Outlook add-in bindings",
+    "description": "Technicians bound to the Outlook tech add-in. Revoking a binding signs the technician out of the add-in on every device.",
+    "loading": "Loading bindings…",
+    "loadFailed": "Failed to load bindings.",
+    "retry": "Try again",
+    "empty": "No technicians have bound the Outlook add-in yet.",
+    "user": "User",
+    "entraTenant": "Entra tenant",
+    "boundOn": "Bound on",
+    "mfaVerified": "MFA verified",
+    "actions": "Actions",
+    "revoke": "Revoke",
+    "revoked": "Binding revoked",
+    "revokeFailed": "Failed to revoke binding",
+    "confirmTitle": "Revoke Outlook add-in binding",
+    "confirmBody": "This signs {{name}} out of the Outlook tech add-in on every device. They can re-bind by signing in again.",
+    "cancel": "Cancel",
+    "confirmRevoke": "Revoke binding"
   }
 }
