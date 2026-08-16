@@ -780,7 +780,12 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, bool, error) 
 	if _, out, _, err := runInstallerCommand(ctx, mountCmd, ""); err != nil {
 		return 1, out, false, fmt.Errorf("failed to mount DMG: %w", err)
 	}
-	defer dmgCommandContext(context.Background(), "hdiutil", "detach", mountPoint, "-quiet").Run()
+	// Best-effort unmount: the install result is already decided by the time this
+	// runs, and a failed detach leaves a stale mountpoint rather than a bad
+	// install, so there is nothing actionable to report from here.
+	defer func() {
+		_ = dmgCommandContext(context.Background(), "hdiutil", "detach", mountPoint, "-quiet").Run()
+	}()
 
 	// Look for .pkg first, then .app
 	entries, _ := os.ReadDir(mountPoint)
