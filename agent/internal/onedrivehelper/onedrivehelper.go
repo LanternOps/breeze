@@ -40,6 +40,17 @@ type Config struct {
 	Libraries []LibraryRule `json:"libraries"`
 }
 
+// Drift reasons reported to the server (heartbeat onedriveDeviceState.driftEntries).
+const (
+	// ReasonNotMounted — the library is entitled but no mounted folder matches it.
+	ReasonNotMounted = "not_mounted"
+	// ReasonNotMountedAmbiguous — same as above, except one or more SAME-NAMED
+	// libraries from other sites are also entitled and the mounted folders can't
+	// be attributed between them. The count of unmounted libraries is right;
+	// which one this entry names is not certain. See ComputeDrift.
+	ReasonNotMountedAmbiguous = "not_mounted_ambiguous"
+)
+
 // DriftEntry records an applied library that OneDrive did not actually mount
 // (e.g. the user previously "stopped sync" — AutoMount will not re-mount it).
 type DriftEntry struct {
@@ -252,6 +263,14 @@ func siteHintFromURL(siteURL string) string {
 //  3. Legacy substring scan, for cache shapes with no parseable folder name.
 //     Keeps an unrecognized shape degrading to the old behaviour rather than
 //     reporting drift on everything. Fuzzy, so it consumes nothing.
+//
+// When pass 2 has to resolve SEVERAL same-named rules against fewer mounts, the
+// assignment is correct in COUNT but arbitrary in attribution — nothing in the
+// data says which site the one mounted "Documents" belongs to. Those entries
+// are reported as ReasonNotMountedAmbiguous rather than ReasonNotMounted, so a
+// tech reading the panel knows the tool is saying "one of these same-named
+// libraries is unmounted and I can't tell which" instead of asserting a
+// coin-flip as fact.
 func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
 	matched := make([]bool, len(applied))
 	consumed := make([]bool, len(mountedPaths))
@@ -274,17 +293,31 @@ func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
 		}
 	}
 
+	// How many rules each display name still has outstanding after pass 1 — more
+	// than one means pass 2 is choosing between indistinguishable candidates.
+	contenders := map[string]int{}
+	for i, r := range applied {
+		if !matched[i] && r.DisplayName != "" {
+			contenders[strings.ToLower(r.DisplayName)]++
+		}
+	}
+
 	// Pass 2 — name-only pairings for whatever is left over.
+	guessedFor := map[string]bool{}
 	for i, r := range applied {
 		if matched[i] || r.DisplayName == "" {
 			continue
 		}
+		key := strings.ToLower(r.DisplayName)
 		for j, p := range mountedPaths {
 			if consumed[j] {
 				continue
 			}
 			if _, ok := mountSiteForLibrary(p, r.DisplayName); ok {
 				matched[i], consumed[j] = true, true
+				if contenders[key] > 1 {
+					guessedFor[key] = true
+				}
 				break
 			}
 		}
@@ -304,7 +337,14 @@ func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
 			}
 		}
 		if !matched[i] {
-			out = append(out, DriftEntry{LibraryID: r.LibraryID, DisplayName: r.DisplayName, Reason: "not_mounted"})
+			reason := ReasonNotMounted
+			// A same-named sibling took a mount by position, not by evidence —
+			// the COUNT of unmounted libraries is right, but which one is named
+			// here is a guess. Say so rather than assert it.
+			if guessedFor[needle] {
+				reason = ReasonNotMountedAmbiguous
+			}
+			out = append(out, DriftEntry{LibraryID: r.LibraryID, DisplayName: r.DisplayName, Reason: reason})
 		}
 	}
 	return out

@@ -410,6 +410,37 @@ func TestComputeDriftIsSiteQualified(t *testing.T) {
 	}
 }
 
+// When same-named libraries can't be told apart — neither site hint matches the
+// mounted folder's free-text site title — the assignment is right in COUNT but
+// arbitrary in attribution. The reported reason must say so instead of naming
+// one library with false confidence.
+func TestComputeDriftFlagsAmbiguousAttribution(t *testing.T) {
+	hr := LibraryRule{LibraryID: "l-hr", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/hrweb"}
+	legal := LibraryRule{LibraryID: "l-legal", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/lgl"}
+	// The site title matches NEITHER url slug, so pass 1 resolves nothing.
+	mounted := []string{`C:\Users\bob\People Operations - Documents`}
+
+	got := ComputeDrift([]LibraryRule{hr, legal}, mounted)
+
+	// Exactly one library is genuinely unmounted, and that count must survive.
+	if len(got) != 1 {
+		t.Fatalf("drift = %+v, want exactly 1 entry", got)
+	}
+	if got[0].Reason != ReasonNotMountedAmbiguous {
+		t.Errorf("reason = %q, want %q — attribution was a positional guess", got[0].Reason, ReasonNotMountedAmbiguous)
+	}
+
+	// A site-confirmed resolution is NOT a guess and must keep the plain reason.
+	confirmedMount := []string{`C:\Users\bob\Contoso hrweb - Documents`}
+	confirmed := ComputeDrift([]LibraryRule{hr, legal}, confirmedMount)
+	if len(confirmed) != 1 || confirmed[0].LibraryID != "l-legal" {
+		t.Fatalf("drift = %+v, want exactly [l-legal]", confirmed)
+	}
+	if confirmed[0].Reason != ReasonNotMounted {
+		t.Errorf("reason = %q, want %q — the pairing was site-confirmed", confirmed[0].Reason, ReasonNotMounted)
+	}
+}
+
 func TestFolderRedirectionState(t *testing.T) {
 	tests := []struct{ raw, want string }{
 		{`C:\Users\bob\OneDrive - Contoso\Documents`, "redirected"},
