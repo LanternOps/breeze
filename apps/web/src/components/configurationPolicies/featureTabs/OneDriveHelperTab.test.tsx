@@ -245,6 +245,105 @@ describe('OneDriveHelperTab', () => {
     await waitFor(() => expect(mockedStatus).toHaveBeenCalledWith('org-99'));
   });
 
+  it('trims free-text fields on Save; a whitespace-only optional field serializes as null (#2336)', async () => {
+    const existingLink: FeatureLink = {
+      id: 'link-1',
+      featureType: 'onedrive_helper',
+      featurePolicyId: null,
+      inlineSettings: {
+        kfmSilentOptIn: true,
+        tenantAssociationId: null,
+        libraries: [
+          {
+            libraryId: 'tenantId=t1&siteId=s1',
+            displayName: 'Marketing Share',
+            targetingMode: 'local_ad_group',
+            groupName: 'Placeholder',
+            hiveScope: 'hkcu',
+            enabled: true,
+          },
+        ],
+      },
+    };
+
+    render(<OneDriveHelperTab {...baseProps} existingLink={existingLink} />);
+
+    // KFM is on -> tenant association input is visible; pad it with whitespace
+    // only, which must collapse to null rather than persist as blank spaces.
+    fireEvent.change(screen.getByTestId('onedrive-tenant-association'), {
+      target: { value: '   ' },
+    });
+    // Group name padded with real content on both sides — must be trimmed,
+    // not persisted with the surrounding whitespace baked in.
+    fireEvent.change(screen.getByTestId('onedrive-lib-groupname-0'), {
+      target: { value: '  Domain Admins  ' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+
+    const [, payload] = saveMock.mock.calls[0] as [
+      string | null,
+      { inlineSettings: { tenantAssociationId: unknown; libraries: Array<Record<string, unknown>> } },
+    ];
+    expect(payload.inlineSettings.tenantAssociationId).toBeNull();
+    expect(payload.inlineSettings.libraries[0]).toMatchObject({ groupName: 'Domain Admins' });
+  });
+
+  it('removing the first of two library rows leaves the second row\'s own values, keyed by rowKey not index (#2336)', () => {
+    const existingLink: FeatureLink = {
+      id: 'link-1',
+      featureType: 'onedrive_helper',
+      featurePolicyId: null,
+      inlineSettings: {
+        libraries: [
+          {
+            libraryId: 'tenantId=t1&siteId=s1',
+            displayName: 'First Library',
+            targetingMode: 'local_ad_group',
+            groupName: 'First Group',
+            hiveScope: 'hkcu',
+            enabled: true,
+          },
+          {
+            libraryId: 'tenantId=t1&siteId=s2',
+            displayName: 'Second Library',
+            targetingMode: 'local_ad_group',
+            groupName: 'Second Group',
+            hiveScope: 'hkcu',
+            enabled: true,
+          },
+        ],
+      },
+    };
+
+    render(<OneDriveHelperTab {...baseProps} existingLink={existingLink} />);
+
+    expect(screen.getByText('First Library')).toBeTruthy();
+    expect(screen.getByText('Second Library')).toBeTruthy();
+
+    // Identity, not rendered text, is what distinguishes the two keying
+    // strategies. Every input here is controlled, so React re-renders the
+    // correct VALUES either way — asserting on text would pass with index keys
+    // too. What differs is which DOM node survives: keyed by rowKey, the second
+    // library keeps the very node it was already rendered into; keyed by index,
+    // React instead reuses the removed first row's node and unmounts the
+    // second's, discarding any DOM-local state (focus, selection, scroll) with it.
+    const secondRowBefore = screen.getByTestId('onedrive-lib-row-1');
+    const secondGroupInputBefore = screen.getByTestId('onedrive-lib-groupname-1');
+
+    fireEvent.click(screen.getByTestId('onedrive-lib-remove-0'));
+
+    expect(screen.queryByText('First Library')).toBeNull();
+    expect(screen.getByText('Second Library')).toBeTruthy();
+    // The surviving row now renders at DOM index 0 — and must be the SAME node.
+    expect(screen.getByTestId('onedrive-lib-row-0')).toBe(secondRowBefore);
+    expect(screen.getByTestId('onedrive-lib-groupname-0')).toBe(secondGroupInputBefore);
+    expect(
+      (screen.getByTestId('onedrive-lib-groupname-0') as HTMLInputElement).value,
+    ).toBe('Second Group');
+  });
+
   it('inherited (parentLink only) shows Override and no direct Save', () => {
     const parentLink: FeatureLink = {
       id: 'parent-link',

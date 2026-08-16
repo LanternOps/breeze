@@ -230,6 +230,24 @@ describe('ConfigPolicyDetailPage — URL hash deep-linking', () => {
     expect(screen.getByTestId('patch-tab-editor')).toBeInTheDocument();
   });
 
+  // #2336: `#onedrive_helper` used to land on Overview. jsdom reports every
+  // measured button width as 0, so OverflowTabs keeps exactly one tab visible
+  // and everything else — OneDrive Helper included — lives in the "More"
+  // dropdown. That makes this the overflow-tab case: the hash must still
+  // select the tab even though its button is never rendered in the nav bar,
+  // and the "More" button must show the active tab's label instead.
+  it('selects an OVERFLOW feature tab from the initial hash (#onedrive_helper)', async () => {
+    window.location.hash = '#onedrive_helper';
+    mockPolicy({ orgId: 'org-1', partnerId: null });
+    render(<ConfigPolicyDetailPage policyId="pol-1" />);
+
+    await screen.findByRole('heading', { name: 'Test Policy' });
+    expect(screen.getByTestId('onedrive-tab-editor')).toBeInTheDocument();
+    // The overflow trigger takes on the active tab's identity rather than "More".
+    expect(screen.getByRole('button', { name: /OneDrive Helper/i })).toBeInTheDocument();
+    expect(screen.queryByText('More')).not.toBeInTheDocument();
+  });
+
   it('writes the tab id to the hash when a tab is selected', async () => {
     mockPolicy({ orgId: 'org-1', partnerId: null });
     render(<ConfigPolicyDetailPage policyId="pol-1" />);

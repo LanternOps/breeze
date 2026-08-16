@@ -2956,23 +2956,54 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     // already-claimed commands. Past the budget, remaining UPNs stay untagged
     // this cycle (fail closed) and retry next heartbeat against a warm cache.
     const taggingDeadline = Date.now() + 15_000;
-    for (const upn of upns) {
-      if (Date.now() > taggingDeadline) {
-        console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
-        break;
+
+    // Resolved through a small fixed-size worker pool rather than one at a
+    // time: a multi-session host (RDS/VDI) reports a UPN per logged-on user,
+    // and serialized round-trips sum into the 15s budget fast enough that the
+    // last users go untagged — their libraries then silently don't mount. The
+    // cap stays small on purpose: these calls share one org's Graph token and
+    // rate limit, so widening it trades a burst of 429s for the latency win.
+    const TAGGING_CONCURRENCY = 4;
+    const memberships = new Array<Set<string> | null>(upns.length).fill(null);
+    let nextIndex = 0;
+    let budgetExhausted = false;
+
+    const worker = async () => {
+      for (;;) {
+        const i = nextIndex++;
+        if (i >= upns.length) return;
+        if (Date.now() > taggingDeadline) {
+          budgetExhausted = true;
+          return;
+        }
+        const res = await resolveUserGroupMembershipCached(device.orgId, upns[i]!);
+        if (res.kind !== 'ok') {
+          // Deliberately no UPN in the log line — it's end-user PII; the code +
+          // deviceId is enough to triage.
+          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+          continue;
+        }
+        memberships[i] = new Set(res.data.groupIds.map(normalizeGuid));
       }
-      const res = await resolveUserGroupMembershipCached(device.orgId, upn);
-      if (res.kind !== 'ok') {
-        // Deliberately no UPN in the log line — it's end-user PII; the code +
-        // deviceId is enough to triage.
-        console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
-        continue;
-      }
-      const groupIds = new Set(res.data.groupIds.map(normalizeGuid));
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(TAGGING_CONCURRENCY, upns.length) }, () => worker()),
+    );
+
+    if (budgetExhausted) {
+      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+    }
+
+    // Applied in the original UPN order (not completion order) so allowedUpns
+    // is deterministic for a given input regardless of how the pool interleaved.
+    for (let i = 0; i < upns.length; i++) {
+      const groupIds = memberships[i];
+      if (!groupIds) continue;
       for (const rule of graphRules) {
         if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
           const arr = allowedByLib.get(rule.id) ?? [];
-          arr.push(upn);
+          arr.push(upns[i]!);
           allowedByLib.set(rule.id, arr);
         }
       }

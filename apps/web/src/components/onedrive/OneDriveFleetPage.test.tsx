@@ -179,6 +179,23 @@ describe('OneDriveFleetPage', () => {
     expect(drift.className).toMatch(/amber/);
   });
 
+  it('KFM caption reads "of total reporting", not "of signedIn signed in" (#2336)', async () => {
+    // The server computes kfmProtected over EVERY reporting device, not just
+    // signed-in ones — pick a set that is impossible to read correctly under
+    // the old "of {signedIn} signed in" caption: 6 protected out of only 4
+    // signed-in devices. The devices array itself is irrelevant to this card;
+    // only `stats` drives the caption and warning threshold.
+    vi.mocked(api.fetchOneDriveFleetState).mockResolvedValue({
+      devices: [],
+      stats: { total: 10, signedIn: 4, kfmProtected: 6, withDrift: 0 },
+    });
+    render(<OneDriveFleetPage />);
+
+    const kfmCard = await screen.findByTestId('onedrive-stat-kfm');
+    expect(kfmCard).toHaveTextContent('of 10 reporting');
+    expect(kfmCard).not.toHaveTextContent('signed in');
+  });
+
   it('shows the empty state when no devices are reporting', async () => {
     vi.mocked(api.fetchOneDriveFleetState).mockResolvedValue({
       devices: [],

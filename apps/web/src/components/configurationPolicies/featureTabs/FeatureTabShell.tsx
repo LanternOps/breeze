@@ -106,7 +106,7 @@ export default function FeatureTabShell({
               <button
                 type="button"
                 onClick={onOverride}
-                disabled={saveDisabled}
+                disabled={saving || saveDisabled}
                 className="inline-flex items-center gap-2 rounded-md border border-primary/40 px-3 py-2 text-sm font-medium text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 <PenLine className="h-4 w-4" />
