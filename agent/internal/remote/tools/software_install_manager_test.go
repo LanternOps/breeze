@@ -266,6 +266,106 @@ func TestInstallViaManagerWingetOnlyOnWindows(t *testing.T) {
 	}
 }
 
+func TestInstallViaManagerBrewUnavailableMapsToManagerUnavailablePrefix(t *testing.T) {
+	deps, runner := testManagerDeps(t, map[string]fakeManagerResponse{}, nil)
+	deps.brewEnsure = func(kind, name, softwareName string) (string, bool, error) {
+		return "", false, fmt.Errorf("%w: brew binary not found", patching.ErrBrewUnavailable)
+	}
+
+	payload := map[string]any{
+		"installMethod": map[string]any{"kind": "homebrew_formula", "packageId": "firefox"},
+		"versionMode":   "latest",
+		"softwareName":  "Firefox",
+	}
+
+	res := installViaManager(payload, deps)
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed", res.Status)
+	}
+	if !strings.HasPrefix(res.Error, "manager_unavailable: ") {
+		t.Fatalf("error = %q, want manager_unavailable: prefix", res.Error)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("brew path must not touch the winget runner, got calls=%v", runner.calls)
+	}
+}
+
+func TestInstallViaManagerBrewRealFailureSurfacesVerbatim(t *testing.T) {
+	deps, _ := testManagerDeps(t, map[string]fakeManagerResponse{}, nil)
+	deps.brewEnsure = func(kind, name, softwareName string) (string, bool, error) {
+		return "", false, fmt.Errorf("cannot execute brew as root: no active non-root console user")
+	}
+
+	payload := map[string]any{
+		"installMethod": map[string]any{"kind": "homebrew_cask", "packageId": "firefox"},
+		"versionMode":   "latest",
+		"softwareName":  "Firefox",
+	}
+
+	res := installViaManager(payload, deps)
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed", res.Status)
+	}
+	if strings.HasPrefix(res.Error, "manager_unavailable: ") {
+		t.Fatalf("a real root/console failure must not be reported as manager_unavailable: got %q", res.Error)
+	}
+	if res.Error != "cannot execute brew as root: no active non-root console user" {
+		t.Fatalf("error = %q, want the underlying brewCommand error verbatim", res.Error)
+	}
+}
+
+func TestInstallViaManagerBrewAlreadyInstalledPassesThrough(t *testing.T) {
+	deps, _ := testManagerDeps(t, map[string]fakeManagerResponse{}, nil)
+	called := false
+	deps.brewEnsure = func(kind, name, softwareName string) (string, bool, error) {
+		called = true
+		if kind != "homebrew_formula" || name != "git" {
+			t.Fatalf("brewEnsure got kind=%q name=%q, want homebrew_formula/git", kind, name)
+		}
+		return "git 2.55.0", true, nil
+	}
+
+	payload := map[string]any{
+		"installMethod": map[string]any{"kind": "homebrew_formula", "packageId": "git"},
+		"versionMode":   "latest",
+		"softwareName":  "Git",
+	}
+
+	res := installViaManager(payload, deps)
+	if !called {
+		t.Fatal("brewEnsure was never invoked")
+	}
+	m := mustDecodeSuccess(t, res)
+	if m["alreadyInstalled"] != true {
+		t.Fatalf("alreadyInstalled = %v, want true", m["alreadyInstalled"])
+	}
+	if m["packageId"] != "git" {
+		t.Fatalf("packageId = %v, want git", m["packageId"])
+	}
+}
+
+// TestInstallViaManagerBrewRejectsInvalidPackageIDBeforeExec pins the
+// contract that ValidateBrewPackageName runs before brewEnsure is ever
+// invoked — an unsafe brew name must never reach a shell-out.
+func TestInstallViaManagerBrewRejectsInvalidPackageIDBeforeExec(t *testing.T) {
+	deps, _ := testManagerDeps(t, map[string]fakeManagerResponse{}, nil)
+	deps.brewEnsure = func(kind, name, softwareName string) (string, bool, error) {
+		t.Fatal("brewEnsure must not be called for an invalid packageId")
+		return "", false, nil
+	}
+
+	payload := map[string]any{
+		"installMethod": map[string]any{"kind": "homebrew_formula", "packageId": "; rm -rf /"},
+		"versionMode":   "latest",
+		"softwareName":  "Evil",
+	}
+
+	res := installViaManager(payload, deps)
+	if res.Status != "failed" {
+		t.Fatalf("status = %q, want failed for an invalid brew packageId", res.Status)
+	}
+}
+
 func TestSoftwareInstallRoutesInstallMethodPayloadToManager(t *testing.T) {
 	// InstallSoftware must branch to the manager path BEFORE requiring
 	// downloadUrl, given an installMethod payload with no downloadUrl at all.

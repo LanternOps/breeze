@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -11,9 +12,8 @@ import (
 )
 
 // managerDeps bundles the OS-facing dependencies installViaManager needs, so
-// tests can inject a fake process runner and a fake winget locator without
-// spawning anything real. brewEnsure is a stub until Task 6 wires the
-// Homebrew ensure-present path through this same seam.
+// tests can inject a fake process runner, a fake winget locator, and a fake
+// brew-ensure function without spawning anything real.
 type managerDeps struct {
 	goos         string
 	locateWinget func() (string, string, error)
@@ -28,15 +28,15 @@ func defaultManagerDeps() managerDeps {
 		goos:         runtime.GOOS,
 		locateWinget: patching.LocateSystemWinget,
 		run:          patching.DefaultRunner,
-		brewEnsure:   stubBrewEnsure,
+		brewEnsure:   liveBrewEnsure,
 	}
 }
 
-// stubBrewEnsure is the Task-6 placeholder for the Homebrew ensure-present
-// path. homebrew_cask/homebrew_formula payloads are parsed and validated by
-// installViaManager already; only the actual `brew` actuation is deferred.
-func stubBrewEnsure(kind, name, softwareName string) (string, bool, error) {
-	return "", false, fmt.Errorf("manager_unavailable: homebrew ensure-present is not yet implemented")
+// liveBrewEnsure adapts patching.EnsureBrewInstalled to the brewEnsure seam.
+// softwareName carries no meaning for brew (Homebrew addresses packages by
+// formula/cask name only) so it is intentionally unused here.
+func liveBrewEnsure(kind, name, softwareName string) (string, bool, error) {
+	return patching.EnsureBrewInstalled(kind, name)
 }
 
 // installViaManager handles a software_install command whose payload carries
@@ -77,6 +77,16 @@ func installViaManager(payload map[string]any, deps managerDeps) (result Command
 		}
 		output, alreadyInstalled, err := deps.brewEnsure(kind, packageID, softwareName)
 		if err != nil {
+			// errors.Is, not a string prefix check: patching.EnsureBrewInstalled
+			// wraps ErrBrewUnavailable with fmt.Errorf's %w, so this must survive
+			// however deep the wrapping goes. Every other brewEnsure failure
+			// (including "cannot execute brew as root: no active non-root
+			// console user") is a real, actionable error and surfaces verbatim —
+			// the manager_unavailable: prefix is reserved for "brew genuinely
+			// isn't installed / reachable on this platform" (Task 7 contract).
+			if errors.Is(err, patching.ErrBrewUnavailable) {
+				return NewErrorResult(fmt.Errorf("manager_unavailable: %s", err.Error()), time.Since(startTime).Milliseconds())
+			}
 			return NewErrorResult(err, time.Since(startTime).Milliseconds())
 		}
 		return NewSuccessResult(map[string]any{
