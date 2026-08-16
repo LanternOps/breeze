@@ -3349,5 +3349,25 @@
       "deleted": "Variable eliminada",
       "deleteFailed": "No se pudo eliminar la variable"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Vinculaciones del complemento de Outlook",
+    "description": "Técnicos vinculados al complemento técnico de Outlook. Revocar una vinculación cierra la sesión del técnico en el complemento en todos los dispositivos.",
+    "loading": "Cargando vinculaciones…",
+    "loadFailed": "No se pudieron cargar las vinculaciones.",
+    "retry": "Reintentar",
+    "empty": "Ningún técnico ha vinculado el complemento de Outlook todavía.",
+    "user": "Usuario",
+    "entraTenant": "Inquilino de Entra",
+    "boundOn": "Vinculado el",
+    "mfaVerified": "MFA verificado",
+    "actions": "Acciones",
+    "revoke": "Revocar",
+    "revoked": "Vinculación revocada",
+    "revokeFailed": "No se pudo revocar la vinculación",
+    "confirmTitle": "Revocar vinculación del complemento de Outlook",
+    "confirmBody": "Esto cierra la sesión de {{name}} en el complemento técnico de Outlook en todos los dispositivos. Puede volver a vincularse iniciando sesión de nuevo.",
+    "cancel": "Cancelar",
+    "confirmRevoke": "Revocar vinculación"
   }
 }

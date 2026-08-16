@@ -3349,5 +3349,25 @@
       "deleted": "Variabile eliminata",
       "deleteFailed": "Impossibile eliminare la variabile"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Associazioni del componente aggiuntivo Outlook",
+    "description": "Tecnici associati al componente aggiuntivo tecnico di Outlook. Revocare un'associazione disconnette il tecnico dal componente aggiuntivo su ogni dispositivo.",
+    "loading": "Caricamento delle associazioni…",
+    "loadFailed": "Impossibile caricare le associazioni.",
+    "retry": "Riprova",
+    "empty": "Nessun tecnico ha ancora associato il componente aggiuntivo Outlook.",
+    "user": "Utente",
+    "entraTenant": "Tenant Entra",
+    "boundOn": "Associato il",
+    "mfaVerified": "MFA verificata",
+    "actions": "Azioni",
+    "revoke": "Revoca",
+    "revoked": "Associazione revocata",
+    "revokeFailed": "Impossibile revocare l'associazione",
+    "confirmTitle": "Revoca associazione del componente aggiuntivo Outlook",
+    "confirmBody": "Questo disconnette {{name}} dal componente aggiuntivo tecnico di Outlook su ogni dispositivo. Potrà associarsi di nuovo effettuando l'accesso.",
+    "cancel": "Annulla",
+    "confirmRevoke": "Revoca associazione"
   }
 }

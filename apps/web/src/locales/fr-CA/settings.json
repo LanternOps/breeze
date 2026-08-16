@@ -3349,5 +3349,25 @@
       "deleted": "Variable supprimée",
       "deleteFailed": "Impossible de supprimer la variable"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Liaisons du complément Outlook",
+    "description": "Techniciens liés au complément technicien Outlook. Révoquer une liaison déconnecte le technicien du complément sur tous les appareils.",
+    "loading": "Chargement des liaisons…",
+    "loadFailed": "Échec du chargement des liaisons.",
+    "retry": "Réessayer",
+    "empty": "Aucun technicien n'a encore lié le complément Outlook.",
+    "user": "Utilisateur",
+    "entraTenant": "Locataire Entra",
+    "boundOn": "Lié le",
+    "mfaVerified": "MFA vérifiée",
+    "actions": "Actions",
+    "revoke": "Révoquer",
+    "revoked": "Liaison révoquée",
+    "revokeFailed": "Échec de la révocation de la liaison",
+    "confirmTitle": "Révoquer la liaison du complément Outlook",
+    "confirmBody": "Cette action déconnecte {{name}} du complément technicien Outlook sur tous les appareils. La personne pourra se relier en se reconnectant.",
+    "cancel": "Annuler",
+    "confirmRevoke": "Révoquer la liaison"
   }
 }

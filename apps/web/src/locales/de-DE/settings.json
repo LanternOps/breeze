@@ -3349,5 +3349,25 @@
       "deleted": "Variable gelöscht",
       "deleteFailed": "Variable konnte nicht gelöscht werden"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Outlook-Add-In-Bindungen",
+    "description": "Techniker, die mit dem Outlook-Techniker-Add-In verbunden sind. Das Widerrufen einer Bindung meldet den Techniker auf allen Geräten vom Add-In ab.",
+    "loading": "Bindungen werden geladen…",
+    "loadFailed": "Bindungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Noch kein Techniker hat das Outlook-Add-In verbunden.",
+    "user": "Benutzer",
+    "entraTenant": "Entra-Mandant",
+    "boundOn": "Verbunden am",
+    "mfaVerified": "MFA verifiziert",
+    "actions": "Aktionen",
+    "revoke": "Widerrufen",
+    "revoked": "Bindung widerrufen",
+    "revokeFailed": "Bindung konnte nicht widerrufen werden",
+    "confirmTitle": "Outlook-Add-In-Bindung widerrufen",
+    "confirmBody": "Dadurch wird {{name}} auf allen Geräten vom Outlook-Techniker-Add-In abgemeldet. Eine erneute Verbindung ist durch erneutes Anmelden möglich.",
+    "cancel": "Abbrechen",
+    "confirmRevoke": "Bindung widerrufen"
   }
 }
