@@ -283,14 +283,20 @@ export default function DeviceActivityFeed({
               ? `, ${activeAlerts} ${t("deviceActivityFeed.activeAlert")}${
                   activeAlerts === 1 ? "" : t("deviceActivityFeed.s")
                 }`
-              : // A device with nothing to show auto-collapses to this rail, so
-                // the empty state in the expanded card is never reached on
-                // desktop. Without this the rail announced (and displayed) a
-                // bare "Activity" and nothing else — indistinguishable from
-                // still-loading (#3452).
-                !loading && itemCount === 0
-                ? `, ${t("deviceActivityFeed.noRecentActionsOnThisDevice")}`
-                : ""
+              : loading
+                ? ""
+                : // A device with nothing to show auto-collapses to this rail, so
+                  // the empty state in the expanded card is never reached on
+                  // desktop. Without this the rail announced (and displayed) a
+                  // bare "Activity" and nothing else — indistinguishable from
+                  // still-loading (#3452).
+                  itemCount === 0
+                  ? `, ${t("deviceActivityFeed.noRecentActionsOnThisDevice")}`
+                  : // The count badge is aria-hidden (an aria-label on the
+                    // button suppresses descendant text anyway), so without
+                    // this the everyday "events but no active alerts" state
+                    // announced a bare "Activity" and dropped the count.
+                    `, ${t("deviceActivityFeed.recentActions", { count: itemCount })}`
           }`}
           className={`hidden w-full flex-col items-center gap-3 rounded-lg border bg-card py-4 shadow-xs transition hover:bg-muted/50 lg:flex lg:h-full ${
             activeAlerts > 0 ? 'border-warning/40' : ''

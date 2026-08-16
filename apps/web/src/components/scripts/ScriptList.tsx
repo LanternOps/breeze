@@ -92,14 +92,15 @@ export default function ScriptList({
   timezone,
   organizations = [],
 }: ScriptListProps) {
-  const { t } = useTranslation('scripts');
+  // `scripts` stays the default namespace, so every existing `t('scriptList.…')`
+  // call is unaffected; `common` is added for the pagination labels below.
+  const { t } = useTranslation(['scripts', 'common']);
   // The pagination arrows are icon-only, so their accessible name has to come
   // from an aria-label — a screen reader announced them as unlabelled buttons
-  // (#3452). Reuses the shared `common:actions.*` pair already used by
-  // ConfigPolicyList rather than minting a scripts-namespace duplicate.
-  const { t: tCommon } = useTranslation('common');
-  const previousPageLabel = tCommon('actions.previousPage');
-  const nextPageLabel = tCommon('actions.nextPage');
+  // (#3452). Reuses the shared `common:actions.*` pair ConfigPolicyList already
+  // uses rather than minting a scripts-namespace duplicate.
+  const previousPageLabel = t('common:actions.previousPage');
+  const nextPageLabel = t('common:actions.nextPage');
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [languageFilter, setLanguageFilter] = useState<string>('all');

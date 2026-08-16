@@ -149,6 +149,27 @@ describe('DeviceActivityFeed', () => {
     expect(bar).toHaveAttribute('aria-label', 'Activity, No recent actions on this device.');
   });
 
+  it('collapsed: announces the item count when there are events but no active alerts (#3452)', async () => {
+    // The badge is aria-hidden and an aria-label suppresses descendant text,
+    // so without the count in the label this everyday state announced a bare
+    // "Activity" and dropped the number entirely.
+    mockFeed([evt('e1'), evt('e2')], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() =>
+      expect(bar).toHaveAttribute('aria-label', 'Activity, 2 recent actions'),
+    );
+  });
+
+  it('collapsed: uses the singular form for a single item (#3452)', async () => {
+    mockFeed([evt('e1')], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() => expect(bar).toHaveAttribute('aria-label', 'Activity, 1 recent action'));
+  });
+
   it('expanded: the header chevron fires onToggleCollapse to collapse', async () => {
     mockFeed([evt('e1')], []);
     const onToggleCollapse = vi.fn();

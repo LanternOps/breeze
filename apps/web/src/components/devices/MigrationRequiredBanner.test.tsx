@@ -139,6 +139,10 @@ describe('MigrationRequiredBanner', () => {
 // i18next pluralization, so these two tests unmock 'react-i18next' and
 // '@/lib/i18n' and re-import the component fresh against the real locale
 // resources instead of the mocked translator.
+//
+// The unmock is never restored, so this MUST stay the last describe in this
+// file — anything appended below would silently run against real i18next and
+// fail far from its cause.
 describe('MigrationRequiredBanner message pluralization (#3452)', () => {
   it('uses the singular string for exactly 1 device', async () => {
     vi.resetModules();
