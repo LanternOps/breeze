@@ -11,14 +11,15 @@ import {
   type TimeEntryActor,
 } from '../../services/timeEntryService';
 import { addinLogTimeSchema, addinStartTimerSchema, addinStopTimerSchema } from './schemas';
+import type { AddinRunningTimerEntry } from '@breeze/shared';
 
 /**
  * Tech add-in time-tracking endpoints (Task 18). A deliberately NARROW slice of
  * `timeEntryService` — just the technician's own running/start/stop/log
  * actions. No bulk approval, timesheet, arbitrary update, or delete route
  * exists here (those stay on the web-only `timeEntriesApiRoutes`); this router
- * exposes only what routes/timeEntries/timeEntries.ts calls the "internal-only
- * surface" minus anything requiring `manageAll`.
+ * exposes only the "internal-only" surface `timeEntryService.ts` describes
+ * (spec D4), minus anything requiring `manageAll`.
  */
 export const officeAddinTimeRoutes = new Hono();
 
@@ -57,24 +58,29 @@ interface RunningTimerRow {
   description: string | null;
 }
 
-function toRunningTimerResponse(entry: RunningTimerRow) {
+// Returns the @breeze/shared wire type so drift between this projection and
+// the add-in client fails to compile instead of surfacing at runtime.
+function toRunningTimerResponse(entry: RunningTimerRow): AddinRunningTimerEntry {
   return {
     id: entry.id,
     ticketId: entry.ticketId,
     ticketInternalNumber: entry.ticketNumber,
-    startedAt: entry.startedAt,
+    startedAt: entry.startedAt.toISOString(),
     description: entry.description,
   };
 }
 
-officeAddinTimeRoutes.get('/time/running', requireAddinCapability('time-read'), async (c) => {
+// Registered as '/running' — the router is mounted under '/time' in ./index.ts,
+// so the external path stays GET /office-addin/time/running (same for
+// '/start', '/stop' and '/log' below).
+officeAddinTimeRoutes.get('/running', requireAddinCapability('time-read'), async (c) => {
   const auth = c.get('officeAddinAuth');
   const running = await getRunningTimer(auth.userId);
   return c.json({ running: running ? toRunningTimerResponse(running) : null });
 });
 
 officeAddinTimeRoutes.post(
-  '/time/start',
+  '/start',
   requireAddinCapability('time-write'),
   zValidator('json', addinStartTimerSchema),
   async (c) => {
@@ -97,7 +103,7 @@ officeAddinTimeRoutes.post(
 );
 
 officeAddinTimeRoutes.post(
-  '/time/stop',
+  '/stop',
   requireAddinCapability('time-write'),
   zValidator('json', addinStopTimerSchema),
   async (c) => {
@@ -114,7 +120,7 @@ officeAddinTimeRoutes.post(
 );
 
 officeAddinTimeRoutes.post(
-  '/time/log',
+  '/log',
   requireAddinCapability('time-write'),
   zValidator('json', addinLogTimeSchema),
   async (c) => {

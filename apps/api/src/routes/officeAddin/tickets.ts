@@ -12,13 +12,14 @@ import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
-import { draftTicketFromEmail } from '../../services/officeAddin/aiEmailDraft';
+import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
   createTicket,
   getPortalUserForValidation,
   TicketServiceError,
+  toAddinTicketSummary,
   type AddinTicketSummary,
   type TicketActor,
 } from '../../services/ticketService';
@@ -72,16 +73,23 @@ import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
  *     - `allocateInternalTicketNumber` runs under
  *       `runOutsideDbContext(withSystemDbAccessContext(...))`, i.e. its own
  *       short transaction on another connection. The loser therefore BURNS a
- *       per-partner counter value. That is by design (see ticketNumbers.ts:12 —
+ *       per-partner counter value. That is by design (see the comment inside
+ *       `allocateInternalTicketNumber` in ticketNumbers.ts —
  *       gaps in ticket numbers are acceptable, and holding the partner row lock
  *       inside the request transaction would be worse).
  *     - `emitTicketEvent` enqueues a BullMQ job for a ticket id that will not
  *       exist. Ticket-event consumers already MUST treat ticket-not-found as
- *       retryable rather than terminal (ticketService.ts:337), so the job
- *       retries and expires instead of corrupting anything.
+ *       retryable rather than terminal (see the NOTE above `createTicket` in
+ *       ticketService.ts), so the job retries and expires instead of
+ *       corrupting anything.
  *     - `createAuditLogAsync` leaves an orphan `ticket.create` audit row.
- *   All three are pre-existing consequences of the shapes those helpers chose;
- *   the route adds no new escape. The route's OWN audit event
+ *     - `createConfirmedContact` (the `create_contact` requester branch) runs
+ *       before the nested transaction opens, so the requester's portal-user
+ *       row survives a claim-race loser. Intentional: the technician
+ *       explicitly confirmed that contact, and it stays valid for the winning
+ *       ticket / future ones.
+ *   The first three are pre-existing consequences of the shapes those helpers
+ *   chose; the route adds no new escape. The route's OWN audit event
  *   (`office_addin.ticket.created_from_email`) is written only after the nested
  *   transaction commits, so it never describes a ticket that vanished.
  *
@@ -140,21 +148,11 @@ interface TicketRowForSummary {
   emailThreadKey?: string | null;
 }
 
-// Mirrors ticketService.toAddinTicketSummary (not exported there) so the add-in
-// sees ONE ticket shape across /email-context and this route.
+// Delegates to ticketService.toAddinTicketSummary so the add-in sees ONE
+// ticket shape (the @breeze/shared wire type) across /email-context and this
+// route.
 function toSummary(row: TicketRowForSummary, submitterEmail: string | null): AddinTicketSummary {
-  return {
-    id: row.id,
-    internalNumber: row.internalNumber,
-    subject: row.subject,
-    status: row.status,
-    priority: row.priority,
-    updatedAt: row.updatedAt,
-    submitterEmail: row.submitterEmail,
-    matchesSubmitter: Boolean(
-      submitterEmail && row.submitterEmail && row.submitterEmail.toLowerCase() === submitterEmail.toLowerCase()
-    ),
-  };
+  return toAddinTicketSummary(row, submitterEmail);
 }
 
 /**
@@ -278,16 +276,19 @@ async function partnerAiEnabled(partnerId: string): Promise<boolean> {
 /**
  * AI email -> ticket draft (spec Task 19). A prefill only: subject + a plain-
  * English summary + a suggested time estimate. Never blocks ticket creation —
- * any failure (no entitlement, no key, DLP block aside, timeout, model error)
- * degrades to a non-200 so the pane falls back to a deterministic (non-AI)
- * prefill.
+ * every failure answers with a non-200 (403 no entitlement, 503 no key /
+ * timeout / model error, and the DLP block's 422 is one of them too), and ANY
+ * non-200 makes the pane fall back to a deterministic (non-AI) prefill.
  *
  * Check order is entitlement -> API key -> DLP -> model: the cheapest and most
  * authoritative "you may not do this at all" answer first, so an unentitled
  * partner never reaches DLP evaluation or the model.
  */
+// Registered as '/draft' — the router is mounted under '/tickets' in
+// ./index.ts, so the external path stays POST /office-addin/tickets/draft
+// (same for '/from-email' and '/:id/link-email' below).
 officeAddinTicketRoutes.post(
-  '/tickets/draft',
+  '/draft',
   requireAddinCapability('ticket-create'),
   zValidator('json', draftSchema),
   async (c) => {
@@ -323,9 +324,11 @@ officeAddinTicketRoutes.post(
         DRAFT_TIMEOUT_MS
       );
       // Usage accounting (spec §6). `recordUsage` takes a NULLABLE session id
-      // (aiCostTracker.ts:320) — this one-shot draft has no `ai_sessions` row,
-      // so the per-session totals update is skipped while the per-org budget
-      // aggregates (`ai_cost_usage`) still see the spend. Best-effort: a
+      // (see its doc in aiCostTracker.ts) — this one-shot draft has no
+      // `ai_sessions` row, so the per-session totals update is skipped while
+      // the per-org budget aggregates (`ai_cost_usage`) still see the spend.
+      // Token counts are accumulated across retry attempts, so a
+      // failed-then-recovered attempt 1 is metered too. Best-effort: a
       // metering failure must never turn a good draft into a 503 for the pane.
       try {
         await recordUsage(null, input.orgId, model, draft.inputTokens, draft.outputTokens, false);
@@ -337,13 +340,23 @@ officeAddinTicketRoutes.post(
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
       console.error('[office-addin] draft failed', err);
+      // Failed attempts still burned tokens — meter them (same best-effort
+      // posture as the success path). A timeout escapes this: withTimeout
+      // rejects with a plain Error before token counts exist.
+      if (err instanceof EmailDraftFailedError && (err.inputTokens > 0 || err.outputTokens > 0)) {
+        try {
+          await recordUsage(null, input.orgId, model, err.inputTokens, err.outputTokens, false);
+        } catch (meterErr) {
+          console.error('[office-addin] draft usage accounting failed', meterErr);
+        }
+      }
       return c.json({ error: 'ai_unavailable' }, 503);
     }
   }
 );
 
 officeAddinTicketRoutes.post(
-  '/tickets/from-email',
+  '/from-email',
   requireAddinCapability('ticket-create'),
   zValidator('json', fromEmailSchema),
   async (c) => {
@@ -396,8 +409,9 @@ officeAddinTicketRoutes.post(
       // org B's new ticket inherit org A's email_thread_key — and
       // findTicketInPartner matches thread keys PARTNER-wide with limit(1), so
       // the customer's next reply on org A's thread would deterministically
-      // land on org B's ticket. The inbound path has no such hole: it always
-      // continues in the closed original's own org (inboundEmailService.ts:306).
+      // land on org B's ticket. The inbound path has no such hole: its
+      // `createFromEmail` continuation always stays in the closed original's
+      // own org (inboundEmailService.ts).
       if (!prior || prior.orgId !== input.orgId) {
         return c.json({ error: 'not_found' }, 404);
       }
@@ -508,7 +522,7 @@ officeAddinTicketRoutes.post(
  *     as any other technician-written public/internal comment would).
  */
 officeAddinTicketRoutes.post(
-  '/tickets/:id/link-email',
+  '/:id/link-email',
   requireAddinCapability('ticket-link'),
   zValidator('json', linkEmailSchema),
   async (c) => {

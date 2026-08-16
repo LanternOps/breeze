@@ -58,16 +58,43 @@ export async function mintTechSession(
   return { token, expiresInSeconds: TECH_SESSION_SLIDING_TTL_SECONDS };
 }
 
+/**
+ * Field guard matching mintTechSession's write shape. Every downstream
+ * consumer (the tech middleware, the per-user revocation index) assumes these
+ * four non-empty strings exist — a payload that fails this never came from
+ * mintTechSession and must be treated as corrupt, not trusted.
+ */
+function isTechSessionPayload(value: unknown): value is TechSessionPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.userId === 'string' && v.userId.length > 0 &&
+    typeof v.partnerId === 'string' && v.partnerId.length > 0 &&
+    typeof v.bindingId === 'string' && v.bindingId.length > 0 &&
+    typeof v.createdAt === 'string' && v.createdAt.length > 0
+  );
+}
+
 export async function getTechSession(redis: Redis, token: string): Promise<TechSessionPayload | null> {
-  const raw = await redis.get(TECH_SESSION_KEYS.session(token));
+  const sessionKey = TECH_SESSION_KEYS.session(token);
+  const raw = await redis.get(sessionKey);
   if (!raw) return null;
 
-  let session: TechSessionPayload;
+  let parsed: unknown;
   try {
-    session = JSON.parse(raw) as TechSessionPayload;
+    parsed = JSON.parse(raw);
   } catch {
+    parsed = undefined;
+  }
+  if (!isTechSessionPayload(parsed)) {
+    // Corrupt/foreign payload under our namespace: log the KEY (never the
+    // value — it is untrusted bytes) and delete it so the bad key can't keep
+    // costing a parse + this branch on every retry.
+    console.error('[office-addin] corrupt tech session payload, deleting key', sessionKey);
+    await redis.del(sessionKey);
     return null;
   }
+  const session: TechSessionPayload = parsed;
 
   const createdAtMs = new Date(session.createdAt).getTime();
   if (Number.isNaN(createdAtMs) || Date.now() - createdAtMs > TECH_SESSION_MAX_LIFETIME_MS) {

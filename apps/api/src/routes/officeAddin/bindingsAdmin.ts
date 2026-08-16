@@ -64,7 +64,9 @@ function auditBindingRevoked(
   });
 }
 
-officeAddinBindingsAdminRoutes.get('/bindings', ...adminChain, async (c) => {
+// Registered as '/' — the router is mounted under '/bindings' in ./index.ts,
+// so the external path stays GET /office-addin/bindings.
+officeAddinBindingsAdminRoutes.get('/', ...adminChain, async (c) => {
   const auth = c.get('auth');
   if (!canManagePartnerWidePolicies(auth)) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
@@ -94,7 +96,8 @@ officeAddinBindingsAdminRoutes.get('/bindings', ...adminChain, async (c) => {
   return c.json({ bindings: rows });
 });
 
-officeAddinBindingsAdminRoutes.delete('/bindings/:id', ...adminChain, async (c) => {
+// '/:id' under the '/bindings' mount -> DELETE /office-addin/bindings/:id.
+officeAddinBindingsAdminRoutes.delete('/:id', ...adminChain, async (c) => {
   const auth = c.get('auth');
   if (!canManagePartnerWidePolicies(auth)) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);

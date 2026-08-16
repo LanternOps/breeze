@@ -53,7 +53,14 @@ vi.mock('../../middleware/officeAddinTechAuth', () => ({
   requireAddinCapability: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
-vi.mock('../../db', () => ({ db: mockDb }));
+// runOutsideDbContext/withSystemDbAccessContext passthroughs exist because the
+// real ticketEmailLinks module (importActual'd below for normalizeMessageId)
+// imports them at module load.
+vi.mock('../../db', () => ({
+  db: mockDb,
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
 
 vi.mock('../../db/schema', () => ({
   tickets: {
@@ -82,7 +89,9 @@ vi.mock('../../services/aiCostTracker', () => ({
   recordUsage: hoisted.recordUsage,
 }));
 
-vi.mock('../../services/ticketService', () => ({
+vi.mock('../../services/ticketService', async (importOriginal) => ({
+  // Real mapper: the route delegates its toSummary to it, and it's pure.
+  toAddinTicketSummary: (await importOriginal<typeof import('../../services/ticketService')>()).toAddinTicketSummary,
   createTicket: hoisted.createTicket,
   getPortalUserForValidation: hoisted.getPortalUserForValidation,
   addTicketComment: hoisted.addTicketComment,
@@ -130,8 +139,11 @@ vi.mock('../../services/clientAiDlp', () => ({
   applyDlp: hoisted.applyDlp,
 }));
 
-vi.mock('../../services/officeAddin/aiEmailDraft', () => ({
+vi.mock('../../services/officeAddin/aiEmailDraft', async (importOriginal) => ({
   draftTicketFromEmail: hoisted.draftTicketFromEmail,
+  // Real error class: the route's failure-path metering branches on instanceof.
+  EmailDraftFailedError: (await importOriginal<typeof import('../../services/officeAddin/aiEmailDraft')>())
+    .EmailDraftFailedError,
 }));
 
 vi.mock('../../services/aiAgent', () => ({
@@ -139,6 +151,7 @@ vi.mock('../../services/aiAgent', () => ({
 }));
 
 import { officeAddinTicketRoutes } from './tickets';
+import { EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 
 // --- db chain mock -----------------------------------------------------------
 // `select(...).from(tickets).where(...).limit(1)` drains a queue of canned rows;
@@ -184,7 +197,10 @@ function primeDb() {
 
 function makeApp() {
   const app = new Hono();
-  app.route('/', officeAddinTicketRoutes);
+  // Mirrors ./index.ts: the router registers '/draft', '/from-email' and
+  // '/:id/link-email' and is mounted under '/tickets', keeping the external
+  // paths the tests exercise unchanged.
+  app.route('/tickets', officeAddinTicketRoutes);
   return app;
 }
 
@@ -785,6 +801,43 @@ describe('POST /tickets/draft', () => {
     const body = await res.json();
     expect(body).toEqual({ error: 'ai_unavailable' });
     expect(errSpy).toHaveBeenCalledWith('[office-addin] draft failed', expect.any(Error));
+    // A plain Error carries no token counts — nothing to meter.
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('meters the burned tokens when the draft fails with accumulated attempt spend', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope; attempt 2: nope', 180, 90)
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 180, 90, false);
+    errSpy.mockRestore();
+  });
+
+  it('failure-path metering stays best-effort: a metering throw still returns the 503', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope', 10, 5)
+    );
+    hoisted.recordUsage.mockRejectedValue(new Error('meter down'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(errSpy).toHaveBeenCalledWith('[office-addin] draft usage accounting failed', expect.any(Error));
+    errSpy.mockRestore();
+  });
+
+  it('skips failure-path metering when the failed draft burned zero tokens', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: api down', 0, 0)
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 

@@ -17,9 +17,11 @@ import {
   revokeBinding,
   findUserForBind,
   createBinding,
+  vetBinding,
   BindingConflictError,
   type BindingWithUser,
 } from '../../services/officeAddin/officeAddinBindings';
+import { assertActiveTenantContext, TenantInactiveError } from '../../services/tenantStatus';
 import { mintTechSession } from '../../services/officeAddin/techSession';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
 import { exchangeSchema, EXCHANGE_RATE_LIMIT, bindSchema, BIND_RATE_LIMIT } from './schemas';
@@ -138,7 +140,9 @@ function auditClientExchange(
   });
 }
 
-officeAddinAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema), async (c) => {
+// Registered as '/exchange' — the router is mounted under '/auth' in ./index.ts,
+// so the external path stays POST /office-addin/auth/exchange.
+officeAddinAuthRoutes.post('/exchange', zValidator('json', exchangeSchema), async (c) => {
   if (!CLIENT_AI_ENTRA_CLIENT_ID) {
     return c.json({ error: 'not_enabled' }, 404);
   }
@@ -200,15 +204,26 @@ officeAddinAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema),
   }
 
   if (bound) {
-    if (bound.user.status !== 'active') {
-      return c.json(deny(c, 'user_inactive', bound), 403);
+    const vet = vetBinding(bound);
+    if (!vet.ok) {
+      if (vet.reason === 'epoch_advanced') {
+        await withSystemDbAccessContext(() => revokeBinding(bound.binding.id, null));
+      }
+      return c.json(deny(c, vet.reason, bound), 403);
     }
-    if (bound.user.authEpoch !== bound.binding.boundAuthEpoch) {
-      await withSystemDbAccessContext(() => revokeBinding(bound.binding.id, null));
-      return c.json(deny(c, 'epoch_advanced', bound), 403);
-    }
-    if (bound.user.partnerId !== bound.binding.partnerId) {
-      return c.json(deny(c, 'membership_revoked', bound), 403);
+
+    // Tenant status: never mint a session for a technician at a suspended /
+    // churned / soft-deleted partner. The middleware re-checks this on every
+    // request (officeAddinTechAuth.ts) — this gate just refuses the mint too,
+    // so a dead tenant's tech gets the same 403 here instead of a token that
+    // fails one request later.
+    try {
+      await assertActiveTenantContext({ scope: 'partner', partnerId: bound.binding.partnerId, orgId: null });
+    } catch (err) {
+      if (err instanceof TenantInactiveError) {
+        return c.json(deny(c, 'tenant_inactive', bound), 403);
+      }
+      throw err;
     }
 
     const { token, expiresInSeconds } = await mintTechSession(redis, {
@@ -267,7 +282,8 @@ officeAddinAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema),
  * is the verified Entra (tid, oid) pair, stored on the binding row and
  * checked on every future exchange; the email is not read again after bind.
  */
-officeAddinAuthRoutes.post('/auth/bind', zValidator('json', bindSchema), async (c) => {
+// '/bind' under the './index.ts' '/auth' mount -> POST /office-addin/auth/bind.
+officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) => {
   if (!CLIENT_AI_ENTRA_CLIENT_ID) {
     return c.json({ error: 'not_enabled' }, 404);
   }
@@ -333,6 +349,19 @@ officeAddinAuthRoutes.post('/auth/bind', zValidator('json', bindSchema), async (
 
     if (!user.partnerId) {
       return { deny: 403, error: 'not_a_technician' };
+    }
+
+    // Tenant status (mirrors the exchange route and officeAddinTechAuth.ts): a
+    // technician at a suspended/churned/soft-deleted partner must not be able
+    // to establish a binding at all — without this, bind minted a row whose
+    // every subsequent request merely 403'd in the middleware.
+    try {
+      await assertActiveTenantContext({ scope: 'partner', partnerId: user.partnerId, orgId: null });
+    } catch (err) {
+      if (err instanceof TenantInactiveError) {
+        return { deny: 403, error: 'tenant_inactive' };
+      }
+      throw err;
     }
 
     if (ENABLE_2FA) {

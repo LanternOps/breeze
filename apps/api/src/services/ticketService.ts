@@ -9,6 +9,7 @@ import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
+import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
 export type TicketSource = (typeof ticketSourceEnum.enumValues)[number];
@@ -186,18 +187,12 @@ export async function listRequestersForOrg(
 const ADDIN_OPEN_STATUSES: TicketStatus[] = ['new', 'open', 'pending', 'on_hold'];
 const ADDIN_TICKET_LIST_LIMIT = 10;
 
-export interface AddinTicketSummary {
-  id: string;
-  internalNumber: string | null;
-  subject: string;
-  status: string;
-  priority: string | null;
-  updatedAt: Date;
-  submitterEmail: string | null;
-  matchesSubmitter: boolean;
-}
+// Wire shape shared with the Outlook add-in client (@breeze/shared
+// types/officeAddin.ts) — updatedAt is serialized to an ISO string here so the
+// service output IS the wire contract, not a Date-carrying near-miss of it.
+export type { AddinTicketSummary } from '@breeze/shared';
 
-function toAddinTicketSummary(
+export function toAddinTicketSummary(
   row: {
     id: string;
     internalNumber: string | null;
@@ -212,7 +207,7 @@ function toAddinTicketSummary(
   const matchesSubmitter = Boolean(
     submitterEmail && row.submitterEmail && row.submitterEmail.toLowerCase() === submitterEmail.toLowerCase()
   );
-  return { ...row, matchesSubmitter };
+  return { ...row, updatedAt: row.updatedAt.toISOString(), matchesSubmitter };
 }
 
 /**

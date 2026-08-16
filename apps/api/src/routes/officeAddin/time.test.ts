@@ -58,7 +58,9 @@ import { TimeEntryServiceError } from '../../services/timeEntryService';
 
 function makeApp() {
   const app = new Hono();
-  app.route('/', officeAddinTimeRoutes);
+  // Mirrors ./index.ts: the router registers '/running', '/start', '/stop' and
+  // '/log' and is mounted under '/time', keeping the external paths unchanged.
+  app.route('/time', officeAddinTimeRoutes);
   return app;
 }
 

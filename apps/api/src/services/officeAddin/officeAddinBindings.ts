@@ -15,6 +15,9 @@ import { isPgUniqueViolation } from '../../utils/pgErrors';
  * `withSystemDbAccessContext` block.
  */
 
+/** Literal union of the users.status pgEnum (db/schema/users.ts userStatusEnum). */
+export type BoundUserStatus = 'active' | 'invited' | 'disabled';
+
 export type BindingWithUser = {
   binding: {
     id: string;
@@ -27,11 +30,73 @@ export type BindingWithUser = {
     id: string;
     email: string;
     name: string;
-    status: string;
+    status: BoundUserStatus;
     authEpoch: number;
     partnerId: string;
   };
 };
+
+/** Row shape shared by the two binding+user join queries below. */
+type BindingWithUserRow = {
+  bindingId: string;
+  bindingUserId: string;
+  bindingPartnerId: string;
+  boundAuthEpoch: number;
+  mfaVerifiedAt: Date;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  userStatus: BoundUserStatus;
+  userAuthEpoch: number;
+  userPartnerId: string;
+};
+
+function toBindingWithUser(row: BindingWithUserRow): BindingWithUser {
+  return {
+    binding: {
+      id: row.bindingId,
+      userId: row.bindingUserId,
+      partnerId: row.bindingPartnerId,
+      boundAuthEpoch: row.boundAuthEpoch,
+      mfaVerifiedAt: row.mfaVerifiedAt,
+    },
+    user: {
+      id: row.userId,
+      email: row.userEmail,
+      name: row.userName,
+      status: row.userStatus,
+      authEpoch: row.userAuthEpoch,
+      partnerId: row.userPartnerId,
+    },
+  };
+}
+
+export type BindingVetResult =
+  | { ok: true }
+  | { ok: false; reason: 'user_inactive' | 'epoch_advanced' | 'membership_revoked' };
+
+/**
+ * The shared three-check vetting every live use of a binding must pass, in
+ * deny-precedence order (spec §9): the bound user is still active, their auth
+ * epoch has not advanced since bind (password reset / forced logout), and they
+ * still belong to the partner the binding was created under. Pure — callers
+ * own the side effects (auditing, revocation on 'epoch_advanced') and status
+ * codes. NOTE: the tech middleware ALSO asserts the presented session matches
+ * the binding (userId/partnerId) — that confused-deputy check is session
+ * business, deliberately not part of vetting the binding itself.
+ */
+export function vetBinding(bound: BindingWithUser): BindingVetResult {
+  if (bound.user.status !== 'active') {
+    return { ok: false, reason: 'user_inactive' };
+  }
+  if (bound.user.authEpoch !== bound.binding.boundAuthEpoch) {
+    return { ok: false, reason: 'epoch_advanced' };
+  }
+  if (bound.user.partnerId !== bound.binding.partnerId) {
+    return { ok: false, reason: 'membership_revoked' };
+  }
+  return { ok: true };
+}
 
 /** Active (non-revoked) binding for an Entra identity, joined to its Breeze user. */
 export async function findActiveBinding(
@@ -63,25 +128,7 @@ export async function findActiveBinding(
     )
     .limit(1);
 
-  if (!row) return null;
-
-  return {
-    binding: {
-      id: row.bindingId,
-      userId: row.bindingUserId,
-      partnerId: row.bindingPartnerId,
-      boundAuthEpoch: row.boundAuthEpoch,
-      mfaVerifiedAt: row.mfaVerifiedAt,
-    },
-    user: {
-      id: row.userId,
-      email: row.userEmail,
-      name: row.userName,
-      status: row.userStatus,
-      authEpoch: row.userAuthEpoch,
-      partnerId: row.userPartnerId,
-    },
-  };
+  return row ? toBindingWithUser(row) : null;
 }
 
 /**
@@ -115,25 +162,7 @@ export async function findActiveBindingById(bindingId: string): Promise<BindingW
     )
     .limit(1);
 
-  if (!row) return null;
-
-  return {
-    binding: {
-      id: row.bindingId,
-      userId: row.bindingUserId,
-      partnerId: row.bindingPartnerId,
-      boundAuthEpoch: row.boundAuthEpoch,
-      mfaVerifiedAt: row.mfaVerifiedAt,
-    },
-    user: {
-      id: row.userId,
-      email: row.userEmail,
-      name: row.userName,
-      status: row.userStatus,
-      authEpoch: row.userAuthEpoch,
-      partnerId: row.userPartnerId,
-    },
-  };
+  return row ? toBindingWithUser(row) : null;
 }
 
 /** Candidate user row for the bind flow's credential check. */
@@ -141,7 +170,7 @@ export type BindCandidateUser = {
   id: string;
   email: string;
   name: string;
-  status: string;
+  status: BoundUserStatus;
   partnerId: string | null;
   passwordHash: string | null;
   mfaEnabled: boolean;

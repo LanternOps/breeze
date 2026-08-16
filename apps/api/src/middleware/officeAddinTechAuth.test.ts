@@ -45,9 +45,12 @@ vi.mock('../services/officeAddin/techSession', () => ({
   },
 }));
 
-vi.mock('../services/officeAddin/officeAddinBindings', () => ({
+vi.mock('../services/officeAddin/officeAddinBindings', async (importOriginal) => ({
   findActiveBindingById: findActiveBindingByIdMock,
   revokeBinding: revokeBindingMock,
+  // The middleware branches on the REAL vetBinding — pure logic, safe to use.
+  vetBinding: (await importOriginal<typeof import('../services/officeAddin/officeAddinBindings')>())
+    .vetBinding,
 }));
 
 vi.mock('../services/tenantStatus', () => ({
@@ -56,6 +59,9 @@ vi.mock('../services/tenantStatus', () => ({
 }));
 
 vi.mock('../db', () => ({
+  // `db` is unused by the middleware but imported (at module load) by the real
+  // officeAddinBindings module pulled in for vetBinding above.
+  db: {},
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: withDbAccessContextMock,
 }));
@@ -202,6 +208,19 @@ describe('officeAddinTechAuthMiddleware', () => {
     // Confused deputy: must never vet one identity and authorize another.
     expect(computeAccessibleOrgIdsMock).not.toHaveBeenCalled();
     expect(getUserPermissionsMock).not.toHaveBeenCalled();
+  });
+
+  it('401s when the session partnerId disagrees with the binding partnerId', async () => {
+    findActiveBindingByIdMock.mockResolvedValue({
+      ...BOUND,
+      binding: { ...BOUND.binding, partnerId: OTHER_PARTNER_ID },
+      user: { ...BOUND.user, partnerId: OTHER_PARTNER_ID },
+    });
+    const res = await buildApp().request(authed());
+    expect(res.status).toBe(401);
+    // Same confused-deputy posture as the userId check: a forged/stale session
+    // partner claim must never be honoured, even against a consistent binding.
+    expect(computeAccessibleOrgIdsMock).not.toHaveBeenCalled();
   });
 
   it('401s when the user was deactivated mid-session', async () => {

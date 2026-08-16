@@ -63,37 +63,78 @@ function clamp(value: number): number {
   return Math.min(MAX_SUGGESTED_MINUTES, Math.max(MIN_SUGGESTED_MINUTES, Math.round(value)));
 }
 
+/**
+ * Thrown when every attempt fails. Carries the token spend ACCUMULATED across
+ * all attempts so the caller can still meter the burned tokens — a failed
+ * draft is not a free one. The message concatenates every per-attempt error
+ * (parse failure, "no text block", API error) so attempt 2 never erases
+ * attempt 1's diagnosis.
+ */
+export class EmailDraftFailedError extends Error {
+  constructor(
+    message: string,
+    public readonly inputTokens: number,
+    public readonly outputTokens: number,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+    this.name = 'EmailDraftFailedError';
+  }
+}
+
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
   const client = new Anthropic();
   const userContent = buildUserContent(input);
-  let lastErr: unknown;
+  const attemptErrors: string[] = [];
+  // Accumulated across attempts: a successful retry still reports (and the
+  // route still meters) attempt 1's burned tokens, and the failure error below
+  // carries the full spend.
   let inTok = 0;
   let outTok = 0;
 
+  const fail = (cause?: unknown): never => {
+    throw new EmailDraftFailedError(
+      `Failed to draft ticket from email: ${attemptErrors.join('; ')}`,
+      inTok,
+      outTok,
+      cause === undefined ? undefined : { cause }
+    );
+  };
+
   for (let attempt = 0; attempt < 2; attempt++) {
-    const resp = await client.messages.create({
-      model: input.model,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
-    });
-    inTok = resp.usage?.input_tokens ?? 0;
-    outTok = resp.usage?.output_tokens ?? 0;
+    let resp;
+    try {
+      resp = await client.messages.create({
+        model: input.model,
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: userContent }],
+      });
+    } catch (err) {
+      // API/network error: same no-retry behavior as before (the pane has a
+      // deterministic fallback), but wrapped so prior attempts' tokens meter.
+      attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
+      return fail(err);
+    }
+    inTok += resp.usage?.input_tokens ?? 0;
+    outTok += resp.usage?.output_tokens ?? 0;
     const text = lastTextBlock(resp.content);
-    if (text) {
-      try {
-        const parsed = llmSchema.parse(JSON.parse(text));
-        return {
-          subject: parsed.subject,
-          summary: parsed.summary,
-          suggestedTimeMinutes: clamp(parsed.suggestedTimeMinutes),
-          inputTokens: inTok,
-          outputTokens: outTok,
-        };
-      } catch (err) {
-        lastErr = err;
-      }
+    if (!text) {
+      attemptErrors.push(`attempt ${attempt + 1}: no text block in model response`);
+      continue;
+    }
+    try {
+      const parsed = llmSchema.parse(JSON.parse(text));
+      return {
+        subject: parsed.subject,
+        summary: parsed.summary,
+        suggestedTimeMinutes: clamp(parsed.suggestedTimeMinutes),
+        inputTokens: inTok,
+        outputTokens: outTok,
+      };
+    } catch (err) {
+      attemptErrors.push(`attempt ${attempt + 1}: ${String(err)}`);
     }
   }
-  throw new Error(`Failed to draft ticket from email: ${String(lastErr)}`);
+  return fail();
 }

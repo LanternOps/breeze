@@ -22,6 +22,8 @@ const {
   consumeMFATokenMock,
   decryptMfaSecretForMigrationMock,
   enableTwoFactorRef,
+  assertActiveTenantContextMock,
+  TenantInactiveErrorClass,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
@@ -29,6 +31,7 @@ const {
     expire: vi.fn(() => Promise.resolve(1)),
   };
   class BindingConflictErrorClass extends Error {}
+  class TenantInactiveErrorClass extends Error {}
   return {
     verifyMock: vi.fn(),
     findActiveBindingMock: vi.fn(),
@@ -50,6 +53,8 @@ const {
     consumeMFATokenMock: vi.fn(),
     decryptMfaSecretForMigrationMock: vi.fn(),
     enableTwoFactorRef: { current: true },
+    assertActiveTenantContextMock: vi.fn(() => Promise.resolve()),
+    TenantInactiveErrorClass,
   };
 });
 
@@ -71,13 +76,21 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('../../services/officeAddin/officeAddinBindings', () => ({
+vi.mock('../../services/officeAddin/officeAddinBindings', async (importOriginal) => ({
   findActiveBinding: findActiveBindingMock,
   hasAnyBinding: hasAnyBindingMock,
   revokeBinding: revokeBindingMock,
   findUserForBind: findUserForBindMock,
   createBinding: createBindingMock,
   BindingConflictError: BindingConflictErrorClass,
+  // The route now branches on the REAL vetBinding — pure logic, safe to use.
+  vetBinding: (await importOriginal<typeof import('../../services/officeAddin/officeAddinBindings')>())
+    .vetBinding,
+}));
+
+vi.mock('../../services/tenantStatus', () => ({
+  assertActiveTenantContext: assertActiveTenantContextMock,
+  TenantInactiveError: TenantInactiveErrorClass,
 }));
 
 vi.mock('../../services/password', () => ({
@@ -203,7 +216,9 @@ const BIND_USER = {
 
 function buildApp() {
   const app = new Hono();
-  app.route('/office-addin', officeAddinAuthRoutes);
+  // Mirrors ./index.ts: the auth router registers '/exchange' and '/bind' and
+  // is mounted under '/auth', keeping the external paths unchanged.
+  app.route('/office-addin/auth', officeAddinAuthRoutes);
   return app;
 }
 
@@ -249,6 +264,7 @@ beforeEach(() => {
   decryptMfaSecretForMigrationMock.mockReturnValue({ plaintext: 'TOTPSECRET', migratedSecret: null });
   createBindingMock.mockResolvedValue({ id: BINDING_ID });
   hashPasswordMock.mockResolvedValue('dummy-hash');
+  assertActiveTenantContextMock.mockResolvedValue(undefined);
 });
 
 // ── Tests: the exchange matrix (spec §9) ────────────────────────────────────
@@ -334,6 +350,21 @@ describe('POST /office-addin/auth/exchange', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'binding_denied', reason: 'membership_revoked' });
     expect(revokeBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('bound + eligible but partner tenant inactive → 403 binding_denied/tenant_inactive, no session minted', async () => {
+    findActiveBindingMock.mockResolvedValue(ELIGIBLE_BOUND);
+    assertActiveTenantContextMock.mockRejectedValue(new TenantInactiveErrorClass('nope'));
+    const res = await postExchange(buildApp());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'binding_denied', reason: 'tenant_inactive' });
+    expect(assertActiveTenantContextMock).toHaveBeenCalledWith({
+      scope: 'partner',
+      partnerId: PARTNER_ID,
+      orgId: null,
+    });
+    expect(mintTechSessionMock).not.toHaveBeenCalled();
+    expect(resolveAndMintClientSessionMock).not.toHaveBeenCalled();
   });
 
   it('6. token missing scp access_as_user → 401 invalid_token (checked before binding lookup)', async () => {
@@ -499,6 +530,19 @@ describe('POST /office-addin/auth/bind', () => {
     const res = await postBind(buildApp());
     expect(res.status).toBe(200);
     expect(createBindingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('suspended/churned partner → 403 tenant_inactive, no binding created', async () => {
+    assertActiveTenantContextMock.mockRejectedValue(new TenantInactiveErrorClass('nope'));
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'tenant_inactive' });
+    expect(assertActiveTenantContextMock).toHaveBeenCalledWith({
+      scope: 'partner',
+      partnerId: PARTNER_ID,
+      orgId: null,
+    });
+    expect(createBindingMock).not.toHaveBeenCalled();
   });
 
   it('user with partner_id null (org-only user) → 403 not_a_technician', async () => {

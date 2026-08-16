@@ -13,7 +13,7 @@ import {
   revokeTechSessionsForUser,
   TECH_SESSION_KEYS,
 } from '../services/officeAddin/techSession';
-import { findActiveBindingById, revokeBinding } from '../services/officeAddin/officeAddinBindings';
+import { findActiveBindingById, revokeBinding, vetBinding } from '../services/officeAddin/officeAddinBindings';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import {
   getUserPermissions,
@@ -110,34 +110,33 @@ export async function officeAddinTechAuthMiddleware(
     return c.json(UNAUTHORIZED, 401);
   }
 
-  // Confused-deputy guard: everything below vets the BINDING's user (status,
-  // epoch, partner) while steps 5-6 authorize `session.userId`. Assert the two
-  // are the same identity here rather than trusting the mint site to have kept
-  // them in sync — a forged/corrupt session payload or future drift in
-  // routes/officeAddin/auth.ts would otherwise check one user and hand out
-  // another user's permissions.
-  if (bound.binding.userId !== session.userId) {
+  // Confused-deputy guard: `vetBinding` below vets the BINDING's user (status,
+  // epoch, partner) while steps 5-6 authorize the SESSION's claims. Assert the
+  // session and binding agree on identity here rather than trusting the mint
+  // site to have kept them in sync — a forged/corrupt session payload or
+  // future drift in routes/officeAddin/auth.ts would otherwise check one user
+  // and hand out another user's permissions. This is session business, so it
+  // deliberately lives outside vetBinding.
+  if (bound.binding.userId !== session.userId || bound.binding.partnerId !== session.partnerId) {
     return c.json(UNAUTHORIZED, 401);
   }
 
-  if (bound.user.status !== 'active') {
-    return c.json(UNAUTHORIZED, 401);
-  }
-
-  if (bound.user.authEpoch !== bound.binding.boundAuthEpoch) {
-    // Password reset / forced logout since bind: the Entra identity must be
-    // re-bound with a fresh credential check. Kill the binding AND every live
-    // session for this user, not just the presented one.
-    // Explicit system context: a contextless write would run with the default
-    // scope and bypass RLS silently rather than by declaration.
-    await withSystemDbAccessContext(() => revokeBinding(session.bindingId, null));
-    await revokeTechSessionsForUser(redis, session.userId);
-    return c.json(UNAUTHORIZED, 401);
-  }
-
-  if (bound.user.partnerId !== session.partnerId) {
-    // The user moved partners after the session was minted; the token's
-    // partner claim is stale and must never be honoured.
+  // Shared three-check vetting (status / epoch / partner membership) — the
+  // same contract the exchange route enforces, minus its audit + 403 shaping:
+  // here every deny is an opaque 401.
+  const vet = vetBinding(bound);
+  if (!vet.ok) {
+    if (vet.reason === 'epoch_advanced') {
+      // Password reset / forced logout since bind: the Entra identity must be
+      // re-bound with a fresh credential check. Kill the binding AND every live
+      // session for this user, not just the presented one.
+      // Explicit system context: a contextless write would run with the default
+      // scope and bypass RLS silently rather than by declaration.
+      await withSystemDbAccessContext(() => revokeBinding(session.bindingId, null));
+      await revokeTechSessionsForUser(redis, session.userId);
+    }
+    // 'membership_revoked' covers the user moving partners after mint — the
+    // token's stale partner claim must never be honoured.
     return c.json(UNAUTHORIZED, 401);
   }
 

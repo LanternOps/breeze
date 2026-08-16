@@ -13,8 +13,15 @@ import {
 import { portalUsers } from '../../db/schema/portal';
 import { getConfig } from '../../config/validate';
 import type { OfficeAddinTechAuth } from '../../middleware/officeAddinTechAuth';
-import { findTicketInPartner, type MatchedTicket } from '../inboundEmail/threadMatcher';
-import { listOrgTicketsForAddin, type AddinTicketSummary } from '../ticketService';
+import { findTicketInPartner } from '../inboundEmail/threadMatcher';
+import { listOrgTicketsForAddin } from '../ticketService';
+import type {
+  ContactCandidate,
+  ContactCandidateKind,
+  ContactCandidateProvenance,
+  EmailContextResult,
+  AddinOrgSummary as OrgSummary,
+} from '@breeze/shared';
 
 /**
  * Freemail domains never drive org resolution — a `bob@gmail.com` sender is
@@ -55,35 +62,16 @@ export interface EmailContextInput {
   itemGeneration: number;
 }
 
-export type ContactCandidateKind = 'portal_user' | 'contact';
-export type ContactCandidateProvenance = 'address_match' | 'domain_org';
-
-export interface ContactCandidate {
-  kind: ContactCandidateKind;
-  id: string;
-  name: string | null;
-  email: string;
-  orgId: string;
-  provenance: ContactCandidateProvenance;
-}
-
-export interface OrgSummary {
-  name: string;
-  siteCount: number;
-  deviceCount: number;
-  openTicketCount: number;
-}
-
-export interface EmailContextResult {
-  itemGeneration: number;
-  org: { id: string; name: string } | null;
-  contacts: ContactCandidate[];
-  threadMatchedTicket: MatchedTicket | null;
-  openTickets: AddinTicketSummary[];
-  recentTickets: AddinTicketSummary[];
-  orgSummary: OrgSummary | null;
-  inboundPathConfigured: boolean;
-}
+// Wire shapes live in @breeze/shared (types/officeAddin.ts) so the add-in
+// client consumes the same definitions this service produces. Re-exported
+// under the names this module has always exposed.
+export type {
+  ContactCandidate,
+  ContactCandidateKind,
+  ContactCandidateProvenance,
+  EmailContextResult,
+} from '@breeze/shared';
+export type { AddinOrgSummary as OrgSummary } from '@breeze/shared';
 
 /** Lowercased domain part of an email address, or null if malformed. */
 function domainOf(address: string): string | null {
@@ -93,7 +81,7 @@ function domainOf(address: string): string | null {
   return domain || null;
 }
 
-// (1)+(2) Address-level identity resolution: portal_users (partner-scoped join
+// Address-level identity resolution: portal_users (partner-scoped join
 // organizations) and contacts (org_id direct), both matched on the represented
 // `from` address. Rows outside `tech.accessibleOrgIds` are dropped here
 // (app-layer narrowing — partner-axis RLS is flat and does not enforce a
@@ -163,7 +151,7 @@ async function findAddressMatches(
   return candidates.filter((c) => tech.canAccessOrg(c.orgId));
 }
 
-// (3) Domain-level org resolution (skipped for freemail domains). Same
+// Domain-level org resolution (skipped for freemail domains). Same
 // exact-domain semantics as resolveOrgBySenderDomain — do not widen to
 // endsWith. Narrowed to accessibleOrgIds like every other resolution path.
 async function resolveOrgByDomain(
@@ -188,7 +176,7 @@ async function resolveOrgByDomain(
   return row.orgId;
 }
 
-// (7) Honesty flag (spec §8): true when the partner can actually RECEIVE
+// Honesty flag (spec §8): true when the partner can actually RECEIVE
 // inbound ticket email, via either path —
 //   a) a connected Graph mailbox (ticket_mailbox_connections.status='connected'), or
 //   b) a Mailgun inbound address, which per resolvePartnerByRecipient is either
@@ -263,8 +251,8 @@ export async function buildEmailContext(
 
   let org: { id: string; name: string } | null = null;
   let orgSummary: OrgSummary | null = null;
-  let openTickets: AddinTicketSummary[] = [];
-  let recentTickets: AddinTicketSummary[] = [];
+  let openTickets: EmailContextResult['openTickets'] = [];
+  let recentTickets: EmailContextResult['recentTickets'] = [];
 
   if (orgId) {
     const orgRows = await db
@@ -329,9 +317,11 @@ const ORG_SEARCH_LIMIT = 20;
 
 /**
  * POST /office-addin/orgs/search backing query. `ilike` on org name, scoped
- * to the partner AND app-layer-narrowed to `tech.accessibleOrgIds`
- * (`accessibleOrgIds === null` means the partner-wide 'all' grant — no
- * narrowing needed there).
+ * to the partner AND app-layer-narrowed to `tech.accessibleOrgIds`. The
+ * `accessibleOrgIds === null` branch is defensive only — per the
+ * `OfficeAddinTechAuth` doc, this partner-scope path never produces null
+ * today (a partner-wide 'all' grant still arrives as a concrete org list) —
+ * and skipping the narrowing is the correct behavior if it ever does.
  */
 export async function searchOrgsForAddin(
   query: string,

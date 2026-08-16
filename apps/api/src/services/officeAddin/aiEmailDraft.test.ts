@@ -5,7 +5,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create: createMock }; },
 }));
 
-import { draftTicketFromEmail } from './aiEmailDraft';
+import { draftTicketFromEmail, EmailDraftFailedError } from './aiEmailDraft';
 
 function reply(json: object, inTok = 100, outTok = 50) {
   return { content: [{ type: 'text', text: JSON.stringify(json) }], usage: { input_tokens: inTok, output_tokens: outTok } };
@@ -44,10 +44,86 @@ describe('draftTicketFromEmail', () => {
     expect(createMock).toHaveBeenCalledTimes(2);
   });
 
+  it('accumulates token counts across attempts on a recovered retry', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: { input_tokens: 30, output_tokens: 10 } })
+      .mockResolvedValueOnce(reply({ subject: 'Recovered subject', summary: 'A summary with enough words to be plausible for a ticket body description here.', suggestedTimeMinutes: 15 }, 100, 50));
+
+    const r = await draftTicketFromEmail(baseInput);
+
+    // Attempt 1's burned 30/10 must not be dropped when attempt 2 succeeds.
+    expect(r.inputTokens).toBe(130);
+    expect(r.outputTokens).toBe(60);
+  });
+
   it('retries once on malformed JSON then throws', async () => {
     createMock.mockResolvedValue({ content: [{ type: 'text', text: 'not json' }], usage: {} });
     await expect(draftTicketFromEmail(baseInput)).rejects.toThrow();
     expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws EmailDraftFailedError carrying accumulated tokens from BOTH failed attempts', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: { input_tokens: 40, output_tokens: 20 } })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'still not json' }], usage: { input_tokens: 60, output_tokens: 30 } });
+
+    const err = await draftTicketFromEmail(baseInput).then(
+      () => { throw new Error('expected rejection'); },
+      (e: unknown) => e
+    );
+
+    expect(err).toBeInstanceOf(EmailDraftFailedError);
+    const failed = err as EmailDraftFailedError;
+    expect(failed.inputTokens).toBe(100);
+    expect(failed.outputTokens).toBe(50);
+    expect(failed.message).toContain('attempt 1:');
+    expect(failed.message).toContain('attempt 2:');
+  });
+
+  it('records a per-attempt "no text block" error and never reports undefined', async () => {
+    createMock.mockResolvedValue({ content: [{ type: 'tool_use' }], usage: { input_tokens: 10, output_tokens: 0 } });
+
+    const err = await draftTicketFromEmail(baseInput).then(
+      () => { throw new Error('expected rejection'); },
+      (e: unknown) => e
+    );
+
+    expect(err).toBeInstanceOf(EmailDraftFailedError);
+    expect((err as Error).message).toContain('no text block in model response');
+    expect((err as Error).message).not.toContain('undefined');
+    expect((err as EmailDraftFailedError).inputTokens).toBe(20); // both attempts metered
+  });
+
+  it("attempt 2's no-text failure does not erase attempt 1's parse error", async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: {} })
+      .mockResolvedValueOnce({ content: [], usage: {} });
+
+    const err = await draftTicketFromEmail(baseInput).then(
+      () => { throw new Error('expected rejection'); },
+      (e: unknown) => e
+    );
+
+    const message = (err as Error).message;
+    expect(message).toMatch(/attempt 1: .*(SyntaxError|JSON)/);
+    expect(message).toContain('attempt 2: no text block in model response');
+  });
+
+  it('wraps an API error so prior attempts stay diagnosable and metered', async () => {
+    createMock
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'not json' }], usage: { input_tokens: 25, output_tokens: 5 } })
+      .mockRejectedValueOnce(new Error('overloaded'));
+
+    const err = await draftTicketFromEmail(baseInput).then(
+      () => { throw new Error('expected rejection'); },
+      (e: unknown) => e
+    );
+
+    expect(err).toBeInstanceOf(EmailDraftFailedError);
+    expect((err as Error).message).toContain('attempt 1:');
+    expect((err as Error).message).toContain('overloaded');
+    expect((err as EmailDraftFailedError).inputTokens).toBe(25);
+    expect((err as EmailDraftFailedError).outputTokens).toBe(5);
   });
 
   it('retries once on zod-invalid output then throws', async () => {

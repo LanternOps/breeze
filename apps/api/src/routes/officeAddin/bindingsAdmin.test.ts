@@ -109,7 +109,9 @@ import { officeAddinBindingsAdminRoutes } from './bindingsAdmin';
 
 function makeApp() {
   const app = new Hono();
-  app.route('/', officeAddinBindingsAdminRoutes);
+  // Mirrors ./index.ts: the router registers '/' and '/:id' and is mounted
+  // under '/bindings', keeping the external paths unchanged.
+  app.route('/bindings', officeAddinBindingsAdminRoutes);
   return app;
 }
 
