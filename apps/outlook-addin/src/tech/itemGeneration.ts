@@ -24,7 +24,15 @@ export function createItemGenerationStore(): ItemGenerationStore {
 
   subscribeOutlookItemChanged(() => {
     generation += 1;
-    for (const subscriber of [...subscribers]) subscriber(generation);
+    // Isolate subscribers from each other: a throwing subscriber must not
+    // abort the loop and starve every later subscriber of this bump.
+    for (const subscriber of [...subscribers]) {
+      try {
+        subscriber(generation);
+      } catch (error) {
+        console.error('createItemGenerationStore: subscriber threw', error);
+      }
+    }
   });
 
   return {

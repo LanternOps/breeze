@@ -43,4 +43,22 @@ describe('outlookSelection — host-bound mailbox wiring', () => {
     getOfficeMock().switchItem({ subject: 'B' });
     expect(cb).toHaveBeenCalledTimes(1);
   });
+
+  it('a throwing subscriber does not stop a later subscriber from being notified', () => {
+    const throwing = vi.fn(() => {
+      throw new Error('subscriber A blew up');
+    });
+    const healthy = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    subscribeOutlookItemChanged(throwing);
+    subscribeOutlookItemChanged(healthy);
+    getOfficeMock().switchItem({ subject: 'A' });
+
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
 });

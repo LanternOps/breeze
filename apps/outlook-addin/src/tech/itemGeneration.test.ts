@@ -46,6 +46,27 @@ describe('createItemGenerationStore', () => {
     expect(store.current()).toBe(3);
   });
 
+  it('a throwing subscriber does not stop a later subscriber from being notified', () => {
+    const store = createItemGenerationStore();
+    const throwing = vi.fn(() => {
+      throw new Error('subscriber A blew up');
+    });
+    const healthy = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    store.subscribe(throwing);
+    store.subscribe(healthy);
+    getOfficeMock().switchItem({ subject: 'A' });
+
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledWith(1);
+    expect(store.current()).toBe(1);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it('supports multiple independent subscribers', () => {
     const store = createItemGenerationStore();
     const cbA = vi.fn();

@@ -58,7 +58,17 @@ export function subscribeOutlookItemChanged(cb: () => void): () => void {
     mailbox.addHandlerAsync(
       itemChanged,
       () => {
-        for (const subscriber of [...liveSubscribers]) subscriber();
+        // Isolate subscribers from each other: a throwing subscriber must not
+        // abort the loop and starve every later subscriber of this
+        // ItemChanged notification (this fan-out feeds both the core
+        // selection hook and the item-generation store).
+        for (const subscriber of [...liveSubscribers]) {
+          try {
+            subscriber();
+          } catch (error) {
+            console.error('subscribeOutlookItemChanged: subscriber threw', error);
+          }
+        }
       },
       () => undefined,
     );
