@@ -173,7 +173,10 @@ const namespaceDuplicateBaselines = {
     // in French.
     // +3: tenant variables page — "Variables", "Description" and "Secret"
     // are spelled identically in French.
-    'settings.json': 150,
+    // +1: officeAddinBindings.actions — "Actions" is the same word in French
+    // and is already the reviewed value for the eight other table
+    // action-column headers in this namespace.
+    'settings.json': 151,
     'tickets.json': 21,
     'vulnerabilities.json': 15,
   },
@@ -226,7 +229,10 @@ const namespaceDuplicateBaselines = {
     // in French.
     // +3: tenant variables page — "Variables", "Description" and "Secret"
     // are spelled identically in French.
-    'settings.json': 155,
+    // +1: officeAddinBindings.actions — "Actions" is the same word in French
+    // and is already the reviewed value for the other table action-column
+    // headers in this namespace.
+    'settings.json': 156,
     'tickets.json': 20,
     'vulnerabilities.json': 15,
   },
