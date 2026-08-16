@@ -1153,6 +1153,87 @@ describe('software routes', () => {
       expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual([WIN_DEVICE, LINUX_DEVICE]);
     });
 
+    it('fails every target when the item cannot serve any target platform (winget-only item, macOS targets)', async () => {
+      // No group is servable, but the devices must still get result rows —
+      // a 201 covering zero devices would silently ignore the Macs.
+      primeSelects([wingetMethod], [{ id: MAC_DEVICE, osType: 'macos' }]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([MAC_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce({
+        deploymentId: 'dep-none',
+        deployment: { id: 'dep-none' },
+        status: 'failed',
+        message: 'No install method for this device OS on any target device',
+        dispatchedDeviceIds: [],
+      });
+
+      const res = await post({ targetIds: [MAC_DEVICE] });
+      expect(res.status).toBe(200);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      // The Mac is carried into the deployment so the fan-out pre-fails it.
+      expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual([MAC_DEVICE]);
+      const body = await res.json();
+      expect(body.data.status).toBe('failed');
+    });
+
+    it('carries devices on an unservable platform into the deployment that does exist', async () => {
+      // winget-only item, mixed target set: the Macs must not be dropped —
+      // they ride on the Windows deployment and get failed result rows.
+      primeSelects([wingetMethod], [
+        { id: WIN_DEVICE, osType: 'windows' },
+        { id: MAC_DEVICE, osType: 'macos' },
+      ]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE, MAC_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce(deploymentResult('dep-win'));
+
+      const res = await post({ targetIds: [WIN_DEVICE, MAC_DEVICE] });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual([WIN_DEVICE, MAC_DEVICE]);
+    });
+
+    it('keeps an exact pin on the winget half of a split and forces the Homebrew half to latest', async () => {
+      primeSelects([wingetMethod, brewMethod], [
+        { id: WIN_DEVICE, osType: 'windows' },
+        { id: MAC_DEVICE, osType: 'macos' },
+      ]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE, MAC_DEVICE]);
+      createDeploymentMock
+        .mockResolvedValueOnce(deploymentResult('dep-win'))
+        .mockResolvedValueOnce(deploymentResult('dep-mac'));
+
+      const res = await post({
+        targetIds: [WIN_DEVICE, MAC_DEVICE],
+        versionMode: 'exact',
+        requestedVersion: '128.0.1',
+      });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock.mock.calls[0]![0]).toMatchObject({
+        installMethodId: 'method-win',
+        versionMode: 'exact',
+        requestedVersion: '128.0.1',
+      });
+      // Homebrew is latest-only in phase 1 — never ship it a pin.
+      expect(createDeploymentMock.mock.calls[1]![0]).toMatchObject({
+        installMethodId: 'method-mac',
+        versionMode: 'latest',
+      });
+      expect(createDeploymentMock.mock.calls[1]![0].requestedVersion).toBeUndefined();
+    });
+
+    it('prefers homebrew_cask over homebrew_formula when the item carries both', async () => {
+      const formulaMethod = { id: 'method-formula', catalogId: CATALOG_ID, platform: 'macos', kind: 'homebrew_formula', packageId: 'firefox', enabled: true };
+      // Formula listed FIRST: the pick must not depend on row order.
+      primeSelects([formulaMethod, brewMethod], [{ id: MAC_DEVICE, osType: 'macos' }]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([MAC_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce(deploymentResult('dep-mac'));
+
+      const res = await post({ targetIds: [MAC_DEVICE] });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledWith(
+        expect.objectContaining({ installMethodId: 'method-mac' }),
+      );
+    });
+
     it('passes an exact version pin through to the service', async () => {
       primeSelects([wingetMethod], [{ id: WIN_DEVICE, osType: 'windows' }]);
       vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE]);

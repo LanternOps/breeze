@@ -1307,25 +1307,50 @@ softwareRoutes.get(
 // ---------------------------------------------------------------------------
 
 /**
- * Bucket resolved target devices by the platform whose install method could
- * serve them. `other` holds every device neither platform can serve (Linux,
- * or an unknown osType); the caller attaches those to the FIRST created
- * deployment so the fan-out records an explicit
- * "No install method for this device OS" failure per device instead of
- * silently dropping them.
+ * Bucket resolved target devices by the platform whose install method will
+ * serve them. `servablePlatforms` is the set of platforms the catalog item
+ * actually has an ENABLED method for — a device on a platform outside that
+ * set (a Mac under a winget-only item) lands in `other` exactly like a Linux
+ * device does. `other` is attached to the FIRST created deployment so the
+ * fan-out records an explicit "No install method for this device OS
+ * (<osType>)" failure row per device; nothing is ever silently dropped.
  */
 export function splitTargetsByPlatform(
   deviceRows: { id: string; osType: string | null }[],
+  servablePlatforms: ReadonlyArray<'windows' | 'macos'> = ['windows', 'macos'],
 ): { windows: string[]; macos: string[]; other: string[] } {
+  const servable = new Set(servablePlatforms);
   const windows: string[] = [];
   const macos: string[] = [];
   const other: string[] = [];
   for (const row of deviceRows) {
-    if (row.osType === 'windows') windows.push(row.id);
-    else if (row.osType === 'macos') macos.push(row.id);
+    if (row.osType === 'windows' && servable.has('windows')) windows.push(row.id);
+    else if (row.osType === 'macos' && servable.has('macos')) macos.push(row.id);
     else other.push(row.id);
   }
   return { windows, macos, other };
+}
+
+/**
+ * Deterministic method choice for a platform. A catalog item may legitimately
+ * carry BOTH a homebrew_cask and a homebrew_formula for macOS; row order from
+ * the DB is not defined, so the pick is spelled out rather than left to
+ * whichever row came back first. Casks (GUI apps) are preferred over formulae,
+ * matching what an MSP deploying a desktop app expects.
+ */
+export function pickInstallMethodForPlatform<
+  T extends { platform: string; kind: string },
+>(methods: readonly T[], platform: 'windows' | 'macos'): T | null {
+  const ofPlatform = methods.filter((m) => m.platform === platform);
+  if (ofPlatform.length === 0) return null;
+  const preference = platform === 'windows'
+    ? ['winget']
+    : ['homebrew_cask', 'homebrew_formula'];
+  for (const kind of preference) {
+    const match = ofPlatform.find((m) => m.kind === kind);
+    if (match) return match;
+  }
+  return ofPlatform[0]!;
 }
 
 type ManagerDeploymentPayload = {
@@ -1407,25 +1432,35 @@ async function createManagerDeployments(
   const deviceRows = await db.select({ id: devices.id, osType: devices.osType })
     .from(devices)
     .where(and(eq(devices.orgId, orgId), inArray(devices.id, resolvedTargets.deviceIds)));
-  const split = splitTargetsByPlatform(deviceRows);
+  // Only platforms with an enabled method can be served; devices on the other
+  // platform fall into `split.other` and get failure rows.
+  const pickedMethods = {
+    windows: pickInstallMethodForPlatform(methods, 'windows'),
+    macos: pickInstallMethodForPlatform(methods, 'macos'),
+  };
+  const servablePlatforms = (['windows', 'macos'] as const).filter((p) => pickedMethods[p]);
+  const split = splitTargetsByPlatform(deviceRows, servablePlatforms);
 
   // One group per platform that has BOTH an enabled method and target devices,
   // Windows first for determinism.
-  const groups: { platform: 'windows' | 'macos'; methodId: string; deviceIds: string[] }[] = [];
-  for (const platform of ['windows', 'macos'] as const) {
-    const method = methods.find((m) => m.platform === platform);
-    if (!method) continue;
+  const groups: {
+    platform: 'windows' | 'macos';
+    method: (typeof methods)[number];
+    deviceIds: string[];
+  }[] = [];
+  for (const platform of servablePlatforms) {
     if (split[platform].length === 0) continue;
-    groups.push({ platform, methodId: method.id, deviceIds: [...split[platform]] });
+    groups.push({ platform, method: pickedMethods[platform]!, deviceIds: [...split[platform]] });
   }
   if (groups.length === 0) {
-    // Nothing the item can serve. Still create ONE deployment (against the
-    // first enabled method) so every target device gets a recorded failure
-    // rather than a 200 with no trace.
-    const fallback = methods[0]!;
+    // Nothing the item can serve (e.g. a winget-only item aimed at Macs).
+    // Still create ONE deployment so every target device gets a recorded
+    // failure row rather than a 201 covering nothing. Windows-first keeps the
+    // choice deterministic.
+    const fallbackPlatform = servablePlatforms[0]!;
     groups.push({
-      platform: fallback.platform as 'windows' | 'macos',
-      methodId: fallback.id,
+      platform: fallbackPlatform,
+      method: pickedMethods[fallbackPlatform]!,
       deviceIds: [],
     });
   }
@@ -1436,11 +1471,15 @@ async function createManagerDeployments(
   const isSplit = groups.length > 1;
   const results = [];
   for (const group of groups) {
+    // Only winget can install a pinned version. In a split request the
+    // Homebrew half silently falls back to 'latest' rather than failing the
+    // whole request — brew is latest-only in phase 1.
+    const groupVersionMode = group.method.kind === 'winget' ? versionMode : 'latest';
     const result = await createSoftwareDeployment({
       orgId,
-      installMethodId: group.methodId,
-      versionMode,
-      requestedVersion: payload.requestedVersion,
+      installMethodId: group.method.id,
+      versionMode: groupVersionMode,
+      requestedVersion: groupVersionMode === 'exact' ? payload.requestedVersion : undefined,
       deploymentType: payload.deploymentType,
       deviceIds: group.deviceIds,
       scheduleType: payload.scheduleType,
@@ -1469,9 +1508,10 @@ async function createManagerDeployments(
         deploymentType: payload.deploymentType,
         targetType: payload.targetType,
         deviceCount: group.deviceIds.length,
-        installMethodId: group.methodId,
+        installMethodId: group.method.id,
         platform: group.platform,
-        versionMode,
+        kind: group.method.kind,
+        versionMode: groupVersionMode,
       },
     });
   }
