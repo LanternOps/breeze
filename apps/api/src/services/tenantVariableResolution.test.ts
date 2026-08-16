@@ -23,6 +23,7 @@ import {
   loadTenantVariableScope,
   resolveForOrg,
   substituteTenantVariables,
+  unreadableForOrg,
   type ResolvedVariable
 } from './tenantVariableResolution';
 
@@ -213,6 +214,72 @@ describe('loadTenantVariableScope', () => {
     const scope = await loadTenantVariableScope([ORG_A]);
     const resolved = resolveForOrg(scope, ORG_A);
     expect(resolved.get('s1_token')).toMatchObject({ isSecret: true, value: 'shh' });
+  });
+
+  it('an undecryptable row is reported as unreadable, not merely absent — and is still never given a value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    // Never resolves to a value — no placeholder, no empty string.
+    expect(resolved.has('broken')).toBe(false);
+    // But it must be distinguishable from a key that was never defined at all.
+    expect(unreadableForOrg(scope, ORG_A).has('broken')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a key that was never defined is absent from BOTH the resolved map and the unreadable set', async () => {
+    stubSelect([]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    expect(resolved.has('never_defined')).toBe(false);
+    expect(unreadableForOrg(scope, ORG_A).has('never_defined')).toBe(false);
+  });
+
+  // The subtle precedence case: an org-owned row for key `k` fails to
+  // decrypt, and a readable partner-wide row for the SAME key `k` also
+  // exists. The org row won the precedence contest (org > partner, see the
+  // two-pass loop above), so `k` must be UNREADABLE for this org — it must
+  // NOT silently fall back to the partner-wide value, which would substitute
+  // a different tenant scope's material into a script. Before this task,
+  // `orgOwnedKeys` was only populated on a *successful* decrypt, so an
+  // unreadable org row left the key unclaimed and the partner-wide pass
+  // resolved right over it with the wrong tenant's value.
+  it('an unreadable org row shadows a readable partner row — it must NOT fall back to the partner value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      encryptedRow(ROW_PARTNER, 'partner-value', { key: 'k', ownerOrgId: null, forOrgId: ORG_A }),
+      { id: ROW_BAD, key: 'k', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    expect(resolved.has('k')).toBe(false);
+    expect(resolved.get('k')?.value).not.toBe('partner-value');
+    expect(unreadableForOrg(scope, ORG_A).has('k')).toBe(true);
+    warn.mockRestore();
+  });
+});
+
+describe('unreadableForOrg', () => {
+  it('throws when asked to resolve for an org the snapshot was not built for', async () => {
+    stubSelect([]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    expect(() => unreadableForOrg(scope, ORG_B)).toThrow(/not in this snapshot/i);
+  });
+
+  it('returns a fresh set each call — mutating the result cannot corrupt the snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const first = unreadableForOrg(scope, ORG_A);
+    (first as Set<string>).delete('broken');
+    const second = unreadableForOrg(scope, ORG_A);
+    expect(second.has('broken')).toBe(true);
+    warn.mockRestore();
   });
 });
 

@@ -60,13 +60,22 @@ export interface TenantVariableScope {
   readonly orgIds: ReadonlySet<string>;
 }
 
-/** Module-private carrier. Not exported — see {@link TenantVariableScope}. */
+/**
+ * Module-private carrier. Not exported — see {@link TenantVariableScope}.
+ *
+ * `unreadableKeysByOrg` tracks keys whose winning row (per the org-over-
+ * partner precedence below) failed to decrypt, so that state stays
+ * distinguishable from a key that was never defined at all — see
+ * {@link unreadableForOrg}. It follows the exact same "not exported, reached
+ * only through a checked accessor" shape as `byOrg`.
+ */
 interface InternalTenantVariableScope extends TenantVariableScope {
   readonly byOrg: ReadonlyMap<string, ReadonlyMap<string, ResolvedVariable>>;
+  readonly unreadableKeysByOrg: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 function emptyScope(): InternalTenantVariableScope {
-  return { orgIds: new Set(), byOrg: new Map() };
+  return { orgIds: new Set(), byOrg: new Map(), unreadableKeysByOrg: new Map() };
 }
 
 /** Row shape decrypted by {@link decryptRow}. Matches the resolver's select projection. */
@@ -181,23 +190,48 @@ export async function loadTenantVariableScope(orgIds: string[]): Promise<TenantV
       const orgOwnedKeys = new Map<string, Set<string>>();
       for (const id of uniqueOrgIds) orgOwnedKeys.set(id, new Set());
 
+      // Rows whose winning precedence pass failed to decrypt — kept separate
+      // from `byOrg` so an unreadable key is never confused with one that was
+      // simply never defined (see {@link unreadableForOrg}).
+      const unreadableByOrg = new Map<string, Set<string>>();
+      for (const id of uniqueOrgIds) unreadableByOrg.set(id, new Set());
+
       for (const row of rows) {
         if (row.ownerOrgId === null) continue; // partner-wide; handled in the second pass
-        const resolved = decryptRow(row);
-        if (!resolved) continue;
-        byOrg.get(row.forOrgId)?.set(row.key, resolved);
+        // Claim this (org, key) for org-precedence BEFORE attempting the
+        // decrypt, regardless of whether it succeeds. An org row that fails
+        // to decrypt still WON the precedence contest against a same-key
+        // partner-wide row — it must shadow that partner value, not leave it
+        // exposed to the second pass below. Marking the claim only on a
+        // successful decrypt (the previous behaviour) let the partner-wide
+        // pass resolve right over an unreadable org override, silently
+        // substituting a DIFFERENT tenant scope's material into the org's
+        // resolution — a tenancy bug, not a convenience.
         orgOwnedKeys.get(row.forOrgId)?.add(row.key);
+        const resolved = decryptRow(row);
+        if (!resolved) {
+          unreadableByOrg.get(row.forOrgId)?.add(row.key);
+          continue;
+        }
+        byOrg.get(row.forOrgId)?.set(row.key, resolved);
       }
 
       for (const row of rows) {
         if (row.ownerOrgId !== null) continue; // org-owned; already handled above
-        if (orgOwnedKeys.get(row.forOrgId)?.has(row.key)) continue; // shadowed by an org override
+        if (orgOwnedKeys.get(row.forOrgId)?.has(row.key)) continue; // shadowed by an org override (readable or not)
         const resolved = decryptRow(row);
-        if (!resolved) continue;
+        if (!resolved) {
+          unreadableByOrg.get(row.forOrgId)?.add(row.key);
+          continue;
+        }
         byOrg.get(row.forOrgId)?.set(row.key, resolved);
       }
 
-      const scope: InternalTenantVariableScope = { orgIds: new Set(uniqueOrgIds), byOrg };
+      const scope: InternalTenantVariableScope = {
+        orgIds: new Set(uniqueOrgIds),
+        byOrg,
+        unreadableKeysByOrg: unreadableByOrg
+      };
       return scope;
     })
   );
@@ -225,6 +259,33 @@ export function resolveForOrg(scope: TenantVariableScope, orgId: string): Map<st
   }
   const internal = scope as InternalTenantVariableScope;
   return new Map(internal.byOrg.get(orgId) ?? []);
+}
+
+/**
+ * Keys whose winning row (per {@link loadTenantVariableScope}'s org-over-
+ * partner precedence) existed but failed to decrypt, for one org out of a
+ * previously-loaded snapshot.
+ *
+ * Deliberately distinct from "absent": a key that was never defined for this
+ * org appears in neither `resolveForOrg`'s map nor this set, while a key
+ * whose row exists but is unreadable appears ONLY here, never in
+ * `resolveForOrg`'s map (an unreadable variable must never resolve to a
+ * value — see {@link decryptRow}). This is the reporting channel #3409 PR4c
+ * needs to pin "unreadable" into an approval digest as something other than
+ * "absent".
+ *
+ * Same membership check as `resolveForOrg`, for the same reason — see its
+ * doc comment.
+ *
+ * Returns a fresh `Set` copy (never the snapshot's own set), mirroring
+ * `resolveForOrg`'s copy-out contract.
+ */
+export function unreadableForOrg(scope: TenantVariableScope, orgId: string): ReadonlySet<string> {
+  if (!scope.orgIds.has(orgId)) {
+    throw new Error(`Org ${orgId} is not in this snapshot`);
+  }
+  const internal = scope as InternalTenantVariableScope;
+  return new Set(internal.unreadableKeysByOrg.get(orgId) ?? []);
 }
 
 export interface SubstitutionOutcome {
