@@ -84,6 +84,58 @@ export async function findActiveBinding(
   };
 }
 
+/**
+ * Active (non-revoked) binding by its id, joined to its Breeze user — the
+ * per-request re-authorization read for `officeAddinTechAuthMiddleware`.
+ *
+ * The join is INNER because `office_addin_user_bindings.user_id` is a NOT NULL
+ * FK to `users`: a missing user row is impossible, so a null result here always
+ * means "binding missing or revoked", which the middleware treats as the
+ * harsher deny (it also deletes the Redis session).
+ */
+export async function findActiveBindingById(bindingId: string): Promise<BindingWithUser | null> {
+  const [row] = await db
+    .select({
+      bindingId: officeAddinUserBindings.id,
+      bindingUserId: officeAddinUserBindings.userId,
+      bindingPartnerId: officeAddinUserBindings.partnerId,
+      boundAuthEpoch: officeAddinUserBindings.boundAuthEpoch,
+      mfaVerifiedAt: officeAddinUserBindings.mfaVerifiedAt,
+      userId: users.id,
+      userEmail: users.email,
+      userName: users.name,
+      userStatus: users.status,
+      userAuthEpoch: users.authEpoch,
+      userPartnerId: users.partnerId,
+    })
+    .from(officeAddinUserBindings)
+    .innerJoin(users, eq(users.id, officeAddinUserBindings.userId))
+    .where(
+      and(eq(officeAddinUserBindings.id, bindingId), isNull(officeAddinUserBindings.revokedAt))
+    )
+    .limit(1);
+
+  if (!row) return null;
+
+  return {
+    binding: {
+      id: row.bindingId,
+      userId: row.bindingUserId,
+      partnerId: row.bindingPartnerId,
+      boundAuthEpoch: row.boundAuthEpoch,
+      mfaVerifiedAt: row.mfaVerifiedAt,
+    },
+    user: {
+      id: row.userId,
+      email: row.userEmail,
+      name: row.userName,
+      status: row.userStatus,
+      authEpoch: row.userAuthEpoch,
+      partnerId: row.userPartnerId,
+    },
+  };
+}
+
 /** Candidate user row for the bind flow's credential check. */
 export type BindCandidateUser = {
   id: string;
