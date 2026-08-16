@@ -128,8 +128,9 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // The pinned set — and the reads that produce it — live in
   // runScriptSnapshot.ts rather than inline here: #3409 PR4c-1 makes the
   // digest and dispatch derivable from ONE observation instead of two copies
-  // free to drift apart (the release side will consume the snapshot's scope;
-  // this creation-side call needs only the material).
+  // free to drift apart (the release side consumes the snapshot's scope —
+  // `computeEffectDigestForRelease` carries it to dispatch; this creation-side
+  // call needs only the material).
   // `runScriptDigestMaterial` is a `v: 2` envelope, so a digest pinned before
   // this change can never compare equal to a recomputed one: a pre-PR4c
   // intent fails closed at release rather than revalidating against a
@@ -369,14 +370,23 @@ export function effectDigestResolverKey(toolName: string, action?: string): stri
  * '../../db' (and its real Postgres client construction) itself. Tests just
  * pass a fake `database`.
  *
- * ONE EXCEPTION since #3409 PR4c-1: run_script's snapshot loads the tenant-
- * variable scope through `loadTenantVariableScope`, which deliberately does
- * NOT ride the caller's transaction (it elevates to a fresh system context —
- * see tenantVariableResolution.ts for why resolution must not depend on which
- * of the five dispatch call sites is ambient) and therefore reads the module-
- * level `db`. So this module's import graph now reaches '../../db'
- * transitively, and effectDigest.test.ts seams that ONE function. Everything
- * else still resolves purely against the injected `database`.
+ * ONE NUANCE since #3409 PR4c-1 (Task 3b): run_script's snapshot loads the
+ * tenant-variable scope through `loadTenantVariableScope`, and hands it THIS
+ * SAME `database` as `opts.database` so the load rides the caller's connection
+ * too. `loadTenantVariableScope`'s default path deliberately escapes to a
+ * genuinely fresh system context (see tenantVariableResolution.ts for why
+ * resolution must not depend on which of the five DISPATCH call sites is
+ * ambient); taking that escape here would acquire a SECOND pooled connection
+ * while the creation transaction still holds the first — the #1105
+ * connection-hold class. Reusing the caller's connection is sound only because
+ * every call site of this module is already system-scoped, which is the
+ * caller obligation `opts.database` carries and `loadTenantVariableScope`
+ * asserts on entry.
+ *
+ * The import graph therefore still reaches '../../db' transitively (through
+ * tenantVariableResolution), and effectDigest.test.ts seams that ONE function
+ * so the unit suite needs no database module at all. Everything else still
+ * resolves purely against the injected `database`.
  */
 export async function computeEffectDigestOutcome(
   toolName: string,
@@ -415,36 +425,25 @@ async function resolveEffectDigest(
   };
 }
 
-/**
- * Flattening wrapper: the pinned digest, or null for BOTH unpinnable outcomes.
- *
- * This is the shape the two RELEASE paths want and must keep — they compare
- * the recomputed value against the stored column, where `not_applicable` and
- * `unresolved` are indistinguishable by construction (both stored NULL). Only
- * the CREATION path (intentService.ts) uses computeEffectDigestOutcome, since
- * it is the only caller that can still observe the distinction.
- */
-export async function computeEffectDigest(
-  toolName: string,
-  args: Record<string, unknown>,
-  database: Database,
-): Promise<string | null> {
-  const outcome = await computeEffectDigestOutcome(toolName, args, database);
-  return outcome.kind === 'pinned' ? outcome.digest : null;
-}
-
 /** What a release path gets back: the digest to compare, and — when the
  *  resolver produced one — the verified material to EXECUTE from. */
 export type EffectDigestReleaseResult = {
-  /** Same value `computeEffectDigest` returns, for the same comparison. */
+  /**
+   * The pinned digest, or null for BOTH unpinnable outcomes. Flattened
+   * deliberately: a release path compares this against the stored column,
+   * where `not_applicable` and `unresolved` are indistinguishable by
+   * construction (both stored NULL). Only the CREATION path
+   * (`computeEffectDigestOutcome`, used by intentService.ts) can still observe
+   * the distinction, and it is the only caller that needs to.
+   */
   digest: string | null;
   /** Absent unless the resolver resolved something a handler can reuse. */
   context?: ToolExecutionContext;
 };
 
 /**
- * The RELEASE-path recompute (#3409 PR4c-1) — `computeEffectDigest`'s sibling,
- * not its replacement.
+ * The RELEASE-path recompute (#3409 PR4c-1) — the sibling of
+ * `computeEffectDigestOutcome`, which stays the CREATION path.
  *
  * Both release paths (jobs/intentReleaseWorker.ts and the inline chat release
  * in services/aiAgentSdk.ts) already read the target in order to recompute the
@@ -454,10 +453,10 @@ export type EffectDigestReleaseResult = {
  * unchanged could change between the comparison and the handler's own query.
  *
  * So this returns the digest AND the resolved material, and the caller hands
- * the latter to `executeTool` as its `ToolExecutionContext`. A caller that
- * ignores `context` behaves exactly as `computeEffectDigest` — which is why
- * that flattener keeps its `string | null` signature for every non-release
- * caller rather than being widened.
+ * the latter to `executeTool` as its `ToolExecutionContext`. `context` is
+ * optional: a caller that ignores it gets exactly the digest comparison and
+ * nothing else, so a release path that has no handler to feed (or a tool with
+ * no reusable material) needs no separate entry point.
  *
  * The context is returned even on a MISMATCH (the digest is what decides), so
  * a caller must compare first and only then dispatch. Both call sites fail

@@ -182,8 +182,9 @@ function verifiedRunScriptFor(
  *     per-device partner guard — EXCEPT ONE SHAPE:
  *     `(org_id NULL, partner_id NULL, is_system false)`. That orphan is
  *     representable today (`resolveScriptCreateScope`'s system-scope branch
- *     yields `{orgId: null, partnerId: null}` and `insertScriptRow` clamps
- *     `is_system` to false; there is no XOR CHECK on `scripts`), it is
+ *     yields `{orgId: null, partnerId: null}` and `insertScriptRow` DEFAULTS
+ *     `is_system` to false on that branch unless the caller explicitly
+ *     requests it; there is no XOR CHECK on `scripts`), it is
  *     invisible to every non-system caller, and it would sail straight past
  *     layer 1 (org id is null) and past the partner guard (partner id is
  *     null). It is refused below.

@@ -2642,7 +2642,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
   // pin one; unpinnable four_eyes intents skip it too) must skip the
   // recompute entirely and let the step execute normally — proves the check
   // is opt-in on a stored digest, not a blanket recompute-and-compare.
-  it('executes normally and never calls computeEffectDigest when the stored effect digest is null', async () => {
+  it('executes normally and never calls the digest recompute when the stored effect digest is null', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,

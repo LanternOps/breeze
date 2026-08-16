@@ -126,10 +126,11 @@ export type BuildRunScriptSnapshotResult =
  * importing it: production `loadScope` (below) forwards `buildRunScriptSnapshot`'s
  * own `database` argument straight into `loadTenantVariableScope`'s
  * `opts.database` (#3409 PR4c-1 Task 3b) — every call into this module
- * already runs inside a system-scoped transaction (see the three
- * `computeEffectDigestOutcome` call sites in effectDigest.ts's header), so
- * reusing that connection is what avoids acquiring a second pooled one while
- * the caller's transaction is still held. Injecting `loadScope` is what lets
+ * already runs inside a system-scoped transaction (the effect digest's three
+ * entry points: `computeEffectDigestOutcome` from intentService.ts and
+ * `computeEffectDigestForRelease` from jobs/intentReleaseWorker.ts and
+ * services/aiAgentSdk.ts), so reusing that connection is what avoids
+ * acquiring a second pooled one while the caller's transaction is still held. Injecting `loadScope` is what lets
  * the unit suite build snapshots without a live or mocked database module at
  * all. Production callers pass nothing.
  */

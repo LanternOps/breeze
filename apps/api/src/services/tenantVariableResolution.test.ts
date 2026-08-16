@@ -12,16 +12,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // functions, specifically so Task 3b's "database supplied -> escape hatch
 // NOT invoked" tests can assert on call counts rather than merely on side
 // effects. Same pattern as aiToolsScripts.runScript.orgEquality.test.ts.
+// getCurrentDbAccessContext backs the `opts.database` system-scope assertion;
+// it defaults to the system context the real callers hold, and the assertion
+// test below overrides it per-case.
 vi.mock('../db', () => {
   const dbMock = { select: vi.fn() };
   return {
     db: dbMock,
+    getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
     runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
     withSystemDbAccessContext: vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => fn())
   };
 });
 
-import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  type Database
+} from '../db';
 import { encryptTenantVariableValue } from './tenantVariables';
 import {
   describeVariableFailure,
@@ -35,6 +45,7 @@ import {
 const dbMock = db as unknown as { select: ReturnType<typeof vi.fn> };
 const runOutsideDbContextMock = runOutsideDbContext as unknown as ReturnType<typeof vi.fn>;
 const withSystemDbAccessContextMock = withSystemDbAccessContext as unknown as ReturnType<typeof vi.fn>;
+const getCurrentDbAccessContextMock = getCurrentDbAccessContext as unknown as ReturnType<typeof vi.fn>;
 
 const ORG_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -342,6 +353,29 @@ describe('loadTenantVariableScope given an explicit database', () => {
     expect(dbMock.select).not.toHaveBeenCalled();
     expect(runOutsideDbContextMock).not.toHaveBeenCalled();
     expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
+  // `opts.database` is a caller ASSERTION that a system context is already
+  // open, and nothing but this check enforces it. A false assertion never
+  // errors on its own: the query just runs under the caller's RLS, which can
+  // NARROW the result set silently — for the effect-digest callers that means
+  // a recomputed digest that no longer matches the pinned one and
+  // `content_changed` on every approved release.
+  it.each([
+    ['an org-scoped context', { scope: 'organization' }],
+    ['a partner-scoped context', { scope: 'partner' }],
+    ['no context at all', undefined]
+  ])('refuses the supplied database under %s', async (_case, ambient) => {
+    getCurrentDbAccessContextMock.mockReturnValueOnce(ambient);
+    const suppliedSelect = vi.fn();
+    stubSelectOn(suppliedSelect, []);
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    await expect(loadTenantVariableScope([ORG_A], { database: suppliedDb })).rejects.toThrow(
+      /requires an already-open system-scoped DB context/i
+    );
+    // Fails BEFORE the query — an RLS-narrowed row set never reaches a snapshot.
+    expect(suppliedSelect).not.toHaveBeenCalled();
   });
 });
 

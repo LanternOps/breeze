@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '../../db';
 import type { ResolvedVariable, TenantVariableScope } from '../tenantVariableResolution';
 import {
-  computeEffectDigest,
+  computeEffectDigestForRelease,
   computeEffectDigestOutcome,
   effectDigestResolverKey,
   hasPinnedDigest,
@@ -15,11 +15,14 @@ import {
  * `run_script`'s resolver now builds the verified snapshot
  * (`runScriptSnapshot.ts`), and that builder loads the tenant-variable scope
  * through `loadTenantVariableScope` — the single function in this file's
- * import graph that reaches the module-level `db` singleton. Everything else
- * in `tenantVariableResolution` (notably `resolveForOrg` / `unreadableForOrg`,
- * which the builder actually uses to shape the pinned references) is left
- * REAL by the `importOriginal` spread, so this stays a seam over the loader
- * rather than a mock of the resolution logic under test.
+ * import graph that needs real DB machinery. Its default path reads the
+ * module-level `db` singleton, and its `opts.database` path (the one the
+ * digest takes, Task 3b) asserts an already-open system-scoped context, which
+ * a unit test has none of. Everything else in `tenantVariableResolution`
+ * (notably `resolveForOrg` / `unreadableForOrg`, which the builder actually
+ * uses to shape the pinned references) is left REAL by the `importOriginal`
+ * spread, so this stays a seam over the loader rather than a mock of the
+ * resolution logic under test.
  *
  * The rest of the module's no-`vi.mock` stance is unchanged: every resolver
  * still runs against whatever fake `Database` the test hands it.
@@ -29,6 +32,24 @@ vi.mock('../tenantVariableResolution', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../tenantVariableResolution')>()),
   loadTenantVariableScope: loadScope,
 }));
+
+/**
+ * The flattened `string | null` digest, through the LIVE release entry point.
+ *
+ * The module has exactly two entry points — `computeEffectDigestOutcome`
+ * (creation) and `computeEffectDigestForRelease` (both release paths) — and
+ * every resolver assertion below only cares about the digest half. Flattening
+ * once here keeps the resolver cases readable while still driving a function
+ * production actually calls; the `context` half is asserted separately, in the
+ * two release suites that consume it.
+ */
+async function digestFor(
+  toolName: string,
+  args: Record<string, unknown>,
+  database: Database,
+): Promise<string | null> {
+  return (await computeEffectDigestForRelease(toolName, args, database)).digest;
+}
 
 /**
  * Generic fake `Database`: every `.select(...).from(...).where(...)` chain
@@ -190,6 +211,23 @@ describe('computeEffectDigestOutcome', () => {
       expect(d1).toEqual(d2);
     });
 
+    // The CREATION path projects `verified` back off: it has no dispatch to
+    // feed and no business holding decrypted tenant plaintext one property
+    // access away. `toEqual` above cannot see the difference (extra keys on
+    // the received object are compared, but `verified` sits on the RESOLVER's
+    // result, not the outcome) — so pin the returned key set explicitly. A
+    // future change that lets the resolver's `verified` leak into the outcome
+    // fails here.
+    it('never returns the resolved material on the creation path', async () => {
+      loadScope.mockResolvedValueOnce(fakeScope([{ orgId: 'org-1' }]));
+      const outcome = await computeEffectDigestOutcome(
+        'run_script',
+        RUN_SCRIPT_ARGS,
+        runScriptDb(scriptRow()).database,
+      );
+      expect(Object.keys(outcome).sort()).toEqual(['digest', 'kind']);
+    });
+
     // FIX 4: `content` alone left run_as / language / timeout_seconds free to
     // change between approval and release with a byte-identical digest —
     // flipping run_as from `user` to `system` is a privilege escalation the
@@ -201,8 +239,8 @@ describe('computeEffectDigestOutcome', () => {
       ['timeoutSeconds', { timeoutSeconds: 9000 }],
       ['orgId', { orgId: 'org-2' }],
     ])('changes the digest when %s changes', async (_field, mutation) => {
-      const before = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
-      const after = await computeEffectDigest(
+      const before = await digestFor('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+      const after = await digestFor(
         'run_script',
         RUN_SCRIPT_ARGS,
         runScriptDb(scriptRow(mutation)).database,
@@ -240,8 +278,8 @@ describe('computeEffectDigestOutcome', () => {
           },
         ]);
 
-      // Task 3b (#3409 PR4c-1): `digestOf` now records the exact `database`
-      // it handed `computeEffectDigest`, so the pinning test below can assert
+      // Task 3b (#3409 PR4c-1): `digestOf` records the exact `database` it
+      // handed the digest entry point, so the pinning test below can assert
       // `loadScope` (== `loadTenantVariableScope`) was called with THAT SAME
       // connection reused — not a second, freshly-escaped one.
       let lastDatabase: Database;
@@ -254,7 +292,7 @@ describe('computeEffectDigestOutcome', () => {
       ): Promise<string | null> {
         loadScope.mockResolvedValueOnce(scope);
         lastDatabase = runScriptDb(script, devices).database;
-        return computeEffectDigest(
+        return digestFor(
           'run_script',
           { scriptId: 'script-1', deviceIds: devices.map((d) => d.id) },
           lastDatabase,
@@ -346,7 +384,7 @@ describe('computeEffectDigestOutcome', () => {
             }),
           )
           .digest('hex');
-        const v2 = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+        const v2 = await digestFor('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
         expect(v2).toMatch(/^[0-9a-f]{64}$/);
         expect(v2).not.toBe(v1);
       });
@@ -355,7 +393,7 @@ describe('computeEffectDigestOutcome', () => {
       // pay for a variable query at intent creation.
       it('loads no variable scope for a script that references none', async () => {
         const database = runScriptDb(scriptRow()).database;
-        const digest = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, database);
+        const digest = await digestFor('run_script', RUN_SCRIPT_ARGS, database);
         expect(digest).toMatch(/^[0-9a-f]{64}$/);
         expect(loadScope).toHaveBeenCalledWith([], { database });
       });
@@ -375,8 +413,8 @@ describe('computeEffectDigestOutcome', () => {
         [{ updatedAt }], // header untouched
         [{ id: 'line-1', quantity: '2', unitPrice: '10.00', lineTotal: '20.00', sortOrder: 0 }], // qty changed
       ]);
-      const digestBefore = await computeEffectDigest('manage_quotes', args, before.database);
-      const digestAfter = await computeEffectDigest('manage_quotes', args, after.database);
+      const digestBefore = await digestFor('manage_quotes', args, before.database);
+      const digestAfter = await digestFor('manage_quotes', args, after.database);
       expect(digestBefore).not.toBeNull();
       expect(digestBefore).not.toBe(digestAfter);
     });
@@ -401,18 +439,18 @@ describe('computeEffectDigestOutcome', () => {
     // effectDigestCoverage.contract.test.ts now makes impossible to repeat.
     it.each(['issue', 'void', 'record_payment'])('%s hashes the invoice updated_at', async (action) => {
       const { database } = makeFakeDb([[{ updatedAt: new Date('2026-08-01T00:00:00Z') }]]);
-      const result = await computeEffectDigest('manage_invoices', { action, invoiceId: 'inv-1' }, database);
+      const result = await digestFor('manage_invoices', { action, invoiceId: 'inv-1' }, database);
       expect(result).toMatch(/^[0-9a-f]{64}$/);
     });
 
     it('void detects a revision change between approval and release', async () => {
       const args = { action: 'void', invoiceId: 'inv-1' };
-      const before = await computeEffectDigest(
+      const before = await digestFor(
         'manage_invoices',
         args,
         makeFakeDb([[{ updatedAt: new Date('2026-08-01T00:00:00Z') }]]).database,
       );
-      const after = await computeEffectDigest(
+      const after = await digestFor(
         'manage_invoices',
         args,
         makeFakeDb([[{ updatedAt: new Date('2026-08-02T00:00:00Z') }]]).database,
@@ -425,7 +463,7 @@ describe('computeEffectDigestOutcome', () => {
         [{ invoiceId: 'inv-1' }], // invoice_payments lookup by paymentId
         [{ updatedAt: new Date('2026-08-01T00:00:00Z') }], // invoices lookup by invoiceId
       ]);
-      const result = await computeEffectDigest(
+      const result = await digestFor(
         'manage_invoices',
         { action: 'void_payment', paymentId: 'pay-1' },
         database,
@@ -459,7 +497,7 @@ describe('computeEffectDigestOutcome', () => {
   describe('manage_contracts', () => {
     it('activate hashes the contract updated_at', async () => {
       const { database } = makeFakeDb([[{ updatedAt: new Date('2026-08-01T00:00:00Z') }]]);
-      const result = await computeEffectDigest(
+      const result = await digestFor(
         'manage_contracts',
         { action: 'activate', contractId: 'contract-1' },
         database,
@@ -471,8 +509,8 @@ describe('computeEffectDigestOutcome', () => {
       const before = makeFakeDb([[{ updatedAt: new Date('2026-08-01T00:00:00Z') }]]);
       const after = makeFakeDb([[{ updatedAt: new Date('2026-08-02T00:00:00Z') }]]);
       const args = { action: 'cancel', contractId: 'contract-1' };
-      const digestBefore = await computeEffectDigest('manage_contracts', args, before.database);
-      const digestAfter = await computeEffectDigest('manage_contracts', args, after.database);
+      const digestBefore = await digestFor('manage_contracts', args, before.database);
+      const digestAfter = await digestFor('manage_contracts', args, after.database);
       expect(digestBefore).not.toBe(digestAfter);
     });
   });
@@ -480,7 +518,7 @@ describe('computeEffectDigestOutcome', () => {
   describe('manage_organizations:update_org', () => {
     it('hashes the current org status', async () => {
       const { database } = makeFakeDb([[{ status: 'active' }]]);
-      const result = await computeEffectDigest(
+      const result = await digestFor(
         'manage_organizations',
         { action: 'update_org', orgId: 'org-1', status: 'suspended' },
         database,
@@ -492,8 +530,8 @@ describe('computeEffectDigestOutcome', () => {
       const active = makeFakeDb([[{ status: 'active' }]]);
       const suspended = makeFakeDb([[{ status: 'suspended' }]]);
       const args = { action: 'update_org', orgId: 'org-1' };
-      const digestActive = await computeEffectDigest('manage_organizations', args, active.database);
-      const digestSuspended = await computeEffectDigest('manage_organizations', args, suspended.database);
+      const digestActive = await digestFor('manage_organizations', args, active.database);
+      const digestSuspended = await digestFor('manage_organizations', args, suspended.database);
       expect(digestActive).not.toBe(digestSuspended);
     });
 
@@ -511,17 +549,17 @@ describe('computeEffectDigestOutcome', () => {
   describe('manage_tickets:move_org', () => {
     it('pins the ticket org + status, not updated_at (comment churn must not trip it)', async () => {
       const args = { action: 'move_org', ticketId: 'ticket-1', targetOrgId: 'org-2' };
-      const before = await computeEffectDigest(
+      const before = await digestFor(
         'manage_tickets',
         args,
         makeFakeDb([[{ orgId: 'org-1', status: 'open' }]]).database,
       );
-      const sameAfterAComment = await computeEffectDigest(
+      const sameAfterAComment = await digestFor(
         'manage_tickets',
         args,
         makeFakeDb([[{ orgId: 'org-1', status: 'open' }]]).database,
       );
-      const afterSomeoneElseMovedIt = await computeEffectDigest(
+      const afterSomeoneElseMovedIt = await digestFor(
         'manage_tickets',
         args,
         makeFakeDb([[{ orgId: 'org-9', status: 'open' }]]).database,
@@ -546,12 +584,12 @@ describe('computeEffectDigestOutcome', () => {
   describe('execute_dr_plan', () => {
     it('pins the plan revision — a plan edited between approval and release changes the digest', async () => {
       const args = { planId: 'plan-1', executionType: 'failover' };
-      const before = await computeEffectDigest(
+      const before = await digestFor(
         'execute_dr_plan',
         args,
         makeFakeDb([[{ updatedAt: new Date('2026-08-01T00:00:00Z'), status: 'active' }]]).database,
       );
-      const after = await computeEffectDigest(
+      const after = await digestFor(
         'execute_dr_plan',
         args,
         makeFakeDb([[{ updatedAt: new Date('2026-08-02T00:00:00Z'), status: 'active' }]]).database,
@@ -575,17 +613,17 @@ describe('computeEffectDigestOutcome', () => {
     // keys on the tool's actual spelling, not a normalized one.
     it('pins the partner name + status via the snake_case tenant_id arg', async () => {
       const args = { tenant_id: 'partner-1', confirmation_phrase: 'delete Acme permanently' };
-      const before = await computeEffectDigest(
+      const before = await digestFor(
         'delete_tenant',
         args,
         makeFakeDb([[{ name: 'Acme', status: 'active' }]]).database,
       );
-      const afterRename = await computeEffectDigest(
+      const afterRename = await digestFor(
         'delete_tenant',
         args,
         makeFakeDb([[{ name: 'Acme Holdings', status: 'active' }]]).database,
       );
-      const afterChurn = await computeEffectDigest(
+      const afterChurn = await digestFor(
         'delete_tenant',
         args,
         makeFakeDb([[{ name: 'Acme', status: 'churned' }]]).database,
@@ -606,20 +644,54 @@ describe('computeEffectDigestOutcome', () => {
   });
 });
 
-describe('computeEffectDigest (flattening wrapper the release paths use)', () => {
+describe('computeEffectDigestForRelease (the shape both release paths consume)', () => {
   it('flattens BOTH unpinnable outcomes to null, which is what the stored column can express', async () => {
-    expect(await computeEffectDigest('list_scripts', {}, makeFakeDb([]).database)).toBeNull();
-    expect(await computeEffectDigest('run_script', {}, makeFakeDb([]).database)).toBeNull();
+    expect(await digestFor('list_scripts', {}, makeFakeDb([]).database)).toBeNull();
+    expect(await digestFor('run_script', {}, makeFakeDb([]).database)).toBeNull();
     // A genuine target_absent (not another missing_arg): well-formed args, no
     // script row. Both reasons still flatten to the same stored NULL.
     expect(
-      await computeEffectDigest('run_script', { ...RUN_SCRIPT_ARGS, scriptId: 'ghost' }, runScriptDb(null).database),
+      await digestFor('run_script', { ...RUN_SCRIPT_ARGS, scriptId: 'ghost' }, runScriptDb(null).database),
     ).toBeNull();
   });
 
   it('returns the digest itself on pinned', async () => {
-    const result = await computeEffectDigest('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
+    const result = await digestFor('run_script', RUN_SCRIPT_ARGS, runScriptDb(scriptRow()).database);
     expect(result).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  // The half the flattening `digestFor` above throws away: a release path also
+  // gets the material it can EXECUTE from, so the handler need not re-read
+  // what the digest just proved unchanged.
+  it('carries the verified run_script material alongside the digest', async () => {
+    const script = scriptRow();
+    const scope = fakeScope([{ orgId: 'org-1' }]);
+    loadScope.mockResolvedValueOnce(scope);
+    const result = await computeEffectDigestForRelease(
+      'run_script',
+      RUN_SCRIPT_ARGS,
+      runScriptDb(script).database,
+    );
+    expect(result.digest).toMatch(/^[0-9a-f]{64}$/);
+    // The SAME observation the digest was computed over — same row object,
+    // same scope object, not a re-read.
+    expect(result.context?.verifiedRunScript?.scriptRow).toBe(script);
+    expect(result.context?.verifiedRunScript?.scope).toBe(scope);
+    expect(result.context?.verifiedRunScript?.snapshot.script.id).toBe('script-1');
+  });
+
+  it('omits the context for a resolver that produced nothing reusable', async () => {
+    const pinnedButUnreusable = await computeEffectDigestForRelease(
+      'manage_organizations',
+      { action: 'update_org', orgId: 'org-1' },
+      makeFakeDb([[{ status: 'active' }]]).database,
+    );
+    expect(pinnedButUnreusable.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(pinnedButUnreusable.context).toBeUndefined();
+
+    // Unpinnable surfaces carry no context either.
+    const notApplicable = await computeEffectDigestForRelease('list_scripts', {}, makeFakeDb([]).database);
+    expect(notApplicable).toEqual({ digest: null });
   });
 });
 

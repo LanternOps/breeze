@@ -48,7 +48,7 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
       isHeadlessM365Tool: vi.fn(() => false),
       executeM365ToolHeadless: vi.fn(),
     },
-    // Task 7: computeEffectDigest itself is unit-tested in
+    // Task 7: the digest compute itself is unit-tested in
     // services/actionIntents/effectDigest.test.ts (the resolver map). Mocked
     // wholesale here, same treatment as buildAuthContextForIntent/
     // getActiveOrgTenant/checkToolPermission above — this file only needs to
@@ -58,10 +58,9 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     effectDigestMock: {
       // The RELEASE-path compute (#3409 PR4c-1): returns the digest AND, for
       // run_script, the verified material the handler can execute from
-      // without re-reading. `computeEffectDigest` (the flattening `string |
-      // null` wrapper) still exists for other callers but the worker no
-      // longer uses it — the whole point is that the worker keeps what the
-      // recompute already resolved.
+      // without re-reading — the whole point being that the worker KEEPS what
+      // the recompute already resolved instead of taking a bare digest and
+      // letting the handler read the row a second time.
       computeEffectDigestForRelease: vi.fn(
         async () => ({ digest: null }) as { digest: string | null; context?: unknown },
       ),
@@ -205,7 +204,7 @@ vi.mock('bullmq', () => ({
 // ---------------------------------------------------------------------------
 
 import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseWorker';
-// The mocked db handle the worker threads into computeEffectDigest — imported
+// The mocked db handle the worker threads into the digest recompute — imported
 // so that call can be asserted against the real object rather than
 // expect.anything().
 import { db as mockedDb } from '../db';
@@ -257,7 +256,7 @@ function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
     errorCode: null,
     // Task 7: NULL by default (matches supervised intents and legacy/
     // unpinnable four_eyes intents) — the worker's effect-digest check
-    // short-circuits on null and never calls computeEffectDigest, so the
+    // short-circuits on null and never calls the digest recompute, so the
     // existing fixtures/tests above don't need to know effectDigest exists.
     // Tests that DO exercise the check override this explicitly.
     effectDigest: null,

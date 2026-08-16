@@ -5,7 +5,7 @@
  *
  * Before this file, `grep -rn "effectDigest\|effect_digest"` across every
  * integration suite returned NOTHING. The whole feature's only coverage was
- * unit tests that `vi.mock` `computeEffectDigest` wholesale and compare
+ * unit tests that `vi.mock` the digest compute wholesale and compare
  * `'a'.repeat(64)` against `'b'.repeat(64)` — which proves the worker
  * branches on inequality, and proves nothing at all about the property the
  * feature exists for. The actual chain
@@ -93,7 +93,7 @@ import { devices } from '../../db/schema/devices';
 import { scripts } from '../../db/schema/scripts';
 import { tenantVariables } from '../../db/schema/tenantVariables';
 import { createActionIntent } from '../../services/actionIntents/intentService';
-import { computeEffectDigest } from '../../services/actionIntents/effectDigest';
+import { computeEffectDigestForRelease } from '../../services/actionIntents/effectDigest';
 import { buildRunScriptSnapshot } from '../../services/actionIntents/runScriptSnapshot';
 import { encryptTenantVariableValue } from '../../services/tenantVariables';
 import { loadTenantVariableScope, resolveForOrg } from '../../services/tenantVariableResolution';
@@ -798,12 +798,16 @@ describe('effect-digest TOCTOU chain (real Postgres, real resolver, real release
     // Same args the intent carries — the pinned org set is derived from these,
     // so a different device id would legitimately produce a different digest.
     const args = { scriptId: s.scriptId, deviceIds: [s.deviceId] };
+    // The exact entry point both release paths call, in the system context
+    // they call it from.
+    const recompute = () =>
+      withSystemDbAccessContext(() => computeEffectDigestForRelease(TOOL_NAME, args, db));
 
-    const recomputed = await withSystemDbAccessContext(() => computeEffectDigest(TOOL_NAME, args, db));
+    const recomputed = (await recompute()).digest;
     expect(recomputed).toBe(digest);
 
     await editScript(s.scriptId, { content: TAMPERED_CONTENT });
-    const afterEdit = await withSystemDbAccessContext(() => computeEffectDigest(TOOL_NAME, args, db));
+    const afterEdit = (await recompute()).digest;
     expect(afterEdit).toMatch(/^[0-9a-f]{64}$/);
     expect(afterEdit).not.toBe(digest);
   });

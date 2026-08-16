@@ -97,8 +97,9 @@ export interface AiTool {
   /**
    * `context` carries material a release path already verified against the
    * approval's pinned effect digest (see `toolExecutionContext.ts`). It is
-   * OPTIONAL and trailing, so the 188 handlers declared `(input, auth)` are
-   * unaffected; only a handler that has a re-query worth skipping declares it,
+   * OPTIONAL and trailing, so every handler declared `(input, auth)` — which
+   * is nearly all of them — is unaffected; only a handler that has a re-query
+   * worth skipping declares it,
    * and it must behave identically when it is absent (direct chat, MCP and
    * script-builder callers never supply one).
    *

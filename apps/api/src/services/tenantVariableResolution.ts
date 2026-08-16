@@ -1,6 +1,12 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { replaceVariableTokens } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  type Database
+} from '../db';
 import { organizations, tenantVariables } from '../db/schema';
 import { decryptTenantVariableValue } from './tenantVariables';
 
@@ -136,20 +142,27 @@ function decryptRow(row: RawResolvedRow): ResolvedVariable | null {
  * `withSystemDbAccessContext`), typically because it is computing atomically
  * inside a transaction it cannot afford to leave (a second pooled connection
  * held alongside the first is exactly the #1105 connection-hold class this
- * option exists to avoid — see #3409 PR4c-1 Task 3b). This function does not
- * itself elevate privilege when a database is supplied, so if the caller's
- * assertion is false — an unprivileged, RLS-constrained connection handed in
- * under the belief that it "would still be safe" — the query below silently
- * runs UNDER that connection's RLS instead of the intended system scope.
- * Because system scope is what makes the `WHERE o.id = ANY($1)` clause below
- * the query's ONLY tenancy boundary (see below), an RLS-constrained
- * connection wouldn't widen access — worse, it can silently NARROW the
- * result set (e.g. an org token whose JWT lacks `partnerId` losing every
- * partner-wide row) without erroring, which is a correctness bug wearing a
- * safety costume. Only pass `opts.database` when you can point at the
+ * option exists to avoid — see #3409 PR4c-1 Task 3b). **That assertion is
+ * CHECKED, not trusted**: the ambient `getCurrentDbAccessContext()` must
+ * report `scope === 'system'`, or this throws before querying.
+ *
+ * It has to be checked, because a false assertion is otherwise silent. This
+ * function does not itself elevate privilege when a database is supplied, so
+ * an unprivileged, RLS-constrained connection handed in under the belief that
+ * it "would still be safe" would simply run the query UNDER that connection's
+ * RLS. Because system scope is what makes the `WHERE o.id = ANY($1)` clause
+ * below the query's ONLY tenancy boundary (see below), that would not WIDEN
+ * access — worse, it can NARROW the result set (e.g. an org token whose JWT
+ * lacks `partnerId` losing every partner-wide row) without erroring. For the
+ * effect-digest callers that narrowing is a full-feature outage wearing a
+ * safety costume: the recomputed digest stops matching the pinned one and
+ * EVERY approved release fails `content_changed`. A loud throw is strictly
+ * better. Only pass `opts.database` when you can point at the
  * specific system-scoping call that is already open around your call site
- * (today: `computeEffectDigestOutcome`'s three call sites, all of which run
- * inside `withSystemDbAccessContext` — see effectDigest.ts and
+ * (today: the effect digest's three entry points — `computeEffectDigestOutcome`
+ * from intentService.ts and `computeEffectDigestForRelease` from
+ * jobs/intentReleaseWorker.ts and services/aiAgentSdk.ts — every one of which
+ * opens `withSystemDbAccessContext` around the call. See effectDigest.ts and
  * runScriptSnapshot.ts).
  *
  * ## Why the escape hatch (the `opts.database`-omitted path)
@@ -186,6 +199,16 @@ export async function loadTenantVariableScope(
   }
 
   if (opts?.database) {
+    // Enforce the caller obligation `opts.database` carries (see the doc
+    // above): the connection must already be system-scoped, because that is
+    // what leaves `WHERE o.id = ANY($1)` as the query's only tenancy boundary.
+    const ambientScope = getCurrentDbAccessContext()?.scope;
+    if (ambientScope !== 'system') {
+      throw new Error(
+        'loadTenantVariableScope: opts.database requires an already-open system-scoped DB context ' +
+          `(ambient scope: ${ambientScope ?? 'none'})`
+      );
+    }
     return queryScope(opts.database, uniqueOrgIds);
   }
 
