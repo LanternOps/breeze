@@ -191,6 +191,11 @@
         "title": "Clear Sessions",
         "message": "End all active remote sessions for {{hostname}}? This will disconnect any users currently connected via terminal, desktop, or file transfer.",
         "confirm": "Clear Sessions"
+      },
+      "installHomebrew": {
+        "title": "Install Homebrew",
+        "message": "Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session.",
+        "confirm": "Install Homebrew"
       }
     },
     "runScript": "Run Script",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Send a Wake-on-LAN packet via an online peer agent on the device's LAN",
     "power": "Power",
     "shutdown": "Shutdown",
-    "deviceSettings": "Device Settings"
+    "deviceSettings": "Device Settings",
+    "installHomebrew": "Install Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Activity",

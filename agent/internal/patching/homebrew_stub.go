@@ -5,6 +5,7 @@ package patching
 import (
 	"errors"
 	"fmt"
+	"os/user"
 )
 
 // ErrBrewUnavailable mirrors the darwin build's sentinel (homebrew.go) so
@@ -19,4 +20,17 @@ var ErrBrewUnavailable = errors.New("homebrew not installed")
 // to a `brew` that cannot exist on this platform.
 func EnsureBrewInstalled(kind, name string) (output string, alreadyInstalled bool, err error) {
 	return "", false, fmt.Errorf("%w: homebrew ensure-present is darwin-only", ErrBrewUnavailable)
+}
+
+// BrewBinaryPath is the non-darwin stub: Homebrew is macOS-only, so there is
+// never a brew binary to find here.
+func BrewBinaryPath() (string, error) {
+	return "", fmt.Errorf("%w: brew is darwin-only", ErrBrewUnavailable)
+}
+
+// ActiveConsoleUser is the non-darwin stub. The console-user resolution is
+// implemented with macOS's /dev/console ownership convention and has no
+// meaning on other platforms.
+func ActiveConsoleUser() (*user.User, error) {
+	return nil, fmt.Errorf("console user resolution is darwin-only")
 }

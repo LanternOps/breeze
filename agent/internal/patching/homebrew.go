@@ -62,6 +62,20 @@ func brewBinaryPath() (string, error) {
 	return "", fmt.Errorf("brew binary not found")
 }
 
+// BrewBinaryPath exposes the brew-binary lookup to callers outside this
+// package (the homebrew_bootstrap command needs it both as an
+// already-installed short-circuit and as post-install verification).
+func BrewBinaryPath() (string, error) {
+	return brewBinaryPath()
+}
+
+// ActiveConsoleUser exposes the console-user resolution used by every
+// as-the-user brew invocation. Homebrew refuses to run as root, so the
+// bootstrap command needs the same account brewCommand would sudo to.
+func ActiveConsoleUser() (*user.User, error) {
+	return activeConsoleUser()
+}
+
 func activeConsoleUser() (*user.User, error) {
 	output, err := commandOutputWithTimeout(patchListTimeout, "/usr/bin/stat", "-f", "%Su", "/dev/console")
 	if err != nil {
