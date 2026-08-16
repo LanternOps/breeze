@@ -1,3 +1,15 @@
+/* Condensed document theme fonts (Task 12) — Barlow Condensed for headings,
+   DM Sans for body copy, scoped to [data-doc-theme='condensed'] documents
+   only (see the rule near the end of this file). Declared unconditionally: a
+   browser only fetches a face when a matched element actually uses it, so a
+   'classic' document downloads nothing. These @imports must stay above
+   `@import 'tailwindcss'` — Vite's postcss-import resolves @import at build
+   time and drops any @import that isn't first (same rule as apps/web). */
+@import '@fontsource/barlow-condensed/600.css';
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/700.css';
+
 @import 'tailwindcss';
 
 @plugin '@tailwindcss/forms';
@@ -173,4 +185,16 @@
   .quote-rich-text a {
     @apply text-primary underline underline-offset-2;
   }
+}
+
+/* Condensed document theme (Task 12) — plain CSS vars/selectors, not @theme
+   tokens. Scoped to [data-doc-theme='condensed'], stamped by documentShell's
+   DocumentPaper on the rendered quote/invoice root, so it never touches the
+   rest of the portal. */
+[data-doc-theme='condensed'] {
+  font-family: 'DM Sans', var(--font-sans, system-ui), sans-serif;
+}
+[data-doc-theme='condensed'] :is(h1, h2, h3, h4, th) {
+  font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
+  letter-spacing: 0.01em;
 }

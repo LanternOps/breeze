@@ -21,7 +21,8 @@ import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { toPublicQuoteHeader } from '../services/publicQuoteDto';
+import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
+import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -59,7 +60,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       if (!quote || quote.status === 'draft') return null;
       const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-      const [partner] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
       // authenticated counterpart at portal/quotes.ts:48.
@@ -72,7 +73,16 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // and replaces its raw authoring content with the token-gated render contract.
       const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);
       const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
-      return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } };
+      // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
+      // sent quote's frozen presentation always wins over the partner's live
+      // theme/pageSize columns.
+      const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+      const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
+      const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
+      return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
+        partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+        theme, pageSize,
+      }, presentation: toPublicQuotePresentation(theme, pageSize) };
     }));
     if (!data) return c.json({ error: 'Quote not found' }, 404);
     return c.json({ data });

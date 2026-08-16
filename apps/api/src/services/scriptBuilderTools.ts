@@ -12,10 +12,12 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
+import { scriptParameterDefinitionsSchema } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { normalizeScriptCode } from './scriptCodeNormalize';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -43,6 +45,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_script_details: 1,
   list_script_templates: 1,
   get_script_execution_history: 1,
+  get_script_execution: 1,
   execute_script_on_device: 3,
 };
 
@@ -136,12 +139,23 @@ function makeExistingHandler(
 // Apply tool handlers (emit SSE events, no DB execution)
 // ============================================
 
-function makeApplyHandler(
+// Exported for scriptBuilderTools.applyNormalize.test.ts, which pins that the
+// normalized (not raw) code is what reaches onPostToolUse — the object the SSE
+// tool_result re-attach delivers to the editor.
+export function makeApplyHandler(
   toolName: string,
   onPostToolUse?: PostToolUseCallback,
 ) {
   return async (args: Record<string, unknown>) => {
     const startTime = Date.now();
+    // Scrub typographic Unicode (curly quotes, em-dashes, NBSP) the model
+    // sometimes emits — it breaks script parsing on-device (PowerShell 5.1
+    // ANSI mis-decode; literal chars in bash syntax positions). The editor
+    // receives `args` via the SSE tool_result re-attach in
+    // aiAgentSdk.createSessionPostToolUse.
+    if (typeof args.code === 'string') {
+      args = { ...args, code: normalizeScriptCode(args.code) };
+    }
     const code = typeof args.code === 'string' ? args.code : undefined;
     const output = compactToolResultForChat(toolName, JSON.stringify({
       applied: true,
@@ -171,13 +185,10 @@ export const applyScriptMetadataInputShape = {
   description: z.string().max(2000).optional().describe('Script description'),
   category: z.enum(['Maintenance', 'Security', 'Monitoring', 'Deployment', 'Backup', 'Network', 'User Management', 'Software', 'Custom']).optional(),
   osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
-  parameters: z.array(z.object({
-    name: z.string(),
-    type: z.enum(['string', 'number', 'boolean', 'select']),
-    defaultValue: z.string().optional(),
-    required: z.boolean().optional(),
-    options: z.string().optional(),
-  })).optional(),
+  // The one definition schema (#3409 PR3) — same shape, same env-var collision
+  // rule, and the same 64-parameter cap the API itself now enforces, so the
+  // builder can no longer propose a definition list the save endpoint rejects.
+  parameters: scriptParameterDefinitionsSchema.optional(),
   runAs: z.enum(['system', 'user', 'elevated']).optional(),
   // 3600 = agent executor MaxTimeout — higher values are silently clamped
   // on-device, so don't let the builder propose them (#2398).
@@ -283,6 +294,15 @@ export function createScriptBuilderMcpServer(
         limit: z.number().int().min(1).max(50).optional(),
       },
       makeExistingHandler('get_script_execution_history', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_script_execution',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use after a run you or the user started to read its result.',
+      {
+        executionId: uuid.describe('The execution ID to fetch'),
+      },
+      makeExistingHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // --- Execution tool (requires approval) ---

@@ -176,6 +176,13 @@ func migrationSignal(server, backup string) (edition string, migrationRequired b
 // enforces the policy this version number claims to be honoring.
 type SecurityCapabilities struct {
 	OutboundNetworkPolicyVersion int `json:"outboundNetworkPolicyVersion"`
+	// #3409 PR4b — this build decodes `secretEnv`, injects BREEZE_VAR_*, blocks
+	// user-context runs that would drop the credential, and redacts the values
+	// out of stdout/stderr/error. Declared unconditionally: the behavior is
+	// compiled in, not a runtime toggle. The server writes this non-sticky on
+	// every beat, so a DOWNGRADE to an older agent reports back down to 0 and
+	// the PR4c dispatch gate stops trusting a stale claim.
+	ScriptSecretEnvVersion int `json:"scriptSecretEnvVersion"`
 }
 
 type DesktopAccessState struct {
@@ -2798,6 +2805,14 @@ func (h *Heartbeat) sendPatchInventoryData(pendingItems, installedItems []map[st
 	pendingPayload := map[string]any{
 		"patches": pendingItems,
 	}
+	// Second coverage axis (#2727): whether this scan could look at per-user
+	// installs at all. Sent on every pending upload, targeted or full, because
+	// both paths sweep. Omitted entirely when no scope-aware provider is
+	// registered, so the API can tell "not applicable" from "not scanned" and
+	// leaves user-scope rows alone in both cases.
+	if userScan, present := h.wingetUserScopeStatus(); present {
+		pendingPayload["userScopeScanned"] = userScan.Scanned
+	}
 	if source != "" {
 		pendingPayload["source"] = source
 	} else if full {
@@ -2863,6 +2878,16 @@ func (h *Heartbeat) collectPatchInventory() ([]map[string]any, []map[string]any,
 				"uncoveredSources", uncovered)
 		} else {
 			log.Debug("patch scan full coverage", "coveredSources", coveredSources)
+		}
+
+		// Per-user winget installs are a separate coverage axis from the source
+		// buckets above: the machine-scope pass can succeed (third_party covered)
+		// while per-user apps went unlooked-at because nobody was logged in.
+		// Logged at Info when unscanned so the under-report is explainable in the
+		// field (#2727).
+		if userScan, present := h.wingetUserScopeStatus(); present && !userScan.Scanned {
+			log.Info("winget per-user apps were not scanned this cycle; results cover machine scope only",
+				"attempted", userScan.Attempted, "reason", userScan.Reason)
 		}
 
 		if scanErr != nil && installedErr != nil {
@@ -2975,7 +3000,7 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 				externalId = p.ID + "@" + p.Version
 			}
 		}
-		items[i] = map[string]any{
+		item := map[string]any{
 			"name":            p.Title,
 			"version":         p.Version,
 			"category":        category,
@@ -2990,8 +3015,34 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 			"requiresRestart": p.RebootRequired,
 			"releaseDate":     p.ReleaseDate,
 		}
+		// Only providers that can actually distinguish install scope set this
+		// (winget, #2727). Omitted rather than defaulted so the API can tell
+		// "machine-wide" apart from "this provider has no scope concept".
+		if p.Scope != "" {
+			item["scope"] = p.Scope
+		}
+		items[i] = item
 	}
 	return items
+}
+
+// wingetUserScopeStatus reports the last user-context winget pass, and whether
+// a provider capable of one is even registered. Used to tell the server that
+// per-user apps were NOT scanned, so a device showing no per-user updates can
+// be read as "not looked at" rather than "clean" (#2727).
+func (h *Heartbeat) wingetUserScopeStatus() (patching.UserScanStatus, bool) {
+	if h.patchMgr == nil {
+		return patching.UserScanStatus{}, false
+	}
+	provider, ok := h.patchMgr.GetProvider("winget")
+	if !ok {
+		return patching.UserScanStatus{}, false
+	}
+	scanner, ok := provider.(patching.UserScopeScanner)
+	if !ok {
+		return patching.UserScanStatus{}, false
+	}
+	return scanner.LastUserScan(), true
 }
 
 func (h *Heartbeat) installedPatchesToMaps(patches []patching.InstalledPatch) []map[string]any {
@@ -3825,7 +3876,10 @@ func (h *Heartbeat) sendHeartbeat() {
 		// so it always declares version 1. Unconditional (not gated on any
 		// runtime check): the enforcement is compiled in, not a runtime
 		// toggle.
-		SecurityCapabilities: SecurityCapabilities{OutboundNetworkPolicyVersion: 1},
+		SecurityCapabilities: SecurityCapabilities{
+			OutboundNetworkPolicyVersion: 1,
+			ScriptSecretEnvVersion:       1,
+		},
 	}
 	// Hosted/self-host build-edition + migration-needed telemetry (Task 8).
 	// Independent of hostpolicy.Strict() — see migrationSignal doc comment.

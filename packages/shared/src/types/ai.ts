@@ -240,6 +240,10 @@ export type RunAs = ScriptRunAs;
 
 export interface ScriptBuilderContext {
   scriptId?: string;
+  /** Device the user pinned in the editor for test runs. */
+  targetDeviceId?: string;
+  /** Most recent test-run execution started from the editor. */
+  lastTestExecutionId?: string;
   editorSnapshot?: {
     name?: string;
     content?: string;

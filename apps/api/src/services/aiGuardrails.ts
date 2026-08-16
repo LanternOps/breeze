@@ -110,10 +110,13 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // manage_alert_rules mutations disabled — managed via configuration policies
   // manage_service_monitors mutations disabled — managed via configuration policies
   generate_report: ['create', 'update', 'delete', 'generate'],
-  // Policy prerequisite tools — Tier 2 create/update actions
-  manage_update_rings: ['create', 'update'],
-  manage_software_policies: ['create', 'update'],
-  manage_peripheral_policies: ['create', 'update'],
+  // Policy prerequisite tools — Tier 2 create/update actions.
+  //
+  // #3552 (2026-08-14): manage_update_rings, manage_software_policies and
+  // manage_peripheral_policies were REMOVED from this list and escalated to
+  // Tier 3 in TIER3_ACTIONS below — their create/update payloads ARM
+  // unattended enforcement/remediation on the fleet. The two backup tools stay
+  // here deliberately; see the note in TIER3_ACTIONS for the full rationale.
   manage_backup_configs: ['create', 'update'],
   manage_backup_profiles: ['create', 'update', 'delete'],
   // Notification channel & saved filter tools — Tier 2 actions
@@ -183,12 +186,53 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 3 actions (require user approval)
   manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
-  manage_patches: ['install', 'rollback'],
+  // setup_auto_approval added #3552: it arms unattended patch approval +
+  // reboot policy, the same class as manage_update_rings.autoApprove below.
+  // Its handler is hard-disabled today (aiToolsFleet.ts returns "managed
+  // through configuration policies"), so the gate costs no live workflow —
+  // it is here so re-enabling the handler cannot silently reopen the hole.
+  manage_patches: ['install', 'rollback', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
   manage_automations: ['run'],
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // Policy prerequisite tools (#3552) — the standalone feature policies that
+  // manage_configuration_policy links via featurePolicyId. These were Tier 2
+  // (auto-execute + audit, no approval) while the configuration policy that
+  // consumes them, and their singular-named siblings that write the SAME
+  // tables, are Tier 3:
+  //
+  //   manage_software_policies   ~ manage_software_policy   (aiToolsCompliance.ts, base tier 3)
+  //   manage_peripheral_policies ~ manage_peripheral_policy (aiToolsPeripherals.ts, base tier 3)
+  //   manage_update_rings        ~ manage_patches:install   (Tier 3 above)
+  //
+  // The tier gap was the reachable one: the prereq tools are the ones listed
+  // in aiAgentSdkTools' TOOL_TIERS, so they — not the Tier-3 singulars — are
+  // what chat/MCP actually calls. Each create/update payload ARMS unattended
+  // action on real endpoints with no human in the loop:
+  //   - software policies: `enforceMode` + `remediationOptions.autoUninstall`
+  //     turn a detect-only allowlist into fleet-wide auto-uninstall (the #3381
+  //     mass-uninstall failure mode).
+  //   - update rings: `autoApprove` + `deadlineDays` + `gracePeriodHours` arm
+  //     unattended patch installs with FORCED reboots — the standing-rule form
+  //     of manage_patches:install, which already requires approval.
+  //   - peripheral policies: `action_type: block | read_only` cuts off USB /
+  //     Bluetooth / Thunderbolt access across the target scope.
+  //
+  // `list`/`get` are deliberately NOT listed: the tools keep base tier 1, so
+  // reads still auto-execute with no prompt. Only the mutations escalate.
+  //
+  // Deliberately NOT escalated (judgment calls, left at Tier 2, #3552):
+  //   - manage_backup_configs / manage_backup_profiles. They change storage
+  //     destinations, credentials, retention and selection sets — real, but
+  //     PROTECTIVE scheduling rather than enforcement or remediation: no
+  //     payload there causes an agent to uninstall, block, or reboot anything.
+  //     Escalating them is defensible under a broader "any live linked policy
+  //     change needs approval" rule; that is a separate product decision.
+  manage_update_rings: ['create', 'update'],
+  manage_software_policies: ['create', 'update'],
+  manage_peripheral_policies: ['create', 'update'],
   // Backup & DR — Tier 3 actions (require user approval)
   manage_dr_plan: ['delete_group'],
   manage_hyperv_checkpoints: ['delete', 'apply'],
@@ -334,12 +378,22 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
   manage_deployments: ['create', 'start', 'cancel'],
-  manage_patches: ['install'],
+  manage_patches: ['install', 'setup_auto_approval'],
   manage_groups: ['create', 'update', 'delete'],
   manage_automations: ['run'],
   manage_processes: ['kill'],
   manage_policy_feature_link: ['remove'],
   registry_operations: ['set_value', 'create_key', 'delete_key'],
+  // #3552 policy-prerequisite escalations. `supervised`, matching the
+  // configuration policy they link into (manage_configuration_policy
+  // create/update/delete above), the Tier-3 singular siblings in
+  // TIER3_SUPERVISED_TOOLS below, and manage_patches:install. Spec §3.2
+  // reserves four_eyes for externally-binding, identity, and
+  // destroy/rewind actions; arming a policy is none of those, and
+  // blast-radius-based escalation is explicitly deferred in the design doc.
+  manage_update_rings: ['create', 'update'],
+  manage_software_policies: ['create', 'update'],
+  manage_peripheral_policies: ['create', 'update'],
   manage_dr_plan: ['delete_group'],
   manage_monitors: ['create', 'update', 'delete'],
   manage_contracts: ['pause', 'resume'],
@@ -747,6 +801,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_script_details: { resource: 'scripts', action: 'read' },
   list_script_templates: { resource: 'scripts', action: 'read' },
   get_script_execution_history: { resource: 'scripts', action: 'read' },
+  get_script_execution: { resource: 'scripts', action: 'read' },
   // Backup & DR tools
   query_backups: { resource: 'devices', action: 'read' },
   get_backup_status: { resource: 'devices', action: 'read' },

@@ -125,6 +125,7 @@ export const TOOL_TIERS = {
   get_script_details: 1,
   list_script_templates: 1,
   get_script_execution_history: 1,
+  get_script_execution: 1,
   manage_services: 3,
   security_scan: 3,
   get_security_posture: 1,
@@ -1141,6 +1142,15 @@ export function createBreezeMcpServer(
         parameters: z.record(z.string(), z.unknown()).optional(),
       },
       makeHandler('run_script', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_script_execution',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use to read the result of a run that was still running when run_script returned.',
+      {
+        executionId: uuid,
+      },
+      makeHandler('get_script_execution', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

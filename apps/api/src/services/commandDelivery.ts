@@ -14,6 +14,8 @@ import { captureException } from './sentry';
 export type ClaimedCommand = {
   id: string;
   type: string;
+  /** Bound into the #3409 secret envelope's AAD, so delivery cannot omit it. */
+  deviceId: string;
   payload: unknown;
   executedAt: Date | null;
 };
@@ -42,7 +44,12 @@ export async function decryptClaimedCommandsForDelivery(
   claimed: ClaimedCommand[],
 ): Promise<DeliverableCommand[]> {
   const delivered = decryptCommandsForDelivery(
-    claimed.map((cmd) => ({ id: cmd.id, type: cmd.type, payload: cmd.payload })),
+    claimed.map((cmd) => ({
+      id: cmd.id,
+      type: cmd.type,
+      deviceId: cmd.deviceId,
+      payload: cmd.payload,
+    })),
   );
   if (delivered.length === claimed.length) {
     return delivered;

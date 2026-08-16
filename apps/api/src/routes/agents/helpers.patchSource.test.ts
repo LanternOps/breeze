@@ -85,7 +85,7 @@ vi.mock('../../jobs/softwareComplianceWorker', () => ({
 }));
 vi.mock('./policyProbeSafety', () => ({ isAllowedPolicyConfigProbe: vi.fn(() => true) }));
 
-import { buildPatchSourceConfigUpdate } from './helpers';
+import { buildPatchSourceConfigUpdate, sanitizeDate } from './helpers';
 
 const DEVICE_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -125,5 +125,35 @@ describe('buildPatchSourceConfigUpdate (#1872)', () => {
     const result = await buildPatchSourceConfigUpdate(DEVICE_ID);
 
     expect(result).toEqual({ exclusiveWindowsUpdate: false });
+  });
+});
+
+describe('sanitizeDate', () => {
+  it('round-trips a valid date', () => {
+    expect(sanitizeDate('2026-01-05')).toBe('2026-01-05');
+  });
+
+  it('rejects an impossible calendar date instead of letting it roll over (regression)', () => {
+    // `new Date('2026-02-31')` silently rolls over to 2026-03-03; the old code
+    // returned the original string, which then hit Postgres 22008 and aborted
+    // the whole ingest transaction.
+    expect(sanitizeDate('2026-02-31')).toBeNull();
+  });
+
+  it('rejects a month 13 date', () => {
+    expect(sanitizeDate('2026-13-01')).toBeNull();
+  });
+
+  it('rejects Feb 29 in a non-leap year', () => {
+    expect(sanitizeDate('2025-02-29')).toBeNull();
+  });
+
+  it('rejects non-matching shapes', () => {
+    expect(sanitizeDate('01/05/2026')).toBeNull();
+    expect(sanitizeDate('')).toBeNull();
+    expect(sanitizeDate(12345)).toBeNull();
+    expect(sanitizeDate(null)).toBeNull();
+    expect(sanitizeDate(undefined)).toBeNull();
+    expect(sanitizeDate('2026-1-5')).toBeNull();
   });
 });

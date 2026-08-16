@@ -20,6 +20,7 @@ import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { buildSellerSnapshot } from '../../services/sellerSnapshot';
+import { resolveThemeId, resolvePageSize } from '../../services/documentThemes';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
 
@@ -58,15 +59,24 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // error), so the name reads under SYSTEM scope like the /pdf route below;
   // portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
+    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+  // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
+  // sent quote's frozen presentation always wins over the partner's live
+  // theme/pageSize columns.
+  const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
   try {
     // Resolves every `contract` block's pinned template version (system context,
     // ahead of the response we're about to build below) and replaces its raw
     // authoring content with the render contract the portal understands.
     const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`);
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
-    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: { partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null } } });
+    const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
+    const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
+    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
+      partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+      theme, pageSize,
+    }, presentation: { theme, pageSize } } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
@@ -107,6 +117,8 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
       billingAddressCountry: partners.billingAddressCountry,
       invoiceFooter: partners.invoiceFooter,
       currencyCode: partners.currencyCode,
+      documentTheme: partners.documentTheme,
+      documentPageSize: partners.documentPageSize,
     }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
   ));
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
@@ -133,10 +145,17 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // frozen (sent+) quotes today, but the admin draft-PDF route shipped exactly
   // this raw-vs-overlaid split as a blank {{client.name}} in contract text.
   const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, quoteForRender);
-  const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, {
+  // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
+  // sent quote's frozen presentation always wins over the partner's live
+  // theme/pageSize columns.
+  const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+  const branding = {
     partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-  }, undefined, contractRenderData);
+    theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
+    pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),
+  };
+  const pdf = await renderQuotePdf(quoteForRender, blocks, lines, loadImage, branding, undefined, contractRenderData);
   const { mergeUploadedContractPdfs } = await import('../../services/pdfMerge');
   const finalPdf = await mergeUploadedContractPdfs(pdf, uploads);
   const filename = safeContentDispositionFilename(`quote-${quote.quoteNumber || quote.id}.pdf`);

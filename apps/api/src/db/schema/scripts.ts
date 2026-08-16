@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { ScriptParameterDefinition } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -25,7 +26,12 @@ export const scripts = pgTable('scripts', {
   osTypes: text('os_types').array().notNull(),
   language: scriptLanguageEnum('language').notNull(),
   content: text('content').notNull(),
-  parameters: jsonb('parameters'),
+  // Parameter DEFINITIONS (the authoring-time contract), validated by
+  // `scriptParameterDefinitionsSchema` in @breeze/shared. Note the deliberate
+  // asymmetry with `script_executions.parameters` / `script_execution_batches
+  // .parameters` below, which hold run-time VALUES and are typed by
+  // `scriptParametersSchema` instead.
+  parameters: jsonb('parameters').$type<ScriptParameterDefinition[]>(),
   timeoutSeconds: integer('timeout_seconds').notNull().default(300),
   runAs: scriptRunAsEnum('run_as').notNull().default('system'),
   isSystem: boolean('is_system').notNull().default(false),
@@ -100,7 +106,9 @@ export const scriptTemplates = pgTable('script_templates', {
   category: varchar('category', { length: 100 }),
   language: scriptLanguageEnum('language'),
   content: text('content').notNull(),
-  parameters: jsonb('parameters'),
+  // Definitions, same as `scripts.parameters` — a template is a script
+  // blueprint, so what it stores is the parameter contract, not values.
+  parameters: jsonb('parameters').$type<ScriptParameterDefinition[]>(),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
   downloads: integer('downloads').notNull().default(0),
   rating: numeric('rating', { precision: 2, scale: 1 })
@@ -125,6 +133,8 @@ export const scriptExecutions = pgTable('script_executions', {
   // a bare uuid. Readers filter on it (`WHERE automation_run_id = $run`), so a
   // stale id left behind by a purged run simply matches nothing.
   automationRunId: uuid('automation_run_id'),
+  // Run-time VALUES supplied by the caller, NOT definitions — do not annotate
+  // this with ScriptParameterDefinition[]. Shape: `scriptParametersSchema`.
   parameters: jsonb('parameters'),
   status: executionStatusEnum('status').notNull().default('pending'),
   startedAt: timestamp('started_at'),
@@ -151,6 +161,7 @@ export const scriptExecutionBatches = pgTable('script_execution_batches', {
   orgId: uuid('org_id').references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
+  // Run-time VALUES, as on script_executions above — not definitions.
   parameters: jsonb('parameters'),
   devicesTargeted: integer('devices_targeted').notNull(),
   devicesCompleted: integer('devices_completed').notNull().default(0),

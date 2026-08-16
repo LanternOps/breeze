@@ -29,8 +29,12 @@ import {
   type StagedExtensionContributions,
 } from '../extensions/contributionRegistry';
 import { createExtensionStateStore, type ExtensionStateStore } from '../extensions/stateStore';
-import { getExtensionWebAsset, isServableWebMember, type ExtensionWebAsset } from '../extensions/webAssets';
-import { assertVerifiedMemberBytes } from '../extensions/bundleVerifier';
+import {
+  assertVerifiedMemberBytes,
+  getExtensionWebAsset,
+  isServableWebMember,
+  type ExtensionWebAsset,
+} from '../extensions/webAssets';
 import { buildRuntimeWebRegistry, type RuntimeWebRegistrySource } from '../extensions/webRegistry';
 
 /** The state-store surface this router needs (injectable for tests). */

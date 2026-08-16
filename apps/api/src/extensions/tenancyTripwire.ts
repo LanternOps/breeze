@@ -6,16 +6,16 @@
 // and they run at boot: a violation refuses the boot rather than shipping a
 // table with no RLS.
 //
-// Split out of loader.ts, which owns route mounting and the default-deny auth
-// guard — a separate concern from verifying what an extension's migrations did
-// to the database.
+// Deliberately separate from the gateway (which owns route mounting and the
+// default-deny auth guard) — verifying what an extension's migrations did to
+// the database is its own concern.
 import { getTableName, is, sql } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 import {
   SHARED_TABLE_ALLOWLIST,
   TENANT_SCOPE_COLUMNS,
   type ExtensionTenancyDeclaration,
-} from '@breeze/extension-api';
+} from '@breeze/extension-sdk';
 import * as coreSchema from '../db/schema';
 import { db } from '../db';
 
@@ -191,7 +191,7 @@ function extractCatalogRows(result: unknown, extensionName: string): RlsCatalogR
  *
  * SCOPE — what this does NOT prove. Ownership is inferred from the `<name>_`
  * prefix in schema `public`. The prefix is enforced on manifest DECLARATIONS
- * (packages/extension-api), never on the DDL an extension's migration actually
+ * (packages/extension-sdk), never on the DDL an extension's migration actually
  * runs. A table created unprefixed, or in a non-public schema, is not caught
  * here. `assertNoUnaccountedPublicTables` below closes the unprefixed case
  * repo-wide; the non-public-schema case remains open and is tracked separately —
@@ -408,7 +408,7 @@ export async function assertNoUnaccountedPublicTables(
         + 'An extension table must be declared in its manifest tenancy arrays (or tenancy.nonTenantTables) '
         + 'so it gets an RLS check; extension tables are invisible to the core rls-coverage contract test, '
         + 'and this is their only tripwire. If one of these is a CORE table, it is missing from the Drizzle '
-        + 'schema — add it there (or to CORE_NON_DRIZZLE_TABLES in extensions/loader.ts).',
+        + 'schema — add it there (or to CORE_NON_DRIZZLE_TABLES in extensions/tenancyTripwire.ts).',
     );
   }
 }

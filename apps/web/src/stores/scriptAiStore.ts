@@ -74,6 +74,12 @@ export interface ScriptFormBridge {
   takeSnapshot: () => ScriptFormSnapshot;
   /** Restore a previously taken snapshot */
   restoreSnapshot: (snapshot: ScriptFormSnapshot) => void;
+  /** Saved script id, when the editor holds an already-saved script */
+  getScriptId?: () => string | null;
+  /** Device the user pinned in the editor's test runner */
+  getTestDeviceId?: () => string | null;
+  /** Most recent test-run execution started from the editor */
+  getLastTestExecutionId?: () => string | null;
 }
 
 interface PendingApproval {
@@ -138,6 +144,23 @@ function isApplyTool(toolName: string | undefined): boolean {
 
 function baseToolName(toolName: string): string {
   return toolName.includes('__') ? toolName.split('__').pop()! : toolName;
+}
+
+/** Build the session context from the editor bridge: snapshot plus the saved
+ *  script id / pinned test device / last test run, when the form knows them.
+ *  Exported for ScriptAiPanel's mount-time session create. */
+export function buildEditorContext(bridge: ScriptFormBridge | null): ScriptBuilderContext | undefined {
+  if (!bridge) return undefined;
+  const context: ScriptBuilderContext = {
+    editorSnapshot: bridge.getFormValues() as ScriptBuilderContext['editorSnapshot'],
+  };
+  const scriptId = bridge.getScriptId?.();
+  if (scriptId) context.scriptId = scriptId;
+  const targetDeviceId = bridge.getTestDeviceId?.();
+  if (targetDeviceId) context.targetDeviceId = targetDeviceId;
+  const lastTestExecutionId = bridge.getLastTestExecutionId?.();
+  if (lastTestExecutionId) context.lastTestExecutionId = lastTestExecutionId;
+  return context;
 }
 
 // ============================================
@@ -233,10 +256,7 @@ export const useScriptAiStore = create<ScriptAiState>()(
 
       // Create session if needed — use current editor state as context
       if (!sessionId) {
-        const editorContext: ScriptBuilderContext | undefined = _bridge
-          ? { editorSnapshot: _bridge.getFormValues() as ScriptBuilderContext['editorSnapshot'] }
-          : undefined;
-        await get().createSession(editorContext);
+        await get().createSession(buildEditorContext(_bridge));
       }
 
       const currentSessionId = get().sessionId;
@@ -260,10 +280,7 @@ export const useScriptAiStore = create<ScriptAiState>()(
 
       try {
         // Build editor context from bridge for system prompt refresh
-        const bridge = get()._bridge;
-        const editorContext: ScriptBuilderContext | undefined = bridge
-          ? { editorSnapshot: bridge.getFormValues() as ScriptBuilderContext['editorSnapshot'] }
-          : undefined;
+        const editorContext = buildEditorContext(get()._bridge);
 
         const res = await fetchWithAuth(
           `/ai/script-builder/sessions/${currentSessionId}/messages`,

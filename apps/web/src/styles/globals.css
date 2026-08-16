@@ -21,6 +21,17 @@
 @import '@fontsource/plus-jakarta-sans/latin-ext-600.css';
 @import '@fontsource/plus-jakarta-sans/latin-ext-700.css';
 
+/* Condensed document theme fonts (Task 12) — Barlow Condensed for headings,
+   DM Sans for body copy, scoped to [data-doc-theme='condensed'] documents
+   only (see the rule near the end of this file). Declared unconditionally,
+   same as the app fonts above: a browser only fetches a face when a matched
+   element actually uses it, so a 'classic' document downloads nothing. Plain
+   @import (no `layer(base)`) for the same cascade-ordering reason as above. */
+@import '@fontsource/barlow-condensed/600.css';
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/700.css';
+
 @import 'tailwindcss';
 
 @plugin '@tailwindcss/forms';
@@ -34622,4 +34633,17 @@
 [data-density='dense'] .sidebar-nav a {
   padding-top: 0.25rem !important;
   padding-bottom: 0.25rem !important;
+}
+
+/* Condensed document theme (Task 12) — plain CSS vars/selectors, deliberately
+   NOT @theme tokens (see the @theme inline self-reference NB near the top of
+   this file: a --font-sans self-reference there resolves to an invalid empty
+   value). Scoped to [data-doc-theme='condensed'], stamped by QuoteDocument.tsx
+   on the rendered proposal root, so it never touches the rest of the app. */
+[data-doc-theme='condensed'] {
+  font-family: 'DM Sans', var(--font-sans, system-ui), sans-serif;
+}
+[data-doc-theme='condensed'] :is(h1, h2, h3, h4, th) {
+  font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
+  letter-spacing: 0.01em;
 }

@@ -39,6 +39,13 @@ type ScriptExecution struct {
 	Parameters map[string]string `json:"parameters,omitempty"`
 	Timeout    int               `json:"timeout"`
 	RunAs      string            `json:"runAs,omitempty"`
+
+	// #3409 PR4b — secret tenant variables, delivered as process environment
+	// rather than substituted into the script text. `json:"-"` because this
+	// struct must never carry a credential onto any wire or into any file;
+	// SecretEnv's own String/Format/MarshalJSON redact as a second layer.
+	// Populated only by heartbeat.handleScript, which validates it first.
+	SecretEnv SecretEnv `json:"-"`
 }
 
 // ScriptResult represents the result of a script execution
@@ -339,6 +346,19 @@ func (e *Executor) buildEnvironment(script ScriptExecution) []string {
 	for key, value := range script.Parameters {
 		envKey := "BREEZE_PARAM_" + strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
 		env = append(env, envKey+"="+value)
+	}
+
+	// #3409 PR4b: secrets ride the environment, never the script text — the
+	// substituted script is written to a temp file on the customer's disk.
+	// Appended after os.Environ() on purpose: os/exec dedupes Cmd.Env keeping
+	// the LAST occurrence, so a pre-existing BREEZE_VAR_* in the machine
+	// environment cannot shadow a delivered secret.
+	//
+	// Keys were validated against the tenant-variable grammar by
+	// ParseSecretEnv, so no character mapping is needed here (unlike the
+	// parameter loop above, which has to fold "-" to "_").
+	for key, value := range script.SecretEnv {
+		env = append(env, script.SecretEnv.EnvKey(key)+"="+value)
 	}
 
 	return env

@@ -53,7 +53,12 @@ export default function CapacityForecast({
           </p>
         </div>
       </div>
-      <div className="flex-1 u-min-h-px-240">
+      <div className="flex flex-1 u-min-h-px-240">
+        {data.length === 0 ? (
+          <div className="flex w-full items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+            {t('analytics.chartWidget.noData')}
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -95,6 +100,7 @@ export default function CapacityForecast({
             />
           </LineChart>
         </ResponsiveContainer>
+        )}
       </div>
       {thresholds && (
         <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">

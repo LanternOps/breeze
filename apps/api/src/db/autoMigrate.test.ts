@@ -880,85 +880,27 @@ describe('Wave 6 signed manifest key delegation', () => {
   });
 });
 
-describe('extension migrations', () => {
-  const tempRoots: string[] = [];
-
-  afterEach(() => {
-    for (const root of tempRoots) rmSync(root, { recursive: true, force: true });
-    tempRoots.length = 0;
-  });
-
-  function makeExtensionRoot(): string {
-    const root = mkdtempSync(path.join(tmpdir(), 'ext-'));
-    tempRoots.push(root);
-    return root;
-  }
-
-  function scaffoldExtension(root: string, name: string, files: Record<string, string>): string {
-    const dir = path.join(root, name);
-    mkdirSync(path.join(dir, 'migrations'), { recursive: true });
-    writeFileSync(
-      path.join(dir, 'breeze-extension.json'),
-      JSON.stringify({ name, routeNamespace: name, entry: 'src/index.ts', tenancy: {} }),
-    );
-    for (const [filename, sql] of Object.entries(files)) {
-      writeFileSync(path.join(dir, 'migrations', filename), sql);
-    }
-    return dir;
-  }
-
-  it('lists extension migrations after all core migrations, prefixed with the extension name', () => {
-    const extRoot = makeExtensionRoot();
-    scaffoldExtension(extRoot, 'workspace', {
-      '2026-07-10-workspace-foundation.sql': 'SELECT 1;',
-    });
-
-    const plan = planMigrations(
-      ['2026-07-08-automation-run-device-results.sql', '9999-last.sql'],
-      extRoot,
-    );
+describe('extension-owned ledger rows', () => {
+  it('plans core migrations only — extension migrations are the extension migrator\'s job', () => {
+    const plan = planMigrations([
+      '2026-07-08-automation-run-device-results.sql',
+      '9999-last.sql',
+    ]);
 
     expect(plan.map((migration) => migration.ledgerName)).toEqual([
       '2026-07-08-automation-run-device-results.sql',
       '9999-last.sql',
-      'workspace/2026-07-10-workspace-foundation.sql',
     ]);
   });
 
-  it('applies extensions in name order, files in localeCompare order within each', () => {
-    const extRoot = makeExtensionRoot();
-    scaffoldExtension(extRoot, 'zeta', { '2026-01-01-z.sql': 'SELECT 1;' });
-    scaffoldExtension(extRoot, 'alpha', {
-      '2026-01-02-b.sql': 'SELECT 1;',
-      '2026-01-01-a.sql': 'SELECT 1;',
-    });
-
-    const plan = planMigrations([], extRoot);
-
-    expect(plan.map((migration) => migration.ledgerName)).toEqual([
-      'alpha/2026-01-01-a.sql',
-      'alpha/2026-01-02-b.sql',
-      'zeta/2026-01-01-z.sql',
+  it('partitions ledger rows: bare core rows verified, namespaced extension rows skipped', () => {
+    const { verify, skip } = partitionLedgerRows([
+      '0001-core.sql',
+      'workspace/2026-07-10-a.sql',
+      'ghost/2026-01-01-x.sql',
     ]);
-  });
 
-  it('rejects extension migration filenames that do not match the core pattern', () => {
-    const extRoot = makeExtensionRoot();
-    scaffoldExtension(extRoot, 'workspace', { 'workspace-init.sql': 'SELECT 1;' });
-
-    expect(planMigrations([], extRoot).map((migration) => migration.ledgerName)).toEqual([]);
-  });
-
-  it('partitions ledger rows: present-extension rows verified, absent-extension rows skipped', () => {
-    const extRoot = makeExtensionRoot();
-    scaffoldExtension(extRoot, 'workspace', { '2026-07-10-a.sql': 'SELECT 1;' });
-
-    const { verify, skip } = partitionLedgerRows(
-      ['0001-core.sql', 'workspace/2026-07-10-a.sql', 'ghost/2026-01-01-x.sql'],
-      extRoot,
-    );
-
-    expect(verify).toEqual(['0001-core.sql', 'workspace/2026-07-10-a.sql']);
-    expect(skip).toEqual(['ghost/2026-01-01-x.sql']);
+    expect(verify).toEqual(['0001-core.sql']);
+    expect(skip).toEqual(['workspace/2026-07-10-a.sql', 'ghost/2026-01-01-x.sql']);
   });
 });

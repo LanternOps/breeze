@@ -916,7 +916,9 @@
       "timeoutSeconds": "Tempo limite (segundos)",
       "runAs": "Executar como",
       "exitCode": "Código de saída",
-      "severity": "Gravidade"
+      "severity": "Gravidade",
+      "source": "Origem",
+      "fallbackValue": "Valor de reserva"
     },
     "placeholders": {
       "name": "Limpar arquivos temporários",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "Ainda não há parâmetros. Parâmetros permitem que usuários informem valores em tempo de execução — referencie-os no script como",
       "emptyMiddle": "(PowerShell/Bash) ou",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Origem do parâmetro {{index}}"
     },
     "execution": {
       "timeoutHint": "O script é encerrado após essa duração. O padrão de 300s (5 min) é adequado para a maioria das tarefas. Máximo de 3600s (1 hora).",
@@ -997,6 +1000,22 @@
       "empty": "Nenhuma variável ainda.",
       "secretUnavailable": "Secreto — uma versão futura o entregará como variável de ambiente.",
       "unknown": "Não existe variável para {{keys}} — os dispositivos selecionados vão falhar até você criá-la."
+    },
+    "parameterSources": {
+      "runtime": "Perguntado na execução",
+      "tenantVariable": "De uma variável",
+      "deviceCustomField": "De um campo personalizado do dispositivo",
+      "builtin": "De uma propriedade do dispositivo"
+    },
+    "parameterBinding": {
+      "variableLabel": "Chave da variável",
+      "variablePlaceholder": "ex.: vendor_token",
+      "fieldLabel": "Chave do campo personalizado",
+      "fieldPlaceholder": "ex.: asset_tag",
+      "builtinLabel": "Propriedade",
+      "chooseTitle": "Escolher uma variável",
+      "secretRejected": "\"{{key}}\" é secreta — o salvamento será rejeitado. Escolha uma variável que não seja secreta.",
+      "hint": "Resolvido para cada dispositivo de destino quando o script é executado — ninguém precisa informar."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,13 @@
       "number": "O parâmetro \"{{name}}\" deve ser um número válido"
     },
     "title": "Parâmetros",
-    "selectPlaceholder": "Selecione..."
+    "selectPlaceholder": "Selecione...",
+    "allSupplied": "Todos os parâmetros são fornecidos automaticamente — não há nada para preencher.",
+    "suppliedBy": {
+      "tenantVariable": "Fornecido automaticamente pela variável {{key}}",
+      "deviceCustomField": "Fornecido automaticamente pelo campo personalizado do dispositivo {{key}}",
+      "builtin": "Fornecido automaticamente por {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {
@@ -1216,5 +1241,37 @@
     "scriptCount": "{{count}} scripts no pacote",
     "statusInvalid": "Inválido",
     "exportLimit": "Você pode exportar até {{max}} scripts por pacote."
+  },
+  "testRunner": {
+    "title": "Execução de teste",
+    "devicePlaceholder": "Selecionar dispositivo de teste…",
+    "noDevices": "Nenhum dispositivo compatível",
+    "deviceStatus": {
+      "offline": "desconectado",
+      "maintenance": "manutenção"
+    },
+    "run": "Executar teste",
+    "saveAndRun": "Salvar e testar",
+    "saveFirst": "Salve o script uma vez para habilitar execuções de teste.",
+    "requiredParams": "Parâmetros obrigatórios sem valores padrão ({{params}}) — use a caixa de diálogo Executar script.",
+    "offlineWarning": "O dispositivo selecionado está offline — a execução aguardará até que ele reconecte.",
+    "exitCode": "saída {{code}}",
+    "viewHistory": "Ver histórico",
+    "status": {
+      "pending": "Na fila",
+      "running": "Em execução",
+      "completed": "Concluída",
+      "failed": "Falhou",
+      "timeout": "Tempo esgotado",
+      "queued": "Na fila",
+      "cancelled": "Cancelada"
+    },
+    "errors": {
+      "execute": "Falha ao iniciar a execução de teste",
+      "save": "Falha ao salvar — corrija os erros acima e tente novamente.",
+      "notStarted": "A execução não foi iniciada (o dispositivo pode estar em manutenção).",
+      "pollDeadline": "Ainda sem resultado — verifique o histórico de execuções.",
+      "pollFailed": "Não foi possível ler o resultado — a execução pode ter sido excluída ou seu acesso mudou."
+    }
   }
 }

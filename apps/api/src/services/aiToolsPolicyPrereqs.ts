@@ -22,6 +22,10 @@ import {
   backupProfileSelectionsSchema,
 } from '@breeze/shared/validators';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import {
+  auditSoftwarePolicyToolEvent,
+  summarizeEnforcementChange,
+} from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
 
@@ -423,6 +427,20 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const policy = rows[0];
         if (!policy) return JSON.stringify({ error: 'Failed to create software policy' });
 
+        auditSoftwarePolicyToolEvent(auth, 'manage_software_policies', {
+          orgId: policy.orgId,
+          partnerId: policy.partnerId,
+          policyId: policy.id,
+          policyName: policy.name,
+          policyAuditAction: 'policy_created',
+          auditLogAction: 'software_policy.create',
+          details: {
+            mode: policy.mode,
+            ownerScope: owner.partnerId ? 'partner' : 'organization',
+            ...summarizeEnforcementChange(input),
+          },
+        });
+
         return JSON.stringify({
           success: true,
           policyId: policy.id,
@@ -456,6 +474,22 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (typeof input.isActive === 'boolean') updates.isActive = input.isActive;
 
         await db.update(softwarePolicies).set(updates).where(eq(softwarePolicies.id, existing.id));
+
+        auditSoftwarePolicyToolEvent(auth, 'manage_software_policies', {
+          orgId: existing.orgId,
+          partnerId: existing.partnerId,
+          policyId: existing.id,
+          policyName: (updates.name as string | undefined) ?? existing.name,
+          policyAuditAction: 'policy_updated',
+          auditLogAction: 'software_policy.update',
+          details: {
+            // Derived from the columns actually written, not raw `input` (which
+            // also carries routing keys like `action`/`policyId`).
+            updatedFields: Object.keys(updates).filter((field) => field !== 'updatedAt'),
+            ...summarizeEnforcementChange(input),
+          },
+        });
+
         return JSON.stringify({ success: true, message: `Software policy "${existing.name}" updated` });
       }
 

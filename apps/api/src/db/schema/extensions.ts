@@ -4,8 +4,8 @@ import { pgTable, text, boolean, timestamp, primaryKey, uuid } from 'drizzle-orm
  * Lifecycle states for an installed runtime extension. Kept in lockstep with the
  * `CHECK (lifecycle_state IN (...))` constraint in
  * `migrations/2026-08-01-e-runtime-extensions.sql` — the DB enforces the set,
- * this union types it. The reconciler/migrator (later tasks) drive the
- * transitions; `ExtensionStateStore` persists them.
+ * this union types it. The built-in loader and the extension migrator drive
+ * the transitions; `ExtensionStateStore` persists them.
  *
  *  - discovered   — present in the deployment config, nothing verified yet
  *  - verified     — signed bundle verified against a trusted publisher
@@ -69,30 +69,5 @@ export const extensionSchemaHistory = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.extensionName, t.bundleVersion] }),
-  }),
-);
-
-/**
- * Org-axis table (RLS shape 1): one row per (extension, org) activation — the
- * L1 install-scoping authorization record. Gateway/job reads run in system
- * scope (breeze_has_org_access admits system); the partner management API
- * reads/writes it in the caller's scope. Registered in
- * CORE_ORG_CASCADE_DELETE_ORDER for org deletion; extension removal cascades
- * via the FK.
- */
-export const extensionOrgInstalls = pgTable(
-  'extension_org_installs',
-  {
-    extensionName: text('extension_name')
-      .notNull()
-      .references(() => installedExtensions.name, { onDelete: 'cascade' }),
-    orgId: uuid('org_id').notNull(),
-    enabled: boolean('enabled').notNull().default(true),
-    installedBy: uuid('installed_by'),
-    installedAt: timestamp('installed_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.extensionName, t.orgId] }),
   }),
 );

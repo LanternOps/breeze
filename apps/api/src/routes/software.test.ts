@@ -8,7 +8,7 @@ import {
   S3ConfigError,
   S3OperationError,
 } from '../services/s3Storage';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import { parseStreamingMultipart } from '../services/streamingUpload';
 import { createHash } from 'node:crypto';
 import { authMiddleware } from '../middleware/auth';
@@ -694,6 +694,177 @@ describe('software routes', () => {
       expect(res.status).toBe(500);
       expect(captureException).toHaveBeenCalledTimes(1);
       expect(uploadBinary).not.toHaveBeenCalled();
+    });
+  });
+
+  // A URL-created version never recorded a fileType, so softwareDeployment.ts
+  // fell back to `fileType: 'exe'` / `fileName: 'package.exe'`. The agent's EXE
+  // branch execs the downloaded file DIRECTLY, so an MSI died at CreateProcess
+  // with ERROR_BAD_EXE_FORMAT and the operator's msiexec command was discarded
+  // unused. These assert the recorded fileType, not just that the insert ran.
+  describe('POST /software/catalog/:id/versions (URL source) installer type', () => {
+    const catalogId = '11111111-1111-1111-1111-111111111111';
+
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    /** Runs insertLatestSoftwareVersion's real transaction body against a tx
+     *  that captures the inserted row, so the assertions below read the values
+     *  actually written rather than merely confirming a call happened. */
+    const captureInsert = () => {
+      const captured: { values?: Record<string, any> } = {};
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) =>
+        fn({
+          insert: () => ({
+            values: (v: Record<string, any>) => {
+              captured.values = v;
+              return { returning: async () => [{ id: 'ver-1', ...v }] };
+            },
+          }),
+          update: () => ({
+            set: () => ({
+              where: () => {
+                const res: any = {
+                  then: (resolve: any) => resolve(undefined),
+                  returning: async () => [{ id: 'ver-1', ...captured.values }],
+                };
+                return res;
+              },
+            }),
+          }),
+        }),
+      );
+      return captured;
+    };
+
+    const createVersion = async (body: Record<string, unknown>) => {
+      vi.mocked(db.select).mockReturnValueOnce(
+        selectResult([{ id: catalogId, orgId: 'org-123', name: 'Acme Tool' }]),
+      );
+      const captured = captureInsert();
+      const res = await app.request(`/software/catalog/${catalogId}/versions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ version: '1.0.0', ...body }),
+      });
+      return { res, captured };
+    };
+
+    it('records fileType msi from the URL extension and prefills msiexec args', async () => {
+      const { res, captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme-agent-1.0.0.msi',
+      });
+
+      expect(res.status).toBe(201);
+      expect(captured.values?.fileType).toBe('msi');
+      expect(captured.values?.silentInstallArgs).toBe('msiexec /i "{file}" /qn /norestart');
+      expect(captured.values?.silentUninstallArgs).toBe('msiexec /x "{file}" /qn /norestart');
+    });
+
+    it('derives the type through a presigned query string', async () => {
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme.msi?X-Amz-Signature=deadbeef',
+      });
+      expect(captured.values?.fileType).toBe('msi');
+    });
+
+    it('honours an explicit fileType over the URL extension', async () => {
+      // A vendor URL whose path lies about the payload — the operator's choice wins.
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/download.exe',
+        fileType: 'msi',
+      });
+      expect(captured.values?.fileType).toBe('msi');
+    });
+
+    it('never overwrites an operator-supplied install command', async () => {
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme.msi',
+        silentInstallArgs: 'msiexec /i "{file}" /qn REBOOT=ReallySuppress',
+      });
+      expect(captured.values?.fileType).toBe('msi');
+      expect(captured.values?.silentInstallArgs).toBe(
+        'msiexec /i "{file}" /qn REBOOT=ReallySuppress',
+      );
+    });
+
+    it('leaves fileType null when the URL has no recognizable extension', async () => {
+      // Guessing here would just invert the bug; null preserves prior behavior.
+      const { captured } = await createVersion({
+        downloadUrl: 'https://vendor.example.com/download.php?product=acme',
+      });
+      expect(captured.values?.fileType).toBeNull();
+      expect(captured.values?.silentInstallArgs).toBeNull();
+    });
+
+    it('does not prefill msiexec args for a non-MSI installer', async () => {
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme-setup.exe',
+      });
+      expect(captured.values?.fileType).toBe('exe');
+      expect(captured.values?.silentInstallArgs).toBeNull();
+    });
+
+    it('treats an explicitly-empty install command as absent, not as a value', async () => {
+      // `||` rather than `??`: a cleared form field posts '', and storing that
+      // literal empty string would suppress the MSI default for no reason.
+      const { captured } = await createVersion({
+        downloadUrl: 'https://cdn.example.com/acme.msi',
+        silentInstallArgs: '',
+      });
+      expect(captured.values?.silentInstallArgs).toBe('msiexec /i "{file}" /qn /norestart');
+    });
+
+    it('records the resolved type on the audit event', async () => {
+      // The only durable server-side trace of what was decided at write time.
+      await createVersion({ downloadUrl: 'https://cdn.example.com/acme.msi' });
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'software.catalog.version.create',
+          details: expect.objectContaining({ fileType: 'msi' }),
+        }),
+      );
+    });
+
+    it('flags an undetermined installer type for non-web clients', async () => {
+      // The web forms warn in the UI, but an API/MCP/script client gets no
+      // prompt — without this nobody can count how often it happens.
+      await createVersion({
+        downloadUrl: 'https://vendor.example.com/download.php?product=acme',
+      });
+      expect(captureMessage).toHaveBeenCalledWith(
+        'software version created with undetermined installer type',
+        'warning',
+        expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+      );
+    });
+
+    it('does not log the presigned query string of a download URL', async () => {
+      // Managed-software URLs carry capability query strings that must never
+      // reach a log — host only.
+      await createVersion({
+        downloadUrl: 'https://vendor.example.com/get?token=SECRET-CAPABILITY',
+      });
+      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[2];
+      expect(JSON.stringify(logged)).not.toContain('SECRET-CAPABILITY');
+    });
+
+    it('rejects an unsupported explicit fileType with 400', async () => {
+      const res = await app.request(`/software/catalog/${catalogId}/versions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          version: '1.0.0',
+          downloadUrl: 'https://cdn.example.com/acme.zip',
+          fileType: 'zip',
+        }),
+      });
+      expect(res.status).toBe(400);
     });
   });
 

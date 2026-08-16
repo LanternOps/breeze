@@ -916,7 +916,9 @@
       "timeoutSeconds": "Timeout (seconds)",
       "runAs": "Run As",
       "exitCode": "Exit code",
-      "severity": "Severity"
+      "severity": "Severity",
+      "source": "Source",
+      "fallbackValue": "Fallback value"
     },
     "placeholders": {
       "name": "Clear Temp Files",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "No parameters yet. Parameters let users supply values at runtime — reference them in your script as",
       "emptyMiddle": "(PowerShell/Bash) or",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Source for parameter {{index}}"
     },
     "execution": {
       "timeoutHint": "Script is killed after this duration. Default 300s (5 min) is suitable for most tasks. Maximum 3600s (1 hour).",
@@ -997,6 +1000,22 @@
       "empty": "No variables yet.",
       "secretUnavailable": "Secret — a later release delivers it as an environment variable.",
       "unknown": "No variable exists for {{keys}} — targeted devices will fail until you create it."
+    },
+    "parameterSources": {
+      "runtime": "Asked at run time",
+      "tenantVariable": "From a variable",
+      "deviceCustomField": "From a device custom field",
+      "builtin": "From a device property"
+    },
+    "parameterBinding": {
+      "variableLabel": "Variable key",
+      "variablePlaceholder": "e.g. vendor_token",
+      "fieldLabel": "Custom field key",
+      "fieldPlaceholder": "e.g. asset_tag",
+      "builtinLabel": "Property",
+      "chooseTitle": "Choose a variable",
+      "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",
+      "hint": "Resolved for every target device when the script runs — nobody is asked for it."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,13 @@
       "number": "Parameter \"{{name}}\" must be a valid number"
     },
     "title": "Parameters",
-    "selectPlaceholder": "Select..."
+    "selectPlaceholder": "Select...",
+    "allSupplied": "Every parameter is supplied automatically — there is nothing to fill in.",
+    "suppliedBy": {
+      "tenantVariable": "Supplied automatically from variable {{key}}",
+      "deviceCustomField": "Supplied automatically from device custom field {{key}}",
+      "builtin": "Supplied automatically from {{key}}"
+    }
   },
   "scriptTagManager": {
     "errors": {
@@ -1216,5 +1241,37 @@
     "scriptCount": "{{count}} scripts in bundle",
     "statusInvalid": "Invalid",
     "exportLimit": "You can export up to {{max}} scripts per bundle."
+  },
+  "testRunner": {
+    "title": "Test run",
+    "devicePlaceholder": "Select a test device…",
+    "noDevices": "No compatible devices",
+    "deviceStatus": {
+      "offline": "offline",
+      "maintenance": "maintenance"
+    },
+    "run": "Test Run",
+    "saveAndRun": "Save & Test Run",
+    "saveFirst": "Save the script once to enable test runs.",
+    "requiredParams": "Required parameters without defaults ({{params}}) — use the Run Script dialog instead.",
+    "offlineWarning": "The selected device is offline — the run will wait until it reconnects.",
+    "exitCode": "exit {{code}}",
+    "viewHistory": "View history",
+    "status": {
+      "pending": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "timeout": "Timed out",
+      "queued": "Queued",
+      "cancelled": "Cancelled"
+    },
+    "errors": {
+      "execute": "Failed to start the test run",
+      "save": "Save failed — fix the errors above and try again.",
+      "notStarted": "The run was not started (the device may be in maintenance).",
+      "pollDeadline": "Still no result — check the execution history for the outcome.",
+      "pollFailed": "Could not read the run result — it may have been deleted or your access changed."
+    }
   }
 }

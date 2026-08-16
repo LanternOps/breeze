@@ -318,7 +318,10 @@ describe('ScriptForm unknown-variable notice', () => {
     editorInstances.length = 0;
     getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
     orgStoreMock.mockReturnValue({ organizations: [], partners: [], sites: [] });
-    fetchWithAuthMock.mockResolvedValue(
+    // Fresh Response per call: the form now issues several reads on mount
+    // (tenant variables + the test runner's device list), and a shared
+    // Response body can only be consumed once.
+    fetchWithAuthMock.mockImplementation(async () =>
       new Response(JSON.stringify({ data: [tenantVariable] }), { status: 200 })
     );
   });
@@ -359,5 +362,214 @@ describe('ScriptForm unknown-variable notice', () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
     await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
     expect(screen.queryByTestId('script-variable-warning')).toBeNull();
+  });
+});
+
+// #3409 PR3: a parameter definition can be BOUND to a tenant variable, a device
+// custom field or a built-in property instead of being asked for at run time.
+describe('ScriptForm sourced parameters', () => {
+  const variableRow = (key: string, description: string, isSecret: boolean) => ({
+    id: `tv-${key}`,
+    key,
+    value: 'x',
+    isSecret,
+    description,
+    ownerScope: 'partner' as const,
+    orgId: null,
+    partnerId: 'p-1',
+    version: 1,
+    createdAt: '2026-08-13T00:00:00.000Z',
+    updatedAt: '2026-08-13T00:00:00.000Z',
+  });
+
+  const draft = { name: 'Draft', category: 'Custom', language: 'powershell' as const, content: 'echo hi' };
+
+  beforeEach(() => {
+    editorInstances.length = 0;
+    getJwtClaimsMock.mockReturnValue({ scope: 'organization', partnerId: null, orgId: 'o-1' });
+    orgStoreMock.mockReturnValue({ organizations: [], partners: [], sites: [] });
+    fetchWithAuthMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            variableRow('vendor_token', 'Vendor portal token', false),
+            variableRow('api_password', 'Vendor API password', true),
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps a legacy parameter (no `source`) on the runtime behaviour with no binding field', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{ ...draft, parameters: [{ name: 'message', type: 'string' }] }}
+      />
+    );
+
+    const sourceSelect = await screen.findByLabelText('Source for parameter 1');
+    expect((sourceSelect as HTMLSelectElement).value).toBe('runtime');
+    expect(screen.queryByPlaceholderText('e.g. vendor_token')).toBeNull();
+    expect(screen.getByText('Default Value')).toBeInTheDocument();
+  });
+
+  it('reveals the variable key picker when the row is switched to a variable source', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{ ...draft, parameters: [{ name: 'message', type: 'string' }] }}
+      />
+    );
+
+    const sourceSelect = await screen.findByLabelText('Source for parameter 1');
+    fireEvent.change(sourceSelect, { target: { value: 'tenantVariable' } });
+
+    expect(screen.getByPlaceholderText('e.g. vendor_token')).toBeInTheDocument();
+    // A bound parameter's default is a fallback, not a prefilled answer.
+    expect(screen.getByText('Fallback value')).toBeInTheDocument();
+  });
+
+  it('stores the bare KEY when a variable is picked from the menu — never a {{var.x}} token', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: '' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('Choose a variable'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Vendor portal token/i }));
+
+    const keyInput = screen.getByPlaceholderText('e.g. vendor_token') as HTMLInputElement;
+    await waitFor(() => expect(keyInput.value).toBe('vendor_token'));
+    expect(keyInput.value).not.toContain('{{');
+  });
+
+  it('offers secret variables as disabled rows in the key picker', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'token', type: 'string', source: 'tenantVariable', variableKey: '' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('Choose a variable'));
+    expect(await screen.findByRole('menuitem', { name: /Vendor API password/i })).toBeDisabled();
+  });
+
+  it('warns before save when a binding targets a secret variable (the API 400s it)', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [
+            { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_password' },
+          ],
+        }}
+      />
+    );
+
+    const warning = await screen.findByTestId('script-parameter-secret-warning');
+    expect(warning).toHaveTextContent(/api_password/);
+    expect(warning).toHaveTextContent(/rejected/i);
+  });
+
+  it('gives every secret-bound row its own warning id so both announce', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [
+            { name: 'first', type: 'string', source: 'tenantVariable', variableKey: 'api_password' },
+            { name: 'second', type: 'string', source: 'tenantVariable', variableKey: 'api_password' },
+          ],
+        }}
+      />
+    );
+
+    const warnings = await screen.findAllByTestId('script-parameter-secret-warning');
+    expect(warnings).toHaveLength(2);
+    const ids = warnings.map(w => w.id);
+    expect(new Set(ids).size).toBe(2);
+    // Each input points at its OWN paragraph — a shared id would silently drop one.
+    const inputs = screen.getAllByPlaceholderText('e.g. vendor_token');
+    expect(inputs.map(i => i.getAttribute('aria-describedby'))).toEqual(ids);
+  });
+
+  it('does not warn for a non-secret binding', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [
+            { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'vendor_token' },
+          ],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
+  });
+
+  it('hides the run-time options list for a bound select parameter', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'env', type: 'select', options: 'a,b', source: 'builtin', builtinKey: 'org.name' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(editorInstances.length).toBeGreaterThan(0));
+    expect(screen.queryByPlaceholderText('option1, option2, option3')).toBeNull();
+    // The built-in vocabulary comes from @breeze/shared, not a local copy.
+    expect(screen.getByText('device.hostname')).toBeInTheDocument();
+  });
+
+  it('clears the previous arm\'s binding key when the source changes', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [
+            { name: 'token', type: 'string', source: 'tenantVariable', variableKey: 'api_password' },
+          ],
+        }}
+      />
+    );
+
+    await screen.findByTestId('script-parameter-secret-warning');
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'deviceCustomField' },
+    });
+
+    expect(screen.getByPlaceholderText('e.g. asset_tag')).toBeInTheDocument();
+    // Switching back must not resurrect the abandoned (secret) key.
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'tenantVariable' },
+    });
+    expect((screen.getByPlaceholderText('e.g. vendor_token') as HTMLInputElement).value).toBe('');
+    expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
   });
 });

@@ -1241,7 +1241,11 @@
       "selectAtLeastOnePackage": "Select at least one package",
       "failedToImportPackage": "Failed to add package",
       "installMethods": "Install methods",
-      "addedPackage": "Added {{name}}"
+      "addedPackage": "Added {{name}}",
+      "installerType": "Installer type",
+      "autoDetectFromUrl": "Auto-detect from URL",
+      "autoDetectedType": "Auto-detect ({{type}})",
+      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Managed built-in",
@@ -1750,7 +1754,11 @@
       "saving": "Saving...",
       "uploadSave": "Upload & Save",
       "saveVersion": "Save Version",
-      "setAsLatest": "Set as latest"
+      "setAsLatest": "Set as latest",
+      "installerType": "Installer type",
+      "autoDetectFromUrl": "Auto-detect from URL",
+      "autoDetectedType": "Auto-detect ({{type}})",
+      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",

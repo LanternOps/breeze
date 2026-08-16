@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +42,22 @@ const (
 // shrink it — moving the real 500 MiB through a unit test is impractical.
 // Production behavior is unchanged.
 var maxInstallFileSize int64 = 500 * 1024 * 1024 // 500 MB
+
+// installerWaitDelay bounds how long Wait keeps collecting output after the
+// installer process itself has exited. A var (not a const) solely so tests
+// can shrink it; production behavior is a fixed safety net.
+var installerWaitDelay = 10 * time.Second
+
+// detectionSettleWindow/detectionSettleInterval bound the post-install
+// detection re-check used ONLY when the installer's descendants outlived the
+// wrapper (the ErrWaitDelay path): the wrapper is gone but the real setup is
+// still writing to disk, so a single immediate evaluation would fail a healthy
+// install as "detection rule not satisfied". Vars (not consts) solely so tests
+// can shrink them; the ordinary install path never reads them.
+var (
+	detectionSettleWindow   = 60 * time.Second
+	detectionSettleInterval = 2 * time.Second
+)
 
 var checksumHexPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
@@ -154,7 +173,7 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 	}
 
 	// Execute installer
-	exitCode, output, err := executeInstaller(localPath, fileType, silentInstallArgs)
+	exitCode, output, descendantsPending, err := executeInstaller(localPath, fileType, silentInstallArgs)
 	output, outputTruncated := sanitizeInstallerOutput(output)
 	if err != nil {
 		errMsg := err.Error()
@@ -184,7 +203,7 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		successPayload["outputTruncated"] = true
 	}
 
-	return applyPostInstallDetection(successPayload, exitCode, output, detectionRules, time.Since(startTime).Milliseconds())
+	return applyPostInstallDetectionSettling(successPayload, exitCode, output, detectionRules, time.Since(startTime).Milliseconds(), descendantsPending)
 }
 
 // applyPostInstallDetection decides the final install result from the device's
@@ -201,11 +220,30 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 // With no rules it is a plain exit-code success. successPayload is mutated with
 // detection metadata for the success/unsupported paths.
 func applyPostInstallDetection(successPayload map[string]any, exitCode int, output string, rules []DetectionRule, durationMs int64) CommandResult {
+	return applyPostInstallDetectionSettling(successPayload, exitCode, output, rules, durationMs, false)
+}
+
+// applyPostInstallDetectionSettling is applyPostInstallDetection plus the
+// descendant case. When descendantsPending is set the wrapper installer exited
+// while the REAL installer was still running (the ErrWaitDelay path), so the
+// software legitimately is not on disk yet and one immediate check would fail a
+// healthy install. Only that case re-checks, bounded by detectionSettleWindow
+// and returning the moment the rule is satisfied; the ordinary path keeps its
+// single-shot evaluation and timing. An unsupported verdict can never change,
+// so it is never waited on.
+func applyPostInstallDetectionSettling(successPayload map[string]any, exitCode int, output string, rules []DetectionRule, durationMs int64, descendantsPending bool) CommandResult {
 	if len(rules) == 0 {
 		return NewSuccessResult(successPayload, durationMs)
 	}
 
 	post := EvaluateDetectionRules(rules)
+	if descendantsPending {
+		deadline := time.Now().Add(detectionSettleWindow)
+		for post.Supported && !post.Detected && time.Now().Before(deadline) {
+			time.Sleep(detectionSettleInterval)
+			post = EvaluateDetectionRules(rules)
+		}
+	}
 	if !post.Supported {
 		successPayload["detectionPerformed"] = false
 		successPayload["detail"] = post.Detail
@@ -548,7 +586,10 @@ func computeSHA256(filePath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func executeInstaller(localPath, fileType, silentInstallArgs string) (int, string, error) {
+// executeInstaller runs the installer for fileType. The third return reports
+// that the installer's descendants outlived it (see runInstallerCommand), which
+// post-install detection needs in order to wait for the real install to land.
+func executeInstaller(localPath, fileType, silentInstallArgs string) (int, string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
 
@@ -578,26 +619,102 @@ func executeInstaller(localPath, fileType, silentInstallArgs string) (int, strin
 		return installDMG(ctx, localPath)
 
 	default:
-		return 1, "", fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
+		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
 	}
 
-	cmd.Env = procoutput.ApplyEnv(os.Environ())
+	return runInstallerCommand(ctx, cmd, fileType)
+}
 
-	output, err := cmd.CombinedOutput()
+// lockedBuffer collects an installer's merged stdout+stderr. CombinedOutput's
+// plain bytes.Buffer is not safe here: with WaitDelay, Wait can return while the
+// copy goroutine of a descendant that still holds the pipe is writing.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+// runInstallerCommand runs one installer command. Its third return says the
+// installer's descendants were still holding the output pipes when the wrapper
+// exited — i.e. the real setup is probably still running, which post-install
+// detection must account for before declaring the rule unsatisfied.
+func runInstallerCommand(ctx context.Context, cmd *exec.Cmd, fileType string) (int, string, bool, error) {
+	cmd.Env = procoutput.ApplyEnv(os.Environ())
+	// EXE installers are typically wrappers: they spawn the real setup (which
+	// inherits the output handles) and exit. Without WaitDelay, Wait blocks on
+	// pipe EOF until every descendant exits — real installs stalled into the
+	// 30-minute timeout. Mirrors scripts/runner.go and executor/executor.go.
+	cmd.WaitDelay = installerWaitDelay
+
+	tree := newInstallerProcessTree()
+	defer tree.release()
+	tree.prepare(cmd)
+
+	// Start/Wait rather than CombinedOutput: the process must be adopted by the
+	// tree the moment it exists. One writer for both streams so os/exec collapses
+	// them onto a single pipe exactly as CombinedOutput does; the lock is because
+	// WaitDelay lets Wait return while an abandoned descendant's copy goroutine
+	// is still writing.
+	var buf lockedBuffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return 1, "", false, err
+	}
+	tree.adopt(cmd)
+	err := cmd.Wait()
+	output := buf.Bytes()
+
 	exitCode := 0
+	descendantsPending := false
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
+		} else if errors.Is(err, exec.ErrWaitDelay) {
+			// The installer itself exited; only its abandoned descendants kept
+			// the output pipes open. Judge the install by the real exit code.
+			descendantsPending = true
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
 		} else {
-			return 1, procoutput.BytesToUTF8(output), err
+			return 1, procoutput.BytesToUTF8(output), false, err
 		}
 	}
 
-	if installerExitIndicatesSuccess(fileType, exitCode) {
-		return exitCode, procoutput.BytesToUTF8(output), nil
+	// The deadline having passed is NOT on its own a timeout: a wrapper can exit
+	// 0 and then have Wait drain its descendants' pipes past the deadline, in
+	// which case the deadline killed nothing and the install really succeeded.
+	// Only claim a timeout when the process did not finish on its own with a
+	// success code — otherwise a good install inside the last installerWaitDelay
+	// of the window is reported as a 30-minute hang.
+	if ctx.Err() == context.DeadlineExceeded &&
+		(cmd.ProcessState == nil || !cmd.ProcessState.Exited() || !installerExitIndicatesSuccess(fileType, exitCode)) {
+		// Only here: the deadline fired on an installer that never finished, so
+		// its descendants are part of a hang, not of a legitimate install still
+		// landing. Every other path leaves the tree alone.
+		tree.kill(cmd)
+		return -1, procoutput.BytesToUTF8(output), false,
+			fmt.Errorf("installer timed out after %s and was terminated", installTimeout)
 	}
 
-	return exitCode, procoutput.BytesToUTF8(output), fmt.Errorf("installer exited with code %d", exitCode)
+	if installerExitIndicatesSuccess(fileType, exitCode) {
+		return exitCode, procoutput.BytesToUTF8(output), descendantsPending, nil
+	}
+
+	return exitCode, procoutput.BytesToUTF8(output), descendantsPending, fmt.Errorf("installer exited with code %d", exitCode)
 }
 
 // installerExitIndicatesSuccess reports whether an installer exit code means the
@@ -645,35 +762,44 @@ func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
 	return parts
 }
 
-func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
+// dmgCommandContext builds installDMG's child processes. A var (not a direct
+// exec.CommandContext call) solely so tests can drive the DMG path without a
+// real disk image; production behavior is unchanged.
+var dmgCommandContext = exec.CommandContext
+
+func installDMG(ctx context.Context, dmgPath string) (int, string, bool, error) {
 	// Mount
 	mountPoint := filepath.Join(os.TempDir(), "breeze-dmg-mount")
 	os.MkdirAll(mountPoint, 0700)
 
-	mountCmd := exec.CommandContext(ctx, "hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet")
-	if out, err := mountCmd.CombinedOutput(); err != nil {
-		return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to mount DMG: %w", err)
+	// hdiutil and cp go through runInstallerCommand for its WaitDelay and its
+	// timeout labeling — hdiutil's helper daemon can hold the output pipes, and a
+	// wedged mount or a multi-gigabyte copy that hits the deadline must be
+	// reported as a timeout, not as the kill's exit code. Neither is an
+	// *installer*, so both are run with an empty fileType: only 0 means success,
+	// the Windows reboot-pending codes (3010/1641) have no meaning for them.
+	// Their descendantsPending is likewise dropped rather than propagated —
+	// nothing hdiutil or cp leaves behind is an install still landing on disk.
+	mountCmd := dmgCommandContext(ctx, "hdiutil", "attach", dmgPath, "-mountpoint", mountPoint, "-nobrowse", "-quiet")
+	if _, out, _, err := runInstallerCommand(ctx, mountCmd, ""); err != nil {
+		return 1, out, false, fmt.Errorf("failed to mount DMG: %w", err)
 	}
-	defer func() { _ = exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run() }()
+	// Best-effort unmount: the install result is already decided by the time this
+	// runs, and a failed detach leaves a stale mountpoint rather than a bad
+	// install, so there is nothing actionable to report from here.
+	defer func() {
+		_ = dmgCommandContext(context.Background(), "hdiutil", "detach", mountPoint, "-quiet").Run()
+	}()
 
 	// Look for .pkg first, then .app
 	entries, _ := os.ReadDir(mountPoint)
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".pkg") {
 			pkgPath := filepath.Join(mountPoint, entry.Name())
-			cmd := exec.CommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/")
-			out, err := cmd.CombinedOutput()
-			exitCode := 0
-			if err != nil {
-				if exitErr, ok := err.(*exec.ExitError); ok {
-					exitCode = exitErr.ExitCode()
-				}
-				if exitCode != 0 {
-					return exitCode, procoutput.BytesToUTF8(out), fmt.Errorf("pkg installer exited with code %d", exitCode)
-				}
-				return 1, procoutput.BytesToUTF8(out), err
-			}
-			return 0, procoutput.BytesToUTF8(out), nil
+			// A .pkg postinstall script routinely spawns a lingering child, so
+			// this is the DMG case that needs both the WaitDelay escape and the
+			// descendantsPending signal that makes detection settle.
+			return runInstallerCommand(ctx, dmgCommandContext(ctx, "installer", "-pkg", pkgPath, "-target", "/"), "pkg")
 		}
 	}
 
@@ -682,16 +808,15 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 		if strings.HasSuffix(entry.Name(), ".app") {
 			src := filepath.Join(mountPoint, entry.Name())
 			dst := filepath.Join("/Applications", entry.Name())
-			cmd := exec.CommandContext(ctx, "cp", "-R", src, dst)
-			out, err := cmd.CombinedOutput()
+			exitCode, out, _, err := runInstallerCommand(ctx, dmgCommandContext(ctx, "cp", "-R", src, dst), "")
 			if err != nil {
-				return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to copy app: %w", err)
+				return exitCode, out, false, fmt.Errorf("failed to copy app: %w", err)
 			}
-			return 0, procoutput.BytesToUTF8(out), nil
+			return exitCode, out, false, nil
 		}
 	}
 
-	return 1, "", fmt.Errorf("no .pkg or .app found in DMG")
+	return 1, "", false, fmt.Errorf("no .pkg or .app found in DMG")
 }
 
 // splitCommandLine splits a command-line string into arguments, respecting double-quoted strings.

@@ -154,6 +154,14 @@ export const devices = pgTable('devices', {
   // build correctly reports back down to 0. Task 5 gates managed-software
   // dispatch on this value.
   outboundNetworkPolicyVersion: integer('outbound_network_policy_version').notNull().default(0),
+  // #3409 PR4 — agent capability for encrypted secret-env delivery. 0 for every
+  // agent build predating PR4b and for any heartbeat omitting the field; only
+  // the recognized integer version 1 is written as anything else. Non-sticky
+  // (written every beat), so a downgrade reports back down and the PR4c
+  // dispatch gate stops trusting a stale claim. An agent that ignores
+  // `secretEnv` would run the script with the credential UNSET, which is why
+  // this gates on a declared capability rather than on agentVersion.
+  scriptSecretEnvVersion: integer('script_secret_env_version').notNull().default(0),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
   // every heartbeat (self-healing), so a resolved condition clears next beat.

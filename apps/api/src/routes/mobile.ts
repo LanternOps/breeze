@@ -1235,6 +1235,12 @@ mobileRoutes.post(
           scriptId: result.scriptId,
           executionId: execution.executionId,
           commandId: execution.commandId,
+          // #3409 PR3 §2.2 — bound parameter keys whose caller-supplied value
+          // was dropped in favour of the binding. KEYS ONLY, never values.
+          // Named distinctly rather than folded into an existing key: audit
+          // `details` is an untyped shared bag and overloading a generic name
+          // there has already caused one cross-meaning collision (`deviceId`).
+          ignoredParameterKeys: result.ignoredParameters,
         },
       });
 
@@ -1242,6 +1248,13 @@ mobileRoutes.post(
         action: data.action,
         executionId: execution.executionId,
         commandId: execution.commandId,
+        // This endpoint accepts `parameters`, so the mobile client is just as
+        // able to supply a value for a bound key as the web one — the warning
+        // is surfaced here for the same reason and in the same shape as
+        // POST /scripts/:id/execute (omitted when empty, so the clean-run
+        // response shape mobile already parses is unchanged). The single-
+        // device shape needs no aggregation: the fan-out is one device.
+        ignoredParameters: result.ignoredParameters.length > 0 ? result.ignoredParameters : undefined,
       }, 201);
     }
 

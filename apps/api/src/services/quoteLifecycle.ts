@@ -13,6 +13,7 @@ import { getEmailService } from './email';
 import { resolveBillingEmail } from './invoicePdf';
 import { isQuoteExpired } from './quoteExpiry';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
+import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
@@ -179,6 +180,16 @@ export async function sendQuote(
   });
   const acceptUrl = buildPublicQuoteAcceptUrl(token);
 
+  // Stamp the presentation ONCE, at send: never overwrite an existing snapshot
+  // (a draft that already carries one — e.g. cloned from a sent quote — keeps
+  // it verbatim), so a re-read of this same quote always renders the document
+  // the customer was actually shown, even if the partner's live theme/pageSize
+  // columns change later. Precedence matches resolveQuoteBranding exactly.
+  const presentationSnapshot = quote.presentationSnapshot ?? {
+    theme: resolveThemeId(partnerRow?.documentTheme),
+    pageSize: resolvePageSize(partnerRow?.documentPageSize),
+  };
+
   const claimed = await db
     .update(quotes)
     .set({
@@ -195,6 +206,7 @@ export async function sendQuote(
       sellerSnapshot: buildSellerSnapshot(partnerRow),
       termsAndConditions: quote.termsAndConditions ?? partnerRow?.billingTermsAndConditions ?? null,
       terms: quote.terms ?? partnerRow?.invoiceFooter ?? null,
+      presentationSnapshot,
     })
     .where(and(eq(quotes.id, id), eq(quotes.status, 'draft')))
     .returning({ id: quotes.id });
@@ -225,11 +237,39 @@ export async function sendQuote(
     billToAddress,
     billToTaxId: quote.billToTaxId ?? org?.taxId ?? null,
     sellerSnapshot,
+    presentationSnapshot,
   };
 
   const { emailed, emailReason } = await deliverQuoteEmail({
     quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts,
   });
+
+  // Persist THIS attempt's outcome, matching resendQuote and the scheduled-send
+  // worker: without it a direct send whose PDF render or transport failed is
+  // marked sent with send_email_reason NULL, so the detail page's "no email was
+  // delivered" banner never fires and nobody learns the customer got nothing.
+  // The draft→sent claim above already cleared the column, so only a failure
+  // needs writing back.
+  //
+  // Deliberately NOT wrapped in try/catch. This runs inside the request-wide
+  // transaction opened by withDbAccessContext, so a statement error here leaves
+  // that transaction aborted: catching the rejection would not roll back to a
+  // savepoint, the re-select below would fail with "current transaction is
+  // aborted" anyway, and the whole draft→sent claim would roll back regardless.
+  // A catch would only hide where it started. Failing here is atomic with the
+  // status flip, which is the honest outcome — the email having already left is
+  // a pre-existing property of sending inside the request transaction, not
+  // something this write introduces.
+  // Matched on id alone, deliberately: the SAME predicate the draft→sent claim
+  // above used. Adding `orgId` here looks like defence-in-depth and is not —
+  // `quote` was read BEFORE the claim, and updateQuote can reassign a draft's
+  // org (quoteService.ts, `set.orgId = targetOrgId`). A concurrent move would
+  // leave the claim succeeding on id+status while this write matched ZERO rows
+  // against the stale org, silently losing the outcome this function exists to
+  // record. Keep the write bound to the row the claim actually took.
+  if (emailReason) {
+    await db.update(quotes).set({ sendEmailReason: emailReason, updatedAt: new Date() }).where(eq(quotes.id, id));
+  }
 
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   return { quote: updated!, emailed, emailReason, acceptUrl };
@@ -290,14 +330,12 @@ interface DeliverQuoteEmailInput {
  * Best effort by contract: every failure is swallowed into an `emailReason` so
  * the caller's transaction still commits.
  *
- * Callers differ in what they do with that reason, and the difference is
- * user-visible: resendQuote and the scheduled-send worker
- * (jobs/quoteSendQueue.ts) PERSIST it to quotes.send_email_reason, which is
- * what raises the detail page's "no email was delivered" banner. The direct
- * sendQuote path returns it in the response only — so a failed immediate send
- * (MCP, bulk-send, a body-less POST /send) leaves send_email_reason NULL and
- * shows no banner. That gap predates this function and is NOT fixed here; do
- * not assume symmetry when debugging a missing banner.
+ * All three callers persist that reason to quotes.send_email_reason, which is
+ * what raises the detail page's "no email was delivered" banner: sendQuote,
+ * resendQuote, and the scheduled-send worker (jobs/quoteSendQueue.ts). Keep it
+ * that way when adding a fourth. A caller that only returns the reason marks
+ * the quote sent with the column NULL, so the banner never fires and nobody
+ * learns the customer received nothing (#3502).
  */
 async function deliverQuoteEmail(
   { quote, blocks, lines, partnerRow, quoteNumber, acceptUrl, frozenQuote, billingRecipient, opts }: DeliverQuoteEmailInput,
@@ -358,12 +396,20 @@ async function deliverQuoteEmail(
           // rendering, so the emailed attachment matches the on-demand download.
           const { contractRenderData, uploads } = await loadContractPdfInputs(blocks, frozenQuote);
           const { renderQuotePdf } = await import('./quotePdf');
+          // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding):
+          // frozenQuote.presentationSnapshot is the send-stamped value on a first
+          // send, and the already-frozen one on a resend — either way it wins over
+          // the partner's live theme/pageSize columns.
+          const presentationSnap = frozenQuote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
+          const emailBranding = {
+            partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+            footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
+            theme: resolveThemeId(presentationSnap?.theme ?? partnerRow?.documentTheme),
+            pageSize: resolvePageSize(presentationSnap?.pageSize ?? partnerRow?.documentPageSize),
+          };
           const rawPdf = await renderQuotePdf(
             frozenQuote,
-            blocks, customerLines, loadImage, {
-              partnerName: partnerName ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
-              footer: quote.terms ?? brand?.footerText ?? null, currencyCode: quote.currencyCode ?? 'USD',
-            }, undefined, contractRenderData);
+            blocks, customerLines, loadImage, emailBranding, undefined, contractRenderData);
           const { mergeUploadedContractPdfs } = await import('./pdfMerge');
           pdf = await mergeUploadedContractPdfs(rawPdf, uploads);
         } catch (pdfErr) {

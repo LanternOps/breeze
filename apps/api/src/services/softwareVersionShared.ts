@@ -5,10 +5,16 @@
  * Behavior is identical to the pre-extraction definitions.
  */
 import { and, eq } from 'drizzle-orm';
+import { SOFTWARE_FILE_TYPES } from '@breeze/shared';
 import { db } from '../db';
 import { softwareVersions } from '../db/schema';
 
-export const ALLOWED_EXTENSIONS = new Set(['.msi', '.exe', '.dmg', '.deb', '.pkg']);
+// Derived, not restated: this was a second hand-maintained copy of the installer
+// type list, and a third (the Go agent's isSupportedInstallFileType) is already
+// unavoidable. One TS source of truth is the most we can collapse to.
+export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set(
+  SOFTWARE_FILE_TYPES.map((t) => `.${t}`),
+);
 export const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
 
 export type SoftwareVersionInsert = Omit<typeof softwareVersions.$inferInsert, 'catalogId' | 'isLatest'>;

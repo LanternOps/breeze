@@ -3,8 +3,15 @@ package patching
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
+
+// machinePassFailedReason is reported when the SYSTEM machine-scope pass could
+// not complete: the provider is skipped wholesale, so the user-context pass is
+// never attempted and per-user apps are unscanned for a different reason than a
+// missing helper session.
+const machinePassFailedReason = "machine-scope pass failed; user-context pass not attempted"
 
 const (
 	systemWingetScanTimeout    = 120 * time.Second
@@ -12,10 +19,32 @@ const (
 )
 
 // SystemWingetProvider implements PatchProvider by running the resolved
-// winget.exe directly from the SYSTEM agent process against MACHINE scope.
+// winget.exe directly from the SYSTEM agent process against MACHINE scope,
+// optionally followed by a best-effort user-context pass through the user
+// helper for per-user installs (#2727).
+//
+// Both passes live behind ONE provider ID on purpose. Coverage is computed per
+// source BUCKET and a bucket only counts as scanned when every provider feeding
+// it succeeded (heartbeat.coveredPatchSources), so a separate `winget-user`
+// provider would leave the shared third_party bucket permanently uncovered on
+// any machine with nobody logged in — the API would then never sweep stale
+// third-party pending rows for the whole fleet of unattended devices. Keeping
+// the user pass internal makes coverage semantics byte-identical to before:
+// winget is covered iff the SYSTEM machine-scope pass parsed.
 type SystemWingetProvider struct {
 	wingetPath string
 	run        cmdRunner
+	// userExec, when non-nil, runs winget inside the interactive user's
+	// session. nil on non-Windows and whenever no helper transport exists.
+	userExec UserExecFunc
+
+	mu sync.RWMutex
+	// userScan records the outcome of the last user-context pass so callers
+	// can report that per-user apps were not scanned.
+	userScan UserScanStatus
+	// userScopeIDs holds the lowercased package IDs the last scan saw ONLY at
+	// user scope, so Install/Uninstall can refuse them explicitly.
+	userScopeIDs map[string]struct{}
 }
 
 // NewSystemWingetProvider constructs a SystemWingetProvider that invokes the
@@ -24,7 +53,17 @@ func NewSystemWingetProvider(wingetPath string, run cmdRunner) *SystemWingetProv
 	return &SystemWingetProvider{wingetPath: wingetPath, run: run}
 }
 
+// NewSystemWingetProviderWithUserScan constructs a SystemWingetProvider that
+// also attempts a user-context scan via userExec. A nil userExec is equivalent
+// to NewSystemWingetProvider.
+func NewSystemWingetProviderWithUserScan(wingetPath string, run cmdRunner, userExec UserExecFunc) *SystemWingetProvider {
+	p := NewSystemWingetProvider(wingetPath, run)
+	p.userExec = userExec
+	return p
+}
+
 var _ PatchProvider = (*SystemWingetProvider)(nil)
+var _ UserScopeScanner = (*SystemWingetProvider)(nil)
 
 func (p *SystemWingetProvider) ID() string { return "winget" }
 func (p *SystemWingetProvider) Name() string {
@@ -58,9 +97,11 @@ func systemIsInstalledArgs(id string) []string {
 func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 	stdout, stderr, code, err := p.run(p.wingetPath, systemScanArgs(), systemWingetScanTimeout)
 	if err != nil {
+		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
 		return nil, fmt.Errorf("winget upgrade failed: %w", err)
 	}
 	if code != 0 && stdout == "" {
+		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
 		return nil, fmt.Errorf("winget upgrade failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
 	patches, parseErr := parseWingetUpgradeOutput(stdout)
@@ -77,16 +118,95 @@ func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 		// most common real trigger (localized column headers) stderr is empty,
 		// and the unparsable stdout head is the only clue a tech has for why
 		// this device keeps reporting a skipped winget scan.
+		p.recordUserScanStatus(UserScanStatus{Reason: machinePassFailedReason})
 		return nil, fmt.Errorf("%w: %v (exit %d, stdout: %q, stderr: %q)",
 			ErrScanSkipped, parseErr, code,
 			truncatePatchField(stdout), truncatePatchField(stderr))
 	}
-	return patches, nil
+	return p.withUserScope(patches), nil
+}
+
+// withUserScope labels the machine-scope results and appends whatever the
+// best-effort user-context pass found. The user pass NEVER changes the outcome
+// of the machine pass: any failure (no helper configured, no session, IPC
+// error, winget error, unparsable output) is recorded in the status and the
+// machine results are returned unchanged, exactly as before #2727.
+func (p *SystemWingetProvider) withUserScope(machine []AvailablePatch) []AvailablePatch {
+	if p.userExec == nil {
+		p.recordUserScanStatus(UserScanStatus{
+			Reason: "no user-context executor configured",
+		})
+		return mergeWingetScopes(machine, nil)
+	}
+
+	userPatches, err := userWingetScan(p.userExec)
+	if err != nil {
+		// recordUserScanStatus, NOT recordUserScan: a failed user pass is not
+		// evidence that the packages the last successful pass proved to be
+		// user-scope have become machine-scope. Clearing the remembered set
+		// here would silently re-open the install guard the moment the user
+		// logged out.
+		p.recordUserScanStatus(UserScanStatus{
+			Attempted: true,
+			Reason:    truncatePatchDescription(err.Error()),
+		})
+		return mergeWingetScopes(machine, nil)
+	}
+
+	merged := mergeWingetScopes(machine, userPatches)
+	p.recordUserScan(UserScanStatus{Attempted: true, Scanned: true}, merged)
+	return merged
+}
+
+func (p *SystemWingetProvider) recordUserScan(status UserScanStatus, merged []AvailablePatch) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.userScan = status
+	p.userScopeIDs = userScopeIDSet(merged)
+}
+
+// recordUserScanStatus updates only the reported status, leaving the remembered
+// user-scope package IDs intact. Used when the machine pass failed and the
+// provider is skipped entirely: the install guard should keep refusing packages
+// the last successful scan proved to be user-scope rather than reverting to a
+// machine-scope install just because one scan failed.
+func (p *SystemWingetProvider) recordUserScanStatus(status UserScanStatus) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.userScan = status
+}
+
+// LastUserScan reports whether the most recent scan covered per-user installs.
+func (p *SystemWingetProvider) LastUserScan() UserScanStatus {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.userScan
+}
+
+// errUserScopeInstallUnsupported guards the detection-only scope of #2727: a
+// package the last scan saw only at user scope cannot be remediated by this
+// SYSTEM process. Running the machine-scope install anyway would either fail
+// with a confusing winget error or install a SECOND, machine-wide copy
+// alongside the user's, so it is refused with an explicit message instead.
+func (p *SystemWingetProvider) errUserScopeInstallUnsupported(action, patchID string) error {
+	return fmt.Errorf("%s %q: package is installed per-user (user scope) and cannot be %sed from the SYSTEM agent context; per-user remediation is not supported yet",
+		action, patchID, action)
+}
+
+// isUserScopeOnly reports whether the last scan saw patchID only at user scope.
+func (p *SystemWingetProvider) isUserScopeOnly(patchID string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	_, ok := p.userScopeIDs[strings.ToLower(patchID)]
+	return ok
 }
 
 func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 	if !validWingetPkgID.MatchString(patchID) {
 		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", patchID)
+	}
+	if p.isUserScopeOnly(patchID) {
+		return InstallResult{}, p.errUserScopeInstallUnsupported("install", patchID)
 	}
 	stdout, stderr, code, err := p.run(p.wingetPath, systemInstallArgs(patchID), systemWingetInstallTimeout)
 	if err != nil {
@@ -107,6 +227,9 @@ func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 func (p *SystemWingetProvider) Uninstall(patchID string) error {
 	if !validWingetPkgID.MatchString(patchID) {
 		return fmt.Errorf("invalid winget package ID: %q", patchID)
+	}
+	if p.isUserScopeOnly(patchID) {
+		return p.errUserScopeInstallUnsupported("uninstall", patchID)
 	}
 	_, stderr, code, err := p.run(p.wingetPath, systemUninstallArgs(patchID), systemWingetInstallTimeout)
 	if err != nil {

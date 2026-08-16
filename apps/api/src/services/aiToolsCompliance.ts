@@ -22,11 +22,16 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
-import { normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import {
+  auditSoftwarePolicyToolEvent,
+  summarizeEnforcementChange,
+} from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
 
 function resolveWritableToolOrgId(
   auth: AuthContext,
@@ -288,6 +293,22 @@ registerTool({
         scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
         console.error(`[aiTools] Failed to schedule compliance check for policy ${policy.id}:`, error);
       }
+
+      auditSoftwarePolicyToolEvent(auth, 'manage_software_policy', {
+        orgId: policy.orgId,
+        partnerId: policy.partnerId,
+        policyId: policy.id,
+        policyName: policy.name,
+        policyAuditAction: 'policy_created',
+        auditLogAction: 'software_policy.create',
+        details: {
+          mode: policy.mode,
+          rules: rules.software.length,
+          scheduleWarning,
+          ...summarizeEnforcementChange(input),
+        },
+      });
+
       return JSON.stringify({ success: true, policyId: policy.id, name: policy.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
     }
 
@@ -352,6 +373,25 @@ registerTool({
         scheduleWarning = error instanceof Error ? error.message : 'Failed to schedule compliance check';
         console.error(`[aiTools] Failed to schedule compliance check for policy ${existing.id}:`, error);
       }
+
+      // `updates` (not raw `input`) is the set of columns actually written —
+      // `input` also carries routing keys like `action`/`policyId` that were
+      // never persisted, which would make the trail overstate the change.
+      const updatedFields = Object.keys(updates).filter((field) => field !== 'updatedAt');
+      auditSoftwarePolicyToolEvent(auth, 'manage_software_policy', {
+        orgId: existing.orgId,
+        partnerId: existing.partnerId,
+        policyId: existing.id,
+        policyName: updated?.name ?? existing.name,
+        policyAuditAction: 'policy_updated',
+        auditLogAction: 'software_policy.update',
+        details: {
+          updatedFields,
+          scheduleWarning,
+          ...summarizeEnforcementChange(input),
+        },
+      });
+
       return JSON.stringify({ success: true, policyId: existing.id, name: updated?.name ?? existing.name, ...(scheduleWarning ? { warning: scheduleWarning } : {}) });
     }
 
@@ -387,6 +427,16 @@ registerTool({
         await tx
           .delete(softwareComplianceStatus)
           .where(eq(softwareComplianceStatus.policyId, existing.id));
+      });
+
+      auditSoftwarePolicyToolEvent(auth, 'manage_software_policy', {
+        orgId: existing.orgId,
+        partnerId: existing.partnerId,
+        policyId: existing.id,
+        policyName: existing.name,
+        policyAuditAction: 'policy_deleted',
+        auditLogAction: 'software_policy.delete',
+        details: { name: existing.name },
       });
 
       return JSON.stringify({ success: true, message: `Policy "${existing.name}" disabled` });
@@ -429,7 +479,37 @@ registerTool({
 
     const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
     if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
-    if (policy.mode === 'audit') return JSON.stringify({ error: 'Cannot remediate audit-only policy' });
+
+    // Arming gate (#3543, incident #3381). This tool used to refuse only
+    // `mode === 'audit'`, so a detect-only policy — enforcement deliberately
+    // left off by its owner — could still have fleet-wide uninstalls queued
+    // through the model. Tier-3 approval is a prompt-time check on the ACTION,
+    // not the policy's own enforcement setting, so it is not a substitute.
+    // Deliberately no override parameter: re-arming is an administrator's
+    // decision made on the policy, not an argument the model can supply.
+    const arming = evaluateSoftwarePolicyArming(policy);
+    if (!arming.armed) {
+      auditSoftwarePolicyToolEvent(auth, 'remediate_software_violation', {
+        orgId: policy.orgId,
+        partnerId: policy.partnerId,
+        policyId: policy.id,
+        policyName: policy.name,
+        policyAuditAction: 'remediation_denied',
+        auditLogAction: 'software_policy.remediate',
+        result: 'denied',
+        details: {
+          reason: arming.reason,
+          mode: policy.mode,
+          enforceMode: policy.enforceMode,
+          requestedDeviceCount: Array.isArray(input.deviceIds) ? input.deviceIds.length : 0,
+        },
+      });
+      return JSON.stringify({
+        error: `Cannot remediate: ${arming.message}`,
+        reason: arming.reason,
+        policyId: policy.id,
+      });
+    }
 
     let deviceIds = Array.isArray(input.deviceIds)
       ? Array.from(new Set((input.deviceIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
@@ -485,6 +565,20 @@ registerTool({
       console.error(`[aiTools] Failed to schedule remediation for policy ${policy.id}:`, error);
       return JSON.stringify({ error: 'Failed to schedule remediation', policyId: policy.id });
     }
+
+    auditSoftwarePolicyToolEvent(auth, 'remediate_software_violation', {
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      policyName: policy.name,
+      policyAuditAction: 'remediation_requested',
+      auditLogAction: 'software_policy.remediate',
+      details: {
+        requestedCount: deviceIds.length,
+        queued,
+      },
+    });
+
     return JSON.stringify({
       message: `Remediation scheduled for ${queued} device(s)`,
       policyId: policy.id,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';
 
 // ============================================
 // Page Context Validators
@@ -78,6 +79,8 @@ export const aiSessionQuerySchema = z.object({
 
 export const scriptBuilderContextSchema = z.object({
   scriptId: z.string().guid().optional(),
+  targetDeviceId: z.string().guid().optional(),
+  lastTestExecutionId: z.string().guid().optional(),
   editorSnapshot: z.object({
     name: z.string().max(255).optional(),
     content: z.string().max(500_000).optional(),
@@ -85,13 +88,11 @@ export const scriptBuilderContextSchema = z.object({
     language: z.enum(['powershell', 'bash', 'python', 'cmd']).optional(),
     osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).optional(),
     category: z.string().max(100).optional(),
-    parameters: z.array(z.object({
-      name: z.string(),
-      type: z.enum(['string', 'number', 'boolean', 'select']),
-      defaultValue: z.string().optional(),
-      required: z.boolean().optional(),
-      options: z.string().max(1000).optional(),
-    })).max(50).optional(),
+    // The one definition schema (#3409 PR3). The 50-item cap is kept as it
+    // was — it is narrower than the shared MAX_SCRIPT_PARAMETERS (64) because
+    // this snapshot is echoed into an LLM context window, not because the
+    // parameter list itself is bounded differently.
+    parameters: scriptParameterDefinitionsSchema.max(50).optional(),
     runAs: z.enum(['system', 'user', 'elevated']).optional(),
     // The editor snapshot echoes the current form values, which for legacy
     // scripts may hold timeouts saved under the old 86400 intake cap. Tolerate

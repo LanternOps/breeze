@@ -868,6 +868,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "VPN DNS Nombre",
+    "vpnState": "Estado",
+    "vpnConnected": "Conectado",
+    "vpnDisconnected": "Desconectado",
     "detectionSource": "Fuente de detección",
     "agent": "Agente",
     "agentVersion": "Versión del agente",
@@ -1049,6 +1052,7 @@
     "filterByVpn": "Filtrar por VPN",
     "allVpn": "Todo VPN",
     "anyActiveVpn": "Cualquier VPN activo",
+    "vpnDisconnected": "desconectado",
     "off": "apagado",
     "on": "en",
     "multiBootMachinesTuckExpectedOffline": "Máquinas de arranque múltiple: coloque los perfiles de arranque fuera de línea esperados debajo de su hermano en línea como tiras delgadas. Desactivado = lista plana.",
@@ -1256,6 +1260,7 @@
       }
     },
     "installPatchNotApprovedTitle": "Esta organización no ha aprobado {{name}}. Apruebe el parche antes de instalarlo.",
+    "installPatchUserScopeTitle": "{{name}} está instalado en el perfil del usuario que inició sesión. Las apps por usuario aún no se pueden actualizar desde el contexto del sistema.",
     "installPatchTitle": "Instalar {{name}}",
     "loading": "Cargando estado del parche...",
     "notDownloadedTitle": "Aún no descargado: la instalación tardará más",
@@ -1273,6 +1278,9 @@
       "queued": "{{label}} en cola",
       "queuedDetail": "{{label}} en cola{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Por usuario",
+    "perUserBadgeTitle": "Instalado en el perfil del usuario con sesión iniciada; todavía no se puede aplicar el parche desde el contexto del sistema",
+    "perUserNotScanned": "No se analizaron las aplicaciones por usuario (no hay sesión de usuario interactiva); es posible que falten actualizaciones por usuario.",
     "rebootRequired": "Se requiere reinicio",
     "table": {
       "approval": "Aprobación",
@@ -2235,6 +2243,7 @@
     },
     "generalCategory": "General",
     "paramCount": "parámetros {{count}}",
+    "boundParamCount": "{{count}} automáticos",
     "runAs": {
       "system": "Ejecutar como: Sistema",
       "user": "Ejecutar como: usuario registrado"

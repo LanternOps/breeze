@@ -53,9 +53,10 @@ import {
 } from "@/lib/deviceRoles";
 import {
   activeVpnList,
+  vpnList,
   getVpnProviderIcon,
   getVpnProviderLabel,
-  getVpnProviderBadgeClass,
+  getVpnBadgeClass,
   formatVpnTooltip,
 } from "@/lib/vpnProviders";
 import {
@@ -521,11 +522,13 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   // sorts as a blank-last null to match the dash the cell renders (#1284).
   reliability: (d) =>
     typeof d.reliabilityScore === "number" ? d.reliabilityScore : null,
-  // Sort by the first active VPN's provider label; devices with no active VPN
-  // sort blanks-last (null) to match the dash the cell renders (#1284).
+  // Sort by the first badge's provider label — active VPNs sort ahead of
+  // running-but-disconnected ones because vpnList orders them first. Devices
+  // with no VPN at all sort blanks-last (null) to match the dash the cell
+  // renders (#1284).
   vpn: (d) => {
-    const active = activeVpnList(d.activeVpns);
-    return active.length > 0 ? getVpnProviderLabel(active[0].provider) : null;
+    const vpns = vpnList(d.activeVpns);
+    return vpns.length > 0 ? getVpnProviderLabel(vpns[0].provider) : null;
   },
 };
 
@@ -1787,8 +1790,11 @@ export default function DeviceList({
       header: () => sortHeader("vpn", "VPN", "Sort by VPN provider"),
       cell: (device) => {
         // Rendered ONLY from cached inventory (device.activeVpns) — never a
-        // live command fan-out from the table (#2139).
-        const active = activeVpnList(device.activeVpns);
+        // live command fan-out from the table (#2139). Connected VPNs come
+        // first and keep their provider colors; a client that is running with
+        // no tunnel up renders as a muted badge so on/off state is visible
+        // rather than the VPN silently disappearing.
+        const active = vpnList(device.activeVpns);
         if (active.length === 0) {
           return (
             <td
@@ -1803,8 +1809,12 @@ export default function DeviceList({
         const VPN_CHIP_CAP = 2;
         const shown = active.slice(0, VPN_CHIP_CAP);
         const overflow = active.length - shown.length;
+        const stateLabel = (vpn: (typeof active)[number]) =>
+          vpn.active ? undefined : t("deviceList.vpnDisconnected");
         // Full list on the cell title so hover reveals every provider/IP/DNS.
-        const fullTitle = active.map(formatVpnTooltip).join("\n");
+        const fullTitle = active
+          .map((vpn) => formatVpnTooltip(vpn, stateLabel(vpn)))
+          .join("\n");
         return (
           <td
             key="vpn"
@@ -1817,8 +1827,9 @@ export default function DeviceList({
                 return (
                   <span
                     key={`${vpn.provider}:${vpn.interfaceName}`}
-                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${getVpnProviderBadgeClass(vpn.provider)}`}
-                    title={formatVpnTooltip(vpn)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${getVpnBadgeClass(vpn)}`}
+                    title={formatVpnTooltip(vpn, stateLabel(vpn))}
+                    data-vpn-active={vpn.active ? "true" : "false"}
                     data-testid={`device-${device.id}-vpn-badge-${vpn.provider}`}
                   >
                     <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />

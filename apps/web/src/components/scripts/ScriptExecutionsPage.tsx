@@ -106,7 +106,24 @@ export default function ScriptExecutionsPage({ scriptId }: ScriptExecutionsPageP
   }, [fetchScript, fetchExecutions, fetchDevices, fetchSites]);
 
   const handleViewDetails = (execution: ScriptExecution) => {
+    // Open immediately with the list row, then upgrade with the full record —
+    // the list endpoint omits stdout/stderr to keep its payload small.
     setSelectedExecution(execution);
+    void (async () => {
+      try {
+        const response = await fetchWithAuth(`/scripts/executions/${execution.id}`);
+        if (!response.ok) {
+          if (response.status === 401) void navigateTo('/login', { replace: true });
+          return;
+        }
+        const detail = await response.json();
+        setSelectedExecution(prev =>
+          prev && prev.id === execution.id ? { ...prev, ...detail } : prev
+        );
+      } catch {
+        // Keep the list row; the modal still shows status/metadata.
+      }
+    })();
   };
 
   const handleCloseDetails = () => {

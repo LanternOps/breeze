@@ -14,6 +14,7 @@ import {
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { envInt } from '../utils/envInt';
 
+import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 /**
  * Offboarding drain state (#2774).
  *
@@ -185,6 +186,7 @@ async function queueDrainUninstalls(
         status: 'cancelled',
         completedAt: new Date(),
         result: { reason: 'tenant_offboarding' },
+        ...terminalPayloadErasureSet(),
       })
       .where(
         and(
@@ -301,6 +303,7 @@ async function cancelDrainUninstallsForOrgIds(orgIds: string[], reason: string):
       status: 'cancelled',
       completedAt: new Date(),
       result: { reason },
+      ...terminalPayloadErasureSet(),
     })
     .where(
       and(
@@ -462,6 +465,7 @@ async function collectAndCancelOutstanding(
           reason: 'offboarding_window_closed',
           error: 'Offboarding drain window closed: agent never confirmed the uninstall',
         },
+        ...terminalPayloadErasureSet(),
       })
       .where(
         and(

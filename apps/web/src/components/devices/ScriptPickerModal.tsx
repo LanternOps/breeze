@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
-import type { ScriptParameter } from '../scripts/ScriptFormSchema';
+import { runtimeParameters, type ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 
@@ -155,30 +155,38 @@ export default function ScriptPickerModal({
   }, [scripts, query, categoryFilter, deviceOs]);
 
   const handleSelect = (script: Script) => {
-    if (script.parameters && script.parameters.length > 0) {
-      // Seed param values from defaults
-      const defaults: Record<string, unknown> = {};
-      for (const param of script.parameters) {
-        if (param.defaultValue !== undefined) {
-          if (param.type === 'number') {
-            defaults[param.name] = Number(param.defaultValue) || 0;
-          } else if (param.type === 'boolean') {
-            defaults[param.name] = param.defaultValue === 'true';
-          } else {
-            defaults[param.name] = param.defaultValue;
-          }
-        } else {
-          defaults[param.name] = param.type === 'boolean' ? false : param.type === 'number' ? 0 : '';
-        }
-      }
-      setParamValues(defaults);
-      setSelectedScript(script);
-      setParamError(undefined);
-      setView('params');
-    } else {
+    // The parameter STEP is gated on the whole definition list: a fully-bound
+    // script asks for nothing but still injects values per device, so the
+    // operator sees the contract (and a Run button) rather than a run that
+    // fires the instant they click the row. Only a script with no parameters
+    // at all runs straight through.
+    if (!script.parameters || script.parameters.length === 0) {
       onSelect(script, runAs, undefined, showSessionTarget ? targetSessionId : undefined);
       onClose();
+      return;
     }
+
+    // Seeding stays runtime-only (#3409 PR3). A bound parameter is resolved per
+    // target device by the server, so it must never enter `paramValues` — a
+    // supplied value would be ignored and reported back in `ignoredParameters`.
+    const defaults: Record<string, unknown> = {};
+    for (const param of runtimeParameters(script.parameters)) {
+      if (param.defaultValue !== undefined) {
+        if (param.type === 'number') {
+          defaults[param.name] = Number(param.defaultValue) || 0;
+        } else if (param.type === 'boolean') {
+          defaults[param.name] = param.defaultValue === 'true';
+        } else {
+          defaults[param.name] = param.defaultValue;
+        }
+      } else {
+        defaults[param.name] = param.type === 'boolean' ? false : param.type === 'number' ? 0 : '';
+      }
+    }
+    setParamValues(defaults);
+    setSelectedScript(script);
+    setParamError(undefined);
+    setView('params');
   };
 
   const handleBack = () => {
@@ -292,43 +300,61 @@ export default function ScriptPickerModal({
               </div>
             ) : (
               <div className="space-y-2">
-                {filteredScripts.map(script => (
-                  <button
-                    key={script.id}
-                    type="button"
-                    onClick={() => handleSelect(script)}
-                    className="flex w-full items-start gap-3 rounded-lg border p-4 text-left transition hover:bg-muted/50"
-                  >
-                    <div className={cn(
-                      'flex h-8 w-8 shrink-0 items-center justify-center rounded text-xs font-bold',
-                      languageConfig[script.language].color
-                    )}>
-                      {languageConfig[script.language].icon}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium">{script.name}</p>
-                      {script.description && (
-                        <p className="mt-0.5 text-sm text-muted-foreground line-clamp-2">
-                          {script.description}
-                        </p>
-                      )}
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                          {script.category}
-                        </span>
-                        <span>
-                          {script.osTypes.join(', ')}
-                        </span>
-                        {script.parameters && script.parameters.length > 0 && (
-                          <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                            {t('scriptPickerModal.paramCount', { count: script.parameters.length })}
-                          </span>
-                        )}
+                {filteredScripts.map(script => {
+                  // Two separate facts, so two separate badges: how many values
+                  // the operator will be asked for, and how many the server
+                  // injects. Collapsing them into one total would over-report
+                  // the work ("2 param(s)" for one question) and hiding the
+                  // bound ones would under-report what actually reaches the
+                  // device — a fully-bound script would look parameterless.
+                  const runtimeCount = runtimeParameters(script.parameters).length;
+                  const boundCount = (script.parameters?.length ?? 0) - runtimeCount;
+                  return (
+                    <button
+                      key={script.id}
+                      type="button"
+                      onClick={() => handleSelect(script)}
+                      className="flex w-full items-start gap-3 rounded-lg border p-4 text-left transition hover:bg-muted/50"
+                    >
+                      <div className={cn(
+                        'flex h-8 w-8 shrink-0 items-center justify-center rounded text-xs font-bold',
+                        languageConfig[script.language].color
+                      )}>
+                        {languageConfig[script.language].icon}
                       </div>
-                    </div>
-                    <Play className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  </button>
-                ))}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium">{script.name}</p>
+                        {script.description && (
+                          <p className="mt-0.5 text-sm text-muted-foreground line-clamp-2">
+                            {script.description}
+                          </p>
+                        )}
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
+                            {script.category}
+                          </span>
+                          <span>
+                            {script.osTypes.join(', ')}
+                          </span>
+                          {runtimeCount > 0 && (
+                            <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
+                              {t('scriptPickerModal.paramCount', { count: runtimeCount })}
+                            </span>
+                          )}
+                          {boundCount > 0 && (
+                            <span
+                              data-testid={`script-bound-param-count-${script.id}`}
+                              className="inline-flex items-center rounded-full bg-muted px-2 py-0.5"
+                            >
+                              {t('scriptPickerModal.boundParamCount', { count: boundCount })}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <Play className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

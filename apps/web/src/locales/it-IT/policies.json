@@ -1241,7 +1241,11 @@
       "selectAtLeastOnePackage": "Seleziona almeno un pacchetto",
       "failedToImportPackage": "Impossibile aggiungere il pacchetto",
       "installMethods": "Metodi di installazione",
-      "addedPackage": "{{name}} aggiunto"
+      "addedPackage": "{{name}} aggiunto",
+      "installerType": "Tipo di installer",
+      "autoDetectFromUrl": "Rilevamento automatico dall'URL",
+      "autoDetectedType": "Rilevamento automatico ({{type}})",
+      "installerTypeUndetected": "Questo URL non ha un'estensione di installer riconoscibile. Scegli il tipo esplicitamente, altrimenti il file scaricato viene eseguito direttamente, cosa che fallisce per un MSI."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Integrato gestito",
@@ -1750,7 +1754,11 @@
       "saving": "Salvataggio...",
       "uploadSave": "Carica e salva",
       "saveVersion": "Salva versione",
-      "setAsLatest": "Imposta come più recente"
+      "setAsLatest": "Imposta come più recente",
+      "installerType": "Tipo di installer",
+      "autoDetectFromUrl": "Rilevamento automatico dall'URL",
+      "autoDetectedType": "Rilevamento automatico ({{type}})",
+      "installerTypeUndetected": "Questo URL non ha un'estensione di installer riconoscibile. Scegli il tipo esplicitamente, altrimenti il file scaricato viene eseguito direttamente, cosa che fallisce per un MSI."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Inserisci una variabile di distribuzione",

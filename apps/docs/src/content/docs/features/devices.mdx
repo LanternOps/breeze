@@ -52,33 +52,53 @@ Agents on Windows, macOS, and Linux detect active VPN and overlay-network client
 
 Detection works purely from **local signals on the device** — tunnel interface names and addresses, corroborated by the provider's running service or process. It is read-only telemetry: Breeze does not read keys, peer lists, or any VPN configuration, and cannot manage the VPN. For Tailscale, the device's own DNS name is also reported.
 
+### Connected vs. disconnected
+
+Each reported VPN carries a state:
+
+- **Connected** — the tunnel interface is up and carries an overlay address. The interface and addresses are reported.
+- **Disconnected** — the VPN client is installed and running on the device, but no tunnel is up. Only the provider and the detection source are reported; there is no interface or address to show.
+
+A provider is only ever reported when the device gives a concrete signal for it — a tunnel interface, or a running service/process. Breeze never lists a VPN it merely guesses might be installed.
+
+<Aside type="note">
+  A VPN whose client is not running at all is not reported. "Disconnected" means the client is running with no tunnel up, which is the state operators usually care about; a stopped client is indistinguishable from an uninstalled one without scanning the filesystem, which the agent deliberately does not do.
+</Aside>
+
+### Naming tunnels on macOS
+
+macOS tunnels are all named `utunN`, which carries no provider information. The agent resolves the owner per interface from the network extension that created it, so a Mac running several VPN clients at once still names each tunnel correctly.
+
+Clients that create a plain `utun` from a background daemon rather than a network extension — NetBird and OpenVPN among them — expose no owner. Those tunnels are named only when exactly one known VPN client is running on the device; otherwise they show as the generic **VPN** provider rather than risk naming the wrong one. When a tunnel cannot be attributed this way, no VPN on that device is reported as disconnected either, since the unattributed tunnel may well belong to one of the running clients.
+
 <Aside type="note">
   VPN data is the latest snapshot from the agent's periodic network inventory report (roughly every 15 minutes), not a live view. A blank value means either no VPN was detected or the agent is too old to report VPN presence.
 </Aside>
 
 ### On the device list
 
-Enable the **VPN** column via the column picker (it is hidden by default). It shows a badge per active provider, is sortable, and adds a filter dropdown with:
+Enable the **VPN** column via the column picker (it is hidden by default). It shows a badge per provider — connected VPNs first in the provider's color, then any disconnected clients in a muted badge — is sortable, and adds a filter dropdown with:
 
 - **All VPN** — no VPN filtering
 - **Any active VPN** — only devices with at least one active VPN
 - One entry per provider seen in the current list (e.g. **Tailscale**), to show only devices running that provider
 
-Hovering a VPN badge shows the full detail — interface, addresses, and DNS name.
+Hovering a VPN badge shows the full detail — interface, addresses, and DNS name, or `disconnected` for a client with no tunnel up. The filter matches **connected** VPNs only, so a device whose VPN client is running but disconnected does not count as having a VPN.
 
 ### On the device Info tab
 
-When a device has at least one active VPN, its **Info** tab shows a **VPN** section with a card per active tunnel:
+When a device has reported at least one VPN, its **Info** tab shows a **VPN** section with a card per VPN — connected tunnels first, then any disconnected clients:
 
 | Field | Description |
 |-------|-------------|
-| **Interface** | The tunnel interface name on the device. |
+| **State** | Connected, or Disconnected when the client is running with no tunnel up. |
+| **Interface** | The tunnel interface name on the device. Omitted when disconnected. |
 | **VPN IPv4 / VPN IPv6** | The device's overlay-network addresses. |
 | **VPN DNS Name** | The device's name on the overlay network (Tailscale). |
-| **Detection Source** | How the VPN was identified (interface, service, or process). |
+| **Detection Source** | How the VPN was identified (interface, adapter, service, or process). |
 | **Last Reported** | When the agent last reported this VPN. |
 
-The section is hidden entirely when no VPN is active.
+The section is hidden entirely when the device has reported no VPNs at all.
 
 ---
 

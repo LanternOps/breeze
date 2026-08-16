@@ -99,6 +99,11 @@ export const partnerBillingSettingsSchema = z.object({
   // AI copy style for enrich/polish output; null reverts to the built-in house format.
   catalogAiStyle: z.string().max(2000).nullable().optional(),
   invoiceFooter: z.string().max(5000).nullable().optional(),
+  // Document presentation (Spec A): curated theme preset + page size applied
+  // to quote PDFs/HTML. Partner-owned — see documentTheme/documentPageSize on
+  // the `partners` schema for the full justification.
+  documentTheme: z.enum(['classic', 'condensed']).optional(),
+  documentPageSize: z.enum(['letter', 'a4']).optional(),
   // Seller "From" contact profile (snapshotted onto each document at issue).
   billingCompanyName: z.string().max(255).nullable().optional(),
   billingPhone: z.string().max(40).nullable().optional(),

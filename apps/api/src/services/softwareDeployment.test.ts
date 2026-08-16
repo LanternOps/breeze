@@ -375,6 +375,96 @@ describe('createSoftwareDeployment', () => {
     );
   });
 
+  // The fileName/fileType pair the agent receives. This is the bridge the
+  // original MSI-by-URL bug lived on and nothing asserted it: every other
+  // dispatch fixture sets originalFileName, so the `package.${fileType}`
+  // fallback branch — the one every URL-created version takes, because
+  // original_file_name is NULL for all of them — was never evaluated by a test.
+  //
+  // The two fields are COUPLED, not independent: the agent's
+  // validateInstallFileName rejects the command outright unless the filename's
+  // extension equals '.' + fileType.
+  describe('dispatched fileName/fileType pair', () => {
+    const dispatchWithVersion = async (
+      versionOverrides: Record<string, unknown>,
+      deploymentId: string,
+    ) => {
+      const versionRecord = {
+        id: 'ver-ft',
+        catalogId: 'cat-1',
+        s3Key: null,
+        downloadUrl: 'https://dl/acme.msi',
+        checksum: null,
+        originalFileName: null,
+        silentInstallArgs: null,
+        version: '1.0.0',
+        ...versionOverrides,
+      };
+      const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+      const targetDevices = [
+        { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: {} },
+      ];
+
+      selectMock
+        .mockReturnValueOnce(sel([versionRecord]))
+        .mockReturnValueOnce(sel([catalogItem]))
+        .mockReturnValueOnce(sel(targetDevices))
+        .mockReturnValueOnce(selLimit([{ name: 'Acme' }]))
+        .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }]))
+        .mockReturnValueOnce(selJoin([]));
+      insertMock
+        .mockReturnValueOnce(insWithReturning([{ id: deploymentId, orgId: 'org-1' }]))
+        .mockReturnValueOnce(ins());
+
+      await createSoftwareDeployment({
+        orgId: 'org-1',
+        softwareVersionId: 'ver-ft',
+        deploymentType: 'install',
+        deviceIds: ['dev-1'],
+        scheduleType: 'immediate',
+        createdBy: null,
+      });
+
+      return sendCommandMock.mock.calls[0]![1].payload;
+    };
+
+    it('sends package.msi for an MSI version with no original filename', async () => {
+      // Reverting the fix makes this `{fileType:'exe', fileName:'package.exe'}`
+      // — the exact payload that produced ERROR_BAD_EXE_FORMAT on Windows.
+      const payload = await dispatchWithVersion({ fileType: 'msi' }, 'dep-ft-msi');
+      expect(payload.fileType).toBe('msi');
+      expect(payload.fileName).toBe('package.msi');
+    });
+
+    it('keeps the legacy exe fallback for a version with no recorded type', async () => {
+      // Deliberate, not incidental: we never guess a better answer from the URL
+      // at dispatch time, because that would silently override a stored type.
+      const payload = await dispatchWithVersion({ fileType: null }, 'dep-ft-null');
+      expect(payload.fileType).toBe('exe');
+      expect(payload.fileName).toBe('package.exe');
+    });
+
+    it('falls back to exe for a file_type the agent could not install', async () => {
+      // The column is a bare nullable varchar with no CHECK, so anything a
+      // future route or manual UPDATE writes would otherwise reach the device
+      // verbatim and fail only AFTER the download.
+      const payload = await dispatchWithVersion({ fileType: 'rpm' }, 'dep-ft-bogus');
+      expect(payload.fileType).toBe('exe');
+      expect(payload.fileName).toBe('package.exe');
+    });
+
+    it('keeps a stored original filename in step with its type', async () => {
+      const payload = await dispatchWithVersion(
+        { fileType: 'msi', originalFileName: 'AcmeAgent.msi' },
+        'dep-ft-orig',
+      );
+      expect(payload.fileName).toBe('AcmeAgent.msi');
+      // The invariant the agent enforces, stated once here so any future change
+      // to either field has to keep them consistent.
+      expect(payload.fileName.toLowerCase().endsWith(`.${payload.fileType}`)).toBe(true);
+    });
+  });
+
   it('resolves a {{var.<key>}} tenant variable into the download URL (#3409 PR2)', async () => {
     const versionRecord = {
       id: 'ver-var2',

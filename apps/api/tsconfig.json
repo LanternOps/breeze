@@ -5,7 +5,6 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@breeze/extension-api": ["../../packages/extension-api/src"],
       "@breeze/shared": ["../../packages/shared/src"],
       "@breeze/shared/*": ["../../packages/shared/src/*"]
     }

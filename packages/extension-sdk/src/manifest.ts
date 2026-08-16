@@ -17,14 +17,14 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
 /**
  * Route namespaces already owned by the Breeze API.
  *
- * Mirrored verbatim in packages/extension-api/src/legacy.ts; the two sets are
- * asserted equal by packages/extension-api/src/index.test.ts, which also
- * derives the core mounts from apps/api/src/index.ts at test time so a new
- * core mount that isn't reserved here fails the build automatically.
+ * `apps/api/src/extensions/reservedRouteNamespaces.test.ts` DERIVES the core
+ * mount list from apps/api/src/index.ts at test time and fails if a new core
+ * mount isn't reserved here — this list is checked, not hand-trusted. (The test
+ * lives over there because that file is its ground truth.)
  *
  * Exception: `api.route('/', subRouter)` mounts declare their segments in
- * another file and are reserved by hand; a tripwire test pins how many exist.
- * See the fuller note in packages/extension-api/src/legacy.ts.
+ * another file and are reserved by hand; the same test pins which sub-routers
+ * are root-mounted so a change there cannot slip past unnoticed.
  */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
@@ -123,10 +123,13 @@ const tenancySchema = z.object({
   deviceOrgMoveDeleteTables: z.array(z.string()).optional(),
   nonTenantTables: z.array(z.string()).optional(),
   /**
-   * L1 install scoping (authorization, NOT containment — see the tenant-scoped
-   * install design). 'org': the host only dispatches requests / reveals the
-   * install set for orgs with an enabled extension_org_installs row. 'server'
-   * (default): today's behavior, no per-org gating.
+   * Install scoping. RESERVED — the host has no per-org install gate: it
+   * removed `extension_org_installs` and every dispatch path that read it, so
+   * every loaded extension is effectively server-scoped and
+   * `ExtensionRuntimeContext.tenancy.installedOrgs()` always throws. The field
+   * stays in the v1 wire schema (which is `.strict()`, so removing it would
+   * reject manifests that declare it) but declaring 'org' buys nothing today.
+   * Do not treat it as an authorization control.
    */
   installScope: z.enum(['server', 'org']).default('server'),
 }).strict();

@@ -334,6 +334,24 @@ describe('invoiceService guards', () => {
     expect(setArg.defaultMarkupPercent).toBe('12.50'); // numeric(6,2)
   });
 
+  it('updatePartnerBillingSettings writes and returns documentTheme and documentPageSize', async () => {
+    queueResult([{
+      currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+      documentTheme: 'condensed', documentPageSize: 'letter',
+    }]);
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    const row = await svc.updatePartnerBillingSettings(
+      { currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, documentTheme: 'condensed', documentPageSize: 'letter' },
+      actor,
+    );
+    expect(row.documentTheme).toBe('condensed');
+    expect(row.documentPageSize).toBe('letter');
+    const setMock = (db as unknown as { set: { mock: { calls: unknown[][] } } }).set;
+    const setArg = setMock.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(setArg.documentTheme).toBe('condensed');
+    expect(setArg.documentPageSize).toBe('letter');
+  });
+
   it('updatePartnerBillingSettings clears the tax rate and markup when null', async () => {
     queueResult([{ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };

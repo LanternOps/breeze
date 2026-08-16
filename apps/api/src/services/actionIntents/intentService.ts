@@ -165,8 +165,15 @@ export const RELEASE_LEASE_MS = 10 * 60 * 1000;
  * (Task 2) so a future ruleset change can be told apart from intents
  * classified under an older version. Bump when the classification logic
  * changes in a materially observable way.
+ *
+ * v2 (#3552, 2026-08-14): the policy-prerequisite mutators
+ * manage_update_rings / manage_software_policies / manage_peripheral_policies
+ * create+update moved from Tier 2 (auto-execute) to Tier 3 `supervised`, so
+ * they produce approval intents for the first time. Intents for those pairs
+ * only exist from v2 onward; their absence before v2 is a tier gap, not a
+ * gap in the record.
  */
-export const CLASSIFICATION_VERSION = 1;
+export const CLASSIFICATION_VERSION = 2;
 
 const MAX_ARG_VALUE_LEN = 80;
 

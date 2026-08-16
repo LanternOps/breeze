@@ -1,6 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { validateParameters } from './ScriptParametersForm';
+import '@/lib/i18n';
+
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import ScriptParametersForm, { validateParameters } from './ScriptParametersForm';
 import type { ScriptParameter } from './ScriptFormSchema';
+
+// #3409 PR3 — a bound parameter is resolved per target device by the server.
+// Deliberately `required: true`: the whole point is that "required" is evaluated
+// at dispatch after resolution, so it must NOT make this form demand a value.
+const boundVariable: ScriptParameter = {
+  name: 'api_key',
+  type: 'string',
+  required: true,
+  source: 'tenantVariable',
+  variableKey: 'vendor_token',
+};
 
 describe('validateParameters', () => {
   it('returns null when there are no parameters', () => {
@@ -88,5 +102,105 @@ describe('validateParameters', () => {
       { name: 'count', type: 'number', required: true }
     ];
     expect(validateParameters(params, { count: NaN })).toBe('Parameter "count" must be a valid number');
+  });
+
+  it('never requires a value for a bound parameter — the server resolves it per device', () => {
+    expect(validateParameters([boundVariable], {})).toBeNull();
+  });
+
+  it('still enforces the runtime parameters alongside a bound one', () => {
+    const params: ScriptParameter[] = [
+      boundVariable,
+      { name: 'message', type: 'string', required: true },
+    ];
+    expect(validateParameters(params, {})).toBe('Parameter "message" is required');
+    expect(validateParameters(params, { message: 'hi' })).toBeNull();
+  });
+
+  it('does not number-check a bound parameter that happens to carry a stray value', () => {
+    const params: ScriptParameter[] = [
+      { name: 'count', type: 'number', required: false, source: 'builtin', builtinKey: 'org.id' },
+    ];
+    // A stale/injected value must not fail validation locally — dispatch ignores
+    // it and reports it back in `ignoredParameters`.
+    expect(validateParameters(params, { count: 'not-a-number' })).toBeNull();
+  });
+});
+
+describe('ScriptParametersForm rendering', () => {
+  it('renders a bound parameter read-only with its source, and no input', () => {
+    render(
+      <ScriptParametersForm
+        parameters={[{ name: 'message', type: 'string' }, boundVariable]}
+        values={{}}
+        onChange={vi.fn()}
+      />
+    );
+
+    // The runtime parameter is still an editable field.
+    expect(screen.getByPlaceholderText('')).toBeInTheDocument();
+
+    const chip = screen.getByTestId('script-bound-parameter-api_key');
+    expect(chip).toHaveTextContent('Supplied automatically from variable vendor_token');
+    // No control of any kind inside the bound cell — nothing can enter the
+    // outgoing parameters map.
+    expect(chip.querySelector('input')).toBeNull();
+    expect(chip.querySelector('select')).toBeNull();
+    expect(chip.querySelector('textarea')).toBeNull();
+  });
+
+  it('names the binding for each source', () => {
+    render(
+      <ScriptParametersForm
+        parameters={[
+          { name: 'message', type: 'string' },
+          { name: 'tag', type: 'string', source: 'deviceCustomField', fieldKey: 'asset_tag' },
+          { name: 'org', type: 'string', source: 'builtin', builtinKey: 'org.name' },
+        ]}
+        values={{}}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId('script-bound-parameter-tag')).toHaveTextContent(
+      'Supplied automatically from device custom field asset_tag'
+    );
+    expect(screen.getByTestId('script-bound-parameter-org')).toHaveTextContent(
+      'Supplied automatically from org.name'
+    );
+  });
+
+  it('still shows the section when every parameter is bound — the operator must see what gets injected', () => {
+    const { container } = render(
+      <ScriptParametersForm parameters={[boundVariable]} values={{}} onChange={vi.fn()} />
+    );
+
+    expect(screen.getByText('Parameters')).toBeInTheDocument();
+    expect(screen.getByTestId('script-bound-parameter-api_key')).toHaveTextContent(
+      'Supplied automatically from variable vendor_token'
+    );
+    // Visible, but nothing to prompt for: no control anywhere in the form, and
+    // an explicit note so the empty-looking section is not read as a bug.
+    expect(screen.getByTestId('script-parameters-all-supplied')).toBeInTheDocument();
+    expect(container.querySelector('input')).toBeNull();
+    expect(container.querySelector('select')).toBeNull();
+  });
+
+  it('renders nothing when the script has no parameters at all', () => {
+    const { container } = render(
+      <ScriptParametersForm parameters={[]} values={{}} onChange={vi.fn()} />
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('does not show the all-supplied note when there is a runtime parameter to fill', () => {
+    render(
+      <ScriptParametersForm
+        parameters={[{ name: 'message', type: 'string' }, boundVariable]}
+        values={{}}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByTestId('script-parameters-all-supplied')).toBeNull();
   });
 });

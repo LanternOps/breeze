@@ -53,3 +53,21 @@ export interface PublicQuoteCoverPage {
   preparedForName: string | null;
   showPreparedBy: boolean;
 }
+
+/** Document theme/page-size identifiers — mirrors
+ *  apps/api/src/services/documentThemes.ts's DocumentThemeId/DocumentPageSize
+ *  (server-side source of truth; kept in sync manually, same as every other
+ *  type in this file). */
+export type DocumentThemeId = 'classic' | 'condensed';
+export type DocumentPageSize = 'letter' | 'a4';
+
+/** Resolved document presentation, sibling of `branding` on every quote-detail
+ *  DTO (staff, authed portal, public token). Precedence is resolved
+ *  server-side (quote.presentationSnapshot → partner defaults → 'classic'/
+ *  'a4') — see quoteBranding.ts's resolveQuoteBranding for the canonical
+ *  precedence this mirrors. Drives `data-doc-theme` on the rendered document
+ *  shell so a 'condensed' quote loads its themed fonts. */
+export interface QuotePresentation {
+  theme: DocumentThemeId;
+  pageSize: DocumentPageSize;
+}

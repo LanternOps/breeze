@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, patches } from '../../db/schema';
 import * as enrichmentModule from '../../services/thirdPartyEnrichment';
+import * as auditEvents from '../../services/auditEvents';
 import * as wingetWorker from '../../jobs/wingetReleaseTestWorker';
 import { patchesRoutes } from './patches';
 
@@ -42,6 +43,7 @@ const tables = vi.hoisted(() => ({
     lastCheckedAt: 'devicePatches.lastCheckedAt',
     installedAt: 'devicePatches.installedAt',
     installedVersion: 'devicePatches.installedVersion',
+    scope: 'devicePatches.scope',
     updatedAt: 'devicePatches.updatedAt',
   },
 }));
@@ -147,6 +149,7 @@ function mockDeviceLookup(osType = 'linux') {
 
 function mockPatchInsertTx() {
   const insertedRows: Array<Record<string, unknown>> = [];
+  const devicePatchValues: Array<Record<string, unknown>> = [];
   const tx = {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -164,6 +167,7 @@ function mockPatchInsertTx() {
             };
           }
 
+          devicePatchValues.push(values as Record<string, unknown>);
           return {
             returning: vi.fn().mockResolvedValue([]),
           };
@@ -171,7 +175,7 @@ function mockPatchInsertTx() {
       })),
     })),
   };
-  return { tx, insertedRows };
+  return { tx, insertedRows, devicePatchValues };
 }
 
 describe('PUT /agents/:id/patches - third-party fields', () => {
@@ -288,9 +292,25 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
       packageId: 'Mozilla.Firefox',
       source: 'third_party',
     }));
-    expect(patchUpsertSet).toEqual(expect.objectContaining({
-      vendor: 'Mozilla',
-      packageId: 'Mozilla.Firefox',
+    // `patches` is a global, un-tenanted catalog row, so an uncurated (raw
+    // agent) report may only FILL the identity columns, never rewrite them: the
+    // conflict update has to render as COALESCE(existing, incoming) rather than
+    // a bare assignment. The real SQL semantics are proven against Postgres in
+    // patches.integration.test.ts; this only pins the generated shape.
+    expect(patchUpsertSet?.packageId).toEqual(expect.objectContaining({
+      op: 'sql',
+      strings: ['COALESCE(', ', ', ')'],
+      values: ['patches.packageId', 'Mozilla.Firefox'],
+    }));
+    expect(patchUpsertSet?.vendor).toEqual(expect.objectContaining({
+      op: 'sql',
+      strings: ['COALESCE(', ', ', ')'],
+      values: ['patches.vendor', 'Mozilla'],
+    }));
+    // Title is not rewritten at all without curation — it keeps the stored value.
+    expect(patchUpsertSet?.title).toEqual(expect.objectContaining({
+      op: 'sql',
+      values: ['patches.title'],
     }));
   });
 
@@ -331,6 +351,59 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
 
     vi.mocked(enrichmentModule.enrichFromCatalog).mockRestore();
+  });
+
+  it('converts download size to whole MB and clamps it to the integer column ceiling', async () => {
+    async function submitSize(size: number | undefined) {
+      patchRows = [];
+      await app.request(`/agents/${AGENT_ID}/patches`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patches: [{
+            name: 'Sized', source: 'third_party', externalId: 'sized-1',
+            packageId: 'Sized.Pkg', ...(size === undefined ? {} : { size }),
+          }],
+        }),
+      });
+      return patchRows[0]?.downloadSizeMb;
+    }
+
+    expect(await submitSize(5 * 1024 * 1024)).toBe(5);
+    // Rounds up: a partial megabyte still reports as one.
+    expect(await submitSize(1)).toBe(1);
+    expect(await submitSize(undefined)).toBeNull();
+    expect(await submitSize(0)).toBeNull();
+    // `download_size_mb` is a Postgres `integer` and the request schema puts no
+    // upper bound on `size`, so an absurd byte count must be clamped rather
+    // than overflowing the column and aborting the whole scan transaction.
+    expect(await submitSize(Number.MAX_SAFE_INTEGER)).toBe(2147483647);
+  });
+
+  it('audits refused rows with a reason histogram summed across both lists', async () => {
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        // Both lists refuse a row for the SAME reason. Merging the two
+        // histograms by object spread would drop one of the counts.
+        patches: [{ name: 'Bad pending', source: 'third_party', externalId: 'bad-p', packageId: 'winget:--all' }],
+        installed: [{ name: 'Bad installed', source: 'third_party', externalId: 'bad-i', packageId: 'winget:--all' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(expect.objectContaining({ success: true, rejected: 2 }));
+    expect(auditEvents.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'agent.patches.submit',
+        details: expect.objectContaining({
+          rejectedCount: 2,
+          rejectedReasons: { package_id_option_like: 2 },
+        }),
+      }),
+    );
   });
 
   it('persists agent-supplied version into patches.version', async () => {
@@ -506,7 +579,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).toHaveBeenCalledWith(tables.devicePatches);
     expect(tx.insert).not.toHaveBeenCalled();
 
@@ -530,7 +603,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });
@@ -556,7 +629,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, installed: 1, ignored: 0 });
+    expect(body).toEqual({ success: true, installed: 1, ignored: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).toHaveBeenCalledWith(tables.patches);
     expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
@@ -583,7 +656,7 @@ describe('split patch ingest endpoints', () => {
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, installed: 0, ignored: 1 });
+    expect(body).toEqual({ success: true, installed: 0, ignored: 1, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });
@@ -634,7 +707,7 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 1 });
+    expect(body).toEqual({ success: true, pending: 1, rejected: 0 });
 
     expect(tx.update).toHaveBeenCalledTimes(1);
     expect(tx.update).toHaveBeenCalledWith(tables.devicePatches);
@@ -668,12 +741,69 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     expect(tx.update).toHaveBeenCalledTimes(1);
-    // No source scoping: only the deviceId + pending-status conditions.
+    // No source scoping: deviceId + pending-status, plus the user-scope guard
+    // (#2727) — a legacy payload carries no userScopeScanned, so per-user rows
+    // are never tombstoned by it.
     const conditions = (updateWheres[0] as { conds?: unknown[] }).conds ?? [];
-    expect(conditions).toHaveLength(2);
+    expect(conditions).toHaveLength(3);
     expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.deviceId, right: DEVICE_ID });
     expect(conditions).toContainEqual({ op: 'eq', left: tables.devicePatches.status, right: 'pending' });
+    expect(JSON.stringify(updateWheres[0])).toContain('IS DISTINCT FROM');
     expect(tx.insert).toHaveBeenCalledWith(tables.devicePatches);
+  });
+
+  // #2727 — per-user winget results are a second coverage axis: the user-context
+  // pass only runs when somebody is logged in, so user-scope pending rows must
+  // only be swept when the agent explicitly says that pass ran.
+  it('spares user-scope rows unless userScopeScanned is explicitly true', async () => {
+    for (const [payloadFlag, wantGuard] of [[undefined, true], [false, true], [true, false]] as const) {
+      const { tx } = mockPatchInsertTx();
+      const updateWheres = captureUpdateWhere(tx);
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+      const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full: true,
+          coveredSources: ['third_party'],
+          ...(payloadFlag === undefined ? {} : { userScopeScanned: payloadFlag }),
+          patches: [{ name: 'Chrome', source: 'third_party', externalId: 'Google.Chrome', scope: 'user' }],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const serialized = JSON.stringify(updateWheres[0]);
+      if (wantGuard) {
+        expect(serialized, `userScopeScanned=${String(payloadFlag)} must spare user-scope rows`).toContain('IS DISTINCT FROM');
+
+        // Assert the OPERAND too, not just the operator: comparing against the
+        // wrong literal would leave the substring above intact while sparing
+        // the wrong rows.
+        expect(serialized).toContain("IS DISTINCT FROM 'user'");
+        expect(serialized).toContain('devicePatches.scope');
+      } else {
+        expect(serialized, 'a scan that covered user scope may sweep user-scope rows').not.toContain('IS DISTINCT FROM');
+      }
+    }
+  });
+
+  it('persists the reported install scope on the device_patches row', async () => {
+    const { tx, devicePatchValues } = mockPatchInsertTx();
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'third_party',
+        userScopeScanned: true,
+        patches: [{ name: 'Chrome', source: 'third_party', externalId: 'Google.Chrome', scope: 'user' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(devicePatchValues[0]).toMatchObject({ scope: 'user' });
   });
 
   it('full scan with empty coveredSources tombstones nothing', async () => {
@@ -692,7 +822,7 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
 
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ success: true, pending: 0 });
+    expect(body).toEqual({ success: true, pending: 0, rejected: 0 });
     expect(tx.update).not.toHaveBeenCalled();
     expect(tx.insert).not.toHaveBeenCalled();
   });

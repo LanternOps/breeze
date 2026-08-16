@@ -916,7 +916,9 @@
       "timeoutSeconds": "Timeout (Sekunden)",
       "runAs": "Ausführen als",
       "exitCode": "Exit-Code",
-      "severity": "Schweregrad"
+      "severity": "Schweregrad",
+      "source": "Quelle",
+      "fallbackValue": "Ersatzwert"
     },
     "placeholders": {
       "name": "Temporäre Dateien löschen",
@@ -939,7 +941,8 @@
     "parameters": {
       "emptyPrefix": "Noch keine Parameter. Mit Parametern können Benutzer zur Laufzeit Werte angeben – verweisen Sie sie in Ihrem Skript als",
       "emptyMiddle": "(PowerShell/Bash) oder",
-      "emptySuffix": "(Python)."
+      "emptySuffix": "(Python).",
+      "sourceAriaLabel": "Quelle für Parameter {{index}}"
     },
     "execution": {
       "timeoutHint": "Das Skript wird nach dieser Dauer beendet. Die Standardeinstellung von 300 Sekunden (5 Minuten) ist für die meisten Aufgaben geeignet. Maximal 3600 Sekunden (1 Stunde).",
@@ -997,6 +1000,22 @@
       "empty": "Noch keine Variablen.",
       "secretUnavailable": "Geheim – wird erst in einer späteren Version als Umgebungsvariable übergeben.",
       "unknown": "Für {{keys}} existiert keine Variable – die Ausführung schlägt auf jedem Zielgerät fehl, bis Sie sie anlegen."
+    },
+    "parameterSources": {
+      "runtime": "Wird bei der Ausführung abgefragt",
+      "tenantVariable": "Aus einer Variablen",
+      "deviceCustomField": "Aus einem benutzerdefinierten Gerätefeld",
+      "builtin": "Aus einer Geräteeigenschaft"
+    },
+    "parameterBinding": {
+      "variableLabel": "Variablenschlüssel",
+      "variablePlaceholder": "z.B. vendor_token",
+      "fieldLabel": "Schlüssel des benutzerdefinierten Felds",
+      "fieldPlaceholder": "z.B. asset_tag",
+      "builtinLabel": "Eigenschaft",
+      "chooseTitle": "Variable auswählen",
+      "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
+      "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
     }
   },
   "scriptList": {
@@ -1053,7 +1072,13 @@
       "number": "Parameter „{{name}}“ muss eine gültige Zahl sein"
     },
     "title": "Parameter",
-    "selectPlaceholder": "Wählen Sie..."
+    "selectPlaceholder": "Wählen Sie...",
+    "allSupplied": "Alle Parameter werden automatisch bereitgestellt – es ist nichts auszufüllen.",
+    "suppliedBy": {
+      "tenantVariable": "Wird automatisch aus der Variablen {{key}} übernommen",
+      "deviceCustomField": "Wird automatisch aus dem benutzerdefinierten Gerätefeld {{key}} übernommen",
+      "builtin": "Wird automatisch aus {{key}} übernommen"
+    }
   },
   "scriptTagManager": {
     "errors": {
@@ -1216,5 +1241,37 @@
     "scriptCount": "{{count}} Skripte im Bundle",
     "statusInvalid": "Ungültig",
     "exportLimit": "Sie können bis zu {{max}} Skripte pro Bundle exportieren."
+  },
+  "testRunner": {
+    "title": "Testlauf",
+    "devicePlaceholder": "Testgerät auswählen…",
+    "noDevices": "Keine kompatiblen Geräte",
+    "deviceStatus": {
+      "offline": "nicht verbunden",
+      "maintenance": "Wartung"
+    },
+    "run": "Testlauf starten",
+    "saveAndRun": "Speichern & Testlauf",
+    "saveFirst": "Speichern Sie das Skript einmal, um Testläufe zu aktivieren.",
+    "requiredParams": "Pflichtparameter ohne Standardwerte ({{params}}) — verwenden Sie stattdessen den Dialog „Skript ausführen“.",
+    "offlineWarning": "Das ausgewählte Gerät ist offline — der Lauf wartet, bis es sich wieder verbindet.",
+    "exitCode": "Exit {{code}}",
+    "viewHistory": "Verlauf anzeigen",
+    "status": {
+      "pending": "In Warteschlange",
+      "running": "Läuft",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelled": "Abgebrochen"
+    },
+    "errors": {
+      "execute": "Testlauf konnte nicht gestartet werden",
+      "save": "Speichern fehlgeschlagen — beheben Sie die Fehler oben und versuchen Sie es erneut.",
+      "notStarted": "Der Lauf wurde nicht gestartet (das Gerät befindet sich möglicherweise in Wartung).",
+      "pollDeadline": "Noch kein Ergebnis — prüfen Sie den Ausführungsverlauf.",
+      "pollFailed": "Ergebnis konnte nicht gelesen werden — der Lauf wurde möglicherweise gelöscht oder Ihr Zugriff hat sich geändert."
+    }
   }
 }

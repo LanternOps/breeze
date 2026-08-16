@@ -1,68 +1,74 @@
 ---
 title: Extensions
-description: Signed runtime bundles that extend Breeze with additional routes, AI tools, background jobs, and web surfaces.
+description: First-party built-in extensions that ship inside the API image and are enabled per deployment.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Extensions are signed runtime bundles the operator provisions server-wide. Each
-extension declares a manifest (`name`, `routeNamespace`, migrations, and a
-`tenancy` block) that the host verifies, migrates, and activates at startup.
-Once active, an extension can contribute HTTP routes (mounted at
-`/api/v1/ext/<name>/…`, with a legacy alias at `/api/v1/<routeNamespace>/…`),
-AI tools exposed over the MCP server, and background jobs — all running
-in-process against the same request-scoped, RLS-bounded database handle core
-routes use.
+Extensions are **first-party modules compiled into the API image**. They are
+not downloaded, installed, or provisioned — the code is already in the image
+you run. Breeze currently ships one: **Workspace**.
+
+Compiled in is not the same as loaded. Every built-in is **off by default** and
+loads at boot only when its deployment enable flag is set. A built-in that is
+switched off costs nothing: no migrations run, no tables are created, and none
+of its infrastructure requirements apply.
+
+| Extension | Enable flag | Notes |
+| --- | --- | --- |
+| Workspace (file/email indexing and content search) | `BREEZE_WORKSPACE_ENABLED` | Requires a Postgres image with `pgvector` available |
+
+The flag is strict: only the exact string `true` enables the extension.
 
 <Aside type="note">
-  This page covers the *runtime extension* system (`installed_extensions`,
-  manifest-declared bundles). It is unrelated to the separate, older
-  [Plugins](/features/plugins/) catalog (`plugin_catalog` /
+  This page covers **built-in extensions** (`installed_extensions`, the
+  manifest-declared modules under `ee/`). It is unrelated to the separate,
+  older [Plugins](/features/plugins/) catalog (`plugin_catalog` /
   `plugin_installations`).
 </Aside>
 
 ---
 
-## Tenant-scoped installs
+## What an enabled extension contributes
 
-By default an extension serves every organization on the server
-(`installScope: "server"`). An extension may opt in to per-tenant activation by
-declaring, in its manifest `tenancy` block:
+When its flag is set, the extension's migrations are applied at API startup and
+its manifest-declared contributions become active:
 
-```json
-"tenancy": { "installScope": "org" }
+- **HTTP routes**, mounted at `/api/v1/ext/<name>/…` with an alias at
+  `/api/v1/<routeNamespace>/…`. They run in-process against the same
+  request-scoped, RLS-bounded database handle core routes use.
+- **Web surfaces** — pages, navigation entries, and slot elements — discovered
+  by the web app through `GET /api/v1/extensions/registry`.
+- **Background jobs and AI tools**, where the manifest declares them.
+
+A built-in is required code shipped inside the image, so any failure while
+loading one (migration, staging, validation, activation) **aborts API startup**
+rather than degrading silently.
+
+## What Breeze does not have
+
+- **No third-party extension mechanism.** There is no way to add an extension
+  to a running deployment; the set of extensions is whatever the image was
+  built with.
+- **No signed runtime bundles.** There is no artifact format, no packing or
+  signing tool, no `extensions.yaml`, and no extensions directory to mount.
+- **No per-organization activation.** An enabled extension serves every
+  organization on the server. There are no per-org install or activation
+  endpoints.
+
+## Enabling Workspace
+
+Set the flag on the API service and restart:
+
+```bash
+BREEZE_WORKSPACE_ENABLED=true
 ```
 
-The operator still provisions one bundle server-wide; activation is an
-authorization record per organization. Partner admins manage activations
-(bounded by their accessible organizations):
-
-- `PUT /api/v1/extensions/:name/orgs/:orgId` — activate
-- `DELETE /api/v1/extensions/:name/orgs/:orgId` — deactivate
-- `GET /api/v1/extensions/:name/orgs` — list activations the caller may see
-
-A non-activated organization receives **404** on both `/api/v1/ext/<name>/…`
-and the legacy `/api/v1/<routeNamespace>/…` request dispatch, and the same
-non-disclosure treatment on extension-contributed AI tools — a non-activated
-org's callers never see the tool in an MCP `tools/list`, and a direct
-`tools/call` against it fails the same non-disclosure way as an HTTP 404,
-without revealing whether the tool or the org is the reason.
-
-<Aside type="caution">
-  The **web slice** is not yet org-filtered: the `/api/v1/extensions/registry`
-  listing and its digest-addressed web asset serving gate only on the
-  extension's fleet-wide enabled flag, not on per-org install state. Any
-  authenticated user can see a `tenancy: "org"` extension in that registry and
-  fetch its web assets regardless of whether their org is activated for it.
-  This is deferred to the web slice's own org-filtering work, not covered by
-  this L1 install-scoping layer.
-</Aside>
-
-Background jobs are **not** host-enforced to the install set — the host does
-not intercept or filter job execution. An extension's own job handler is
-responsible for reading `context.tenancy.installedOrgs()` and scoping its own
-work to that set; a job that ignores it will run against every organization
-on the server regardless of activation.
-
-This is install **scoping** (authorization), not sandboxing: it decides which
-tenants an extension serves, not what its code can access.
+Workspace's migrations run `CREATE EXTENSION vector` on boot, so the database
+must be a `pgvector`-capable Postgres. The `POSTGRES_IMAGE_REF` that Breeze
+ships by default (`pgvector/pgvector:pg16`) already includes it; if you supply
+your own Postgres image, provide `pgvector` before setting the flag or the API
+will fail to start with `extension "vector" is not available`. See
+[Production deployment](/deploy/production/) for the database details,
+including the upgrade caveat about swapping images over an existing data
+volume.

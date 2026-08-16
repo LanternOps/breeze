@@ -10,6 +10,8 @@ import {
   type QuoteBlock,
   type QuoteLine,
   type ContractBlockContent,
+  type QuoteTableContent,
+  type QuoteCalloutContent,
   STATUS_ROLES,
   statusLabel,
   formatDate,
@@ -283,10 +285,80 @@ function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block
       </div>
     );
   }
-  // line_items
-  const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');
-  const showSubtotal = block.content?.showSubtotal === true;
-  return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} showSubtotal={showSubtotal} />;
+  if (block.blockType === 'table') {
+    // Structured JSON, never HTML-parsed — column labels and cell values are
+    // sanitized server-side with the inline-only profile (quoteService's
+    // read-path sanitizer), safe for dangerouslySetInnerHTML per the rich_text
+    // precedent above.
+    const content = block.content as Partial<QuoteTableContent> | undefined;
+    if (!content?.columns?.length || !content?.rows?.length) return null;
+    return (
+      <div className="overflow-x-auto" data-testid="quote-table-block">
+        <table className="w-full border-collapse text-sm">
+          <thead>
+            <tr className={content.headerStyle === 'plain' ? 'border-b-2' : 'border-b-2 bg-primary/10'}>
+              {content.columns.map((col, i) => (
+                <th
+                  key={i}
+                  style={{ textAlign: col.align ?? 'left' }}
+                  className="px-3 py-2 font-semibold text-foreground"
+                  dangerouslySetInnerHTML={{ __html: col.label }}
+                />
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {content.rows.map((row, ri) => (
+              <tr key={ri} className={content.zebra && ri % 2 === 1 ? 'bg-muted/30' : undefined}>
+                {row.cells.map((cell, ci) => (
+                  <td
+                    key={ci}
+                    style={{ textAlign: content.columns?.[ci]?.align ?? 'left' }}
+                    className="px-3 py-2 align-top text-foreground/90"
+                    dangerouslySetInnerHTML={{ __html: cell }}
+                  />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {content.caption && <p className="mt-1 text-xs text-muted-foreground">{content.caption}</p>}
+      </div>
+    );
+  }
+  if (block.blockType === 'callout') {
+    // Same sanitized-HTML precedent as rich_text — server-sanitized on both
+    // write and read before it ever reaches this component.
+    const content = block.content as Partial<QuoteCalloutContent> | undefined;
+    if (!content?.html?.trim()) return null;
+    const tone =
+      content.variant === 'warn'
+        ? 'border-amber-500/40 bg-amber-500/10'
+        : content.variant === 'accent'
+          ? 'border-primary/40 bg-primary/10'
+          : 'border-border bg-muted/40';
+    return (
+      <div className={`rounded-lg border-l-4 p-4 ${tone}`} data-testid="quote-callout-block">
+        {content.title && <p className="mb-1 text-sm font-semibold text-foreground">{content.title}</p>}
+        <div
+          className="quote-rich-text prose prose-sm max-w-prose dark:prose-invert"
+          dangerouslySetInnerHTML={{ __html: content.html }}
+        />
+      </div>
+    );
+  }
+  if (block.blockType === 'line_items') {
+    const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');
+    const showSubtotal = block.content?.showSubtotal === true;
+    return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} showSubtotal={showSubtotal} />;
+  }
+  // Unknown/future blockType — staff-facing visible placeholder rather than
+  // silently rendering nothing (spec §4).
+  return (
+    <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground" data-testid="unsupported-block">
+      {t('quotes.document.unsupportedBlock')}
+    </div>
+  );
 }
 
 interface DocumentProps {
@@ -300,7 +372,7 @@ interface DocumentProps {
  *  logo/accent. Works for drafts (no portal round-trip). */
 export function QuoteDocument({ detail, customerName }: DocumentProps) {
   const { t } = useTranslation('billing');
-  const { quote, blocks, lines, branding, billTo } = detail;
+  const { quote, blocks, lines, branding, billTo, presentation } = detail;
   // Customer billing address lines (resolved server-side from the org's Billing
   // settings for drafts, or the frozen snapshot once sent). Empty when the org
   // has saved no billing address — the block then shows just the name.
@@ -342,6 +414,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
     <div
       style={accentStyle}
       data-testid="quote-document"
+      data-doc-theme={presentation?.theme ?? 'classic'}
       className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
     >
       <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">

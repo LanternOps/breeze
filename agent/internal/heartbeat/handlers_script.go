@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/privilege"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
@@ -23,7 +24,59 @@ func init() {
 	handlerRegistry[tools.CmdScriptListRunning] = handleScriptListRunning
 }
 
+// handleScript is a thin wrapper that owns two invariants for EVERY exit path
+// of script execution — including early failures, the user-helper path, and
+// panicking-free error returns:
+//
+//  1. a malformed `secretEnv` fails the command before any script runs, and
+//  2. the delivered secret values are stripped from stdout, stderr AND error.
+//
+// `Error` in particular was copied raw out of the executor and out of the
+// helper IPC result, so a credential echoed into an error message reached the
+// server unredacted. BOTH error passes live here — the pattern-based
+// SanitizeOutput as well as the exact-value redactor — rather than at the eight
+// executor sites that assign result.Error, so a new failure path cannot
+// silently opt out. Mirrors the server's own chokepoint invariant
+// (redactAgentResultErrorFields as the first statement of processCommandResult,
+// apps/api/src/routes/agentWs.ts).
 func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	secretEnv, err := executor.ParseSecretEnv(cmd.Payload[executor.SecretEnvPayloadKey])
+	if err != nil {
+		// Fail closed: never run a script whose secret map we could not
+		// validate. ParseSecretEnv error text names keys, never values — but
+		// the key is server-supplied text, so it gets the same sanitizer as
+		// every other Error below.
+		return tools.CommandResult{
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode:   1,
+			Error:      executor.SanitizeOutput(fmt.Sprintf("refusing to execute script: %v", err)),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+	res := handleScriptInner(h, cmd, secretEnv)
+	// Unconditional, and centralized here rather than at the result-build
+	// sites: the two tools.NewErrorResult returns (the executor error below and
+	// the helper IPC send failure in executeViaUserHelper — the latter is a
+	// live path) never had a sanitizer at all, which is precisely the "a new
+	// failure path silently opts out" failure this wrapper exists to prevent.
+	// Stdout/Stderr stay sanitized at their build sites; only Error moved.
+	res.Error = executor.SanitizeOutput(res.Error)
+	if len(secretEnv) == 0 {
+		return res
+	}
+	redact := executor.BuildSecretRedactor(secretEnv.Values())
+	res.Stdout = redact(res.Stdout)
+	res.Stderr = redact(res.Stderr)
+	res.Error = redact(res.Error)
+	return res
+}
+
+// handleScriptInner is the original handler body. Every return it makes flows
+// back through handleScript's redaction — do not call it (or the helper paths
+// it owns: executeViaUserHelper, executeScriptInSession) from anywhere else.
+func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) tools.CommandResult {
 	start := time.Now()
 	script := executor.ScriptExecution{
 		ID:         cmd.ID,
@@ -42,6 +95,11 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 			}
 		}
 	}
+	// Validated by handleScript's ParseSecretEnv. Deliberately set AFTER the
+	// parameters block: secrets ride the process environment (buildEnvironment)
+	// and must never reach SubstituteParameters or validateScript, which would
+	// write them into the temp script file on the customer's disk.
+	script.SecretEnv = secretEnv
 	if script.Script == "" {
 		return tools.CommandResult{
 			Status: "failed",
@@ -55,6 +113,29 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	targetSessionID := -1
 	if ts, ok := cmd.Payload["targetSessionId"].(float64); ok && ts >= 0 && ts <= 65535 {
 		targetSessionID = int(ts)
+	}
+
+	// #3409 PR4b: secrets are delivered as process environment to the LOCAL
+	// executor only. The user-helper path forwards the raw payload over IPC and
+	// the helper never reads parameters or env (userhelper/client.go
+	// executeScript), so a user-context run would execute with the credential
+	// UNSET — anonymous access, an auth fallback, a lockout, or a destructive
+	// operation against the wrong target. Refuse instead. Lifting this needs a
+	// separately-versioned user-helper binary rollout (HelperVersion), which is
+	// deliberately out of scope for v1.
+	//
+	// Placed immediately after targetSessionID is derived so it precedes BOTH
+	// helper branches — the session-targeted one below and the
+	// resolveRunAsSession one after it.
+	if len(script.SecretEnv) > 0 && !runAsSupportsSecrets(script.RunAs, targetSessionID) {
+		return tools.CommandResult{
+			Status: "failed",
+			// Synthetic exit code: no process ran (see tools.CommandResult.ExitCode).
+			ExitCode: 1,
+			Error: "script uses secret variables, which require system-context execution; " +
+				"this script is configured to run as a user and was not executed",
+			DurationMs: time.Since(start).Milliseconds(),
+		}
 	}
 
 	// Explicit session targeting (RDS phase 1): route to exactly that
@@ -125,12 +206,52 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 		status = "timeout"
 	}
 	return tools.CommandResult{
-		Status:     status,
-		ExitCode:   scriptResult.ExitCode,
-		Stdout:     executor.SanitizeOutput(scriptResult.Stdout),
-		Stderr:     executor.SanitizeOutput(scriptResult.Stderr),
+		Status:   status,
+		ExitCode: scriptResult.ExitCode,
+		Stdout:   executor.SanitizeOutput(scriptResult.Stdout),
+		Stderr:   executor.SanitizeOutput(scriptResult.Stderr),
+		// Error is deliberately raw here: handleScript sanitizes it for every
+		// exit path, including the NewErrorResult return above that never
+		// reached this build site. The timeout classification a few lines up
+		// also needs the unmodified text.
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
+// isRunningElevated is an indirection over privilege.IsRunningAsRoot so the
+// elevated-path gate below can be tested deterministically on both root and
+// non-root hosts; CI runners differ.
+var isRunningElevated = privilege.IsRunningAsRoot
+
+// runAsSupportsSecrets reports whether an execution with this runAs setting
+// will reach the LOCAL executor *with its environment intact* — the only way
+// BREEZE_VAR_* actually arrives.
+//
+// "" and system always do. An explicit username is refused even though it
+// currently falls through to local execution on an unresolved lookup — that
+// fall-through is a best-effort downgrade, and downgrading a secret-bearing run
+// is exactly what must not happen silently.
+//
+// `elevated` is admitted ONLY when the agent is already elevated, mirroring
+// executor.configureRunAs's own short-circuit. On a non-root Unix agent
+// configureRunAs re-execs the command through `sudo -n` with no -E /
+// --preserve-env, and sudo's default env_reset discards the BREEZE_VAR_*
+// entries built into cmd.Env — the script would run with the credential UNSET,
+// the same silent-wrong-run the helper IPC path is blocked for, reached by a
+// different mechanism. (-E is not the fix: it would change behavior for every
+// existing script and sudoers can refuse it outright.)
+func runAsSupportsSecrets(runAs string, targetSessionID int) bool {
+	if targetSessionID >= 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(runAs)) {
+	case "", "system":
+		return true
+	case "elevated":
+		return isRunningElevated()
+	default:
+		return false
 	}
 }
 
@@ -270,7 +391,10 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 		)
 	}
 
-	// Translate IPC result to tools.CommandResult
+	// Translate IPC result to tools.CommandResult. Error is copied raw and
+	// sanitized once, centrally, in handleScript — the send-failure return
+	// above never passes through here, so sanitizing at this site would have
+	// left that path uncovered.
 	cmdResult := tools.CommandResult{
 		Status:     result.Status,
 		Error:      result.Error,

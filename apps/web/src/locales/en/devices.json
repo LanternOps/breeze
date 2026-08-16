@@ -868,6 +868,9 @@
     "vpnIpv4": "VPN IPv4",
     "vpnIpv6": "VPN IPv6",
     "vpnDnsName": "VPN DNS Name",
+    "vpnState": "State",
+    "vpnConnected": "Connected",
+    "vpnDisconnected": "Disconnected",
     "detectionSource": "Detection Source",
     "agent": "Agent",
     "agentVersion": "Agent Version",
@@ -1049,6 +1052,7 @@
     "filterByVpn": "Filter by VPN",
     "allVpn": "All VPN",
     "anyActiveVpn": "Any active VPN",
+    "vpnDisconnected": "disconnected",
     "off": "off",
     "on": "on",
     "multiBootMachinesTuckExpectedOffline": "Multi-boot machines: tuck expected-offline boot profiles beneath their online sibling as thin strips. Off = flat list.",
@@ -1256,6 +1260,7 @@
       }
     },
     "installPatchNotApprovedTitle": "This org has not approved {{name}}. Approve the patch before installing.",
+    "installPatchUserScopeTitle": "{{name}} is installed in the logged-in user's profile. Per-user apps cannot be patched from the system context yet.",
     "installPatchTitle": "Install {{name}}",
     "loading": "Loading patch status...",
     "notDownloadedTitle": "Not yet downloaded -- install will take longer",
@@ -1273,6 +1278,9 @@
       "queued": "{{label}} queued",
       "queuedDetail": "{{label}} queued{{commandSuffix}}{{dispatchSuffix}}{{jobSuffix}}."
     },
+    "perUserBadge": "Per-user",
+    "perUserBadgeTitle": "Installed in the logged-in user's profile; cannot be patched from the system context yet",
+    "perUserNotScanned": "Per-user apps were not scanned (no interactive user session) — per-user updates may be missing.",
     "rebootRequired": "Reboot required",
     "table": {
       "approval": "Approval",
@@ -2235,6 +2243,7 @@
     },
     "generalCategory": "General",
     "paramCount": "{{count}} param(s)",
+    "boundParamCount": "{{count}} auto-supplied",
     "runAs": {
       "system": "Run as: System",
       "user": "Run as: Logged-in user"

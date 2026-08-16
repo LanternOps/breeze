@@ -111,8 +111,8 @@ export default function ExecutionHistory({
     return executions.filter(execution => {
       const matchesQuery = normalizedQuery.length === 0
         ? true
-        : execution.scriptName.toLowerCase().includes(normalizedQuery) ||
-          execution.deviceHostname.toLowerCase().includes(normalizedQuery);
+        : (execution.scriptName ?? '').toLowerCase().includes(normalizedQuery) ||
+          (execution.deviceHostname ?? '').toLowerCase().includes(normalizedQuery);
 
       const matchesStatus = statusFilter === 'all' ? true : execution.status === statusFilter;
 
@@ -149,10 +149,10 @@ export default function ExecutionHistory({
       let cmp = 0;
       switch (sortColumn) {
         case 'scriptName':
-          cmp = a.scriptName.localeCompare(b.scriptName);
+          cmp = (a.scriptName ?? '').localeCompare(b.scriptName ?? '');
           break;
         case 'device':
-          cmp = a.deviceHostname.localeCompare(b.deviceHostname);
+          cmp = (a.deviceHostname ?? '').localeCompare(b.deviceHostname ?? '');
           break;
         case 'status':
           cmp = a.status.localeCompare(b.status);

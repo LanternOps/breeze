@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Undo2, Redo2 } from 'lucide-react';
-import { useScriptAiStore } from '@/stores/scriptAiStore';
+import { useScriptAiStore, buildEditorContext } from '@/stores/scriptAiStore';
 import ScriptAiMessages from './ScriptAiMessages';
 import ScriptAiInput from './ScriptAiInput';
 import type { ScriptFormBridge } from '@/stores/scriptAiStore';
@@ -36,10 +36,7 @@ export default function ScriptAiPanel({ bridge }: ScriptAiPanelProps) {
   // Create session when panel mounts for the first time
   useEffect(() => {
     if (!sessionId) {
-      const formValues = bridge.getFormValues();
-      createSession({
-        editorSnapshot: formValues,
-      });
+      createSession(buildEditorContext(bridge));
     }
   }, [sessionId, createSession, bridge]);
 

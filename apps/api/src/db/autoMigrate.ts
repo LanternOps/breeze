@@ -2,12 +2,10 @@
 // entrypoint (db:migrate) that, via seed, gates on NODE_ENV. See #917 (L-6).
 import '../config/normalizeNodeEnv';
 import { createHash } from 'node:crypto';
-import { readdirSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { discoverExtensions } from '../extensions/discovery';
 import { ensureAppRole } from './ensureAppRole';
 import { seed } from './seed';
 
@@ -22,51 +20,42 @@ export interface PlannedMigration {
   filePath: string;
 }
 
-/** Core filenames (already discovered+sorted) + extension files, extensions last. */
-export function planMigrations(
-  coreFilenames: string[],
-  extensionsRoot?: string,
-): PlannedMigration[] {
-  const core: PlannedMigration[] = coreFilenames.map((filename) => ({
+/**
+ * Core filenames (already discovered+sorted), resolved to absolute paths.
+ *
+ * Core migrations are the ONLY thing this planner knows about. Extension
+ * migrations are applied by the extension migrator
+ * (`extensions/migrator.ts`), which writes its own namespaced rows
+ * (`<extension>/<file>`) into the SAME `breeze_migrations` ledger — this
+ * planner never sees them and never applies them.
+ */
+export function planMigrations(coreFilenames: string[]): PlannedMigration[] {
+  return coreFilenames.map((filename) => ({
     ledgerName: filename,
     filePath: path.join(resolveMigrationsDir(), filename),
   }));
-  const extensions: PlannedMigration[] = [];
-
-  for (const extension of discoverExtensions(extensionsRoot)) {
-    if (!extension.migrationsDir) continue;
-    const files = readdirSync(extension.migrationsDir)
-      .filter((name) => MIGRATION_FILE_PATTERN.test(name))
-      .sort((a, b) => a.localeCompare(b));
-    for (const filename of files) {
-      extensions.push({
-        ledgerName: `${extension.name}/${filename}`,
-        filePath: path.join(extension.migrationsDir, filename),
-      });
-    }
-  }
-
-  return [...core, ...extensions];
 }
 
-/** Split ledger rows into checksum-verifiable vs skip (absent extension). */
+/**
+ * Split ledger rows into checksum-verifiable (core) vs skipped (namespaced
+ * extension rows).
+ *
+ * A row is verifiable here only if it is a bare core filename. Namespaced
+ * `<extension>/<file>` rows belong to the extension migrator, which owns their
+ * checksums; the core boot loop has no file on disk to hash them against and
+ * must not treat their absence from `planMigrations` as drift.
+ *
+ * Exported for `scripts/check-drift.ts`, which reports the skipped rows.
+ */
 export function partitionLedgerRows(
   ledgerFilenames: string[],
-  extensionsRoot?: string,
 ): { verify: string[]; skip: string[] } {
-  const presentExtensions = new Set(
-    discoverExtensions(extensionsRoot).map((extension) => extension.name),
-  );
   const verify: string[] = [];
   const skip: string[] = [];
 
   for (const filename of ledgerFilenames) {
-    const slash = filename.indexOf('/');
-    if (slash === -1 || presentExtensions.has(filename.slice(0, slash))) {
-      verify.push(filename);
-    } else {
-      skip.push(filename);
-    }
+    if (filename.includes('/')) skip.push(filename);
+    else verify.push(filename);
   }
 
   return { verify, skip };
@@ -515,7 +504,7 @@ export async function autoMigrate(): Promise<void> {
     ]);
     for (const filename of ledgerRowsToSkip) {
       console.warn(
-        `[auto-migrate] skipping checksum for ${filename} — extension not present`,
+        `[auto-migrate] skipping checksum for ${filename} — extension-owned ledger row`,
       );
     }
     const verifiableLedgerRows = new Set(ledgerRowsToVerify);

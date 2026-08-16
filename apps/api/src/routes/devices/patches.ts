@@ -309,6 +309,7 @@ patchesRoutes.get(
         id: devicePatches.id,
         patchId: devicePatches.patchId,
         status: devicePatches.status,
+        scope: devicePatches.scope,
         installedAt: devicePatches.installedAt,
         lastCheckedAt: devicePatches.lastCheckedAt,
         failureCount: devicePatches.failureCount,
@@ -334,6 +335,7 @@ patchesRoutes.get(
         status: deviceCommands.status,
         createdAt: deviceCommands.createdAt,
         completedAt: deviceCommands.completedAt,
+        result: deviceCommands.result,
       })
       .from(deviceCommands)
       .where(
@@ -347,6 +349,32 @@ patchesRoutes.get(
       .limit(1);
 
     const lastPatchScan = lastPatchScanRows[0] ?? null;
+
+    // #2727 — did the last scan cover per-user installs?
+    //
+    // The stored command result is the agent's ENVELOPE
+    // ({status, exitCode, stdout, ...}) with the handler's payload sitting in
+    // `stdout` as a JSON *string* (tools.NewSuccessResult). Reading
+    // `result.userScopeScanned` directly would therefore always be undefined —
+    // go through safeParsePatchResult, the same unwrapping this file already
+    // uses for pendingCount et al.
+    //
+    // null (not false) when the field is absent: an older agent, a non-Windows
+    // device, or one with no winget provider has not told us it failed to scan
+    // per-user apps — it has told us nothing. Only an explicit false means
+    // "tried and could not", which is what the UI notes.
+    let lastPatchScanUserScopeScanned: boolean | null = null;
+    let lastPatchScanUserScopeSkipReason: string | null = null;
+    const lastPatchScanResult = asRecord(safeParsePatchResult(lastPatchScan?.result));
+    if (lastPatchScanResult) {
+      const scanPayload = asRecord(lastPatchScanResult.stdout) ?? lastPatchScanResult;
+      if (typeof scanPayload.userScopeScanned === 'boolean') {
+        lastPatchScanUserScopeScanned = scanPayload.userScopeScanned;
+      }
+      if (typeof scanPayload.userScopeSkipReason === 'string') {
+        lastPatchScanUserScopeSkipReason = scanPayload.userScopeSkipReason;
+      }
+    }
     const patchIds = [...new Set(devicePatchList.map((patch) => patch.patchId))];
     // Derive the partner from the device's org. If the lookup returns null (no partner
     // found), treat the approved set as empty — all patches are unapproved (fail-safe).
@@ -371,6 +399,7 @@ patchesRoutes.get(
         category: p.category,
         source: p.source,
         requiresReboot: p.requiresReboot,
+        scope: p.scope,
         approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
       }));
 
@@ -389,6 +418,7 @@ patchesRoutes.get(
         category: p.category,
         source: p.source,
         requiresReboot: p.requiresReboot,
+        scope: p.scope,
         approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
       }));
 
@@ -406,6 +436,7 @@ patchesRoutes.get(
         installedAt: p.installedAt,
         category: p.category,
         source: p.source,
+        scope: p.scope,
         approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending'
       }));
 
@@ -433,6 +464,8 @@ patchesRoutes.get(
         compliancePercent,
         lastPatchScanAt: lastPatchScan?.completedAt ?? lastPatchScan?.createdAt ?? null,
         lastPatchScanStatus: lastPatchScan?.status ?? null,
+        lastPatchScanUserScopeScanned,
+        lastPatchScanUserScopeSkipReason,
         pending,
         missing,
         installed,

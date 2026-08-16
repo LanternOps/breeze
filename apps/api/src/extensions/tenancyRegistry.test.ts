@@ -1,36 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-vi.mock('./discovery', () => ({
-  discoverExtensions: vi.fn(() => [
-    {
-      name: 'sample',
-      dir: '/x/sample',
-      migrationsDir: null,
-      manifest: {
-        name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-        migrationsDir: 'migrations', helperRoutes: false,
-        tenancy: {
-          orgCascadeDeleteTables: ['sample_items', 'memory_blocks'],
-          orgExportColumns: {
-            sample_items: {
-              include: ['id', 'org_id', 'display_name', 'access_token_status'],
-              exclude: ['credential_hash', 'metadata'],
-            },
-            memory_blocks: {
-              include: ['id', 'org_id', 'content_type'],
-              exclude: ['data'],
-            },
-          },
-          deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
-          deviceOrgDenormalizedTables: ['sample_events'],
-          deviceOrgMoveDeleteTables: ['demo_things'],
-        },
-      },
-    },
-  ]),
-}));
-
-import { discoverExtensions } from './discovery';
+import { describe, it, expect, beforeEach } from 'vitest';
+import type { ExtensionTenancyDeclaration } from '@breeze/extension-sdk';
 import {
   CORE_TENANT_EXPORT_POLICY,
   getTenantExportPolicyRegistry,
@@ -41,12 +10,41 @@ import {
   withExtensionDeviceOrgDenormalized,
   withExtensionDeviceOrgMoveDelete,
   getExtensionOrgExportColumns,
+  registerRuntimeExtensionTenancy,
   resetExtensionTenancyCacheForTests,
 } from './tenancyRegistry';
 
-beforeEach(() => {
-  vi.clearAllMocks();
+/**
+ * Tenancy declarations reach this registry ONE way: the built-in extension
+ * loader calls `registerRuntimeExtensionTenancy` the moment an extension's
+ * migrations succeed (builtinExtensions.ts). These tests publish declarations
+ * the same way — there is no on-disk discovery to stub any more.
+ */
+const SAMPLE: ExtensionTenancyDeclaration = {
+  orgCascadeDeleteTables: ['sample_items', 'memory_blocks'],
+  orgExportColumns: {
+    sample_items: {
+      include: ['id', 'org_id', 'display_name', 'access_token_status'],
+      exclude: ['credential_hash', 'metadata'],
+    },
+    memory_blocks: {
+      include: ['id', 'org_id', 'content_type'],
+      exclude: ['data'],
+    },
+  },
+  deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
+  deviceOrgDenormalizedTables: ['sample_events'],
+  deviceOrgMoveDeleteTables: ['demo_things'],
+};
+
+/** Replace the published set with exactly `declarations`. */
+function publish(...declarations: ExtensionTenancyDeclaration[]): void {
   resetExtensionTenancyCacheForTests();
+  for (const declaration of declarations) registerRuntimeExtensionTenancy(declaration);
+}
+
+beforeEach(() => {
+  publish(SAMPLE);
 });
 
 describe('tenancyRegistry', () => {
@@ -62,23 +60,12 @@ describe('tenancyRegistry', () => {
   });
 
   it('includes extension-declared organizations exactly once and last', () => {
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      {
-        name: 'sample',
-        dir: '/x/sample',
-        migrationsDir: null,
-        manifest: {
-          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-          migrationsDir: 'migrations', helperRoutes: false,
-          tenancy: {
-            orgCascadeDeleteTables: ['organizations', 'sample_items', 'organizations'],
-            deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
-            deviceOrgDenormalizedTables: ['sample_events'],
-            deviceOrgMoveDeleteTables: ['demo_things'],
-          },
-        },
-      },
-    ]);
+    publish({
+      orgCascadeDeleteTables: ['organizations', 'sample_items', 'organizations'],
+      deviceCascadeDeleteTables: ['sample_child', 'sample_parent'],
+      deviceOrgDenormalizedTables: ['sample_events'],
+      deviceOrgMoveDeleteTables: ['demo_things'],
+    });
 
     expect(withExtensionOrgCascade(['devices'])).toEqual([
       'devices', 'sample_items', 'organizations',
@@ -113,25 +100,15 @@ describe('tenancyRegistry', () => {
   });
 
   it('dedupes a shared table declared by two extensions in device-cascade lists', () => {
-    const sampleManifest = {
-      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-      migrationsDir: 'migrations', helperRoutes: false,
-      tenancy: {
-        orgCascadeDeleteTables: [],
-        deviceCascadeDeleteTables: ['memory_blocks', 'sample_child'],
-        deviceOrgDenormalizedTables: [],
-      },
+    const base: ExtensionTenancyDeclaration = {
+      orgCascadeDeleteTables: [],
+      deviceCascadeDeleteTables: ['memory_blocks', 'sample_child'],
+      deviceOrgDenormalizedTables: [],
     };
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest: sampleManifest },
-      {
-        name: 'other', dir: '/x/other', migrationsDir: null,
-        manifest: {
-          ...sampleManifest, name: 'other', routeNamespace: 'other',
-          tenancy: { ...sampleManifest.tenancy, deviceCascadeDeleteTables: ['memory_blocks', 'other_child'] },
-        },
-      },
-    ]);
+    publish(
+      base,
+      { ...base, deviceCascadeDeleteTables: ['memory_blocks', 'other_child'] },
+    );
     expect(withExtensionDeviceCascade(['devices_data'])).toEqual([
       'memory_blocks', 'sample_child', 'other_child', 'devices_data',
     ]);
@@ -146,20 +123,21 @@ describe('tenancyRegistry', () => {
     ]);
   });
 
-  it('is a pure pass-through with no extensions', async () => {
-    vi.mocked(discoverExtensions).mockReturnValueOnce([]);
-    resetExtensionTenancyCacheForTests();
+  it('is a pure pass-through with no extensions', () => {
+    publish();
     expect(withExtensionOrgCascade(['alerts', 'organizations'])).toEqual(['alerts', 'organizations']);
   });
 
-  it('caches discovery across getters and discovers again after reset', () => {
-    withExtensionOrgCascade(['alerts', 'organizations']);
-    withExtensionDeviceCascade(['backup_jobs']);
-    expect(discoverExtensions).toHaveBeenCalledTimes(1);
+  it('reflects a declaration published after the first read (no stale cache)', () => {
+    publish();
+    expect(withExtensionDeviceCascade(['backup_jobs'])).toEqual(['backup_jobs']);
 
-    resetExtensionTenancyCacheForTests();
-    withExtensionDeviceOrgDenormalized(['agent_logs']);
-    expect(discoverExtensions).toHaveBeenCalledTimes(2);
+    registerRuntimeExtensionTenancy({
+      orgCascadeDeleteTables: [],
+      deviceCascadeDeleteTables: ['late_child'],
+      deviceOrgDenormalizedTables: [],
+    });
+    expect(withExtensionDeviceCascade(['backup_jobs'])).toEqual(['late_child', 'backup_jobs']);
   });
 
   it('returns complete extension org-export classifications', () => {
@@ -176,23 +154,12 @@ describe('tenancyRegistry', () => {
   });
 
   it('fails when an org-cascade extension table has no export policy', () => {
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      {
-        name: 'sample',
-        dir: '/x/sample',
-        migrationsDir: null,
-        manifest: {
-          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-          migrationsDir: 'migrations', helperRoutes: false,
-          tenancy: {
-            orgCascadeDeleteTables: ['sample_items'],
-            orgExportColumns: {},
-            deviceCascadeDeleteTables: [],
-            deviceOrgDenormalizedTables: [],
-          },
-        },
-      },
-    ]);
+    publish({
+      orgCascadeDeleteTables: ['sample_items'],
+      orgExportColumns: {},
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
+    });
 
     expect(() => getExtensionOrgExportColumns()).toThrow(/sample_items.*classification/i);
   });
@@ -202,84 +169,44 @@ describe('tenancyRegistry', () => {
     ['duplicate exclude', { include: ['id', 'org_id'], exclude: ['secret', 'secret'] }],
     ['include/exclude overlap', { include: ['id', 'org_id'], exclude: ['id'] }],
   ])('rejects %s in an extension export policy', (_label, exportPolicy) => {
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      {
-        name: 'sample',
-        dir: '/x/sample',
-        migrationsDir: null,
-        manifest: {
-          name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-          migrationsDir: 'migrations', helperRoutes: false,
-          tenancy: {
-            orgCascadeDeleteTables: ['sample_items'],
-            orgExportColumns: { sample_items: exportPolicy },
-            deviceCascadeDeleteTables: [],
-            deviceOrgDenormalizedTables: [],
-          },
-        },
-      },
-    ]);
+    publish({
+      orgCascadeDeleteTables: ['sample_items'],
+      orgExportColumns: { sample_items: exportPolicy },
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
+    });
 
     expect(() => getExtensionOrgExportColumns()).toThrow(/sample_items.*duplicate|sample_items.*overlap/i);
   });
 
   it('rejects two extensions that classify the same table inconsistently', () => {
-    const first = {
-      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-      migrationsDir: 'migrations', helperRoutes: false,
-      tenancy: {
-        orgCascadeDeleteTables: ['memory_blocks'],
-        orgExportColumns: {
-          memory_blocks: { include: ['id', 'org_id'], exclude: ['data'] },
-        },
-        deviceCascadeDeleteTables: [],
-        deviceOrgDenormalizedTables: [],
+    const first: ExtensionTenancyDeclaration = {
+      orgCascadeDeleteTables: ['memory_blocks'],
+      orgExportColumns: {
+        memory_blocks: { include: ['id', 'org_id'], exclude: ['data'] },
       },
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
     };
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest: first },
-      {
-        name: 'other',
-        dir: '/x/other',
-        migrationsDir: null,
-        manifest: {
-          ...first,
-          name: 'other',
-          routeNamespace: 'other',
-          tenancy: {
-            ...first.tenancy,
-            orgExportColumns: {
-              memory_blocks: { include: ['id', 'org_id', 'data'], exclude: [] },
-            },
-          },
-        },
+    publish(first, {
+      ...first,
+      orgExportColumns: {
+        memory_blocks: { include: ['id', 'org_id', 'data'], exclude: [] },
       },
-    ]);
+    });
 
     expect(() => getExtensionOrgExportColumns()).toThrow(/memory_blocks.*inconsistent/i);
   });
 
   it('dedupes identical classifications for a shared extension table', () => {
     const sharedPolicy = { include: ['id', 'org_id'], exclude: ['data'] };
-    const manifest = {
-      name: 'sample', routeNamespace: 'sample', entry: 'src/index.ts',
-      migrationsDir: 'migrations', helperRoutes: false,
-      tenancy: {
-        orgCascadeDeleteTables: ['memory_blocks'],
-        orgExportColumns: { memory_blocks: sharedPolicy },
-        deviceCascadeDeleteTables: [],
-        deviceOrgDenormalizedTables: [],
-      },
+    const declaration: ExtensionTenancyDeclaration = {
+      orgCascadeDeleteTables: ['memory_blocks'],
+      orgExportColumns: { memory_blocks: sharedPolicy },
+      deviceCascadeDeleteTables: [],
+      deviceOrgDenormalizedTables: [],
     };
-    vi.mocked(discoverExtensions).mockReturnValueOnce([
-      { name: 'sample', dir: '/x/sample', migrationsDir: null, manifest },
-      {
-        name: 'other',
-        dir: '/x/other',
-        migrationsDir: null,
-        manifest: { ...manifest, name: 'other', routeNamespace: 'other' },
-      },
-    ]);
+    publish(declaration, { ...declaration });
 
     expect(getExtensionOrgExportColumns()).toEqual({
       memory_blocks: sharedPolicy,

@@ -14,16 +14,12 @@ COPY turbo.json tsconfig.json ./
 # Copy package.json files for dependency installation
 COPY apps/api/package.json ./apps/api/
 COPY packages/shared/package.json ./packages/shared/
-COPY packages/extension-api/package.json ./packages/extension-api/
 COPY packages/extension-sdk/package.json ./packages/extension-sdk/
-# devDependency of apps/api. This image installs devDependencies (bare
-# `pnpm install` below), so its manifest must be here or pnpm aborts with
-# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
-COPY packages/extension-cli/package.json ./packages/extension-cli/
 # apps/api statically imports the built-in @breeze/ext-workspace extension
 # (builtinRegistry.ts), which depends on extension-web-sdk and, as a
-# devDependency, extension-testkit. Same ERR_PNPM_WORKSPACE_PKG_NOT_FOUND
-# risk as extension-cli above if any manifest here is missing.
+# devDependency, extension-testkit. This image installs devDependencies
+# (bare `pnpm install` below), so every manifest here must be present or
+# pnpm aborts with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
 COPY packages/extension-web-sdk/package.json ./packages/extension-web-sdk/
 COPY packages/extension-testkit/package.json ./packages/extension-testkit/
 COPY ee/workspace/package.json ./ee/workspace/
@@ -34,9 +30,7 @@ RUN pnpm install
 # Copy source code (will be overridden by volume mounts in dev)
 COPY apps/api ./apps/api
 COPY packages/shared ./packages/shared
-COPY packages/extension-api ./packages/extension-api
 COPY packages/extension-sdk ./packages/extension-sdk
-COPY packages/extension-cli ./packages/extension-cli
 COPY packages/extension-web-sdk ./packages/extension-web-sdk
 COPY packages/extension-testkit ./packages/extension-testkit
 # Built-in extension source + manifest.json + migrations (no build:web here --

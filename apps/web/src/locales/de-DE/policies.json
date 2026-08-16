@@ -1241,7 +1241,11 @@
       "selectAtLeastOnePackage": "Wählen Sie mindestens ein Paket aus",
       "failedToImportPackage": "Paket konnte nicht hinzugefügt werden",
       "installMethods": "Installationsmethoden",
-      "addedPackage": "{{name}} hinzugefügt"
+      "addedPackage": "{{name}} hinzugefügt",
+      "installerType": "Installationstyp",
+      "autoDetectFromUrl": "Automatisch aus URL erkennen",
+      "autoDetectedType": "Automatisch erkannt ({{type}})",
+      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",
@@ -1750,7 +1754,11 @@
       "saving": "Speichern...",
       "uploadSave": "Hochladen und speichern",
       "saveVersion": "Version speichern",
-      "setAsLatest": "Als aktuell festlegen"
+      "setAsLatest": "Als aktuell festlegen",
+      "installerType": "Installationstyp",
+      "autoDetectFromUrl": "Automatisch aus URL erkennen",
+      "autoDetectedType": "Automatisch erkannt ({{type}})",
+      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",
