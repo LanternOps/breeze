@@ -62,6 +62,20 @@ gh issue list --repo LanternOps/breeze --state open --limit 50 \
 
 Cross-check against `queue.md`. Add anything new, mark anything closed/merged, flag drift.
 
+**Never quote the bare open-issue count as a backlog number.** As of 2026-08-16 the 248 open issues are ~112 `enhancement` (roadmap you filed for yourself) against ~136 defects; the total moves with how fast you file features, not with how fast you fix bugs. Every open issue now carries a label, so use the views rather than the total:
+
+```bash
+# The defect list — the number that should actually trend down
+gh issue list --repo LanternOps/breeze --state open --limit 200 \
+  --label bug --label tech-debt --label ci-red    # OR-semantics: any of these
+# Roadmap — feature work; triage it, don't count it as debt
+gh issue list --repo LanternOps/breeze --state open --limit 200 --label enhancement
+# Waiting on someone else — sweep for stale ones each round
+gh issue list --repo LanternOps/breeze --state open --label pending-author --label needs-info
+```
+
+An unlabeled issue is invisible to all three, so **label on sight** — that's what let 69 issues escape triage entirely before 2026-08-16.
+
 **The universal staleness trap — "I responded but the queue memory is stale" applies to ALL THREE types.** For every open item, compare the *last-activity author + date* against my last engagement. If someone else spoke after me with a date past my last action, **I'm the blocker** — read the full thread before deciding what's open. This is the single most common failure mode and it is type-agnostic:
 
 - **PRs:** `reviewDecision` resets from `CHANGES_REQUESTED` → `REVIEW_REQUIRED` whenever new commits land, so a PR you bounced that's since been fixed looks identical to one the author hasn't touched. For every "REQUEST CHANGES posted" PR, verify `commits.last.committedDate` vs the bounce date:
