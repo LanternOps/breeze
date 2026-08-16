@@ -1241,5 +1241,37 @@
     "scriptCount": "{{count}} komut dosyaları pakette",
     "statusInvalid": "Geçersiz",
     "exportLimit": "Paket başına en fazla {{max}} komut dosyasını dışa aktarabilirsiniz."
+  },
+  "testRunner": {
+    "title": "Test çalıştırması",
+    "devicePlaceholder": "Bir test cihazı seçin…",
+    "noDevices": "Uyumlu cihaz yok",
+    "deviceStatus": {
+      "offline": "çevrimdışı",
+      "maintenance": "bakımda"
+    },
+    "run": "Test Çalıştır",
+    "saveAndRun": "Kaydet ve Test Çalıştır",
+    "saveFirst": "Test çalıştırmalarını etkinleştirmek için betiği bir kez kaydedin.",
+    "requiredParams": "Varsayılanı olmayan zorunlu parametreler ({{params}}) — bunun yerine Betik Çalıştır iletişim kutusunu kullanın.",
+    "offlineWarning": "Seçilen cihaz çevrimdışı — çalıştırma, cihaz yeniden bağlanana kadar bekleyecek.",
+    "exitCode": "çıkış {{code}}",
+    "viewHistory": "Geçmişi görüntüle",
+    "status": {
+      "pending": "Kuyrukta",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "timeout": "Zaman aşımına uğradı",
+      "queued": "Kuyrukta",
+      "cancelled": "İptal edildi"
+    },
+    "errors": {
+      "execute": "Test çalıştırması başlatılamadı",
+      "save": "Kaydetme başarısız — yukarıdaki hataları düzeltip yeniden deneyin.",
+      "notStarted": "Çalıştırma başlatılmadı (cihaz bakımda olabilir).",
+      "pollDeadline": "Hâlâ sonuç yok — sonucu görmek için çalıştırma geçmişini kontrol edin.",
+      "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
+    }
   }
 }

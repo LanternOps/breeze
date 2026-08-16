@@ -1211,7 +1211,19 @@
       "uploading": "Yükleniyor…",
       "creating": "Oluşturuluyor…",
       "retryAddingVersion": "Sürüm eklemeyi yeniden deneyin",
-      "createPackage": "Paket oluştur"
+      "createPackage": "Paket oluştur",
+      "installerType": "Yükleyici türü",
+      "autoDetectFromUrl": "URL'den otomatik algıla",
+      "autoDetectedType": "Otomatik algıla ({{type}})",
+      "installerTypeUndetected": "Bu URL'de tanınabilir bir yükleyici uzantısı yok. Türü açıkça seçin — aksi takdirde indirilen dosya doğrudan çalıştırılır ve bu bir MSI için başarısız olur.",
+      "uploadsRequireS3Storage": "Dosya yüklemeleri için sunucuda S3 nesne depolamasının yapılandırılmış olması gerekir.",
+      "scope": "Kapsam",
+      "allOrganizations": "Tüm organizasyonlar",
+      "sharedAcrossAllYourOrganizations": "— tüm organizasyonlarınız arasında paylaşılır",
+      "thisOrganizationOnly": "Yalnızca bu organizasyon",
+      "partnerWideUrlOnly": "İş ortağı genelindeki paketler bir indirme URL’si kullanır — bunlar için dosya yükleme henüz kullanılamıyor.",
+      "selectedFileRemoved": "Seçilen dosya kaldırıldı — iş ortağı genelindeki paketler bir indirme URL’si kullanır.",
+      "scopeLockedAfterCreate": "Paket zaten bu kapsamla oluşturuldu — oluşturulduktan sonra sahiplik değiştirilemez."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Yönetilen yerleşik",
@@ -1431,7 +1443,11 @@
       "deviceCount_other": "{{count}} cihazlar",
       "groupCount_one": "{{count}} grubu",
       "groupCount_other": "{{count}} grup",
-      "viewDeployment": "Dağıtımı görüntüle"
+      "viewDeployment": "Dağıtımı görüntüle",
+      "deployingTo": "Şuraya dağıtılıyor",
+      "customer": "Müşteri",
+      "allTargetsBelongToThisCustomer": "Seçilen tüm hedefler bu müşteriye aittir.",
+      "allOrgsSelectCustomer": "Tüm organizasyonları görüntülüyorsunuz. Bu dağıtımı hedeflemek için organizasyon değiştiriciden bir müşteri seçin."
     },
     "detectionRulesEditor": {
       "detectionRules": "Algılama Kuralları",
@@ -1706,7 +1722,16 @@
       "saving": "Kaydediliyor...",
       "uploadSave": "Yükle ve Kaydet",
       "saveVersion": "Sürümü Kaydet",
-      "setAsLatest": "En yeni olarak ayarla"
+      "setAsLatest": "En yeni olarak ayarla",
+      "installerType": "Yükleyici türü",
+      "autoDetectFromUrl": "URL'den otomatik algıla",
+      "autoDetectedType": "Otomatik algıla ({{type}})",
+      "installerTypeUndetected": "Bu URL'de tanınabilir bir yükleyici uzantısı yok. Türü açıkça seçin — aksi takdirde indirilen dosya doğrudan çalıştırılır ve bu bir MSI için başarısız olur.",
+      "advancedOptions": "Gelişmiş seçenekler",
+      "uploadsRequireS3Storage": "Dosya yüklemeleri için sunucuda S3 nesne depolamasının yapılandırılmış olması gerekir.",
+      "editingVersion": "Sürüm düzenleniyor",
+      "failedToUpdateVersion": "Sürüm güncellenemedi",
+      "replaceFileAddNewVersion": "Yükleyici dosyasını değiştirmek için bunun yerine yeni bir sürüm ekleyin."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Dağıtım zamanı değişkeni ekleyin",
