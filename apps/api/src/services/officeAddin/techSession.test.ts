@@ -45,7 +45,8 @@ describe('techSession', () => {
     expect(expiresInSeconds).toBe(TECH_SESSION_SLIDING_TTL_SECONDS);
 
     expect(redis.setex).toHaveBeenCalledTimes(1);
-    const [sessionKey, ttl, rawPayload] = redis.setex.mock.calls[0];
+    const call = redis.setex.mock.calls[0] as [string, number, string];
+    const [sessionKey, ttl, rawPayload] = call;
     expect(sessionKey).toBe(TECH_SESSION_KEYS.session(token));
     expect(sessionKey.startsWith('techaddin:session:')).toBe(true);
     expect(ttl).toBe(TECH_SESSION_SLIDING_TTL_SECONDS);
