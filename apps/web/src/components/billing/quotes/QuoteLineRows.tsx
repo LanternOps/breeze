@@ -356,7 +356,11 @@ export function GhostRow({ blockId, busy, currency, onAdd, colSpan }: {
             onChange={(e) => { setQty(e.target.value); setError(null); }}
             onKeyDown={onKeyDown}
             disabled={busy}
-            aria-label={t('quotes.editor.line.quantityAria')}
+            // The new-line row and every persisted row used to share the bare
+            // "Quantity" label, so a screen reader's form-controls list read as
+            // N identical entries with nothing to tell them apart (#2151). The
+            // ghost row names itself; persisted rows name their item below.
+            aria-label={t('quotes.editor.ghost.quantityAria')}
             data-testid={`quote-ghost-qty-${blockId}`}
             className={`${ghostField} w-14 px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
           />
@@ -371,7 +375,7 @@ export function GhostRow({ blockId, busy, currency, onAdd, colSpan }: {
             onKeyDown={onKeyDown}
             disabled={busy}
             placeholder="0.00"
-            aria-label={t('quotes.editor.table.unitPrice')}
+            aria-label={t('quotes.editor.ghost.unitPriceAria')}
             data-testid={`quote-ghost-price-${blockId}`}
             style={{ width: growWidth(ghostPriceDisplay, 6, 18, MONEY_INPUT_PAD_X) }}
             className={`${ghostField} px-2 text-right text-sm tabular-nums ${active ? '' : 'hidden'}`}
@@ -578,6 +582,14 @@ export function EditableLineRow({
   // removal flow runs under `line:<id>` and should hold the row's actions.
   const fieldBusy = (field: string) => isPending(pendingKey.lineField(line.id, field));
   const removeBusy = isPending(pendingKey.line(line.id));
+  // Accessible names for this row's numeric fields. Every row previously
+  // labelled its qty/price inputs "Quantity"/"Unit price", so a screen reader's
+  // form-controls list was N indistinguishable pairs (#2151). Scoping the name
+  // to the line's item makes each one addressable. Deliberately the PERSISTED
+  // title, not the live `name` draft — an accessible name that changes on every
+  // keystroke is itself SR churn — and it falls back to the same "this line"
+  // phrase the bulk-select checkbox already uses for an untitled row.
+  const rowLabelItem = lineTitle(line) || t('quotes.editor.confirm.thisLine');
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   // Rest-state density: an EMPTY description renders no textarea — a compact
@@ -1056,7 +1068,7 @@ export function EditableLineRow({
         <input
           type="number" min="1" step="1"
           value={qty}
-          aria-label={t('quotes.editor.line.quantityAria')}
+          aria-label={t('quotes.editor.line.quantityForAria', { item: rowLabelItem })}
           onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; setFieldError('qty', null); }}
           onBlur={commitQty}
           disabled={fieldBusy('qty')}
@@ -1071,7 +1083,7 @@ export function EditableLineRow({
         <input
           type="text" inputMode="decimal"
           value={priceDisplay}
-          aria-label={t('quotes.editor.table.unitPrice')}
+          aria-label={t('quotes.editor.line.unitPriceForAria', { item: rowLabelItem })}
           onFocus={() => setPriceFocused(true)}
           onChange={(e) => { setPrice(filterMoneyChars(e.target.value)); priceEdited.current = true; setFieldError('price', null); }}
           onBlur={() => { setPriceFocused(false); commitPrice(); }}

@@ -658,6 +658,8 @@
         "partNumberOptional": "Part # (facultatif)",
         "profit": "Profit",
         "quantityAria": "Quantité",
+        "quantityForAria": "Quantité pour {{item}}",
+        "unitPriceForAria": "Prix unitaire pour {{item}}",
         "saveToCatalog": "Enregistrer dans le catalogue",
         "showLess": "Afficher moins",
         "showMore": "Afficher plus",
@@ -805,7 +807,9 @@
       "ghost": {
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
-        "placeholder": "Saisissez le nom de l'article…"
+        "placeholder": "Saisissez le nom de l'article…",
+        "quantityAria": "Quantité de la nouvelle ligne",
+        "unitPriceAria": "Prix unitaire de la nouvelle ligne"
       },
       "unassigned": {
         "explainer": "Ces lignes ne figurent dans aucune section tarifaire, mais elles apparaissent malgré tout sur le devis du client et sont comptées dans ses totaux. Déplacez chacune d'elles dans une section tarifaire pour maîtriser l'endroit où elle apparaît.",
@@ -1318,7 +1322,12 @@
       "lineName": "Nom de la ligne",
       "name": "Nom",
       "quantity": "Quantité",
+      "quantityFor": "Quantité pour {{item}}",
+      "quantityNewLine": "Quantité de la nouvelle ligne",
+      "unitPriceFor": "Prix unitaire pour {{item}}",
+      "unitPriceNewLine": "Prix unitaire de la nouvelle ligne",
       "taxable": "Taxable",
+      "untitledLine": "cette ligne",
       "unitPrice": "Prix unitaire"
     },
     "hiddenSuffix": " (masqué)",

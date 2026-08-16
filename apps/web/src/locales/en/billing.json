@@ -658,6 +658,7 @@
         "partNumberOptional": "Part # (optional)",
         "profit": "Profit",
         "quantityAria": "Quantity",
+        "quantityForAria": "Quantity for {{item}}",
         "saveToCatalog": "Save to catalog",
         "showLess": "Show less",
         "showMore": "Show more",
@@ -665,7 +666,8 @@
         "skuHelp": "Your catalog or distributor stock number for this item.",
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Tidy with AI",
-        "unitCost": "Unit cost"
+        "unitCost": "Unit cost",
+        "unitPriceForAria": "Unit price for {{item}}"
       },
       "liveTotals": {
         "annualRecurring": "Annual recurring",
@@ -805,7 +807,9 @@
       "ghost": {
         "add": "Add",
         "nameAria": "New line name",
-        "placeholder": "Type an item name…"
+        "placeholder": "Type an item name…",
+        "quantityAria": "New line quantity",
+        "unitPriceAria": "New line unit price"
       },
       "unassigned": {
         "explainer": "These lines aren’t in any pricing section, but they still appear on the customer’s quote and count toward its totals. Move each one into a pricing section to control where it appears.",
@@ -1318,8 +1322,13 @@
       "lineName": "Line name",
       "name": "Name",
       "quantity": "Quantity",
+      "quantityFor": "Quantity for {{item}}",
+      "quantityNewLine": "New line quantity",
       "taxable": "Taxable",
-      "unitPrice": "Unit price"
+      "unitPrice": "Unit price",
+      "unitPriceFor": "Unit price for {{item}}",
+      "unitPriceNewLine": "New line unit price",
+      "untitledLine": "this line"
     },
     "hiddenSuffix": " (hidden)",
     "notes": {

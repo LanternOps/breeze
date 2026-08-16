@@ -18,7 +18,8 @@ import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
 
 export interface QuoteBranding {
-  /** Partner display name; falls back to "Proposal" when the partner is absent. */
+  /** Partner display name. Falls back to the document's frozen seller name when
+   *  the partner row is unreadable, and only then to "Proposal". */
   partnerName: string;
   /** Portal logo URL (data: or hosted) rendered directly in an <img>, or null. */
   logoUrl: string | null;
@@ -73,13 +74,24 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
 
   const snap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
 
+  const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? (partner ? buildSellerSnapshot(partner) : null);
+
   return {
-    partnerName: partner?.name ?? 'Proposal',
+    // Seller-snapshot fallback before the document-type literal (#2151). The
+    // realistic way `partner` comes back empty is the RLS zero-row read in the
+    // header note, not a genuinely nameless partner — and in exactly that case
+    // the document still carries the seller name frozen onto it at send time.
+    // Falling straight through to "Proposal" printed a document-type word where
+    // a company name belongs, next to the header's own PROPOSAL eyebrow. This
+    // also matches what the web preview already does (InvoiceDocument /
+    // QuoteDocument: `branding.partnerName || seller.name`), so PDF and preview
+    // now degrade identically instead of diverging on the same missing row.
+    partnerName: partner?.name ?? seller?.name ?? 'Proposal',
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,
     currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
-    seller: (quote.sellerSnapshot as SellerSnapshot | null) ?? (partner ? buildSellerSnapshot(partner) : null),
+    seller,
     theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
   };
