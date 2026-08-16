@@ -12,6 +12,7 @@ import {
   Trash2,
   XCircle,
   Package,
+  Beer,
   MapPin,
   Zap,
   ChevronDown,
@@ -107,7 +108,8 @@ type ModalType =
   | "shutdown"
   | "maintenance"
   | "decommission"
-  | "clear-sessions";
+  | "clear-sessions"
+  | "install-homebrew";
 
 type ModalConfigEntry = {
   title: string;
@@ -180,6 +182,13 @@ function getModalConfig(
         confirmLabel: t("deviceActions.confirm.decommission.confirm"),
         variant: "destructive",
       };
+    case "install-homebrew":
+      return {
+        title: t("deviceActions.confirm.installHomebrew.title"),
+        message: t("deviceActions.confirm.installHomebrew.message"),
+        confirmLabel: t("deviceActions.confirm.installHomebrew.confirm"),
+        variant: "warning",
+      };
     case "clear-sessions":
       return {
         title: t("deviceActions.confirm.clearSessions.title"),
@@ -222,7 +231,8 @@ export default function DeviceActions({
       action === "shutdown" ||
       action === "maintenance" ||
       action === "decommission" ||
-      action === "clear-sessions"
+      action === "clear-sessions" ||
+      action === "install-homebrew"
     ) {
       setModalType(action);
       closeMenus();
@@ -356,7 +366,18 @@ export default function DeviceActions({
                 <Package className="h-4 w-4" />
                 {t("deviceActions.deploySoftware")}{" "}
               </button>
-              <button
+{device.os === "macos" && (
+                <button
+                  type="button"
+                  data-testid="device-install-homebrew"
+                  onClick={() => handleAction("install-homebrew")}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <Beer className="h-4 w-4" />
+                  {t("deviceActions.installHomebrew")}{" "}
+                </button>
+              )}
+                            <button
                 type="button"
                 onClick={() => handleAction("clear-sessions")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
@@ -561,7 +582,18 @@ export default function DeviceActions({
                 <Package className="h-4 w-4" />
                 {t("deviceActions.deploySoftware")}{" "}
               </button>
-              <button
+{device.os === "macos" && (
+                <button
+                  type="button"
+                  data-testid="device-install-homebrew"
+                  onClick={() => handleAction("install-homebrew")}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <Beer className="h-4 w-4" />
+                  {t("deviceActions.installHomebrew")}{" "}
+                </button>
+              )}
+                            <button
                 type="button"
                 onClick={() => handleAction("clear-sessions")}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"

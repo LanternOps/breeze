@@ -79,6 +79,64 @@ const ITEM = {
   createdAt: '2026-06-14T00:00:00Z'
 };
 
+describe('SoftwareCatalog package-manager badges', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it('badges a card with the package managers its install methods use', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          {
+            ...ITEM,
+            versionCount: 0,
+            methodCount: 2,
+            methodKinds: ['winget', 'homebrew_cask'],
+          },
+        ],
+      }),
+    );
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+
+    const badges = screen.getByTestId('package-manager-badges');
+    expect(badges.textContent).toMatch(/winget/);
+    expect(badges.textContent).toMatch(/brew/);
+  });
+
+  it('collapses both Homebrew kinds into a single brew badge', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          {
+            ...ITEM,
+            methodCount: 2,
+            methodKinds: ['homebrew_cask', 'homebrew_formula'],
+          },
+        ],
+      }),
+    );
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+
+    expect(screen.getAllByText('brew')).toHaveLength(1);
+    expect(screen.queryByText('winget')).not.toBeInTheDocument();
+  });
+
+  it('renders no badge row for a package with no install methods', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [ITEM] }));
+
+    render(<SoftwareCatalog />);
+    await waitFor(() => expect(screen.getByText('TestApp')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('package-manager-badges')).not.toBeInTheDocument();
+  });
+});
+
 describe('SoftwareCatalog delete', () => {
   beforeEach(() => {
     fetchMock.mockReset();

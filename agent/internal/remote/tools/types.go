@@ -63,6 +63,12 @@ const (
 	CmdSoftwareInstall   = "software_install"
 	CmdSoftwareUpdate    = "software_update"
 
+	// Opt-in Homebrew bootstrap (macOS) — installs Homebrew itself from a
+	// pinned, checksum-verified copy of the official installer, run as the
+	// active console user. Never implicit: only an explicit operator action
+	// sends this.
+	CmdHomebrewBootstrap = "homebrew_bootstrap"
+
 	// Boot performance
 	CmdCollectBootPerformance    = "collect_boot_performance"
 	CmdManageStartupItem         = "manage_startup_item"

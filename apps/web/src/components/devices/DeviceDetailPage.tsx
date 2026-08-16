@@ -26,6 +26,7 @@ import {
 } from "../../services/deviceActions";
 import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
+import { runAction, ActionError } from "@/lib/runAction";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -328,6 +329,27 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         case "change-site":
           setChangeSiteOpen(true);
           return;
+
+        case "install-homebrew": {
+          // Opt-in, per-device package-manager bootstrap. The pinned installer
+          // URL + sha256 live server-side (services/homebrewBootstrap.ts) — the
+          // browser never chooses what gets executed on the endpoint.
+          try {
+            await runAction({
+              request: () =>
+                fetchWithAuth(`/devices/${device.id}/homebrew-bootstrap`, {
+                  method: "POST",
+                }),
+              errorFallback: `Failed to queue Homebrew install for ${device.hostname}`,
+              successMessage: `Homebrew install queued for ${device.hostname}. It runs as the signed-in console user.`,
+            });
+          } catch (err) {
+            // 401 → the auth redirect is the feedback; any other ActionError was
+            // already toasted by runAction.
+            if (!(err instanceof ActionError)) throw err;
+          }
+          break;
+        }
 
         case "clear-sessions": {
           const result = await clearDeviceSessions(device.id);

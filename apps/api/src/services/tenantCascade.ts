@@ -451,6 +451,48 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
          OR device_id IN (SELECT id FROM devices WHERE org_id = ${orgId})
     `,
   },
+  // Software deployment chain. None of these three tables is reachable by the
+  // main cascade loop's FK-safe ordering, because that toposort only sees FK
+  // edges BETWEEN tables that are in the cascade list:
+  //   - deployment_results has no org_id (so it is not in the list) yet holds
+  //     NO ACTION FKs to software_deployments AND devices — both of which the
+  //     main loop deletes;
+  //   - software_versions has no org_id either, and its catalog_id FK to
+  //     software_catalog is NO ACTION, so deleting the org's catalog rows
+  //     raises 23503;
+  //   - software_deployments IS in the list, but it must be emptied before
+  //     deployment_results' parent devices are deleted, and (since Task 4)
+  //     it also carries a NO ACTION install_method_id FK into
+  //     software_install_methods, which itself cascades from software_catalog.
+  // So org erasure aborted with 23503 for ANY org that ever uploaded a
+  // software version or ran a deployment — pre-existing on main and widened
+  // by install_method_id. Order below is load-bearing: results, then
+  // deployments, then versions. After this the main loop's
+  // software_deployments DELETE is a no-op.
+  // software_install_methods needs no entry: its catalog_id FK is
+  // ON DELETE CASCADE.
+  // The integration fixture proving this lands in the erasure roundtrip suite
+  // (Task 12).
+  {
+    table: 'deployment_results',
+    clearSql: (orgId) => sql`
+      DELETE FROM deployment_results
+      WHERE deployment_id IN (SELECT id FROM software_deployments WHERE org_id = ${orgId})
+    `,
+  },
+  {
+    table: 'software_deployments',
+    clearSql: (orgId) => sql`
+      DELETE FROM software_deployments WHERE org_id = ${orgId}
+    `,
+  },
+  {
+    table: 'software_versions',
+    clearSql: (orgId) => sql`
+      DELETE FROM software_versions
+      WHERE catalog_id IN (SELECT id FROM software_catalog WHERE org_id = ${orgId})
+    `,
+  },
 ];
 
 /**

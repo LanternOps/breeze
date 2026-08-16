@@ -25,6 +25,9 @@ var allCommandTypes = []string{
 	tools.CmdReboot, tools.CmdShutdown, tools.CmdLock, tools.CmdRebootSafeMode, tools.CmdWakeOnLan,
 	tools.CmdRefreshInventory,
 	tools.CmdCollectSoftware, tools.CmdSoftwareUninstall, tools.CmdSoftwareInstall, tools.CmdSoftwareUpdate,
+
+	// handlers_homebrew_bootstrap.go init()
+	tools.CmdHomebrewBootstrap,
 	tools.CmdCollectBootPerformance, tools.CmdManageStartupItem,
 	tools.CmdCollectReliabilityMetrics,
 	tools.CmdCollectAuditPolicy, tools.CmdApplyAuditPolicyBaseline,

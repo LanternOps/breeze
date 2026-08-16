@@ -358,6 +358,38 @@ describe('applySoftwareInstallResult', () => {
     expect(JSON.stringify(stored)).not.toContain('BEGIN PRIVATE KEY');
   });
 
+  it('normalizes a manager_unavailable-prefixed error to the web-facing badge string', async () => {
+    const { setMock } = riggedUpdate();
+
+    await applySoftwareInstallResult({
+      deploymentId: DEPLOYMENT_ID,
+      deviceId: DEVICE_ID,
+      status: 'failed',
+      error: 'manager_unavailable: winget.exe not found under WindowsApps',
+    });
+
+    const stored = setMock.mock.calls[0]![0];
+    expect(stored.errorMessage).toBe(
+      'Package manager unavailable on this device: winget.exe not found under WindowsApps',
+    );
+    expect(stored.status).toBe('failed');
+  });
+
+  it('passes through a plain (non-manager_unavailable) error unchanged', async () => {
+    const { setMock } = riggedUpdate();
+
+    await applySoftwareInstallResult({
+      deploymentId: DEPLOYMENT_ID,
+      deviceId: DEVICE_ID,
+      status: 'failed',
+      error: 'download failed: connection reset',
+    });
+
+    const stored = setMock.mock.calls[0]![0];
+    expect(stored.errorMessage).toBe('download failed: connection reset');
+    expect(stored.status).toBe('failed');
+  });
+
   it('stores null output/errorMessage when the agent supplied none', async () => {
     const { setMock } = riggedUpdate();
 

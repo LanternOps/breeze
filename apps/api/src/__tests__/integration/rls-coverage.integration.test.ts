@@ -89,6 +89,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'software_product_resolutions', // Global DisplayName→product resolution cache/log (#2290). Forced RLS, system-only policy → only system context.
   'third_party_package_catalog', // System-wide curated catalog of third-party packages; writes gated by platform-admin role at the route layer.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
+  'winget_package_index', // Platform-global mirror of the public microsoft/winget-pkgs manifest tree (no tenant axis, no tenant data). Forced RLS with a permissive `USING (true)` SELECT policy — the /software/package-search route reads it from an ordinary org-scoped request context — plus a system-only FOR ALL policy so only the winget-index-sync worker can write.
   'partner_abuse_signals', // Operator abuse signals ABOUT partners. Forced RLS, system-only policy — partners must never see their own risk signals.
   'abuse_script_hosts', // Cross-partner download-host corpus for the script-content abuse detector. Carries partner_id but is deliberately operator-only (mirrors partner_abuse_signals). Forced RLS, system-only policy.
   'abuse_sweep_state', // Abuse-sweep scan state (incremental execution-scan high-water mark). No tenant column. Forced RLS, system-only policy.
@@ -516,6 +517,7 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // org-tenant table, because a nested-RLS join through its nullable-org parent
   // `scripts` could not satisfy the system-script INSERT under bound parameters.
   ['software_versions', ['software_catalog']],
+  ['software_install_methods', ['software_catalog']],
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and

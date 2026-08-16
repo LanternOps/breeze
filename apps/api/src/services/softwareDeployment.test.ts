@@ -82,6 +82,15 @@ vi.mock('../db/schema', () => ({
     siteId: 'd.siteId',
     hostname: 'd.hostname',
     customFields: 'd.customFields',
+    osType: 'd.osType',
+  },
+  softwareInstallMethods: {
+    id: 'sim.id',
+    catalogId: 'sim.catalogId',
+    platform: 'sim.platform',
+    kind: 'sim.kind',
+    packageId: 'sim.packageId',
+    enabled: 'sim.enabled',
   },
   organizations: { id: 'o.id', name: 'o.name', partnerId: 'o.partnerId' },
   sites: { id: 's.id', name: 's.name', orgId: 's.orgId' },
@@ -1511,3 +1520,196 @@ describe('dispatchSoftwareInstallToDevice', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Package-manager (winget / Homebrew) deployments — Task 4.
+//
+// A manager deployment references ONE software_install_methods row instead of
+// a software_versions row, so there is no installer URL, checksum, download
+// policy or `{{...}}` variable substitution on this path: the agent resolves
+// the package through the OS package manager. The route splits a
+// cross-platform catalog item into one deployment per platform, so the
+// service only ever sees a single method — a device whose osType doesn't
+// match it is failed in place rather than silently skipped.
+// ---------------------------------------------------------------------------
+describe('createSoftwareDeployment (package-manager install methods)', () => {
+  const wingetMethod = {
+    id: 'method-win',
+    catalogId: 'cat-1',
+    platform: 'windows',
+    kind: 'winget',
+    packageId: 'Mozilla.Firefox',
+    enabled: true,
+  };
+  const catalogItem = { id: 'cat-1', orgId: 'org-1', name: 'Firefox', integrationProvider: null };
+  const deployment = { id: 'dep-m1', orgId: 'org-1' };
+
+  /** Insert chain that records the inserted values for assertions. */
+  let insertedValues: Record<string, unknown>[] = [];
+  function insCapture(rows: unknown[]) {
+    return {
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedValues.push(values);
+        return { returning: vi.fn().mockResolvedValue(rows) };
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
+    selectMock.mockReset();
+    insertMock.mockReset();
+    updateMock.mockReset();
+    sendCommandMock.mockReturnValue(true);
+    queueCommandMock.mockResolvedValue({ id: 'queued-cmd-1' });
+    insertedValues = [];
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    effectivePolicyMock.mockReset();
+    effectivePolicyMock.mockResolvedValue({ version: 1, approvedPrivateOrigins: [] });
+  });
+
+  /** selects: install method -> catalog item -> devices */
+  function primeSelects(method: unknown, targetDevices: unknown[]) {
+    selectMock
+      .mockReturnValueOnce(sel([method]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices));
+    insertMock.mockReturnValueOnce(insCapture([deployment])).mockReturnValueOnce(ins());
+  }
+
+  it('dispatches a manager payload with installMethod/versionMode and no downloadUrl', async () => {
+    primeSelects(wingetMethod, [{ id: 'dev-1', agentId: 'agent-1', osType: 'windows' }]);
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'method-win',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+      name: 'Firefox (Windows)',
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+    // The deployment row carries the method, not a version.
+    expect(insertedValues[0]).toMatchObject({
+      installMethodId: 'method-win',
+      softwareVersionId: null,
+    });
+
+    const payload = sendCommandMock.mock.calls[0]![1].payload;
+    expect(payload).toMatchObject({
+      deploymentId: 'dep-m1',
+      retryCount: 0,
+      installMethod: { kind: 'winget', packageId: 'Mozilla.Firefox' },
+      versionMode: 'latest',
+      softwareName: 'Firefox',
+      forceReinstall: false,
+    });
+    // URL-path fields must be absent entirely for manager deploys.
+    expect(payload).not.toHaveProperty('downloadUrl');
+    expect(payload).not.toHaveProperty('checksum');
+    expect(payload).not.toHaveProperty('downloadPolicy');
+    expect(payload).not.toHaveProperty('requestedVersion');
+  });
+
+  it('includes requestedVersion when versionMode is exact', async () => {
+    primeSelects(wingetMethod, [{ id: 'dev-1', agentId: 'agent-1', osType: 'windows' }]);
+
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'method-win',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+      versionMode: 'exact',
+      requestedVersion: '128.0.1',
+    });
+
+    expect(sendCommandMock.mock.calls[0]![1].payload).toMatchObject({
+      versionMode: 'exact',
+      requestedVersion: '128.0.1',
+    });
+  });
+
+  it('fails a device whose osType has no matching install method instead of dispatching it', async () => {
+    primeSelects(wingetMethod, [
+      { id: 'dev-1', agentId: 'agent-1', osType: 'windows' },
+      { id: 'dev-2', agentId: 'agent-2', osType: 'linux' },
+    ]);
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'method-win',
+      deploymentType: 'install',
+      deviceIds: ['dev-1', 'dev-2'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-1']);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    const failureWrite = updateSetCalls.find((v) => v.status === 'failed');
+    expect(failureWrite).toBeDefined();
+    expect(String(failureWrite!.errorMessage)).toContain('No install method for this device OS');
+  });
+
+  it('returns status failed when no target device OS matches the install method', async () => {
+    primeSelects(wingetMethod, [
+      { id: 'dev-1', agentId: 'agent-1', osType: 'macos' },
+      { id: 'dev-2', agentId: 'agent-2', osType: 'linux' },
+    ]);
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'method-win',
+      deploymentType: 'install',
+      deviceIds: ['dev-1', 'dev-2'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(result.message).toContain('No install method for this device OS');
+  });
+
+  it('rejects an input that sets both a version and an install method', async () => {
+    await expect(
+      createSoftwareDeployment({
+        orgId: 'org-1',
+        softwareVersionId: 'ver-1',
+        installMethodId: 'method-win',
+        deploymentType: 'install',
+        deviceIds: ['dev-1'],
+        scheduleType: 'immediate',
+        createdBy: null,
+      }),
+    ).rejects.toThrow(/exactly one/i);
+  });
+
+  it('throws when the install method row does not exist', async () => {
+    selectMock.mockReturnValueOnce(sel([]));
+
+    await expect(
+      createSoftwareDeployment({
+        orgId: 'org-1',
+        installMethodId: 'missing',
+        deploymentType: 'install',
+        deviceIds: ['dev-1'],
+        scheduleType: 'immediate',
+        createdBy: null,
+      }),
+    ).rejects.toThrow(/Install method not found/);
+  });
+});

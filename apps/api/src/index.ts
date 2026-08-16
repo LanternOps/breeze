@@ -277,6 +277,7 @@ import { initializeUserRiskRetention, shutdownUserRiskRetention } from './jobs/u
 import { initializePatchComplianceReportWorker, shutdownPatchComplianceReportWorker } from './jobs/patchComplianceReportWorker';
 import { initializeReportScheduleWorker, shutdownReportScheduleWorker } from './jobs/reportScheduleWorker';
 import { initializeCveEnrichmentWorker, shutdownCveEnrichmentWorker } from './jobs/cveEnrichmentWorker';
+import { initializeWingetIndexSyncWorker, shutdownWingetIndexSyncWorker } from './jobs/wingetIndexSyncWorker';
 import { initializeVulnerabilityJobs, shutdownVulnerabilityJobs } from './jobs/vulnerabilityJobs';
 import { initializeSoftwareComplianceWorker, shutdownSoftwareComplianceWorker } from './jobs/softwareComplianceWorker';
 import { initializeSoftwareRemediationWorker, shutdownSoftwareRemediationWorker } from './jobs/softwareRemediationWorker';
@@ -1445,6 +1446,7 @@ async function initializeWorkers(): Promise<void> {
     ['patchComplianceReportWorker', initializePatchComplianceReportWorker],
     ['reportScheduleWorker', initializeReportScheduleWorker],
     ['cveEnrichmentWorker', initializeCveEnrichmentWorker],
+    ['wingetIndexSyncWorker', initializeWingetIndexSyncWorker],
     ['vulnerabilityJobs', initializeVulnerabilityJobs],
     ['dnsSyncWorker', initializeDnsSyncJob],
     ['dnsThreatAlertSubscriber', async () => { registerDnsThreatAlertSubscriber(); }],
@@ -1622,6 +1624,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownPatchComplianceReportWorker,
     shutdownReportScheduleWorker,
     shutdownCveEnrichmentWorker,
+    shutdownWingetIndexSyncWorker,
     shutdownVulnerabilityJobs,
     shutdownDnsSyncJob,
     shutdownS1SyncJob,

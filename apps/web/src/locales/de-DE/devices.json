@@ -191,6 +191,11 @@
         "title": "Sitzungen beenden",
         "message": "Alle aktiven Remote-Sitzungen für {{hostname}} beenden? Dadurch werden alle derzeit über Terminal, Desktop oder Dateiübertragung verbundenen Benutzer getrennt.",
         "confirm": "Sitzungen beenden"
+      },
+      "installHomebrew": {
+        "title": "Homebrew installieren",
+        "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
+        "confirm": "Homebrew installieren"
       }
     },
     "runScript": "Skript ausführen",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Wake-on-LAN-Paket über einen online verfügbaren Peer-Agent im LAN des Geräts senden",
     "power": "Energie",
     "shutdown": "Herunterfahren",
-    "deviceSettings": "Geräteeinstellungen"
+    "deviceSettings": "Geräteeinstellungen",
+    "installHomebrew": "Homebrew installieren"
   },
   "deviceActivityFeed": {
     "activity": "Aktivität",

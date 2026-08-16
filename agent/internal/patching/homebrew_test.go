@@ -3,9 +3,12 @@
 package patching
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -351,6 +354,131 @@ func TestBrewInstallCallsUpgrade(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "brew upgrade failed") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// --- EnsureBrewInstalled: pure arg construction (no process execution) ---
+
+func TestEnsureBrewArgsFormula(t *testing.T) {
+	got := ensureBrewArgs("homebrew_formula", "firefox")
+	want := []string{"install", "firefox"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensureBrewArgs(formula) = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureBrewArgsCask(t *testing.T) {
+	got := ensureBrewArgs("homebrew_cask", "firefox")
+	want := []string{"install", "--cask", "firefox"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensureBrewArgs(cask) = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureBrewArgsNeverUpgrades(t *testing.T) {
+	for _, kind := range []string{"homebrew_formula", "homebrew_cask"} {
+		for _, arg := range ensureBrewArgs(kind, "firefox") {
+			if arg == "upgrade" {
+				t.Fatalf("ensureBrewArgs(%q) must never contain \"upgrade\": %v", kind, ensureBrewArgs(kind, "firefox"))
+			}
+		}
+	}
+}
+
+func TestEnsureBrewListArgsFormula(t *testing.T) {
+	got := ensureBrewListArgs("homebrew_formula", "firefox")
+	want := []string{"list", "--versions", "firefox"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensureBrewListArgs(formula) = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureBrewListArgsCask(t *testing.T) {
+	got := ensureBrewListArgs("homebrew_cask", "firefox")
+	want := []string{"list", "--cask", "--versions", "firefox"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ensureBrewListArgs(cask) = %v, want %v", got, want)
+	}
+}
+
+// --- EnsureBrewInstalled: sentinel wrapping ---
+
+// TestEnsureBrewInstalledWrapsSentinelForErrorsIs pins the errors.Is contract
+// the tools layer relies on (Task 7): whatever EnsureBrewInstalled wraps
+// ErrBrewUnavailable with must still satisfy errors.Is, not just a string
+// prefix match on Error().
+func TestEnsureBrewInstalledWrapsSentinelForErrorsIs(t *testing.T) {
+	wrapped := fmt.Errorf("%w: %v", ErrBrewUnavailable, errors.New("brew binary not found"))
+	if !errors.Is(wrapped, ErrBrewUnavailable) {
+		t.Fatal("wrapped error must satisfy errors.Is(err, ErrBrewUnavailable)")
+	}
+}
+
+func TestEnsureBrewInstalledRejectsInvalidName(t *testing.T) {
+	_, alreadyInstalled, err := EnsureBrewInstalled("homebrew_formula", "; rm -rf /")
+	if err == nil {
+		t.Fatal("want validation error for an unsafe package name")
+	}
+	if alreadyInstalled {
+		t.Fatal("alreadyInstalled must be false on a validation failure")
+	}
+	if errors.Is(err, ErrBrewUnavailable) {
+		t.Fatal("an invalid name is a validation failure, not manager-unavailable")
+	}
+}
+
+// --- EnsureBrewInstalled: real brew, matching the file's existing
+// skip-if-unavailable convention (TestBrewBinaryPathFindsRealBrew etc). ---
+
+func TestEnsureBrewInstalledAlreadyPresentNeverReinstalls(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("brew rejects root execution")
+	}
+	if _, err := exec.LookPath("brew"); err != nil {
+		t.Skip("brew not installed")
+	}
+
+	h := NewHomebrewProvider()
+	installed, err := h.GetInstalled()
+	if err != nil || len(installed) == 0 {
+		t.Skip("no installed formula/cask available to probe against")
+	}
+
+	name, _ := parseBrewID(installed[0].ID)
+	kind := "homebrew_formula"
+	if strings.HasPrefix(installed[0].ID, brewCaskPrefix) {
+		kind = "homebrew_cask"
+	}
+
+	output, alreadyInstalled, err := EnsureBrewInstalled(kind, name)
+	if err != nil {
+		t.Fatalf("EnsureBrewInstalled(%q, %q) unexpected error: %v", kind, name, err)
+	}
+	if !alreadyInstalled {
+		t.Fatalf("alreadyInstalled = false for a package GetInstalled just reported present: %q", name)
+	}
+	if !strings.Contains(output, name) {
+		t.Fatalf("output %q does not mention the presence-checked package %q", output, name)
+	}
+}
+
+func TestEnsureBrewInstalledUnknownPackageFailsRatherThanFallback(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("brew rejects root execution")
+	}
+	if _, err := exec.LookPath("brew"); err != nil {
+		t.Skip("brew not installed")
+	}
+
+	_, alreadyInstalled, err := EnsureBrewInstalled("homebrew_formula", "definitely-not-a-real-package-xyz123")
+	if err == nil {
+		t.Fatal("want error installing a nonexistent formula")
+	}
+	if alreadyInstalled {
+		t.Fatal("alreadyInstalled must be false when the install attempt failed")
+	}
+	if errors.Is(err, ErrBrewUnavailable) {
+		t.Fatal("a real brew install failure is not manager-unavailable")
 	}
 }
 

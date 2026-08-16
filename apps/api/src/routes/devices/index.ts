@@ -23,6 +23,7 @@ import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
 import { softwareActionsRoutes } from './softwareActions';
+import { homebrewBootstrapRoutes } from './homebrewBootstrap';
 import { networkRoutes } from './network';
 import { customFieldValuesRoutes } from './customFieldValues';
 import { linksRoutes } from './links';
@@ -101,6 +102,7 @@ deviceRoutes.route('/', watchdogLogsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
+deviceRoutes.route('/', homebrewBootstrapRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

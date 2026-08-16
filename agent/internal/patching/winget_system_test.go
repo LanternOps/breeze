@@ -131,6 +131,48 @@ func TestConfirmedEmptySystemWingetScanStaysCovered(t *testing.T) {
 	}
 }
 
+func TestSystemIsInstalledMatch(t *testing.T) {
+	p := NewSystemWingetProvider(`C:\wg\winget.exe`, func(name string, args []string, _ time.Duration) (string, string, int, error) {
+		j := strings.Join(args, " ")
+		for _, want := range []string{"list", "--exact", "--id", "Google.Chrome", "--scope", "machine", "--source", "winget"} {
+			if !strings.Contains(j, want) {
+				t.Fatalf("IsInstalled args missing %q: %s", want, j)
+			}
+		}
+		return "Name    Id             Version\nChrome  Google.Chrome  1.0\n", "", 0, nil
+	})
+	installed, err := p.IsInstalled("Google.Chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !installed {
+		t.Fatal("want installed=true when winget list exits 0 with the id present")
+	}
+}
+
+func TestSystemIsInstalledNoMatchExitNonZero(t *testing.T) {
+	p := NewSystemWingetProvider(`C:\wg\winget.exe`, func(name string, args []string, _ time.Duration) (string, string, int, error) {
+		return "No installed package found matching input criteria.\n", "", 1, nil
+	})
+	installed, err := p.IsInstalled("Google.Chrome")
+	if err != nil {
+		t.Fatalf("winget exiting non-zero for no-match must not be an error: %v", err)
+	}
+	if installed {
+		t.Fatal("want installed=false on winget no-match exit code")
+	}
+}
+
+func TestSystemIsInstalledRejectsBadID(t *testing.T) {
+	p := NewSystemWingetProvider(`C:\wg\winget.exe`, func(string, []string, time.Duration) (string, string, int, error) {
+		t.Fatal("must not exec on invalid id")
+		return "", "", 0, nil
+	})
+	if _, err := p.IsInstalled("Bad ID; rm -rf"); err == nil {
+		t.Fatal("want validation error")
+	}
+}
+
 func TestSystemInstallSuccess(t *testing.T) {
 	p := NewSystemWingetProvider(`C:\wg\winget.exe`, func(name string, args []string, _ time.Duration) (string, string, int, error) {
 		if !strings.Contains(strings.Join(args, " "), "--scope machine") {

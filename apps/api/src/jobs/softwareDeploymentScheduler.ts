@@ -7,6 +7,7 @@ import {
   maintenanceWindows,
   softwareCatalog,
   softwareDeployments,
+  softwareInstallMethods,
   softwareVersions,
 } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
@@ -58,7 +59,9 @@ function getQueue(): Queue<SchedulerJobData> {
 export interface DueDeploymentCandidate {
   id: string;
   orgId: string;
-  softwareVersionId: string;
+  softwareVersionId: string | null;
+  /** Set instead of softwareVersionId for package-manager deployments. */
+  installMethodId?: string | null;
   scheduleType: string;
   scheduledAt: Date | null;
   options: unknown;
@@ -110,6 +113,7 @@ async function findDueCandidates(now: Date): Promise<DueDeploymentCandidate[]> {
       id: softwareDeployments.id,
       orgId: softwareDeployments.orgId,
       softwareVersionId: softwareDeployments.softwareVersionId,
+      installMethodId: softwareDeployments.installMethodId,
       scheduleType: softwareDeployments.scheduleType,
       scheduledAt: softwareDeployments.scheduledAt,
       options: softwareDeployments.options,
@@ -160,6 +164,54 @@ async function failAllPendingResults(deploymentId: string, errorMessage: string)
     );
 }
 
+/** Dispatch a due package-manager deployment (winget / Homebrew). */
+async function dispatchDueManagerDeployment(
+  candidate: DueDeploymentCandidate,
+  installMethodId: string,
+  deviceIds: string[],
+): Promise<boolean> {
+  const [method] = await db
+    .select()
+    .from(softwareInstallMethods)
+    .where(eq(softwareInstallMethods.id, installMethodId));
+  if (!method) {
+    await failAllPendingResults(candidate.id, 'Install method no longer exists');
+    return true;
+  }
+
+  const [catalogItem] = await db
+    .select({
+      id: softwareCatalog.id,
+      name: softwareCatalog.name,
+      integrationProvider: softwareCatalog.integrationProvider,
+    })
+    .from(softwareCatalog)
+    .where(eq(softwareCatalog.id, method.catalogId));
+  if (!catalogItem) {
+    await failAllPendingResults(candidate.id, 'Software catalog item no longer exists');
+    return true;
+  }
+
+  const options = (candidate.options as Record<string, unknown> | null) ?? null;
+  const fanout = await buildAndDispatchSoftwareInstalls({
+    deploymentId: candidate.id,
+    orgId: candidate.orgId,
+    installMethod: method,
+    versionMode: options?.versionMode === 'exact' ? 'exact' : 'latest',
+    requestedVersion: typeof options?.requestedVersion === 'string' ? options.requestedVersion : null,
+    catalogItem,
+    deviceIds,
+    options,
+    createdBy: candidate.createdBy,
+    markDispatched: false,
+  });
+
+  console.log(
+    `[SoftwareDeploymentScheduler] Dispatched package-manager deployment ${candidate.id} (${candidate.scheduleType}): status=${fanout.status}, devices=${fanout.dispatchedDeviceIds.length}/${deviceIds.length}`,
+  );
+  return true;
+}
+
 /**
  * Claim + dispatch one due deployment. Returns true when this instance won
  * the claim (regardless of dispatch outcome), false when another instance
@@ -201,10 +253,17 @@ export async function processDueDeployment(candidate: DueDeploymentCandidate): P
     return true;
   }
 
+  // Package-manager deployment: dispatch against the install method instead
+  // of a version record. Version intent rides in `options` (written at create
+  // by createSoftwareDeployment).
+  if (candidate.installMethodId) {
+    return dispatchDueManagerDeployment(candidate, candidate.installMethodId, deviceIds);
+  }
+
   const [versionRecord] = await db
     .select()
     .from(softwareVersions)
-    .where(eq(softwareVersions.id, candidate.softwareVersionId));
+    .where(eq(softwareVersions.id, candidate.softwareVersionId!));
   if (!versionRecord) {
     await failAllPendingResults(candidate.id, 'Software version no longer exists');
     return true;

@@ -4,6 +4,7 @@ package patching
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,16 @@ import (
 )
 
 const brewCaskPrefix = "cask:"
+
+// ErrBrewUnavailable distinguishes "Homebrew is not installed on this
+// machine" from a real actuation failure (e.g. root-without-console-user,
+// or `brew install` genuinely failing). EnsureBrewInstalled wraps this
+// sentinel with fmt.Errorf's %w so errors.Is still matches; the tools layer
+// (agent/internal/remote/tools) maps errors.Is(err, ErrBrewUnavailable) to
+// the "manager_unavailable: " prefix Task 7 depends on. Everything else is
+// surfaced verbatim as an actionable failure, never folded into
+// "unavailable".
+var ErrBrewUnavailable = errors.New("homebrew not installed")
 
 // HomebrewProvider integrates with Homebrew on macOS.
 type HomebrewProvider struct{}
@@ -49,6 +60,20 @@ func brewBinaryPath() (string, error) {
 	}
 
 	return "", fmt.Errorf("brew binary not found")
+}
+
+// BrewBinaryPath exposes the brew-binary lookup to callers outside this
+// package (the homebrew_bootstrap command needs it both as an
+// already-installed short-circuit and as post-install verification).
+func BrewBinaryPath() (string, error) {
+	return brewBinaryPath()
+}
+
+// ActiveConsoleUser exposes the console-user resolution used by every
+// as-the-user brew invocation. Homebrew refuses to run as root, so the
+// bootstrap command needs the same account brewCommand would sudo to.
+func ActiveConsoleUser() (*user.User, error) {
+	return activeConsoleUser()
 }
 
 func activeConsoleUser() (*user.User, error) {
@@ -228,6 +253,82 @@ func (h *HomebrewProvider) Uninstall(patchID string) error {
 	}
 
 	return nil
+}
+
+// ensureBrewListArgs builds the `brew list [--cask] --versions <name>`
+// presence-check args for a given software_install installMethod.kind
+// ("homebrew_cask" or "homebrew_formula"). Pure and table-testable
+// independent of any process execution.
+func ensureBrewListArgs(kind, name string) []string {
+	args := []string{"list"}
+	if kind == "homebrew_cask" {
+		args = append(args, "--cask")
+	}
+	return append(args, "--versions", name)
+}
+
+// ensureBrewArgs builds the `brew install [--cask] <name>` args for a given
+// installMethod.kind. Always an install verb — EnsureBrewInstalled never
+// invokes `brew upgrade`.
+func ensureBrewArgs(kind, name string) []string {
+	args := []string{"install"}
+	if kind == "homebrew_cask" {
+		args = append(args, "--cask")
+	}
+	return append(args, name)
+}
+
+// EnsureBrewInstalled makes sure a Homebrew formula/cask is present,
+// INSTALL-ONLY: a package already present is reported as such and left
+// completely untouched (never `brew upgrade`d); an absent one is installed
+// via `brew install`.
+//
+// kind is "homebrew_cask" or "homebrew_formula"; name is defensively
+// re-validated here even though callers (the tools layer) are expected to
+// call validateBrewPackageName/ValidateBrewPackageName first, so this
+// function is safe to call directly.
+//
+// Two failure shapes are distinguished:
+//   - Homebrew is not installed at all (brewBinaryPath fails) → wrapped
+//     ErrBrewUnavailable.
+//   - Anything else — including brewCommand's own
+//     "cannot execute brew as root: no active non-root console user" — is a
+//     real, actionable failure and is returned verbatim, never folded into
+//     "unavailable".
+func EnsureBrewInstalled(kind, name string) (output string, alreadyInstalled bool, err error) {
+	if err := validateBrewPackageName(name); err != nil {
+		return "", false, err
+	}
+
+	if _, err := brewBinaryPath(); err != nil {
+		return "", false, fmt.Errorf("%w: %v", ErrBrewUnavailable, err)
+	}
+
+	h := NewHomebrewProvider()
+
+	// Presence check. Exit 0 means the package is already there — return
+	// immediately and NEVER touch it (no upgrade, no reinstall).
+	listCmd, err := h.brewCommand(ensureBrewListArgs(kind, name)...)
+	if err != nil {
+		return "", false, err
+	}
+	if listOut, listErr := runCmdCombinedOutputWithTimeout(listCmd, patchListTimeout); listErr == nil {
+		return truncatePatchOutput(listOut), true, nil
+	}
+
+	// Absent: install. `brew install` is itself safe against a concurrent
+	// install racing in from elsewhere (it no-ops rather than corrupting
+	// state), so no additional locking is needed here.
+	installCmd, err := h.brewCommand(ensureBrewArgs(kind, name)...)
+	if err != nil {
+		return "", false, err
+	}
+	installOut, installErr := runCmdCombinedOutputWithTimeout(installCmd, patchMutateTimeout)
+	if installErr != nil {
+		return "", false, fmt.Errorf("brew install failed: %w: %s", installErr, truncatePatchOutput(installOut))
+	}
+
+	return truncatePatchOutput(installOut), false, nil
 }
 
 // GetInstalled returns installed Homebrew formulae and casks.

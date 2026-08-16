@@ -63,6 +63,21 @@ export interface SoftwareInstallResultInput {
  * org-scoped context) via the plain `db` handle — same as the pre-extraction
  * inline code in routes/agents/commands.ts.
  */
+const MANAGER_UNAVAILABLE_PREFIX = 'manager_unavailable: ';
+
+/**
+ * Normalizes the agent's `manager_unavailable: <detail>` error prefix (Tasks
+ * 5-6, emitted when winget/brew is absent on the device) into the web-facing
+ * string the results table string-matches for badge styling (Task 10). Any
+ * other error passes through unchanged.
+ */
+function normalizeInstallError(error: string | null | undefined): string | null | undefined {
+  if (error?.startsWith(MANAGER_UNAVAILABLE_PREFIX)) {
+    return `Package manager unavailable on this device: ${error.slice(MANAGER_UNAVAILABLE_PREFIX.length)}`;
+  }
+  return error;
+}
+
 export async function applySoftwareInstallResult(input: SoftwareInstallResultInput): Promise<void> {
   const attemptNumber = input.attemptNumber ?? 0;
   const drStatus =
@@ -92,7 +107,7 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
       output: input.stdout != null ? redactSecretsFromOutput(input.stdout) : null,
       errorMessage:
         input.error != null
-          ? redactSecretsFromOutput(input.error)
+          ? redactSecretsFromOutput(normalizeInstallError(input.error) as string)
           : input.stderr != null
             ? redactSecretsFromOutput(input.stderr)
             : null,
