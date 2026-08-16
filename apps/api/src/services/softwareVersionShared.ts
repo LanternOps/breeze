@@ -64,6 +64,45 @@ export function resolveScopedOrgId(
   return { error: 'orgId is required for this scope', status: 400 };
 }
 
+/**
+ * Read authorization for a catalog row fetched by id (dual-axis, #2135).
+ *
+ * Restores main's narrowing rule whenever the request resolves to an org:
+ * an org-owned row must belong to THAT org, even though partner-scope RLS
+ * makes every sibling org's rows visible — a partner caller acting as org A
+ * must not read org B's package by id. An explicitly requested org the caller
+ * can't access is rejected outright (403), before looking at the row.
+ *
+ * The only divergence from main is when NO org resolves (partner scope, no
+ * ?orgId, multiple accessible orgs) — the All-organizations fleet view, which
+ * main answered with a 400. Partner-wide rows (org_id NULL) pass — RLS already
+ * binds a visible NULL-org row to the caller's own partner — and org-owned
+ * rows fall back to canAccessOrg, the set that view legitimately spans. The
+ * fallback never fires when an org resolves, so this is never weaker than the
+ * resolved-org rule.
+ *
+ * Returns null when allowed, else the error response to send. 404 (not 403)
+ * for foreign rows, matching the don't-reveal-existence behavior of these
+ * routes.
+ */
+export function authorizeCatalogItemRead(
+  auth: AuthScopeContext & { canAccessOrg: (orgId: string) => boolean },
+  itemOrgId: string | null,
+  requestedOrgId: string | undefined,
+): { error: string; status: 403 | 404 } | null {
+  const scoped = resolveScopedOrgId(auth, requestedOrgId);
+  if ('error' in scoped) {
+    // 403 only happens for an explicitly requested org — reject regardless of
+    // the row, exactly as main did.
+    if (scoped.status === 403) return { error: scoped.error, status: 403 };
+    // 400: nothing to resolve — the fleet-view case described above.
+    if (itemOrgId === null || auth.canAccessOrg(itemOrgId)) return null;
+    return { error: 'Catalog item not found', status: 404 };
+  }
+  if (itemOrgId === null || itemOrgId === scoped.orgId) return null;
+  return { error: 'Catalog item not found', status: 404 };
+}
+
 export async function setLatestSoftwareVersion(
   tx: DbTransaction,
   catalogId: string,

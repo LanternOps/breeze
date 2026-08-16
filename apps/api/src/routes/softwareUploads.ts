@@ -60,6 +60,7 @@ import {
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
+  authorizeCatalogItemRead,
   getFileExtension,
   insertLatestSoftwareVersion,
   resolveScopedOrgId,
@@ -208,9 +209,13 @@ softwareUploadRoutes.post(
     const { id: catalogId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, catalogId));
-    if (!catalogItem || (catalogItem.orgId !== null && !auth.canAccessOrg(catalogItem.orgId))) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    // Same narrowing rule as the software.ts catalog reads: an org-owned item
+    // must belong to the org this request resolves to. The contextOrg check
+    // further down would catch the mismatch too, but authorize before touching
+    // anything else so the boundary is enforced in one place.
+    const catalogReadError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (catalogReadError) return c.json({ error: catalogReadError.error }, catalogReadError.status);
     // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
     // partner-wide package (#2135, org_id NULL) has no org to book the session
     // under yet. Fail up front with an actionable message instead of a 500.

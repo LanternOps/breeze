@@ -264,4 +264,51 @@ describe('built-in package versions via route (#1957)', () => {
     );
     expect(siblingRes.status).toBe(404);
   });
+
+  // The All-organizations fleet view sends NO orgId, so nothing resolves and
+  // the guard falls back to canAccessOrg. Pins the one place the rule is
+  // intentionally wider than the resolved-org narrowing: a multi-org partner
+  // caller with no org context can still read its built-ins AND any accessible
+  // org's package — that's what the fleet view spans — while cross-partner rows
+  // stay invisible (RLS).
+  it('fleet view (partner scope, no orgId): reads built-in and own-org package, not cross-partner', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const { catalog: builtin } = await seedBuiltin(partner.id);
+    const { catalog: orgBPkg } = await seedOrgOwned(orgB.id);
+
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const { catalog: foreignPkg } = await seedOrgOwned(otherOrg.id);
+
+    // Two accessible orgs and no auth.orgId: resolveScopedOrgId has nothing to
+    // resolve (the single-org shortcut must not fire), which is the fleet view.
+    activeAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: partner.id,
+      accessibleOrgIds: [orgA.id, orgB.id],
+    };
+
+    const app = await buildApp();
+    const builtinRes = await app.request(
+      `/software/catalog/${builtin.id}/versions`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(builtinRes.status).toBe(200);
+    expect((await builtinRes.json()).data).toHaveLength(1);
+
+    const orgPkgRes = await app.request(
+      `/software/catalog/${orgBPkg.id}`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(orgPkgRes.status).toBe(200);
+
+    const foreignRes = await app.request(
+      `/software/catalog/${foreignPkg.id}`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(foreignRes.status).toBe(404);
+  });
 });

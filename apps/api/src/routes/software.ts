@@ -56,6 +56,7 @@ import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
   getFileExtension,
+  authorizeCatalogItemRead,
   resolveScopedOrgId,
   setLatestSoftwareVersion,
   insertLatestSoftwareVersion,
@@ -729,16 +730,17 @@ softwareRoutes.get(
     // the caller's org rows, plus NULL-org partner rows — built-ins for any
     // caller, but partner-wide custom packages only for partner-scope tokens
     // (org tokens never pass breeze_has_partner_access, so those rows are
-    // simply invisible here and 404). The org guard below rejects a (visible)
-    // org row the caller can't access. Partner rows have org_id NULL, so an
+    // simply invisible here and 404). Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
-    // No resolveScopedOrgId here: the All-organizations view has no org to
-    // resolve, and a partner-wide row is exactly what it should still see.
+    // authorizeCatalogItemRead narrows org-owned rows to the request's resolved
+    // org (a partner caller acting as org A must not read sibling org B's
+    // package), falling back to canAccessOrg only in the org-less
+    // All-organizations view.
     const [item] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!item || (item.orgId !== null && !auth.canAccessOrg(item.orgId))) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!item) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, item.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionCount] = await db.select({ count: sql<number>`count(*)` })
       .from(softwareVersions).where(eq(softwareVersions.catalogId, id));
@@ -865,14 +867,15 @@ softwareRoutes.get(
     // catalog row entirely and the endpoint 404s — which the deploy wizard
     // renders as "No versions" with a grayed-out deploy. Look up by id and
     // authorize in JS, mirroring the /deploy route: RLS binds a visible
-    // NULL-org row to the caller's own partner (system scope sees all). No
-    // resolveScopedOrgId: the All-organizations view has no org to resolve and
-    // partner rows are exactly what it should still see.
+    // NULL-org row to the caller's own partner (system scope sees all).
+    // authorizeCatalogItemRead narrows org-owned rows to the request's
+    // resolved org; only the org-less All-organizations view falls back to
+    // canAccessOrg.
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!catalogItem || (catalogItem.orgId !== null && !auth.canAccessOrg(catalogItem.orgId))) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const versions = await db.select().from(softwareVersions)
       .where(eq(softwareVersions.catalogId, id))
@@ -1291,13 +1294,14 @@ softwareRoutes.get(
     const catalogId = c.req.param('id')!;
     const versionId = c.req.param('versionId')!;
 
-    // Dual-axis read authorization: org rows need access to that org; partner
-    // rows (org_id NULL) are already bound to the caller's partner by RLS.
+    // Dual-axis read authorization: org rows are narrowed to the request's
+    // resolved org (canAccessOrg fallback only in the org-less All-orgs view);
+    // partner rows (org_id NULL) are already bound to the caller's partner by RLS.
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, catalogId));
-    if (!catalogItem || (catalogItem.orgId !== null && !auth.canAccessOrg(catalogItem.orgId))) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionRecord] = await db.select().from(softwareVersions)
       .where(and(eq(softwareVersions.id, versionId), eq(softwareVersions.catalogId, catalogId)));
