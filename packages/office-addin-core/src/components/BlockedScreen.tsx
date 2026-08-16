@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { AuthBlockKind } from '../auth/session';
 
 const COPY: Record<AuthBlockKind, { title: string; body: string }> = {
@@ -25,9 +26,27 @@ const COPY: Record<AuthBlockKind, { title: string; body: string }> = {
     title: 'Not available',
     body: 'This session type is not supported here. Please reload the add-in.',
   },
+  relink_required: {
+    title: 'Re-link required',
+    body: 'Your technician account needs to be re-linked (e.g. after a password reset). Sign in again to reconnect.',
+  },
+  access_revoked: {
+    title: 'Access revoked',
+    body: 'Your access has been revoked. Contact your administrator.',
+  },
 };
 
-export function BlockedScreen({ kind, onRetry }: { kind: AuthBlockKind; onRetry?: () => void }) {
+export function BlockedScreen({
+  kind,
+  onRetry,
+  extra,
+}: {
+  kind: AuthBlockKind;
+  onRetry?: () => void;
+  /** Outlook-only technician bind/re-link affordance (App's `signInExtra`), shown
+   *  for the kinds where self-serve recovery is possible (not_provisioned, relink_required). */
+  extra?: ReactNode;
+}) {
   const copy = COPY[kind];
   return (
     <div
@@ -46,6 +65,7 @@ export function BlockedScreen({ kind, onRetry }: { kind: AuthBlockKind; onRetry?
           Try again
         </button>
       )}
+      {extra}
     </div>
   );
 }

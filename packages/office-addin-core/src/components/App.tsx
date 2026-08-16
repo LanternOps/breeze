@@ -9,7 +9,7 @@
  * `host` (object-model seam) and `clientHost` (wire discriminant) straight to
  * ChatPane once a session exists, and never touches a concrete host itself.
  */
-import { useCallback, useEffect, useState, type ComponentType } from 'react';
+import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import {
   AuthBlockedError,
   getStoredSession,
@@ -38,9 +38,19 @@ export interface AppProps {
   exchangePath?: string;
   /** Renders a 'tech'-persona session instead of ChatPane. Omitted for Word/Excel/PowerPoint, which never see persona 'tech'. */
   techPane?: ComponentType<{ session: TechPersonaSession }>;
+  /**
+   * Outlook-only technician bind/re-link affordance (Task 25) — a "Technician
+   * sign-in" control that opens BindFlow, supplied by Outlook's main.tsx so App
+   * stays host-neutral. Rendered on the sign-in screen, on the client-resolution
+   * blocked screen (`not_provisioned` — a technician hitting the client-AI 404
+   * before ever binding), and on the `relink_required` blocked screen (a
+   * previously-bound technician whose binding needs to be re-established).
+   * Omitted entirely for Word/Excel/PowerPoint.
+   */
+  signInExtra?: ReactNode;
 }
 
-export function App({ host, clientHost, exchangePath, techPane }: AppProps) {
+export function App({ host, clientHost, exchangePath, techPane, signInExtra }: AppProps) {
   const [phase, setPhase] = useState<Phase>({ name: 'loading' });
 
   // Item-changed rebinding (the mail-model behavior) needs NO App-level effect:
@@ -98,12 +108,17 @@ export function App({ host, clientHost, exchangePath, techPane }: AppProps) {
           </div>
         );
       case 'signin':
-        return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} />;
+        return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} extra={signInExtra} />;
       case 'blocked':
         return (
           <BlockedScreen
             kind={phase.kind}
             onRetry={phase.kind === 'retryable' ? interactiveSignIn : undefined}
+            extra={
+              phase.kind === 'not_provisioned' || phase.kind === 'relink_required'
+                ? signInExtra
+                : undefined
+            }
           />
         );
       case 'ready':

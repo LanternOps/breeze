@@ -1,4 +1,15 @@
-export function SignInScreen({ failed, onSignIn }: { failed: boolean; onSignIn: () => void }) {
+import type { ReactNode } from 'react';
+
+export function SignInScreen({
+  failed,
+  onSignIn,
+  extra,
+}: {
+  failed: boolean;
+  onSignIn: () => void;
+  /** Outlook-only technician sign-in affordance (App's `signInExtra`). Omitted for Word/Excel/PowerPoint. */
+  extra?: ReactNode;
+}) {
   return (
     <div className="flex h-screen flex-col items-center justify-center gap-3 p-6 text-center">
       <div className="text-base font-semibold text-gray-800">Breeze AI</div>
@@ -18,6 +29,7 @@ export function SignInScreen({ failed, onSignIn }: { failed: boolean; onSignIn: 
       >
         Sign in with Microsoft
       </button>
+      {extra}
     </div>
   );
 }

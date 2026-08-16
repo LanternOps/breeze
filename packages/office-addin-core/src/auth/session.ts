@@ -40,7 +40,13 @@ export type AuthBlockKind =
   | 'user_not_permitted'
   | 'account_inactive'
   | 'retryable'
-  | 'unsupported_persona';
+  | 'unsupported_persona'
+  /** office-addin only: 403 binding_denied/{epoch_advanced,revoked_relink} — the technician's
+   *  Entra↔Breeze binding needs to be re-established via BindFlow. */
+  | 'relink_required'
+  /** office-addin only: 403 binding_denied/{user_inactive,membership_revoked} — hard stop,
+   *  no self-serve recovery. */
+  | 'access_revoked';
 
 export class AuthBlockedError extends Error {
   constructor(
@@ -178,6 +184,14 @@ const BLOCK_KINDS: Record<string, AuthBlockKind> = {
   service_unavailable: 'retryable',
 };
 
+/** office-addin exchange `{error:'binding_denied', reason}` → block kind (Task 25). */
+const BINDING_DENIED_KINDS: Record<string, AuthBlockKind> = {
+  epoch_advanced: 'relink_required',
+  revoked_relink: 'relink_required',
+  user_inactive: 'access_revoked',
+  membership_revoked: 'access_revoked',
+};
+
 const DEFAULT_EXCHANGE_PATH = '/client-ai/auth/exchange';
 
 async function exchangeOnce(
@@ -202,6 +216,13 @@ async function exchangeOnce(
       ? (body as { error: string }).error
       : `http_${res.status}`;
   if (res.status === 401) throw new InvalidEntraTokenError();
+  if (code === 'binding_denied') {
+    const reason =
+      body && typeof body === 'object' && typeof (body as { reason?: unknown }).reason === 'string'
+        ? (body as { reason: string }).reason
+        : '';
+    throw new AuthBlockedError(BINDING_DENIED_KINDS[reason] ?? 'retryable', `binding_denied:${reason}`);
+  }
   throw new AuthBlockedError(BLOCK_KINDS[code] ?? 'retryable', code);
 }
 

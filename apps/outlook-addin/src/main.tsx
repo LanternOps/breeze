@@ -1,23 +1,39 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App, bootAddin } from '@breeze/office-addin-core';
 import { outlookHostAdapter } from './host/outlook';
 import { TechPane } from './tech/TechPane';
+import { OutlookAuthExtras } from './tech/OutlookAuthExtras';
 import './index.css';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('taskpane.html is missing #root');
 const root = createRoot(rootEl);
 
+/**
+ * `bootId` remounts `App` (via `key`) once BindFlow + the post-bind exchange
+ * succeed — App's own boot effect re-reads the now-stored tech session and
+ * "re-enters the normal flow" as Task 25's brief requires, with zero new App
+ * surface beyond `signInExtra` itself.
+ */
+function Root(): React.ReactElement {
+  const [bootId, setBootId] = useState(0);
+  return (
+    <App
+      key={bootId}
+      host={outlookHostAdapter}
+      clientHost="outlook"
+      exchangePath="/office-addin/auth/exchange"
+      techPane={TechPane}
+      signInExtra={<OutlookAuthExtras onSessionReady={() => setBootId((n) => n + 1)} />}
+    />
+  );
+}
+
 function render(): void {
   root.render(
     <React.StrictMode>
-      <App
-        host={outlookHostAdapter}
-        clientHost="outlook"
-        exchangePath="/office-addin/auth/exchange"
-        techPane={TechPane}
-      />
+      <Root />
     </React.StrictMode>,
   );
 }
