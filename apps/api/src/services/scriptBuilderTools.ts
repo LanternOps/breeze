@@ -298,7 +298,7 @@ export function createScriptBuilderMcpServer(
 
     tool(
       'get_script_execution',
-      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use after a run you or the user started to read its result.',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the editor Test Run button, or an execution id from get_script_execution_history) — not to re-check an execute_script_on_device call that already returned.',
       {
         executionId: uuid.describe('The execution ID to fetch'),
       },

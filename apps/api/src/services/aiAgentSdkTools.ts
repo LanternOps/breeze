@@ -1146,7 +1146,7 @@ export function createBreezeMcpServer(
 
     tool(
       'get_script_execution',
-      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use to read the result of a run that was still running when run_script returned.',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the script editor Test Run button, or an execution id from get_script_execution_history) — not to re-check a run_script call that already returned.',
       {
         executionId: uuid,
       },

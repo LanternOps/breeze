@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Play, Loader2, CheckCircle, XCircle, AlertTriangle, Clock, Terminal, AlertOctagon, ExternalLink } from 'lucide-react';
+import { Play, Loader2, CheckCircle, XCircle, AlertTriangle, Clock, Terminal, AlertOctagon, ExternalLink, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -64,6 +64,9 @@ export default function ScriptTestRunner({
   const [phase, setPhase] = useState<'idle' | 'saving' | 'starting' | 'polling'>('idle');
   const [execution, setExecution] = useState<TestRunExecution | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  // Set when polling gave up (permanent poll error / deadline) so the user can
+  // re-read THAT execution instead of starting a second run on a real device.
+  const [retryExecutionId, setRetryExecutionId] = useState<string | null>(null);
   const pollTokenRef = useRef(0);
 
   useEffect(() => {
@@ -116,6 +119,23 @@ export default function ScriptTestRunner({
     // identity — re-running would fight the user's manual selection).
   }, [scriptId, compatibleDevices.length]);
 
+  // Drop a pinned device that the current OS targets no longer allow. Without
+  // this the <select> renders as unselected (no matching <option>) while the Run
+  // button stays enabled and would still POST the hidden device id.
+  useEffect(() => {
+    if (!selectedDeviceId) return;
+    // `devices` empty means the /devices fetch hasn't resolved (or failed), not
+    // that the pin is incompatible — never clear a legitimate selection during
+    // the initial load window, or this would fight the restore effect above.
+    if (devices.length === 0) return;
+    if (compatibleDevices.some(d => d.id === selectedDeviceId)) return;
+    setSelectedDeviceId('');
+    if (scriptId) localStorage.removeItem(storageKey(scriptId));
+    onTestDeviceChange?.(null);
+    // onTestDeviceChange is deliberately not a dep — callers pass an inline
+    // closure, and re-running on its identity would re-check needlessly.
+  }, [devices, compatibleDevices, selectedDeviceId, scriptId]);
+
   // Cancel any in-flight poll loop on unmount.
   useEffect(() => () => { pollTokenRef.current += 1; }, []);
 
@@ -152,6 +172,17 @@ export default function ScriptTestRunner({
     const timeoutSecs = Number(timeoutSeconds) || 300;
     const deadline = Date.now() + (timeoutSecs + 120) * 1000;
 
+    // Give up on reading the result without claiming the run is still in flight:
+    // dropping `execution` stops the animated status chip (which would otherwise
+    // spin forever while the Run button was re-enabled) and offers a re-poll of
+    // the SAME execution so recovery never means a second run on a real device.
+    const abandonPoll = (message: string) => {
+      setPhase('idle');
+      setExecution(null);
+      setRetryExecutionId(executionId);
+      setRunError(message);
+    };
+
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
       if (pollTokenRef.current !== token) return;
@@ -163,11 +194,14 @@ export default function ScriptTestRunner({
           return;
         }
         if (!response.ok) {
-          // A 4xx is permanent (execution deleted, access revoked) — stop
-          // instead of hammering the endpoint to the deadline. 5xx retries.
-          if (response.status >= 400 && response.status < 500) {
-            setPhase('idle');
-            setRunError(t('testRunner.errors.pollFailed'));
+          // Most 4xx are permanent (execution deleted, access revoked) — stop
+          // instead of hammering the endpoint to the deadline. 408 and 429 are
+          // NOT permanent: the app-wide globalRateLimit() can trip on a 2s poll
+          // loop, so those fall through and retry alongside 5xx.
+          const permanent = response.status >= 400 && response.status < 500
+            && response.status !== 408 && response.status !== 429;
+          if (permanent) {
+            abandonPoll(t('testRunner.errors.pollFailed'));
             return;
           }
           continue;
@@ -185,14 +219,25 @@ export default function ScriptTestRunner({
     }
 
     if (pollTokenRef.current === token) {
-      setPhase('idle');
-      setRunError(t('testRunner.errors.pollDeadline'));
+      abandonPoll(t('testRunner.errors.pollDeadline'));
     }
   }, [timeoutSeconds, t]);
+
+  // Re-read the SAME execution after a poll failure — never a second run.
+  const handleRetryPoll = () => {
+    if (!retryExecutionId || phase !== 'idle') return;
+    const executionId = retryExecutionId;
+    setRunError(null);
+    setRetryExecutionId(null);
+    setExecution({ id: executionId, status: 'pending' });
+    setPhase('polling');
+    void pollExecution(executionId);
+  };
 
   const handleRun = async () => {
     if (!scriptId || !selectedDeviceId || phase !== 'idle') return;
     setRunError(null);
+    setRetryExecutionId(null);
 
     if (isDirty) {
       setPhase('saving');
@@ -367,7 +412,20 @@ export default function ScriptTestRunner({
         </p>
       )}
       {runError && (
-        <p className="border-t px-3 py-2 text-xs text-destructive">{runError}</p>
+        <p className="flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs text-destructive">
+          <span>{runError}</span>
+          {retryExecutionId && !busy && (
+            <button
+              type="button"
+              onClick={handleRetryPoll}
+              data-testid="test-poll-retry"
+              className="inline-flex items-center gap-1 rounded border border-destructive/40 px-2 py-0.5 font-medium transition hover:bg-destructive/10"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t('common:actions.retry')}
+            </button>
+          )}
+        </p>
       )}
 
       {execution && !running && TERMINAL_STATUSES.includes(execution.status) && (
