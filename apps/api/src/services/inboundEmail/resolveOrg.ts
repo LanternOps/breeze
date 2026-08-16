@@ -87,6 +87,20 @@ export type UnknownSenderMode = 'quarantine' | 'triage' | 'drop';
 const UNKNOWN_SENDER_MODES: readonly UnknownSenderMode[] = ['quarantine', 'triage', 'drop'];
 
 export interface PartnerInboundPolicy {
+  /**
+   * The 'Enable email-to-ticket' master switch (settings.ticketing.inbound.enabled).
+   * When false, `processInboundEmail` terminates as 'ignored' before any ticket,
+   * review-queue row, or autoresponse is produced.
+   *
+   * Defaults to TRUE when absent, which is deliberately the opposite of the safe
+   * default used by every other field here: from the feature's introduction until
+   * this gate existed the flag was display-only, so ingestion has ALWAYS been on.
+   * Defaulting to false would silently stop ticketing for every partner that never
+   * touched the toggle. A stored `false` written before this gate shipped is not
+   * evidence of intent either — see the `2026-08-24-inbound-enabled-backfill.sql`
+   * migration, which repairs those rows for partners with observed inbound mail.
+   */
+  enabled: boolean;
   unknownSenderMode: UnknownSenderMode;
   defaultTriageOrgId: string | null;
   /**
@@ -101,7 +115,9 @@ export interface PartnerInboundPolicy {
 /**
  * Read the partner's inbound routing policy from partners.settings JSONB
  * (settings.ticketing.inbound). Absent fields read as the safe default
- * (quarantine; never drop). Back-compat: a partner that only has the legacy
+ * (quarantine; never drop) — with the deliberate exception of `enabled`, which
+ * defaults to true so an upgrade cannot silently stop ingestion (see the field
+ * docs on PartnerInboundPolicy). Back-compat: a partner that only has the legacy
  * `triageUnknownSenders` boolean (set before the 3-way mode existed) maps
  * true -> 'triage', false/absent -> 'quarantine'. The first save from the UI
  * replaces the inbound object wholesale, retiring the legacy key.
@@ -118,6 +134,7 @@ export async function loadPartnerInboundPolicy(
   const inbound =
     (((settings.ticketing as Record<string, unknown> | undefined)?.inbound) as
       | {
+          enabled?: boolean;
           defaultTriageOrgId?: string | null;
           triageUnknownSenders?: boolean;
           unknownSenderMode?: string;
@@ -134,6 +151,7 @@ export async function loadPartnerInboundPolicy(
       : 'quarantine';
 
   return {
+    enabled: inbound.enabled !== false,
     unknownSenderMode: mode,
     defaultTriageOrgId: inbound.defaultTriageOrgId ?? null,
     dropUnverifiedSenders: inbound.dropUnverifiedSenders === true,

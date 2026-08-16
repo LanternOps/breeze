@@ -218,6 +218,40 @@ export async function processInboundEmail(
       .limit(1);
     if (dup[0]) return;
 
+    // (2b) Master switch (#3597). `settings.ticketing.inbound.enabled` used to be
+    // display-only: the card persisted and re-rendered it while nothing in this
+    // pipeline read it, so a partner who turned the feature OFF kept getting tickets
+    // (and autoresponses) with no in-product way to stop it. Gate here — after the
+    // partner is known (the flag is per-partner) and after the dedup SELECT, so a
+    // provider retry short-circuits on the existing row instead of racing the
+    // (partner_id, provider_message_id) unique index and landing a spurious `failed`.
+    //
+    // Terminate as `ignored`, not an error: the webhook already 202'd and a 4xx/5xx
+    // would make the provider retry mail we intend to discard. `ignored` also keeps
+    // the row out of the review queue (REVIEW_STATUSES = quarantined|failed), which
+    // is the point — a disabled partner should see nothing, not a growing queue.
+    // No separate autoresponder gate is needed: autoresponses only fire from
+    // createFromEmail, which is downstream of this return.
+    //
+    // The M365 poll path lands here too (mailboxGeneration carries the partnerId), so
+    // it is covered — but note the semantic: the poller still fetches, marks read, and
+    // advances its delta cursor, so mail that arrives while the switch is OFF is
+    // CONSUMED (with an audit row), not queued for replay when it's switched back on.
+    // 'Off' means discard-with-audit, not pause. Pause-and-replay would need a
+    // cursor-level design in ticketMailboxPollWorker, not a gate here.
+    //
+    // Scope: this governs NEW ingestion only. Rows already in the review queue stay
+    // manually convertible after the switch goes off — the switch is not a retroactive
+    // queue purge.
+    //
+    // The policy is loaded ONCE here and threaded to the unknown-sender decision at
+    // the bottom, replacing what used to be two independent reads of the same row.
+    const policy = await loadPartnerInboundPolicy(partnerId);
+    if (!policy.enabled) {
+      await logInbound(n, partnerId, 'ignored', null, 'inbound disabled for partner');
+      return;
+    }
+
     // (R4) Sender authentication gate. The From header is spoofable and the per-partner
     // ticket token (T-YYYY-NNNN) is enumerable, so a token/thread match or a
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
@@ -249,7 +283,6 @@ export async function processInboundEmail(
       // queue, no autoresponse). This gate runs before any sender matching, so
       // the drop applies to ALL unverified senders — known or not (see
       // PartnerInboundPolicy.dropUnverifiedSenders).
-      const policy = await loadPartnerInboundPolicy(partnerId);
       if (policy.dropUnverifiedSenders) {
         await logInbound(n, partnerId, 'ignored', null, `drop: ${reason}`);
       } else {
@@ -316,8 +349,8 @@ export async function processInboundEmail(
     // (7) Unknown sender (no thread, no portal user, no mapped domain). The
     // partner's policy (settings.ticketing.inbound) decides the fate. No contact
     // is onboarded — the customer is unknown. Default-off: absent settings keep
-    // the Phase 4 quarantine behavior.
-    const policy = await loadPartnerInboundPolicy(partnerId);
+    // the Phase 4 quarantine behavior. (`policy` was loaded at the master-switch
+    // gate above.)
 
     // 'drop' — silently ignore: no ticket, no review-queue row, no autoresponse.
     // Distinct from quarantine so unmapped spam doesn't fill the review queue.

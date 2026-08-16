@@ -250,13 +250,21 @@ describe('getTicketConfig inbound block', () => {
     expect(cfg.inbound.address).toBe('support@tickets.acme.com');
     expect(cfg.inbound.addressOverride).toBe('support@tickets.acme.com');
   });
-  it('defaults enabled=false, autoresponderEnabled=true, addressOverride=null when config absent', async () => {
+  // #3597: `enabled` must read back with the SAME default the ingestion gate uses
+  // (loadPartnerInboundPolicy: absent → true), or the card renders an "off" toggle
+  // for a partner whose mail is still being ingested — the original bug.
+  it('defaults enabled=true, autoresponderEnabled=true, addressOverride=null when config absent', async () => {
     enqueueForInbound({ slug: 'acme', settings: {} });
     const cfg = await getTicketConfig('p-1');
-    expect(cfg.inbound.enabled).toBe(false);
+    expect(cfg.inbound.enabled).toBe(true);
     expect(cfg.inbound.autoresponderEnabled).toBe(true);
     expect(cfg.inbound.defaultTriageOrgId).toBeNull();
     expect(cfg.inbound.addressOverride).toBeNull();
+  });
+  it('surfaces an explicit enabled=false (the gate honors it)', async () => {
+    enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { enabled: false } } } });
+    const cfg = await getTicketConfig('p-1');
+    expect(cfg.inbound.enabled).toBe(false);
   });
   it('surfaces auto-reply subject/body from partner settings, defaulting to null', async () => {
     enqueueForInbound({ slug: 'acme', settings: { ticketing: { inbound: { autoresponseSubject: 'Hi {{ticket_number}}', autoresponseBody: 'Body' } } } });

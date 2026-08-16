@@ -137,6 +137,15 @@ Tickets enter the queue from four directions:
 
 Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.
 
+### Turning it on and off
+
+**Enable email-to-ticket** on the Inbound email card is the master switch for the whole feature. With it off, mail addressed to your partner is discarded — no ticket, no review-queue entry, no autoresponse — and each discarded message is still recorded in the inbound log for audit. It applies to both delivery paths: the native inbound address and a connected Microsoft 365 shared mailbox.
+
+Two things to know:
+
+- Existing partners are **on** by default. The switch had no effect before v0.106.0, so ingestion has always been running; leaving it alone keeps today's behavior.
+- Switching it off **discards** mail rather than pausing it. Messages that arrive while it's off are not queued for replay when you switch it back on.
+
 ### Your inbound address
 
 Each partner gets an **inbound address** -- the email address customers send to. Copy it from the Inbound email card and share it with your customers (or forward your existing support mailbox to it). Mail sent to that address is converted into tickets.
