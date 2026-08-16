@@ -34,6 +34,9 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.spyOn(api, 'fetchEmailContext').mockResolvedValue(emptyContext(0));
+  // TimeWidget (Task 24) polls this unconditionally once the pane is ready —
+  // stub it so pane-level tests don't hit the real network.
+  vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
 });
 
 describe('TechPane', () => {

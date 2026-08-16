@@ -32,6 +32,7 @@ import { ContextCard } from './ContextCard';
 import { TicketList } from './TicketList';
 import { LinkEmailAction } from './LinkEmailAction';
 import { CreateTicketForm } from './CreateTicketForm';
+import { TimeWidget } from './TimeWidget';
 import { getMailboxItemOrNull, readBodyText } from '../tools/mailbox';
 
 export interface TechPaneProps {
@@ -70,6 +71,10 @@ export function TechPane({ session: _session }: TechPaneProps) {
   const [contactOverride, setContactOverride] = useState<ContactCandidate | null>(null);
   const [selectedTicket, setSelectedTicket] = useState<AddinTicketSummary | MatchedTicket | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  // Last AI draft's suggested duration (Task 24) — lifted out of
+  // CreateTicketForm just for this one field so TimeWidget can prefill its
+  // manual log form; the rest of the draft stays local to the form.
+  const [suggestedDurationMinutes, setSuggestedDurationMinutes] = useState<number | undefined>(undefined);
 
   const load = useCallback(
     async (generation: number, signal: AbortSignal) => {
@@ -77,6 +82,7 @@ export function TechPane({ session: _session }: TechPaneProps) {
       setContactOverride(null);
       setSelectedTicket(null);
       setShowCreateForm(false);
+      setSuggestedDurationMinutes(undefined);
       let identity: EmailIdentity;
       try {
         identity = await readEmailIdentity();
@@ -287,10 +293,16 @@ export function TechPane({ session: _session }: TechPaneProps) {
                 }}
                 onBanner={setBanner}
                 onCancel={() => setShowCreateForm(false)}
+                onDraftSuggestedDuration={setSuggestedDurationMinutes}
               />
             )}
 
-            {/* Task 24 composition point: <TimeWidget> against the open ticket. */}
+            <TimeWidget
+              linkedTicket={selectedTicket}
+              suggestedDurationMinutes={suggestedDurationMinutes}
+              onBanner={setBanner}
+            />
+
             {contactOverride && (
               <span data-testid="tech-contact-override" className="hidden">
                 {contactOverride.id}

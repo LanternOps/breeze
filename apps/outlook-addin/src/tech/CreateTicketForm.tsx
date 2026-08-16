@@ -31,6 +31,10 @@ export interface CreateTicketFormProps {
   onDone: (result: FromEmailResponse) => void;
   onBanner: (message: string | null) => void;
   onCancel?: () => void;
+  /** Fires once the AI draft resolves, surfacing `suggestedTimeMinutes` up to
+   *  TechPane so TimeWidget can prefill its manual log form (Task 24). The
+   *  draft itself stays local to this form — only the one field is lifted. */
+  onDraftSuggestedDuration?: (minutes: number) => void;
 }
 
 type RequesterMode = 'raw' | 'create_contact' | `candidate:${string}`;
@@ -47,6 +51,7 @@ export function CreateTicketForm({
   onDone,
   onBanner,
   onCancel,
+  onDraftSuggestedDuration,
 }: CreateTicketFormProps) {
   const org = orgOverride ?? context.org;
   const candidates = context.contacts.filter((c): c is ContactCandidate => c.kind === 'portal_user');
@@ -83,6 +88,7 @@ export function CreateTicketForm({
         if (!subjectDirtyRef.current) setSubject(res.draft.subject);
         if (!descriptionDirtyRef.current) setDescription(res.draft.summary);
         setAiApplied(true);
+        onDraftSuggestedDuration?.(res.draft.suggestedTimeMinutes);
       })
       .catch(() => {
         // 4xx/5xx/timeout — the deterministic fallback already filled the
