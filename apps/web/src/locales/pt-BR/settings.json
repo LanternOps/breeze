@@ -1010,12 +1010,6 @@
   "orgRemoteAccessSettings": {
     "title": "Acesso remoto",
     "description": "Gerencie restrições de túnel, listas de destinos permitidos e sessões ativas por site.",
-    "ipRestrictions": {
-      "title": "Restrições de IP de origem",
-      "description": "Restrinja quais IPs podem criar túneis. Deixe vazio para permitir qualquer usuário autenticado.",
-      "empty": "(Sem restrições — qualquer usuário autenticado pode criar túneis)",
-      "placeholder": "por exemplo, 10.0.0.0/8"
-    },
     "sites": {
       "title": "Sites",
       "empty": "(Nenhum site nesta organização)",

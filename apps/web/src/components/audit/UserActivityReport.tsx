@@ -4,7 +4,7 @@ import { Activity, Download, TrendingUp, User, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { formatAuditAction } from '@/lib/auditFormat';
+import { useAuditActionFormatter } from '@/lib/auditFormat';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type ActivityEntry = {
@@ -30,6 +30,7 @@ interface UserActivityReportProps {
 
 export default function UserActivityReport({ timezone }: UserActivityReportProps) {
   const { t } = useTranslation('admin');
+  const formatAuditAction = useAuditActionFormatter();
   const [users, setUsers] = useState<UserOption[]>([{ id: 'all', name: t('audit.userActivityReport.allUsers') }]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('all');

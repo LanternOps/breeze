@@ -1010,12 +1010,6 @@
   "orgRemoteAccessSettings": {
     "title": "Accesso remoto",
     "description": "Gestisci restrizioni dei tunnel, allowlist delle destinazioni e sessioni attive per sito.",
-    "ipRestrictions": {
-      "title": "Restrizioni IP di origine",
-      "description": "Limita quali IP possono creare tunnel. Lascia vuoto per consentire a qualsiasi utente autenticato.",
-      "empty": "(Nessuna restrizione - qualsiasi utente autenticato può creare tunnel)",
-      "placeholder": "es. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Siti",
       "empty": "(Nessun sito in questa organizzazione)",

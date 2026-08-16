@@ -789,7 +789,7 @@
     },
     "code": {
       "heading": "Transmettez ce code à la personne que vous dépannez",
-      "shownOnce": "Ce code ne s'affiche qu'une seule fois. Copiez-le avant de quitter cette page, car il ne pourra plus jamais être affiché.",
+      "shownOnce": "Copiez ce code maintenant. Breeze n’en conserve qu’une empreinte; dès que vous quittez ou rechargez cette page, il est irrécupérable — vous devriez démarrer une nouvelle session.",
       "expires": "Expire à {{time}}",
       "instructions": "Envoyez-lui le lien, puis demandez-lui de lancer le client téléchargé et d'entrer le code.",
       "copyCode": "Copier le code",

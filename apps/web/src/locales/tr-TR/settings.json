@@ -1010,12 +1010,6 @@
   "orgRemoteAccessSettings": {
     "title": "Uzaktan Erişim",
     "description": "Tünel kısıtlamalarını, hedef izin verilenler listelerini ve site başına etkin oturumları yönetin.",
-    "ipRestrictions": {
-      "title": "Kaynak IP Kısıtlamalar",
-      "description": "Hangi IP'lerin tünel oluşturabileceğini kısıtlayın. Kimliği doğrulanmış herhangi bir kullanıcıya izin vermek için boş bırakın.",
-      "empty": "(Kısıtlama yok; kimliği doğrulanmış herhangi bir kullanıcı tünel oluşturabilir)",
-      "placeholder": "ör. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Siteler",
       "empty": "(Bu kuruluşta site yok)",

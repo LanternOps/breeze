@@ -1,3 +1,7 @@
+import { useCallback, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+import '@/lib/i18n';
+
 // Routine agent telemetry + MCP plumbing actions that saturate the
 // dashboard Recent Activity widget. Passed as a CSV `excludeActions=` query
 // param to GET /audit-logs/logs so the API filters them server-side. The
@@ -20,7 +24,19 @@ export const DEFAULT_DASHBOARD_EXCLUDE_ACTIONS: readonly string[] = [
 
 // Map raw audit action codes (dotted, machine-shaped) to human-readable
 // phrases. Falls back to a generic prettifier for unknown codes.
-
+//
+// The catalog itself lives in the locale files under `admin:audit.actions`, so
+// the Audit Trail reads in the operator's language rather than always English
+// (issue #3432). This English copy is the LAST-RESORT fallback for callers that
+// have no `t` available (and for the eager-loaded first render before a
+// non-English bundle has landed); `useAuditActionFormatter` is what components
+// should use.
+//
+// The locale nodes are read whole via `returnObjects` rather than looked up key
+// by key: action codes contain dots, which i18next would otherwise treat as key
+// separators, and a code that is both a leaf and a prefix of another code
+// (`agent.command` vs `agent.command.result.submit`) cannot be expressed as a
+// nested tree at all.
 const ACTION_DISPLAY: Record<string, string> = {
   // Agent telemetry submissions (high volume)
   'agent.sessions.submit': 'Reported sessions',
@@ -102,9 +118,46 @@ function prettify(action: string): string {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
-export function formatAuditAction(action: string | null | undefined): string {
+/**
+ * Render an audit action code for humans.
+ *
+ * `labels` is the translated catalog (see `useAuditActionFormatter`). When it
+ * is omitted or does not cover the code, we fall back to the built-in English
+ * catalog and finally to `prettify`. Unmapped codes therefore still render in
+ * English under a non-English locale — acceptable, because the API emits many
+ * hundreds of action codes and only the common ones are worth translating.
+ */
+export function formatAuditAction(
+  action: string | null | undefined,
+  labels?: Record<string, string>,
+): string {
   if (!action) return '';
-  return ACTION_DISPLAY[action] ?? prettify(action);
+  return labels?.[action] ?? ACTION_DISPLAY[action] ?? prettify(action);
+}
+
+/**
+ * Hook returning a locale-aware `formatAuditAction`. Prefer this in components
+ * — calling the bare function leaves the action untranslated.
+ */
+export function useAuditActionFormatter(): (
+  action: string | null | undefined,
+) => string {
+  const { t } = useTranslation('admin');
+
+  const labels = useMemo(() => {
+    const raw = t('audit.actions', { returnObjects: true }) as unknown;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    // Guard against a malformed/partial bundle handing us non-string leaves.
+    const entries = Object.entries(raw as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    );
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }, [t]);
+
+  return useCallback(
+    (action: string | null | undefined) => formatAuditAction(action, labels),
+    [labels],
+  );
 }
 
 // Keys we never want to show in the compact Details cell — they're internal

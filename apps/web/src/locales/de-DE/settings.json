@@ -1010,12 +1010,6 @@
   "orgRemoteAccessSettings": {
     "title": "Fernzugriff",
     "description": "Verwalten Sie Tunneleinschränkungen, Zielzulassungslisten und aktive Sitzungen pro Standort.",
-    "ipRestrictions": {
-      "title": "Quell-IP-Einschränkungen",
-      "description": "Beschränken Sie, welche IPs Tunnel erstellen können. Lassen Sie das Feld leer, um jeden authentifizierten Benutzer zuzulassen.",
-      "empty": "(Keine Einschränkungen – jeder authentifizierte Benutzer kann Tunnel erstellen)",
-      "placeholder": "z.B. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Standorte",
       "empty": "(Keine Standorte in dieser Organisation)",

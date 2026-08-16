@@ -62,7 +62,7 @@ describe('OrgRemoteAccessSettings — proxy tunnel rows link to the proxy page',
   it('links a proxy tunnel row target to /remote/proxy/<id>?target=..., but leaves a vnc row as plain text', async () => {
     mockRoutes([PROXY_TUNNEL, VNC_TUNNEL]);
 
-    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} onDirty={() => {}} />);
+    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} />);
 
     // Expand the site accordion to reveal the Active Tunnels table.
     fireEvent.click(await screen.findByText('HQ'));
@@ -82,7 +82,7 @@ describe('OrgRemoteAccessSettings — proxy tunnel rows link to the proxy page',
   it('Kill still closes the tunnel via DELETE /tunnels/:id and works independently of the new link', async () => {
     mockRoutes([PROXY_TUNNEL]);
 
-    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} onDirty={() => {}} />);
+    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} />);
 
     fireEvent.click(await screen.findByText('HQ'));
     await screen.findByTestId('remote-access-tunnel-link-tun-proxy-1');
@@ -97,10 +97,53 @@ describe('OrgRemoteAccessSettings — proxy tunnel rows link to the proxy page',
   it('shows the empty state when there are no active tunnels', async () => {
     mockRoutes([]);
 
-    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} onDirty={() => {}} />);
+    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} />);
 
     fireEvent.click(await screen.findByText('HQ'));
 
     expect(await screen.findByText('(No active tunnels)')).toBeInTheDocument();
+  });
+});
+
+// Regression for #3432: this tab used to mark the whole Org Settings page
+// "unsaved" and could never clear it, so a `beforeunload` prompt fired on the
+// way out even though nothing was pending. The allowlist controls each persist
+// through their own request, so there is no draft state to warn about — the
+// tab must not accept an onDirty channel at all.
+describe('OrgRemoteAccessSettings — never reports unsaved changes (#3432)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it('persists an added allowlist rule immediately, with no dirty-state channel to the parent', async () => {
+    mockRoutes([]);
+
+    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} />);
+
+    fireEvent.click(await screen.findByText('HQ'));
+
+    fireEvent.click(await screen.findByText('Add Rule'));
+    fireEvent.change(screen.getByPlaceholderText('192.168.1.0/24:5900-5910'), {
+      target: { value: '192.168.1.0/24:5900-5910' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+
+    // The rule round-trips to the API on its own — nothing is left unsaved.
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tunnels/allowlist',
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+  });
+
+  it('no longer renders the source-IP restriction control, which never persisted anywhere', async () => {
+    mockRoutes([]);
+
+    render(<OrgRemoteAccessSettings orgId="org-1" sites={[SITE]} />);
+    await screen.findByText('HQ');
+
+    expect(screen.queryByText('Source IP Restrictions')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('e.g. 10.0.0.0/8')).not.toBeInTheDocument();
   });
 });
