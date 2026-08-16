@@ -21,9 +21,16 @@ import { decryptTenantVariableValue } from './tenantVariables';
  * org-token-without-partnerId JWT among them — and if resolution rode
  * whichever context happened to be ambient, the SAME script could resolve a
  * DIFFERENT variable set depending on which call site dispatched it. Instead,
- * `loadTenantVariableScope` always elevates to a genuinely fresh system
- * context (see below) and produces one immutable snapshot that every call
- * site consumes identically.
+ * `loadTenantVariableScope` elevates to a genuinely fresh system context and
+ * produces one immutable snapshot that every call site consumes identically.
+ *
+ * That elevation is the default and is what all five dispatch call sites get.
+ * The ONE exception, since #3409 PR4c-1 Task 3b, is `opts.database`: a caller
+ * that is ALREADY inside a system-scoped context may hand its own connection
+ * in, and the query then runs on that connection rather than escaping to a
+ * second one. Same system scope, one fewer pooled connection — and the caller
+ * must be able to prove the "already system-scoped" half, which is asserted.
+ * See `loadTenantVariableScope`'s own doc comment for the full contract.
  *
  * Because system scope means Postgres RLS no longer constrains the query at
  * all, the WHERE clause in `loadTenantVariableScope` is the ONLY tenancy

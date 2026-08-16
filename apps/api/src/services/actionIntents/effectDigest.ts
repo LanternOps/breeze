@@ -381,12 +381,15 @@ export function effectDigestResolverKey(toolName: string, action?: string): stri
  * connection-hold class. Reusing the caller's connection is sound only because
  * every call site of this module is already system-scoped, which is the
  * caller obligation `opts.database` carries and `loadTenantVariableScope`
- * asserts on entry.
+ * checks inside its `opts.database` branch — note that branch sits AFTER the
+ * empty-`orgIds` short-circuit, so a script referencing no variables never
+ * reaches the check (it issues no query either, so there is nothing to scope).
  *
  * The import graph therefore still reaches '../../db' transitively (through
- * tenantVariableResolution), and effectDigest.test.ts seams that ONE function
- * so the unit suite needs no database module at all. Everything else still
- * resolves purely against the injected `database`.
+ * tenantVariableResolution), and effectDigest.test.ts seams that ONE function.
+ * The seam does not avoid LOADING the db module — `importOriginal()` loads it
+ * — it avoids needing a live database and a real system-scoped context behind
+ * it. Everything else still resolves purely against the injected `database`.
  */
 export async function computeEffectDigestOutcome(
   toolName: string,

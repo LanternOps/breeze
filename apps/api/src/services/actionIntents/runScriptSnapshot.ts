@@ -130,9 +130,9 @@ export type BuildRunScriptSnapshotResult =
  * entry points: `computeEffectDigestOutcome` from intentService.ts and
  * `computeEffectDigestForRelease` from jobs/intentReleaseWorker.ts and
  * services/aiAgentSdk.ts), so reusing that connection is what avoids
- * acquiring a second pooled one while the caller's transaction is still held. Injecting `loadScope` is what lets
- * the unit suite build snapshots without a live or mocked database module at
- * all. Production callers pass nothing.
+ * acquiring a second pooled one while the caller's transaction is still held.
+ * Injecting `loadScope` is what lets the unit suite build snapshots without a
+ * live or mocked database module at all. Production callers pass nothing.
  */
 export interface RunScriptSnapshotDeps {
   loadScope: (orgIds: string[], database: Database) => Promise<TenantVariableScope>;
