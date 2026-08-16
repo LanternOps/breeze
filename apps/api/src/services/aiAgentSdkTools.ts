@@ -2186,9 +2186,17 @@ export function createBreezeMcpServer(
 
     tool(
       'get_quote',
-      'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category breakdown), content blocks, and line items — the same view the web UI shows. Read-only.',
+      // Single source of truth: the registry definition (aiToolsQuotes.ts) carries
+      // the pagination guidance, so the MCP description can't drift from it.
+      registryDescription('get_quote'),
       {
         quoteId: uuid,
+        // Large quotes exceed the MCP output cap — let the model page the content
+        // blocks or fetch a metadata-only overview (#3485). Must mirror the
+        // canonical get_quote schema in aiToolSchemas.ts.
+        blocksOffset: z.number().int().min(0).optional(),
+        blocksLimit: z.number().int().min(1).max(100).optional(),
+        includeBlockContent: z.boolean().optional(),
       },
       makeHandler('get_quote', getAuth, onPreToolUse, onPostToolUse)
     ),
