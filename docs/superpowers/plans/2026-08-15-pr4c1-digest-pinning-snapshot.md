@@ -249,6 +249,31 @@ git commit -m "feat(api): pin parameter definitions and tenant-variable referenc
 
 ---
 
+### Task 3b: Resolve variables on the ambient connection, not a second one
+
+*(Added 2026-08-15 after Task 3's review. Plan-owner ruling on an Important finding.)*
+
+Task 3's resolver now calls `loadTenantVariableScope`, which unconditionally does `runOutsideDbContext(() => withSystemDbAccessContext(...))`. In the digest path that **acquires a second pooled connection while the intent-creation transaction is holding one** — the #1105 connection-hold class, against a US pool ceiling of 25. A burst of concurrent intent creations can wedge on it.
+
+**The obvious fix is wrong.** Hoisting the digest out of the transaction would break a deliberate property: `intentService.ts:395-399` states the digest is computed inside the transaction, on the ambient `db`, "so the pinned content and the row it's attached to are read/written atomically — no window where a concurrent edit lands between 'read the target' and 'create the intent'."
+
+**The correct fix is the opposite direction:** let the resolution reuse the ambient connection. All three `computeEffectDigestOutcome` call sites are already system-scoped —
+`intentService.ts:385` (`withSystemDbAccessContext`), `intentReleaseWorker.ts:380` (same), `aiAgentSdk.ts:1189-1192` (`runOutsideDbContext` → `withSystemDbAccessContext`) — so the context escape buys nothing there and costs a connection. Reusing the ambient connection also makes the variable read share the insert's snapshot, which is strictly better for a digest.
+
+**Files:** `apps/api/src/services/tenantVariableResolution.ts`, `apps/api/src/services/actionIntents/runScriptSnapshot.ts`, and their tests.
+
+- [ ] **Step 1: Write the failing test.** `loadTenantVariableScope` given an explicit database performs its query on that database and does **not** call `runOutsideDbContext` / `withSystemDbAccessContext`. Given none, behaviour is exactly as today (all five existing callers). Assert on the escape helpers being called or not — the existing suites already mock them as flag-tracking passthroughs; follow that pattern.
+
+- [ ] **Step 2: Implement.** Add an optional second argument, e.g. `loadTenantVariableScope(orgIds, opts?: { database?: Database })`. When `database` is supplied, run the query directly on it with no context wrapper; otherwise keep today's escape verbatim. The docblock must state the caller contract explicitly: **supplying a database asserts the caller is already system-scoped**, because this query has RLS disabled and its `WHERE o.id = ANY($1)` is the only tenancy boundary. Then have `buildRunScriptSnapshot` pass the `database` it already receives.
+
+- [ ] **Step 3:** Confirm the five existing callers are untouched and their tests still pass.
+
+- [ ] **Step 4 (Minor, from the same review):** in `effectDigest.ts` around the rewritten comment, *"the release side consumes the snapshot's scope"* is present tense for something Task 6 has not built yet. Change to `will consume`.
+
+- [ ] **Step 5: Commit** — `perf(api): resolve tenant variables on the ambient connection in the digest path (#3409 PR4c-1)`
+
+---
+
 ### Task 4: Correct the three stale "never pinned for supervised" comments
 
 Pinning stopped being gated on `approvalScope === 'four_eyes'` on 2026-08-06, but three comments still tell the reader that a supervised intent is never pinned. Each sits directly above a branch that in fact runs for supervised intents. A future reader trusting them will conclude the branch is dead.
