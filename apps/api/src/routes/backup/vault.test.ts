@@ -274,6 +274,32 @@ describe('vault routes', () => {
     );
   });
 
+  // #3531: the web client posts NO body to this route, while `fetchWithAuth`
+  // still sets `Content-Type: application/json`. Under the strict json
+  // validator Hono called `c.req.json()` on that empty body and threw
+  // `400 Malformed JSON in request body` BEFORE the handler ran, so every
+  // Sync Now click failed — silently, because the old UI swallowed the error.
+  it('queues a sync when the client posts NO body (the web client never sends one)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([makeVault()]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+    queueCommandForExecutionMock.mockResolvedValueOnce(undefined);
+
+    const res = await app.request(`/backup/vault/${VAULT_ID}/sync`, {
+      method: 'POST',
+      // Exactly what fetchWithAuth sends: JSON content-type, no body at all.
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe('pending');
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'VAULT_SYNC',
+      { vaultId: VAULT_ID, snapshotId: undefined },
+      expect.objectContaining({ userId: 'user-123' })
+    );
+  });
+
   it('denies vault status for a site-restricted caller when the vault device is out-of-site', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock
