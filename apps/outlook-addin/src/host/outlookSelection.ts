@@ -27,17 +27,44 @@ export async function captureOutlookSelectionLabel(): Promise<string | undefined
 }
 
 /**
+ * Module-level registry of live subscriber callbacks, keyed by the mailbox
+ * object currently wired to an Office-level ItemChanged handler. The mailbox's
+ * `removeHandlerAsync` only removes ALL handlers for an event type — not a
+ * single one — so a real per-subscriber unsubscribe can't be built on top of
+ * it. Instead: attach exactly ONE Office-level handler per mailbox instance
+ * (re-attaching if the mailbox object itself changes, e.g. between tests'
+ * fresh mocks) and fan it out to whichever subscribers are still live.
+ */
+const liveSubscribers = new Set<() => void>();
+let attachedMailbox: unknown = null;
+
+/**
  * Subscribe to the mailbox ItemChanged event so the core re-reads the context
  * label (and, for a pinned pane, rebinds the active item) on every item switch.
- * Mirrors Excel/Word: returns a no-op unsubscribe (the always-mounted core
- * subscriber guards late updates itself, and the mailbox removeHandlerAsync only
- * removes ALL handlers for an event type — not a single one).
+ * Returns a REAL unsubscribe: the underlying Office handler stays attached
+ * (removeHandlerAsync can't safely target just this subscriber — see above),
+ * but this subscriber stops receiving dispatches immediately.
  */
 export function subscribeOutlookItemChanged(cb: () => void): () => void {
   const officeGlobal = (globalThis as { Office?: typeof Office }).Office;
   const mailbox = officeGlobal?.context?.mailbox;
   const itemChanged = officeGlobal?.EventType?.ItemChanged;
   if (!mailbox || itemChanged === undefined) return () => undefined;
-  mailbox.addHandlerAsync(itemChanged, cb, () => undefined);
-  return () => undefined;
+
+  liveSubscribers.add(cb);
+
+  if (attachedMailbox !== mailbox) {
+    attachedMailbox = mailbox;
+    mailbox.addHandlerAsync(
+      itemChanged,
+      () => {
+        for (const subscriber of [...liveSubscribers]) subscriber();
+      },
+      () => undefined,
+    );
+  }
+
+  return () => {
+    liveSubscribers.delete(cb);
+  };
 }

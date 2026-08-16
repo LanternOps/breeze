@@ -27,9 +27,20 @@ describe('outlookSelection — host-bound mailbox wiring', () => {
     expect(getOfficeMock().itemChangedHandlers.length).toBe(before + 1);
   });
 
-  it('returns a callable no-op unsubscribe', () => {
+  it('returns a callable unsubscribe', () => {
     const unsubscribe = subscribeOutlookItemChanged(() => undefined);
     expect(typeof unsubscribe).toBe('function');
     expect(() => unsubscribe()).not.toThrow();
+  });
+
+  it('unsubscribe stops further callbacks for that subscriber only', () => {
+    const cb = vi.fn();
+    const unsubscribe = subscribeOutlookItemChanged(cb);
+    getOfficeMock().switchItem({ subject: 'A' });
+    expect(cb).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    getOfficeMock().switchItem({ subject: 'B' });
+    expect(cb).toHaveBeenCalledTimes(1);
   });
 });
