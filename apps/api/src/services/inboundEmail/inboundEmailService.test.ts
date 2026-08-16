@@ -218,6 +218,24 @@ vi.mock('../ticketEvents', () => ({ emitTicketEvent: emitMock }));
 const { maybeSendAutoresponseMock } = vi.hoisted(() => ({ maybeSendAutoresponseMock: vi.fn() }));
 vi.mock('./autoresponder', () => ({ maybeSendAutoresponse: maybeSendAutoresponseMock }));
 
+// Task 4: pipeline calls claimMessageLink() to record link rows after a matched
+// append and after a create. Mocked as a collaborator (like resolveOrg/ticketService
+// above) rather than plumbed through the raw db mock — claimMessageLink has its own
+// coverage (ticketEmailLinks.test.ts unit tests + the claim integration suite), and
+// these dispatch-precedence tests only care about the pipeline's control flow.
+// findTicketIdsByMessageIds is called by threadMatcher.ts (also under this mock,
+// since it imports the same module) — stub it to "no link rows" so the existing
+// header/subject-token matching tests are unaffected; the widening itself has its
+// own coverage in the claim integration suite.
+const { claimMessageLinkMock, findTicketIdsByMessageIdsMock } = vi.hoisted(() => ({
+  claimMessageLinkMock: vi.fn().mockResolvedValue({ created: true, link: {} }),
+  findTicketIdsByMessageIdsMock: vi.fn().mockResolvedValue([])
+}));
+vi.mock('../ticketEmailLinks', () => ({
+  claimMessageLink: claimMessageLinkMock,
+  findTicketIdsByMessageIds: findTicketIdsByMessageIdsMock
+}));
+
 import { processInboundEmail } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
 

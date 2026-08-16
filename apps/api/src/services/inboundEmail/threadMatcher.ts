@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets } from '../../db/schema';
+import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
 
 // Per-partner ticket display number, e.g. T-2026-0001.
 export const TICKET_TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
@@ -101,6 +102,11 @@ export async function findTicketInPartner(
   // duplicate). The partner predicate stays mandatory (spec §6 layer 1).
   const candidateKeys = candidateThreadKeys(input);
   if (candidateKeys.length > 0) {
+    // Link-table widening (Task 4): a claimed ticket_email_links row for one of the
+    // candidate keys is an EXTRA OR arm on top of the existing header match — never a
+    // replacement for the status/deleted_at guards below, so a link row can never
+    // re-enable appending to a closed or soft-deleted ticket.
+    const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
     const rows = await db
       .select(MATCH_COLS)
       .from(tickets)
@@ -110,7 +116,8 @@ export async function findTicketInPartner(
         isNull(tickets.deletedAt), // never thread a reply onto a soft-deleted ticket
         or(
           inArray(tickets.emailThreadKey, candidateKeys),
-          inArray(tickets.emailMessageId, candidateKeys)
+          inArray(tickets.emailMessageId, candidateKeys),
+          ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
         )
       ))
       .limit(1);
@@ -154,6 +161,10 @@ export async function findClosedTicketInPartner(
 ): Promise<MatchedTicket | null> {
   const candidateKeys = candidateThreadKeys(input);
   if (candidateKeys.length > 0) {
+    // Link-table widening (Task 4): same additive OR arm as the live matcher, but
+    // gated on status = 'closed' here — a link row only ever surfaces a ticket
+    // that is ALREADY closed via this path, never re-opens/re-matches a live one.
+    const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
     const rows = await db
       .select(MATCH_COLS)
       .from(tickets)
@@ -168,7 +179,10 @@ export async function findClosedTicketInPartner(
         // reply that has already matched (and appended to) a live continuation ALSO
         // re-match the closed original on every subsequent reply, which is exactly
         // the fork this function exists to prevent.
-        inArray(tickets.emailThreadKey, candidateKeys)
+        or(
+          inArray(tickets.emailThreadKey, candidateKeys),
+          ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
+        )
       ))
       .limit(1);
     if (rows[0]) return rows[0] as MatchedTicket;

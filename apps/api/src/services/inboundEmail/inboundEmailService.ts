@@ -19,6 +19,7 @@ import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
+import { claimMessageLink } from '../ticketEmailLinks';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -306,9 +307,27 @@ export async function processInboundEmail(
       }
 
       // Append a public inbound comment, then reopen if resolved.
-      await appendInboundComment(matched.id, n, partnerId, senderResolver);
+      const commentId = await appendInboundComment(matched.id, n, partnerId, senderResolver);
       if (matched.status === 'resolved') {
         await reopenResolvedTicket(matched.id, partnerId);
+      }
+      // Record the reply's OWN Message-ID as a claimed link row (Task 4). This
+      // preserves the next hop when a client strips older References entries —
+      // the NEXT reply's In-Reply-To will point at THIS message, and the link
+      // table (consulted by findTicketInPartner) still resolves it to this
+      // ticket even though no header column carries it. Runs inside the same
+      // outer transaction as the comment insert (NOT the durable outside-context
+      // pattern) — a rollback must discard this together with the comment.
+      if (n.messageId) {
+        await claimMessageLink({
+          ticketId: matched.id,
+          orgId: matched.orgId,
+          partnerId,
+          messageId: n.messageId,
+          origin: 'inbound',
+          visibility: 'public',
+          commentId
+        });
       }
       await logInbound(n, partnerId, 'matched', matched.id);
       return;
@@ -470,6 +489,22 @@ async function createFromEmail(
     SYSTEM_ACTOR
   );
 
+  // Record the originating Message-ID as a claimed link row (Task 4) — same
+  // idempotent claim as the matched-reply path, covering the create path (fresh
+  // ticket + closed-continuation). Swallow created:false (a poller retry that
+  // reaches here again would just re-observe its own prior claim). Runs inside
+  // the pipeline's outer transaction — a rollback discards it with the ticket.
+  if (n.messageId) {
+    await claimMessageLink({
+      ticketId: ticket.id,
+      orgId,
+      partnerId,
+      messageId: n.messageId,
+      origin: 'inbound',
+      visibility: 'public'
+    });
+  }
+
   // Stamp the threading key so future replies match. Precedence:
   //   1) carryThreadKey — preserves a closed-continuation's original thread, so a
   //      reply to the linked ticket still resolves to the original thread key.
@@ -533,7 +568,7 @@ async function appendInboundComment(
   n: NormalizedInboundEmail,
   partnerId: string,
   senderResolver: SenderResolver
-): Promise<void> {
+): Promise<string> {
   // Inserted directly (NOT via addTicketComment, which forces authorType:'internal' /
   // user_id=actor). Under system scope the ticket_comments INSERT policy permits user_id IS
   // NULL. Email-sourced comments are ALWAYS public (spec §4: email can never create an internal note).
@@ -569,6 +604,7 @@ async function appendInboundComment(
     actorUserId: null,
     payload: { commentId: comment.id, isPublic: true, inbound: true }
   });
+  return comment.id;
 }
 
 // Reopen a resolved ticket via a direct partner-scoped UPDATE (FK-safe — see SYSTEM_ACTOR note).
