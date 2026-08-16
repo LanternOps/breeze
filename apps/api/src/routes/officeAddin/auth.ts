@@ -15,11 +15,18 @@ import {
   findActiveBinding,
   hasAnyBinding,
   revokeBinding,
+  findUserForBind,
+  createBinding,
+  BindingConflictError,
   type BindingWithUser,
 } from '../../services/officeAddin/officeAddinBindings';
 import { mintTechSession } from '../../services/officeAddin/techSession';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
-import { exchangeSchema, EXCHANGE_RATE_LIMIT } from './schemas';
+import { exchangeSchema, EXCHANGE_RATE_LIMIT, bindSchema, BIND_RATE_LIMIT } from './schemas';
+import { verifyPassword, hashPassword } from '../../services/password';
+import { consumeMFAToken } from '../../services/mfa';
+import { decryptMfaSecretForMigration } from '../auth/helpers';
+import { ENABLE_2FA } from '../auth/schemas';
 
 /**
  * POST /office-addin/auth/exchange — neutral Entra ID token → persona
@@ -53,6 +60,39 @@ function auditExchange(
     orgId: null,
     action: 'office_addin.auth.exchange',
     resourceType: 'office_addin_session',
+    actorType: 'user',
+    actorId: params.actorId ?? null,
+    actorEmail: params.actorEmail ?? null,
+    result: params.result,
+    details: { principalType: 'user', ...params.details },
+  });
+}
+
+// Lazily-computed dummy argon2id hash used to constant-time the
+// user-not-found branch of /auth/bind — mirrors routes/auth/login.ts's
+// getDummyPasswordHash (not exported there, so replicated minimally here
+// rather than reaching into another route module's private state).
+let dummyPasswordHashPromise: Promise<string> | null = null;
+function getDummyPasswordHash(): Promise<string> {
+  if (!dummyPasswordHashPromise) {
+    dummyPasswordHashPromise = hashPassword('__office-addin-bind-timing-dummy-never-matches__');
+  }
+  return dummyPasswordHashPromise;
+}
+
+function auditBind(
+  c: RequestLike,
+  params: {
+    result: 'success' | 'denied';
+    actorId?: string | null;
+    actorEmail?: string | null;
+    details: Record<string, unknown>;
+  }
+): void {
+  writeAuditEvent(c, {
+    orgId: null,
+    action: params.result === 'success' ? 'office_addin.binding.created' : 'office_addin.binding.denied',
+    resourceType: 'office_addin_binding',
     actorType: 'user',
     actorId: params.actorId ?? null,
     actorEmail: params.actorEmail ?? null,
@@ -213,4 +253,129 @@ officeAddinAuthRoutes.post('/auth/exchange', zValidator('json', exchangeSchema),
   });
 
   return c.json({ persona: 'client', ...outcome.body });
+});
+
+/**
+ * POST /office-addin/auth/bind — establish the Entra identity → Breeze
+ * technician binding (spec §2.2, §9, Task 11). The pane calls this once
+ * (interactively, with password + MFA) to create the row; every subsequent
+ * sign-in goes through the silent `/auth/exchange` path above.
+ *
+ * `email` here is only a LOGIN CREDENTIAL, paired with password + MFA to
+ * prove control of the Breeze account being bound — it is never the
+ * authorization identifier. The durable authorization key for this binding
+ * is the verified Entra (tid, oid) pair, stored on the binding row and
+ * checked on every future exchange; the email is not read again after bind.
+ */
+officeAddinAuthRoutes.post('/auth/bind', zValidator('json', bindSchema), async (c) => {
+  if (!CLIENT_AI_ENTRA_CLIENT_ID) {
+    return c.json({ error: 'not_enabled' }, 404);
+  }
+
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'service_unavailable' }, 503);
+  }
+
+  const ip = getTrustedClientIp(c);
+  const rate = await rateLimiter(
+    redis,
+    `officeaddin-bind-${rateLimitIpKey(ip)}`,
+    BIND_RATE_LIMIT.limit,
+    BIND_RATE_LIMIT.windowSeconds
+  );
+  if (!rate.allowed) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const { accessToken, email, password, mfaCode } = c.req.valid('json');
+
+  let claims;
+  try {
+    claims = await verifyEntraIdToken(accessToken, { audience: CLIENT_AI_ENTRA_CLIENT_ID });
+  } catch (err) {
+    if (err instanceof ClientAiEntraJwksUnavailableError) {
+      console.error(
+        '[office-addin] Entra JWKS unavailable during bind:',
+        (err as Error).message
+      );
+      return c.json({ error: 'service_unavailable' }, 503);
+    }
+    if (err instanceof ClientAiEntraInvalidTokenError) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
+    throw err;
+  }
+
+  const scopes = (claims.scp ?? '').split(' ').filter(Boolean);
+  if (!scopes.includes('access_as_user')) {
+    return c.json({ error: 'invalid_token' }, 401);
+  }
+
+  type Outcome =
+    | { deny: 401 | 403 | 409; error: string }
+    | { bindingId: string; userId: string; userEmail: string; partnerId: string };
+
+  const outcome: Outcome = await withSystemDbAccessContext(async (): Promise<Outcome> => {
+    const user = await findUserForBind(email);
+
+    if (!user || user.status !== 'active') {
+      // Constant-time: run a real argon2 verify against a dummy hash so this
+      // branch's latency matches the found-user path below, blunting email
+      // enumeration via timing (mirrors routes/auth/login.ts:79-84).
+      await verifyPassword(await getDummyPasswordHash(), password).catch(() => false);
+      return { deny: 401, error: 'invalid_credentials' };
+    }
+
+    if (!user.passwordHash || !(await verifyPassword(user.passwordHash, password))) {
+      return { deny: 401, error: 'invalid_credentials' };
+    }
+
+    if (!user.partnerId) {
+      return { deny: 403, error: 'not_a_technician' };
+    }
+
+    if (ENABLE_2FA) {
+      if (!user.mfaEnabled || !user.mfaSecret) {
+        return { deny: 403, error: 'mfa_enrollment_required' };
+      }
+      const { plaintext: secret } = decryptMfaSecretForMigration(user.mfaSecret);
+      if (!secret || !(await consumeMFAToken(secret, mfaCode, user.id))) {
+        return { deny: 401, error: 'invalid_mfa' };
+      }
+    }
+
+    const { id } = await createBinding({
+      entraTenantId: claims.tid,
+      entraOid: claims.oid,
+      userId: user.id,
+      partnerId: user.partnerId,
+      boundAuthEpoch: user.authEpoch,
+      mfaVerifiedAt: new Date(),
+    });
+
+    return { bindingId: id, userId: user.id, userEmail: user.email, partnerId: user.partnerId };
+  }).catch((err) => {
+    if (err instanceof BindingConflictError) {
+      return { deny: 409 as const, error: 'identity_already_bound' };
+    }
+    throw err;
+  });
+
+  if ('deny' in outcome) {
+    auditBind(c, {
+      result: 'denied',
+      details: { reason: outcome.error, tid: claims.tid, oid: claims.oid },
+    });
+    return c.json({ error: outcome.error }, outcome.deny);
+  }
+
+  auditBind(c, {
+    result: 'success',
+    actorId: outcome.userId,
+    actorEmail: outcome.userEmail,
+    details: { bindingId: outcome.bindingId, tid: claims.tid, oid: claims.oid },
+  });
+
+  return c.json({ bound: true });
 });

@@ -2,6 +2,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { officeAddinUserBindings } from '../../db/schema/officeAddin';
 import { users } from '../../db/schema/users';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 
 /**
  * Entra identity → Breeze technician binding lookups for the Office add-in
@@ -83,6 +84,44 @@ export async function findActiveBinding(
   };
 }
 
+/** Candidate user row for the bind flow's credential check. */
+export type BindCandidateUser = {
+  id: string;
+  email: string;
+  name: string;
+  status: string;
+  partnerId: string | null;
+  passwordHash: string | null;
+  mfaEnabled: boolean;
+  mfaSecret: string | null;
+  authEpoch: number;
+};
+
+/**
+ * Look up a user by login email for the bind flow (Task 11). Mirrors
+ * `routes/auth/login.ts`'s case-insensitive lookup (`email.toLowerCase()`) —
+ * this email is a login credential only, never the authorization identifier
+ * (that's the Entra (tid, oid) pair stored on the binding row).
+ */
+export async function findUserForBind(email: string): Promise<BindCandidateUser | null> {
+  const [row] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      status: users.status,
+      partnerId: users.partnerId,
+      passwordHash: users.passwordHash,
+      mfaEnabled: users.mfaEnabled,
+      mfaSecret: users.mfaSecret,
+      authEpoch: users.authEpoch,
+    })
+    .from(users)
+    .where(eq(users.email, email.toLowerCase()))
+    .limit(1);
+  return row ?? null;
+}
+
 /**
  * Whether ANY binding row exists for this identity, active or revoked. Used
  * to hard-deny (`revoked_relink`) instead of falling through to client JIT
@@ -108,4 +147,73 @@ export async function revokeBinding(bindingId: string, revokedBy: string | null)
     .update(officeAddinUserBindings)
     .set({ revokedAt: new Date(), revokedBy })
     .where(eq(officeAddinUserBindings.id, bindingId));
+}
+
+/**
+ * Thrown by {@link createBinding} when the (entraTenantId, entraOid) identity
+ * is already actively bound to a DIFFERENT Breeze user — the partial unique
+ * index `office_addin_bindings_identity_active_uq` raised a 23505. The route
+ * maps this to 409 `identity_already_bound`.
+ */
+export class BindingConflictError extends Error {
+  constructor() {
+    super('office add-in identity already actively bound to a different user');
+    this.name = 'BindingConflictError';
+  }
+}
+
+/**
+ * Create (or re-link) the technician binding for an Entra identity, per the
+ * bind flow (Task 11, spec §2.2/§9). Email is only the login credential used
+ * to authenticate this request — the durable authorization key is the Entra
+ * (tid, oid) pair stored on the row.
+ *
+ * Re-link case: `office_addin_bindings_user_active_uq` allows at most one
+ * active binding per user, so re-binding (e.g. a new Entra tenant) must first
+ * revoke the SAME user's existing active binding inside the same transaction
+ * before inserting the new one. A 23505 on the IDENTITY index instead means
+ * the (tid, oid) is bound to a DIFFERENT user, which is a real conflict, not
+ * a re-link — surfaced as {@link BindingConflictError}.
+ */
+export async function createBinding(input: {
+  entraTenantId: string;
+  entraOid: string;
+  userId: string;
+  partnerId: string;
+  boundAuthEpoch: number;
+  mfaVerifiedAt: Date;
+}): Promise<{ id: string }> {
+  try {
+    return await db.transaction(async (tx) => {
+      await tx
+        .update(officeAddinUserBindings)
+        .set({ revokedAt: new Date(), revokedBy: input.userId })
+        .where(
+          and(eq(officeAddinUserBindings.userId, input.userId), isNull(officeAddinUserBindings.revokedAt))
+        );
+
+      const [row] = await tx
+        .insert(officeAddinUserBindings)
+        .values({
+          entraTenantId: input.entraTenantId,
+          entraOid: input.entraOid,
+          userId: input.userId,
+          partnerId: input.partnerId,
+          boundAuthEpoch: input.boundAuthEpoch,
+          mfaVerifiedAt: input.mfaVerifiedAt,
+        })
+        .returning({ id: officeAddinUserBindings.id });
+
+      if (!row) {
+        throw new Error('office_addin_user_bindings insert returned no row');
+      }
+
+      return { id: row.id };
+    });
+  } catch (err) {
+    if (isPgUniqueViolation(err, 'office_addin_bindings_identity_active_uq')) {
+      throw new BindingConflictError();
+    }
+    throw err;
+  }
 }

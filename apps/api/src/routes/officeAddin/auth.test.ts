@@ -8,23 +8,35 @@ const {
   findActiveBindingMock,
   hasAnyBindingMock,
   revokeBindingMock,
+  findUserForBindMock,
+  createBindingMock,
+  BindingConflictErrorClass,
   mintTechSessionMock,
   resolveAndMintClientSessionMock,
   redisMock,
   getRedisMock,
   rateLimiterMock,
   writeAuditEventMock,
+  verifyPasswordMock,
+  hashPasswordMock,
+  consumeMFATokenMock,
+  decryptMfaSecretForMigrationMock,
+  enableTwoFactorRef,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
     sadd: vi.fn(() => Promise.resolve(1)),
     expire: vi.fn(() => Promise.resolve(1)),
   };
+  class BindingConflictErrorClass extends Error {}
   return {
     verifyMock: vi.fn(),
     findActiveBindingMock: vi.fn(),
     hasAnyBindingMock: vi.fn(),
     revokeBindingMock: vi.fn(),
+    findUserForBindMock: vi.fn(),
+    createBindingMock: vi.fn(),
+    BindingConflictErrorClass,
     mintTechSessionMock: vi.fn(),
     resolveAndMintClientSessionMock: vi.fn(),
     redisMock: redis,
@@ -33,6 +45,11 @@ const {
       Promise.resolve({ allowed: true, remaining: 19, resetAt: new Date() })
     ),
     writeAuditEventMock: vi.fn(),
+    verifyPasswordMock: vi.fn(),
+    hashPasswordMock: vi.fn(() => Promise.resolve('dummy-hash')),
+    consumeMFATokenMock: vi.fn(),
+    decryptMfaSecretForMigrationMock: vi.fn(),
+    enableTwoFactorRef: { current: true },
   };
 });
 
@@ -58,6 +75,28 @@ vi.mock('../../services/officeAddin/officeAddinBindings', () => ({
   findActiveBinding: findActiveBindingMock,
   hasAnyBinding: hasAnyBindingMock,
   revokeBinding: revokeBindingMock,
+  findUserForBind: findUserForBindMock,
+  createBinding: createBindingMock,
+  BindingConflictError: BindingConflictErrorClass,
+}));
+
+vi.mock('../../services/password', () => ({
+  verifyPassword: verifyPasswordMock,
+  hashPassword: hashPasswordMock,
+}));
+
+vi.mock('../../services/mfa', () => ({
+  consumeMFAToken: consumeMFATokenMock,
+}));
+
+vi.mock('../auth/helpers', () => ({
+  decryptMfaSecretForMigration: decryptMfaSecretForMigrationMock,
+}));
+
+vi.mock('../auth/schemas', () => ({
+  get ENABLE_2FA() {
+    return enableTwoFactorRef.current;
+  },
 }));
 
 vi.mock('../../services/officeAddin/techSession', () => ({
@@ -150,6 +189,18 @@ const CLIENT_DENIED_OUTCOME = {
   },
 };
 
+const BIND_USER = {
+  id: USER_ID,
+  email: 'tech@msp.example.com',
+  name: 'Tech User',
+  status: 'active',
+  partnerId: PARTNER_ID,
+  passwordHash: 'argon2-hash',
+  mfaEnabled: true,
+  mfaSecret: 'encrypted-secret',
+  authEpoch: 1,
+};
+
 function buildApp() {
   const app = new Hono();
   app.route('/office-addin', officeAddinAuthRoutes);
@@ -164,6 +215,23 @@ function postExchange(app: Hono, accessToken = 'entra-token') {
   });
 }
 
+function postBind(
+  app: Hono,
+  body: Partial<{ accessToken: string; email: string; password: string; mfaCode: string }> = {}
+) {
+  return app.request('/office-addin/auth/bind', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      accessToken: 'entra-token',
+      email: 'tech@msp.example.com',
+      password: 'correct-horse-battery-staple',
+      mfaCode: '123456',
+      ...body,
+    }),
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   getRedisMock.mockReturnValue(redisMock);
@@ -173,6 +241,14 @@ beforeEach(() => {
   hasAnyBindingMock.mockResolvedValue(false);
   mintTechSessionMock.mockResolvedValue({ token: 'tech-token-123', expiresInSeconds: 43200 });
   resolveAndMintClientSessionMock.mockResolvedValue(CLIENT_RESOLVED_OUTCOME);
+
+  enableTwoFactorRef.current = true;
+  findUserForBindMock.mockResolvedValue({ ...BIND_USER });
+  verifyPasswordMock.mockResolvedValue(true);
+  consumeMFATokenMock.mockResolvedValue(true);
+  decryptMfaSecretForMigrationMock.mockReturnValue({ plaintext: 'TOTPSECRET', migratedSecret: null });
+  createBindingMock.mockResolvedValue({ id: BINDING_ID });
+  hashPasswordMock.mockResolvedValue('dummy-hash');
 });
 
 // ── Tests: the exchange matrix (spec §9) ────────────────────────────────────
@@ -336,5 +412,152 @@ describe('POST /office-addin/auth/exchange', () => {
         details: expect.objectContaining({ reason: 'user_inactive' }),
       })
     );
+  });
+});
+
+// ── Tests: the bind flow (spec §9, Task 11) ─────────────────────────────────
+
+describe('POST /office-addin/auth/bind', () => {
+  it('valid entra token + valid credentials + valid TOTP → binding created → 200 bound:true', async () => {
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ bound: true });
+    expect(createBindingMock).toHaveBeenCalledWith({
+      entraTenantId: TID,
+      entraOid: OID,
+      userId: USER_ID,
+      partnerId: PARTNER_ID,
+      boundAuthEpoch: 1,
+      mfaVerifiedAt: expect.any(Date),
+    });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'office_addin.binding.created',
+        result: 'success',
+        actorId: USER_ID,
+      })
+    );
+  });
+
+  it('wrong password → 401 invalid_credentials, no binding created', async () => {
+    verifyPasswordMock.mockResolvedValue(false);
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('user not found → 401 invalid_credentials (same body as wrong password; dummy hash verified)', async () => {
+    findUserForBindMock.mockResolvedValue(null);
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+    expect(verifyPasswordMock).toHaveBeenCalledWith('dummy-hash', 'correct-horse-battery-staple');
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('user not active → 401 invalid_credentials', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, status: 'disabled' });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_credentials' });
+  });
+
+  it('ENABLE_2FA on + user has no MFA enrolled → 403 mfa_enrollment_required', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, mfaEnabled: false, mfaSecret: null });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'mfa_enrollment_required' });
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('wrong TOTP → 401 invalid_mfa', async () => {
+    consumeMFATokenMock.mockResolvedValue(false);
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_mfa' });
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('MFA secret fails to decrypt → 401 invalid_mfa', async () => {
+    decryptMfaSecretForMigrationMock.mockReturnValue({ plaintext: null, migratedSecret: null });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_mfa' });
+    expect(consumeMFATokenMock).not.toHaveBeenCalled();
+  });
+
+  it('(tid,oid) already actively bound to a DIFFERENT user → 409 identity_already_bound', async () => {
+    createBindingMock.mockRejectedValue(new BindingConflictErrorClass());
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'identity_already_bound' });
+  });
+
+  it('same user re-binding (new Entra tenant) → createBinding called (revoke-then-insert lives in the service) → 200', async () => {
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(200);
+    expect(createBindingMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('user with partner_id null (org-only user) → 403 not_a_technician', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, partnerId: null });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'not_a_technician' });
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
+  it('missing scp access_as_user → 401 invalid_token (checked before any credential work)', async () => {
+    verifyMock.mockResolvedValue({ ...CLAIMS, scp: 'other_scope' });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_token' });
+    expect(findUserForBindMock).not.toHaveBeenCalled();
+  });
+
+  it('rate limit (10 / 15 min per IP) exceeded → 429', async () => {
+    rateLimiterMock.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date() });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(429);
+    expect(rateLimiterMock).toHaveBeenCalledWith(
+      redisMock,
+      expect.stringContaining('officeaddin-bind-'),
+      10,
+      900
+    );
+  });
+
+  it('ENABLE_2FA off → skips MFA verification (dev mode) → 200', async () => {
+    enableTwoFactorRef.current = false;
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, mfaEnabled: false, mfaSecret: null });
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(200);
+    expect(consumeMFATokenMock).not.toHaveBeenCalled();
+    expect(createBindingMock).toHaveBeenCalled();
+  });
+
+  it('400s on a missing mfaCode body field', async () => {
+    const app = buildApp();
+    const res = await app.request('/office-addin/auth/bind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'entra-token', email: 'tech@msp.example.com', password: 'x' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('503s when Redis is unavailable', async () => {
+    getRedisMock.mockReturnValue(null as never);
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(503);
+  });
+
+  it('401s on an invalid Entra token', async () => {
+    verifyMock.mockRejectedValue(new ClientAiEntraInvalidTokenError('bad'));
+    const res = await postBind(buildApp());
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid_token' });
   });
 });
