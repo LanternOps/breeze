@@ -26,6 +26,9 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     insertEmailAuthoredComment: vi.fn(),
     ticketThreadAnchor: vi.fn(),
     writeAuditEvent: vi.fn(),
+    getOrgPolicy: vi.fn(),
+    applyDlp: vi.fn(),
+    draftTicketFromEmail: vi.fn(),
   },
 }));
 
@@ -109,6 +112,22 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: hoisted.writeAuditEvent,
 }));
 
+vi.mock('../../services/clientAiPolicy', () => ({
+  getOrgPolicy: hoisted.getOrgPolicy,
+}));
+
+vi.mock('../../services/clientAiDlp', () => ({
+  applyDlp: hoisted.applyDlp,
+}));
+
+vi.mock('../../services/officeAddin/aiEmailDraft', () => ({
+  draftTicketFromEmail: hoisted.draftTicketFromEmail,
+}));
+
+vi.mock('../../services/aiAgent', () => ({
+  resolveDefaultModel: () => 'claude-x',
+}));
+
 import { officeAddinTicketRoutes } from './tickets';
 
 // --- db chain mock -----------------------------------------------------------
@@ -154,6 +173,14 @@ function makeApp() {
 
 function post(body: unknown) {
   return makeApp().request('/tickets/from-email', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+function postDraft(body: unknown) {
+  return makeApp().request('/tickets/draft', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -208,6 +235,16 @@ beforeEach(() => {
   hoisted.findPortalUserByEmail.mockResolvedValue(null);
   hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
   hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  hoisted.getOrgPolicy.mockResolvedValue({ dlpConfig: {} });
+  hoisted.applyDlp.mockResolvedValue({ action: 'allow', text: 'redacted body', redactions: [] });
+  hoisted.draftTicketFromEmail.mockResolvedValue({
+    subject: 'Fix Outlook crash',
+    summary: 'The customer reports Outlook crashes on launch.',
+    suggestedTimeMinutes: 15,
+    inputTokens: 100,
+    outputTokens: 50,
+  });
 });
 
 describe('POST /tickets/from-email', () => {
@@ -648,6 +685,83 @@ describe('POST /tickets/:id/link-email', () => {
   it('400s on an invalid body', async () => {
     ticketSelectQueue.push([ticketRow()]);
     const res = await postLink(NEW_TICKET_ID, { ...linkBody, visibility: 'nope' });
+    expect(res.status).toBe(400);
+  });
+});
+
+const draftBody = {
+  orgId: ORG_A,
+  subject: 'Outlook will not open',
+  bodyText: 'My Outlook crashes every time I open it.',
+};
+
+describe('POST /tickets/draft', () => {
+  it('returns a draft on the happy path, sending the DLP-redacted text to the model', async () => {
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.draft).toEqual({
+      subject: 'Fix Outlook crash',
+      summary: 'The customer reports Outlook crashes on launch.',
+      suggestedTimeMinutes: 15,
+      inputTokens: 100,
+      outputTokens: 50,
+    });
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x' })
+    );
+  });
+
+  it('404s when the technician cannot access the org', async () => {
+    authRef.current = { accessibleOrgIds: [ORG_B] };
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(404);
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('503s when ANTHROPIC_API_KEY is not configured, without calling DLP or the model', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'ai_unavailable' });
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('422s when DLP blocks the body, and never calls the model', async () => {
+    hoisted.applyDlp.mockResolvedValue({ action: 'block', blockReason: 'dlp_blocked:creditCard', redactions: [] });
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'dlp_blocked' });
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('503s when the model call throws', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(new Error('model exploded'));
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'ai_unavailable' });
+  });
+
+  it('503s when the model call exceeds the timeout', async () => {
+    vi.useFakeTimers();
+    hoisted.draftTicketFromEmail.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve({ subject: 's', summary: 'x', suggestedTimeMinutes: 5, inputTokens: 0, outputTokens: 0 }), 30_000))
+    );
+    const resPromise = postDraft(draftBody);
+    await vi.advanceTimersByTimeAsync(20_001);
+    const res = await resPromise;
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'ai_unavailable' });
+    vi.useRealTimers();
+  });
+
+  it('400s on an invalid body', async () => {
+    const res = await postDraft({ ...draftBody, orgId: 'not-a-uuid' });
     expect(res.status).toBe(400);
   });
 });

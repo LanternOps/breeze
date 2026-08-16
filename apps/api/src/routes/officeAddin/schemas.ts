@@ -72,6 +72,13 @@ export const linkEmailSchema = z.object({
   bodyText: z.string().max(200_000), // quoted into the comment
 });
 
+/** Body of POST /office-addin/tickets/draft (Task 19, AI email -> ticket prefill). */
+export const draftSchema = z.object({
+  orgId: z.string().uuid(),
+  subject: z.string().max(1000),
+  bodyText: z.string().max(200_000),
+});
+
 /**
  * Body of POST /office-addin/time/start (Task 18). Narrower than the web
  * timeEntries `startTimerSchema` — `ticketId` is REQUIRED on this surface,

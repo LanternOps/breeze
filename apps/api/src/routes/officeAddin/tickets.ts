@@ -4,10 +4,14 @@ import { db } from '../../db';
 import { tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
+import { resolveDefaultModel } from '../../services/aiAgent';
 import { writeAuditEvent } from '../../services/auditEvents';
+import { applyDlp } from '../../services/clientAiDlp';
+import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
+import { draftTicketFromEmail } from '../../services/officeAddin/aiEmailDraft';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
@@ -18,7 +22,7 @@ import {
   type TicketActor,
 } from '../../services/ticketService';
 import type { OfficeAddinTechAuth } from '../../middleware/officeAddinTechAuth';
-import { fromEmailSchema, linkEmailSchema } from './schemas';
+import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
 
 /**
  * Outlook tech add-in ticket creation (spec §3.2, Task 16).
@@ -240,6 +244,62 @@ async function respondToLinkConflict(
   const summary = row ? toSummary(row, submitterEmail) : null;
   return c.json({ error: 'message_linked_elsewhere', ticket: summary }, 409);
 }
+
+const DRAFT_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`ai email draft timed out after ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+/**
+ * AI email -> ticket draft (spec Task 19). A prefill only: subject + a plain-
+ * English summary + a suggested time estimate. Never blocks ticket creation —
+ * any failure (no key, DLP block aside, timeout, model error) degrades to a
+ * 503 so the pane falls back to a deterministic (non-AI) prefill.
+ */
+officeAddinTicketRoutes.post(
+  '/tickets/draft',
+  requireAddinCapability('ticket-create'),
+  zValidator('json', draftSchema),
+  async (c) => {
+    const auth = c.get('officeAddinAuth');
+    const input = c.req.valid('json');
+
+    if (!auth.canAccessOrg(input.orgId)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+
+    const policy = await getOrgPolicy(input.orgId);
+    const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
+    if (dlpResult.action === 'block') {
+      return c.json({ error: 'dlp_blocked' }, 422);
+    }
+
+    try {
+      const draft = await withTimeout(
+        draftTicketFromEmail({
+          subject: input.subject,
+          bodyText: dlpResult.text ?? input.bodyText,
+          model: resolveDefaultModel(),
+        }),
+        DRAFT_TIMEOUT_MS
+      );
+      return c.json({ draft }, 200);
+    } catch {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
+  }
+);
 
 officeAddinTicketRoutes.post(
   '/tickets/from-email',
