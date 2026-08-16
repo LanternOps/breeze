@@ -1389,7 +1389,10 @@
       "deploymentCancelled": "Dağıtım iptal edildi",
       "failedToLoadDeployment": "Dağıtım yüklenemedi",
       "loadingDeployment": "Dağıtım yükleniyor…",
-      "devicesFinished": "{{finished}} / {{total}} cihaz tamamlandı"
+      "devicesFinished": "{{finished}} / {{total}} cihaz tamamlandı",
+      "setupNeeded": "Kurulum gerekli",
+      "managerUnavailableSummary_one": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihaza winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar cihaza yapılan her paket yöneticisi dağıtımı başarısız olacaktır.",
+      "managerUnavailableSummary_other": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihazlara winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar bu cihazlara yapılan her paket yöneticisi dağıtımı başarısız olacaktır."
     },
     "deploymentWizard": {
       "selectSoftware": "Yazılımı Seçin",
