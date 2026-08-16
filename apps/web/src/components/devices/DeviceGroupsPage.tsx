@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useCallback,
+  useRef,
   type DragEvent,
   type FormEvent,
 } from "react";
@@ -218,6 +219,7 @@ export default function DeviceGroupsPage() {
   >(undefined);
   const [membershipLoading, setMembershipLoading] = useState(false);
   const [membershipError, setMembershipError] = useState<string>();
+  const membershipRequestId = useRef(0);
   const [bulkScriptId, setBulkScriptId] = useState("");
   const [bulkPolicyId, setBulkPolicyId] = useState("");
   const [deleteReassignGroupId, setDeleteReassignGroupId] = useState("");
@@ -244,7 +246,9 @@ export default function DeviceGroupsPage() {
   const membershipUnavailable =
     modalMode === "edit" &&
     groupForm.type === "static" &&
-    (membershipLoading || baselineDeviceIds === undefined);
+    (membershipLoading ||
+      baselineDeviceIds === undefined ||
+      Boolean(membershipError));
 
   const deviceById = useMemo(() => {
     return new Map(devices.map((device) => [device.id, device]));
@@ -426,33 +430,53 @@ export default function DeviceGroupsPage() {
    * selection" into a DELETE, so the baseline it diffs against has to be the
    * authoritative one read at modal-open time.
    */
-  const fetchGroupMembership = useCallback(async (groupId: string) => {
-    setMembershipLoading(true);
-    setMembershipError(undefined);
-    setBaselineDeviceIds(undefined);
-    try {
-      const response = await fetchWithAuth(`/device-groups/${groupId}/devices`);
-      if (!response.ok) {
-        throw new Error(t("deviceGroupsPage.failedToLoadGroupMembership"));
+  const fetchGroupMembership = useCallback(
+    async (groupId: string, options: { seedSelection?: boolean } = {}) => {
+      const seedSelection = options.seedSelection ?? true;
+      // Only the newest read may write state. Opening Edit on one group while
+      // another group's read is still in flight would otherwise let the stale
+      // response install ITS membership as this group's baseline — and the next
+      // Save would diff one group's device list against another's, moving
+      // devices between groups with no error shown.
+      const requestId = ++membershipRequestId.current;
+      const isCurrent = () => membershipRequestId.current === requestId;
+
+      setMembershipLoading(seedSelection);
+      setMembershipError(undefined);
+      if (seedSelection) setBaselineDeviceIds(undefined);
+      try {
+        const response = await fetchWithAuth(
+          `/device-groups/${groupId}/devices`,
+        );
+        if (!response.ok) {
+          throw new Error(t("deviceGroupsPage.failedToLoadGroupMembership"));
+        }
+        const body = await response.json();
+        const memberIds = asList<{ deviceId: string }>(body, "devices")
+          .map((member) => member.deviceId)
+          .filter((id): id is string => typeof id === "string");
+        if (!isCurrent()) return;
+        setBaselineDeviceIds(memberIds);
+        // A re-sync after a failed save keeps the user's unsaved picks — only
+        // the baseline they will be diffed against is refreshed.
+        if (seedSelection) {
+          setGroupForm((prev) => ({ ...prev, deviceIds: memberIds }));
+        }
+      } catch (err) {
+        if (!isCurrent()) return;
+        // Without a trustworthy baseline the chooser would misreport membership
+        // and silently no-op on save — say so instead of rendering a lie.
+        setMembershipError(
+          err instanceof Error
+            ? err.message
+            : t("deviceGroupsPage.failedToLoadGroupMembership"),
+        );
+      } finally {
+        if (isCurrent()) setMembershipLoading(false);
       }
-      const body = await response.json();
-      const memberIds = asList<{ deviceId: string }>(body, "devices")
-        .map((member) => member.deviceId)
-        .filter((id): id is string => typeof id === "string");
-      setBaselineDeviceIds(memberIds);
-      setGroupForm((prev) => ({ ...prev, deviceIds: memberIds }));
-    } catch (err) {
-      // Without a trustworthy baseline the chooser would misreport membership
-      // and silently no-op on save — say so instead of rendering a lie.
-      setMembershipError(
-        err instanceof Error
-          ? err.message
-          : t("deviceGroupsPage.failedToLoadGroupMembership"),
-      );
-    } finally {
-      setMembershipLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const handleOpenCreate = () => {
     setSelectedGroup(null);
@@ -667,10 +691,22 @@ export default function DeviceGroupsPage() {
         }
         const baseline = baselineDeviceIds;
         const selected = groupForm.deviceIds;
-        await applyMembershipChanges(selectedGroup!.id, {
-          add: selected.filter((id) => !baseline.includes(id)),
-          remove: baseline.filter((id) => !selected.includes(id)),
-        });
+        try {
+          await applyMembershipChanges(selectedGroup!.id, {
+            add: selected.filter((id) => !baseline.includes(id)),
+            remove: baseline.filter((id) => !selected.includes(id)),
+          });
+        } catch (membershipErr) {
+          // Removals are one call per device, so a failure can leave the group
+          // half-applied. Re-read the baseline (keeping the user's picks) before
+          // surfacing the error: a retry against the pre-save baseline would
+          // re-DELETE an already-removed device, which the API 404s.
+          await fetchGroupMembership(selectedGroup!.id, {
+            seedSelection: false,
+          });
+          await fetchGroups();
+          throw membershipErr;
+        }
       }
 
       await fetchGroups();

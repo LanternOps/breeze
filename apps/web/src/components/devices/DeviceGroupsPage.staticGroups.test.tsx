@@ -386,5 +386,69 @@ describe('DeviceGroupsPage static groups', () => {
       ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
     });
+
+    it('ignores a membership read that resolves after the user moved to another group', async () => {
+      const user = userEvent.setup();
+      const groups = [
+        { ...STATIC_GROUP, id: 'group-a', name: 'Group A', deviceIds: [] },
+        { ...STATIC_GROUP, id: 'group-b', name: 'Group B', deviceIds: [] },
+      ];
+      const membership: Record<string, string[]> = {
+        'group-a': ['device-1'],
+        'group-b': ['device-2'],
+      };
+
+      // Group A's read hangs until `releaseA()`, so it can be made to land after
+      // the user has already opened Group B.
+      let releaseA = () => {};
+      const aPending = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+
+      mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        const path = String(url).split('?')[0];
+        const method = init?.method ?? 'GET';
+        if (path === '/device-groups' && method === 'GET') {
+          return jsonResponse({ data: groups, total: groups.length });
+        }
+        const memberMatch = /^\/device-groups\/([^/]+)\/devices$/.exec(path);
+        if (memberMatch && method === 'GET') {
+          const groupId = memberMatch[1];
+          if (groupId === 'group-a') await aPending;
+          const deviceIds = membership[groupId] ?? [];
+          return jsonResponse({
+            data: deviceIds.map((deviceId) => ({ deviceId })),
+            total: deviceIds.length,
+          });
+        }
+        if (path.startsWith('/device-groups')) {
+          return jsonResponse({ data: { id: 'group-b' } });
+        }
+        if (path in SUPPORTING_RESPONSES) return jsonResponse(SUPPORTING_RESPONSES[path]);
+        return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+      });
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Group A');
+
+      const editButtons = screen.getAllByRole('button', { name: 'Edit' });
+      await user.click(editButtons[0]); // Group A — read hangs
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await user.click(screen.getAllByRole('button', { name: 'Edit' })[1]); // Group B
+
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+
+      releaseA();
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+      // Group A's late answer must not install itself as Group B's baseline:
+      // saving an untouched Group B would then remove device-2 and add
+      // device-1 — devices moved between groups purely on request timing.
+      expect(assignmentCheckbox('web-01')).not.toBeChecked();
+
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() => expect(findWrite('PATCH')).toBeDefined());
+      expect(findWrite('POST')).toBeUndefined();
+      expect(findWrite('DELETE')).toBeUndefined();
+    });
   });
 });
