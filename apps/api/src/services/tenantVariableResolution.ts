@@ -204,9 +204,14 @@ export async function loadTenantVariableScope(orgIds: string[]): Promise<TenantV
         // partner-wide row — it must shadow that partner value, not leave it
         // exposed to the second pass below. Marking the claim only on a
         // successful decrypt (the previous behaviour) let the partner-wide
-        // pass resolve right over an unreadable org override, silently
-        // substituting a DIFFERENT tenant scope's material into the org's
-        // resolution — a tenancy bug, not a convenience.
+        // pass resolve right over an unreadable org override: this org's own
+        // partner-wide DEFAULT would win over this org's own unreadable
+        // OVERRIDE — the very value the override exists to replace. (Not a
+        // cross-tenant leak: the join and every write below are keyed by
+        // `forOrgId`, so a different org's or partner's data can never reach
+        // this org's map.) Still a real tenancy bug — an override that fails
+        // to decrypt must fail the device, never quietly fall back to the
+        // default it was meant to shadow.
         orgOwnedKeys.get(row.forOrgId)?.add(row.key);
         const resolved = decryptRow(row);
         if (!resolved) {

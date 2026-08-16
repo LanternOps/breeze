@@ -230,23 +230,59 @@ describe('loadTenantVariableScope', () => {
     warn.mockRestore();
   });
 
-  it('a key that was never defined is absent from BOTH the resolved map and the unreadable set', async () => {
-    stubSelect([]);
+  // A bare empty-rows stub would pass against ANY implementation that
+  // returns empty collections (including a stub that never populates
+  // `unreadableKeysByOrg` at all) — not discriminating. Mix in one readable
+  // and one unreadable key so "never defined" is asserted against a
+  // populated snapshot, proving the never-defined key is excluded from both
+  // collections rather than both collections simply being empty.
+  it('a key that was never defined is absent from BOTH the resolved map and the unreadable set, alongside other readable/unreadable keys', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      encryptedRow(ROW_ORG, 'v', { key: 'defined_readable', ownerOrgId: ORG_A, forOrgId: ORG_A }),
+      { id: ROW_BAD, key: 'defined_unreadable', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
     const scope = await loadTenantVariableScope([ORG_A]);
     const resolved = resolveForOrg(scope, ORG_A);
+    const unreadable = unreadableForOrg(scope, ORG_A);
+    // Sanity: the mixed snapshot actually populated both collections.
+    expect(resolved.has('defined_readable')).toBe(true);
+    expect(unreadable.has('defined_unreadable')).toBe(true);
+    // The never-defined key is in neither.
     expect(resolved.has('never_defined')).toBe(false);
-    expect(unreadableForOrg(scope, ORG_A).has('never_defined')).toBe(false);
+    expect(unreadable.has('never_defined')).toBe(false);
+    warn.mockRestore();
+  });
+
+  // An unreadable row in the PARTNER-WIDE pass (not just the org-owned pass
+  // above) must also be reported as unreadable, never as absent. This is the
+  // likelier real case for an MSP-defined default that fails to decrypt (no
+  // org override involved at all) — and it exercises a different code path
+  // (the second loop in loadTenantVariableScope) than the org-owned case
+  // above, so it needs its own coverage rather than being assumed from it.
+  it('an unreadable partner-wide row (no org override) is reported as unreadable, not absent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken_default', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: null, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    expect(resolved.has('broken_default')).toBe(false);
+    expect(unreadableForOrg(scope, ORG_A).has('broken_default')).toBe(true);
+    warn.mockRestore();
   });
 
   // The subtle precedence case: an org-owned row for key `k` fails to
   // decrypt, and a readable partner-wide row for the SAME key `k` also
   // exists. The org row won the precedence contest (org > partner, see the
   // two-pass loop above), so `k` must be UNREADABLE for this org — it must
-  // NOT silently fall back to the partner-wide value, which would substitute
-  // a different tenant scope's material into a script. Before this task,
-  // `orgOwnedKeys` was only populated on a *successful* decrypt, so an
-  // unreadable org row left the key unclaimed and the partner-wide pass
-  // resolved right over it with the wrong tenant's value.
+  // NOT silently fall back to the partner-wide value. That value is this
+  // org's own DEFAULT (not another tenant's data — the join and every write
+  // are keyed by `forOrgId`), and falling back to it would mean the default
+  // silently wins over the override that was meant to replace it. Before
+  // this task, `orgOwnedKeys` was only populated on a *successful* decrypt,
+  // so an unreadable org row left the key unclaimed and the partner-wide
+  // pass resolved right over it with the default's value.
   it('an unreadable org row shadows a readable partner row — it must NOT fall back to the partner value', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     stubSelect([
