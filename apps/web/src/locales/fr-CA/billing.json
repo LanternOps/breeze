@@ -720,7 +720,8 @@
         "zebra": "Lignes zébrées",
         "headerStyle": "Style d'en-tête",
         "headerStylePlain": "Simple",
-        "headerStyleAccent": "Accentué"
+        "headerStyleAccent": "Accentué",
+        "reshapedWarning": "Ce tableau dépassait la limite de {{columns}} colonnes x {{rows}} lignes et a été ajusté. L'enregistrement remplace le tableau stocké par celui affiché ici."
       },
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",

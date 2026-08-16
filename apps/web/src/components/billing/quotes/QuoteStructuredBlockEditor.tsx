@@ -12,42 +12,31 @@
 //
 // The fields themselves are the create-form's, imported from
 // QuoteBlockContentForms and prefilled from the block's current content.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { type QuoteBlock, type QuoteTableContent, type QuoteCalloutContent } from './quoteTypes';
-import { SrSaved } from './quoteEditorShared';
+import { SrSaved, useSavedFlash } from './quoteEditorShared';
 import {
   TableBlockFields,
   CalloutBlockFields,
   tableFormFromContent,
   tableFormToContent,
+  MAX_TABLE_COLUMNS,
+  MAX_TABLE_ROWS,
   calloutFormFromContent,
   calloutFormToContent,
   type TableFormState,
   type CalloutFormState,
 } from './QuoteBlockContentForms';
 
-/** Quiet "Saved" flash, cleared on unmount so a late timer can't setState a
- *  block that has since been removed (same guard BlockCard uses). */
-function useSavedFlash(): [boolean, () => void] {
-  const [saved, setSaved] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-  const flash = useCallback(() => {
-    setSaved(true);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setSaved(false), 1500);
-  }, []);
-  return [saved, flash];
-}
-
 function EditToolbar({
-  editing, busy, canSave, onEdit, onCancel, onSave, idBase, saved,
+  editing, busy, canSave = true, onEdit, onCancel, onSave, idBase, saved,
 }: {
   editing: boolean;
   busy: boolean;
-  canSave: boolean;
+  /** Omitted where there is nothing to gate on (see TableBlockEditor). */
+  canSave?: boolean;
   onEdit: () => void;
   onCancel: () => void;
   onSave: () => void;
@@ -107,25 +96,46 @@ export function TableBlockEditor({
   // background refresh while the form is closed is always picked up, and one
   // mid-edit can never clobber the user's draft.
   const [form, setForm] = useState<TableFormState | null>(null);
+  // Set when seeding had to reshape the stored content to fit the caps / the
+  // exact-cells contract. Saving would then overwrite the block with the
+  // reshaped version, so the user is told before they can do that.
+  const [reshaped, setReshaped] = useState(false);
   const [saved, flash] = useSavedFlash();
   const content = block.content as Partial<QuoteTableContent> | undefined;
   const idBase = `quote-block-table-${block.id}`;
 
+  const openEdit = useCallback(() => {
+    const seed = tableFormFromContent(block.content);
+    setForm(seed.form);
+    setReshaped(seed.adjusted);
+  }, [block.content]);
+  const closeEdit = useCallback(() => { setForm(null); setReshaped(false); }, []);
+
   const save = useCallback(async () => {
     if (!form) return;
     if (await onEditBlock(block, tableFormToContent(form))) {
-      setForm(null);
+      closeEdit();
       flash();
     }
-  }, [form, block, onEditBlock, flash]);
+  }, [form, block, onEditBlock, flash, closeEdit]);
 
   const body = form ? (
-    <TableBlockFields
-      value={form}
-      onChange={setForm}
-      idPrefix={`${idBase}-edit-form`}
-      disabled={busy}
-    />
+    <>
+      {reshaped && (
+        <p
+          className="mb-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning-foreground dark:text-warning"
+          data-testid={`${idBase}-edit-reshaped`}
+        >
+          {t('quotes.editor.table.reshapedWarning', { columns: MAX_TABLE_COLUMNS, rows: MAX_TABLE_ROWS })}
+        </p>
+      )}
+      <TableBlockFields
+        value={form}
+        onChange={setForm}
+        idPrefix={`${idBase}-edit-form`}
+        disabled={busy}
+      />
+    </>
   ) : !content?.columns?.length || !content?.rows?.length ? (
     <p className="text-sm text-muted-foreground" data-testid={`quote-block-table-content-${block.id}`}>
       {t('quotes.editor.block.tableEmpty')}
@@ -175,9 +185,11 @@ export function TableBlockEditor({
       <EditToolbar
         editing={form !== null}
         busy={busy}
-        canSave
-        onEdit={() => setForm(tableFormFromContent(block.content))}
-        onCancel={() => setForm(null)}
+        // No validity gate, deliberately: the grid mutators keep the shape
+        // schema-valid at all times and empty labels/cells are legal (the add
+        // form submits a blank grid too), so there is nothing to gate on.
+        onEdit={openEdit}
+        onCancel={closeEdit}
         onSave={() => void save()}
         idBase={idBase}
         saved={saved}

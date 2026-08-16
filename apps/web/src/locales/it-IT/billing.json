@@ -720,7 +720,8 @@
         "zebra": "Righe alternate",
         "headerStyle": "Stile intestazione",
         "headerStylePlain": "Semplice",
-        "headerStyleAccent": "Accento"
+        "headerStyleAccent": "Accento",
+        "reshapedWarning": "Questa tabella superava il limite di {{columns}} colonne x {{rows}} righe ed è stata adattata. Il salvataggio sostituisce la tabella memorizzata con quella mostrata qui."
       },
       "terms": {
         "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",

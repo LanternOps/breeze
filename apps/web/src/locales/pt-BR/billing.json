@@ -749,7 +749,8 @@
         "zebra": "Linhas alternadas",
         "headerStyle": "Estilo do cabeçalho",
         "headerStylePlain": "Simples",
-        "headerStyleAccent": "Destaque"
+        "headerStyleAccent": "Destaque",
+        "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",

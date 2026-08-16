@@ -749,7 +749,8 @@
         "zebra": "Zebrastreifen",
         "headerStyle": "Kopfzeilenstil",
         "headerStylePlain": "Einfach",
-        "headerStyleAccent": "Akzent"
+        "headerStyleAccent": "Akzent",
+        "reshapedWarning": "Diese Tabelle überschritt das Limit von {{columns}} Spalten x {{rows}} Zeilen und wurde angepasst. Beim Speichern wird die gespeicherte Tabelle durch die hier angezeigte ersetzt."
       },
       "terms": {
         "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",

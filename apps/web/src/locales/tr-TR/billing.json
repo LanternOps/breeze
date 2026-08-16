@@ -757,7 +757,8 @@
         "zebra": "Zebra şeritleri",
         "headerStyle": "Başlık stili",
         "headerStylePlain": "Düz",
-        "headerStyleAccent": "Vurgulu"
+        "headerStyleAccent": "Vurgulu",
+        "reshapedWarning": "Bu tablo {{columns}} sütun x {{rows}} satır sınırına sığmadığı için yeniden düzenlendi. Kaydetmek, kayıtlı tabloyu burada gördüğünüzle değiştirir."
       },
       "terms": {
         "placeholder": "Ödeme koşulları, garanti hükümleri vb.",

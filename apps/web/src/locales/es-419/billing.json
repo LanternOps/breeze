@@ -749,7 +749,8 @@
         "zebra": "Filas alternadas",
         "headerStyle": "Estilo de encabezado",
         "headerStylePlain": "Simple",
-        "headerStyleAccent": "Acento"
+        "headerStyleAccent": "Acento",
+        "reshapedWarning": "Esta tabla no cabía en el límite de {{columns}} columnas x {{rows}} filas, así que se ajustó. Al guardar, se reemplaza la tabla almacenada por la que ves aquí."
       },
       "terms": {
         "placeholder": "Condiciones de pago, cláusulas de garantía, etc.",

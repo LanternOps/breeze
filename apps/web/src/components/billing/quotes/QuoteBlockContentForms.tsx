@@ -39,26 +39,39 @@ export function freshTableForm(): TableFormState {
 }
 
 /** Seed the form from a persisted block's content. Defensive about shape: a
- *  legacy or hand-written row that disagrees with columns.length is padded or
- *  trimmed HERE (once, visibly, before the user edits) rather than being sent
- *  back to the API where the schema's exact-shape refinement would reject it. */
-export function tableFormFromContent(content: unknown): TableFormState {
+ *  legacy or hand-written table that exceeds the caps, or a row that disagrees
+ *  with columns.length, is reshaped HERE rather than being sent back to the API
+ *  where the schema's exact-shape refinement would reject it with nothing the
+ *  user can act on.
+ *
+ *  Reshaping DISCARDS content (dropped columns/rows/cells), so it reports
+ *  `adjusted` — the caller must tell the user before their Save overwrites the
+ *  stored block with the reshaped version. Today the API's read-path sanitizer
+ *  means in-app content never reaches here out of shape; `adjusted` exists for
+ *  imported/migrated content and for a future cap reduction, which is exactly
+ *  when silently dropping rows would be worst. */
+export function tableFormFromContent(content: unknown): { form: TableFormState; adjusted: boolean } {
   const c = (content ?? {}) as Partial<QuoteTableContent>;
-  const columns = Array.isArray(c.columns) && c.columns.length > 0
-    ? c.columns.slice(0, MAX_TABLE_COLUMNS).map((col) => ({ ...col }))
-    : [{ label: '' }];
-  const rawRows = Array.isArray(c.rows) && c.rows.length > 0 ? c.rows.slice(0, MAX_TABLE_ROWS) : [{ cells: [] }];
-  const rows = rawRows.map((r) => {
-    const cells = Array.isArray(r?.cells) ? r.cells.slice(0, columns.length) : [];
+  const rawColumns = Array.isArray(c.columns) && c.columns.length > 0 ? c.columns : [{ label: '' }];
+  const columns = rawColumns.slice(0, MAX_TABLE_COLUMNS).map((col) => ({ ...col }));
+  const rawRows = Array.isArray(c.rows) && c.rows.length > 0 ? c.rows : [{ cells: [] }];
+  let adjusted = columns.length !== rawColumns.length || rawRows.length > MAX_TABLE_ROWS;
+  const rows = rawRows.slice(0, MAX_TABLE_ROWS).map((r) => {
+    const source = Array.isArray(r?.cells) ? r.cells : [];
+    if (source.length !== columns.length) adjusted = true;
+    const cells = source.slice(0, columns.length);
     while (cells.length < columns.length) cells.push('');
     return { cells };
   });
   return {
-    columns,
-    rows,
-    caption: c.caption ?? '',
-    zebra: c.zebra ?? false,
-    headerStyle: c.headerStyle ?? 'plain',
+    form: {
+      columns,
+      rows,
+      caption: c.caption ?? '',
+      zebra: c.zebra ?? false,
+      headerStyle: c.headerStyle ?? 'plain',
+    },
+    adjusted,
   };
 }
 
