@@ -285,6 +285,25 @@ describe('getTicketConfig inbound block', () => {
     expect(cfg.inbound.domainConfigured).toBe(false);
     expect(cfg.inbound.address).toBe('');
   });
+  // #3599: the card's "no inbound domain" copy branches on this — self-hosted
+  // readers get the TICKETS_INBOUND_DOMAIN variable name, hosted partners don't.
+  it.each([
+    ['true', true],
+    ['false', false],
+    [undefined, false],
+  ] as const)('reports isHosted=%s → %s', async (raw, expected) => {
+    const prev = process.env.IS_HOSTED;
+    if (raw === undefined) delete process.env.IS_HOSTED;
+    else process.env.IS_HOSTED = raw;
+    try {
+      enqueueForInbound({ slug: 'acme', settings: {} });
+      const cfg = await getTicketConfig('p-1');
+      expect(cfg.inbound.isHosted).toBe(expected);
+    } finally {
+      if (prev === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = prev;
+    }
+  });
   it('defaults unknownSenderMode=quarantine and dropUnverifiedSenders=false when absent', async () => {
     enqueueForInbound({ slug: 'acme', settings: {} });
     const cfg = await getTicketConfig('p-1');
