@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketEmailInbound,
@@ -18,6 +18,7 @@ import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
+import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -30,7 +31,7 @@ import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 const SYSTEM_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Inbound Email' };
 
 // Per-partner ticket display number, e.g. T-2026-0001.
-const TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
+const TOKEN_RE = TICKET_TOKEN_RE;
 
 async function logInbound(
   n: NormalizedInboundEmail,
@@ -386,41 +387,12 @@ export async function processInboundEmail(
   }
 }
 
-interface MatchedTicket {
-  id: string;
-  partnerId: string | null;
-  orgId: string;
-  status: string;
-  emailThreadKey: string | null;
-  internalNumber: string | null;
-  submittedBy: string | null;
-  submitterEmail: string | null;
-}
-
-const MATCH_COLS = {
-  id: tickets.id,
-  partnerId: tickets.partnerId,
-  orgId: tickets.orgId,
-  status: tickets.status,
-  emailThreadKey: tickets.emailThreadKey,
-  internalNumber: tickets.internalNumber,
-  submittedBy: tickets.submittedBy,
-  submitterEmail: tickets.submitterEmail
-};
-
-interface SenderIdentity {
-  portalUser: { id: string; orgId: string; name: string | null } | null;
-  domainOrg: { orgId: string; autoCreateContact: boolean } | null;
-}
-
-interface SenderResolver {
-  portalUser(): Promise<SenderIdentity['portalUser']>;
-  domainOrg(): Promise<SenderIdentity['domainOrg']>;
-}
-
+// Lazy, memoized sender-identity lookups. Threaded through the matchers (token
+// binding, #3643) and the unmatched fallthrough so both reuse the same
+// partner-scoped queries instead of issuing duplicates.
 function createSenderResolver(from: string, partnerId: string): SenderResolver {
-  let portalUserPromise: Promise<SenderIdentity['portalUser']> | undefined;
-  let domainOrgPromise: Promise<SenderIdentity['domainOrg']> | undefined;
+  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null } | null> | undefined;
+  let domainOrgPromise: Promise<{ orgId: string; autoCreateContact: boolean } | null> | undefined;
 
   return {
     portalUser() {
@@ -433,149 +405,6 @@ function createSenderResolver(from: string, partnerId: string): SenderResolver {
     }
   };
 }
-
-/**
- * Bind a subject-token (ticket-number) match to the sender. Ticket numbers are
- * sequential and enumerable and the token path carries no org predicate, so
- * without this ANY authenticated-domain sender could append a public comment to
- * another customer org's ticket (and reopen it). The thread-key path is
- * unguessable and needs no binding.
- */
-async function senderIsBoundToTicket(
-  from: string,
-  ticket: MatchedTicket,
-  sender: SenderResolver
-): Promise<boolean> {
-  if (ticket.submitterEmail && ticket.submitterEmail.trim().toLowerCase() === from.trim().toLowerCase()) {
-    return true;
-  }
-
-  const pu = await sender.portalUser();
-  if (pu && (pu.orgId === ticket.orgId || pu.id === ticket.submittedBy)) return true;
-
-  const dom = await sender.domainOrg();
-  return !!dom && dom.orgId === ticket.orgId;
-}
-
-// Candidate threading keys: In-Reply-To + every References entry (a reply's parent
-// can be anywhere in the References chain), deduped.
-function candidateThreadKeys(n: NormalizedInboundEmail): string[] {
-  return Array.from(new Set([n.inReplyTo, ...(n.references ?? [])].filter(Boolean) as string[]));
-}
-
-// (3) Thread-match within the resolved partner. BOTH queries carry an explicit
-// partner_id predicate (spec §6 layer 1) — ticket numbers are per-partner sequences, so an
-// unscoped token match would hit the wrong tenant.
-//
-// CLOSED tickets are EXCLUDED (`ne(status,'closed')`): a closed→new-linked continuation
-// is stamped with the SAME email_thread_key as its closed original (no unique constraint
-// on that column), so an unordered LIMIT 1 could otherwise re-return the closed original
-// and fork the thread into N tickets. Excluding closed here makes a reply to a closed
-// ticket fall through to the dedicated closed lookup (-> ONE new linked ticket), while
-// subsequent replies match the LIVE continuation. Resolved tickets still match (reopen).
-async function findTicketInPartner(
-  n: NormalizedInboundEmail,
-  partnerId: string,
-  sender: SenderResolver
-): Promise<MatchedTicket | null> {
-  // 1) thread headers -> email_thread_key OR email_message_id (scoped to partner,
-  // live tickets only). Candidate keys (In-Reply-To ∪ References) are matched
-  // against EITHER column: email_thread_key carries the generated anchor (so a
-  // reply to the autoresponse / outbound reply threads), and email_message_id
-  // carries the customer's OWN original Message-Id (so an autoresponder-OFF
-  // partner's customer replying to their own original — In-Reply-To = their
-  // original Message-Id, NOT the anchor — still threads instead of forking a
-  // duplicate). The partner predicate stays mandatory (spec §6 layer 1).
-  const candidateKeys = candidateThreadKeys(n);
-  if (candidateKeys.length > 0) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        ne(tickets.status, 'closed'),
-        isNull(tickets.deletedAt), // never thread a reply onto a soft-deleted ticket
-        or(
-          inArray(tickets.emailThreadKey, candidateKeys),
-          inArray(tickets.emailMessageId, candidateKeys)
-        )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  // 2) subject token [T-YYYY-NNNN] (scoped to partner, live tickets only)
-  const m = n.subject.match(TOKEN_RE);
-  if (m) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        ne(tickets.status, 'closed'),
-        isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
-    const row = rows[0] as MatchedTicket | undefined;
-    if (row) {
-      // The token is enumerable, so require proof that this sender belongs to the ticket.
-      if (!(await senderIsBoundToTicket(n.from, row, sender))) return null;
-      return row;
-    }
-  }
-
-  return null;
-}
-
-// Looks up the CLOSED original for a reply, by the same thread-key / subject-token
-// signals findTicketInPartner uses — but matching ONLY closed tickets. Used to spawn a
-// single new linked ticket when a customer replies to a closed thread. Kept separate from
-// findTicketInPartner (which returns live tickets only) so the closed original is never
-// re-matched for an append. Still partner-scoped (spec §6 layer 1).
-async function findClosedTicketInPartner(
-  n: NormalizedInboundEmail,
-  partnerId: string,
-  sender: SenderResolver
-): Promise<MatchedTicket | null> {
-  const candidateKeys = candidateThreadKeys(n);
-  if (candidateKeys.length > 0) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        eq(tickets.status, 'closed'),
-        isNull(tickets.deletedAt), // a deleted closed original must not spawn a continuation
-        inArray(tickets.emailThreadKey, candidateKeys)
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  const m = n.subject.match(TOKEN_RE);
-  if (m) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        eq(tickets.status, 'closed'),
-        isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
-    const row = rows[0] as MatchedTicket | undefined;
-    if (row) {
-      // The token is enumerable, so require proof that this sender belongs to the ticket.
-      if (!(await senderIsBoundToTicket(n.from, row, sender))) return null;
-      return row;
-    }
-  }
-
-  return null;
-}
-
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
 // portal_users has no partner_id; a same-email user under a DIFFERENT partner must not match.
 async function findPortalUserInPartner(email: string, partnerId: string): Promise<{ id: string; orgId: string; name: string | null } | null> {
