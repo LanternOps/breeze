@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, sql, desc, like, or, inArray, isNotNull, type SQL } from 'drizzle-orm';
@@ -9,6 +9,7 @@ import {
   softwareDeployments,
   deploymentResults,
   softwareInventory,
+  softwareInstallMethods,
   devices,
   deviceCommands,
 } from '../db/schema';
@@ -395,7 +396,14 @@ const listDeploymentResultsSchema = z.object({
 
 const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
-  softwareVersionId: z.string().guid(),
+  // Exactly one target: an uploaded/URL version, or a catalog item whose
+  // package-manager install methods the route resolves (winget/Homebrew).
+  softwareVersionId: z.string().guid().optional(),
+  catalogId: z.string().guid().optional(),
+  // Manager deploys only. 'exact' additionally requires a winget method on the
+  // item (validated in the handler — brew cannot pin a version).
+  versionMode: z.enum(['latest', 'exact']).optional(),
+  requestedVersion: z.string().min(1).max(64).optional(),
   deploymentType: z.enum(['install', 'uninstall', 'update']),
   targetType: z.enum(['devices', 'groups', 'sites', 'all', 'filter']),
   targetIds: z.array(z.string().guid()).optional(),
@@ -405,6 +413,36 @@ const createDeploymentSchema = z.object({
   maintenanceWindowId: z.string().guid().optional(),
   options: z.record(z.string(), z.unknown()).optional()
 }).superRefine((data, ctx) => {
+  // Mirrors software_deployments_one_target_chk: a deployment targets a
+  // version XOR a catalog item's install method.
+  if ((data.softwareVersionId == null) === (data.catalogId == null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['softwareVersionId'],
+      message: 'Provide exactly one of softwareVersionId or catalogId',
+    });
+  }
+  if (data.catalogId == null && (data.versionMode || data.requestedVersion)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['versionMode'],
+      message: 'versionMode/requestedVersion apply only to package-manager (catalogId) deployments',
+    });
+  }
+  if (data.versionMode === 'exact' && !data.requestedVersion) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requestedVersion'],
+      message: "requestedVersion is required when versionMode is 'exact'",
+    });
+  }
+  if (data.requestedVersion && data.versionMode !== 'exact') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['versionMode'],
+      message: "requestedVersion requires versionMode 'exact'",
+    });
+  }
   // Reject what never runs (#1.4): nothing dispatches uninstall/update
   // deployments today — accepting them inserted rows that sat pending forever.
   if (data.deploymentType === 'uninstall' || data.deploymentType === 'update') {
@@ -1264,6 +1302,192 @@ softwareRoutes.get(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Package-manager (winget / Homebrew) deployment creation
+// ---------------------------------------------------------------------------
+
+/**
+ * Bucket resolved target devices by the platform whose install method could
+ * serve them. `other` holds every device neither platform can serve (Linux,
+ * or an unknown osType); the caller attaches those to the FIRST created
+ * deployment so the fan-out records an explicit
+ * "No install method for this device OS" failure per device instead of
+ * silently dropping them.
+ */
+export function splitTargetsByPlatform(
+  deviceRows: { id: string; osType: string | null }[],
+): { windows: string[]; macos: string[]; other: string[] } {
+  const windows: string[] = [];
+  const macos: string[] = [];
+  const other: string[] = [];
+  for (const row of deviceRows) {
+    if (row.osType === 'windows') windows.push(row.id);
+    else if (row.osType === 'macos') macos.push(row.id);
+    else other.push(row.id);
+  }
+  return { windows, macos, other };
+}
+
+type ManagerDeploymentPayload = {
+  name: string;
+  catalogId: string;
+  versionMode?: 'latest' | 'exact';
+  requestedVersion?: string;
+  deploymentType: 'install' | 'uninstall' | 'update';
+  targetType: 'devices' | 'groups' | 'sites' | 'all' | 'filter';
+  targetIds?: string[];
+  targetFilter?: unknown;
+  scheduleType: 'immediate' | 'scheduled' | 'maintenance';
+  scheduledAt?: string;
+  maintenanceWindowId?: string;
+  options?: Record<string, unknown>;
+};
+
+const PLATFORM_NAME_SUFFIX: Record<'windows' | 'macos', string> = {
+  windows: ' (Windows)',
+  macos: ' (macOS)',
+};
+
+/**
+ * A software_deployments row references exactly ONE install method
+ * (software_deployments_one_target_chk), but a catalog item may carry a
+ * winget method AND a Homebrew method. So when the resolved target set spans
+ * both platforms this creates one deployment per platform — each with its own
+ * install_method_id and a platform-suffixed name — keeping the column honest
+ * and every per-device result row unambiguous.
+ */
+async function createManagerDeployments(
+  c: Context,
+  orgId: string,
+  payload: ManagerDeploymentPayload,
+) {
+  const auth = c.get('auth');
+
+  const [catalogItem] = await db.select({
+    id: softwareCatalog.id,
+    orgId: softwareCatalog.orgId,
+    name: softwareCatalog.name,
+    integrationProvider: softwareCatalog.integrationProvider,
+  }).from(softwareCatalog)
+    .where(eq(softwareCatalog.id, payload.catalogId));
+  // Same ownership guard as the version path: built-ins (org_id NULL) are
+  // visible to everyone, an org-owned row must match the caller's org.
+  if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
+    return c.json({ error: 'Catalog item not found or access denied' }, 404);
+  }
+
+  const methods = await db.select().from(softwareInstallMethods)
+    .where(and(
+      eq(softwareInstallMethods.catalogId, catalogItem.id),
+      eq(softwareInstallMethods.enabled, true),
+    ));
+  if (methods.length === 0) {
+    return c.json({ error: 'This catalog item has no enabled install method to deploy' }, 400);
+  }
+
+  const versionMode = payload.versionMode ?? 'latest';
+  // Only winget can install a pinned version; Homebrew always installs the
+  // formula/cask's current version.
+  if (versionMode === 'exact' && !methods.some((m) => m.kind === 'winget')) {
+    return c.json(
+      { error: "versionMode 'exact' requires a winget install method on this catalog item" },
+      400,
+    );
+  }
+
+  const resolvedTargets = await resolveSoftwareTargetDeviceIds(
+    orgId,
+    c.get('permissions') as UserPermissions | undefined,
+    payload,
+  );
+  if (resolvedTargets.error) {
+    return c.json({ error: resolvedTargets.error }, resolvedTargets.status ?? 400);
+  }
+
+  const deviceRows = await db.select({ id: devices.id, osType: devices.osType })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), inArray(devices.id, resolvedTargets.deviceIds)));
+  const split = splitTargetsByPlatform(deviceRows);
+
+  // One group per platform that has BOTH an enabled method and target devices,
+  // Windows first for determinism.
+  const groups: { platform: 'windows' | 'macos'; methodId: string; deviceIds: string[] }[] = [];
+  for (const platform of ['windows', 'macos'] as const) {
+    const method = methods.find((m) => m.platform === platform);
+    if (!method) continue;
+    if (split[platform].length === 0) continue;
+    groups.push({ platform, methodId: method.id, deviceIds: [...split[platform]] });
+  }
+  if (groups.length === 0) {
+    // Nothing the item can serve. Still create ONE deployment (against the
+    // first enabled method) so every target device gets a recorded failure
+    // rather than a 200 with no trace.
+    const fallback = methods[0]!;
+    groups.push({
+      platform: fallback.platform as 'windows' | 'macos',
+      methodId: fallback.id,
+      deviceIds: [],
+    });
+  }
+  // Unservable devices ride along with the first deployment so the fan-out
+  // writes their "No install method for this device OS" result rows.
+  groups[0]!.deviceIds.push(...split.other);
+
+  const isSplit = groups.length > 1;
+  const results = [];
+  for (const group of groups) {
+    const result = await createSoftwareDeployment({
+      orgId,
+      installMethodId: group.methodId,
+      versionMode,
+      requestedVersion: payload.requestedVersion,
+      deploymentType: payload.deploymentType,
+      deviceIds: group.deviceIds,
+      scheduleType: payload.scheduleType,
+      createdBy: auth.user?.id ?? null,
+      name: isSplit ? `${payload.name}${PLATFORM_NAME_SUFFIX[group.platform]}` : payload.name,
+      scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : undefined,
+      maintenanceWindowId: payload.maintenanceWindowId ?? null,
+      // A split deployment records the devices it actually owns; an unsplit one
+      // preserves the caller's raw selection, same as the version path.
+      targetType: isSplit ? 'devices' : payload.targetType,
+      targetIds: isSplit ? group.deviceIds : payload.targetIds ?? null,
+      options:
+        payload.targetType === 'filter'
+          ? { ...(payload.options ?? {}), targetFilter: payload.targetFilter ?? null }
+          : payload.options ?? undefined,
+    });
+    results.push(result);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.deployment.create',
+      resourceType: 'software_deployment',
+      resourceId: result.deploymentId,
+      resourceName: payload.name,
+      details: {
+        deploymentType: payload.deploymentType,
+        targetType: payload.targetType,
+        deviceCount: group.deviceIds.length,
+        installMethodId: group.methodId,
+        platform: group.platform,
+        versionMode,
+      },
+    });
+  }
+
+  const deployments = results.map((r) => r.deployment);
+  if (results.every((r) => r.status === 'failed')) {
+    return c.json({
+      data: { id: results[0]!.deploymentId, status: 'failed', message: results[0]!.message },
+      deployments,
+    }, 200);
+  }
+  // `data` stays the (first) deployment object for parity with the version
+  // path; `deployments` carries every row a split produced.
+  return c.json({ data: deployments[0], deployments }, 201);
+}
+
 // POST /deployments - Create deployment
 softwareRoutes.post(
   '/deployments',
@@ -1279,9 +1503,14 @@ softwareRoutes.post(
 
     const payload = c.req.valid('json');
 
+    // Package-manager path: the request names a catalog item, not a version.
+    if (payload.catalogId) {
+      return createManagerDeployments(c, orgId, payload as ManagerDeploymentPayload);
+    }
+
     // Verify version exists and get catalog info
     const [versionRecord] = await db.select().from(softwareVersions)
-      .where(eq(softwareVersions.id, payload.softwareVersionId));
+      .where(eq(softwareVersions.id, payload.softwareVersionId!));
     if (!versionRecord) return c.json({ error: 'Software version not found' }, 404);
 
     const [catalogItem] = await db.select({
@@ -1637,8 +1866,51 @@ async function redispatchSoftwareInstall(opts: {
       ));
   };
 
+  // Package-manager deployment: re-resolve the install method instead of a
+  // version. The version intent lives in `options` (written at create).
+  if (deployment.installMethodId) {
+    const [method] = await db.select().from(softwareInstallMethods)
+      .where(eq(softwareInstallMethods.id, deployment.installMethodId));
+    if (!method) {
+      const error = 'Install method no longer exists for this deployment';
+      await failTargets(error);
+      return { dispatchedDeviceIds: [], error };
+    }
+    const [managerCatalogItem] = await db.select({
+      id: softwareCatalog.id,
+      orgId: softwareCatalog.orgId,
+      name: softwareCatalog.name,
+      integrationProvider: softwareCatalog.integrationProvider,
+    }).from(softwareCatalog)
+      .where(eq(softwareCatalog.id, method.catalogId));
+    if (!managerCatalogItem) {
+      const error = 'Catalog item no longer exists for this deployment';
+      await failTargets(error);
+      return { dispatchedDeviceIds: [], error };
+    }
+    const opts = (deployment.options ?? null) as Record<string, unknown> | null;
+    const fanout = await buildAndDispatchSoftwareInstalls({
+      deploymentId: deployment.id,
+      orgId,
+      installMethod: method,
+      versionMode: opts?.versionMode === 'exact' ? 'exact' : 'latest',
+      requestedVersion: typeof opts?.requestedVersion === 'string' ? opts.requestedVersion : null,
+      catalogItem: managerCatalogItem,
+      deviceIds,
+      scopeToDeviceIds: deviceIds,
+      options: opts,
+      createdBy,
+      markDispatched: false,
+      deviceRetryCounts,
+    });
+    return {
+      dispatchedDeviceIds: fanout.dispatchedDeviceIds,
+      ...(fanout.status === 'failed' && fanout.message ? { error: fanout.message } : {}),
+    };
+  }
+
   const [versionRecord] = await db.select().from(softwareVersions)
-    .where(eq(softwareVersions.id, deployment.softwareVersionId));
+    .where(eq(softwareVersions.id, deployment.softwareVersionId!));
   if (!versionRecord) {
     const error = 'Software version no longer exists for this deployment';
     await failTargets(error);

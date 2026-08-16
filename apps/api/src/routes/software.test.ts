@@ -98,7 +98,16 @@ vi.mock('../db/schema', () => ({
     siteId: 'site_id',
     hostname: 'hostname',
     customFields: 'custom_fields',
+    osType: 'os_type',
     outboundNetworkPolicyVersion: 'outbound_network_policy_version',
+  },
+  softwareInstallMethods: {
+    id: 'sim_id',
+    catalogId: 'sim_catalog_id',
+    platform: 'sim_platform',
+    kind: 'sim_kind',
+    packageId: 'sim_package_id',
+    enabled: 'sim_enabled',
   },
   // Distinct literals so cancel-purge assertions are unambiguous vs the other tables.
   deviceCommands: { id: 'dc_id', deviceId: 'dc_device_id', status: 'dc_status', completedAt: 'dc_completed_at', result: 'dc_result' },
@@ -958,6 +967,202 @@ describe('software routes', () => {
         });
         expect(res.status).toBe(201);
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Package-manager deployments (Task 4): the request names a catalog item
+  // instead of an uploaded version, and the route resolves that item's enabled
+  // install methods. A cross-platform item targeted at a mixed device set
+  // becomes ONE deployment per platform, each carrying its own
+  // install_method_id, so the 1:1 column stays honest and result rows are
+  // unambiguous.
+  // -------------------------------------------------------------------------
+  describe('POST /software/deployments (package-manager install methods)', () => {
+    const CATALOG_ID = '44444444-4444-4444-8444-444444444444';
+    const VERSION_ID = '11111111-1111-4111-8111-111111111111';
+    const WIN_DEVICE = '22222222-2222-4222-8222-222222222222';
+    const MAC_DEVICE = '33333333-3333-4333-8333-333333333333';
+    const LINUX_DEVICE = '55555555-5555-4555-8555-555555555555';
+
+    const catalogRow = { id: CATALOG_ID, orgId: 'org-123', name: 'Firefox', integrationProvider: null };
+    const wingetMethod = { id: 'method-win', catalogId: CATALOG_ID, platform: 'windows', kind: 'winget', packageId: 'Mozilla.Firefox', enabled: true };
+    const brewMethod = { id: 'method-mac', catalogId: CATALOG_ID, platform: 'macos', kind: 'homebrew_cask', packageId: 'firefox', enabled: true };
+
+    const selectResult = (rows: any): any => {
+      const p: any = new Proxy(() => p, {
+        get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+      });
+      return p;
+    };
+
+    const baseBody = {
+      name: 'Firefox rollout',
+      catalogId: CATALOG_ID,
+      deploymentType: 'install',
+      targetType: 'devices',
+      targetIds: [WIN_DEVICE],
+      scheduleType: 'immediate',
+    };
+    const post = (overrides: Record<string, unknown> = {}) =>
+      app.request('/software/deployments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ ...baseBody, ...overrides }),
+      });
+
+    /** selects, in route order: catalog item -> enabled install methods -> device osTypes */
+    const primeSelects = (methods: any[], deviceRows: any[]) => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult(methods))
+        .mockReturnValueOnce(selectResult(deviceRows));
+    };
+
+    const deploymentResult = (id: string) => ({
+      deploymentId: id,
+      deployment: { id },
+      status: 'pending' as const,
+      dispatchedDeviceIds: [],
+    });
+
+    it('rejects a body carrying both softwareVersionId and catalogId', async () => {
+      const res = await post({ softwareVersionId: VERSION_ID });
+      expect(res.status).toBe(400);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a body carrying neither softwareVersionId nor catalogId', async () => {
+      const res = await post({ catalogId: undefined });
+      expect(res.status).toBe(400);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects requestedVersion without versionMode exact', async () => {
+      const res = await post({ requestedVersion: '128.0.1' });
+      expect(res.status).toBe(400);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects versionMode exact without requestedVersion', async () => {
+      const res = await post({ versionMode: 'exact' });
+      expect(res.status).toBe(400);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects versionMode exact when the item has no winget install method', async () => {
+      // Rejected before target resolution: only the catalog + methods selects run.
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([brewMethod]));
+
+      const res = await post({
+        targetIds: [MAC_DEVICE],
+        versionMode: 'exact',
+        requestedVersion: '128.0.1',
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/winget/i);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('404s when the catalog item belongs to another org', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectResult([{ ...catalogRow, orgId: 'other-org' }]));
+      const res = await post();
+      expect(res.status).toBe(404);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('400s when the catalog item has no enabled install methods', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectResult([catalogRow]))
+        .mockReturnValueOnce(selectResult([]));
+      const res = await post();
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/install method/i);
+      expect(createDeploymentMock).not.toHaveBeenCalled();
+    });
+
+    it('creates ONE deployment with the matching install method for a single-platform target set', async () => {
+      primeSelects([wingetMethod, brewMethod], [{ id: WIN_DEVICE, osType: 'windows' }]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce(deploymentResult('dep-win'));
+
+      const res = await post();
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(createDeploymentMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          installMethodId: 'method-win',
+          deviceIds: [WIN_DEVICE],
+          versionMode: 'latest',
+          // Single deployment keeps the caller's name verbatim.
+          name: 'Firefox rollout',
+        }),
+      );
+      // No version target on a manager deployment.
+      expect(createDeploymentMock.mock.calls[0]![0].softwareVersionId).toBeUndefined();
+    });
+
+    it('splits a cross-platform target set into one deployment per platform', async () => {
+      primeSelects(
+        [wingetMethod, brewMethod],
+        [
+          { id: WIN_DEVICE, osType: 'windows' },
+          { id: MAC_DEVICE, osType: 'macos' },
+        ],
+      );
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE, MAC_DEVICE]);
+      createDeploymentMock
+        .mockResolvedValueOnce(deploymentResult('dep-win'))
+        .mockResolvedValueOnce(deploymentResult('dep-mac'));
+
+      const res = await post({ targetIds: [WIN_DEVICE, MAC_DEVICE] });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(2);
+      expect(createDeploymentMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        installMethodId: 'method-win',
+        deviceIds: [WIN_DEVICE],
+        name: 'Firefox rollout (Windows)',
+      }));
+      expect(createDeploymentMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        installMethodId: 'method-mac',
+        deviceIds: [MAC_DEVICE],
+        name: 'Firefox rollout (macOS)',
+      }));
+      const body = await res.json();
+      expect(body.deployments.map((d: any) => d.id)).toEqual(['dep-win', 'dep-mac']);
+    });
+
+    it('attaches devices with no matching platform to the first deployment so they get a failed result row', async () => {
+      primeSelects(
+        [wingetMethod],
+        [
+          { id: WIN_DEVICE, osType: 'windows' },
+          { id: LINUX_DEVICE, osType: 'linux' },
+        ],
+      );
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE, LINUX_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce(deploymentResult('dep-win'));
+
+      const res = await post({ targetIds: [WIN_DEVICE, LINUX_DEVICE] });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledTimes(1);
+      expect(createDeploymentMock.mock.calls[0]![0].deviceIds).toEqual([WIN_DEVICE, LINUX_DEVICE]);
+    });
+
+    it('passes an exact version pin through to the service', async () => {
+      primeSelects([wingetMethod], [{ id: WIN_DEVICE, osType: 'windows' }]);
+      vi.mocked(resolveDeploymentTargets).mockResolvedValueOnce([WIN_DEVICE]);
+      createDeploymentMock.mockResolvedValueOnce(deploymentResult('dep-win'));
+
+      const res = await post({ versionMode: 'exact', requestedVersion: '128.0.1' });
+      expect(res.status).toBe(201);
+      expect(createDeploymentMock).toHaveBeenCalledWith(
+        expect.objectContaining({ versionMode: 'exact', requestedVersion: '128.0.1' }),
+      );
     });
   });
 

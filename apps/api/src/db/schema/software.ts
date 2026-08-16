@@ -82,7 +82,15 @@ export const softwareDeployments = pgTable('software_deployments', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 255 }).notNull(),
-  softwareVersionId: uuid('software_version_id').notNull().references(() => softwareVersions.id),
+  // Exactly one of softwareVersionId / installMethodId is set
+  // (CHECK software_deployments_one_target_chk, migration
+  // 2026-08-16-b-software-deployments-install-method.sql): a deployment either
+  // ships an uploaded/URL version or drives a package manager (winget/brew).
+  // A cross-platform catalog item produces ONE deployment per platform, each
+  // referencing its own install method row — see splitTargetsByPlatform in
+  // routes/software.ts.
+  softwareVersionId: uuid('software_version_id').references(() => softwareVersions.id),
+  installMethodId: uuid('install_method_id').references(() => softwareInstallMethods.id),
   deploymentType: varchar('deployment_type', { length: 20 }).notNull(),
   targetType: varchar('target_type', { length: 50 }).notNull(),
   targetIds: jsonb('target_ids'),
@@ -99,6 +107,7 @@ export const softwareDeployments = pgTable('software_deployments', {
 }, (table) => ({
   orgIdx: index('software_deployments_org_id_idx').on(table.orgId),
   versionIdx: index('software_deployments_version_id_idx').on(table.softwareVersionId),
+  installMethodIdx: index('software_deployments_install_method_idx').on(table.installMethodId),
   scheduleIdx: index('software_deployments_schedule_idx').on(table.scheduleType, table.scheduledAt)
 }));
 
