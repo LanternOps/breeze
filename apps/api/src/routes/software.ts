@@ -39,6 +39,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { softwareUploadRoutes } from './softwareUploads';
+import { softwareInstallMethodRoutes } from './softwareInstallMethods';
 import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
@@ -2098,3 +2099,9 @@ softwareRoutes.put(
 // authMiddleware)` above, so the sub-router's handlers run behind auth.
 // ---------------------------------------------------------------------------
 softwareRoutes.route('/', softwareUploadRoutes);
+
+// ---------------------------------------------------------------------------
+// Package-manager (winget/Homebrew) install-method CRUD. Same mounting
+// pattern as softwareUploadRoutes above.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', softwareInstallMethodRoutes);
