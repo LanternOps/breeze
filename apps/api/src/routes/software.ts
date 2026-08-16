@@ -1,7 +1,7 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray, isNotNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -9,10 +9,12 @@ import {
   softwareDeployments,
   deploymentResults,
   softwareInventory,
+  softwareInstallMethods,
   devices,
   deviceCommands,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess, type AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import {
@@ -39,6 +41,8 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { softwareUploadRoutes } from './softwareUploads';
+import { softwareInstallMethodRoutes } from './softwareInstallMethods';
+import { packageSearchRoutes } from './packageSearch';
 import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
@@ -55,6 +59,7 @@ import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
   getFileExtension,
+  authorizeCatalogItemRead,
   resolveScopedOrgId,
   setLatestSoftwareVersion,
   insertLatestSoftwareVersion,
@@ -97,6 +102,36 @@ function resolveCatalogListScope(
   }
 
   return scopedOrg;
+}
+
+/**
+ * Authorize a write against a catalog row fetched by id (dual-axis, #2135).
+ * Org-owned rows: the same resolved-org narrowing as the reads
+ * (authorizeCatalogItemRead) — a partner caller acting as org A must not
+ * mutate sibling org B's package, with the canAccessOrg fallback only in the
+ * org-less All-organizations view. Partner-wide rows (org_id NULL): system
+ * scope, or a full-partner admin of the owning partner.
+ * Returns null when allowed, else the error response to send. 404 (not 403)
+ * for foreign rows, matching the read routes' don't-reveal-existence behavior.
+ */
+function authorizeCatalogItemWrite(
+  auth: AuthContext,
+  item: { orgId: string | null; partnerId: string | null },
+  requestedOrgId: string | undefined,
+): { error: string; status: 403 | 404 } | null {
+  if (item.orgId !== null) {
+    return authorizeCatalogItemRead(auth, item.orgId, requestedOrgId);
+  }
+  if (auth.scope === 'system') return null;
+  if (auth.scope !== 'partner' || !auth.partnerId || item.partnerId !== auth.partnerId) {
+    return { error: 'Catalog item not found', status: 404 };
+  }
+  return canManagePartnerWidePolicies(auth)
+    ? null
+    : {
+        error: 'Modifying a partner-wide package requires full partner org access (orgAccess must be "all")',
+        status: 403,
+      };
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -339,7 +374,11 @@ const createCatalogSchema = z.object({
   iconUrl: z.string().url().optional(),
   websiteUrl: z.string().url().optional(),
   isManaged: z.boolean().optional(),
-  orgId: z.string().guid().optional()
+  orgId: z.string().guid().optional(),
+  // Ownership axis (#2135 Partner-Wide First): 'partner' creates a package
+  // shared by every org under the caller's partner (org_id NULL). Create-only —
+  // ownership never changes after creation.
+  ownerScope: z.enum(['organization', 'partner']).optional()
 });
 
 const updateCatalogSchema = z.object({
@@ -389,6 +428,23 @@ function safeUrlHost(rawUrl: string): string {
   }
 }
 
+// PATCH body: only provided keys change; explicit null clears a nullable
+// field (notes, URL, OS, args, detection rules — version/releaseDate/
+// architecture reject null). The binary-describing fields (checksum, fileSize,
+// s3Key) and scripts are not editable — replacing the installer means adding
+// a new version.
+const updateVersionSchema = z.object({
+  version: z.string().min(1).max(100).optional(),
+  releaseDate: z.string().datetime().optional(),
+  releaseNotes: z.string().max(5000).nullable().optional(),
+  downloadUrl: z.string().url().nullable().optional(),
+  supportedOs: z.array(platformSchema).nullable().optional(),
+  architecture: z.string().max(20).optional(),
+  silentInstallArgs: z.string().max(2000).nullable().optional(),
+  silentUninstallArgs: z.string().max(2000).nullable().optional(),
+  detectionRules: detectionRulesSchema.nullable().optional()
+});
+
 const listDeploymentsSchema = z.object({
   status: z.enum(['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled']).optional(),
   page: z.string().optional(),
@@ -419,7 +475,14 @@ const listDeploymentResultsSchema = z.object({
 
 const createDeploymentSchema = z.object({
   name: z.string().min(1).max(255),
-  softwareVersionId: z.string().guid(),
+  // Exactly one target: an uploaded/URL version, or a catalog item whose
+  // package-manager install methods the route resolves (winget/Homebrew).
+  softwareVersionId: z.string().guid().optional(),
+  catalogId: z.string().guid().optional(),
+  // Manager deploys only. 'exact' additionally requires a winget method on the
+  // item (validated in the handler — brew cannot pin a version).
+  versionMode: z.enum(['latest', 'exact']).optional(),
+  requestedVersion: z.string().min(1).max(64).optional(),
   deploymentType: z.enum(['install', 'uninstall', 'update']),
   targetType: z.enum(['devices', 'groups', 'sites', 'all', 'filter']),
   targetIds: z.array(z.string().guid()).optional(),
@@ -429,6 +492,36 @@ const createDeploymentSchema = z.object({
   maintenanceWindowId: z.string().guid().optional(),
   options: z.record(z.string(), z.unknown()).optional()
 }).superRefine((data, ctx) => {
+  // Mirrors software_deployments_one_target_chk: a deployment targets a
+  // version XOR a catalog item's install method.
+  if ((data.softwareVersionId == null) === (data.catalogId == null)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['softwareVersionId'],
+      message: 'Provide exactly one of softwareVersionId or catalogId',
+    });
+  }
+  if (data.catalogId == null && (data.versionMode || data.requestedVersion)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['versionMode'],
+      message: 'versionMode/requestedVersion apply only to package-manager (catalogId) deployments',
+    });
+  }
+  if (data.versionMode === 'exact' && !data.requestedVersion) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requestedVersion'],
+      message: "requestedVersion is required when versionMode is 'exact'",
+    });
+  }
+  if (data.requestedVersion && data.versionMode !== 'exact') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['versionMode'],
+      message: "requestedVersion requires versionMode 'exact'",
+    });
+  }
   // Reject what never runs (#1.4): nothing dispatches uninstall/update
   // deployments today — accepting them inserted rows that sat pending forever.
   if (data.deploymentType === 'uninstall' || data.deploymentType === 'update') {
@@ -512,9 +605,16 @@ softwareRoutes.get(
     const conditions: SQL[] = [];
     // Include partner-scoped built-in (integration) packages alongside the caller's
     // own org packages. RLS scopes built-ins to the caller's partner, so widening
-    // the WHERE here cannot leak another partner's rows.
+    // the WHERE here cannot leak another partner's rows. Partner-scope callers
+    // additionally see their own partner-wide custom packages (#2135) — gated on
+    // scope === 'partner' because org tokens never pass breeze_has_partner_access
+    // and must not get an app-layer condition RLS won't back.
     if (scopeResult.orgCondition) {
-      conditions.push(or(scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider))!);
+      const branches: SQL[] = [scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider)];
+      if (auth.scope === 'partner' && auth.partnerId) {
+        branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+      }
+      conditions.push(or(...branches)!);
     }
     if (searchTerm) {
       const term = `%${searchTerm}%`;
@@ -545,7 +645,20 @@ softwareRoutes.get(
         websiteUrl: softwareCatalog.websiteUrl,
         isManaged: softwareCatalog.isManaged,
         createdAt: softwareCatalog.createdAt,
-        versionCount: sql<number>`(SELECT count(*) FROM software_versions WHERE software_versions.catalog_id = ${softwareCatalog.id})`,
+        // NOTE: the outer catalog id MUST be written as `${softwareCatalog}.id`
+        // (table-qualified), never `${softwareCatalog.id}`. Drizzle renders a
+        // bare column reference UNqualified ("id"), which inside these
+        // correlated sub-selects resolves against the SUBQUERY's own table —
+        // `software_versions.catalog_id = software_versions.id` — so every
+        // count came back 0 and every kinds array came back empty for every
+        // row. Proven against real Postgres in
+        // __tests__/integration/softwareInstallMethods.integration.test.ts.
+        versionCount: sql<number>`(SELECT count(*) FROM software_versions WHERE software_versions.catalog_id = ${softwareCatalog}.id)`,
+        // Package-manager items (winget/Homebrew) ship zero uploaded versions but
+        // are still deployable, so the list feed carries the enabled-method count
+        // and the distinct kinds the catalog cards badge with.
+        methodCount: sql<number>`(SELECT count(*) FROM software_install_methods WHERE software_install_methods.catalog_id = ${softwareCatalog}.id AND software_install_methods.enabled)`,
+        methodKinds: sql<string[]>`(SELECT coalesce(array_agg(DISTINCT software_install_methods.kind), ARRAY[]::varchar[]) FROM software_install_methods WHERE software_install_methods.catalog_id = ${softwareCatalog}.id AND software_install_methods.enabled)`,
       }).from(softwareCatalog)
         .where(whereClause)
         .orderBy(softwareCatalog.name)
@@ -572,12 +685,32 @@ softwareRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
+
+    // Ownership axis (#2135): partner-wide packages are shared by every org
+    // under the partner, so creation is gated on the partner-wide capability —
+    // same gate as software policies. The partner is ALWAYS the caller's own.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (payload.ownerScope === 'partner') {
+      if (auth.scope !== 'system' && !auth.partnerId) {
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Partner-wide packages require full partner org access (orgAccess must be "all")' }, 403);
+      }
+      if (!auth.partnerId) {
+        // System scope has no partner of its own to stamp.
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      owner = { orgId: orgResult.orgId, partnerId: null };
+    }
 
     const [item] = await db.insert(softwareCatalog).values({
-      orgId,
+      orgId: owner.orgId,
+      partnerId: owner.partnerId,
       name: payload.name,
       vendor: payload.vendor ?? null,
       description: payload.description ?? null,
@@ -588,7 +721,7 @@ softwareRoutes.post(
     }).returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'software.catalog.create',
       resourceType: 'software_catalog_item',
       resourceId: item!.id,
@@ -614,8 +747,15 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
+    // Same dual-axis widening as GET /catalog: built-ins for everyone, the
+    // caller's own partner-wide custom packages for partner scope (#2135) —
+    // search must not return a narrower set than the list it searches.
+    const scopeBranches: SQL[] = [eq(softwareCatalog.orgId, orgId), isNotNull(softwareCatalog.integrationProvider)];
+    if (auth.scope === 'partner' && auth.partnerId) {
+      scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+    }
     const conditions = [
-      eq(softwareCatalog.orgId, orgId),
+      or(...scopeBranches)!,
       or(
         like(softwareCatalog.name, term),
         like(softwareCatalog.vendor, term),
@@ -639,21 +779,23 @@ softwareRoutes.get(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
-    // Look up by id alone, then authorize in JS. RLS restricts visibility to the
-    // caller's org rows + their partner's built-ins; the org guard below rejects a
-    // (visible) org-scoped row belonging to a different org. Built-in integration
-    // packages (Huntress/SentinelOne) are partner-scoped with org_id NULL, so an
+    // Look up by id alone, then authorize in JS. RLS bounds what is visible:
+    // the caller's org rows, plus NULL-org partner rows — built-ins for any
+    // caller, but partner-wide custom packages only for partner-scope tokens
+    // (org tokens never pass breeze_has_partner_access, so those rows are
+    // simply invisible here and 404). Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
+    // authorizeCatalogItemRead narrows org-owned rows to the request's resolved
+    // org (a partner caller acting as org A must not read sibling org B's
+    // package), falling back to canAccessOrg only in the org-less
+    // All-organizations view.
     const [item] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!item || (item.orgId !== null && item.orgId !== orgId)) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!item) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, item.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionCount] = await db.select({ count: sql<number>`count(*)` })
       .from(softwareVersions).where(eq(softwareVersions.catalogId, id));
@@ -672,16 +814,19 @@ softwareRoutes.patch(
   zValidator('json', updateCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
     const [existing] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
+    // Built-ins are provisioned in system context and stay immutable here.
+    if (existing.integrationProvider !== null && auth.scope !== 'system') {
+      return c.json({ error: 'Built-in integration packages cannot be modified' }, 403);
+    }
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [updated] = await db.update(softwareCatalog)
       .set(payload)
@@ -689,7 +834,7 @@ softwareRoutes.patch(
       .returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: existing.orgId,
       action: 'software.catalog.update',
       resourceType: 'software_catalog_item',
       resourceId: id,
@@ -710,14 +855,17 @@ softwareRoutes.delete(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [existing] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
+    // Built-ins are provisioned in system context and stay immutable here.
+    if (existing.integrationProvider !== null && auth.scope !== 'system') {
+      return c.json({ error: 'Built-in integration packages cannot be deleted' }, 403);
+    }
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A version that is still referenced by a deployment cannot be deleted —
     // software_deployments.software_version_id is an ON DELETE RESTRICT FK, so
@@ -744,7 +892,7 @@ softwareRoutes.delete(
     await db.delete(softwareCatalog).where(eq(softwareCatalog.id, id));
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: existing.orgId,
       action: 'software.catalog.delete',
       resourceType: 'software_catalog_item',
       resourceId: existing.id,
@@ -767,22 +915,22 @@ softwareRoutes.get(
   zValidator('param', versionParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
-    // Built-in integration packages (Huntress/SentinelOne) are partner-scoped with
-    // org_id NULL, so an `eq(orgId)` filter excludes the catalog row entirely and
-    // the endpoint 404s — which the deploy wizard renders as "No versions" with a
-    // grayed-out deploy. Look up by id and authorize in JS, mirroring the /deploy
-    // route: for an org/partner-scoped caller RLS binds a visible built-in to their
-    // own partner, so a NULL-org row here is the caller's own (system scope sees all).
+    // Partner-scoped rows (built-in EDR packages and partner-wide custom
+    // packages, #2135) have org_id NULL, so an `eq(orgId)` filter excludes the
+    // catalog row entirely and the endpoint 404s — which the deploy wizard
+    // renders as "No versions" with a grayed-out deploy. Look up by id and
+    // authorize in JS, mirroring the /deploy route: RLS binds a visible
+    // NULL-org row to the caller's own partner (system scope sees all).
+    // authorizeCatalogItemRead narrows org-owned rows to the request's
+    // resolved org; only the org-less All-organizations view falls back to
+    // canAccessOrg.
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const versions = await db.select().from(softwareVersions)
       .where(eq(softwareVersions.catalogId, id))
@@ -802,16 +950,17 @@ softwareRoutes.post(
   zValidator('json', createVersionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
+    // Dual-axis fetch + write authorization (#2135): partner-wide packages have
+    // org_id NULL and take versions from full-partner admins only.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A URL-created version never recorded a fileType, so the dispatcher fell
     // back to 'exe' and the agent exec'd the downloaded file directly — which
@@ -829,7 +978,10 @@ softwareRoutes.post(
     // scripted clients.
     if (payload.downloadUrl && fileType === null) {
       captureMessage('software version created with undetermined installer type', 'warning', {
-        orgId,
+        // Dual-axis (#2135): a partner-wide package has org_id NULL, so log both
+        // axes — orgId alone would attribute those rows to nothing at all.
+        orgId: catalogItem.orgId,
+        partnerId: catalogItem.partnerId,
         catalogId: id,
         version: payload.version,
         // Host only — a managed-software URL can carry a presigned capability
@@ -860,7 +1012,7 @@ softwareRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: catalogItem.orgId,
       action: 'software.catalog.version.create',
       resourceType: 'software_version',
       resourceId: version.id,
@@ -1075,6 +1227,71 @@ softwareRoutes.post(
   }
 );
 
+// PATCH /catalog/:id/versions/:versionId - Update version metadata
+softwareRoutes.patch(
+  '/catalog/:id/versions/:versionId',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('param', versionIdParamSchema),
+  zValidator('json', updateVersionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+
+    const { id, versionId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    // Dual-axis fetch + write authorization (#2135) — see version create above.
+    const [catalogItem] = await db.select().from(softwareCatalog)
+      .where(eq(softwareCatalog.id, id));
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
+
+    const [existingVersion] = await db.select().from(softwareVersions)
+      .where(and(
+        eq(softwareVersions.id, versionId),
+        eq(softwareVersions.catalogId, id),
+      ));
+    if (!existingVersion) return c.json({ error: 'Version not found' }, 404);
+
+    const updates: Record<string, unknown> = {};
+    if (payload.version !== undefined) updates.version = payload.version;
+    if (payload.releaseDate !== undefined) updates.releaseDate = new Date(payload.releaseDate);
+    if (payload.releaseNotes !== undefined) updates.releaseNotes = payload.releaseNotes;
+    if (payload.downloadUrl !== undefined) updates.downloadUrl = payload.downloadUrl;
+    if (payload.supportedOs !== undefined) updates.supportedOs = payload.supportedOs;
+    if (payload.architecture !== undefined) updates.architecture = payload.architecture;
+    if (payload.silentInstallArgs !== undefined) updates.silentInstallArgs = payload.silentInstallArgs;
+    if (payload.silentUninstallArgs !== undefined) updates.silentUninstallArgs = payload.silentUninstallArgs;
+    if (payload.detectionRules !== undefined) updates.detectionRules = payload.detectionRules;
+    if (Object.keys(updates).length === 0) {
+      return c.json({ error: 'No fields to update' }, 400);
+    }
+    // A URL-sourced version must not end up with neither URL nor uploaded file.
+    if (updates.downloadUrl === null && !existingVersion.s3Key) {
+      return c.json({ error: 'This version has no uploaded file — it needs a download URL' }, 400);
+    }
+
+    const [updated] = await db.update(softwareVersions)
+      .set(updates)
+      .where(eq(softwareVersions.id, versionId))
+      .returning();
+    if (!updated) return c.json({ error: 'Failed to update software version' }, 500);
+
+    writeRouteAudit(c, {
+      orgId: catalogItem.orgId,
+      action: 'software.catalog.version.update',
+      resourceType: 'software_version',
+      resourceId: versionId,
+      resourceName: catalogItem.name,
+      details: { version: updated.version, updatedFields: Object.keys(updates) },
+    });
+
+    return c.json({ data: updated });
+  }
+);
+
 // POST /catalog/:id/versions/:versionId/promote - Mark an existing version as latest
 softwareRoutes.post(
   '/catalog/:id/versions/:versionId/promote',
@@ -1084,14 +1301,14 @@ softwareRoutes.post(
   zValidator('param', versionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id, versionId } = c.req.valid('param');
+    // Dual-axis fetch + write authorization (#2135) — see version create above.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(
@@ -1109,7 +1326,7 @@ softwareRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: catalogItem.orgId,
       action: 'software.catalog.version.promote',
       resourceType: 'software_version',
       resourceId: promotedVersion.id,
@@ -1128,17 +1345,18 @@ softwareRoutes.get(
   requireSoftwareRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const catalogId = c.req.param('id')!;
     const versionId = c.req.param('versionId')!;
 
-    // Verify catalog belongs to org
+    // Dual-axis read authorization: org rows are narrowed to the request's
+    // resolved org (canAccessOrg fallback only in the org-less All-orgs view);
+    // partner rows (org_id NULL) are already bound to the caller's partner by RLS.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, catalogId));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionRecord] = await db.select().from(softwareVersions)
       .where(and(eq(softwareVersions.id, versionId), eq(softwareVersions.catalogId, catalogId)));
@@ -1315,6 +1533,232 @@ softwareRoutes.get(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Package-manager (winget / Homebrew) deployment creation
+// ---------------------------------------------------------------------------
+
+/**
+ * Bucket resolved target devices by the platform whose install method will
+ * serve them. `servablePlatforms` is the set of platforms the catalog item
+ * actually has an ENABLED method for — a device on a platform outside that
+ * set (a Mac under a winget-only item) lands in `other` exactly like a Linux
+ * device does. `other` is attached to the FIRST created deployment so the
+ * fan-out records an explicit "No install method for this device OS
+ * (<osType>)" failure row per device; nothing is ever silently dropped.
+ */
+export function splitTargetsByPlatform(
+  deviceRows: { id: string; osType: string | null }[],
+  servablePlatforms: ReadonlyArray<'windows' | 'macos'> = ['windows', 'macos'],
+): { windows: string[]; macos: string[]; other: string[] } {
+  const servable = new Set(servablePlatforms);
+  const windows: string[] = [];
+  const macos: string[] = [];
+  const other: string[] = [];
+  for (const row of deviceRows) {
+    if (row.osType === 'windows' && servable.has('windows')) windows.push(row.id);
+    else if (row.osType === 'macos' && servable.has('macos')) macos.push(row.id);
+    else other.push(row.id);
+  }
+  return { windows, macos, other };
+}
+
+/**
+ * Deterministic method choice for a platform. A catalog item may legitimately
+ * carry BOTH a homebrew_cask and a homebrew_formula for macOS; row order from
+ * the DB is not defined, so the pick is spelled out rather than left to
+ * whichever row came back first. Casks (GUI apps) are preferred over formulae,
+ * matching what an MSP deploying a desktop app expects.
+ */
+export function pickInstallMethodForPlatform<
+  T extends { platform: string; kind: string },
+>(methods: readonly T[], platform: 'windows' | 'macos'): T | null {
+  const ofPlatform = methods.filter((m) => m.platform === platform);
+  if (ofPlatform.length === 0) return null;
+  const preference = platform === 'windows'
+    ? ['winget']
+    : ['homebrew_cask', 'homebrew_formula'];
+  for (const kind of preference) {
+    const match = ofPlatform.find((m) => m.kind === kind);
+    if (match) return match;
+  }
+  return ofPlatform[0]!;
+}
+
+type ManagerDeploymentPayload = {
+  name: string;
+  catalogId: string;
+  versionMode?: 'latest' | 'exact';
+  requestedVersion?: string;
+  deploymentType: 'install' | 'uninstall' | 'update';
+  targetType: 'devices' | 'groups' | 'sites' | 'all' | 'filter';
+  targetIds?: string[];
+  targetFilter?: unknown;
+  scheduleType: 'immediate' | 'scheduled' | 'maintenance';
+  scheduledAt?: string;
+  maintenanceWindowId?: string;
+  options?: Record<string, unknown>;
+};
+
+const PLATFORM_NAME_SUFFIX: Record<'windows' | 'macos', string> = {
+  windows: ' (Windows)',
+  macos: ' (macOS)',
+};
+
+/**
+ * A software_deployments row references exactly ONE install method
+ * (software_deployments_one_target_chk), but a catalog item may carry a
+ * winget method AND a Homebrew method. So when the resolved target set spans
+ * both platforms this creates one deployment per platform — each with its own
+ * install_method_id and a platform-suffixed name — keeping the column honest
+ * and every per-device result row unambiguous.
+ */
+async function createManagerDeployments(
+  c: Context,
+  orgId: string,
+  payload: ManagerDeploymentPayload,
+) {
+  const auth = c.get('auth');
+
+  const [catalogItem] = await db.select({
+    id: softwareCatalog.id,
+    orgId: softwareCatalog.orgId,
+    name: softwareCatalog.name,
+    integrationProvider: softwareCatalog.integrationProvider,
+  }).from(softwareCatalog)
+    .where(eq(softwareCatalog.id, payload.catalogId));
+  // Same ownership guard as the version path: built-ins (org_id NULL) are
+  // visible to everyone, an org-owned row must match the caller's org.
+  if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
+    return c.json({ error: 'Catalog item not found or access denied' }, 404);
+  }
+
+  const methods = await db.select().from(softwareInstallMethods)
+    .where(and(
+      eq(softwareInstallMethods.catalogId, catalogItem.id),
+      eq(softwareInstallMethods.enabled, true),
+    ));
+  if (methods.length === 0) {
+    return c.json({ error: 'This catalog item has no enabled install method to deploy' }, 400);
+  }
+
+  const versionMode = payload.versionMode ?? 'latest';
+  // Only winget can install a pinned version; Homebrew always installs the
+  // formula/cask's current version.
+  if (versionMode === 'exact' && !methods.some((m) => m.kind === 'winget')) {
+    return c.json(
+      { error: "versionMode 'exact' requires a winget install method on this catalog item" },
+      400,
+    );
+  }
+
+  const resolvedTargets = await resolveSoftwareTargetDeviceIds(
+    orgId,
+    c.get('permissions') as UserPermissions | undefined,
+    payload,
+  );
+  if (resolvedTargets.error) {
+    return c.json({ error: resolvedTargets.error }, resolvedTargets.status ?? 400);
+  }
+
+  const deviceRows = await db.select({ id: devices.id, osType: devices.osType })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), inArray(devices.id, resolvedTargets.deviceIds)));
+  // Only platforms with an enabled method can be served; devices on the other
+  // platform fall into `split.other` and get failure rows.
+  const pickedMethods = {
+    windows: pickInstallMethodForPlatform(methods, 'windows'),
+    macos: pickInstallMethodForPlatform(methods, 'macos'),
+  };
+  const servablePlatforms = (['windows', 'macos'] as const).filter((p) => pickedMethods[p]);
+  const split = splitTargetsByPlatform(deviceRows, servablePlatforms);
+
+  // One group per platform that has BOTH an enabled method and target devices,
+  // Windows first for determinism.
+  const groups: {
+    platform: 'windows' | 'macos';
+    method: (typeof methods)[number];
+    deviceIds: string[];
+  }[] = [];
+  for (const platform of servablePlatforms) {
+    if (split[platform].length === 0) continue;
+    groups.push({ platform, method: pickedMethods[platform]!, deviceIds: [...split[platform]] });
+  }
+  if (groups.length === 0) {
+    // Nothing the item can serve (e.g. a winget-only item aimed at Macs).
+    // Still create ONE deployment so every target device gets a recorded
+    // failure row rather than a 201 covering nothing. Windows-first keeps the
+    // choice deterministic.
+    const fallbackPlatform = servablePlatforms[0]!;
+    groups.push({
+      platform: fallbackPlatform,
+      method: pickedMethods[fallbackPlatform]!,
+      deviceIds: [],
+    });
+  }
+  // Unservable devices ride along with the first deployment so the fan-out
+  // writes their "No install method for this device OS" result rows.
+  groups[0]!.deviceIds.push(...split.other);
+
+  const isSplit = groups.length > 1;
+  const results = [];
+  for (const group of groups) {
+    // Only winget can install a pinned version. In a split request the
+    // Homebrew half silently falls back to 'latest' rather than failing the
+    // whole request — brew is latest-only in phase 1.
+    const groupVersionMode = group.method.kind === 'winget' ? versionMode : 'latest';
+    const result = await createSoftwareDeployment({
+      orgId,
+      installMethodId: group.method.id,
+      versionMode: groupVersionMode,
+      requestedVersion: groupVersionMode === 'exact' ? payload.requestedVersion : undefined,
+      deploymentType: payload.deploymentType,
+      deviceIds: group.deviceIds,
+      scheduleType: payload.scheduleType,
+      createdBy: auth.user?.id ?? null,
+      name: isSplit ? `${payload.name}${PLATFORM_NAME_SUFFIX[group.platform]}` : payload.name,
+      scheduledAt: payload.scheduledAt ? new Date(payload.scheduledAt) : undefined,
+      maintenanceWindowId: payload.maintenanceWindowId ?? null,
+      // A split deployment records the devices it actually owns; an unsplit one
+      // preserves the caller's raw selection, same as the version path.
+      targetType: isSplit ? 'devices' : payload.targetType,
+      targetIds: isSplit ? group.deviceIds : payload.targetIds ?? null,
+      options:
+        payload.targetType === 'filter'
+          ? { ...(payload.options ?? {}), targetFilter: payload.targetFilter ?? null }
+          : payload.options ?? undefined,
+    });
+    results.push(result);
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'software.deployment.create',
+      resourceType: 'software_deployment',
+      resourceId: result.deploymentId,
+      resourceName: payload.name,
+      details: {
+        deploymentType: payload.deploymentType,
+        targetType: payload.targetType,
+        deviceCount: group.deviceIds.length,
+        installMethodId: group.method.id,
+        platform: group.platform,
+        kind: group.method.kind,
+        versionMode: groupVersionMode,
+      },
+    });
+  }
+
+  const deployments = results.map((r) => r.deployment);
+  if (results.every((r) => r.status === 'failed')) {
+    return c.json({
+      data: { id: results[0]!.deploymentId, status: 'failed', message: results[0]!.message },
+      deployments,
+    }, 200);
+  }
+  // `data` stays the (first) deployment object for parity with the version
+  // path; `deployments` carries every row a split produced.
+  return c.json({ data: deployments[0], deployments }, 201);
+}
+
 // POST /deployments - Create deployment
 softwareRoutes.post(
   '/deployments',
@@ -1330,9 +1774,14 @@ softwareRoutes.post(
 
     const payload = c.req.valid('json');
 
+    // Package-manager path: the request names a catalog item, not a version.
+    if (payload.catalogId) {
+      return createManagerDeployments(c, orgId, payload as ManagerDeploymentPayload);
+    }
+
     // Verify version exists and get catalog info
     const [versionRecord] = await db.select().from(softwareVersions)
-      .where(eq(softwareVersions.id, payload.softwareVersionId));
+      .where(eq(softwareVersions.id, payload.softwareVersionId!));
     if (!versionRecord) return c.json({ error: 'Software version not found' }, 404);
 
     const [catalogItem] = await db.select({
@@ -1342,9 +1791,11 @@ softwareRoutes.post(
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
       .where(eq(softwareCatalog.id, versionRecord.catalogId));
-    // RLS already restricts visibility to the caller's org rows + their partner's
-    // built-ins. Extra guard: an org-scoped (non-built-in) row must match the
-    // authenticated org; built-in packages have org_id NULL and are allowed.
+    // RLS already restricts visibility to the caller's org rows + partner-scoped
+    // NULL-org rows (built-in EDR packages, and — for partner-scope tokens —
+    // partner-wide custom packages, #2135). Extra guard: an org-owned row must
+    // match the authenticated org; NULL-org rows are allowed and the deployment
+    // itself is stamped with the resolved context org.
     if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
       return c.json({ error: 'Catalog item not found or access denied' }, 404);
     }
@@ -1446,8 +1897,9 @@ softwareRoutes.post(
     const deviceIds = body.targets?.deviceIds ?? [];
 
     // Look up the catalog item + version. RLS restricts visibility to the caller's
-    // org rows + their partner's built-ins; the org guard below rejects a (visible)
-    // org-scoped row that belongs to a different org. Built-ins have org_id NULL.
+    // org rows + partner-scoped NULL-org rows (built-in EDR packages, and — for
+    // partner-scope tokens — partner-wide custom packages, #2135); the org guard
+    // below rejects a (visible) org-owned row that belongs to a different org.
     const [catalogItem] = await db.select({
       id: softwareCatalog.id,
       orgId: softwareCatalog.orgId,
@@ -1689,8 +2141,51 @@ async function redispatchSoftwareInstall(opts: {
       ));
   };
 
+  // Package-manager deployment: re-resolve the install method instead of a
+  // version. The version intent lives in `options` (written at create).
+  if (deployment.installMethodId) {
+    const [method] = await db.select().from(softwareInstallMethods)
+      .where(eq(softwareInstallMethods.id, deployment.installMethodId));
+    if (!method) {
+      const error = 'Install method no longer exists for this deployment';
+      await failTargets(error);
+      return { dispatchedDeviceIds: [], error };
+    }
+    const [managerCatalogItem] = await db.select({
+      id: softwareCatalog.id,
+      orgId: softwareCatalog.orgId,
+      name: softwareCatalog.name,
+      integrationProvider: softwareCatalog.integrationProvider,
+    }).from(softwareCatalog)
+      .where(eq(softwareCatalog.id, method.catalogId));
+    if (!managerCatalogItem) {
+      const error = 'Catalog item no longer exists for this deployment';
+      await failTargets(error);
+      return { dispatchedDeviceIds: [], error };
+    }
+    const opts = (deployment.options ?? null) as Record<string, unknown> | null;
+    const fanout = await buildAndDispatchSoftwareInstalls({
+      deploymentId: deployment.id,
+      orgId,
+      installMethod: method,
+      versionMode: opts?.versionMode === 'exact' ? 'exact' : 'latest',
+      requestedVersion: typeof opts?.requestedVersion === 'string' ? opts.requestedVersion : null,
+      catalogItem: managerCatalogItem,
+      deviceIds,
+      scopeToDeviceIds: deviceIds,
+      options: opts,
+      createdBy,
+      markDispatched: false,
+      deviceRetryCounts,
+    });
+    return {
+      dispatchedDeviceIds: fanout.dispatchedDeviceIds,
+      ...(fanout.status === 'failed' && fanout.message ? { error: fanout.message } : {}),
+    };
+  }
+
   const [versionRecord] = await db.select().from(softwareVersions)
-    .where(eq(softwareVersions.id, deployment.softwareVersionId));
+    .where(eq(softwareVersions.id, deployment.softwareVersionId!));
   if (!versionRecord) {
     const error = 'Software version no longer exists for this deployment';
     await failTargets(error);
@@ -2151,3 +2646,15 @@ softwareRoutes.put(
 // authMiddleware)` above, so the sub-router's handlers run behind auth.
 // ---------------------------------------------------------------------------
 softwareRoutes.route('/', softwareUploadRoutes);
+
+// ---------------------------------------------------------------------------
+// Package-manager (winget/Homebrew) install-method CRUD. Same mounting
+// pattern as softwareUploadRoutes above.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', softwareInstallMethodRoutes);
+
+// ---------------------------------------------------------------------------
+// GET /software/package-search — winget/Homebrew typeahead. Same mounting
+// pattern as the sub-routers above.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', packageSearchRoutes);

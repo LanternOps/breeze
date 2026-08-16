@@ -310,7 +310,27 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.local-build 
 - If there is no issue number, use the same prefix with a concise slug, e.g. `fix/<short-slug>` or `feat/<short-slug>`.
 - Use `pr-####` or `pr-####-review` only when the branch is specifically for inspecting or reviewing an existing PR.
 - Keep branch slugs lowercase, kebab-case, and specific to the work. Avoid agent/tool/vendor prefixes such as `codex/`, `claude/`, or similar.
-- PR titles should follow the existing convention where useful: `fix(scope): summary`, `feat(scope): summary`, `docs(scope): summary`, or `chore(scope): summary`. Include issue references such as `(#1234)`, `refs #1234`, or `closes #1234` when the work is tied to an issue.
+- PR titles should follow the existing convention where useful: `fix(scope): summary`, `feat(scope): summary`, `docs(scope): summary`, or `chore(scope): summary`. Include the issue number as `(#1234)` when the work is tied to an issue.
+
+### Linking Issues from a PR
+
+The PR **body** decides whether the issue survives the merge. Pick deliberately —
+this is not a stylistic choice.
+
+- **`Closes #1234`** — the PR fully resolves the issue. Use this by default. The
+  issue closes automatically on merge and leaves the backlog.
+- **`Refs #1234`** — the PR resolves only part of the issue, or the issue is a
+  community report whose reporter still has to verify on their own hardware. When
+  you use `Refs`, **state in the PR body which half shipped and which did not** —
+  a bare `Refs` with no scope note is how a fixed issue becomes permanent backlog.
+
+`Refs` was the de-facto default for a long time and it does not close anything, so
+~15 fully-fixed issues sat open for weeks (#2728, #2814, #2894, #2895, #2896, #2913,
+#2950, #2974, #2997, #2999, #3000, #3006, #3201 among them). Default to `Closes`;
+reach for `Refs` only when one of the two reasons above actually applies.
+
+Mechanics: `Closes #X #Y` auto-closes **only** `#X`. Repeat the keyword per issue —
+`Closes #X, closes #Y`.
 
 ### Production Deploy
 

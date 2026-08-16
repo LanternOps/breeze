@@ -191,6 +191,11 @@
         "title": "Oturumları Temizle",
         "message": "{{hostname}} için tüm etkin uzaktan oturumlar sonlandırılsın mı? Bu, halihazırda terminal, masaüstü veya dosya aktarımı yoluyla bağlı olan tüm kullanıcıların bağlantısını kesecektir.",
         "confirm": "Oturumları Temizle"
+      },
+      "installHomebrew": {
+        "title": "Homebrew'u yükle",
+        "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
+        "confirm": "Homebrew'u yükle"
       }
     },
     "runScript": "Komut Dosyasını Çalıştır",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "power": "Güç",
     "shutdown": "Kapatma",
-    "deviceSettings": "Cihaz Ayarları"
+    "deviceSettings": "Cihaz Ayarları",
+    "installHomebrew": "Homebrew'u yükle"
   },
   "deviceActivityFeed": {
     "activity": "Etkinlik",

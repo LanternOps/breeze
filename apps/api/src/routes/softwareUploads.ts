@@ -60,6 +60,7 @@ import {
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
+  authorizeCatalogItemRead,
   getFileExtension,
   insertLatestSoftwareVersion,
   resolveScopedOrgId,
@@ -190,9 +191,6 @@ softwareUploadRoutes.post(
   zValidator('json', createUploadSessionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const payload = c.req.valid('json');
 
@@ -210,8 +208,36 @@ softwareUploadRoutes.post(
 
     const { id: catalogId } = c.req.valid('param');
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, catalogId));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    // Same narrowing rule as the software.ts catalog reads: an org-owned item
+    // must belong to the org this request resolves to. The contextOrg check
+    // further down would catch the mismatch too, but authorize before touching
+    // anything else so the boundary is enforced in one place.
+    const catalogReadError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (catalogReadError) return c.json({ error: catalogReadError.error }, catalogReadError.status);
+    // software_upload_sessions is org-tenanted (org_id NOT NULL), so a
+    // partner-wide package (#2135, org_id NULL) has no org to book the session
+    // under yet. Fail up front with an actionable message instead of a 500.
+    if (catalogItem.orgId === null) {
+      return c.json(
+        { error: 'File upload is not yet available for partner-wide packages — provide a download URL instead.' },
+        400,
+      );
+    }
+    const orgId = catalogItem.orgId;
+    // The chunk/status/complete/delete routes all resolve the org from the
+    // REQUEST context (resolveScopedOrgId on ?orgId=) and filter the session
+    // by it. If that resolution won't land on this catalog's org — e.g. the
+    // All-organizations view injects no orgId, or a different org is selected
+    // — the session would be created successfully and then every chunk would
+    // fail with a misleading "not found", leaving an orphaned session counting
+    // against the org's quota. Fail the create up front instead.
+    const contextOrg = resolveScopedOrgId(auth, c.req.query('orgId'));
+    if ('error' in contextOrg) return c.json({ error: contextOrg.error }, contextOrg.status);
+    if (contextOrg.orgId !== orgId) {
+      return c.json({ error: 'Catalog item not found' }, 404);
+    }
 
     const {
       fileName, fileSize, chunkSize,

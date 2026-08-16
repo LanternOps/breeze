@@ -5,7 +5,7 @@ import AddPackageModal from './AddPackageModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { uploadPackageVersion } from '../../lib/softwarePackageUpload';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) } }));
 vi.mock('../../lib/softwarePackageUpload', () => ({ uploadPackageVersion: vi.fn() }));
 
 const showToast = vi.fn();
@@ -293,6 +293,130 @@ describe('AddPackageModal', () => {
     expect(onCreated).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'cat-1', name: 'Google Chrome', versionCount: 0 }),
     );
+  });
+
+  describe('package-manager source', () => {
+    const CHROME = {
+      platform: 'windows',
+      kind: 'winget',
+      packageId: 'Google.Chrome',
+      name: 'Google Chrome',
+      vendor: 'Google',
+    };
+
+    /** Adds the package-search + import-package routes to the base mock. */
+    function managerRouteMock(opts: { import?: () => Response } = {}) {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (url.startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+        if (url.startsWith('/software/package-search')) {
+          return Promise.resolve(jsonResponse({ results: [CHROME] }));
+        }
+        if (url.startsWith('/software/catalog/import-package') && init?.method === 'POST') {
+          return Promise.resolve(
+            (opts.import ??
+              (() => jsonResponse({ data: { catalogItem: { id: 'cat-9' }, methods: [] } }, true, 201)))(),
+          );
+        }
+        return Promise.resolve(jsonResponse({}, false, 404));
+      });
+    }
+
+    const pickChrome = async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /package manager/i }));
+      fireEvent.change(screen.getByLabelText('Search packages'), {
+        target: { value: 'chrome' },
+      });
+      fireEvent.click(await screen.findByRole('button', { name: /Google Chrome/ }));
+    };
+
+    it('hides the version, architecture and installer-arg fields', async () => {
+      managerRouteMock();
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+
+      expect(screen.getByLabelText('Version')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: /package manager/i }));
+
+      expect(screen.queryByLabelText('Version')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Architecture')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Silent install args')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Advanced options/i }));
+      expect(screen.queryByLabelText('Silent uninstall args')).not.toBeInTheDocument();
+      // Description is package-level, so it stays.
+      expect(screen.getByLabelText('Description')).toBeInTheDocument();
+    });
+
+    it('requires at least one selected package before submitting', async () => {
+      managerRouteMock();
+      render(<AddPackageModal open onClose={() => {}} onCreated={() => {}} />);
+
+      fireEvent.click(screen.getByRole('tab', { name: /package manager/i }));
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Chrome' } });
+
+      expect(screen.getByText('Select at least one package')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Create package' })).toBeDisabled();
+    });
+
+    it('prefills name and vendor from the first pick and imports in a single POST', async () => {
+      const onCreated = vi.fn();
+      const onClose = vi.fn();
+      managerRouteMock();
+      render(<AddPackageModal open onClose={onClose} onCreated={onCreated} />);
+
+      await pickChrome();
+
+      // Identity prefilled from the search result — no version required.
+      await waitFor(() =>
+        expect(screen.getByLabelText('Name')).toHaveValue('Google Chrome'),
+      );
+      expect(screen.getByLabelText('Vendor')).toHaveValue('Google');
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Create package' }));
+      await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
+
+      const imports = fetchMock.mock.calls.filter(
+        ([u, o]) =>
+          String(u).startsWith('/software/catalog/import-package') &&
+          (o as RequestInit)?.method === 'POST',
+      );
+      expect(imports).toHaveLength(1);
+      expect(JSON.parse(String((imports[0]![1] as RequestInit).body))).toMatchObject({
+        name: 'Google Chrome',
+        vendor: 'Google',
+        methods: [{ platform: 'windows', kind: 'winget', packageId: 'Google.Chrome' }],
+      });
+
+      // The two-step catalog→version flow is NOT used on this path.
+      expect(
+        fetchMock.mock.calls.filter(([u]) => u === '/software/catalog'),
+      ).toHaveLength(0);
+      expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 'cat-9' }));
+      expect(onClose).toHaveBeenCalled();
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    });
+
+    it('surfaces an import failure and keeps the modal open', async () => {
+      const onCreated = vi.fn();
+      const onClose = vi.fn();
+      managerRouteMock({
+        import: () => jsonResponse({ error: 'Duplicate platform and kind' }, false, 400),
+      });
+      render(<AddPackageModal open onClose={onClose} onCreated={onCreated} />);
+
+      await pickChrome();
+      fireEvent.click(await screen.findByRole('button', { name: 'Create package' }));
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: 'Duplicate platform and kind' }),
+        ),
+      );
+      expect(onCreated).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      // No orphan catalog row to retry from — the import is one transaction.
+      expect(
+        screen.queryByRole('button', { name: 'Retry adding version' }),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe('chunked upload (file source)', () => {

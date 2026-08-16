@@ -44,6 +44,10 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         partnerId: activeAuth.partnerId,
         orgId: activeAuth.orgId,
         accessibleOrgIds: activeAuth.accessibleOrgIds,
+        // Mirrors buildOrgAccessClosures in middleware/auth.ts: canAccessOrg is a
+        // required member of AuthContext that both real constructors always set,
+        // so a stub that omits it makes the route throw instead of authorizing.
+        canAccessOrg: (orgId: string) => activeAuth!.accessibleOrgIds.includes(orgId),
         user: { id: null, email: 'integration@test' },
       });
       return withDbAccessContext(
@@ -259,5 +263,90 @@ describe('built-in package versions via route (#1957)', () => {
       { headers: { Authorization: 'Bearer token' } },
     );
     expect(siblingRes.status).toBe(404);
+  });
+
+  // The All-organizations fleet view sends NO orgId, so nothing resolves and
+  // the guard falls back to canAccessOrg. Pins the one place the rule is
+  // intentionally wider than the resolved-org narrowing: a multi-org partner
+  // caller with no org context can still read its built-ins AND any accessible
+  // org's package — that's what the fleet view spans — while cross-partner rows
+  // stay invisible (RLS).
+  it('fleet view (partner scope, no orgId): reads built-in and own-org package, not cross-partner', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const { catalog: builtin } = await seedBuiltin(partner.id);
+    const { catalog: orgBPkg } = await seedOrgOwned(orgB.id);
+
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const { catalog: foreignPkg } = await seedOrgOwned(otherOrg.id);
+
+    // Two accessible orgs and no auth.orgId: resolveScopedOrgId has nothing to
+    // resolve (the single-org shortcut must not fire), which is the fleet view.
+    activeAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: partner.id,
+      accessibleOrgIds: [orgA.id, orgB.id],
+    };
+
+    const app = await buildApp();
+    const builtinRes = await app.request(
+      `/software/catalog/${builtin.id}/versions`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(builtinRes.status).toBe(200);
+    expect((await builtinRes.json()).data).toHaveLength(1);
+
+    const orgPkgRes = await app.request(
+      `/software/catalog/${orgBPkg.id}`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(orgPkgRes.status).toBe(200);
+
+    const foreignRes = await app.request(
+      `/software/catalog/${foreignPkg.id}`,
+      { headers: { Authorization: 'Bearer token' } },
+    );
+    expect(foreignRes.status).toBe(404);
+  });
+
+  // Same narrowing on the WRITE side (authorizeCatalogItemWrite): a partner
+  // caller acting as org A must not mutate sibling org B's RLS-visible package,
+  // while the same request against org B's own context succeeds.
+  it('partner-scope caller: cannot PATCH a sibling org-owned package while acting as another org', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const { catalog: orgBPkg } = await seedOrgOwned(orgB.id);
+
+    activeAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: partner.id,
+      accessibleOrgIds: [orgA.id, orgB.id],
+    };
+
+    const app = await buildApp();
+    const crossRes = await app.request(
+      `/software/catalog/${orgBPkg.id}?orgId=${orgA.id}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'tampered from org A context' }),
+      },
+    );
+    expect(crossRes.status).toBe(404);
+
+    const ownRes = await app.request(
+      `/software/catalog/${orgBPkg.id}?orgId=${orgB.id}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'legitimate update in org B context' }),
+      },
+    );
+    expect(ownRes.status).toBe(200);
   });
 });

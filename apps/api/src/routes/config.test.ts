@@ -102,6 +102,28 @@ describe('GET /config', () => {
     expect(body.registration).toEqual({ enabled: false });
   });
 
+  it('softwarePackages.uploadsEnabled is false without full S3 config', async () => {
+    vi.stubEnv('S3_BUCKET', '');
+    vi.stubEnv('S3_ACCESS_KEY', '');
+    vi.stubEnv('S3_SECRET_KEY', '');
+    const { body } = await request();
+    expect(body.softwarePackages).toEqual({ uploadsEnabled: false });
+    vi.unstubAllEnvs();
+  });
+
+  it('softwarePackages.uploadsEnabled requires bucket AND both keys', async () => {
+    vi.stubEnv('S3_BUCKET', 'bucket');
+    vi.stubEnv('S3_ACCESS_KEY', '');
+    vi.stubEnv('S3_SECRET_KEY', 'secret');
+    const partial = await request();
+    expect(partial.body.softwarePackages).toEqual({ uploadsEnabled: false });
+
+    vi.stubEnv('S3_ACCESS_KEY', 'key');
+    const full = await request();
+    expect(full.body.softwarePackages).toEqual({ uploadsEnabled: true });
+    vi.unstubAllEnvs();
+  });
+
   it('returns authenticated org-scoped ML feature flag resolutions', async () => {
     const app = new Hono().route('/config', configRoutes);
     const res = await app.request('/config/ml-feature-flags');

@@ -15,7 +15,7 @@ All configuration is done through environment variables, defined in your `.env.p
 </Aside>
 
 <Aside type="caution" title="Keep your compose file current">
-  The stock `docker-compose.yml` hand-maps each variable into the `api` service's `environment:` block — a value in `.env` that isn't mapped there **silently does nothing**. Compose files from releases before v0.99.0 were missing the mappings for a number of documented variables (including `ENABLE_2FA`, `BREEZE_PLATFORM_ADMINS`, `CORS_ALLOWED_ORIGINS`, the Twilio SMS, Mailgun, and several M365 families). If a documented setting appears to have no effect, update to the current compose file — or add the variable to the `environment:` block yourself.
+  The stock `docker-compose.yml` hand-maps each variable into the `api` service's `environment:` block — a value in `.env` that isn't mapped there **silently does nothing**. Compose files from releases before v0.99.0 were missing the mappings for a number of documented variables (including `ENABLE_2FA`, `BREEZE_PLATFORM_ADMINS`, `CORS_ALLOWED_ORIGINS`, the Twilio SMS, Mailgun, and several M365 families), and compose files before v0.106.0 were missing `TICKETS_INBOUND_DOMAIN` and `MAILGUN_INBOUND_SIGNING_KEY`. If a documented setting appears to have no effect, update to the current compose file — or add the variable to the `environment:` block yourself.
 </Aside>
 
 ## Database
@@ -414,9 +414,38 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
   These variables are optional. When unset, the C2C connection wizard falls back to manual credential entry (Client ID, Secret, Tenant ID). Setting both enables a streamlined "Grant Access" button that redirects to Microsoft's admin consent flow.
 </Aside>
 
+## Inbound email-to-ticket (Mailgun)
+
+These power the **native inbound address** — the `partner@yourdomain` address shown on the Inbound email card, which customers mail directly (or which you forward an existing support mailbox to). This is the self-hosted equivalent of what we configure once, centrally, on hosted Breeze. It is **independent** of the Microsoft 365 mailbox path below: you can run either, both, or neither.
+
+| Variable | Default | Description |
+|---|---|---|
+| `TICKETS_INBOUND_DOMAIN` | — | The domain inbound ticket addresses live on, e.g. `tickets.yourmsp.com`. Each partner's address is `<local part>@<this domain>`. **Until this is set, the Inbound email card reports "The platform inbound domain isn't configured yet"** and no address can be generated. |
+| `MAILGUN_INBOUND_SIGNING_KEY` | — | Mailgun's **HTTP webhook signing key**, used to HMAC-verify deliveries. The inbound webhook is unauthenticated by design — this signature is its only security — so when the key is unset every delivery is rejected with `401`. |
+
+<Aside type="caution">
+  `MAILGUN_DOMAIN` (in the [Email](#email) section above) and `TICKETS_INBOUND_DOMAIN` are different settings. The first is the domain Breeze **sends** from; this one is the domain it **receives** on. They may be the same domain, but setting one does not configure the other. Likewise, `MAILGUN_INBOUND_SIGNING_KEY` is the webhook **signing key** from Mailgun's webhook settings, not your `MAILGUN_API_KEY`.
+</Aside>
+
+### Mailgun setup
+
+Setting the variables is only half of it — mail has to reach Breeze:
+
+1. Add `tickets.yourmsp.com` to Mailgun as a **receiving** domain and publish the MX records it gives you.
+2. Create a Mailgun **Route** matching that domain (`catch_all()`, or `match_recipient(".*@tickets.yourmsp.com")`) with the action `forward("https://<PUBLIC_URL>/api/v1/webhooks/tickets/email-inbound")`.
+3. Copy the domain's **HTTP webhook signing key** into `MAILGUN_INBOUND_SIGNING_KEY`.
+4. Set `TICKETS_INBOUND_DOMAIN`, restart the API, then set the local part and enable email-to-ticket under **Settings → Ticketing → Inbound email**.
+
+Two failure modes are silent from the sender's side, so check these first if mail vanishes:
+
+- **Every delivery returns `401`** — `MAILGUN_INBOUND_SIGNING_KEY` is unset or wrong. Mailgun treats this as permanent and will not retry.
+- **Deliveries return `429`** — the webhook's per-IP rate limiter fails closed, so this is also what you get when Redis is unreachable. Confirm `TRUSTED_PROXY_CIDRS` matches your reverse proxy, or the limiter keys every request to the proxy's own IP.
+
+Breeze trusts the `Authentication-Results` header only when Mailgun itself stamped it, and requires **DMARC pass** to mark a sender verified — SPF and DKIM alone are not sufficient.
+
 ## Ticket Mailbox (M365 email-to-ticket)
 
-These enable partners to connect a Microsoft 365 shared support mailbox so customer email becomes tickets and replies are sent from that mailbox. This is a **separate** Azure app registration from the Cloud-to-Cloud Backup app above.
+These enable partners to connect a Microsoft 365 shared support mailbox so customer email becomes tickets and replies are sent from that mailbox. This is a **separate** Azure app registration from the Cloud-to-Cloud Backup app above, and an alternative to the Mailgun inbound path above — it needs no MX records or DNS changes.
 
 | Variable | Default | Description |
 |---|---|---|

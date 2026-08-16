@@ -8,6 +8,7 @@ import {
   sites,
   softwareCatalog,
   softwareDeployments,
+  softwareInstallMethods,
   softwareVersions,
 } from '../db/schema';
 import { resolveEdrInstaller, type ResolvedInstaller } from './edrInstallerResolver';
@@ -25,7 +26,21 @@ import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 
 export interface CreateSoftwareDeploymentInput {
   orgId: string;
-  softwareVersionId: string;
+  /**
+   * Uploaded/URL target. EXACTLY ONE of softwareVersionId / installMethodId
+   * must be set (mirrors the DB's software_deployments_one_target_chk).
+   */
+  softwareVersionId?: string;
+  /**
+   * Package-manager target: a software_install_methods row id. The route
+   * resolves the catalog item's enabled methods and creates one deployment
+   * per platform, so a deployment always references exactly one method.
+   */
+  installMethodId?: string;
+  /** Manager deploys only: 'latest' (default) or a pinned 'exact' version. */
+  versionMode?: 'latest' | 'exact';
+  /** Required by the route when versionMode is 'exact'. */
+  requestedVersion?: string;
   deploymentType: 'install' | 'update' | 'uninstall';
   deviceIds: string[];
   scheduleType: 'immediate' | 'scheduled' | 'maintenance';
@@ -148,10 +163,34 @@ export interface SoftwareInstallFanoutCatalogItem {
   integrationProvider: string | null;
 }
 
+/**
+ * Structural subset of a software_install_methods row the manager fan-out
+ * needs. Exactly one method drives one deployment (see
+ * CreateSoftwareDeploymentInput.installMethodId).
+ */
+export interface SoftwareInstallFanoutMethod {
+  id: string;
+  platform: string;
+  kind: string;
+  packageId: string;
+}
+
 export interface BuildAndDispatchSoftwareInstallsInput {
   deploymentId: string;
   orgId: string;
-  versionRecord: SoftwareInstallFanoutVersionRecord;
+  /** URL/upload path. Omitted (with `installMethod` set) for manager deploys. */
+  versionRecord?: SoftwareInstallFanoutVersionRecord | null;
+  /**
+   * Package-manager path. When set the fan-out skips presign, EDR resolution,
+   * download-policy evaluation, checksum and `{{...}}` variable substitution —
+   * all of them URL-path concerns — and ships an installMethod payload the
+   * agent resolves through winget/brew.
+   */
+  installMethod?: SoftwareInstallFanoutMethod | null;
+  /** Manager deploys only; defaults to 'latest'. */
+  versionMode?: 'latest' | 'exact';
+  /** Manager deploys only; sent only when versionMode is 'exact'. */
+  requestedVersion?: string | null;
   catalogItem: SoftwareInstallFanoutCatalogItem;
   /** Resolved target device ids (the immediate path passes the create input; the scheduler passes the pending deployment_results rows). */
   deviceIds: string[];
@@ -205,10 +244,98 @@ export interface SoftwareInstallFanoutResult {
  * (EDR error, missing installer, unresolvable variables), and per-device
  * WS-vs-queue delivery via dispatchSoftwareInstallToDevice.
  */
+/** Error text a device gets when its OS doesn't match the deployment's method. */
+export const NO_INSTALL_METHOD_FOR_OS = 'No install method for this device OS';
+
+/**
+ * Package-manager fan-out (winget / Homebrew). Deliberately NOT a variant of
+ * the URL path: there is no installer binary, so presign, EDR resolution,
+ * checksum, the managed-download destination policy and `{{...}}` variable
+ * substitution are all inapplicable — the agent asks the OS package manager
+ * for `installMethod.packageId`.
+ *
+ * A deployment references exactly ONE install method, so a device whose
+ * osType doesn't match `installMethod.platform` can never be served by it.
+ * Those devices get their result row failed in place (same UPDATE shape as
+ * the unresolved-variable branch above) rather than being silently dropped;
+ * when that's every device, the whole deployment reports 'failed'.
+ */
+async function dispatchManagerInstalls(
+  input: BuildAndDispatchSoftwareInstallsInput,
+  installMethod: SoftwareInstallFanoutMethod,
+  fanoutDeviceIds: string[],
+): Promise<SoftwareInstallFanoutResult> {
+  const { deploymentId, orgId, catalogItem, options, createdBy, markDispatched, deviceRetryCounts } = input;
+  const versionMode = input.versionMode ?? 'latest';
+  const forceReinstall = options?.forceReinstall === true;
+
+  const targetDevices = await db
+    .select({
+      id: devices.id,
+      agentId: devices.agentId,
+      osType: devices.osType,
+    })
+    .from(devices)
+    .where(and(eq(devices.orgId, orgId), inArray(devices.id, fanoutDeviceIds)));
+
+  if (markDispatched) {
+    await db
+      .update(softwareDeployments)
+      .set({ dispatchedAt: new Date() })
+      .where(eq(softwareDeployments.id, deploymentId));
+  }
+
+  const dispatchedDeviceIds: string[] = [];
+  let osMismatchCount = 0;
+  for (const device of targetDevices) {
+    if (device.osType !== installMethod.platform) {
+      await db
+        .update(deploymentResults)
+        .set({
+          status: 'failed',
+          errorMessage: `${NO_INSTALL_METHOD_FOR_OS} (${device.osType})`,
+          completedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, device.id),
+          ),
+        );
+      osMismatchCount++;
+      continue;
+    }
+
+    const retryCount = deviceRetryCounts?.[device.id] ?? 0;
+    const payload: AgentCommand['payload'] = {
+      deploymentId,
+      retryCount,
+      installMethod: { kind: installMethod.kind, packageId: installMethod.packageId },
+      versionMode,
+      ...(versionMode === 'exact' && input.requestedVersion
+        ? { requestedVersion: input.requestedVersion }
+        : {}),
+      softwareName: catalogItem.name,
+      forceReinstall,
+    };
+    await dispatchSoftwareInstallToDevice(deploymentId, device, payload, createdBy, retryCount);
+    dispatchedDeviceIds.push(device.id);
+  }
+
+  if (dispatchedDeviceIds.length === 0 && osMismatchCount > 0) {
+    return {
+      status: 'failed',
+      message: `${NO_INSTALL_METHOD_FOR_OS} on any target device`,
+      dispatchedDeviceIds: [],
+    };
+  }
+  return { status: 'pending', dispatchedDeviceIds };
+}
+
 export async function buildAndDispatchSoftwareInstalls(
   input: BuildAndDispatchSoftwareInstallsInput,
 ): Promise<SoftwareInstallFanoutResult> {
-  const { deploymentId, orgId, versionRecord, catalogItem, deviceIds, options, createdBy, markDispatched, scopeToDeviceIds, deviceRetryCounts } = input;
+  const { deploymentId, orgId, versionRecord, installMethod, catalogItem, deviceIds, options, createdBy, markDispatched, scopeToDeviceIds, deviceRetryCounts } = input;
 
   // WHERE clause for the deployment-wide failure pre-writes below. Scoped to
   // the retried subset when scopeToDeviceIds is set (retry path); otherwise
@@ -223,6 +350,18 @@ export async function buildAndDispatchSoftwareInstalls(
   // Device ids the dispatch loop targets: intersection with the scope when set.
   const scopeSet = scopeToDeviceIds ? new Set(scopeToDeviceIds) : null;
   const fanoutDeviceIds = scopeSet ? deviceIds.filter((id) => scopeSet.has(id)) : deviceIds;
+
+  // Package-manager deploys take a completely different (and much shorter)
+  // path: no installer to presign, no checksum, no destination policy to
+  // evaluate and no `{{...}}` templates to resolve.
+  if (installMethod) {
+    return dispatchManagerInstalls(input, installMethod, fanoutDeviceIds);
+  }
+  if (!versionRecord) {
+    throw new Error(
+      `Software deployment ${deploymentId} has neither a version record nor an install method`,
+    );
+  }
 
   // Get presigned URL for download
   let downloadUrl: string | null = null;
@@ -467,14 +606,25 @@ export async function buildAndDispatchSoftwareInstalls(
     // reconciliation keys on it) and the WS command id.
     const retryCount = deviceRetryCounts?.[device.id] ?? 0;
 
-    const resolvedFileType = isSoftwareFileType(versionRecord.fileType)
-      ? versionRecord.fileType
-      : 'exe';
 
     // deploymentId MUST be in the payload: the WS transport tracks it via
     // the sw-install-<deployment>-<device>-<attempt> command id, but the
     // queued fallback's device_commands row only has the payload to key
     // result reconciliation on (deploymentId AND retryCount).
+    // file_type is a plain nullable varchar with no CHECK constraint, so the
+    // column can hold anything a future route, import or manual UPDATE puts
+    // there. Narrow on read: an unrecognized value would otherwise be
+    // dispatched verbatim and only rejected by the agent AFTER the download,
+    // as `unsupported fileType`. 'exe' remains the historical fallback for a
+    // NULL — see deriveSoftwareFileTypeFromUrl on why we never guess better.
+    //
+    // Deliberately NOT inferred from deviceDownloadUrl here. Doing so would fix
+    // dispatch for legacy URL-only rows created before #3571 stamped file_type,
+    // but it reverses an explicit decision in that PR, so it is left as a
+    // separate call rather than smuggled in by a rebase.
+    const effectiveFileType = isSoftwareFileType(versionRecord.fileType)
+      ? versionRecord.fileType
+      : 'exe';
     const payload: AgentCommand['payload'] = {
       deploymentId,
       retryCount,
@@ -484,19 +634,13 @@ export async function buildAndDispatchSoftwareInstalls(
         approvedPrivateOrigins,
       },
       checksum: versionRecord.checksum,
-      // file_type is a plain nullable varchar with no CHECK constraint, so the
-      // column can hold anything a future route, import or manual UPDATE puts
-      // there. Narrow on read: an unrecognized value would otherwise be
-      // dispatched verbatim and only rejected by the agent AFTER the download,
-      // as `unsupported fileType`. 'exe' remains the historical fallback for a
-      // NULL — see deriveSoftwareFileTypeFromUrl on why we never guess better.
-      //
       // fileName and fileType are a COUPLED pair, not two independent fields:
       // the agent's validateInstallFileName rejects the command outright when
       // the filename's extension doesn't equal '.' + fileType. Building the
       // fallback name from the same resolved type is what keeps them in step.
-      fileName: versionRecord.originalFileName ?? `package.${resolvedFileType}`,
-      fileType: resolvedFileType,
+      fileName:
+        versionRecord.originalFileName ?? `package.${effectiveFileType}`,
+      fileType: effectiveFileType,
       silentInstallArgs: deviceSilentInstallArgs,
       softwareName: catalogItem.name,
       version: versionRecord.version,
@@ -531,6 +675,9 @@ export async function createSoftwareDeployment(
   const {
     orgId,
     softwareVersionId,
+    installMethodId,
+    versionMode,
+    requestedVersion,
     deploymentType,
     deviceIds,
     scheduleType,
@@ -543,13 +690,39 @@ export async function createSoftwareDeployment(
     targetIds,
   } = input;
 
-  // Look up version record
-  const [versionRecord] = await db
-    .select()
-    .from(softwareVersions)
-    .where(eq(softwareVersions.id, softwareVersionId));
-  if (!versionRecord) {
-    throw new Error(`Software version not found: ${softwareVersionId}`);
+  // Mirrors the DB CHECK (software_deployments_one_target_chk): a deployment
+  // targets an uploaded/URL version OR a package-manager method, never both
+  // and never neither.
+  if ((softwareVersionId == null) === (installMethodId == null)) {
+    throw new Error(
+      'createSoftwareDeployment requires exactly one of softwareVersionId / installMethodId',
+    );
+  }
+
+  // Look up the deployment target — a version row or an install-method row.
+  let versionRecord: typeof softwareVersions.$inferSelect | null = null;
+  let installMethod: SoftwareInstallFanoutMethod | null = null;
+  let catalogId: string;
+  if (installMethodId) {
+    const [method] = await db
+      .select()
+      .from(softwareInstallMethods)
+      .where(eq(softwareInstallMethods.id, installMethodId));
+    if (!method) {
+      throw new Error(`Install method not found: ${installMethodId}`);
+    }
+    installMethod = method;
+    catalogId = method.catalogId;
+  } else {
+    const [record] = await db
+      .select()
+      .from(softwareVersions)
+      .where(eq(softwareVersions.id, softwareVersionId!));
+    if (!record) {
+      throw new Error(`Software version not found: ${softwareVersionId}`);
+    }
+    versionRecord = record;
+    catalogId = record.catalogId;
   }
 
   // Look up catalog item
@@ -561,11 +734,24 @@ export async function createSoftwareDeployment(
       integrationProvider: softwareCatalog.integrationProvider,
     })
     .from(softwareCatalog)
-    .where(eq(softwareCatalog.id, versionRecord.catalogId));
+    .where(eq(softwareCatalog.id, catalogId));
 
   if (!catalogItem) {
-    throw new Error(`Catalog item not found for version ${softwareVersionId}`);
+    throw new Error(
+      `Catalog item not found for ${installMethodId ? `install method ${installMethodId}` : `version ${softwareVersionId}`}`,
+    );
   }
+
+  // Manager deploys persist their version intent in `options` so the
+  // scheduler and the retry endpoint can rebuild the same payload later
+  // without new columns.
+  const storedOptions = installMethodId
+    ? {
+        ...(options ?? {}),
+        versionMode: versionMode ?? 'latest',
+        ...(requestedVersion ? { requestedVersion } : {}),
+      }
+    : options ?? null;
 
   // Insert deployment
   const [deployment] = await db
@@ -573,7 +759,8 @@ export async function createSoftwareDeployment(
     .values({
       orgId,
       name: name ?? 'Software Deployment',
-      softwareVersionId,
+      softwareVersionId: softwareVersionId ?? null,
+      installMethodId: installMethodId ?? null,
       deploymentType,
       targetType: targetType ?? 'devices',
       targetIds: targetIds !== undefined ? targetIds : deviceIds,
@@ -581,7 +768,7 @@ export async function createSoftwareDeployment(
       scheduledAt: scheduledAt ?? null,
       maintenanceWindowId: maintenanceWindowId ?? null,
       createdBy,
-      options: options ?? null,
+      options: storedOptions,
     })
     .returning();
 
@@ -613,6 +800,9 @@ export async function createSoftwareDeployment(
       deploymentId: deployment.id,
       orgId,
       versionRecord,
+      installMethod,
+      versionMode,
+      requestedVersion,
       catalogItem,
       deviceIds,
       options: options ?? null,

@@ -82,7 +82,15 @@ export const softwareDeployments = pgTable('software_deployments', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   name: varchar('name', { length: 255 }).notNull(),
-  softwareVersionId: uuid('software_version_id').notNull().references(() => softwareVersions.id),
+  // Exactly one of softwareVersionId / installMethodId is set
+  // (CHECK software_deployments_one_target_chk, migration
+  // 2026-08-16-b-software-deployments-install-method.sql): a deployment either
+  // ships an uploaded/URL version or drives a package manager (winget/brew).
+  // A cross-platform catalog item produces ONE deployment per platform, each
+  // referencing its own install method row — see splitTargetsByPlatform in
+  // routes/software.ts.
+  softwareVersionId: uuid('software_version_id').references(() => softwareVersions.id),
+  installMethodId: uuid('install_method_id').references(() => softwareInstallMethods.id),
   deploymentType: varchar('deployment_type', { length: 20 }).notNull(),
   targetType: varchar('target_type', { length: 50 }).notNull(),
   targetIds: jsonb('target_ids'),
@@ -99,6 +107,7 @@ export const softwareDeployments = pgTable('software_deployments', {
 }, (table) => ({
   orgIdx: index('software_deployments_org_id_idx').on(table.orgId),
   versionIdx: index('software_deployments_version_id_idx').on(table.softwareVersionId),
+  installMethodIdx: index('software_deployments_install_method_idx').on(table.installMethodId),
   scheduleIdx: index('software_deployments_schedule_idx').on(table.scheduleType, table.scheduledAt)
 }));
 
@@ -186,3 +195,24 @@ export const softwareUploadSessions = pgTable('software_upload_sessions', {
   catalogIdx: index('software_upload_sessions_catalog_id_idx').on(table.catalogId),
   lastActivityIdx: index('software_upload_sessions_last_activity_idx').on(table.lastActivityAt),
 }));
+
+// Package-manager install methods (one per catalog item × platform × kind).
+// Parent-FK join tenancy: no org_id — RLS EXISTS-joins to software_catalog
+// (migration 2026-08-16-a-software-install-methods.sql). Version intent
+// (latest/exact) lives on the deployment, not here.
+export const softwareInstallMethods = pgTable('software_install_methods', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  catalogId: uuid('catalog_id').notNull().references(() => softwareCatalog.id, { onDelete: 'cascade' }),
+  platform: varchar('platform', { length: 10 }).notNull(),   // 'windows' | 'macos'
+  kind: varchar('kind', { length: 20 }).notNull(),           // 'winget' | 'homebrew_cask' | 'homebrew_formula'
+  packageId: varchar('package_id', { length: 256 }).notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (table) => ({
+  catalogPlatformKindUq: uniqueIndex('software_install_methods_catalog_platform_kind_uq').on(table.catalogId, table.platform, table.kind),
+  catalogIdx: index('software_install_methods_catalog_id_idx').on(table.catalogId)
+}));
+
+export type SoftwareInstallMethod = typeof softwareInstallMethods.$inferSelect;
+export type InstallMethodPlatform = 'windows' | 'macos';
+export type InstallMethodKind = 'winget' | 'homebrew_cask' | 'homebrew_formula';

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeploymentWizard from './DeploymentWizard';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) } }));
 vi.mock('../filters/DeviceTargetSelector', () => ({ DeviceTargetSelector: () => null }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -31,6 +31,45 @@ describe('DeploymentWizard preselect (initialCatalogId)', () => {
     // step-1 selection UI (invariant: preselect → non-empty selectedSoftwareId).
     await waitFor(() =>
       expect(screen.getAllByText('Huntress EDR Agent').length).toBeGreaterThan(0),
+    );
+  });
+
+  it('preselects a package-manager item that has no uploaded versions', async () => {
+    // cat-m has zero versions but one enabled winget method — deployable via the
+    // manager path, so preselect must not fall through to "no deployable item".
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/software/catalog')
+        return Promise.resolve(
+          ok({
+            data: [
+              { id: 'cat-9', name: 'Huntress EDR Agent', vendor: 'Huntress', category: 'security' },
+              { id: 'cat-m', name: 'VLC Media Player', vendor: 'VideoLAN', category: 'media' },
+            ],
+          }),
+        );
+      if (url === '/software/catalog/cat-m/versions') return Promise.resolve(ok({ data: [] }));
+      if (url === '/software/catalog/cat-m/install-methods')
+        return Promise.resolve(
+          ok({
+            data: [
+              {
+                id: 'm-win',
+                catalogId: 'cat-m',
+                platform: 'windows',
+                kind: 'winget',
+                packageId: 'VideoLAN.VLC',
+                enabled: true,
+              },
+            ],
+          }),
+        );
+      return Promise.resolve(route(url));
+    });
+
+    render(<DeploymentWizard initialCatalogId="cat-m" />);
+    await waitFor(() =>
+      // Both the list row and the "Selected software" panel show the name.
+      expect(screen.getAllByText('VLC Media Player').length).toBeGreaterThan(1),
     );
   });
 });

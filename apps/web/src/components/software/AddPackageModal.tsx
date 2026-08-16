@@ -5,6 +5,7 @@ import {
   Upload,
   Link2,
   HardDriveUpload,
+  PackageSearch,
 } from "lucide-react";
 import { asList } from '@/lib/asList';
 import {
@@ -18,16 +19,28 @@ import { cn } from "@/lib/utils";
 import { Dialog } from "../shared/Dialog";
 import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
+import { usePackageUploadsGate } from "../../stores/featuresStore";
+import {
+  useDefaultOwnerScope,
+  type OwnerScope,
+} from "../../hooks/useDefaultOwnerScope";
 import { runAction, ActionError } from "../../lib/runAction";
+import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import PackageManagerPicker, {
+  type SelectedPackageMethod,
+} from "./PackageManagerPicker";
 import VariableInput, { type DeviceCustomField } from "./VariableInput";
 import { useTenantVariables } from "@/lib/tenantVariableTokens";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type Architecture = "x64" | "arm64" | "x86";
-type Source = "url" | "file";
+/** `manager` = winget/Homebrew: Breeze never hosts a binary for it, so that
+ *  source has no version, architecture, installer args or detection rules —
+ *  the package manager owns all of it. */
+type Source = "url" | "file" | "manager";
 export interface CreatedPackage {
   id: string;
   name: string;
@@ -88,6 +101,7 @@ const blankForm = {
   notes: "",
   file: null as File | null,
   fileName: "",
+  managerMethods: [] as SelectedPackageMethod[],
 };
 export default function AddPackageModal({
   open,
@@ -102,6 +116,46 @@ export default function AddPackageModal({
   const [customFields, setCustomFields] = useState<DeviceCustomField[]>([]);
   // Tenant variables (#3409) — offered as `{{var.<key>}}` in the same picker.
   const tenantVariables = useTenantVariables(open);
+  // File uploads need S3 storage on the server; without it the upload routes
+  // 503, so gray the "Upload file" source out entirely instead (gated on
+  // /config → softwarePackages.uploadsEnabled).
+  const { enabled: s3UploadsEnabled } = usePackageUploadsGate(open);
+  // Ownership axis (#2135): partner admins can create the package once for all
+  // their orgs. Chunked upload sessions are org-tenanted, so partner-wide
+  // packages are URL-only for now — the file source is disabled in that mode.
+  const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const [ownerScope, setOwnerScopeState] = useState<OwnerScope>("organization");
+  // Ownership is create-only server-side. Once step 1 created the catalog row
+  // (retry-after-partial-failure keeps it via createdCatalogId), changing the
+  // selector could no longer change anything — lock it so the UI never claims
+  // a scope the package doesn't have.
+  const [scopeLocked, setScopeLocked] = useState(false);
+  // Set when switching to partner-wide discarded an already-picked file, so
+  // the user is told rather than left wondering where their file went.
+  const [droppedFileName, setDroppedFileName] = useState("");
+  const uploadsEnabled = s3UploadsEnabled && ownerScope !== "partner";
+  const uploadDisabledReason = !s3UploadsEnabled
+    ? i18n.t("policies:software.addPackageModal.uploadsRequireS3Storage")
+    : ownerScope === "partner"
+      ? i18n.t("policies:software.addPackageModal.partnerWideUrlOnly")
+      : null;
+  const setOwnerScope = (next: OwnerScope) => {
+    if (scopeLocked) return;
+    setOwnerScopeState(next);
+    // Partner-wide packages are URL-only (see above): drop a picked file and
+    // fall back to the URL source rather than submitting a doomed upload —
+    // and say so, via droppedFileName, rather than doing it silently.
+    if (next === "partner") {
+      setForm((prev) => {
+        if (prev.source !== "file" && !prev.file) return prev;
+        if (prev.fileName) setDroppedFileName(prev.fileName);
+        return { ...prev, source: "url", file: null, fileName: "" };
+      });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } else {
+      setDroppedFileName("");
+    }
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   // If the catalog item was created but the version write failed, keep its id so
   // a retry continues from the version step instead of creating a duplicate.
@@ -128,6 +182,9 @@ export default function AddPackageModal({
   useEffect(() => {
     if (!open) return;
     setForm(blankForm);
+    setOwnerScopeState(defaultOwnerScope);
+    setScopeLocked(false);
+    setDroppedFileName("");
     setAdvancedOpen(false);
     createdCatalogId.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -159,6 +216,9 @@ export default function AddPackageModal({
     return () => {
       cancelled = true;
     };
+    // Intentionally keyed on `open` alone: defaultOwnerScope is read once per
+    // open as the initial value — a mid-edit store hydration must not wipe the
+    // user's in-progress form.
   }, [open]);
   const update = <K extends keyof typeof blankForm>(
     key: K,
@@ -174,6 +234,7 @@ export default function AddPackageModal({
       file,
       fileName: file.name,
       ...applySilentArgsPrefill(prev, derived),
+      ...applyOsHint(prev, file.name),
     }));
   };
   /** URL-source counterpart to handleFile: the extension in the URL is the only
@@ -189,6 +250,7 @@ export default function AddPackageModal({
         // An explicit selector choice outranks the URL for prefill purposes too.
         prev.fileType || deriveSoftwareFileTypeFromUrl(value),
       ),
+      ...applyOsHint(prev, value),
     }));
   };
   /** Selector changes retract or install the prefill the same way a URL edit does. */
@@ -234,14 +296,35 @@ export default function AddPackageModal({
     knownKeys,
     knownVariableKeys,
   ]);
+  const isManager = form.source === "manager";
   const hasSource =
-    form.source === "url" ? form.downloadUrl.trim() !== "" : form.file != null;
+    form.source === "url"
+      ? form.downloadUrl.trim() !== ""
+      : isManager
+        ? form.managerMethods.length > 0
+        : form.file != null;
   const canSubmit =
     form.name.trim() !== "" &&
-    form.version.trim() !== "" &&
+    // A package-manager package has no Breeze-hosted version to name: the
+    // package manager resolves (and updates) the version on the device.
+    (isManager || form.version.trim() !== "") &&
     hasSource &&
     tokenErrors.length === 0 &&
     !saving;
+  /** Prefill identity from the first pick, but never overwrite what the user
+   *  typed. */
+  const handleManagerMethods = (next: SelectedPackageMethod[]) => {
+    setForm((prev) => {
+      const first = next[0];
+      return {
+        ...prev,
+        managerMethods: next,
+        name: prev.name.trim() === "" && first?.name ? first.name : prev.name,
+        vendor:
+          prev.vendor.trim() === "" && first?.vendor ? first.vendor : prev.vendor,
+      };
+    });
+  };
   const buildVersionRequest = (
     catalogId: string,
     controller: AbortController | null,
@@ -299,9 +382,85 @@ export default function AddPackageModal({
         }),
       });
   };
+  /**
+   * Package-manager source: ONE call. `/software/catalog/import-package`
+   * creates the catalog item and all of its install methods in a single
+   * transaction, so there is no half-created state to retry from and no
+   * `createdCatalogId` orphan to surface (that ref stays null on this path).
+   */
+  const submitManagerImport = async () => {
+    setSaving(true);
+    try {
+      const created = await runAction<{ id: string }>({
+        request: () =>
+          fetchWithAuth("/software/catalog/import-package", {
+            method: "POST",
+            body: JSON.stringify({
+              name: form.name.trim(),
+              vendor: form.vendor.trim() || undefined,
+              category: form.category,
+              description: form.description.trim() || undefined,
+              homepageUrl: form.managerMethods[0]?.homepageUrl || undefined,
+              methods: form.managerMethods.map(
+                ({ platform, kind, packageId }) => ({
+                  platform,
+                  kind,
+                  packageId,
+                }),
+              ),
+            }),
+          }),
+        parseSuccess: (d) => {
+          const payload = (d as { data?: { catalogItem?: { id?: unknown } } })
+            .data;
+          return { id: String(payload?.catalogItem?.id ?? "") };
+        },
+        errorFallback: i18n.t(
+          "policies:software.addPackageModal.failedToImportPackage",
+        ),
+        successMessage: () =>
+          i18n.t("policies:software.addPackageModal.addedPackage", {
+            name: form.name.trim(),
+          }),
+      });
+      onCreated({
+        id: created.id,
+        name: form.name.trim(),
+        vendor: form.vendor.trim(),
+        category: form.category,
+        description: form.description.trim(),
+        createdAt: new Date().toISOString(),
+        // Package-manager packages carry install methods, not Breeze-hosted
+        // versions — the manager resolves the version on the device.
+        versionCount: 0,
+      });
+      onClose();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({
+          type: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : i18n.t(
+                  "policies:software.addPackageModal.failedToImportPackage",
+                ),
+        });
+      }
+      // Non-401 ActionError already toasted by runAction; the modal stays open.
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
+    if (isManager) {
+      await submitManagerImport();
+      return;
+    }
     // A FRESH controller per submit: a retry after a cancelled attempt must not
     // inherit the previous (already aborted) signal, or the next genuine failure
     // would be silently swallowed as "the user cancelled". Only the file branch
@@ -325,6 +484,9 @@ export default function AddPackageModal({
                 vendor: form.vendor.trim() || undefined,
                 category: form.category,
                 description: form.description.trim() || undefined,
+                // Only partner-scope users ever see the selector; org tokens
+                // always create org-owned (the server default).
+                ownerScope: isPartnerScope ? ownerScope : undefined,
               }),
             }),
           parseSuccess: (d) => {
@@ -354,6 +516,9 @@ export default function AddPackageModal({
           ),
         });
         createdCatalogId.current = item.id;
+        // The row now exists with this ownership — a retry must not let the
+        // selector drift away from what was actually created.
+        setScopeLocked(true);
         // The cancel affordance opens BEFORE the transfer it cancels: a Cancel
         // during step 1 ran handleClose while this id was still null, so that
         // branch could not surface the package and the catalog row would be
@@ -487,6 +652,56 @@ export default function AddPackageModal({
             <h3 className="text-sm font-semibold text-foreground">
               {i18n.t("policies:software.addPackageModal.package")}
             </h3>
+            {/* Ownership scope — partner-scope creators only (#2135, same
+                pattern as PolicyForm). */}
+            {isPartnerScope && (
+              <fieldset
+                className="space-y-2 rounded-md border p-4"
+                data-testid="software-package-owner"
+              >
+                <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+                  {i18n.t("policies:software.addPackageModal.scope")}
+                </legend>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="pkg-owner-scope"
+                    value="partner"
+                    checked={ownerScope === "partner"}
+                    disabled={scopeLocked}
+                    onChange={() => setOwnerScope("partner")}
+                    data-testid="software-package-owner-partner"
+                  />
+                  {i18n.t("policies:software.addPackageModal.allOrganizations")}
+                  <span className="text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.addPackageModal.sharedAcrossAllYourOrganizations",
+                    )}
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="pkg-owner-scope"
+                    value="organization"
+                    checked={ownerScope === "organization"}
+                    disabled={scopeLocked}
+                    onChange={() => setOwnerScope("organization")}
+                    data-testid="software-package-owner-org"
+                  />
+                  {i18n.t(
+                    "policies:software.addPackageModal.thisOrganizationOnly",
+                  )}
+                </label>
+                {scopeLocked && (
+                  <p className="text-xs text-muted-foreground">
+                    {i18n.t(
+                      "policies:software.addPackageModal.scopeLockedAfterCreate",
+                    )}
+                  </p>
+                )}
+              </fieldset>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className={labelCls} htmlFor="pkg-name">
@@ -542,8 +757,11 @@ export default function AddPackageModal({
           {/* First version */}
           <section className="space-y-4 border-t pt-5">
             <h3 className="text-sm font-semibold text-foreground">
-              {i18n.t("policies:software.addPackageModal.firstVersion")}
+              {isManager
+                ? i18n.t("policies:software.addPackageModal.installMethods")
+                : i18n.t("policies:software.addPackageModal.firstVersion")}
             </h3>
+            {!isManager && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className={labelCls} htmlFor="pkg-version">
@@ -584,8 +802,9 @@ export default function AddPackageModal({
                 </select>
               </div>
             </div>
+            )}
 
-            {/* Source: URL or file, one control */}
+            {/* Source: URL, file or package manager — one control */}
             <div>
               <span className={labelCls}>
                 {i18n.t("policies:software.addPackageModal.source")}
@@ -609,6 +828,11 @@ export default function AddPackageModal({
                       i18n.t("policies:software.addPackageModal.uploadFile"),
                       HardDriveUpload,
                     ],
+                    [
+                      "manager",
+                      i18n.t("policies:software.addPackageModal.packageManager"),
+                      PackageSearch,
+                    ],
                   ] as const
                 ).map(([val, label, Icon]) => (
                   <button
@@ -616,9 +840,15 @@ export default function AddPackageModal({
                     type="button"
                     role="tab"
                     aria-selected={form.source === val}
+                    disabled={val === "file" && !uploadsEnabled}
+                    title={
+                      val === "file" && uploadDisabledReason
+                        ? uploadDisabledReason
+                        : undefined
+                    }
                     onClick={() => update("source", val)}
                     className={cn(
-                      "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+                      "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                       form.source === val
                         ? "bg-background text-foreground shadow-xs"
                         : "text-muted-foreground hover:text-foreground",
@@ -629,8 +859,38 @@ export default function AddPackageModal({
                   </button>
                 ))}
               </div>
+              {uploadDisabledReason && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {uploadDisabledReason}
+                </p>
+              )}
+              {droppedFileName && ownerScope === "partner" && (
+                <p
+                  className="mt-1 text-xs text-amber-600 dark:text-amber-500"
+                  data-testid="pkg-file-dropped-notice"
+                >
+                  {i18n.t(
+                    "policies:software.addPackageModal.selectedFileRemoved",
+                  )}{" "}
+                  ({droppedFileName})
+                </p>
+              )}
 
-              {form.source === "url" ? (
+              {form.source === "manager" ? (
+                <div className="mt-3">
+                  <PackageManagerPicker
+                    methods={form.managerMethods}
+                    onChange={handleManagerMethods}
+                  />
+                  {form.managerMethods.length === 0 && (
+                    <p className="mt-2 text-xs text-destructive">
+                      {i18n.t(
+                        "policies:software.addPackageModal.selectAtLeastOnePackage",
+                      )}
+                    </p>
+                  )}
+                </div>
+              ) : form.source === "url" ? (
                 <div className="mt-3">
                   <VariableInput
                     id="pkg-url"
@@ -725,6 +985,11 @@ export default function AddPackageModal({
               )}
             </div>
 
+            {/* Supported OS and installer args belong to a Breeze-hosted
+                installer. A package-manager package has neither: the platform
+                comes from the chosen methods and winget/brew own the install
+                invocation. */}
+            {!isManager && (
             <div>
               <span className={labelCls}>
                 {i18n.t("policies:software.addPackageModal.supportedOS")}
@@ -756,7 +1021,9 @@ export default function AddPackageModal({
                 })}
               </div>
             </div>
+            )}
 
+            {!isManager && (
             <div>
               <label className={labelCls} htmlFor="pkg-install">
                 {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
@@ -774,6 +1041,7 @@ export default function AddPackageModal({
                 />
               </div>
             </div>
+            )}
           </section>
 
           {/* Advanced */}
@@ -795,6 +1063,11 @@ export default function AddPackageModal({
 
             {advancedOpen && (
               <div className="mt-4 space-y-4">
+                {/* Uninstall args, detection rules and release notes describe a
+                    Breeze-hosted VERSION; the package-manager path creates no
+                    version row, so they'd be silently discarded. */}
+                {!isManager && (
+                <>
                 <div>
                   <label className={labelCls} htmlFor="pkg-uninstall">
                     {i18n.t(
@@ -836,6 +1109,8 @@ export default function AddPackageModal({
                     className="mt-2 min-h-24 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
                 </div>
+                </>
+                )}
 
                 <div>
                   <label className={labelCls} htmlFor="pkg-desc">

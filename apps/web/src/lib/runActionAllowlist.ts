@@ -33,4 +33,8 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // FeatureTabShell error banner + per-field errors (inline error UI), but the
   // fetchWithAuth mutations are not yet routed through runAction.
   'apps/web/src/components/configurationPolicies/featureTabs/BackupTab.tsx',
+  // Version add/edit (incl. the PATCH edit path) surfaces outcomes via the
+  // inline error banner + the row updating in place, but the fetchWithAuth
+  // mutations are not yet routed through runAction.
+  'apps/web/src/components/software/SoftwareVersionManager.tsx',
 ];

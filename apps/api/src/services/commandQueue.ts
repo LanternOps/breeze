@@ -99,6 +99,8 @@ export const CommandTypes = {
   SOFTWARE_INSTALL: 'software_install',
   SOFTWARE_UNINSTALL: 'software_uninstall',
   SOFTWARE_UPDATE: 'software_update',
+  // Opt-in macOS package-manager bootstrap (installs Homebrew itself).
+  HOMEBREW_BOOTSTRAP: 'homebrew_bootstrap',
   CIS_BENCHMARK: 'cis_benchmark',
   APPLY_CIS_REMEDIATION: 'apply_cis_remediation',
 
@@ -380,6 +382,9 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.SOFTWARE_INSTALL,
   CommandTypes.SOFTWARE_UNINSTALL,
   CommandTypes.SOFTWARE_UPDATE,
+  // Installing a package manager onto an endpoint is a privileged,
+  // state-changing action — always audited.
+  CommandTypes.HOMEBREW_BOOTSTRAP,
   CommandTypes.CIS_BENCHMARK,
   CommandTypes.APPLY_CIS_REMEDIATION,
   CommandTypes.SECURITY_SCAN,
