@@ -729,4 +729,32 @@ describe('DevicePatchStatusTab', () => {
 
     await screen.findByText(/pending approval/i);
   });
+
+  it('renders "Installed (date unknown)" when an installed patch has null installedAt (#3589)', async () => {
+    const patchData = {
+      data: {
+        compliancePercent: 100,
+        pending: [],
+        installed: [
+          {
+            id: 'inst-null-date',
+            title: 'Cumulative Update for Windows 11 (KB5101650)',
+            source: 'microsoft',
+            category: 'security',
+            status: 'installed',
+            installedAt: null,
+            approvalStatus: 'approved'
+          }
+        ]
+      }
+    };
+
+    fetchWithAuthMock.mockImplementation(async () => makeJsonResponse(patchData));
+
+    render(<DevicePatchStatusTab deviceId="dev-123" osType="windows" />);
+
+    expect(await screen.findByText('Cumulative Update for Windows 11 (KB5101650)')).toBeInTheDocument();
+    expect(screen.getByText('Installed (date unknown)')).toBeInTheDocument();
+  });
+
 });
