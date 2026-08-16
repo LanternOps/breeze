@@ -266,7 +266,7 @@ beforeEach(() => {
   resolveOrgMock.mockResolvedValue(null);
   findOrCreateContactMock.mockReset();
   loadPolicyMock.mockReset();
-  loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+  loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 });
 
 describe('processInboundEmail', () => {
@@ -912,7 +912,7 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [];
     state.selectRows['portal_users'] = [];
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: true });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: true });
 
     await processInboundEmail(email({ senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false } }));
 
@@ -967,7 +967,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     loadPolicyMock.mockReset();
     // Safe defaults: no domain match, quarantine unknown senders.
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
   });
 
   it('routes a mapped domain (autoCreateContact true) -> creates ticket in the org + onboards a contact', async () => {
@@ -1003,7 +1003,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
   it('falls back to the triage org when enabled and no domain matches (no contact onboarding)', async () => {
     state.selectRows['organizations'] = [{ id: 'o-triage' }];
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'triage', defaultTriageOrgId: 'o-triage', dropUnverifiedSenders: false });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'o-triage', dropUnverifiedSenders: false });
     createTicketMock.mockResolvedValue({ id: 't-t', internalNumber: 'T-2026-0100' });
 
     await processInboundEmail(email());
@@ -1016,7 +1016,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
 
   it('quarantines when nothing matches and mode is quarantine (default)', async () => {
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
     await processInboundEmail(email());
 
@@ -1026,7 +1026,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
 
   it('triage mode with NO triage org configured falls through to quarantine (never a no-org create)', async () => {
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'triage', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
     await processInboundEmail(email());
 
@@ -1036,7 +1036,7 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
 
   it("'drop' mode silently ignores an unknown sender — no ticket, no quarantine (audit row only)", async () => {
     resolveOrgMock.mockResolvedValue(null);
-    loadPolicyMock.mockResolvedValue({ unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    loadPolicyMock.mockResolvedValue({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
     await processInboundEmail(email());
 
@@ -1073,5 +1073,98 @@ describe('processInboundEmail — Phase 5 sender-domain routing', () => {
     const input = createTicketMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(input.orgId).toBe('o-known');
     expect(input.submittedBy).toBe('pu-known');
+  });
+});
+
+// #3597 — the 'Enable email-to-ticket' switch was persisted and rendered but never
+// read by this pipeline, so turning the feature OFF did nothing. These assert the
+// gate is real, that it beats every downstream branch, and that it does not fire on
+// its own default (which must stay permissive so an upgrade can't stop ingestion).
+describe('processInboundEmail — inbound enabled master switch (#3597)', () => {
+  const disabled = {
+    enabled: false,
+    unknownSenderMode: 'quarantine' as const,
+    defaultTriageOrgId: null,
+    dropUnverifiedSenders: false,
+  };
+
+  beforeEach(() => {
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [];
+    resolveMock.mockResolvedValue('p-1');
+    resolveOrgMock.mockResolvedValue(null);
+  });
+
+  it('ignores mail for a partner with inbound disabled — no ticket, no quarantine row', async () => {
+    loadPolicyMock.mockResolvedValue(disabled);
+
+    await processInboundEmail(email());
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    const rows = inboundOf();
+    expect(rows).toHaveLength(1);
+    // 'ignored', not 'quarantined'/'failed' — those two are REVIEW_STATUSES, and a
+    // partner who switched the feature off must not accumulate a review queue.
+    expect(rows[0]!.parseStatus).toBe('ignored');
+    expect(rows[0]!.partnerId).toBe('p-1');
+    expect(rows[0]!.ticketId).toBeNull();
+    expect(rows[0]!.error).toBe('inbound disabled for partner');
+  });
+
+  it('beats a live thread match — a disabled partner gets no comment append or reopen', async () => {
+    loadPolicyMock.mockResolvedValue(disabled);
+    // A ticket the message would otherwise match (and reopen, since it's resolved).
+    state.selectRows['tickets'] = [{
+      id: 't-live', partnerId: 'p-1', orgId: 'o-1', status: 'resolved',
+      emailThreadKey: 'k', internalNumber: 'T-2026-0001',
+    }];
+
+    await processInboundEmail(email());
+
+    expect(state.updates).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('ignored');
+  });
+
+  it('suppresses the autoresponder — nothing downstream of the gate runs', async () => {
+    loadPolicyMock.mockResolvedValue(disabled);
+    state.selectRows['organizations'] = [{ id: 'o-9' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-9', autoCreateContact: true });
+
+    await processInboundEmail(email());
+
+    expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
+    expect(findOrCreateContactMock).not.toHaveBeenCalled();
+    expect(resolveOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('gates the M365 poll path too (the flag is per-partner, not per-transport)', async () => {
+    const mailboxGeneration = {
+      connectionId: '44444444-4444-4444-8444-444444444444',
+      partnerId: '22222222-2222-4222-8222-222222222222',
+      tenantId: '11111111-1111-4111-8111-111111111111',
+      consentAttemptId: '66666666-6666-4666-8666-666666666666',
+    };
+    state.selectRows['ticket_mailbox_connections'] = [{ id: mailboxGeneration.connectionId }];
+    loadPolicyMock.mockResolvedValue(disabled);
+
+    await processInboundEmail(
+      email({ provider: 'm365', resolvedPartnerId: mailboxGeneration.partnerId }),
+      mailboxGeneration,
+    );
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(inboundOf()).toEqual([expect.objectContaining({
+      partnerId: mailboxGeneration.partnerId,
+      parseStatus: 'ignored',
+    })]);
+  });
+
+  it('does not fire for an enabled partner (the gate is not the whole pipeline)', async () => {
+    loadPolicyMock.mockResolvedValue({ ...disabled, enabled: true });
+
+    await processInboundEmail(email());
+
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
   });
 });
