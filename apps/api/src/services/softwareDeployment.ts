@@ -248,6 +248,68 @@ export interface SoftwareInstallFanoutResult {
 export const NO_INSTALL_METHOD_FOR_OS = 'No install method for this device OS';
 
 /**
+ * Error text for a target that no longer resolves at dispatch time (#3603) —
+ * the device row was deleted, or moved to another org, between deployment
+ * creation and dispatch.
+ */
+export const DEVICE_NO_LONGER_AVAILABLE =
+  'Device no longer exists or is no longer in this organization';
+
+/** Result statuses that a dispatch-time failure may still overwrite. */
+const NON_TERMINAL_RESULT_STATUSES = ['pending', 'running', 'downloading', 'installing'] as const;
+
+/**
+ * Terminally fail the result rows of requested targets that the target-devices
+ * SELECT did not return (#3603).
+ *
+ * Both dispatch paths iterate the resolved device ROWS, so a device that
+ * disappeared between create and dispatch was simply absent from the loop and
+ * its result row stayed 'pending' forever — the deployment showed fewer
+ * results than targets and never reached a terminal state.
+ *
+ * Two ways a target goes missing, and the UPDATE is the right shape for both:
+ *   - moved to another org: the device row still exists but fails the
+ *     `devices.org_id = orgId` predicate; its result row is still there and is
+ *     what this fails;
+ *   - deleted outright: the device cascade (CORE_DEVICE_CASCADE_DELETE_TABLES)
+ *     already took `deployment_results` with it, so this matches zero rows —
+ *     and an INSERT would be impossible anyway, `deployment_results.device_id`
+ *     being a NOT NULL FK to a row that is gone.
+ *
+ * Restricted to non-terminal statuses so the retry path can never clobber a
+ * previously completed row.
+ *
+ * Returns the number of requested ids that went missing (NOT the row count) —
+ * the caller uses it to decide whether a fan-out that dispatched nothing
+ * should report 'failed' rather than a false 'pending'.
+ */
+async function failMissingTargetDevices(
+  deploymentId: string,
+  fanoutDeviceIds: string[],
+  resolvedDevices: ReadonlyArray<{ id: string }>,
+): Promise<number> {
+  const resolved = new Set(resolvedDevices.map((d) => d.id));
+  const missing = fanoutDeviceIds.filter((id) => !resolved.has(id));
+  if (missing.length === 0) return 0;
+
+  await db
+    .update(deploymentResults)
+    .set({
+      status: 'failed',
+      errorMessage: DEVICE_NO_LONGER_AVAILABLE,
+      completedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(deploymentResults.deploymentId, deploymentId),
+        inArray(deploymentResults.deviceId, missing),
+        inArray(deploymentResults.status, [...NON_TERMINAL_RESULT_STATUSES]),
+      ),
+    );
+  return missing.length;
+}
+
+/**
  * Package-manager fan-out (winget / Homebrew). Deliberately NOT a variant of
  * the URL path: there is no installer binary, so presign, EDR resolution,
  * checksum, the managed-download destination policy and `{{...}}` variable
@@ -277,6 +339,12 @@ async function dispatchManagerInstalls(
     })
     .from(devices)
     .where(and(eq(devices.orgId, orgId), inArray(devices.id, fanoutDeviceIds)));
+
+  const missingDeviceCount = await failMissingTargetDevices(
+    deploymentId,
+    fanoutDeviceIds,
+    targetDevices,
+  );
 
   if (markDispatched) {
     await db
@@ -322,10 +390,13 @@ async function dispatchManagerInstalls(
     dispatchedDeviceIds.push(device.id);
   }
 
-  if (dispatchedDeviceIds.length === 0 && osMismatchCount > 0) {
+  if (dispatchedDeviceIds.length === 0 && (osMismatchCount > 0 || missingDeviceCount > 0)) {
     return {
       status: 'failed',
-      message: `${NO_INSTALL_METHOD_FOR_OS} on any target device`,
+      message:
+        osMismatchCount > 0
+          ? `${NO_INSTALL_METHOD_FOR_OS} on any target device`
+          : 'No target device is still available',
       dispatchedDeviceIds: [],
     };
   }
@@ -451,6 +522,12 @@ export async function buildAndDispatchSoftwareInstalls(
         inArray(devices.id, fanoutDeviceIds),
       ),
     );
+
+  const missingDeviceCount = await failMissingTargetDevices(
+    deploymentId,
+    fanoutDeviceIds,
+    targetDevices,
+  );
 
   // When a template references variables, load the org name + ALL of the org's
   // site names once here (gated below) rather than per-device inside the loop —
@@ -655,14 +732,19 @@ export async function buildAndDispatchSoftwareInstalls(
   // was denied by the destination policy, report failure — mirrors the
   // EDR/no-installer paths rather than reporting a false 'pending' success to
   // the caller.
-  if (dispatchedDeviceIds.length === 0 && (variableFailureCount > 0 || policyDenialCount > 0)) {
+  if (
+    dispatchedDeviceIds.length === 0 &&
+    (variableFailureCount > 0 || policyDenialCount > 0 || missingDeviceCount > 0)
+  ) {
     return {
       status: 'failed',
       message:
         variableFailureCount > 0
           ? 'All target devices failed installer variable resolution'
-          : 'All target devices denied by the managed software network policy: ' +
-            [...policyDenialReasons].sort().join(', '),
+          : policyDenialCount > 0
+            ? 'All target devices denied by the managed software network policy: ' +
+              [...policyDenialReasons].sort().join(', ')
+            : 'No target device is still available',
       dispatchedDeviceIds: [],
     };
   }

@@ -1713,3 +1713,187 @@ describe('createSoftwareDeployment (package-manager install methods)', () => {
     ).rejects.toThrow(/Install method not found/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3603: targets that no longer resolve at dispatch time
+// ---------------------------------------------------------------------------
+
+describe('buildAndDispatchSoftwareInstalls — targets missing at dispatch (#3603)', () => {
+  const catalogItem = { name: 'TestApp', integrationProvider: null };
+  const versionRecord = {
+    downloadUrl: 'https://dl/pkg.exe',
+    s3Key: null,
+    checksum: null,
+    originalFileName: 'pkg.exe',
+    fileType: 'exe',
+    silentInstallArgs: '/S',
+    version: '1.0.0',
+    detectionRules: null,
+  };
+  const installMethod = {
+    id: 'sim-1',
+    platform: 'windows',
+    kind: 'winget',
+    packageId: 'Google.Chrome',
+  };
+
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    queueCommandMock.mockReset();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    vi.mocked(inArray).mockClear();
+    sendCommandMock.mockReturnValue(true);
+    effectivePolicyMock.mockResolvedValue({ approvedPrivateOrigins: [] });
+    updateSetCalls = [];
+    updateMock.mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        updateSetCalls.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+  });
+
+  it('URL path: fails the result row of a target the devices query no longer returns', async () => {
+    // dev-gone was deleted / moved orgs between create and dispatch.
+    selectMock.mockReturnValueOnce(sel([{ id: 'dev-a', agentId: 'agent-a', siteId: 'site-1' }]));
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-1',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a', 'dev-gone'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    // The surviving device still dispatches.
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-a']);
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+
+    // ...and the missing one gets a terminal row instead of staying pending.
+    const failWrites = updateSetCalls.filter((v) => v.status === 'failed');
+    expect(failWrites).toHaveLength(1);
+    expect(failWrites[0]!.errorMessage).toBe(
+      'Device no longer exists or is no longer in this organization',
+    );
+    expect(failWrites[0]!.completedAt).toBeInstanceOf(Date);
+    // Scoped to the missing device only, and only over non-terminal statuses —
+    // a completed row from an earlier attempt must never be clobbered.
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-gone']);
+    expect(inArray).toHaveBeenCalledWith('dr.status', [
+      'pending',
+      'running',
+      'downloading',
+      'installing',
+    ]);
+  });
+
+  it('URL path: writes nothing extra when every target resolves', async () => {
+    selectMock.mockReturnValueOnce(sel([{ id: 'dev-a', agentId: 'agent-a', siteId: 'site-1' }]));
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-1',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-a'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(updateSetCalls.filter((v) => v.status === 'failed')).toHaveLength(0);
+    expect(inArray).not.toHaveBeenCalledWith('dr.deviceId', expect.anything());
+  });
+
+  it('URL path: reports failed when EVERY target went missing', async () => {
+    selectMock.mockReturnValueOnce(sel([]));
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-1',
+      orgId: 'org-1',
+      versionRecord,
+      catalogItem,
+      deviceIds: ['dev-gone-1', 'dev-gone-2'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('No target device is still available');
+    expect(result.dispatchedDeviceIds).toEqual([]);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-gone-1', 'dev-gone-2']);
+  });
+
+  it('manager path: fails the result row of a target that went missing', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-a', agentId: 'agent-a', osType: 'windows' }]),
+    );
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-mgr',
+      orgId: 'org-1',
+      installMethod,
+      catalogItem,
+      deviceIds: ['dev-a', 'dev-gone'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.dispatchedDeviceIds).toEqual(['dev-a']);
+    const failWrites = updateSetCalls.filter((v) => v.status === 'failed');
+    expect(failWrites).toHaveLength(1);
+    expect(failWrites[0]!.errorMessage).toBe(
+      'Device no longer exists or is no longer in this organization',
+    );
+    expect(inArray).toHaveBeenCalledWith('dr.deviceId', ['dev-gone']);
+  });
+
+  it('manager path: reports failed when EVERY target went missing', async () => {
+    selectMock.mockReturnValueOnce(sel([]));
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-mgr',
+      orgId: 'org-1',
+      installMethod,
+      catalogItem,
+      deviceIds: ['dev-gone'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('No target device is still available');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('manager path: an OS mismatch still reports its own message, not the missing-device one', async () => {
+    selectMock.mockReturnValueOnce(
+      sel([{ id: 'dev-mac', agentId: 'agent-mac', osType: 'macos' }]),
+    );
+
+    const result = await buildAndDispatchSoftwareInstalls({
+      deploymentId: 'dep-mgr',
+      orgId: 'org-1',
+      installMethod,
+      catalogItem,
+      deviceIds: ['dev-mac'],
+      options: null,
+      createdBy: null,
+      markDispatched: false,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toMatch(/No install method for this device OS/);
+  });
+});
