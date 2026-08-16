@@ -146,7 +146,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'security_threats',
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
-  'software_inventory', 'software_policy_audit', 'sql_instances',
+  'software_inventory', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
   'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
