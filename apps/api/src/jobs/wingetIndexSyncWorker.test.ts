@@ -485,3 +485,106 @@ describe('runWingetIndexSync', () => {
     expect(new WingetRateLimitError('x').name).toBe('WingetRateLimitError');
   });
 });
+
+// ---------------------------------------------------------------------------
+// No GitHub token, by design (#3602 / #3622)
+// ---------------------------------------------------------------------------
+
+describe('runWingetIndexSync — unauthenticated by design', () => {
+  let deleteMock: ReturnType<typeof vi.fn>;
+  let upserts: UpsertCall[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    upserts = [];
+    (db as unknown as { insert: unknown }).insert = vi.fn(() => ({
+      values: vi.fn((rows: Array<Record<string, unknown>>) => ({
+        onConflictDoUpdate: vi.fn(async (cfg: { set: Record<string, unknown> }) => {
+          upserts.push({ rows, latestVersionSet: renderSql(cfg.set.latestVersion) });
+        }),
+      })),
+    }));
+    deleteMock = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) }));
+    (db as unknown as { delete: unknown }).delete = deleteMock;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function runWithTimers<T>(p: Promise<T>): Promise<T> {
+    const settled = p.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.runAllTimersAsync();
+    const outcome = await settled;
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /** One bucket `m` whose recursive fetch comes back TRUNCATED. */
+  const fixtureFetch = () =>
+    vi.fn(async (url: string) => {
+      if (url.includes('manifests%2Fm')) {
+        return treeResponse({
+          sha: 'm',
+          truncated: true,
+          tree: [{ path: 'Microsoft/Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
+        });
+      }
+      return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
+    });
+
+  /**
+   * #3602 proposed an optional GitHub token. It was investigated against the
+   * live API on 2026-08-16 and deliberately NOT added: a run costs 37 requests
+   * per 24h against a 60/h budget (no skipping observed), and a token would not
+   * have restored pruning either, because subtree splitting does not bottom out
+   * at an affordable depth (manifests/m/Mozilla and .../Mozilla/Firefox both
+   * come back truncated). #3622 retires this worker instead.
+   *
+   * This test is the guard: no credential ever leaves the process, whatever a
+   * GITHUB_TOKEN-shaped variable happens to be set in the environment.
+   */
+  it('never sends an Authorization header, even with GitHub tokens in the environment', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_should_be_ignored';
+    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_should_also_be_ignored';
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await runWithTimers(runWingetIndexSync());
+
+      expect(fetchMock).toHaveBeenCalled();
+      for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+        const headers = init.headers as Record<string, string>;
+        expect(headers.Authorization).toBeUndefined();
+        expect(JSON.stringify(headers)).not.toContain('ghp_');
+      }
+    } finally {
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.WINGET_INDEX_GITHUB_TOKEN;
+    }
+  });
+
+  it('counts the Trees API calls a run made, and spends none rescuing a truncated bucket', async () => {
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    // Root listing + the one bucket. No split walk.
+    expect(summary.requests).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(summary.truncatedBuckets).toEqual(['m']);
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
+    expect(deleteMock).not.toHaveBeenCalled();
+    // Rows still land, still preserving the stored latest_version.
+    expect(upserts.length).toBeGreaterThan(0);
+    expect(upserts.every((u) => u.latestVersionSet.includes('latest_version'))).toBe(true);
+  });
+});

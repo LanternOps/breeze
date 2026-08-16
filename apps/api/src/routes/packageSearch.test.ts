@@ -28,10 +28,16 @@ vi.mock('../services/packageSearch', () => ({
   searchWingetIndex: vi.fn(),
   searchHomebrew: vi.fn(),
   annotateBreezeTested: vi.fn(),
+  getWingetIndexFreshness: vi.fn(),
 }));
 
 import { packageSearchRoutes } from './packageSearch';
-import { searchWingetIndex, searchHomebrew, annotateBreezeTested } from '../services/packageSearch';
+import {
+  searchWingetIndex,
+  searchHomebrew,
+  annotateBreezeTested,
+  getWingetIndexFreshness,
+} from '../services/packageSearch';
 import { requireMfa } from '../middleware/auth';
 
 const app = new Hono();
@@ -51,6 +57,11 @@ beforeEach(() => {
   permissionGate.deny = false;
   scopeGate.deny = false;
   (annotateBreezeTested as any).mockImplementation(async (r: unknown[]) => r);
+  // Default: the index is populated, so zero hits mean "no matches".
+  (getWingetIndexFreshness as any).mockResolvedValue({
+    packages: 1234,
+    lastSyncedAt: '2026-08-16T00:00:00.000Z',
+  });
 });
 
 describe('GET /software/package-search — validation', () => {
@@ -176,5 +187,39 @@ describe('GET /software/package-search — macos (Homebrew)', () => {
     (searchHomebrew as any).mockResolvedValue({ results: [BREW_ROW], degraded: false });
     await app.request('/software/package-search?platform=macos&q=chrome');
     expect(annotateBreezeTested).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /software/package-search — winget index freshness (#3602)', () => {
+  it('reports degraded when zero hits AND the index has never been populated', async () => {
+    (searchWingetIndex as any).mockResolvedValue([]);
+    (getWingetIndexFreshness as any).mockResolvedValue({ packages: 0, lastSyncedAt: null });
+
+    const res = await app.request('/software/package-search?platform=windows&q=chrome');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ results: [], degraded: true });
+    // An empty index is NOT a search miss — never decorate it.
+    expect(annotateBreezeTested).not.toHaveBeenCalled();
+  });
+
+  it('reports a genuine miss (not degraded) when the index is populated', async () => {
+    (searchWingetIndex as any).mockResolvedValue([]);
+    (getWingetIndexFreshness as any).mockResolvedValue({
+      packages: 9001,
+      lastSyncedAt: '2026-08-15T04:00:00.000Z',
+    });
+
+    const res = await app.request('/software/package-search?platform=windows&q=chrome');
+    const body = await res.json();
+    expect(body).toEqual({ results: [], indexUpdatedAt: '2026-08-15T04:00:00.000Z' });
+    expect('degraded' in body).toBe(false);
+  });
+
+  it('does not probe the index when the search returned hits', async () => {
+    (searchWingetIndex as any).mockResolvedValue([WINGET_ROW]);
+
+    const res = await app.request('/software/package-search?platform=windows&q=chrome');
+    expect(res.status).toBe(200);
+    expect(getWingetIndexFreshness).not.toHaveBeenCalled();
   });
 });

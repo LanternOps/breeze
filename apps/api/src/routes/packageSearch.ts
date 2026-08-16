@@ -15,6 +15,7 @@ import { PERMISSIONS } from '../services/permissions';
 import {
   DEFAULT_SEARCH_LIMIT,
   annotateBreezeTested,
+  getWingetIndexFreshness,
   searchHomebrew,
   searchWingetIndex,
   type PackageSearchResult,
@@ -50,6 +51,23 @@ packageSearchRoutes.get(
     }
 
     const raw = await searchWingetIndex(q, DEFAULT_SEARCH_LIMIT);
+
+    // Zero hits are ambiguous: the package genuinely isn't in winget, OR the
+    // index sync has never landed a run (GitHub rate-limits an unauthenticated
+    // sync at 60 req/h and it skips cleanly). Probe the index only in that
+    // case — a search WITH hits proves the index is populated — and report
+    // `degraded` the same way the Homebrew branch does (#3602).
+    if (raw.length === 0) {
+      const freshness = await getWingetIndexFreshness();
+      if (freshness.packages === 0) {
+        console.warn('[packageSearch] winget index is empty; reporting degraded', {
+          lastSyncedAt: freshness.lastSyncedAt,
+        });
+        return c.json({ results: [], degraded: true as const }, 200);
+      }
+      return c.json({ results: [], indexUpdatedAt: freshness.lastSyncedAt }, 200);
+    }
+
     let results: PackageSearchResult[] = raw;
     try {
       results = await annotateBreezeTested(raw);

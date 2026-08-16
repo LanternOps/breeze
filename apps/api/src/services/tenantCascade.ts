@@ -925,6 +925,66 @@ export async function cascadeDeletePartner(
         WHERE connection_id IN (SELECT id FROM psa_connections WHERE partner_id = ${partnerId})
       `,
     },
+    // Software deployment chain, partner axis (#3600). Mirrors the org-axis
+    // entries in ASSOCIATED_SYSTEM_SCOPED_TABLES, keyed on
+    // software_catalog.partner_id instead of org_id: `software_catalog` gained
+    // partner ownership in 2026-06-26-a (epic #2135), so the partner sweep
+    // below runs `DELETE FROM software_catalog WHERE partner_id = ...` — which
+    // raises 23503 against the NO ACTION software_versions.catalog_id FK for
+    // any partner whose built-in catalog item ever had a version row.
+    // `software_versions` has no tenancy column at all, so neither the org
+    // cascade list nor the partner sweep reaches it.
+    //
+    // The deployment arms are belt-and-braces: `software_deployments.org_id` is
+    // NOT NULL, so every deployment is already gone via the per-child-org
+    // cascadeDeleteOrg calls above. They stay because both FKs into the
+    // partner-owned chain (software_version_id, install_method_id) are NO
+    // ACTION, so ANY deployment row that outlives its org — now or after a
+    // future tenancy change — would turn the versions DELETE below into an
+    // aborted purge. Order is load-bearing: results, deployments, versions.
+    // software_install_methods needs no entry (catalog_id FK is ON DELETE CASCADE).
+    {
+      table: 'deployment_results',
+      clearSql: sql`
+        DELETE FROM deployment_results
+        WHERE deployment_id IN (
+          SELECT d.id FROM software_deployments d
+          WHERE d.software_version_id IN (
+                  SELECT v.id FROM software_versions v
+                  JOIN software_catalog c ON c.id = v.catalog_id
+                  WHERE c.partner_id = ${partnerId}
+                )
+             OR d.install_method_id IN (
+                  SELECT m.id FROM software_install_methods m
+                  JOIN software_catalog c ON c.id = m.catalog_id
+                  WHERE c.partner_id = ${partnerId}
+                )
+        )
+      `,
+    },
+    {
+      table: 'software_deployments',
+      clearSql: sql`
+        DELETE FROM software_deployments d
+        WHERE d.software_version_id IN (
+                SELECT v.id FROM software_versions v
+                JOIN software_catalog c ON c.id = v.catalog_id
+                WHERE c.partner_id = ${partnerId}
+              )
+           OR d.install_method_id IN (
+                SELECT m.id FROM software_install_methods m
+                JOIN software_catalog c ON c.id = m.catalog_id
+                WHERE c.partner_id = ${partnerId}
+              )
+      `,
+    },
+    {
+      table: 'software_versions',
+      clearSql: sql`
+        DELETE FROM software_versions
+        WHERE catalog_id IN (SELECT id FROM software_catalog WHERE partner_id = ${partnerId})
+      `,
+    },
   ];
   for (const assoc of partnerAssociatedPreClears) {
     try {

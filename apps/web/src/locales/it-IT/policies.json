@@ -1389,7 +1389,10 @@
       "deploymentCancelled": "Distribuzione annullata",
       "failedToLoadDeployment": "Impossibile caricare la distribuzione",
       "loadingDeployment": "Caricamento della distribuzione…",
-      "devicesFinished": "{{finished}} dispositivi su {{total}} completati"
+      "devicesFinished": "{{finished}} dispositivi su {{total}} completati",
+      "setupNeeded": "Configurazione necessaria",
+      "managerUnavailableSummary_one": "Su {{count}} dispositivo manca il gestore di pacchetti. È una configurazione una tantum del dispositivo: installa winget (Windows) o Homebrew (macOS); fino ad allora ogni distribuzione tramite gestore di pacchetti fallirà.",
+      "managerUnavailableSummary_other": "Su {{count}} dispositivi manca il gestore di pacchetti. È una configurazione una tantum dei dispositivi: installa winget (Windows) o Homebrew (macOS); fino ad allora ogni distribuzione tramite gestore di pacchetti fallirà."
     },
     "deploymentWizard": {
       "selectSoftware": "Seleziona software",

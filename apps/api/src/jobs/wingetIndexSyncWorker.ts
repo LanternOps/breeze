@@ -29,15 +29,44 @@
  * `truncated: true` today (verified 2026-08-15). GitHub truncates below our
  * byte guard and still answers 200, and the entries it drops are exactly the
  * rows a prune would then delete — for `m` that is most of the 27k-entry
- * Microsoft namespace. Splitting a truncated bucket by vendor is not an option
- * inside the anonymous request budget (`m` alone holds 351 vendor directories),
- * and the truncation cut point is not a clean alphabetical boundary, so the
- * complete subset cannot be identified either. We therefore upsert what we got
- * and skip the prune. Consequence to be aware of: while any bucket truncates,
+ * Microsoft namespace. The truncation cut point is not a clean alphabetical
+ * boundary either, so the complete subset cannot be identified. We therefore
+ * upsert what we got and skip the prune. Consequence to be aware of: while any bucket truncates,
  * withdrawn packages are never pruned and linger in the typeahead. That is a
- * cosmetic staleness; deleting 27k live packages every run is not. Authenticating
- * the calls (5000 req/h) would make a per-vendor split affordable and let the
- * prune run again — tracked as a follow-up.
+ * cosmetic staleness; deleting 27k live packages every run is not.
+ *
+ * #3602 proposed an optional GitHub token (5000 req/h) to fix two things. Both
+ * were investigated against the live API on 2026-08-16 and NEITHER justified it,
+ * so no token is read here — deliberately, not by omission.
+ *
+ * Skipped runs: not observed and not expected. One run costs 37 requests, once
+ * per 24h; the only other GitHub callers in this API are latestVersion (1/h,
+ * TTL-cached) and binarySync (around releases), so steady state is ~39 of the
+ * 60/h anonymous budget on a dedicated egress IP. A shared/CGNAT IP could still
+ * lose that race — the `degraded` flag on GET /software/package-search is the
+ * instrument that would SHOW it, and a token can be added then, with evidence.
+ *
+ * Pruning: unreachable by splitting a truncated bucket into smaller subtrees.
+ * The split does not bottom out at any affordable depth:
+ *
+ *   manifests/m                     -> truncated (550 vendor directories,
+ *                                      not the 351 #3602 assumed)
+ *   manifests/m/Mozilla             -> 61,700 entries, STILL truncated
+ *   manifests/m/Mozilla/Firefox     -> 66,194 entries, STILL truncated
+ *   manifests/m/Mozilla/Firefox/*   -> 277 version directories
+ *
+ * Truncation is on RESPONSE BYTES, not entry count (Microsoft's 27,696-entry
+ * subtree comes back complete), and winget's per-version locale manifests blow
+ * that budget three levels deep. Bottoming out means descending to version
+ * directories for the worst packages — hundreds of requests for ONE package,
+ * unbounded across 36 buckets. Even at 5000 req/h that is not affordable, so a
+ * token would not have bought pruning either.
+ *
+ * The real fix is to stop walking git trees altogether: Microsoft publishes the
+ * prebuilt index the winget client itself searches at
+ * https://cdn.winget.microsoft.com/cache/source2.msix — 3.5 MB, a SQLite
+ * database, no rate limit and no truncation. Tracked in #3622; that work
+ * retires this worker.
  *
  * Truncation has a second, quieter consequence: a truncated response's version
  * list is a SUBSET of reality, so the `latest_version` computed from it can be
@@ -279,6 +308,8 @@ export interface WingetIndexSyncSummary {
   truncatedBuckets: string[];
   /** Whether the stale-generation delete actually ran. */
   pruned: boolean;
+  /** Trees API calls this run made — the thing the rate limit actually counts. */
+  requests: number;
   skipped?: 'rate_limited';
 }
 
@@ -292,11 +323,13 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     complete: true,
     truncatedBuckets: [],
     pruned: false,
+    requests: 0,
   };
 
   let root: GitTreeResponse;
   try {
     root = await fetchGitTree('HEAD:manifests', false);
+    summary.requests++;
   } catch (err) {
     if (err instanceof WingetRateLimitError) {
       console.warn('[WingetIndexSync] rate limited; skipping run', { error: err.message });
@@ -329,11 +362,28 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   // therefore possibly missing the newest versions. See the upsert below.
   const partialPackageIds = new Set<string>();
 
+  const mergeInto = (
+    target: Map<string, ParsedWingetPackage>,
+    source: Map<string, ParsedWingetPackage>,
+  ) => {
+    for (const [pkgId, parsed] of source) {
+      const existing = target.get(pkgId);
+      if (existing) {
+        for (const v of parsed.versions) {
+          if (!existing.versions.includes(v)) existing.versions.push(v);
+        }
+      } else {
+        target.set(pkgId, parsed);
+      }
+    }
+  };
+
   for (const bucket of buckets) {
     await sleep(REQUEST_SPACING_MS);
     let tree: GitTreeResponse;
     try {
       tree = await fetchGitTree(`HEAD:manifests/${bucket}`, true);
+      summary.requests++;
     } catch (err) {
       if (err instanceof WingetRateLimitError) {
         console.warn('[WingetIndexSync] rate limited mid-run; skipping run', {
@@ -346,13 +396,19 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     }
     summary.buckets++;
 
+    const bucketPackages = parseWingetTreePaths(tree.tree ?? []);
+
     // GitHub caps a recursive tree response and reports it with `truncated:
     // true` on an otherwise-normal 200 — the byte guard above cannot catch it
     // because truncation happens well below that ceiling. The dropped entries
     // are precisely the packages a prune would then delete, so a truncated
     // bucket makes the whole run non-authoritative. Upserts still proceed
     // (they are additive and cannot lose data); only the prune is suppressed.
-    if (tree.truncated) {
+    // Not rescuable — see the header block: subtree splitting was measured
+    // against the live API and does not bottom out at any affordable depth,
+    // with or without a token.
+    const bucketComplete = !tree.truncated;
+    if (!bucketComplete) {
       summary.complete = false;
       summary.truncatedBuckets.push(bucket);
       console.warn('[WingetIndexSync] bucket response truncated; prune suppressed for this run', {
@@ -361,17 +417,10 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
       });
     }
 
-    for (const [pkgId, parsed] of parseWingetTreePaths(tree.tree ?? [])) {
-      if (tree.truncated) partialPackageIds.add(pkgId);
-      const existing = merged.get(pkgId);
-      if (existing) {
-        for (const v of parsed.versions) {
-          if (!existing.versions.includes(v)) existing.versions.push(v);
-        }
-      } else {
-        merged.set(pkgId, parsed);
-      }
+    for (const pkgId of bucketPackages.keys()) {
+      if (!bucketComplete) partialPackageIds.add(pkgId);
     }
+    mergeInto(merged, bucketPackages);
   }
 
   summary.packages = merged.size;
@@ -485,6 +534,7 @@ export function createWingetIndexSyncWorker(): Worker<WingetIndexSyncJobData> {
           complete: false,
           truncatedBuckets: [],
           pruned: false,
+          requests: 0,
           skipped: true,
         };
       }

@@ -31,6 +31,14 @@ describe('cascadeDeletePartner', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      // Software chain pre-clears (#3600), in list order: deployment_results,
+      // software_deployments, software_versions. software_versions has no
+      // tenancy column and its catalog_id FK is NO ACTION, so the sweep's
+      // `DELETE FROM software_catalog WHERE partner_id = ...` aborts with
+      // 23503 without them.
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ table_name: 'scripts' }, { table_name: 'users' }])
       .mockResolvedValue([]);
 
@@ -63,6 +71,18 @@ describe('cascadeDeletePartner', () => {
     const psaClearIdx = calls.findIndex((c) => c.includes('psa_ticket_mappings'));
     expect(psaClearIdx).toBeGreaterThan(-1);
     expect(psaClearIdx).toBeLessThan(firstSweepIdx);
+
+    // Software chain (#3600): same no-tenancy-column shape, and the three
+    // pre-clears are order-dependent among themselves as well as being before
+    // the sweep. Markers are DELETE-prefixed because every one of these
+    // statements NAMES the other two tables in its subqueries.
+    const resultsIdx = calls.findIndex((c) => c.includes('DELETE FROM deployment_results'));
+    const deploymentsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_deployments'));
+    const versionsIdx = calls.findIndex((c) => c.includes('DELETE FROM software_versions'));
+    expect(resultsIdx).toBeGreaterThan(-1);
+    expect(deploymentsIdx).toBeGreaterThan(resultsIdx);
+    expect(versionsIdx).toBeGreaterThan(deploymentsIdx);
+    expect(versionsIdx).toBeLessThan(firstSweepIdx);
 
     // exactly one partners delete, and it is the LAST execute() call
     expect(calls.filter((c) => c.includes('partners')).length).toBe(1);

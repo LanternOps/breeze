@@ -1389,7 +1389,10 @@
       "deploymentCancelled": "Bereitstellung abgebrochen",
       "failedToLoadDeployment": "Bereitstellung konnte nicht geladen werden",
       "loadingDeployment": "Bereitstellung wird geladen…",
-      "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen"
+      "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen",
+      "setupNeeded": "Einrichtung erforderlich",
+      "managerUnavailableSummary_one": "Auf {{count}} Gerät fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
+      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl."
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",

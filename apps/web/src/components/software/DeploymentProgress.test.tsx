@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DeploymentProgress, {
@@ -101,6 +101,31 @@ const RESULT_FAILED_NO_HOSTNAME = {
   deviceCommandId: null,
   hostname: null,
   queuedOffline: false,
+};
+
+const RESULT_MANAGER_UNAVAILABLE = {
+  id: "res-4",
+  deploymentId: DEP_ID,
+  deviceId: "device-4",
+  status: "failed",
+  startedAt: "2026-07-20T10:01:00Z",
+  completedAt: "2026-07-20T10:02:00Z",
+  exitCode: null,
+  output: null,
+  errorMessage:
+    "Package manager unavailable on this device: winget.exe not found under WindowsApps",
+  retryCount: 0,
+  deviceCommandId: null,
+  hostname: "WS-04",
+  queuedOffline: false,
+};
+
+const RESULT_MANAGER_UNAVAILABLE_2 = {
+  ...RESULT_MANAGER_UNAVAILABLE,
+  id: "res-5",
+  deviceId: "device-5",
+  hostname: "MB-05",
+  errorMessage: "Package manager unavailable on this device: brew not installed",
 };
 
 function routeFetch(opts: {
@@ -346,5 +371,89 @@ describe("DeploymentProgress", () => {
 
     fireEvent.click(screen.getByTestId("deployment-back"));
     expect(onBack).toHaveBeenCalled();
+  });
+});
+
+describe("DeploymentProgress — package manager unavailable (#3604)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    showToast.mockReset();
+  });
+
+  it("badges a manager-unavailable row as setup needed, not failed", async () => {
+    routeFetch({
+      detail: detailPayload("completed_with_errors", { failed: 2, total: 2 }),
+      results: {
+        data: [RESULT_MANAGER_UNAVAILABLE, RESULT_FAILED_NO_HOSTNAME],
+        total: 2,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    // The setup-gap row is styled apart from the genuine install failure...
+    expect(screen.getByText("Setup needed")).toBeInTheDocument();
+    expect(
+      screen.getByTestId(`deployment-result-setup-needed-${RESULT_MANAGER_UNAVAILABLE.id}`),
+    ).toBeInTheDocument();
+    // ...while a real package failure keeps the red "Failed" badge and no
+    // setup-needed marker.
+    expect(
+      within(
+        screen.getByTestId(`deployment-result-row-${RESULT_FAILED_NO_HOSTNAME.id}`),
+      ).getByText("Failed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`deployment-result-setup-needed-${RESULT_FAILED_NO_HOSTNAME.id}`),
+    ).not.toBeInTheDocument();
+    // The message itself is never swallowed.
+    expect(
+      screen.getByText(/winget.exe not found under WindowsApps/),
+    ).toBeInTheDocument();
+  });
+
+  it("groups the affected devices into one summary banner", async () => {
+    routeFetch({
+      detail: detailPayload("failed", { failed: 2, total: 2 }),
+      results: {
+        data: [RESULT_MANAGER_UNAVAILABLE, RESULT_MANAGER_UNAVAILABLE_2],
+        total: 2,
+      },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    const summary = screen.getByTestId("deployment-manager-unavailable-summary");
+    expect(summary).toHaveTextContent("2 devices are missing their package manager");
+  });
+
+  it("uses the singular form for one affected device", async () => {
+    routeFetch({
+      detail: detailPayload("failed", { failed: 1, total: 1 }),
+      results: { data: [RESULT_MANAGER_UNAVAILABLE], total: 1 },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(
+      screen.getByTestId("deployment-manager-unavailable-summary"),
+    ).toHaveTextContent("1 device is missing its package manager");
+  });
+
+  it("shows no banner when nothing hit a manager gap", async () => {
+    routeFetch({
+      detail: detailPayload("completed_with_errors", { failed: 1, total: 1 }),
+      results: { data: [RESULT_FAILED_NO_HOSTNAME], total: 1 },
+    });
+
+    render(<DeploymentProgress deploymentId={DEP_ID} />);
+    await screen.findByText("Chrome Rollout");
+
+    expect(
+      screen.queryByTestId("deployment-manager-unavailable-summary"),
+    ).not.toBeInTheDocument();
   });
 });

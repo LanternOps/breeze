@@ -102,7 +102,7 @@ import {
   softwareVersions,
 } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
-import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { cascadeDeleteOrg, cascadeDeletePartner } from '../../services/tenantCascade';
 
 const MIGRATIONS_DIR = join(__dirname, '../../../migrations');
 const MIGRATION_A = join(MIGRATIONS_DIR, '2026-08-16-a-software-install-methods.sql');
@@ -570,4 +570,101 @@ describe('org erasure removes the whole software chain', () => {
     expect(await countWhere('software_deployments', 'org_id', orgB.id)).toBe(2);
     expect(await countWhere('deployment_results', 'device_id', chainB.device.id)).toBe(2);
   }, 60_000);
+});
+
+describe('partner erasure removes the partner-owned software chain (#3600)', () => {
+  /**
+   * The org-axis pre-clears added with the install-method work are keyed on
+   * `software_catalog.org_id`, so they do not reach a catalog item owned on the
+   * PARTNER axis (epic #2135 dual ownership: org_id XOR partner_id).
+   * `cascadeDeletePartner`'s sweep runs `DELETE FROM software_catalog WHERE
+   * partner_id = $1`, and `software_versions.catalog_id` is a NO ACTION FK with
+   * no tenancy column of its own — so before the partner-axis pre-clears, any
+   * partner whose built-in catalog item ever had a version row aborted the
+   * whole purge with 23503. This fixture is that regression guard.
+   */
+  const countWhere = async (table: string, column: string, value: string) => {
+    const rows = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM ${sql.raw(`"${table}"`)} WHERE ${sql.raw(`"${column}"`)} = ${value}`,
+    )) as unknown as Array<{ n: number }>;
+    return rows[0]?.n ?? 0;
+  };
+
+  /** Partner-owned (built-in integration) catalog item + version + method. */
+  async function seedPartnerChain(partnerId: string) {
+    const [catalog] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({
+        partnerId,
+        integrationProvider: 'huntress',
+        name: `Huntress ${partnerId.slice(0, 8)}`,
+        vendor: 'Huntress',
+      })
+      .returning();
+    if (!catalog) throw new Error('failed to seed partner catalog item');
+    const [version] = await getTestDb()
+      .insert(softwareVersions)
+      .values({ catalogId: catalog.id, version: '2.0.0', fileType: 'exe', isLatest: true })
+      .returning();
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Huntress.Agent');
+    return { catalog, version: version!, method };
+  }
+
+  it('cascadeDeletePartner erases a partner-owned catalog/version/method and spares the other partner', async () => {
+    const partnerA = await createPartner();
+    const partnerB = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const chainA = await seedPartnerChain(partnerA.id);
+    const chainB = await seedPartnerChain(partnerB.id);
+
+    // A child-org deployment against the PARTNER-owned method: the per-org
+    // cascade must clear it before the partner sweep reaches the catalog.
+    const site = await createSite({ orgId: orgA.id });
+    const [device] = await getTestDb()
+      .insert(devices)
+      .values({
+        orgId: orgA.id,
+        siteId: site.id,
+        agentId: `partner-erasure-agent-${crypto.randomUUID()}`,
+        hostname: 'partner-erasure-host',
+        osType: 'windows',
+        osVersion: '11',
+        architecture: 'amd64',
+        agentVersion: '1.0.0',
+      })
+      .returning();
+    const [deployment] = await getTestDb()
+      .insert(softwareDeployments)
+      .values({
+        orgId: orgA.id,
+        name: 'built-in EDR rollout',
+        deploymentType: 'install',
+        targetType: 'devices',
+        scheduleType: 'immediate',
+        installMethodId: chainA.method.id,
+      })
+      .returning();
+    await getTestDb()
+      .insert(deploymentResults)
+      .values({ deploymentId: deployment!.id, deviceId: device!.id, status: 'completed' });
+
+    expect(await countWhere('software_versions', 'catalog_id', chainA.catalog.id)).toBe(1);
+
+    // The assertion that matters: this used to throw 23503 on software_catalog.
+    const stats = await cascadeDeletePartner(partnerA.id, PERFORMED_BY);
+
+    expect(await countWhere('software_catalog', 'partner_id', partnerA.id)).toBe(0);
+    expect(await countWhere('software_versions', 'catalog_id', chainA.catalog.id)).toBe(0);
+    expect(await countWhere('software_install_methods', 'catalog_id', chainA.catalog.id)).toBe(0);
+    expect(await countWhere('software_deployments', 'org_id', orgA.id)).toBe(0);
+    expect(await countWhere('deployment_results', 'device_id', device!.id)).toBe(0);
+
+    // The partner-axis pre-clear genuinely ran rather than matching zero rows.
+    expect(stats.tablesDeleted['software_versions']).toBeGreaterThanOrEqual(1);
+
+    // Partner B is untouched — including its org_id-less children.
+    expect(await countWhere('software_catalog', 'partner_id', partnerB.id)).toBe(1);
+    expect(await countWhere('software_versions', 'catalog_id', chainB.catalog.id)).toBe(1);
+    expect(await countWhere('software_install_methods', 'catalog_id', chainB.catalog.id)).toBe(1);
+  }, 120_000);
 });
