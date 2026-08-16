@@ -15,17 +15,83 @@
  * inbound worker and threadMatcher actually execute in production.
  */
 import './setup';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
-import { withSystemDbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { buildDbAccessContext } from '../../middleware/auth';
 import { ticketEmailLinks, tickets, ticketComments, organizations, partners } from '../../db/schema';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { claimMessageLink, findLinkByMessageId } from '../../services/ticketEmailLinks';
 import { findTicketInPartner, findClosedTicketInPartner } from '../../services/inboundEmail/threadMatcher';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
 import type { NormalizedInboundEmail } from '../../services/inboundEmail/types';
-import { partnerInboundDomains, portalUsers } from '../../db/schema';
+import { partnerInboundDomains, portalUsers, users } from '../../db/schema';
+import { officeAddinTicketRoutes } from '../../routes/officeAddin/tickets';
+
+// --- Task 16 harness ---------------------------------------------------------
+// The add-in route is exercised for real (HTTP -> Hono -> handler -> Postgres);
+// only the tech-auth middleware is replaced, with a stub that publishes the same
+// `officeAddinAuth` principal AND opens the SAME partner-scope
+// withDbAccessContext transaction the real middleware opens. That transaction is
+// the thing under test: the route's nested db.transaction(...) must behave as a
+// SAVEPOINT inside it.
+const addinAuthRef: {
+  current: { userId: string; partnerId: string; orgIds: string[] } | null;
+} = { current: null };
+
+// One-shot switch that makes the route's `findLinkByMessageId` pre-check miss
+// exactly once, which is how a real interleave looks: the poller commits its
+// claim AFTER the add-in's pre-check ran and BEFORE its own claim. Only the
+// ROUTE's import is affected — `claimMessageLink` reads back the winner through
+// the module's internal binding, which stays real.
+const preCheckBlindOnce = { armed: false };
+
+vi.mock('../../middleware/officeAddinTechAuth', () => ({
+  officeAddinTechAuthMiddleware: async (c: any, next: any) => {
+    const principal = addinAuthRef.current!;
+    c.set('officeAddinAuth', {
+      userId: principal.userId,
+      partnerId: principal.partnerId,
+      bindingId: '00000000-0000-4000-8000-000000000001',
+      token: 'integration-token',
+      user: { email: 'tech@partner.test', name: 'Integration Tech' },
+      accessibleOrgIds: principal.orgIds,
+      partnerOrgAccess: 'selected',
+      permissions: {},
+      canAccessOrg: (orgId: string) => principal.orgIds.includes(orgId),
+      canAccessSite: () => true,
+    });
+    return withDbAccessContext(
+      buildDbAccessContext({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: principal.orgIds,
+        partnerId: principal.partnerId,
+        userId: principal.userId,
+      }),
+      next
+    );
+  },
+  requireAddinCapability: () => async (_c: any, next: any) => next(),
+}));
+
+vi.mock('../../services/ticketEmailLinks', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketEmailLinks')>(
+    '../../services/ticketEmailLinks'
+  );
+  return {
+    ...actual,
+    findLinkByMessageId: async (partnerId: string, messageId: string) => {
+      if (preCheckBlindOnce.armed) {
+        preCheckBlindOnce.armed = false;
+        return null;
+      }
+      return actual.findLinkByMessageId(partnerId, messageId);
+    },
+  };
+});
 
 const uniqueSuffix = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -64,14 +130,18 @@ afterAll(async () => {
     sql`${ticketComments.ticketId} IN (SELECT id FROM tickets WHERE partner_id IN (${partnerList}))`
   );
   await db.delete(partnerInboundDomains).where(sql`${partnerInboundDomains.partnerId} IN (${partnerList})`);
-  await db.delete(portalUsers).where(sql`${portalUsers.orgId} IN (${orgList})`);
+  // tickets BEFORE portal_users: tickets.submitted_by references portal_users
+  // with no ON DELETE, and the Task 16 poller path stamps a requester.
   await db.delete(tickets).where(sql`${tickets.partnerId} IN (${partnerList})`);
+  await db.delete(portalUsers).where(sql`${portalUsers.orgId} IN (${orgList})`);
   await db.execute(sql`DELETE FROM partner_ticket_sequences WHERE partner_id IN (${partnerList})`);
   await db.transaction(async (tx: any) => {
     await tx.execute(sql`SET LOCAL session_replication_role = replica`);
     await tx.execute(sql`DELETE FROM audit_logs WHERE org_id IN (${orgList})`);
   });
+  await db.execute(sql`DELETE FROM ticket_email_inbound WHERE partner_id IN (${partnerList})`);
   await db.delete(organizations).where(sql`${organizations.id} IN (${orgList})`);
+  await db.delete(users).where(sql`${users.partnerId} IN (${partnerList})`);
   await db.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
 });
 
@@ -190,5 +260,153 @@ describe('ticket_email_links claim', () => {
     );
     expect(closedMatch).not.toBeNull();
     expect(closedMatch!.id).toBe(closedTicketId);
+  });
+});
+
+/**
+ * Task 16 — POST /office-addin/tickets/from-email vs. the inbound poller.
+ *
+ * The route creates the ticket, stamps threading and claims the Message-ID
+ * inside a NESTED db.transaction(...), which under drizzle's postgres-js driver
+ * is a SAVEPOINT on the request transaction. Losing the claim throws out of that
+ * callback, so ROLLBACK TO SAVEPOINT discards the duplicate ticket while the
+ * request transaction survives to read back the winner's association. These
+ * tests prove that against real Postgres — the mocked route tests cannot.
+ */
+describe('add-in create vs. inbound poller (Task 16)', () => {
+  async function seedTechAndSender() {
+    const suffix = uniqueSuffix();
+    const domain = `addin-${suffix}.tickets.test`;
+    await admin()
+      .insert(partnerInboundDomains)
+      .values({ partnerId: fx.partnerId, domain, provider: 'mailgun', verificationStatus: 'verified' });
+
+    const senderEmail = `sender-${suffix}@known.test`;
+    await admin().insert(portalUsers).values({ orgId: fx.orgId, email: senderEmail, name: 'Known Sender' });
+
+    const tech = await createUser({ partnerId: fx.partnerId, email: `tech-${suffix}@partner.test` });
+    addinAuthRef.current = { userId: tech.id, partnerId: fx.partnerId, orgIds: [fx.orgId] };
+    return { suffix, domain, senderEmail };
+  }
+
+  function pollerEmail(args: { domain: string; senderEmail: string; messageId: string; suffix: string }) {
+    return {
+      provider: 'mailgun',
+      providerMessageId: `<provider-${args.suffix}@customer.test>`,
+      to: `support@${args.domain}`,
+      from: args.senderEmail,
+      fromName: 'Known Sender',
+      subject: `Poller ${args.suffix}`,
+      text: 'Sent from the customer mailbox.',
+      inReplyTo: null,
+      references: [],
+      messageId: args.messageId,
+      senderAuth: { spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true },
+      attachments: [],
+      raw: {}
+    } as unknown as NormalizedInboundEmail;
+  }
+
+  function callAddin(body: Record<string, unknown>) {
+    const app = new Hono();
+    app.route('/', officeAddinTicketRoutes);
+    return app.request('/tickets/from-email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function ticketsWithSubject(subject: string): Promise<number> {
+    const rows = await admin()
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(and(eq(tickets.partnerId, fx.partnerId), eq(tickets.subject, subject)));
+    return rows.length;
+  }
+
+  it('rolls the losing add-in ticket back to the savepoint and returns the winner association', async () => {
+    const { suffix, domain, senderEmail } = await seedTechAndSender();
+    const messageId = `<addin-race-${suffix}@customer.test>`;
+    const addinSubject = `Addin ${suffix}`;
+
+    // The poller wins: it ingests and COMMITS the claim first.
+    await withSystemDbAccessContext(() =>
+      processInboundEmail(pollerEmail({ domain, senderEmail, messageId, suffix }))
+    );
+    const winnerLink = await withSystemDbAccessContext(() => findLinkByMessageId(fx.partnerId, messageId));
+    expect(winnerLink).not.toBeNull();
+
+    // Reproduce the interleave: the add-in's idempotency pre-check runs BEFORE
+    // the poller's row is visible, so the route proceeds to create + claim.
+    preCheckBlindOnce.armed = true;
+    const res = await callAddin({
+      orgId: fx.orgId,
+      subject: addinSubject,
+      description: 'Technician-composed body.',
+      from: { email: senderEmail, name: 'Known Sender' },
+      internetMessageId: messageId,
+      requester: { kind: 'raw' },
+    });
+    expect(preCheckBlindOnce.armed).toBe(false); // the pre-check really was exercised
+
+    // The route hands back the poller's ticket, not a second one.
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.alreadyExisted).toBe(true);
+    expect(body.ticket.id).toBe(winnerLink!.ticketId);
+
+    // ROLLBACK EVIDENCE: the ticket the handler created before losing the claim
+    // does not exist. (Without the savepoint it would be committed by the
+    // request transaction, since onConflictDoNothing raises no error.)
+    expect(await ticketsWithSubject(addinSubject)).toBe(0);
+
+    // Exactly one association, still the poller's.
+    const links = await admin()
+      .select()
+      .from(ticketEmailLinks)
+      .where(and(eq(ticketEmailLinks.partnerId, fx.partnerId), eq(ticketEmailLinks.messageId, messageId)));
+    expect(links).toHaveLength(1);
+    expect(links[0].ticketId).toBe(winnerLink!.ticketId);
+    expect(links[0].origin).toBe('inbound');
+  });
+
+  it('concurrent add-in create and poller ingest of the same message yield exactly one association', async () => {
+    const { suffix, domain, senderEmail } = await seedTechAndSender();
+    const messageId = `<addin-concurrent-${suffix}@customer.test>`;
+    const addinSubject = `Addin ${suffix}`;
+
+    const [res] = await Promise.all([
+      callAddin({
+        orgId: fx.orgId,
+        subject: addinSubject,
+        description: 'Technician-composed body.',
+        from: { email: senderEmail, name: 'Known Sender' },
+        internetMessageId: messageId,
+        requester: { kind: 'raw' },
+      }),
+      withSystemDbAccessContext(() =>
+        processInboundEmail(pollerEmail({ domain, senderEmail, messageId, suffix }))
+      ),
+    ]);
+
+    // ONE association for the message, whichever side won.
+    const links = await admin()
+      .select()
+      .from(ticketEmailLinks)
+      .where(and(eq(ticketEmailLinks.partnerId, fx.partnerId), eq(ticketEmailLinks.messageId, messageId)));
+    expect(links).toHaveLength(1);
+
+    // And the add-in's ticket exists if and only if the add-in won the claim.
+    const addinTickets = await ticketsWithSubject(addinSubject);
+    if (res.status === 201) {
+      expect(addinTickets).toBe(1);
+      expect(links[0].origin).toBe('addin_create');
+      expect(links[0].ticketId).toBe((await res.json()).ticket.id);
+    } else {
+      expect([200, 409]).toContain(res.status);
+      expect(addinTickets).toBe(0);
+      expect(links[0].origin).toBe('inbound');
+    }
   });
 });

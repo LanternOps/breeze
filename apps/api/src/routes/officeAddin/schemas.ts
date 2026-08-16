@@ -47,3 +47,18 @@ export const emailContextSchema = z.object({
 export const orgSearchSchema = z.object({
   query: z.string().min(1).max(200),
 });
+
+/** Body of POST /office-addin/tickets/from-email (spec §3.2, Task 16). */
+export const fromEmailSchema = z.object({
+  orgId: z.string().uuid(),
+  subject: z.string().min(1).max(255),
+  description: z.string().min(1).max(100_000),
+  from: z.object({ email: z.string().email().max(320), name: z.string().max(255).nullish() }),
+  internetMessageId: z.string().max(998).nullish(),
+  requester: z.union([
+    z.object({ kind: z.literal('portal_user'), id: z.string().uuid() }),
+    z.object({ kind: z.literal('create_contact'), email: z.string().email().max(320), name: z.string().max(255).nullish() }), // deliberate, technician-confirmed
+    z.object({ kind: z.literal('raw') }), // submitter_email/name only
+  ]),
+  followUpOf: z.object({ ticketId: z.string().uuid() }).nullish(), // closed-ticket continuation: carries thread key + prior number
+});
