@@ -111,4 +111,65 @@ describe('enrichFromCatalog', () => {
     expect(out.vendor).toBe('Acme');
     expect(out.severity).toBe('low');
   });
+
+  // #3559: agents report provider-prefixed ids (formatPatchID → "winget:...")
+  // while the catalog stores bare ids. The prefixed id must still enrich.
+  it('matches a provider-prefixed packageId against the bare catalog id', async () => {
+    const out = await enrichFromCatalog({
+      source: 'third_party',
+      packageId: 'winget:Mozilla.Firefox',
+      title: 'firefox',
+      vendor: null,
+      severity: 'unknown',
+    });
+    expect(out.matchedCatalogId).toBe('cat-firefox');
+    expect(out.title).toBe('Mozilla Firefox');
+    expect(out.vendor).toBe('Mozilla');
+    expect(out.severity).toBe('important');
+  });
+
+  it('still misses when even the prefix-stripped packageId is not in the catalog', async () => {
+    const out = await enrichFromCatalog({
+      source: 'third_party',
+      packageId: 'winget:Unknown.Package',
+      title: 'Unknown',
+      vendor: 'Acme',
+      severity: 'low',
+    });
+    expect(out.matchedCatalogId).toBeNull();
+    expect(out.title).toBe('Unknown');
+    expect(out.vendor).toBe('Acme');
+  });
+
+  // Only the winget prefix is stripped. winget/chocolatey/homebrew all share
+  // source 'third_party' and the catalog has no provider dimension, so a
+  // non-winget provider must NOT inherit a winget-curated row (would be a
+  // cross-provider mis-enrichment).
+  it.each(['chocolatey:Mozilla.Firefox', 'homebrew:Mozilla.Firefox', 'anything:Mozilla.Firefox'])(
+    'does not enrich a non-winget prefixed id (%s) from the winget catalog row',
+    async (packageId) => {
+      const out = await enrichFromCatalog({
+        source: 'third_party',
+        packageId,
+        title: 'orig',
+        vendor: 'orig-vendor',
+        severity: 'low',
+      });
+      expect(out.matchedCatalogId).toBeNull();
+      expect(out.title).toBe('orig');
+      expect(out.vendor).toBe('orig-vendor');
+    },
+  );
+
+  it('prefers an exact catalog match over prefix-stripping (bare id already matches)', async () => {
+    // The bare id path still works unchanged.
+    const out = await enrichFromCatalog({
+      source: 'third_party',
+      packageId: 'Mozilla.Firefox',
+      title: 'firefox',
+      vendor: null,
+      severity: 'unknown',
+    });
+    expect(out.matchedCatalogId).toBe('cat-firefox');
+  });
 });
