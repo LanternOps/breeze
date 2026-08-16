@@ -67,14 +67,16 @@ Cross-check against `queue.md`. Add anything new, mark anything closed/merged, f
 ```bash
 # The defect list — the number that should actually trend down
 gh issue list --repo LanternOps/breeze --state open --limit 200 \
-  --label bug --label tech-debt --label ci-red    # OR-semantics: any of these
+  --search 'label:bug,tech-debt,ci-red'
 # Roadmap — feature work; triage it, don't count it as debt
 gh issue list --repo LanternOps/breeze --state open --limit 200 --label enhancement
 # Waiting on someone else — sweep for stale ones each round
-gh issue list --repo LanternOps/breeze --state open --label pending-author --label needs-info
+gh issue list --repo LanternOps/breeze --state open --search 'label:pending-author,needs-info'
 ```
 
 An unlabeled issue is invisible to all three, so **label on sight** — that's what let 69 issues escape triage entirely before 2026-08-16.
+
+**Repeated `--label` is AND, not OR.** `--label bug --label tech-debt` returns only issues carrying *both*, which for these labels is zero — a silently empty result that reads exactly like "no defects." Use `--search 'label:a,b,c'` (comma = OR) whenever you want any-of semantics, and sanity-check the count against `--state open` before believing a small number.
 
 **The universal staleness trap — "I responded but the queue memory is stale" applies to ALL THREE types.** For every open item, compare the *last-activity author + date* against my last engagement. If someone else spoke after me with a date past my last action, **I'm the blocker** — read the full thread before deciding what's open. This is the single most common failure mode and it is type-agnostic:
 
