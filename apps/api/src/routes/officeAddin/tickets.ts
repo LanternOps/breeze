@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { db } from '../../db';
 import { tickets } from '../../db/schema';
@@ -36,9 +36,8 @@ import { fromEmailSchema } from './schemas';
  *   So the create+stamp+claim sequence runs inside a NESTED `db.transaction(...)`.
  *   Under drizzle's postgres-js driver a nested transaction is a SAVEPOINT
  *   (PostgresJsTransaction.transaction -> session.client.savepoint), so throwing
- *   `MessageClaimRaceError` out of that callback emits ROLLBACK TO SAVEPOINT:
- *   the losing ticket, its threading stamp and its number allocation are
- *   discarded, while the enclosing request transaction stays alive and usable.
+ *   `MessageClaimRaceError` out of that callback emits ROLLBACK TO SAVEPOINT,
+ *   while the enclosing request transaction stays alive and usable.
  *   The statements inside the callback are issued through the ambient `db`
  *   proxy (which resolves to the OUTER transaction) rather than the savepoint's
  *   own `tx` handle — that is deliberate and correct: a savepoint is a
@@ -58,6 +57,26 @@ import { fromEmailSchema } from './schemas';
  *   scoped query — no `runOutsideDbContext` / system-context escalation is
  *   needed, because the request transaction was never aborted and the caller's
  *   partner-scope context still grants exactly the visibility we want.
+ *
+ *   WHAT THE SAVEPOINT DOES AND DOES NOT UNDO. It undoes exactly the writes
+ *   issued on THIS connection inside the callback: the `tickets` row, its
+ *   threading stamp, and the `ticket_email_links` claim attempt. It does NOT
+ *   undo work that deliberately leaves this connection or this transaction:
+ *     - `allocateInternalTicketNumber` runs under
+ *       `runOutsideDbContext(withSystemDbAccessContext(...))`, i.e. its own
+ *       short transaction on another connection. The loser therefore BURNS a
+ *       per-partner counter value. That is by design (see ticketNumbers.ts:12 —
+ *       gaps in ticket numbers are acceptable, and holding the partner row lock
+ *       inside the request transaction would be worse).
+ *     - `emitTicketEvent` enqueues a BullMQ job for a ticket id that will not
+ *       exist. Ticket-event consumers already MUST treat ticket-not-found as
+ *       retryable rather than terminal (ticketService.ts:337), so the job
+ *       retries and expires instead of corrupting anything.
+ *     - `createAuditLogAsync` leaves an orphan `ticket.create` audit row.
+ *   All three are pre-existing consequences of the shapes those helpers chose;
+ *   the route adds no new escape. The route's OWN audit event
+ *   (`office_addin.ticket.created_from_email`) is written only after the nested
+ *   transaction commits, so it never describes a ticket that vanished.
  *
  * Proven end-to-end against real Postgres in
  * `src/__tests__/integration/ticketEmailLinksClaim.integration.test.ts`
@@ -117,13 +136,37 @@ function toSummary(row: TicketRowForSummary, submitterEmail: string | null): Add
   };
 }
 
-/** Partner-scoped ticket load. RLS narrows further; the explicit partner
- *  predicate is the app-layer half of the same boundary. */
-async function loadTicket(ticketId: string, partnerId: string): Promise<TicketRowForSummary | null> {
+/**
+ * Partner-scoped ticket load. RLS narrows further; the explicit partner
+ * predicate is the app-layer half of the same boundary.
+ *
+ * `excludeDeleted` is opt-in per call site, because the two callers want
+ * opposite things from a soft-deleted ticket:
+ *   - the follow-up branch MUST exclude it. Continuing a deleted closed
+ *     original is precisely what threadMatcher.ts:123 refuses to do ("a deleted
+ *     closed original must not spawn a continuation"), and this route would
+ *     otherwise be a way around that invariant.
+ *   - the link fast path MUST NOT. A `ticket_email_links` row outlives the soft
+ *     delete of its ticket, so hiding it here would make the route mint a
+ *     SECOND ticket for a message that is already claimed — the exact duplicate
+ *     the ledger exists to prevent. Answering `alreadyExisted` with a
+ *     soft-deleted ticket is the lesser evil.
+ */
+async function loadTicket(
+  ticketId: string,
+  partnerId: string,
+  opts: { excludeDeleted?: boolean } = {}
+): Promise<TicketRowForSummary | null> {
   const rows = await db
     .select(SUMMARY_COLUMNS)
     .from(tickets)
-    .where(and(eq(tickets.id, ticketId), eq(tickets.partnerId, partnerId)))
+    .where(
+      and(
+        eq(tickets.id, ticketId),
+        eq(tickets.partnerId, partnerId),
+        ...(opts.excludeDeleted ? [isNull(tickets.deletedAt)] : [])
+      )
+    )
     .limit(1);
   return (rows[0] as TicketRowForSummary | undefined) ?? null;
 }
@@ -204,8 +247,15 @@ officeAddinTicketRoutes.post(
     let carryThreadKey: string | null = null;
     let description = input.description;
     if (input.followUpOf) {
-      const prior = await loadTicket(input.followUpOf.ticketId, auth.partnerId);
-      if (!prior || !auth.canAccessOrg(prior.orgId)) {
+      const prior = await loadTicket(input.followUpOf.ticketId, auth.partnerId, { excludeDeleted: true });
+      // SAME-ORG, not merely reachable. A technician with two orgs in their
+      // grant passes canAccessOrg for both, so an org check alone would let
+      // org B's new ticket inherit org A's email_thread_key — and
+      // findTicketInPartner matches thread keys PARTNER-wide with limit(1), so
+      // the customer's next reply on org A's thread would deterministically
+      // land on org B's ticket. The inbound path has no such hole: it always
+      // continues in the closed original's own org (inboundEmailService.ts:306).
+      if (!prior || prior.orgId !== input.orgId) {
         return c.json({ error: 'not_found' }, 404);
       }
       if (prior.status !== 'closed') {

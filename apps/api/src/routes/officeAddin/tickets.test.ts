@@ -107,12 +107,18 @@ import { officeAddinTicketRoutes } from './tickets';
 // `update(tickets).set(...).where(...)` records the SET payload.
 let ticketSelectQueue: unknown[][] = [];
 let updateSets: Record<string, unknown>[] = [];
+// One entry per ticket SELECT, in order — the real drizzle condition object, so
+// the presence/absence of the soft-delete predicate is inspectable.
+let selectWhereArgs: string[] = [];
 
 function primeDb() {
   mockDb.select.mockImplementation(
     ((_cols?: unknown) => ({
       from: () => ({
-        where: () => ({ limit: () => Promise.resolve(ticketSelectQueue.shift() ?? []) }),
+        where: (...args: unknown[]) => {
+          selectWhereArgs.push(JSON.stringify(args));
+          return { limit: () => Promise.resolve(ticketSelectQueue.shift() ?? []) };
+        },
       }),
     })) as never
   );
@@ -176,6 +182,7 @@ beforeEach(() => {
   authRef.current = { accessibleOrgIds: null };
   ticketSelectQueue = [];
   updateSets = [];
+  selectWhereArgs = [];
   primeDb();
   hoisted.findLinkByMessageId.mockResolvedValue(null);
   hoisted.ticketThreadAnchor.mockReturnValue('<ticket-' + NEW_TICKET_ID + '@tickets.example.com>');
@@ -384,6 +391,54 @@ describe('POST /tickets/from-email', () => {
       emailMessageId: MSG_ID,
       emailThreadKey: '<ticket-old@tickets.example.com>',
     });
+  });
+
+  it('404s on a cross-org follow-up even when the technician can reach both orgs', async () => {
+    authRef.current = { accessibleOrgIds: [ORG_A, ORG_B] };
+    // Closed, reachable, same partner — but it lives in ORG_B while the new
+    // ticket is requested in ORG_A. Carrying its thread key would hijack ORG_B's
+    // thread onto an ORG_A ticket (findTicketInPartner matches partner-wide).
+    ticketSelectQueue.push([
+      ticketRow({
+        id: CLOSED_TICKET_ID,
+        orgId: ORG_B,
+        status: 'closed',
+        internalNumber: 'T-2026-0001',
+        emailThreadKey: '<ticket-orgb@tickets.example.com>',
+      }),
+    ]);
+
+    const res = await post({ ...baseBody, followUpOf: { ticketId: CLOSED_TICKET_ID } });
+    expect(res.status).toBe(404);
+    expect(hoisted.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('excludes soft-deleted tickets from the follow-up lookup but not from the link fast path', async () => {
+    ticketSelectQueue.push([
+      ticketRow({ id: CLOSED_TICKET_ID, status: 'closed', emailThreadKey: '<old@x>' }),
+    ]);
+    await post({ ...baseBody, followUpOf: { ticketId: CLOSED_TICKET_ID } });
+    // A deleted closed original must not spawn a continuation (threadMatcher.ts).
+    expect(selectWhereArgs[0]).toContain('tickets.deleted_at');
+
+    // The fast path must still resolve a link whose ticket was soft-deleted —
+    // hiding it would mint a duplicate for an already-claimed message.
+    selectWhereArgs = [];
+    hoisted.findLinkByMessageId.mockResolvedValue({
+      id: 'link-1',
+      ticketId: OTHER_TICKET_ID,
+      orgId: ORG_A,
+      partnerId: PARTNER_ID,
+      messageId: MSG_ID,
+      origin: 'inbound',
+      visibility: 'public',
+      linkedBy: null,
+      commentId: null,
+    });
+    ticketSelectQueue.push([ticketRow({ id: OTHER_TICKET_ID })]);
+    const res = await post(baseBody);
+    expect(res.status).toBe(200);
+    expect(selectWhereArgs[0]).not.toContain('tickets.deleted_at');
   });
 
   it('400s when the follow-up target is not closed', async () => {
