@@ -24,13 +24,69 @@ type SoftwareVersionOption = {
   version: string;
   isLatest: boolean;
 };
+/** One row of GET /software/catalog/:id/install-methods. */
+type InstallMethodOption = {
+  id: string;
+  platform: string;
+  kind: string;
+  packageId: string;
+  enabled: boolean;
+};
 type SoftwareOption = {
   id: string;
   name: string;
   vendor: string;
   versions: SoftwareVersionOption[];
+  /** winget/Homebrew methods linked to this catalog item (Task 2 route). */
+  installMethods: InstallMethodOption[];
   category: string;
 };
+/** Platform buckets the API can serve an install method for. */
+type MethodPlatform = "windows" | "macos";
+/** Map a device's `osType` onto the install-method platform axis. */
+function methodPlatformForOs(osType: string | undefined): MethodPlatform | null {
+  const normalized = (osType ?? "").toLowerCase();
+  if (normalized.includes("win")) return "windows";
+  if (normalized.includes("mac") || normalized.includes("darwin"))
+    return "macos";
+  return null;
+}
+/** Human label for the OS-coverage callout ("3 selected Linux devices …"). */
+function osLabel(osType: string | undefined): string {
+  const platform = methodPlatformForOs(osType);
+  if (platform === "windows")
+    return i18n.t("policies:software.deploymentWizard.osWindows");
+  if (platform === "macos")
+    return i18n.t("policies:software.deploymentWizard.osMacos");
+  if ((osType ?? "").toLowerCase().includes("linux"))
+    return i18n.t("policies:software.deploymentWizard.osLinux");
+  return i18n.t("policies:software.deploymentWizard.osUnknown");
+}
+/** Manager name for a method kind — product names, deliberately untranslated. */
+export function methodKindLabel(kind: string): string {
+  if (kind === "winget") return "winget";
+  if (kind === "homebrew_cask") return "brew cask";
+  if (kind === "homebrew_formula") return "brew formula";
+  return kind;
+}
+const enabledMethodsOf = (item: SoftwareOption | undefined) =>
+  item?.installMethods.filter((method) => method.enabled) ?? [];
+/**
+ * A catalog item is deployable when it has an uploaded version OR at least one
+ * enabled package-manager method (winget/Homebrew items ship zero versions).
+ */
+export function isDeployableSoftware(item: SoftwareOption): boolean {
+  return item.versions.length > 0 || enabledMethodsOf(item).length > 0;
+}
+/**
+ * Manager path = the item has no uploaded version to deploy, so the install is
+ * delegated to winget/Homebrew. An item carrying BOTH keeps the version path
+ * (the API accepts exactly one of softwareVersionId / catalogId).
+ */
+export function usesManagerPath(item: SoftwareOption | undefined): boolean {
+  if (!item) return false;
+  return item.versions.length === 0 && enabledMethodsOf(item).length > 0;
+}
 type TargetNode = {
   id: string;
   name: string;
@@ -120,9 +176,23 @@ function normalizeVersion(
     isLatest: Boolean(raw.isLatest ?? raw.is_latest ?? false),
   };
 }
+function normalizeInstallMethod(
+  raw: Record<string, unknown>,
+  index: number,
+): InstallMethodOption {
+  return {
+    id: String(raw.id ?? `method-${index}`),
+    platform: String(raw.platform ?? ""),
+    kind: String(raw.kind ?? ""),
+    packageId: String(raw.packageId ?? raw.package_id ?? ""),
+    // Rows are enabled by default server-side; only an explicit false disables.
+    enabled: raw.enabled !== false,
+  };
+}
 function normalizeSoftware(
   raw: Record<string, unknown>,
   versions: SoftwareVersionOption[],
+  installMethods: InstallMethodOption[],
   index: number,
 ): SoftwareOption {
   return {
@@ -130,6 +200,7 @@ function normalizeSoftware(
     name: String(raw.name ?? raw.softwareName ?? "Unknown"),
     vendor: String(raw.vendor ?? raw.publisher ?? ""),
     versions,
+    installMethods,
     category: String(raw.category ?? raw.type ?? "Software"),
   };
 }
@@ -226,6 +297,15 @@ export default function DeploymentWizard({
   const [targetTree, setTargetTree] = useState<TargetNode[]>([]);
   const [selectedSoftwareId, setSelectedSoftwareId] = useState<string>("");
   const [selectedVersionId, setSelectedVersionId] = useState<string>("");
+  // Package-manager deploys pin either the manager's latest, or an exact
+  // version (winget only — Homebrew cannot install a specific version).
+  const [versionMode, setVersionMode] = useState<"latest" | "exact">("latest");
+  const [requestedVersion, setRequestedVersion] = useState("");
+  // deviceId → osType, used by the manager OS-coverage callout on the targets
+  // step (the target tree only carries ids/names).
+  const [deviceOsById, setDeviceOsById] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   // Seeded from a device-list bulk selection (#2866) so the targets step shows
   // the carried-over devices pre-checked in the default tree mode.
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(
@@ -264,31 +344,60 @@ export default function DeploymentWizard({
         const rawCatalog =
           asList(catalogPayload, 'catalog');
         const catalogRows = Array.isArray(rawCatalog) ? rawCatalog : [];
-        const versionResults = await Promise.allSettled(
-          catalogRows.map(async (row) => {
-            const catalogId = String((row as Record<string, unknown>).id ?? "");
-            if (!catalogId) return [] as SoftwareVersionOption[];
-            const response = await fetchWithAuth(
-              `/software/catalog/${catalogId}/versions`,
-            );
-            if (!response.ok) return [] as SoftwareVersionOption[];
-            const payload = await response.json();
-            const rawVersions =
-              asList(payload, 'versions');
-            if (!Array.isArray(rawVersions))
-              return [] as SoftwareVersionOption[];
-            return rawVersions
-              .map((version: Record<string, unknown>, index: number) =>
-                normalizeVersion(version, index),
-              )
-              .filter((version) => version.version);
-          }),
-        );
+        // Versions and package-manager install methods are fetched in parallel:
+        // a manager-linked item has zero versions but is still deployable.
+        const [versionResults, methodResults] = await Promise.all([
+          Promise.allSettled(
+            catalogRows.map(async (row) => {
+              const catalogId = String(
+                (row as Record<string, unknown>).id ?? "",
+              );
+              if (!catalogId) return [] as SoftwareVersionOption[];
+              const response = await fetchWithAuth(
+                `/software/catalog/${catalogId}/versions`,
+              );
+              if (!response.ok) return [] as SoftwareVersionOption[];
+              const payload = await response.json();
+              const rawVersions =
+                asList(payload, 'versions');
+              if (!Array.isArray(rawVersions))
+                return [] as SoftwareVersionOption[];
+              return rawVersions
+                .map((version: Record<string, unknown>, index: number) =>
+                  normalizeVersion(version, index),
+                )
+                .filter((version) => version.version);
+            }),
+          ),
+          Promise.allSettled(
+            catalogRows.map(async (row) => {
+              const catalogId = String(
+                (row as Record<string, unknown>).id ?? "",
+              );
+              if (!catalogId) return [] as InstallMethodOption[];
+              const response = await fetchWithAuth(
+                `/software/catalog/${catalogId}/install-methods`,
+              );
+              if (!response.ok) return [] as InstallMethodOption[];
+              const payload = await response.json();
+              const rawMethods = asList(payload, 'installMethods');
+              if (!Array.isArray(rawMethods)) return [] as InstallMethodOption[];
+              return rawMethods
+                .map((method: Record<string, unknown>, index: number) =>
+                  normalizeInstallMethod(method, index),
+                )
+                .filter((method) => method.kind && method.packageId);
+            }),
+          ),
+        ]);
         normalizedCatalog = catalogRows.map((row, index) =>
           normalizeSoftware(
             row as Record<string, unknown>,
             versionResults[index]?.status === "fulfilled"
               ? versionResults[index].value
+              : [],
+            methodResults[index]?.status === "fulfilled"
+              ? methodResults[index].value
               : [],
             index,
           ),
@@ -347,6 +456,14 @@ export default function DeploymentWizard({
           asList(devicesPayload, 'devices');
         if (Array.isArray(rawDevices)) {
           deviceRows = rawDevices as Array<Record<string, unknown>>;
+          const osMap = new Map<string, string>();
+          for (const deviceRecord of deviceRows) {
+            osMap.set(
+              String(deviceRecord.id),
+              String(deviceRecord.osType ?? deviceRecord.os_type ?? ""),
+            );
+          }
+          setDeviceOsById(osMap);
           for (const deviceRecord of deviceRows) {
             const deviceNode: TargetNode = {
               id: String(deviceRecord.id),
@@ -394,13 +511,11 @@ export default function DeploymentWizard({
         // back to the first deployable one when none was passed or it has no version.
         const preferred = initialCatalogId
           ? normalizedCatalog.find(
-              (item) =>
-                item.id === initialCatalogId && item.versions.length > 0,
+              (item) => item.id === initialCatalogId && isDeployableSoftware(item),
             )
           : undefined;
         const firstDeployable =
-          preferred ??
-          normalizedCatalog.find((item) => item.versions.length > 0);
+          preferred ?? normalizedCatalog.find(isDeployableSoftware);
         if (firstDeployable) {
           setSelectedSoftwareId(firstDeployable.id);
           setSelectedVersionId(
@@ -460,10 +575,82 @@ export default function DeploymentWizard({
       );
     }
   }, [selectedSoftware, selectedVersionId]);
+  const selectedMethods = useMemo(
+    () => enabledMethodsOf(selectedSoftware),
+    [selectedSoftware],
+  );
+  const isManagerDeploy = useMemo(
+    () => usesManagerPath(selectedSoftware),
+    [selectedSoftware],
+  );
+  /** Homebrew cannot pin a version, so "Exact" needs a winget method. */
+  const supportsExactVersion = useMemo(
+    () => selectedMethods.some((method) => method.kind === "winget"),
+    [selectedMethods],
+  );
+  // Reset the version intent whenever the selected package changes so a stale
+  // "exact 3.0.20" can't ride along onto a Homebrew-only item.
+  useEffect(() => {
+    setVersionMode("latest");
+    setRequestedVersion("");
+  }, [selectedSoftwareId]);
+  useEffect(() => {
+    if (!supportsExactVersion && versionMode === "exact")
+      setVersionMode("latest");
+  }, [supportsExactVersion, versionMode]);
   const targetSummary = useMemo(
     () => getSelectedTargetSummary(targetMode, selectedDevices, targetConfig),
     [targetMode, selectedDevices, targetConfig],
   );
+  /**
+   * Devices in the current selection whose OS has no enabled install method —
+   * the API creates them anyway and pre-fails each with
+   * "No install method for this device OS", so warn before the deploy.
+   * Only device-id selections can be checked; group/filter/all targeting is
+   * resolved server-side and is deliberately not guessed at here.
+   */
+  const managerCoverageGaps = useMemo(() => {
+    if (!isManagerDeploy) return [] as { os: string; count: number }[];
+    const servable = new Set(selectedMethods.map((method) => method.platform));
+    const deviceIds =
+      targetMode === "advanced"
+        ? targetConfig.type === "devices"
+          ? (targetConfig.deviceIds ?? [])
+          : []
+        : Array.from(selectedDevices);
+    const counts = new Map<string, number>();
+    for (const deviceId of deviceIds) {
+      const osType = deviceOsById.get(deviceId);
+      const platform = methodPlatformForOs(osType);
+      if (platform && servable.has(platform)) continue;
+      const label = osLabel(osType);
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([os, count]) => ({ os, count }));
+  }, [
+    deviceOsById,
+    isManagerDeploy,
+    selectedDevices,
+    selectedMethods,
+    targetConfig,
+    targetMode,
+  ]);
+  const managerCoverageCallout =
+    managerCoverageGaps.length > 0 ? (
+      <div
+        data-testid="manager-os-coverage"
+        className="mb-4 rounded-md border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+      >
+        {managerCoverageGaps.map((gap) => (
+          <p key={gap.os}>
+            {i18n.t("policies:software.deploymentWizard.managerOsCoverage", {
+              count: gap.count,
+              os: gap.os,
+            })}
+          </p>
+        ))}
+      </div>
+    ) : null;
   const handleTargetConfigChange = useCallback(
     (config: DeploymentTargetConfig) => {
       setTargetConfig(config);
@@ -474,8 +661,12 @@ export default function DeploymentWizard({
     [],
   );
   const canProceed = useMemo(() => {
-    if (activeStep === "software")
-      return Boolean(selectedSoftwareId && selectedVersionId);
+    if (activeStep === "software") {
+      if (!selectedSoftwareId) return false;
+      if (isManagerDeploy)
+        return versionMode === "latest" || requestedVersion.trim().length > 0;
+      return Boolean(selectedVersionId);
+    }
     if (activeStep === "targets") {
       if (targetMode === "advanced") {
         if (targetConfig.type === "all") return true;
@@ -493,6 +684,8 @@ export default function DeploymentWizard({
     return true;
   }, [
     activeStep,
+    isManagerDeploy,
+    requestedVersion,
     scheduleType,
     scheduledAt,
     selectedDevices.size,
@@ -500,6 +693,7 @@ export default function DeploymentWizard({
     selectedVersionId,
     targetConfig,
     targetMode,
+    versionMode,
   ]);
   const toggleDevices = (deviceIds: string[], select: boolean) => {
     setSelectedDevices((prev) => {
@@ -516,7 +710,7 @@ export default function DeploymentWizard({
   };
   const handleDeploy = async () => {
     try {
-      if (!selectedVersionId) {
+      if (!selectedVersionId && !isManagerDeploy) {
         throw new Error(
           i18n.t(
             "policies:software.deploymentWizard.selectASoftwareVersionBeforeDeploying",
@@ -525,11 +719,26 @@ export default function DeploymentWizard({
       }
       setDeploying(true);
       setError(undefined);
+      // Exactly one of softwareVersionId / catalogId — the API rejects both.
+      const source = isManagerDeploy
+        ? {
+            catalogId: selectedSoftwareId,
+            versionMode,
+            ...(versionMode === "exact"
+              ? { requestedVersion: requestedVersion.trim() }
+              : {}),
+          }
+        : { softwareVersionId: selectedVersionId };
+      const versionLabel = isManagerDeploy
+        ? versionMode === "exact"
+          ? requestedVersion.trim()
+          : "latest"
+        : (selectedVersion?.version ?? "");
       const payload =
         targetMode === "advanced"
           ? {
-              name: `${selectedSoftware?.name ?? "Software"} ${selectedVersion?.version ?? ""}`.trim(),
-              softwareVersionId: selectedVersionId,
+              name: `${selectedSoftware?.name ?? "Software"} ${versionLabel}`.trim(),
+              ...source,
               deploymentType: "install",
               targetType: targetConfig.type,
               targetIds:
@@ -550,8 +759,8 @@ export default function DeploymentWizard({
               options: forceReinstall ? { forceReinstall: true } : undefined,
             }
           : {
-              name: `${selectedSoftware?.name ?? "Software"} ${selectedVersion?.version ?? ""}`.trim(),
-              softwareVersionId: selectedVersionId,
+              name: `${selectedSoftware?.name ?? "Software"} ${versionLabel}`.trim(),
+              ...source,
               deploymentType: "install",
               targetType: "devices" as const,
               targetIds: Array.from(selectedDevices),
@@ -614,9 +823,7 @@ export default function DeploymentWizard({
     }
   };
   const resetWizard = () => {
-    const firstDeployable = softwareOptions.find(
-      (item) => item.versions.length > 0,
-    );
+    const firstDeployable = softwareOptions.find(isDeployableSoftware);
     setDeploymentComplete(false);
     setActiveStepIndex(0);
     setSelectedSoftwareId(firstDeployable?.id ?? "");
@@ -626,6 +833,8 @@ export default function DeploymentWizard({
         "",
     );
     setSelectedDevices(new Set());
+    setVersionMode("latest");
+    setRequestedVersion("");
     setScheduleType("immediate");
     setScheduledAt("");
     setTargetMode("tree");
@@ -738,7 +947,8 @@ export default function DeploymentWizard({
                 </p>
               ) : (
                 filteredSoftware.map((item) => {
-                  const isDeployable = item.versions.length > 0;
+                  const isDeployable = isDeployableSoftware(item);
+                  const managerOnly = usesManagerPath(item);
                   const defaultVersion =
                     item.versions.find((version) => version.isLatest) ??
                     item.versions[0];
@@ -769,11 +979,15 @@ export default function DeploymentWizard({
                         </p>
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        {isDeployable
-                          ? defaultVersion?.version
-                          : i18n.t(
-                              "policies:software.deploymentWizard.noVersions",
-                            )}
+                        {managerOnly
+                          ? i18n.t(
+                              "policies:software.deploymentWizard.managedByPackageManager",
+                            )
+                          : isDeployable
+                            ? defaultVersion?.version
+                            : i18n.t(
+                                "policies:software.deploymentWizard.noVersions",
+                              )}
                       </span>
                     </button>
                   );
@@ -799,7 +1013,82 @@ export default function DeploymentWizard({
                     {selectedSoftware.vendor}
                   </p>
                 </div>
-                {selectedSoftware.versions.length > 0 ? (
+                {isManagerDeploy ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedMethods.map((method) => (
+                        <span
+                          key={method.id}
+                          className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] font-medium"
+                        >
+                          {methodKindLabel(method.kind)}
+                          <span className="font-mono text-muted-foreground">
+                            {method.packageId}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                    <fieldset className="space-y-2">
+                      <legend className="text-xs font-semibold uppercase text-muted-foreground">
+                        {i18n.t("policies:software.deploymentWizard.version")}
+                      </legend>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="radio"
+                          name="manager-version-mode"
+                          value="latest"
+                          checked={versionMode === "latest"}
+                          onChange={() => setVersionMode("latest")}
+                          className="mt-1 h-4 w-4"
+                        />
+                        <span>
+                          {i18n.t(
+                            "policies:software.deploymentWizard.versionModeLatest",
+                          )}
+                        </span>
+                      </label>
+                      {supportsExactVersion && (
+                        <label className="flex items-start gap-2 text-sm">
+                          <input
+                            type="radio"
+                            name="manager-version-mode"
+                            value="exact"
+                            checked={versionMode === "exact"}
+                            onChange={() => setVersionMode("exact")}
+                            className="mt-1 h-4 w-4"
+                          />
+                          <span>
+                            {i18n.t(
+                              "policies:software.deploymentWizard.versionModeExact",
+                            )}
+                          </span>
+                        </label>
+                      )}
+                    </fieldset>
+                    {versionMode === "exact" && (
+                      <input
+                        type="text"
+                        data-testid="manager-exact-version"
+                        value={requestedVersion}
+                        onChange={(event) =>
+                          setRequestedVersion(event.target.value)
+                        }
+                        placeholder={i18n.t(
+                          "policies:software.deploymentWizard.versionNumberPlaceholder",
+                        )}
+                        aria-label={i18n.t(
+                          "policies:software.deploymentWizard.versionModeExact",
+                        )}
+                        className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    )}
+                    <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:software.deploymentWizard.managerInstallExplainer",
+                      )}
+                    </div>
+                  </div>
+                ) : selectedSoftware.versions.length > 0 ? (
                   <>
                     <div>
                       <label className="text-xs font-semibold uppercase text-muted-foreground">
@@ -887,6 +1176,7 @@ export default function DeploymentWizard({
         return (
           <div>
             {targetModeToggle}
+            {managerCoverageCallout}
             <DeviceTargetSelector
               value={targetConfig}
               onChange={handleTargetConfigChange}
@@ -947,6 +1237,7 @@ export default function DeploymentWizard({
       return (
         <div>
           {targetModeToggle}
+          {managerCoverageCallout}
           <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
             <div className="rounded-lg border bg-card p-5 shadow-xs">
               <h3 className="text-sm font-semibold">
@@ -1092,7 +1383,13 @@ export default function DeploymentWizard({
               </p>
               <p className="text-xs text-muted-foreground">
                 {i18n.t("policies:software.deploymentWizard.version2")}
-                {selectedVersion?.version ?? "—"}
+                {isManagerDeploy
+                  ? versionMode === "exact"
+                    ? requestedVersion.trim() || "—"
+                    : i18n.t(
+                        "policies:software.deploymentWizard.versionModeLatestShort",
+                      )
+                  : (selectedVersion?.version ?? "—")}
               </p>
             </div>
             <div className="rounded-md border bg-muted/30 p-4">

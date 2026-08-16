@@ -561,6 +561,11 @@ softwareRoutes.get(
         isManaged: softwareCatalog.isManaged,
         createdAt: softwareCatalog.createdAt,
         versionCount: sql<number>`(SELECT count(*) FROM software_versions WHERE software_versions.catalog_id = ${softwareCatalog.id})`,
+        // Package-manager items (winget/Homebrew) ship zero uploaded versions but
+        // are still deployable, so the list feed carries the enabled-method count
+        // and the distinct kinds the catalog cards badge with.
+        methodCount: sql<number>`(SELECT count(*) FROM software_install_methods WHERE software_install_methods.catalog_id = ${softwareCatalog.id} AND software_install_methods.enabled)`,
+        methodKinds: sql<string[]>`(SELECT coalesce(array_agg(DISTINCT software_install_methods.kind), ARRAY[]::varchar[]) FROM software_install_methods WHERE software_install_methods.catalog_id = ${softwareCatalog.id} AND software_install_methods.enabled)`,
       }).from(softwareCatalog)
         .where(whereClause)
         .orderBy(softwareCatalog.name)

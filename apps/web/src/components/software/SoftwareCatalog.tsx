@@ -42,7 +42,24 @@ type SoftwareItem = {
   partnerId?: string;
   /** Number of uploaded versions; built-in S1 needs >=1 before it can deploy. */
   versionCount?: number;
+  /** Enabled winget/Homebrew install methods (GET /software/catalog aggregate). */
+  methodCount?: number;
+  /** Distinct enabled method kinds, e.g. ['winget', 'homebrew_cask']. */
+  methodKinds?: string[];
 };
+/**
+ * Manager labels for a card's install-method kinds. Both Homebrew kinds collapse
+ * into one "brew" badge — the cask/formula split is an implementation detail the
+ * catalog grid has no room (or need) to surface.
+ */
+function packageManagerBadges(item: SoftwareItem): string[] {
+  const labels = new Set<string>();
+  for (const kind of item.methodKinds ?? []) {
+    if (kind === "winget") labels.add("winget");
+    else if (kind.startsWith("homebrew")) labels.add("brew");
+  }
+  return Array.from(labels);
+}
 /**
  * A built-in package whose installer binary must be uploaded before it can deploy
  * (SentinelOne ships no derivable download URL — the partner uploads the MSI once).
@@ -258,6 +275,11 @@ export default function SoftwareCatalog() {
             partnerId: item.partnerId ? String(item.partnerId) : undefined,
             versionCount:
               item.versionCount != null ? Number(item.versionCount) : undefined,
+            methodCount:
+              item.methodCount != null ? Number(item.methodCount) : undefined,
+            methodKinds: Array.isArray(item.methodKinds)
+              ? item.methodKinds.map(String)
+              : undefined,
           })),
         );
       }
@@ -634,6 +656,22 @@ export default function SoftwareCatalog() {
                 <p className="mt-3 text-xs text-muted-foreground line-clamp-2">
                   {item.description}
                 </p>
+              )}
+
+              {packageManagerBadges(item).length > 0 && (
+                <div
+                  data-testid="package-manager-badges"
+                  className="mt-3 flex flex-wrap items-center gap-1.5"
+                >
+                  {packageManagerBadges(item).map((label) => (
+                    <span
+                      key={label}
+                      className="inline-flex items-center rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </div>
               )}
 
               <div className="mt-4 flex items-center justify-between gap-2">

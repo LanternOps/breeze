@@ -230,6 +230,22 @@ describe('software routes', () => {
       expect(body).toHaveProperty('pagination');
     });
 
+    it('projects enabled install-method aggregates for manager badges', async () => {
+      const res = await app.request('/software/catalog', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      // The catalog list is the only feed the UI has for "is this package
+      // deployable" — a winget/brew item ships zero versions, so the card would
+      // read "0 versions" without these two aggregates.
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('versionCount');
+      expect(projection).toHaveProperty('methodCount');
+      expect(projection).toHaveProperty('methodKinds');
+    });
+
     it('lists catalog items across accessible orgs in partner All-Orgs scope', async () => {
       vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
         c.set('auth', {
