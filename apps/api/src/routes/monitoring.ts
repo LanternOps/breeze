@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 import { and, desc, eq, gte, inArray, isNotNull, lte, or, sql } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
@@ -119,7 +120,7 @@ async function resolveSiteAllowedAssetIds(orgId: string, perms: UserPermissions 
 
 const listAssetsSchema = z.object({
   orgId: z.string().guid().optional(),
-  includeUnconfigured: z.coerce.boolean().optional()
+  includeUnconfigured: optionalQueryBoolean
 });
 
 monitoringRoutes.get(

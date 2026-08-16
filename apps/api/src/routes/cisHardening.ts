@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 
 import { db } from '../db';
 import {
@@ -28,7 +29,7 @@ const baselineLevelSchema = z.enum(['l1', 'l2', 'custom']);
 const listBaselinesQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   osType: osTypeSchema.optional(),
-  active: z.coerce.boolean().optional(),
+  active: optionalQueryBoolean,
   limit: z.coerce.number().int().positive().max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
