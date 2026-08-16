@@ -1,11 +1,35 @@
 /**
  * Typed wrappers over the shared `apiFetch` (Bearer token + 401 re-exchange,
  * `@breeze/office-addin-core`) for the tech-persona `/office-addin/*` surface.
- * Request/response types mirror `apps/api/src/routes/officeAddin/schemas.ts`
- * and the service result types (`emailContext.ts`, `ticketService.ts`,
- * `threadMatcher.ts`) exactly — keep them in sync when those change.
+ * Request types mirror `apps/api/src/routes/officeAddin/schemas.ts`; the
+ * response/domain shapes live in `@breeze/shared` (`types/officeAddin.ts`),
+ * shared with the producing services, and are re-exported here under the
+ * names the tech components consume.
  */
 import { apiFetch, getApiBaseUrl } from '@breeze/office-addin-core';
+import type {
+  AddinOrgSummary,
+  AddinRunningTimerEntry,
+  AddinTicketSummary,
+  AddinTimeEntry,
+  ContactCandidate,
+  ContactCandidateKind,
+  ContactCandidateProvenance,
+  EmailContextResult,
+  MatchedTicket,
+} from '@breeze/shared';
+
+export type {
+  AddinTicketSummary,
+  ContactCandidate,
+  ContactCandidateKind,
+  ContactCandidateProvenance,
+  MatchedTicket,
+};
+export type OrgSummary = AddinOrgSummary;
+export type EmailContextResponse = EmailContextResult;
+export type RunningTimerEntry = AddinRunningTimerEntry;
+export type TimeEntry = AddinTimeEntry;
 
 type FetchLike = typeof fetch;
 
@@ -67,56 +91,6 @@ export interface EmailContextRequest {
   subject: string;
   conversationId?: string | null;
   itemGeneration: number;
-}
-
-export type ContactCandidateKind = 'portal_user' | 'contact';
-export type ContactCandidateProvenance = 'address_match' | 'domain_org';
-
-export interface ContactCandidate {
-  kind: ContactCandidateKind;
-  id: string;
-  name: string | null;
-  email: string;
-  orgId: string;
-  provenance: ContactCandidateProvenance;
-}
-
-export interface MatchedTicket {
-  id: string;
-  partnerId: string;
-  orgId: string;
-  status: string;
-  emailThreadKey: string | null;
-  internalNumber: string | null;
-}
-
-export interface AddinTicketSummary {
-  id: string;
-  internalNumber: string | null;
-  subject: string;
-  status: string;
-  priority: string | null;
-  updatedAt: string;
-  submitterEmail: string | null;
-  matchesSubmitter: boolean;
-}
-
-export interface OrgSummary {
-  name: string;
-  siteCount: number;
-  deviceCount: number;
-  openTicketCount: number;
-}
-
-export interface EmailContextResponse {
-  itemGeneration: number;
-  org: { id: string; name: string } | null;
-  contacts: ContactCandidate[];
-  threadMatchedTicket: MatchedTicket | null;
-  openTickets: AddinTicketSummary[];
-  recentTickets: AddinTicketSummary[];
-  orgSummary: OrgSummary | null;
-  inboundPathConfigured: boolean;
 }
 
 /** POST /office-addin/email-context — resolves org/contacts/tickets for the open message. */
@@ -188,8 +162,10 @@ export interface LinkEmailRequest {
 
 export interface LinkEmailResponse {
   linked: boolean;
-  /** True when this exact message-id was already linked to this ticket (idempotent replay). */
-  alreadyLinked: boolean;
+  /** Present ONLY on the idempotent-replay 200 (`true` — this exact message-id
+   *  was already linked to this ticket). The fresh-link 201 body omits the
+   *  field entirely, so check truthiness, never `=== false`. */
+  alreadyLinked?: boolean;
   commentId: string | null;
 }
 
@@ -234,39 +210,11 @@ export async function fetchDraft(body: DraftRequest, fetchImpl?: FetchLike): Pro
 
 // ---------------------------------------------------------------------------
 // Time tracking (schemas.ts addinStartTimerSchema / addinStopTimerSchema /
-// addinLogTimeSchema) — Task 24. Field shapes mirror `entrySelection()` /
-// `toRunningTimerResponse()` in `routes/officeAddin/time.ts`.
+// addinLogTimeSchema) — Task 24. Field shapes mirror `entrySelection()`
+// (`services/timeEntryService.ts`) and `toRunningTimerResponse()`
+// (`routes/officeAddin/time.ts`); see the shared `AddinTimeEntry` /
+// `AddinRunningTimerEntry` types re-exported above.
 // ---------------------------------------------------------------------------
-
-export interface RunningTimerEntry {
-  id: string;
-  ticketId: string | null;
-  ticketInternalNumber: string | null;
-  startedAt: string;
-  description: string | null;
-}
-
-export interface TimeEntry {
-  id: string;
-  partnerId: string;
-  orgId: string | null;
-  ticketId: string | null;
-  userId: string;
-  startedAt: string;
-  endedAt: string | null;
-  durationMinutes: number | null;
-  description: string | null;
-  isBillable: boolean;
-  hourlyRate: string | null;
-  billingStatus: string;
-  isApproved: boolean;
-  approvedBy: string | null;
-  approvedAt: string | null;
-  createdAt: string;
-  ticketNumber: string | null;
-  ticketSubject: string | null;
-  userName: string | null;
-}
 
 export interface RunningTimerResponse {
   running: RunningTimerEntry | null;

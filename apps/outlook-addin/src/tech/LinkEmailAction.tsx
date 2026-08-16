@@ -52,6 +52,37 @@ type ClosedConflict = { kind: 'ticket_closed'; ticket: LinkableTicket & { emailT
 type ElsewhereConflict = { kind: 'message_linked_elsewhere'; ticket: AddinTicketSummary | null };
 type Conflict = ClosedConflict | ElsewhereConflict;
 
+/** The `message_linked_elsewhere` 409 affordance — the winner ticket plus an
+ *  "Open ticket" button — shared with CreateTicketForm, whose from-email call
+ *  can hit the same conflict. */
+export function MessageLinkedElsewhereNotice({
+  ticket,
+  onShowTicket,
+}: {
+  ticket: AddinTicketSummary | null;
+  onShowTicket?: (ticket: AddinTicketSummary) => void;
+}) {
+  return (
+    <div data-testid="link-conflict-elsewhere" className="flex flex-col gap-1 text-xs text-amber-800">
+      {ticket ? (
+        <>
+          <span>This message is already linked to another ticket.</span>
+          <button
+            type="button"
+            data-testid="open-other-ticket-button"
+            onClick={() => onShowTicket?.(ticket)}
+            className="w-fit rounded-md border border-amber-300 bg-amber-50 px-2 py-1 hover:bg-amber-100"
+          >
+            Open ticket {ticket.internalNumber ?? ticket.id}
+          </button>
+        </>
+      ) : (
+        <span>This message is already linked to a ticket you don&apos;t have access to.</span>
+      )}
+    </div>
+  );
+}
+
 /** Fallback quote used when the deterministic follow-up ticket is created
  *  from a closed-ticket link attempt — mirrors CreateTicketForm's truncation. */
 function trimmedDescription(bodyText: string): string {
@@ -198,23 +229,7 @@ export function LinkEmailAction({
       )}
 
       {conflict?.kind === 'message_linked_elsewhere' && (
-        <div data-testid="link-conflict-elsewhere" className="flex flex-col gap-1 text-xs text-amber-800">
-          {conflict.ticket ? (
-            <>
-              <span>This message is already linked to another ticket.</span>
-              <button
-                type="button"
-                data-testid="open-other-ticket-button"
-                onClick={() => onShowTicket?.(conflict.ticket!)}
-                className="w-fit rounded-md border border-amber-300 bg-amber-50 px-2 py-1 hover:bg-amber-100"
-              >
-                Open ticket {conflict.ticket.internalNumber ?? conflict.ticket.id}
-              </button>
-            </>
-          ) : (
-            <span>This message is already linked to a ticket you don&apos;t have access to.</span>
-          )}
-        </div>
+        <MessageLinkedElsewhereNotice ticket={conflict.ticket} onShowTicket={onShowTicket} />
       )}
     </div>
   );

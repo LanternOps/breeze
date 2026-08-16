@@ -18,10 +18,30 @@ export interface BindFlowProps {
   onBound(): void;
 }
 
+type TokenFailureReason = 'popup_blocked' | 'cancelled' | 'unknown';
+
 type TokenState =
   | { status: 'acquiring' }
   | { status: 'ready'; token: string }
-  | { status: 'failed' };
+  | { status: 'failed'; reason: TokenFailureReason };
+
+/** Map the MSAL BrowserAuthError codes we can act on to a user-actionable
+ *  reason; everything else (consent, conditional access, network, Office SSO
+ *  error codes) stays generic — the full error is on the console either way. */
+function tokenFailureReason(err: unknown): TokenFailureReason {
+  const code =
+    err && typeof err === 'object' ? (err as { errorCode?: unknown }).errorCode : undefined;
+  if (code === 'popup_window_error' || code === 'empty_window_error') return 'popup_blocked';
+  if (code === 'user_cancelled') return 'cancelled';
+  return 'unknown';
+}
+
+const TOKEN_FAILURE_MESSAGES: Record<TokenFailureReason, string> = {
+  popup_blocked:
+    'Your browser blocked the Microsoft sign-in popup. Allow popups for this add-in, then try again.',
+  cancelled: 'Microsoft sign-in was cancelled. Try again.',
+  unknown: "Couldn't get a Microsoft sign-in token. Try again.",
+};
 
 const BIND_ERROR_MESSAGES: Record<string, string> = {
   invalid_credentials: 'Incorrect email or password.',
@@ -56,8 +76,11 @@ export function BindFlow({ onBound }: BindFlowProps) {
       .then((token) => {
         if (!cancelled) setTokenState({ status: 'ready', token });
       })
-      .catch(() => {
-        if (!cancelled) setTokenState({ status: 'failed' });
+      .catch((err: unknown) => {
+        // Popup-blocked / consent / conditional-access / network all land here —
+        // keep the full error on the console so support isn't debugging blind.
+        console.error('BindFlow: Entra token acquisition failed', err);
+        if (!cancelled) setTokenState({ status: 'failed', reason: tokenFailureReason(err) });
       });
     return () => {
       cancelled = true;
@@ -92,7 +115,7 @@ export function BindFlow({ onBound }: BindFlowProps) {
   if (tokenState.status === 'failed') {
     return (
       <div className="p-4 text-center text-sm text-red-600" data-testid="bind-token-error">
-        Couldn&apos;t get a Microsoft sign-in token. Try again.
+        {TOKEN_FAILURE_MESSAGES[tokenState.reason]}
       </div>
     );
   }

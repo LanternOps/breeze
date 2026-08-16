@@ -808,3 +808,9 @@ export * from './executiveSummaryReport';
 
 export * from './loginContext';
 export * from './publicQuote';
+
+// ============================================
+// Office add-in tech-persona wire shapes
+// ============================================
+
+export * from './officeAddin';

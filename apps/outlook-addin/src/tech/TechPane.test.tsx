@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { getOfficeMock } from '../__tests__/officeMock';
 import { TechPane } from './TechPane';
 import * as api from './api';
@@ -97,6 +97,94 @@ describe('TechPane', () => {
     const dismiss = screen.getByRole('button', { name: 'Dismiss' });
     dismiss.click();
     await waitFor(() => expect(screen.queryByTestId('tech-banner')).toBeNull());
+  });
+
+  it('a failed body read warns on console and gates create behind a warning; retry recovers', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mock = getOfficeMock();
+    mock.setItem(
+      { subject: 'Printer down', body: 'the body', from: { displayName: 'A', emailAddress: 'a@x.com' } },
+      'read',
+    );
+    mock.failBodyGet = true;
+    vi.spyOn(api, 'fetchEmailContext').mockResolvedValue({
+      ...emptyContext(0),
+      org: { id: 'org-1', name: 'Acme' },
+    });
+    // Never resolves — this test asserts the DETERMINISTIC prefill after retry,
+    // which a resolved AI draft would overwrite.
+    vi.spyOn(api, 'fetchDraft').mockImplementation(() => new Promise(() => {}));
+    render(<TechPane session={session} />);
+    await waitFor(() => expect(screen.getByTestId('create-ticket-button')).toBeTruthy());
+    expect(warnSpy).toHaveBeenCalledWith(
+      'TechPane: failed to read the message body',
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByTestId('create-ticket-button'));
+    await waitFor(() => expect(screen.getByTestId('body-read-warning')).toBeTruthy());
+    expect(screen.queryByTestId('create-ticket-form')).toBeNull();
+
+    // Host recovered — retry swaps the real body in and reveals the form.
+    mock.failBodyGet = false;
+    fireEvent.click(screen.getByTestId('body-read-retry'));
+    await waitFor(() => expect(screen.getByTestId('create-ticket-form')).toBeTruthy());
+    expect(screen.queryByTestId('body-read-warning')).toBeNull();
+    expect((screen.getByTestId('create-ticket-description') as HTMLTextAreaElement).value).toBe(
+      'the body',
+    );
+  });
+
+  it('an explicit "Continue without body" acknowledges the failed read and reveals the form', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mock = getOfficeMock();
+    mock.setItem(
+      { subject: 'Printer down', from: { displayName: 'A', emailAddress: 'a@x.com' } },
+      'read',
+    );
+    mock.failBodyGet = true;
+    vi.spyOn(api, 'fetchEmailContext').mockResolvedValue({
+      ...emptyContext(0),
+      org: { id: 'org-1', name: 'Acme' },
+    });
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({
+      draft: { subject: 'x', summary: 'y', suggestedTimeMinutes: 5, inputTokens: 1, outputTokens: 1 },
+    });
+    render(<TechPane session={session} />);
+    await waitFor(() => expect(screen.getByTestId('create-ticket-button')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('create-ticket-button'));
+    await waitFor(() => expect(screen.getByTestId('body-read-warning')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('body-read-continue'));
+    await waitFor(() => expect(screen.getByTestId('create-ticket-form')).toBeTruthy());
+  });
+
+  it('a created ticket flows through onDone and becomes the selected (linkable) ticket', async () => {
+    getOfficeMock().setItem(
+      { subject: 'Printer down', body: 'b', from: { displayName: 'A', emailAddress: 'a@x.com' } },
+      'read',
+    );
+    vi.spyOn(api, 'fetchEmailContext').mockResolvedValue({
+      ...emptyContext(0),
+      org: { id: 'org-1', name: 'Acme' },
+    });
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({
+      draft: { subject: 'x', summary: 'y', suggestedTimeMinutes: 5, inputTokens: 1, outputTokens: 1 },
+    });
+    vi.spyOn(api, 'createTicketFromEmail').mockResolvedValue({
+      ticket: { id: 't-1', internalNumber: 'T-1', subject: 'x', status: 'new', priority: null, updatedAt: '', submitterEmail: null, matchesSubmitter: false },
+      alreadyExisted: true,
+    });
+    render(<TechPane session={session} />);
+    await waitFor(() => expect(screen.getByTestId('create-ticket-button')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('create-ticket-button'));
+    await waitFor(() => expect(screen.getByTestId('create-ticket-form')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+    // The form closes and the created/existing ticket is selected for linking.
+    await waitFor(() => expect(screen.getByTestId('link-email-action')).toBeTruthy());
+    expect(screen.getByTestId('link-email-submit').textContent).toContain('T-1');
   });
 
   it('rapid switchItem() twice renders only the latest generation, the earlier response is discarded', async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { getEntraTokenInteractive, getEntraTokenSilent } from '@breeze/office-addin-core';
 import { BindFlow } from './BindFlow';
 import * as api from './api';
 import { TechApiError } from './api';
@@ -69,6 +70,20 @@ describe('BindFlow', () => {
 
     await waitFor(() => expect(screen.getByTestId('bind-error')).toBeTruthy());
     expect(screen.getByTestId('bind-error').textContent).toMatch(pattern);
+  });
+
+  it('a blocked MSAL popup logs the error and shows the popup-specific message', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const popupError = Object.assign(new Error('popup blocked'), {
+      errorCode: 'popup_window_error',
+    });
+    vi.mocked(getEntraTokenSilent).mockRejectedValueOnce(new Error('sso unavailable'));
+    vi.mocked(getEntraTokenInteractive).mockRejectedValueOnce(popupError);
+    render(<BindFlow onBound={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('bind-token-error')).toBeTruthy());
+    expect(screen.getByTestId('bind-token-error').textContent).toMatch(/blocked the Microsoft sign-in popup/i);
+    expect(errorSpy).toHaveBeenCalledWith('BindFlow: Entra token acquisition failed', popupError);
   });
 
   it('calls bindTechnician with the acquired Entra token and form fields, then onBound on success', async () => {

@@ -53,6 +53,10 @@ function errorMessage(err: unknown, fallback: string): string {
 export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }: TimeWidgetProps) {
   const [running, setRunning] = useState<RunningTimerEntry | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // 403 on the running-timer read = the technician lacks time-entry permission.
+  // Not an error worth nagging about (the 30s poll would re-raise it forever):
+  // hide the whole widget and stop polling instead.
+  const [forbidden, setForbidden] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [pendingStart, setPendingStart] = useState(false);
@@ -72,6 +76,10 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
       const res = await fetchRunningTimer();
       setRunning(res.running);
     } catch (err) {
+      if (err instanceof TechApiError && err.status === 403) {
+        setForbidden(true);
+        return;
+      }
       onBanner(errorMessage(err, 'Failed to load timer'));
     } finally {
       setLoaded(true);
@@ -80,12 +88,13 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
   }, []);
 
   useEffect(() => {
+    if (forbidden) return;
     void refresh();
     const interval = setInterval(() => {
       void refresh();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, forbidden]);
 
   useEffect(() => {
     if (!durationTouched && suggestedDurationMinutes != null) {
@@ -180,6 +189,8 @@ export function TimeWidget({ linkedTicket, suggestedDurationMinutes, onBanner }:
       setLogSubmitting(false);
     }
   }
+
+  if (forbidden) return null;
 
   return (
     <div data-testid="time-widget" className="flex flex-col gap-2 rounded-md border border-gray-200 p-3">

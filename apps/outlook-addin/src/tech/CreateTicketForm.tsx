@@ -8,18 +8,24 @@
  * `fetchDraft` fires once the form opens (fire-and-forget from the form's
  * perspective — the fields are already editable). Per-field dirty tracking
  * means an AI result only overwrites a field the technician hasn't touched
- * yet; on any AI failure (4xx/5xx/timeout) the fallback just stays, silently.
+ * yet; on any AI failure (4xx/5xx/timeout) the fallback stays and a muted,
+ * non-blocking hint notes the draft was unavailable. A draft resolving after
+ * the form unmounted (an item switch tears the form down via TechPane's
+ * per-generation reset) is discarded, so item A's draft can never prefill
+ * item B's fields or TimeWidget duration.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
   createTicketFromEmail,
   fetchDraft,
   TechApiError,
+  type AddinTicketSummary,
   type ContactCandidate,
   type EmailContextResponse,
   type FromEmailRequester,
   type FromEmailResponse,
 } from './api';
+import { MessageLinkedElsewhereNotice } from './LinkEmailAction';
 import type { EmailIdentity } from './emailIdentity';
 
 export interface CreateTicketFormProps {
@@ -31,6 +37,9 @@ export interface CreateTicketFormProps {
   onDone: (result: FromEmailResponse) => void;
   onBanner: (message: string | null) => void;
   onCancel?: () => void;
+  /** From-email can 409 `message_linked_elsewhere` — same recovery affordance
+   *  as LinkEmailAction: surface the winner ticket with an "open it" button. */
+  onShowTicket?: (ticket: AddinTicketSummary) => void;
   /** Fires once the AI draft resolves, surfacing `suggestedTimeMinutes` up to
    *  TechPane so TimeWidget can prefill its manual log form (Task 24). The
    *  draft itself stays local to this form — only the one field is lifted. */
@@ -51,6 +60,7 @@ export function CreateTicketForm({
   onDone,
   onBanner,
   onCancel,
+  onShowTicket,
   onDraftSuggestedDuration,
 }: CreateTicketFormProps) {
   const org = orgOverride ?? context.org;
@@ -61,6 +71,7 @@ export function CreateTicketForm({
   const [subjectDirty, setSubjectDirty] = useState(false);
   const [descriptionDirty, setDescriptionDirty] = useState(false);
   const [aiApplied, setAiApplied] = useState(false);
+  const [draftFailed, setDraftFailed] = useState(false);
   // Refs mirror the dirty flags so the fetchDraft effect (fired once, deps
   // [org?.id]) reads the CURRENT value at resolution time rather than the
   // value closed over when the effect ran — a technician can edit a field any
@@ -77,23 +88,41 @@ export function CreateTicketForm({
 
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
+  const [linkedElsewhere, setLinkedElsewhere] = useState<AddinTicketSummary | null | undefined>(
+    undefined,
+  );
 
   const draftRequestedRef = useRef(false);
 
   useEffect(() => {
     if (draftRequestedRef.current || !org) return;
     draftRequestedRef.current = true;
+    // Stale-draft guard: an item switch unmounts this form (TechPane resets
+    // showCreateForm per generation), so `cancelled` is the generation check —
+    // a late response must not prefill the NEXT item's form or lift its
+    // suggested duration into TimeWidget.
+    let cancelled = false;
     fetchDraft({ orgId: org.id, subject: identity.subject, bodyText })
       .then((res) => {
+        if (cancelled) return;
         if (!subjectDirtyRef.current) setSubject(res.draft.subject);
         if (!descriptionDirtyRef.current) setDescription(res.draft.summary);
         setAiApplied(true);
         onDraftSuggestedDuration?.(res.draft.suggestedTimeMinutes);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // 4xx/5xx/timeout — the deterministic fallback already filled the
-        // fields; never block or surface an error for an AI-only failure.
+        // fields; never block on an AI-only failure, but leave a trace for
+        // debugging and a passive hint for the technician.
+        console.warn(
+          'CreateTicketForm: AI draft failed',
+          err instanceof TechApiError ? `${err.status} ${err.code}` : err,
+        );
+        if (!cancelled) setDraftFailed(true);
       });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once per form open, by design
   }, [org?.id]);
 
@@ -117,6 +146,7 @@ export function CreateTicketForm({
     if (!org || !identity.from || !requester) return;
     setSubmitting(true);
     setSuccess(null);
+    setLinkedElsewhere(undefined);
     onBanner(null);
     try {
       const result = await createTicketFromEmail({
@@ -128,9 +158,20 @@ export function CreateTicketForm({
         requester,
         followUpOf: null,
       });
-      setSuccess('Ticket created.');
+      setSuccess(
+        result.alreadyExisted
+          ? `This email already has a ticket — ${result.ticket.internalNumber ?? result.ticket.id}.`
+          : 'Ticket created.',
+      );
       onDone(result);
     } catch (err) {
+      if (err instanceof TechApiError && err.status === 409 && err.code === 'message_linked_elsewhere') {
+        // Same recovery affordance LinkEmailAction gives this 409: show the
+        // winner ticket instead of a generic banner.
+        const body = err.body as { ticket?: unknown } | null;
+        setLinkedElsewhere((body?.ticket ?? null) as AddinTicketSummary | null);
+        return;
+      }
       onBanner(err instanceof TechApiError ? `Failed to create ticket (${err.code}).` : 'Failed to create ticket.');
     } finally {
       setSubmitting(false);
@@ -265,10 +306,20 @@ export function CreateTicketForm({
         )}
       </div>
 
+      {draftFailed && (
+        <div data-testid="ai-draft-unavailable" className="text-[10px] text-gray-400">
+          AI draft unavailable — filled from email.
+        </div>
+      )}
+
       {success && (
         <div data-testid="action-success" className="text-xs text-green-700">
           {success}
         </div>
+      )}
+
+      {linkedElsewhere !== undefined && (
+        <MessageLinkedElsewhereNotice ticket={linkedElsewhere} onShowTicket={onShowTicket} />
       )}
 
       <div className="flex gap-2">

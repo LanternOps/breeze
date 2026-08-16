@@ -305,6 +305,24 @@ describe('TimeWidget', () => {
     );
   });
 
+  it('a 403 on load hides the widget without a banner and stops the poll', async () => {
+    vi.useFakeTimers();
+    const spy = vi
+      .spyOn(api, 'fetchRunningTimer')
+      .mockRejectedValue(new TechApiError(403, 'forbidden'));
+    const onBanner = vi.fn();
+    render(<TimeWidget {...baseProps({ onBanner })} />);
+
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="time-widget"]')).toBeNull(),
+    );
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(onBanner).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a start failure via onBanner', async () => {
     vi.spyOn(api, 'fetchRunningTimer').mockResolvedValue({ running: null });
     vi.spyOn(api, 'startTimer').mockRejectedValue(new TechApiError(409, 'ticket_closed'));

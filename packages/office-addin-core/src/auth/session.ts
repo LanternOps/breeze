@@ -66,6 +66,16 @@ export class InvalidEntraTokenError extends Error {
   }
 }
 
+/** The exchange returned 200 but the body doesn't match the ExchangeResponse
+ *  contract (a proxy error page, a half-deployed server, a wrong endpoint).
+ *  Never stored — storing it would crash consumers like ChatPane later. */
+export class MalformedExchangeResponseError extends Error {
+  constructor() {
+    super('Exchange returned 200 with a body that does not match the ExchangeResponse contract');
+    this.name = 'MalformedExchangeResponseError';
+  }
+}
+
 /** Versioned discriminated union — the durable on-disk (sessionStorage) shape. */
 export type ClientPersonaSession = {
   v: 2;
@@ -97,14 +107,45 @@ const LEGACY_STORAGE_KEY = 'breeze-client-ai-session';
 
 let current: PersonaSession | null = null;
 
+function isExchangeUser(value: unknown): value is ExchangeUser {
+  if (!value || typeof value !== 'object') return false;
+  const u = value as Record<string, unknown>;
+  return (
+    typeof u.id === 'string' &&
+    typeof u.email === 'string' &&
+    (u.name === null || typeof u.name === 'string')
+  );
+}
+
+function isPartnerRef(value: unknown): value is { id: string } {
+  if (!value || typeof value !== 'object') return false;
+  return typeof (value as Record<string, unknown>).id === 'string';
+}
+
 function isPersonaSession(value: unknown): value is PersonaSession {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   if (v.v !== 2) return false;
   if (typeof v.sessionToken !== 'string' || typeof v.expiresAt !== 'number') return false;
+  // `user` is dereferenced downstream (ChatPane reads session.user.email), so a
+  // blob without it must not pass — same for the tech persona's partner id.
+  if (!isExchangeUser(v.user)) return false;
   if (v.persona === 'client') return true;
-  if (v.persona === 'tech') return typeof v.partner === 'object' && v.partner !== null;
+  if (v.persona === 'tech') return isPartnerRef(v.partner);
   return false;
+}
+
+/** Parse+validate the persisted session WITHOUT the expiry check — reExchange
+ *  needs the persona of an expired session to pick the right exchange endpoint. */
+function readPersistedSession(): PersonaSession | null {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return isPersonaSession(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export function getStoredSession(): PersonaSession | null {
@@ -117,16 +158,10 @@ export function getStoredSession(): PersonaSession | null {
   }
   if (current && Date.now() < current.expiresAt) return current;
   current = null;
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (!isPersonaSession(parsed) || Date.now() >= parsed.expiresAt) return null;
-    current = parsed;
-    return parsed;
-  } catch {
-    return null;
-  }
+  const persisted = readPersistedSession();
+  if (!persisted || Date.now() >= persisted.expiresAt) return null;
+  current = persisted;
+  return persisted;
 }
 
 export function getSessionToken(): string | null {
@@ -143,7 +178,49 @@ export function __resetSessionForTests(): void {
   current = null;
 }
 
-function storeSession(res: ExchangeResponse): PersonaSession {
+/** ExchangeResponse with the back-compat optional `persona?: 'client'`
+ *  discriminant resolved to a required value — only parseExchangeResponse
+ *  produces this, so everything past the parse boundary can switch on persona
+ *  without re-handling the optional wire form. */
+type NormalizedExchangeResponse =
+  | (Extract<ExchangeResponse, { persona?: 'client' }> & { persona: 'client' })
+  | Extract<ExchangeResponse, { persona: 'tech' }>;
+
+/** Validate the exchange 200 body against the ExchangeResponse contract and
+ *  normalize the persona discriminant. Throws MalformedExchangeResponseError
+ *  rather than letting a garbage body be stored as a session. */
+function parseExchangeResponse(body: unknown): NormalizedExchangeResponse {
+  if (!body || typeof body !== 'object') throw new MalformedExchangeResponseError();
+  const b = body as Record<string, unknown>;
+  if (
+    typeof b.accessToken !== 'string' ||
+    typeof b.expiresInSeconds !== 'number' ||
+    !isExchangeUser(b.user)
+  ) {
+    throw new MalformedExchangeResponseError();
+  }
+  if (b.persona === 'tech') {
+    if (!isPartnerRef(b.partner)) throw new MalformedExchangeResponseError();
+    return {
+      persona: 'tech',
+      accessToken: b.accessToken,
+      expiresInSeconds: b.expiresInSeconds,
+      user: b.user,
+      partner: b.partner,
+    };
+  }
+  if (b.persona !== undefined && b.persona !== 'client') throw new MalformedExchangeResponseError();
+  return {
+    persona: 'client',
+    accessToken: b.accessToken,
+    expiresInSeconds: b.expiresInSeconds,
+    user: b.user,
+    org: b.org as ExchangeOrg | undefined,
+    branding: b.branding as ExchangeBranding | undefined,
+  };
+}
+
+function storeSession(res: NormalizedExchangeResponse): PersonaSession {
   const session: PersonaSession =
     res.persona === 'tech'
       ? {
@@ -193,6 +270,17 @@ const BINDING_DENIED_KINDS: Record<string, AuthBlockKind> = {
 };
 
 const DEFAULT_EXCHANGE_PATH = '/client-ai/auth/exchange';
+/** The persona-neutral endpoint the Outlook add-in signs in against (Task 20). */
+const TECH_EXCHANGE_PATH = '/office-addin/auth/exchange';
+
+/** Persona → exchange endpoint. Derived (not remembered from the last signIn)
+ *  so a session RESTORED from sessionStorage — App's short-circuit never calls
+ *  signIn — still re-exchanges against the endpoint that minted it: a tech
+ *  session must never hit the client-ai exchange (worst case it would
+ *  JIT-provision the technician as a portal user). */
+function exchangePathForSession(session: PersonaSession | null): string {
+  return session?.persona === 'tech' ? TECH_EXCHANGE_PATH : DEFAULT_EXCHANGE_PATH;
+}
 
 async function exchangeOnce(
   entraToken: string,
@@ -210,7 +298,7 @@ async function exchangeOnce(
   } catch {
     /* non-JSON error body */
   }
-  if (res.ok) return storeSession(body as ExchangeResponse);
+  if (res.ok) return storeSession(parseExchangeResponse(body));
   const code =
     body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
       ? (body as { error: string }).error
@@ -234,15 +322,11 @@ export interface SignInOptions {
   exchangePath?: string;
 }
 
-/** Remembered so reExchange (which takes no exchangePath) reuses whatever signIn last used. */
-let lastExchangePath = DEFAULT_EXCHANGE_PATH;
-
 export async function signIn(
   opts: SignInOptions,
   deps: SignInDeps = {},
 ): Promise<PersonaSession> {
   const exchangePath = opts.exchangePath ?? DEFAULT_EXCHANGE_PATH;
-  lastExchangePath = exchangePath;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const entraDeps = deps.entra ?? defaultEntraTokenDeps;
   const getToken = opts.interactive ? getEntraTokenInteractive : getEntraTokenSilent;
@@ -262,14 +346,15 @@ export async function signIn(
 
 let reExchangeInFlight: Promise<PersonaSession> | null = null;
 
-/** Single-flight silent re-auth for API-level 401s (Task 6 apiFetch). Reuses the last signIn's exchangePath. */
+/** Single-flight silent re-auth for API-level 401s (Task 6 apiFetch). The
+ *  exchange endpoint is derived from the CURRENT session's persona (in-memory
+ *  first, then the persisted copy even when expired) — never remembered from a
+ *  prior signIn call, which a restored-from-storage session never made. */
 export function reExchange(deps: SignInDeps = {}): Promise<PersonaSession> {
   if (!reExchangeInFlight) {
+    const exchangePath = exchangePathForSession(current ?? readPersistedSession());
     clearSession();
-    reExchangeInFlight = signIn(
-      { interactive: false, exchangePath: lastExchangePath },
-      deps,
-    ).finally(() => {
+    reExchangeInFlight = signIn({ interactive: false, exchangePath }, deps).finally(() => {
       reExchangeInFlight = null;
     });
   }

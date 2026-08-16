@@ -51,6 +51,10 @@ type PaneState =
       headerCapable: boolean;
       identity: EmailIdentity;
       bodyText: string;
+      /** readBodyText threw (offline/permission getAsync error) — the pane
+       *  still renders (never-block contract), but link/create must not
+       *  silently ship an empty-body comment without the tech's say-so. */
+      bodyReadFailed: boolean;
     }
   | { kind: 'error' };
 
@@ -71,6 +75,9 @@ export function TechPane({ session: _session }: TechPaneProps) {
   const [contactOverride, setContactOverride] = useState<ContactCandidate | null>(null);
   const [selectedTicket, setSelectedTicket] = useState<AddinTicketSummary | MatchedTicket | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  // Explicit "Continue without body" confirmation after a failed body read —
+  // link/create actions stay hidden behind the warning until the tech acks.
+  const [bodyWarningAcked, setBodyWarningAcked] = useState(false);
   // Last AI draft's suggested duration (Task 24) — lifted out of
   // CreateTicketForm just for this one field so TimeWidget can prefill its
   // manual log form; the rest of the draft stays local to the form.
@@ -82,6 +89,7 @@ export function TechPane({ session: _session }: TechPaneProps) {
       setContactOverride(null);
       setSelectedTicket(null);
       setShowCreateForm(false);
+      setBodyWarningAcked(false);
       setSuggestedDurationMinutes(undefined);
       let identity: EmailIdentity;
       try {
@@ -133,16 +141,19 @@ export function TechPane({ session: _session }: TechPaneProps) {
 
         // Body text for the create-ticket fallback prefill (subject/description)
         // and the link-email quote. Never blocks the pane on failure (an
-        // offline/permission getAsync error) — the create form still works with
-        // an empty fallback description, same "never block" contract as the
-        // rest of this reader.
+        // offline/permission getAsync error) — but the failure is REMEMBERED
+        // (`bodyReadFailed`) so link/create actions warn and require an
+        // explicit confirm before shipping a comment with no body.
         const item = getMailboxItemOrNull();
         let bodyText = '';
+        let bodyReadFailed = false;
         if (item) {
           try {
             bodyText = await readBodyText(item);
-          } catch {
+          } catch (err) {
+            console.warn('TechPane: failed to read the message body', err);
             bodyText = '';
+            bodyReadFailed = true;
           }
         }
         if (signal.aborted || generation !== store.current()) return;
@@ -154,6 +165,7 @@ export function TechPane({ session: _session }: TechPaneProps) {
           headerCapable: identity.headerCapable,
           identity,
           bodyText,
+          bodyReadFailed,
         });
       } catch (err) {
         if (signal.aborted || generation !== store.current()) return;
@@ -185,6 +197,21 @@ export function TechPane({ session: _session }: TechPaneProps) {
 
   function dismissBanner(): void {
     setBanner(null);
+  }
+
+  async function retryBodyRead(): Promise<void> {
+    if (state.kind !== 'ready') return;
+    const generation = store.current();
+    const item = getMailboxItemOrNull();
+    if (!item) return;
+    try {
+      const bodyText = await readBodyText(item);
+      // An item switch mid-read supersedes this retry — load() owns the state.
+      if (generation !== store.current()) return;
+      setState({ ...state, bodyText, bodyReadFailed: false });
+    } catch (err) {
+      console.warn('TechPane: failed to read the message body', err);
+    }
   }
 
   return (
@@ -234,6 +261,10 @@ export function TechPane({ session: _session }: TechPaneProps) {
         return null; // the banner above already reports the failure
       case 'ready': {
         const effectiveOrg = manualOrg ?? state.org;
+        // A failed body read gates the link/create actions behind an explicit
+        // confirm (or a successful retry) — an unacked failure must never
+        // silently produce a headers-only ticket comment.
+        const bodyActionsBlocked = state.bodyReadFailed && !bodyWarningAcked;
         return (
           <>
             <ContextCard
@@ -267,7 +298,37 @@ export function TechPane({ session: _session }: TechPaneProps) {
               {showCreateForm ? 'Cancel new ticket' : 'Create ticket from this email'}
             </button>
 
-            {selectedTicket && (
+            {bodyActionsBlocked && (selectedTicket || showCreateForm) && (
+              <div
+                data-testid="body-read-warning"
+                className="flex flex-col gap-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800"
+              >
+                <span>
+                  Couldn&apos;t read this email&apos;s body — the ticket would only carry the
+                  message headers.
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    data-testid="body-read-retry"
+                    onClick={() => void retryBodyRead()}
+                    className="rounded-md border border-amber-400 bg-amber-100 px-2 py-1 hover:bg-amber-200"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="body-read-continue"
+                    onClick={() => setBodyWarningAcked(true)}
+                    className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50"
+                  >
+                    Continue without body
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {selectedTicket && !bodyActionsBlocked && (
               <LinkEmailAction
                 ticket={selectedTicket}
                 identity={state.identity}
@@ -281,18 +342,25 @@ export function TechPane({ session: _session }: TechPaneProps) {
               />
             )}
 
-            {showCreateForm && (
+            {showCreateForm && !bodyActionsBlocked && (
               <CreateTicketForm
                 context={state.context}
                 identity={state.identity}
                 bodyText={state.bodyText}
                 orgOverride={manualOrg}
-                onDone={() => {
+                onDone={(result) => {
                   setBanner(null);
                   setShowCreateForm(false);
+                  // Select the created (or already-existing) ticket so the
+                  // link/time affordances point at it right away.
+                  setSelectedTicket(result.ticket);
                 }}
                 onBanner={setBanner}
                 onCancel={() => setShowCreateForm(false)}
+                onShowTicket={(ticket) => {
+                  setShowCreateForm(false);
+                  setSelectedTicket(ticket);
+                }}
                 onDraftSuggestedDuration={setSuggestedDurationMinutes}
               />
             )}

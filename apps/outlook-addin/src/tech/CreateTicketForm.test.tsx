@@ -99,13 +99,36 @@ describe('CreateTicketForm', () => {
     expect(screen.getByTestId('ai-draft-badge-description')).toBeTruthy();
   });
 
-  it('AI 4xx/5xx/timeout keeps the fallback silently (no banner)', async () => {
+  it('AI 4xx/5xx/timeout keeps the fallback, shows the muted hint, and warns on the console (no banner)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(api, 'fetchDraft').mockRejectedValue(new TechApiError(503, 'ai_unavailable'));
     const onBanner = vi.fn();
     render(<CreateTicketForm {...baseProps({ onBanner })} />);
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => expect(screen.getByTestId('ai-draft-unavailable')).toBeTruthy());
     expect((screen.getByTestId('create-ticket-subject') as HTMLInputElement).value).toBe('Printer down');
     expect(onBanner).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'CreateTicketForm: AI draft failed',
+      expect.stringContaining('503 ai_unavailable'),
+    );
+  });
+
+  it('a draft resolving after unmount (item switch) is discarded — no suggested duration is lifted', async () => {
+    let resolveDraft!: (v: api.DraftResponse) => void;
+    vi.spyOn(api, 'fetchDraft').mockImplementation(
+      () => new Promise((resolve) => { resolveDraft = resolve; }),
+    );
+    const onDraftSuggestedDuration = vi.fn();
+    const { unmount } = render(
+      <CreateTicketForm {...baseProps()} onDraftSuggestedDuration={onDraftSuggestedDuration} />,
+    );
+
+    unmount();
+    resolveDraft({
+      draft: { subject: 'AI subject', summary: 'AI summary', suggestedTimeMinutes: 45, inputTokens: 1, outputTokens: 1 },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onDraftSuggestedDuration).not.toHaveBeenCalled();
   });
 
   it('posts the exact fromEmailSchema shape including internetMessageId and requester union (raw)', async () => {
@@ -161,6 +184,48 @@ describe('CreateTicketForm', () => {
         requester: { kind: 'create_contact', email: 'new@acme.com', name: 'Alice' },
       }),
     );
+  });
+
+  it('an idempotent replay (alreadyExisted) says the ticket already exists and still fires onDone', async () => {
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({
+      draft: { subject: 'x', summary: 'y', suggestedTimeMinutes: 5, inputTokens: 1, outputTokens: 1 },
+    });
+    const result = {
+      ticket: { id: 't-9', internalNumber: 'T-9', subject: 'x', status: 'open', priority: null, updatedAt: '', submitterEmail: null, matchesSubmitter: false },
+      alreadyExisted: true,
+    };
+    vi.spyOn(api, 'createTicketFromEmail').mockResolvedValue(result);
+    const onDone = vi.fn();
+    render(<CreateTicketForm {...baseProps({ onDone })} />);
+
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+    await waitFor(() => expect(screen.getByTestId('action-success')).toBeTruthy());
+    expect(screen.getByTestId('action-success').textContent).toContain('already has a ticket');
+    expect(screen.getByTestId('action-success').textContent).toContain('T-9');
+    expect(onDone).toHaveBeenCalledWith(result);
+  });
+
+  it('a message_linked_elsewhere 409 shows the winner ticket with an open affordance instead of a banner', async () => {
+    vi.spyOn(api, 'fetchDraft').mockResolvedValue({
+      draft: { subject: 'x', summary: 'y', suggestedTimeMinutes: 5, inputTokens: 1, outputTokens: 1 },
+    });
+    const winner = { id: 't-7', internalNumber: 'T-7', subject: 'Other', status: 'open', priority: null, updatedAt: '', submitterEmail: null, matchesSubmitter: false };
+    vi.spyOn(api, 'createTicketFromEmail').mockRejectedValue(
+      new TechApiError(409, 'message_linked_elsewhere', { error: 'message_linked_elsewhere', ticket: winner }),
+    );
+    const onBanner = vi.fn();
+    const onShowTicket = vi.fn();
+    render(<CreateTicketForm {...baseProps({ onBanner, onShowTicket })} />);
+
+    fireEvent.click(screen.getByTestId('create-ticket-submit'));
+
+    await waitFor(() => expect(screen.getByTestId('link-conflict-elsewhere')).toBeTruthy());
+    expect(screen.getByTestId('open-other-ticket-button').textContent).toContain('T-7');
+    expect(onBanner).not.toHaveBeenCalledWith(expect.stringContaining('message_linked_elsewhere'));
+
+    fireEvent.click(screen.getByTestId('open-other-ticket-button'));
+    expect(onShowTicket).toHaveBeenCalledWith(winner);
   });
 
   it('surfaces a create failure via onBanner', async () => {

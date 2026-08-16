@@ -25,11 +25,12 @@ export interface EmailIdentity {
   /** Provenance only (send-on-behalf); do not use for resolution. */
   sender: { email: string; name: string | null } | null;
   conversationId: string | null;
-  /** null below Mailbox 1.8 or when the host has no id for this item. */
+  /** null below Mailbox 1.8, in compose mode (the header APIs are read-mode
+   *  only), or when the host has no id for this item. */
   internetMessageId: string | null;
-  /** [] below Mailbox 1.8. */
+  /** [] below Mailbox 1.8 or in compose mode. */
   references: string[];
-  /** null below Mailbox 1.8. */
+  /** null below Mailbox 1.8 or in compose mode. */
   inReplyTo: string | null;
   /** Mailbox 1.8+ (and mode === 'read' — the header APIs are read-mode only). */
   headerCapable: boolean;
@@ -105,7 +106,15 @@ function readRawHeaderBlock(item: MailboxItem): Promise<string> {
       return;
     }
     item.getAllInternetHeadersAsync((result) => {
-      resolve(result.status === 'succeeded' ? (result.value ?? '') : '');
+      if (result.status !== 'succeeded') {
+        // Never-block contract: degrade to subject/from-based matching — but
+        // leave a trace, since headerCapable stays true and the degradation is
+        // otherwise invisible.
+        console.warn('readEmailIdentity: getAllInternetHeadersAsync failed', result.error);
+        resolve('');
+        return;
+      }
+      resolve(result.value ?? '');
     });
   });
 }

@@ -5,7 +5,7 @@
  * the open item changed out from under them.
  *
  * Built on top of `subscribeOutlookItemChanged` (host/outlookSelection.ts),
- * which now supports real per-subscriber unsubscribe — this store just adds
+ * which supports real per-subscriber unsubscribe — this store just adds
  * the "which generation am I" counter on top of that raw event stream.
  */
 import { subscribeOutlookItemChanged } from '../host/outlookSelection';
