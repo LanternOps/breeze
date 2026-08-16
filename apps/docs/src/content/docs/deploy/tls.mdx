@@ -103,6 +103,28 @@ If you prefer nginx, here's an equivalent configuration:
             proxy_pass http://127.0.0.1:3001;
         }
 
+        # Customer portal (Astro SSR on :4322 under the /portal base path). This
+        # mirrors Caddy's `path /portal /portal/*`: an exact match for /portal
+        # plus a prefix match for everything under it (so it can't also grab an
+        # unrelated path like /portalX). The portal emits /portal-prefixed URLs,
+        # so keep the prefix — no trailing slash on proxy_pass. Its API calls
+        # stay on the /api/ block above.
+        location = /portal {
+            proxy_pass http://127.0.0.1:4322;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /portal/ {
+            proxy_pass http://127.0.0.1:4322;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
         # Web dashboard
         location / {
             proxy_pass http://127.0.0.1:4321;
