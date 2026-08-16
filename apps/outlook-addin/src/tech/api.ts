@@ -13,6 +13,10 @@ export class TechApiError extends Error {
   constructor(
     public status: number,
     public code: string,
+    /** The parsed JSON error body, when present — e.g. the `ticket` payload on
+     *  the from-email/link-email 409 responses (`ticket_closed`,
+     *  `message_linked_elsewhere`). null when the body wasn't JSON or empty. */
+    public body: unknown = null,
   ) {
     super(`office-addin tech request failed: ${status} ${code}`);
     this.name = 'TechApiError';
@@ -34,7 +38,7 @@ async function expectOk(res: Response): Promise<unknown> {
       body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
         ? (body as { error: string }).error
         : `http_${res.status}`;
-    throw new TechApiError(res.status, code);
+    throw new TechApiError(res.status, code, body);
   }
   return body;
 }

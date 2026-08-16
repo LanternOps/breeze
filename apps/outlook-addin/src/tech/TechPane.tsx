@@ -20,9 +20,19 @@ import { useCallback, useEffect, useState } from 'react';
 import type { TechPersonaSession } from '@breeze/office-addin-core';
 import { readEmailIdentity, type EmailIdentity } from './emailIdentity';
 import { createItemGenerationStore } from './itemGeneration';
-import { fetchEmailContext, TechApiError, type EmailContextResponse, type ContactCandidate } from './api';
+import {
+  fetchEmailContext,
+  TechApiError,
+  type EmailContextResponse,
+  type ContactCandidate,
+  type AddinTicketSummary,
+  type MatchedTicket,
+} from './api';
 import { ContextCard } from './ContextCard';
 import { TicketList } from './TicketList';
+import { LinkEmailAction } from './LinkEmailAction';
+import { CreateTicketForm } from './CreateTicketForm';
+import { getMailboxItemOrNull, readBodyText } from '../tools/mailbox';
 
 export interface TechPaneProps {
   session: TechPersonaSession;
@@ -38,6 +48,8 @@ type PaneState =
       context: EmailContextResponse;
       org: { id: string; name: string } | null;
       headerCapable: boolean;
+      identity: EmailIdentity;
+      bodyText: string;
     }
   | { kind: 'error' };
 
@@ -56,11 +68,15 @@ export function TechPane({ session: _session }: TechPaneProps) {
   // load (a fresh item switch / re-fetch supersedes a stale manual choice).
   const [manualOrg, setManualOrg] = useState<{ id: string; name: string } | null>(null);
   const [contactOverride, setContactOverride] = useState<ContactCandidate | null>(null);
+  const [selectedTicket, setSelectedTicket] = useState<AddinTicketSummary | MatchedTicket | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const load = useCallback(
     async (generation: number, signal: AbortSignal) => {
       setManualOrg(null);
       setContactOverride(null);
+      setSelectedTicket(null);
+      setShowCreateForm(false);
       let identity: EmailIdentity;
       try {
         identity = await readEmailIdentity();
@@ -108,7 +124,31 @@ export function TechPane({ session: _session }: TechPaneProps) {
         // response resolved, and the echoed itemGeneration is the authority.
         if (signal.aborted || generation !== store.current() || context.itemGeneration !== store.current())
           return;
-        setState({ kind: 'ready', context, org: context.org, headerCapable: identity.headerCapable });
+
+        // Body text for the create-ticket fallback prefill (subject/description)
+        // and the link-email quote. Never blocks the pane on failure (an
+        // offline/permission getAsync error) — the create form still works with
+        // an empty fallback description, same "never block" contract as the
+        // rest of this reader.
+        const item = getMailboxItemOrNull();
+        let bodyText = '';
+        if (item) {
+          try {
+            bodyText = await readBodyText(item);
+          } catch {
+            bodyText = '';
+          }
+        }
+        if (signal.aborted || generation !== store.current()) return;
+
+        setState({
+          kind: 'ready',
+          context,
+          org: context.org,
+          headerCapable: identity.headerCapable,
+          identity,
+          bodyText,
+        });
       } catch (err) {
         if (signal.aborted || generation !== store.current()) return;
         const message =
@@ -203,15 +243,54 @@ export function TechPane({ session: _session }: TechPaneProps) {
               threadMatchedTicket={state.context.threadMatchedTicket}
               openTickets={state.context.openTickets}
               recentTickets={state.context.recentTickets}
-              onSelect={() => {
-                /* Task 23 wires ticket-row selection into create/link actions. */
+              onSelect={(ticket) => {
+                setSelectedTicket(ticket);
+                setShowCreateForm(false);
               }}
             />
-            {/* Composition points for later tasks — kept here so wiring is a
-                single-file diff, not a re-architecture:
-                  - Task 23: create/link/draft actions for the selected ticket
-                    or `effectiveOrg` (org resolution above already exposes it).
-                  - Task 24: <TimeWidget> against the open ticket. */}
+
+            <button
+              type="button"
+              data-testid="create-ticket-button"
+              onClick={() => {
+                setShowCreateForm((v) => !v);
+                setSelectedTicket(null);
+              }}
+              className="w-fit rounded-md border border-gray-300 px-2 py-1 text-sm hover:bg-gray-50"
+            >
+              {showCreateForm ? 'Cancel new ticket' : 'Create ticket from this email'}
+            </button>
+
+            {selectedTicket && (
+              <LinkEmailAction
+                ticket={selectedTicket}
+                identity={state.identity}
+                bodyText={state.bodyText}
+                orgId={effectiveOrg?.id ?? null}
+                onDone={() => {
+                  setBanner(null);
+                  setSelectedTicket(null);
+                }}
+                onBanner={setBanner}
+              />
+            )}
+
+            {showCreateForm && (
+              <CreateTicketForm
+                context={state.context}
+                identity={state.identity}
+                bodyText={state.bodyText}
+                orgOverride={manualOrg}
+                onDone={() => {
+                  setBanner(null);
+                  setShowCreateForm(false);
+                }}
+                onBanner={setBanner}
+                onCancel={() => setShowCreateForm(false)}
+              />
+            )}
+
+            {/* Task 24 composition point: <TimeWidget> against the open ticket. */}
             {contactOverride && (
               <span data-testid="tech-contact-override" className="hidden">
                 {contactOverride.id}
