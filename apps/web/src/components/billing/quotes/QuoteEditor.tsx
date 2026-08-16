@@ -28,16 +28,25 @@ import {
   type ContractTemplateDetail,
   type TemplateVersionSummary,
 } from '../../../lib/api/contractTemplates';
-import type { QuoteBlockInput, CoverPage, QuoteTableColumn, QuoteCalloutContent } from '@breeze/shared';
+import type { QuoteBlockInput, CoverPage } from '@breeze/shared';
 import { computeQuoteTotals, computeQuoteProfit, priceFromMarkup, toQuoteDepositConfig, type QuoteLineForMath, type QuoteProfit, type QuoteTotals, type QuoteDepositType, type QuoteDepositConfig } from '@breeze/shared';
 import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/api/catalog';
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { showToast } from '../../shared/Toast';
 import RichTextEditor from '../../common/RichTextEditor';
-import InlineRichTextEditor from '../../common/InlineRichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
+import {
+  TableBlockFields,
+  CalloutBlockFields,
+  freshTableForm,
+  freshCalloutForm,
+  tableFormToContent,
+  calloutFormToContent,
+  type TableFormState,
+  type CalloutFormState,
+} from './QuoteBlockContentForms';
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
@@ -71,16 +80,6 @@ const ADD_BLOCK_OPTIONS: { value: AddableBlockType; labelKey: string }[] = [
   { value: 'table', labelKey: 'quotes.editor.blockTypes.table' },
   { value: 'callout', labelKey: 'quotes.editor.blockTypes.callout' },
 ];
-
-/** Fresh 2x2 grid the table form starts from (and resets to after a submit) —
- *  small enough to see the whole shape at a glance, with both add row/column
- *  actions immediately meaningful (removing either lands at the 1x1 floor). */
-function freshTableColumns(): QuoteTableColumn[] {
-  return [{ label: '' }, { label: '' }];
-}
-function freshTableRows(columnCount: number): { cells: string[] }[] {
-  return [{ cells: Array(columnCount).fill('') }, { cells: Array(columnCount).fill('') }];
-}
 
 
 // Grace window for undo-able line/section deletion: the item leaves the UI
@@ -361,57 +360,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [imageUrl, setImageUrl] = useState('');
 
   // ---- add table block ------------------------------------------------------
-  // `tableRows[i].cells.length` is kept equal to `tableColumns.length` at every
-  // mutation (add/remove column pads/trims every row in the same setState) —
-  // the same exact-shape invariant quoteTableContentSchema enforces server-side,
-  // so the POST body can never trip its row-length refinement.
-  const [tableColumns, setTableColumns] = useState<QuoteTableColumn[]>(freshTableColumns);
-  const [tableRows, setTableRows] = useState<{ cells: string[] }[]>(() => freshTableRows(2));
-  const [tableCaption, setTableCaption] = useState('');
-  const [tableZebra, setTableZebra] = useState(false);
-  const [tableHeaderStyle, setTableHeaderStyle] = useState<'accent' | 'plain'>('plain');
-
-  const resetTableForm = useCallback(() => {
-    setTableColumns(freshTableColumns());
-    setTableRows(freshTableRows(2));
-    setTableCaption('');
-    setTableZebra(false);
-    setTableHeaderStyle('plain');
-  }, []);
-
-  const addTableColumn = useCallback(() => {
-    setTableColumns((cols) => (cols.length >= 8 ? cols : [...cols, { label: '' }]));
-    setTableRows((rows) => (rows.length > 0 && rows[0].cells.length >= 8 ? rows : rows.map((r) => ({ cells: [...r.cells, ''] }))));
-  }, []);
-  const removeTableColumn = useCallback((idx: number) => {
-    setTableColumns((cols) => (cols.length <= 1 ? cols : cols.filter((_, i) => i !== idx)));
-    setTableRows((rows) => (rows.length > 0 && rows[0].cells.length <= 1 ? rows : rows.map((r) => ({ cells: r.cells.filter((_, i) => i !== idx) }))));
-  }, []);
-  const addTableRow = useCallback(() => {
-    setTableRows((rows) => (rows.length >= 100 ? rows : [...rows, { cells: Array(tableColumns.length).fill('') }]));
-  }, [tableColumns.length]);
-  const removeTableRow = useCallback((idx: number) => {
-    setTableRows((rows) => (rows.length <= 1 ? rows : rows.filter((_, i) => i !== idx)));
-  }, []);
-  const setTableColumnLabel = useCallback((idx: number, label: string) => {
-    setTableColumns((cols) => cols.map((c, i) => (i === idx ? { ...c, label } : c)));
-  }, []);
-  const setTableColumnAlign = useCallback((idx: number, align: QuoteTableColumn['align']) => {
-    setTableColumns((cols) => cols.map((c, i) => (i === idx ? { ...c, align } : c)));
-  }, []);
-  const setTableCell = useCallback((rowIdx: number, colIdx: number, html: string) => {
-    setTableRows((rows) => rows.map((r, i) => (i === rowIdx ? { cells: r.cells.map((c, j) => (j === colIdx ? html : c)) } : r)));
-  }, []);
+  // The grid fields (and the "every row has exactly columns.length cells"
+  // invariant quoteTableContentSchema enforces server-side) live in
+  // QuoteBlockContentForms, shared with the edit-in-place affordance on a
+  // persisted block — so the two surfaces can never drift.
+  const [tableFormState, setTableFormState] = useState<TableFormState>(freshTableForm);
+  const resetTableForm = useCallback(() => setTableFormState(freshTableForm()), []);
 
   // ---- add callout block -----------------------------------------------------
-  const [calloutVariant, setCalloutVariant] = useState<QuoteCalloutContent['variant']>('info');
-  const [calloutTitle, setCalloutTitle] = useState('');
-  const [calloutHtml, setCalloutHtml] = useState('');
-  const resetCalloutForm = useCallback(() => {
-    setCalloutVariant('info');
-    setCalloutTitle('');
-    setCalloutHtml('');
-  }, []);
+  const [calloutFormState, setCalloutFormState] = useState<CalloutFormState>(freshCalloutForm);
+  const resetCalloutForm = useCallback(() => setCalloutFormState(freshCalloutForm()), []);
 
   // ---- add contract block --------------------------------------------------
   // The template library for the picker, loaded lazily the first time the
@@ -1306,13 +1264,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         const created = await runAction<{ id?: string }>({
           request: () => addBlock(quote.id, {
             blockType: 'table' as const,
-            content: {
-              columns: tableColumns,
-              rows: tableRows.map((r) => ({ cells: r.cells })),
-              ...(tableCaption.trim() ? { caption: tableCaption.trim() } : {}),
-              zebra: tableZebra,
-              headerStyle: tableHeaderStyle,
-            },
+            content: tableFormToContent(tableFormState),
           } as QuoteBlockInput),
           errorFallback: t('quotes.editor.errors.addSection'),
           // No success toast — the new table visibly appears in the block list.
@@ -1328,16 +1280,12 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     }
 
     if (addType === 'callout') {
-      if (!calloutHtml.trim()) return;
+      if (!calloutFormState.html.trim()) return;
       await runScoped('add-block', async () => {
         const created = await runAction<{ id?: string }>({
           request: () => addBlock(quote.id, {
             blockType: 'callout' as const,
-            content: {
-              variant: calloutVariant,
-              ...(calloutTitle.trim() ? { title: calloutTitle.trim() } : {}),
-              html: calloutHtml,
-            },
+            content: calloutFormToContent(calloutFormState),
           } as QuoteBlockInput),
           errorFallback: t('quotes.editor.errors.addSection'),
           // No success toast — the new callout visibly appears in the block list.
@@ -1378,7 +1326,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       setInsertAt(null);
       refresh();
     }, t('quotes.editor.errors.addSection'));
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, tableColumns, tableRows, tableCaption, tableZebra, tableHeaderStyle, resetTableForm, calloutVariant, calloutTitle, calloutHtml, resetCalloutForm, positionNewBlock, quote.id, refresh, runScoped, t]);
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, tableFormState, resetTableForm, calloutFormState, resetCalloutForm, positionNewBlock, quote.id, refresh, runScoped, t]);
 
 
   // Removing a line_items block cascades to every line under it (server-side), so
@@ -2280,173 +2228,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             )}
 
             {addType === 'table' && (
-              <div className="mb-3 space-y-3" data-testid="quote-block-table">
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[32rem] border-separate border-spacing-1 text-xs">
-                    <thead>
-                      <tr>
-                        {tableColumns.map((col, colIdx) => (
-                          <th key={colIdx} className="text-left font-normal">
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="text"
-                                value={col.label}
-                                maxLength={200}
-                                onChange={(e) => setTableColumnLabel(colIdx, e.target.value)}
-                                placeholder={t('quotes.editor.table.columnLabelPlaceholder')}
-                                data-testid={`quote-block-table-column-label-${colIdx}`}
-                                className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                              />
-                              <select
-                                value={col.align ?? 'left'}
-                                onChange={(e) => setTableColumnAlign(colIdx, e.target.value as QuoteTableColumn['align'])}
-                                aria-label={t('quotes.editor.table.columnAlignAria')}
-                                data-testid={`quote-block-table-column-align-${colIdx}`}
-                                className="h-8 rounded-md border bg-background px-1 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                              >
-                                <option value="left">{t('quotes.editor.table.alignLeft')}</option>
-                                <option value="center">{t('quotes.editor.table.alignCenter')}</option>
-                                <option value="right">{t('quotes.editor.table.alignRight')}</option>
-                              </select>
-                              <button
-                                type="button"
-                                onClick={() => removeTableColumn(colIdx)}
-                                disabled={tableColumns.length <= 1}
-                                aria-label={t('quotes.editor.table.removeColumn')}
-                                title={t('quotes.editor.table.removeColumn')}
-                                data-testid={`quote-block-table-remove-column-${colIdx}`}
-                                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-40"
-                              >
-                                &times;
-                              </button>
-                            </div>
-                          </th>
-                        ))}
-                        <th className="w-8">
-                          <button
-                            type="button"
-                            onClick={addTableColumn}
-                            disabled={tableColumns.length >= 8}
-                            aria-label={t('quotes.editor.table.addColumn')}
-                            title={t('quotes.editor.table.addColumn')}
-                            data-testid="quote-block-table-add-column"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground hover:bg-muted disabled:opacity-40"
-                          >
-                            +
-                          </button>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {tableRows.map((row, rowIdx) => (
-                        <tr key={rowIdx}>
-                          {row.cells.map((cell, colIdx) => (
-                            <td key={colIdx} className="align-top">
-                              <InlineRichTextEditor
-                                value={cell}
-                                onChange={(html) => setTableCell(rowIdx, colIdx, html)}
-                                ariaLabel={t('quotes.editor.table.cellAria', { row: rowIdx + 1, column: colIdx + 1 })}
-                                testId={`quote-block-table-cell-${rowIdx}-${colIdx}`}
-                                maxLength={2000}
-                              />
-                            </td>
-                          ))}
-                          <td className="align-top">
-                            <button
-                              type="button"
-                              onClick={() => removeTableRow(rowIdx)}
-                              disabled={tableRows.length <= 1}
-                              aria-label={t('quotes.editor.table.removeRow')}
-                              title={t('quotes.editor.table.removeRow')}
-                              data-testid={`quote-block-table-remove-row-${rowIdx}`}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-40"
-                            >
-                              &times;
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <button
-                  type="button"
-                  onClick={addTableRow}
-                  disabled={tableRows.length >= 100}
-                  data-testid="quote-block-table-add-row"
-                  className="inline-flex h-8 items-center justify-center rounded-md border px-3 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-40"
-                >
-                  {t('quotes.editor.table.addRow')}
-                </button>
-                <input
-                  type="text"
-                  value={tableCaption}
-                  maxLength={300}
-                  onChange={(e) => setTableCaption(e.target.value)}
-                  placeholder={t('quotes.editor.table.captionPlaceholder')}
-                  data-testid="quote-block-table-caption"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-                <div className="flex flex-wrap items-center gap-4">
-                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={tableZebra}
-                      onChange={(e) => setTableZebra(e.target.checked)}
-                      data-testid="quote-block-table-zebra"
-                    />
-                    {t('quotes.editor.table.zebra')}
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                    {t('quotes.editor.table.headerStyle')}
-                    <select
-                      value={tableHeaderStyle}
-                      onChange={(e) => setTableHeaderStyle(e.target.value as 'accent' | 'plain')}
-                      data-testid="quote-block-table-header-style"
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    >
-                      <option value="plain">{t('quotes.editor.table.headerStylePlain')}</option>
-                      <option value="accent">{t('quotes.editor.table.headerStyleAccent')}</option>
-                    </select>
-                  </label>
-                </div>
-              </div>
+              <TableBlockFields value={tableFormState} onChange={setTableFormState} />
             )}
 
             {addType === 'callout' && (
-              <div className="mb-3 space-y-3" data-testid="quote-block-callout">
-                <div>
-                  <label htmlFor="quote-block-callout-variant" className="mb-1 block text-xs text-muted-foreground">
-                    {t('quotes.editor.callout.variantLabel')}
-                  </label>
-                  <select
-                    id="quote-block-callout-variant"
-                    value={calloutVariant}
-                    onChange={(e) => setCalloutVariant(e.target.value as QuoteCalloutContent['variant'])}
-                    data-testid="quote-block-callout-variant"
-                    className="h-9 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                  >
-                    <option value="info">{t('quotes.editor.callout.variantInfo')}</option>
-                    <option value="accent">{t('quotes.editor.callout.variantAccent')}</option>
-                    <option value="warn">{t('quotes.editor.callout.variantWarn')}</option>
-                  </select>
-                </div>
-                <input
-                  type="text"
-                  value={calloutTitle}
-                  maxLength={200}
-                  onChange={(e) => setCalloutTitle(e.target.value)}
-                  placeholder={t('quotes.editor.callout.titlePlaceholder')}
-                  data-testid="quote-block-callout-title"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                />
-                <RichTextEditor
-                  value={calloutHtml}
-                  onChange={setCalloutHtml}
-                  ariaLabel={t('quotes.editor.callout.bodyAria')}
-                  testId="quote-block-callout-body"
-                />
-              </div>
+              <CalloutBlockFields value={calloutFormState} onChange={setCalloutFormState} />
             )}
 
             <div className="flex justify-end">
@@ -2460,7 +2246,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   (addType === 'image' && imageSource === 'file' && !imageFile) ||
                   (addType === 'image' && imageSource === 'url' && !imageUrl.trim()) ||
                   (addType === 'contract' && !contractVersion) ||
-                  (addType === 'callout' && !calloutHtml.trim())
+                  (addType === 'callout' && !calloutFormState.html.trim())
                 }
                 data-testid="quote-add-block-submit"
                 className="inline-flex h-9 items-center justify-center rounded-md border px-4 text-sm font-medium hover:bg-muted disabled:opacity-50"

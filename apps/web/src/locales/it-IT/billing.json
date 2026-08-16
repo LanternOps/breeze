@@ -512,7 +512,9 @@
         "imageSectionPdf": "Sezione immagine (renderizzata nel PDF).",
         "richTextContentAria": "Contenuto di testo formattato",
         "tableEmpty": "Tabella vuota.",
-        "calloutEmpty": "Riquadro vuoto."
+        "calloutEmpty": "Riquadro vuoto.",
+        "edit": "Modifica",
+        "saveEdit": "Salva"
       },
       "blockTypes": {
         "heading": "Intestazione",

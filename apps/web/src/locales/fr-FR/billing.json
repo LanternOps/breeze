@@ -512,7 +512,9 @@
         "imageSectionPdf": "Section image (rendue dans le PDF).",
         "richTextContentAria": "Contenu en texte enrichi",
         "tableEmpty": "Tableau vide.",
-        "calloutEmpty": "Encadré vide."
+        "calloutEmpty": "Encadré vide.",
+        "edit": "Modifier",
+        "saveEdit": "Enregistrer"
       },
       "blockTypes": {
         "heading": "Titre",

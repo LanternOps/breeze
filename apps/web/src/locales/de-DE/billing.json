@@ -512,7 +512,9 @@
         "imageSectionPdf": "Bildausschnitt (gerendert im PDF).",
         "richTextContentAria": "Rich-Text-Inhalt",
         "tableEmpty": "Leere Tabelle.",
-        "calloutEmpty": "Leere Hinweisbox."
+        "calloutEmpty": "Leere Hinweisbox.",
+        "edit": "Bearbeiten",
+        "saveEdit": "Speichern"
       },
       "blockTypes": {
         "heading": "Überschrift",

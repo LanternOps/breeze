@@ -512,7 +512,9 @@
         "imageSectionPdf": "Image section (rendered in the PDF).",
         "richTextContentAria": "Rich text content",
         "tableEmpty": "Empty table.",
-        "calloutEmpty": "Empty callout."
+        "calloutEmpty": "Empty callout.",
+        "edit": "Edit",
+        "saveEdit": "Save"
       },
       "blockTypes": {
         "heading": "Heading",

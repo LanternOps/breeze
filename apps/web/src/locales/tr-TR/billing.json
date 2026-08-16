@@ -512,7 +512,9 @@
         "imageSectionPdf": "Resim bölümü (PDF'de oluşturulmuştur).",
         "richTextContentAria": "Zengin metin içeriği",
         "tableEmpty": "Boş tablo.",
-        "calloutEmpty": "Boş çağrı kutusu."
+        "calloutEmpty": "Boş çağrı kutusu.",
+        "edit": "Düzenle",
+        "saveEdit": "Kaydet"
       },
       "blockTypes": {
         "heading": "Başlık",

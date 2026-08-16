@@ -512,7 +512,9 @@
         "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
         "richTextContentAria": "Conteúdo de rich text",
         "tableEmpty": "Tabela vazia.",
-        "calloutEmpty": "Destaque vazio."
+        "calloutEmpty": "Destaque vazio.",
+        "edit": "Editar",
+        "saveEdit": "Salvar"
       },
       "blockTypes": {
         "heading": "Título",

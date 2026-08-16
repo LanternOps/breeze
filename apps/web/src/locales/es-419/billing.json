@@ -512,7 +512,9 @@
         "imageSectionPdf": "Sección de imagen (representada en PDF).",
         "richTextContentAria": "Contenido de texto enriquecido",
         "tableEmpty": "Tabla vacía.",
-        "calloutEmpty": "Recuadro vacío."
+        "calloutEmpty": "Recuadro vacío.",
+        "edit": "Editar",
+        "saveEdit": "Guardar"
       },
       "blockTypes": {
         "heading": "Título",
