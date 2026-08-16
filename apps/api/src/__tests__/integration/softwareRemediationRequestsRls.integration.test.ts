@@ -16,6 +16,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, softwarePolicies, softwareRemediationRequests } from '../../db/schema';
 import { consumeManualRemediationAuthorization } from '../../jobs/softwareRemediationWorker';
+import { pruneExpiredRemediationRequests } from '../../jobs/softwareRemediationRequestCleanup';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const createdRequests: string[] = [];
@@ -62,12 +63,12 @@ async function seedOrgPolicy(orgId: string): Promise<string> {
   return row!.id;
 }
 
-async function seedRequest(fields: { orgId: string | null; partnerId: string | null; policyId: string; deviceId: string; consumed?: boolean }): Promise<string> {
+async function seedRequest(fields: { orgId: string | null; partnerId: string | null; policyId: string; deviceId: string; consumed?: boolean; expiresAt?: Date }): Promise<string> {
   const [row] = await withDbAccessContext(SYSTEM_CTX, () =>
     db.insert(softwareRemediationRequests).values({
       orgId: fields.orgId, partnerId: fields.partnerId, policyId: fields.policyId, deviceId: fields.deviceId,
       requestedByUserId: null,
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      expiresAt: fields.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000),
       consumedAt: fields.consumed ? new Date() : null,
     }).returning({ id: softwareRemediationRequests.id }),
   );
@@ -146,6 +147,37 @@ describe('software_remediation_requests — RLS + device-move + consume (#3553)'
     expect(second.authorized).toBe(false); // already consumed
   });
 
+  // #3614 follow-up 4: the sequential case above proves single-use only AFTER
+  // the first consume has committed. The property that actually matters is that
+  // two consumes racing on the SAME row cannot both win. That holds because the
+  // consume is one atomic `UPDATE ... WHERE consumed_at IS NULL ... RETURNING`,
+  // so the second UPDATE blocks on the first's row lock and then matches zero
+  // rows. Pinning it here means a future refactor to read-then-write — which
+  // would still pass the sequential test — fails instead.
+  it('concurrent consumes of the same request: exactly one wins', async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const siteA = await createSite({ orgId: orgA.id });
+    const deviceD = await seedDevice(orgA.id, siteA.id);
+    const policyP = await seedOrgPolicy(orgA.id);
+    const requestId = await seedRequest({ orgId: orgA.id, partnerId: null, policyId: policyP, deviceId: deviceD });
+
+    // Started together, not awaited in sequence: both are in flight before
+    // either resolves.
+    const [a, b] = await Promise.all([
+      withDbAccessContext(SYSTEM_CTX, () =>
+        consumeManualRemediationAuthorization({ manualRequestId: requestId, policyId: policyP, deviceId: deviceD }),
+      ),
+      withDbAccessContext(SYSTEM_CTX, () =>
+        consumeManualRemediationAuthorization({ manualRequestId: requestId, policyId: policyP, deviceId: deviceD }),
+      ),
+    ]);
+
+    // Exactly one authorized — never both (double uninstall dispatch), never
+    // neither (a burned token that queued nothing).
+    expect([a.authorized, b.authorized].filter(Boolean)).toHaveLength(1);
+  });
+
   // #3553 finding 4: prove the PARTNER axis of the dual RLS + consume, not just
   // the org axis. A partner-wide policy's request is visible to its partner and
   // NOT to another partner, and consumes while the device stays under the partner.
@@ -183,4 +215,57 @@ describe('software_remediation_requests — RLS + device-move + consume (#3553)'
     expect(visibleToB).toHaveLength(0);
     expect(consumed.authorized).toBe(true); // device still under partner A
   });
+
+  // #3614 review: the unit suite asserts query SHAPE, which cannot express this.
+  // Todd demonstrated the gap by inverting `lt` -> `gt` on the cutoff — turning
+  // the sweep into one that deletes every UNEXPIRED authorization — and the unit
+  // tests still passed 6/6. The failure mode is a row count, so it is checked
+  // here against real Postgres.
+  it('prune deletes only rows past the retention grace, across orgs, and spares live ones', async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const orgB = await createOrganization({ partnerId: partnerA.id });
+    const siteA = await createSite({ orgId: orgA.id });
+    const siteB = await createSite({ orgId: orgB.id });
+    const deviceA = await seedDevice(orgA.id, siteA.id);
+    const deviceB = await seedDevice(orgB.id, siteB.id);
+    const policyA = await seedOrgPolicy(orgA.id);
+    const policyB = await seedOrgPolicy(orgB.id);
+
+    const HOUR = 60 * 60 * 1000;
+    // Live: expires in an hour. Must survive.
+    const live = await seedRequest({
+      orgId: orgA.id, partnerId: null, policyId: policyA, deviceId: deviceA,
+      expiresAt: new Date(Date.now() + HOUR),
+    });
+    // Expired 1h ago — past expiry but INSIDE the 72h grace. Must survive.
+    const recentlyExpired = await seedRequest({
+      orgId: orgA.id, partnerId: null, policyId: policyA, deviceId: deviceA,
+      expiresAt: new Date(Date.now() - HOUR),
+    });
+    // Expired 100h ago, in a DIFFERENT org — past the grace. Must be deleted,
+    // and the sweep must not be org-scoped.
+    const longExpired = await seedRequest({
+      orgId: orgB.id, partnerId: null, policyId: policyB, deviceId: deviceB,
+      expiresAt: new Date(Date.now() - 100 * HOUR),
+    });
+
+    // Called with NO ambient context on purpose: the prune establishes its own
+    // system context per batch, so it must sweep the whole table unaided.
+    const result = await pruneExpiredRemediationRequests();
+    expect(result.deletedCount).toBeGreaterThanOrEqual(1);
+
+    const survivors = await withDbAccessContext(SYSTEM_CTX, async () => {
+      const rows = await db
+        .select({ id: softwareRemediationRequests.id })
+        .from(softwareRemediationRequests);
+      return new Set(rows.map((r) => r.id));
+    });
+
+    // An inverted comparison would invert exactly these three assertions.
+    expect(survivors.has(live)).toBe(true);
+    expect(survivors.has(recentlyExpired)).toBe(true);
+    expect(survivors.has(longExpired)).toBe(false);
+  });
+
 });

@@ -11,6 +11,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
@@ -168,4 +169,13 @@ export const softwareRemediationRequests = pgTable('software_remediation_request
   partnerIdIdx: index('software_remediation_requests_partner_id_idx').on(table.partnerId),
   policyIdIdx: index('software_remediation_requests_policy_id_idx').on(table.policyId),
   deviceIdIdx: index('software_remediation_requests_device_id_idx').on(table.deviceId),
+  // Partial index, mirroring the migration so this schema describes what the
+  // database actually has. It serves the CONSUME path, which looks a row up by
+  // id while filtering `consumed_at IS NULL AND expires_at > now()`.
+  // Deliberately NOT claimed for the retention sweep: that scans by expires_at
+  // across consumed and unconsumed rows alike, so this partial index cannot
+  // cover it.
+  expiryIdx: index('software_remediation_requests_expiry_idx')
+    .on(table.expiresAt)
+    .where(sql`consumed_at IS NULL`),
 }));
