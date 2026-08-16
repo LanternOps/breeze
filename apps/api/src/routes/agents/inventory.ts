@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
+import { vpnPresenceIngestSchema } from '@breeze/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -325,9 +327,33 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
   // a live tunnel to "no VPN". We stamp reportedAt server-side per entry.
   // Semantics of the stored column: null = never successfully reported (old
   // agent or every collection failed); [] = reported with no active VPN.
-  const vpnProvided = data.vpns !== undefined;
+  // #3550: validate VPN entries PER-ENTRY here, not in the request schema, so a
+  // single malformed entry can't 400 the whole payload and discard the valid
+  // adapter inventory in the same request. Bad entries are dropped and counted.
+  const rawVpns = data.vpns;
+  const salvagedVpns: z.infer<typeof vpnPresenceIngestSchema>[] = [];
+  let droppedVpnCount = 0;
+  if (rawVpns !== undefined) {
+    for (const entry of rawVpns) {
+      const parsed = vpnPresenceIngestSchema.safeParse(entry);
+      if (parsed.success) salvagedVpns.push(parsed.data);
+      else droppedVpnCount += 1;
+    }
+  }
+  if (droppedVpnCount > 0) {
+    console.warn(
+      `[agents.network] dropped ${droppedVpnCount} malformed VPN ` +
+        `entr${droppedVpnCount === 1 ? 'y' : 'ies'} for agent ${agentId}; ` +
+        `kept ${salvagedVpns.length}, adapters preserved`,
+    );
+  }
+  // Treat an all-malformed report like a FAILED collection: leave the stored
+  // snapshot untouched rather than overwriting a live tunnel to "no VPN". A
+  // genuinely empty report (agent sent [], nothing dropped) is still honored as
+  // "reported, no active VPN".
+  const vpnProvided = rawVpns !== undefined && !(salvagedVpns.length === 0 && droppedVpnCount > 0);
   const activeVpns = vpnProvided
-    ? data.vpns!.map((vpn) => ({
+    ? salvagedVpns.map((vpn) => ({
         provider: vpn.provider,
         active: vpn.active,
         interfaceName: vpn.interfaceName,
@@ -373,7 +399,11 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
   return c.json({
     success: true,
     count: data.adapters.length,
-    vpnCount: vpnProvided ? activeVpns!.length : null
+    vpnCount: vpnProvided ? activeVpns!.length : null,
+    // Machine-readable partial-ingest signal (#3550): how many VPN entries were
+    // dropped as malformed. 0 on a clean ingest; lets a future agent surface a
+    // persistent serialization regression instead of it hiding behind a 200.
+    droppedVpnCount
   });
 });
 

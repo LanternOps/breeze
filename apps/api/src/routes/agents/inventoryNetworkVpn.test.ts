@@ -4,7 +4,8 @@ import { Hono } from 'hono';
 // Active-VPN-client presence ingest via PUT /:id/network (#2139). Verifies the
 // handler stamps reportedAt server-side and persists the snapshot to
 // devices.activeVpns, that old agents (no `vpns`) store an empty array, and
-// that the payload validator rejects unknown providers.
+// that a malformed VPN entry is SALVAGED per-entry — dropped without rejecting
+// the whole payload (which used to discard the valid adapter inventory, #3550).
 
 vi.mock('../../db', () => ({
   db: {
@@ -43,11 +44,18 @@ function mockDeviceLookup(device: { id: string; orgId: string } | null) {
 // Capture what the handler writes to devices.activeVpns inside the txn.
 // `updateCalled` distinguishes "wrote []" from "never touched the column".
 function mockTransactionCapture() {
-  const captured: { activeVpns?: unknown; updateCalled: boolean } = { updateCalled: false };
+  const captured: { activeVpns?: unknown; inserted?: unknown[]; updateCalled: boolean } = {
+    updateCalled: false,
+  };
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
     const tx = {
       delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      insert: vi.fn().mockReturnValue({
+        values: vi.fn().mockImplementation((rows: unknown[]) => {
+          captured.inserted = rows;
+          return Promise.resolve(undefined);
+        }),
+      }),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockImplementation((row: { activeVpns?: unknown }) => {
           captured.updateCalled = true;
@@ -191,26 +199,47 @@ describe('agent network inventory — VPN presence ingest (#2139)', () => {
     expect(Number.isNaN(Date.parse(inactive!.reportedAt as string))).toBe(false);
   });
 
-  it('rejects an active VPN entry with an empty interfaceName (validator)', async () => {
-    // zValidator rejects before the handler runs — no db mocks needed, and
-    // queuing a device lookup here would leak into the next test.
+  it('salvages a mixed payload: drops a malformed VPN but keeps the valid VPN and the adapters (#3550)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture();
+
     const res = await putNetwork(makeApp(), {
-      adapters: [],
-      vpns: [{ provider: 'tailscale', active: true, interfaceName: '', detectionSource: 'interface' }],
+      adapters: [{ interfaceName: 'en0', ipAddress: '10.0.0.5', ipType: 'ipv4', isPrimary: true }],
+      vpns: [
+        { provider: 'tailscale', active: true, interfaceName: 'utun3', ipv4: '100.1.2.3', detectionSource: 'interface' },
+        // Malformed: an active VPN with no interfaceName.
+        { provider: 'tailscale', active: true, interfaceName: '', detectionSource: 'interface' },
+      ],
     });
 
-    expect(res.status).toBe(400);
+    // The whole payload is no longer rejected — the valid adapter is persisted...
+    expect(res.status).toBe(200);
+    expect(captured.inserted).toHaveLength(1);
+    // ...and only the well-formed VPN survives.
+    const stored = captured.activeVpns as Array<Record<string, unknown>>;
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ provider: 'tailscale', interfaceName: 'utun3' });
+    const body = await res.json();
+    expect(body.vpnCount).toBe(1);
+    // The response reports how many entries were dropped (#3550 observability).
+    expect(body.droppedVpnCount).toBe(1);
   });
 
-  it('rejects an unknown VPN provider (validator)', async () => {
-    // zValidator rejects before the handler runs — no db mocks needed, and
-    // queuing a device lookup here would leak into the next test.
+  it('salvages an unknown-provider VPN: adapters persist and the bad entry is dropped (#3550)', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
+    const captured = mockTransactionCapture();
+
     const res = await putNetwork(makeApp(), {
-      adapters: [],
+      adapters: [{ interfaceName: 'eth0', ipAddress: '192.168.1.20', ipType: 'ipv4', isPrimary: true }],
       vpns: [{ provider: 'nordvpn', active: true, interfaceName: 'utun9', detectionSource: 'interface' }],
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(captured.inserted).toHaveLength(1);
+    // Every provided VPN was malformed, so the snapshot is left UNTOUCHED rather
+    // than overwritten to "no VPN" (avoids clobbering a live tunnel). The handler
+    // signals this by not calling update on activeVpns.
+    expect(captured.updateCalled).toBe(false);
   });
 
   it('returns 404 and does not open a txn when the device is unknown', async () => {
