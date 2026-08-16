@@ -175,6 +175,45 @@ describe('RegionalSetupStep (#3204)', () => {
     expect(onNext).not.toHaveBeenCalled();
   });
 
+  /**
+   * The success banner delays onNext by 600ms, so the callback outlives an
+   * unmount. Without the mounted guard + a disabled Back button, a user who
+   * clicks Save and then navigates back is silently yanked FORWARD to Install
+   * Agent 600ms later by the stale callback.
+   */
+  it('locks Back while saving and never advances after unmount', async () => {
+    // Hold the first PATCH open so the in-flight window is actually observable
+    // — with instant mocks `saving` flips back before anything can be asserted.
+    let releaseFirstPatch: () => void = () => {};
+    const firstPatchHeld = new Promise<void>((resolve) => { releaseFirstPatch = resolve; });
+    authMocks.fetchWithAuth.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') await firstPatchHeld;
+      return jsonRes(PARTNER);
+    });
+
+    const user = userEvent.setup();
+    const onNext = vi.fn();
+    const { unmount } = render(
+      <RegionalSetupStep siteId="site-1" onNext={onNext} onBack={vi.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('setup-currency')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /save/i }));
+
+    // Back is unusable for the whole in-flight window.
+    await waitFor(() => expect(screen.getByRole('button', { name: /back/i })).toBeDisabled());
+
+    releaseFirstPatch();
+    await waitFor(() => expect(screen.getByText(/saved|salv|enregistr/i)).toBeInTheDocument());
+
+    // The user gets away anyway (stepper click, browser back) inside the 600ms
+    // banner delay.
+    unmount();
+    await new Promise((r) => setTimeout(r, 900));
+
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
   it('skips the site PATCH entirely when no site id is available', async () => {
     const user = userEvent.setup();
     const { onNext } = await renderLoaded({ siteId: null });

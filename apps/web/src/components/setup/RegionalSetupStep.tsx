@@ -26,7 +26,7 @@
 // partial save would silently ship the exact defaults this step exists to
 // replace. The Skip button is the escape hatch for a user whose role lacks
 // `invoices:write` (call 4 is permission-gated) or who simply does not care.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Coins, Globe, Loader2, ArrowLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { SupportedLocale } from '@breeze/shared';
@@ -96,6 +96,17 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
+
+  // The success banner is shown for 600ms before advancing, so `onNext` fires
+  // from a timer that outlives an unmount. Without these two guards, a user who
+  // clicks Save and then Back gets silently yanked FORWARD to Install Agent
+  // 600ms later by the stale callback.
+  const mounted = useRef(true);
+  const advanceTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => {
+    mounted.current = false;
+    if (advanceTimer.current) clearTimeout(advanceTimer.current);
+  }, []);
 
   const [timezone, setTimezone] = useState('UTC');
   const [language, setLanguage] = useState<SupportedLocale>('en');
@@ -242,7 +253,7 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
         }
       }
       setSuccess(t('auth:setup.regional.success'));
-      setTimeout(onNext, 600);
+      advanceTimer.current = setTimeout(() => { if (mounted.current) onNext(); }, 600);
     } catch {
       setError(t('auth:setup.common.unexpectedError'));
     } finally {
@@ -342,7 +353,8 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
             <button
               type="button"
               onClick={onBack}
-              className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
             >
               <ArrowLeft className="h-4 w-4" />
               {t('auth:setup.common.back')}
