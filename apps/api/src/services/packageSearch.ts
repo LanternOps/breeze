@@ -70,6 +70,36 @@ export async function searchWingetIndex(
   }));
 }
 
+export interface WingetIndexFreshness {
+  /** Rows currently in the index. 0 means the sync has never landed a run. */
+  packages: number;
+  /** Newest row timestamp — the last time a sync run wrote anything. */
+  lastSyncedAt: string | null;
+}
+
+/**
+ * Index-health probe for the winget search branch (#3602).
+ *
+ * The sync worker skips cleanly when GitHub rate-limits it, so a repeatedly
+ * rate-limited deployment (shared egress IP, CGNAT) ends up serving an empty
+ * or stale index — and an empty index looks exactly like "no matches" to the
+ * caller. This lets the route distinguish the two, the way the Homebrew branch
+ * already does with its `degraded` flag.
+ */
+export async function getWingetIndexFreshness(): Promise<WingetIndexFreshness> {
+  const rows = (await db.execute(sql`
+    SELECT count(*)::int AS packages, max(updated_at) AS last_synced_at
+    FROM winget_package_index
+  `)) as unknown as Array<{ packages: number; last_synced_at: Date | string | null }>;
+
+  const row = rows[0];
+  const raw = row?.last_synced_at ?? null;
+  return {
+    packages: Number(row?.packages ?? 0),
+    lastSyncedAt: raw === null ? null : new Date(raw).toISOString(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Homebrew
 // ---------------------------------------------------------------------------

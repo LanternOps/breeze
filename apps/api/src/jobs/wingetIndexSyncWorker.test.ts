@@ -485,3 +485,179 @@ describe('runWingetIndexSync', () => {
     expect(new WingetRateLimitError('x').name).toBe('WingetRateLimitError');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Authenticated sync + per-vendor split of a truncated bucket (#3602)
+// ---------------------------------------------------------------------------
+
+describe('runWingetIndexSync — GitHub token (#3602)', () => {
+  let insertMock: ReturnType<typeof vi.fn>;
+  let deleteMock: ReturnType<typeof vi.fn>;
+  let upserts: UpsertCall[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    delete process.env.WINGET_INDEX_GITHUB_TOKEN;
+
+    upserts = [];
+    insertMock = vi.fn(() => ({
+      values: vi.fn((rows: Array<Record<string, unknown>>) => ({
+        onConflictDoUpdate: vi.fn(async (cfg: { set: Record<string, unknown> }) => {
+          upserts.push({ rows, latestVersionSet: renderSql(cfg.set.latestVersion) });
+        }),
+      })),
+    }));
+    deleteMock = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) }));
+    (db as unknown as { insert: unknown }).insert = insertMock;
+    (db as unknown as { delete: unknown }).delete = deleteMock;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    delete process.env.WINGET_INDEX_GITHUB_TOKEN;
+  });
+
+  async function runWithTimers<T>(p: Promise<T>): Promise<T> {
+    const settled = p.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.runAllTimersAsync();
+    const outcome = await settled;
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
+  }
+
+  /**
+   * One bucket `m` whose recursive fetch comes back TRUNCATED, holding two
+   * vendor directories. The per-vendor subtrees are complete and their paths
+   * are vendor-RELATIVE, exactly as the Trees API returns them.
+   */
+  function fixtureFetch() {
+    return vi.fn(async (url: string) => {
+      if (url.includes('manifests%2Fm%2FMicrosoft')) {
+        return treeResponse({
+          sha: 'ms',
+          tree: [
+            { path: 'Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' },
+            { path: 'Edge/127.0/Microsoft.Edge.installer.yaml', type: 'blob' },
+          ],
+        });
+      }
+      if (url.includes('manifests%2Fm%2FMozilla')) {
+        return treeResponse({
+          sha: 'mz',
+          tree: [{ path: 'Firefox/130.0/Mozilla.Firefox.yaml', type: 'blob' }],
+        });
+      }
+      if (url.includes('manifests%2Fm') && url.includes('recursive=1')) {
+        return treeResponse({
+          sha: 'm',
+          truncated: true,
+          tree: [{ path: 'Microsoft/Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
+        });
+      }
+      if (url.includes('manifests%2Fm')) {
+        // Non-recursive vendor LISTING for the split.
+        return treeResponse({
+          sha: 'm',
+          tree: [
+            { path: 'Microsoft', type: 'tree' },
+            { path: 'Mozilla', type: 'tree' },
+          ],
+        });
+      }
+      return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
+    });
+  }
+
+  it('sends no Authorization header and never splits when no token is set', async () => {
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.authenticated).toBe(false);
+    expect(summary.splitBuckets).toEqual([]);
+    expect(summary.truncatedBuckets).toEqual(['m']);
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
+    expect(deleteMock).not.toHaveBeenCalled();
+    // Root listing + the one (truncated) bucket — no vendor walk.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(summary.requests).toBe(2);
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    }
+  });
+
+  it('authenticates, splits the truncated bucket by vendor and re-enables the prune', async () => {
+    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.authenticated).toBe(true);
+    expect(summary.splitBuckets).toEqual(['m']);
+    expect(summary.truncatedBuckets).toEqual([]);
+    expect(summary.complete).toBe(true);
+    expect(summary.pruned).toBe(true);
+    expect(deleteMock).toHaveBeenCalled();
+    // root + truncated bucket + vendor listing + 2 vendor subtrees.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(summary.requests).toBe(5);
+
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ghp_test_token');
+    }
+
+    // The vendor segment survives the re-prefixing — a package parsed from a
+    // vendor-relative subtree must NOT lose `Microsoft`/`Mozilla`.
+    const rows = upserts.flatMap((u) => u.rows);
+    expect(rows.map((r) => r.packageId).sort()).toEqual(['Microsoft.Edge', 'Mozilla.Firefox']);
+    // 127.0 only exists in the split response, so the split genuinely merged in.
+    expect(rows.find((r) => r.packageId === 'Microsoft.Edge')?.latestVersion).toBe('127.0');
+    // A rescued bucket is authoritative, so latest_version overwrites outright.
+    expect(upserts.every((u) => u.latestVersionSet === 'excluded.latest_version')).toBe(true);
+  });
+
+  it('keeps the bucket incomplete when a vendor subtree itself truncates', async () => {
+    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('manifests%2Fm%2FMicrosoft')) {
+          return treeResponse({
+            sha: 'ms',
+            truncated: true,
+            tree: [{ path: 'Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
+          });
+        }
+        if (url.includes('manifests%2Fm') && url.includes('recursive=1')) {
+          return treeResponse({
+            sha: 'm',
+            truncated: true,
+            tree: [{ path: 'Microsoft/Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
+          });
+        }
+        if (url.includes('manifests%2Fm')) {
+          return treeResponse({ sha: 'm', tree: [{ path: 'Microsoft', type: 'tree' }] });
+        }
+        return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
+      }),
+    );
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
+    expect(summary.splitBuckets).toEqual([]);
+    expect(summary.truncatedBuckets).toEqual(['m']);
+    expect(summary.complete).toBe(false);
+    expect(summary.pruned).toBe(false);
+    expect(deleteMock).not.toHaveBeenCalled();
+    // Rows still land, and still preserve the stored latest_version.
+    expect(upserts.every((u) => u.latestVersionSet.includes('latest_version'))).toBe(true);
+  });
+});
