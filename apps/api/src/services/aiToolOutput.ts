@@ -93,6 +93,26 @@ function truncateText(value: string, maxChars: number, stats: CompactStats): str
   return `${base.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
 }
 
+// #3521: the in-band marker appended to a truncated ARRAY, mirroring the string
+// `[truncated N chars]` marker. The ANCHORED regex matches only our exact
+// canonical marker, so a re-compaction pass recognizes its own marker (staying
+// idempotent) without misclassifying a legitimate trailing string that merely
+// begins similarly.
+const ARRAY_SENTINEL_RE = /^\.\.\.\[truncated: (\d+) more items omitted. Use pagination or the REST API\]$/;
+
+function arrayTruncationSentinel(dropped: number): string {
+  return `...[truncated: ${dropped} more items omitted. Use pagination or the REST API]`;
+}
+
+// Prior omitted count if `value` is exactly our marker, else null. Used to carry
+// the count forward across a tighter re-compaction (mirrors truncateText's
+// priorOmitted), so the marker reports the TOTAL omitted from the original input.
+function priorArrayOmitted(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const match = ARRAY_SENTINEL_RE.exec(value);
+  return match ? Number(match[1]) : null;
+}
+
 export function redactAiToolOutputText(value: string): string {
   return BARE_SECRET_PATTERNS.reduce(
     (current, pattern) => current.replace(pattern, REDACTED),
@@ -155,13 +175,33 @@ function compactValue(
   }
 
   if (Array.isArray(value)) {
-    if (value.length > config.maxArrayItems) {
-      stats.arraysTruncated += 1;
-      stats.arrayItemsDropped += value.length - config.maxArrayItems;
-    }
-    return value
+    // #3521: a truncated array used to be `.slice()`d with only a buried
+    // `_chat.arrayItemsDropped` stat — the array itself reads as a complete,
+    // plausible list, so it silently misrepresents state. Append an in-band
+    // marker element (mirroring the string `...[truncated N chars]` marker) at
+    // the point of loss. It is a JSON string, so the array stays valid JSON.
+    //
+    // Idempotence: if this array already carries our marker (e.g. output that is
+    // ever re-compacted), strip it first so the synthetic element is not counted
+    // as a real item nor re-truncated in place; re-emit or refresh it below.
+    const priorOmitted = value.length > 0 ? priorArrayOmitted(value[value.length - 1]) : null;
+    const items = priorOmitted !== null ? value.slice(0, -1) : value;
+    const compacted = items
       .slice(0, config.maxArrayItems)
       .map((item) => compactValue(item, stats, config, depth + 1));
+    const droppedThisPass = items.length - config.maxArrayItems;
+    if (droppedThisPass > 0) {
+      stats.arraysTruncated += 1;
+      stats.arrayItemsDropped += droppedThisPass;
+      // Marker reports the CUMULATIVE omission from the original input, so a
+      // tighter re-compaction of already-marked output doesn't understate it.
+      compacted.push(arrayTruncationSentinel((priorOmitted ?? 0) + droppedThisPass));
+    } else if (priorOmitted !== null) {
+      // Already-truncated upstream and still fits — preserve the existing count
+      // rather than silently dropping the "more omitted" signal.
+      compacted.push(arrayTruncationSentinel(priorOmitted));
+    }
+    return compacted;
   }
 
   if (isRecord(value)) {
