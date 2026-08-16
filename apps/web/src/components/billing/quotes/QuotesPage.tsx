@@ -230,7 +230,7 @@ export function QuotesPage() {
         // nulls the site on retarget, matching updateQuote's reassignment.
         request: () => newSourceId
           ? cloneQuote(newSourceId, { orgId: newOrgId, title: newTitle.trim() || undefined })
-          : createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined, currencyCode: 'USD' }),
+          : createQuote({ orgId: newOrgId, siteId: newSiteId || undefined, title: newTitle.trim() || undefined }),
         errorFallback: t('quotes.page.create.error'),
         successMessage: t('quotes.page.create.success'),
         onUnauthorized: UNAUTHORIZED,

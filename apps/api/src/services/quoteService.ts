@@ -250,6 +250,19 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   assertOrg(actor, input.orgId);
   assertSite(actor, input.siteId ?? null);
   const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
+  // A new quote inherits the partner's configured currency unless the caller
+  // names one explicitly. The web and MCP create forms used to hardcode 'USD',
+  // so a non-USD partner's quotes (and their PDFs) were always minted in USD
+  // (#3200). The notNull DB default 'USD' remains the final backstop.
+  let currencyCode = input.currencyCode;
+  if (!currencyCode) {
+    const [partner] = await db
+      .select({ currencyCode: partners.currencyCode })
+      .from(partners)
+      .where(eq(partners.id, partnerId))
+      .limit(1);
+    currencyCode = partner?.currencyCode ?? 'USD';
+  }
   // Number at creation (not at send): techs reference the number while drafting
   // and in the list. A deleted draft leaves a counter gap, which the numbering
   // contract explicitly tolerates (see allocateQuoteCounter). sendQuote keeps
@@ -263,7 +276,7 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
     siteId: input.siteId ?? null,
     quoteNumber,
     title: input.title?.trim() || null,
-    currencyCode: input.currencyCode,
+    currencyCode,
     taxRate,
     expiryDate: input.expiryDate ?? null,
     introNotes: input.introNotes ?? null,

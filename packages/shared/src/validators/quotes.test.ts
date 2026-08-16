@@ -9,9 +9,11 @@ import {
 } from './quotes';
 
 describe('quote validators', () => {
-  it('accepts a minimal create payload', () => {
+  it('accepts a minimal create payload and leaves currencyCode unset', () => {
+    // currencyCode is optional now (#3200): omitting it lets createQuote inherit
+    // the partner's currency server-side, instead of the schema forcing 'USD'.
     const q = createQuoteSchema.parse({ orgId: '11111111-1111-1111-1111-111111111111' });
-    expect(q.currencyCode).toBe('USD');
+    expect(q.currencyCode).toBeUndefined();
   });
 
   it('parses a recurring catalog line with term', () => {
