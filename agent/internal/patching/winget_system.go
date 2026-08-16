@@ -48,6 +48,11 @@ func systemListArgs() []string {
 		"--accept-source-agreements", "--disable-interactivity"}
 }
 
+func systemIsInstalledArgs(id string) []string {
+	return []string{"list", "--exact", "--id", id, "--scope", "machine",
+		"--source", "winget", "--accept-source-agreements", "--disable-interactivity"}
+}
+
 func (p *SystemWingetProvider) Scan() ([]AvailablePatch, error) {
 	stdout, stderr, code, err := p.run(p.wingetPath, systemScanArgs(), systemWingetScanTimeout)
 	if err != nil {
@@ -109,6 +114,58 @@ func (p *SystemWingetProvider) Uninstall(patchID string) error {
 		return fmt.Errorf("winget uninstall failed (exit %d): %s", code, strings.TrimSpace(stderr))
 	}
 	return nil
+}
+
+// IsInstalled reports whether id is present on this machine, scoped to
+// MACHINE (matching the install/uninstall scope) so it agrees with what
+// Install/Uninstall actually act on. Install-only callers use this to decide
+// whether to skip a redundant install, never to decide whether to upgrade.
+//
+// winget exits non-zero when `list --exact --id` finds no match — that is a
+// normal "not installed" outcome, not a runner failure, so it is reported as
+// (false, nil) rather than an error. Only a failure to invoke the process at
+// all (run returning a non-nil err) is treated as an error here.
+func (p *SystemWingetProvider) IsInstalled(id string) (bool, error) {
+	if !validWingetPkgID.MatchString(id) {
+		return false, fmt.Errorf("invalid winget package ID: %q", id)
+	}
+	stdout, _, code, err := p.run(p.wingetPath, systemIsInstalledArgs(id), systemWingetScanTimeout)
+	if err != nil {
+		return false, fmt.Errorf("winget list failed: %w", err)
+	}
+	if code != 0 {
+		return false, nil
+	}
+	return strings.Contains(stdout, id), nil
+}
+
+// InstallExact installs (never upgrades) id at MACHINE scope. When version is
+// non-empty, --version <v> is appended so winget installs exactly that
+// build; an exact-version miss (winget reports "No package found matching
+// input criteria" or exits non-zero) is a failure, never a silent fallback to
+// latest.
+func (p *SystemWingetProvider) InstallExact(id, version string) (InstallResult, error) {
+	if !validWingetPkgID.MatchString(id) {
+		return InstallResult{}, fmt.Errorf("invalid winget package ID: %q", id)
+	}
+	args := systemInstallArgs(id)
+	if version != "" {
+		args = append(args, "--version", version)
+	}
+	stdout, stderr, code, err := p.run(p.wingetPath, args, systemWingetInstallTimeout)
+	if err != nil {
+		return InstallResult{}, fmt.Errorf("winget install failed: %w", err)
+	}
+	combined := strings.TrimSpace(stdout + "\n" + stderr)
+	if code != 0 || strings.Contains(combined, "No package found matching input criteria") {
+		return InstallResult{}, fmt.Errorf("winget install failed (exit %d): %s", code, combined)
+	}
+	res := InstallResult{PatchID: id, Provider: "winget", Message: combined}
+	low := strings.ToLower(combined)
+	if strings.Contains(low, "restart") || strings.Contains(low, "reboot") {
+		res.RebootRequired = true
+	}
+	return res, nil
 }
 
 func (p *SystemWingetProvider) GetInstalled() ([]InstalledPatch, error) {

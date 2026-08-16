@@ -52,6 +52,10 @@ func InstallSoftware(payload map[string]any) (result CommandResult) {
 		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
 	}()
 
+	if _, ok := payload["installMethod"].(map[string]any); ok {
+		return installViaManager(payload, defaultManagerDeps())
+	}
+
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
 	if errResult != nil {
 		return *errResult
