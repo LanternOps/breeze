@@ -6,7 +6,10 @@ const authMocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }));
 const i18nMocks = vi.hoisted(() => ({ applyLocale: vi.fn() }));
 const appearanceMocks = vi.hoisted(() => ({ writeLocalePreference: vi.fn() }));
 
+const toastMocks = vi.hoisted(() => ({ showToast: vi.fn() }));
+
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: authMocks.fetchWithAuth }));
+vi.mock('../shared/Toast', () => ({ showToast: toastMocks.showToast }));
 
 vi.mock('@/lib/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/lib/i18n')>('@/lib/i18n');
@@ -109,6 +112,46 @@ describe('RegionalSetupStep (#3204)', () => {
 
     expect(appearanceMocks.writeLocalePreference).toHaveBeenCalledWith('de-DE');
     expect(i18nMocks.applyLocale).toHaveBeenCalledWith('de-DE');
+    expect(toastMocks.showToast).not.toHaveBeenCalled();
+  });
+
+  /**
+   * When the language chunk fails to load, applyLocale renders English instead
+   * — but the select still shows the chosen language and submit still persists
+   * it. Without the toast, what the user sees and what gets saved diverge with
+   * no signal at all.
+   */
+  it('warns when the chosen language chunk fails to load and English renders', async () => {
+    i18nMocks.applyLocale.mockResolvedValue({ locale: 'de-DE', usedFallback: true });
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.selectOptions(screen.getByTestId('setup-language'), 'de-DE');
+
+    await waitFor(() =>
+      expect(toastMocks.showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error' }),
+      ),
+    );
+  });
+
+  /**
+   * The load effect must run exactly once. `useTranslation`'s `t` gets a new
+   * identity on every language change, so listing it as a dependency would
+   * refetch the partner — and reset the currency the user had already picked —
+   * on the very interaction the language select exists to perform.
+   */
+  it('does not reload (or discard picked values) when the language changes', async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+    const loadsAfterMount = authMocks.fetchWithAuth.mock.calls.length;
+
+    await user.selectOptions(screen.getByTestId('setup-currency'), 'GBP');
+    await user.selectOptions(screen.getByTestId('setup-language'), 'de-DE');
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(authMocks.fetchWithAuth.mock.calls.length).toBe(loadsAfterMount);
+    expect(screen.getByTestId('setup-currency')).toHaveValue('GBP');
   });
 
   /**

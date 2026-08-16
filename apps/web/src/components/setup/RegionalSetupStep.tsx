@@ -36,6 +36,7 @@ import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { applyLocale, i18n } from '@/lib/i18n';
 import { writeLocalePreference } from '@/lib/appearance';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
+import { showToast } from '../shared/Toast';
 
 interface RegionalSetupStepProps {
   /** Site created in the Organization step; null when it could not be resolved. */
@@ -148,22 +149,38 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
       // Surfaced rather than swallowed: the form is usable, but the values shown
       // are guesses instead of what is actually stored, and the billing PATCH
       // will be echoing default prefix/terms it could not read.
-      if (loadFailed) setError(t('auth:setup.regional.errors.loadFailed'));
+      // i18n.t rather than the hook's `t`: this effect must run EXACTLY once.
+      // `t` gets a new identity every time the language changes, and changing
+      // the language is the whole job of the select below — depending on it
+      // would refetch the partner and reset the timezone/currency the user had
+      // just picked, on the very interaction that is supposed to be free.
+      if (loadFailed) setError(i18n.t('auth:setup.regional.errors.loadFailed'));
       setLoading(false);
     };
 
     void load();
     return () => { cancelled = true; };
-  }, [t]);
+  }, []);
 
   // Switch the console immediately so the rest of the wizard renders in the
   // language just chosen. Persisting the choice happens on submit; this is the
-  // local preview, and a chunk-load failure falls back to English inside
-  // applyLocale rather than breaking the step.
-  const handleLanguageChange = (value: SupportedLocale) => {
+  // local preview.
+  //
+  // `usedFallback` is awaited rather than fire-and-forgotten (the mistake
+  // ThemingSettings already guards against with its languageLoadFailed toast):
+  // when the language chunk fails to load, applyLocale renders English instead,
+  // but the select still shows the chosen language and submit still persists it
+  // — so without this the user is told nothing while what they see and what
+  // gets saved silently diverge.
+  const handleLanguageChange = async (value: SupportedLocale) => {
     setLanguage(value);
     writeLocalePreference(value);
-    void applyLocale(value);
+    const result = await applyLocale(value);
+    if (result.usedFallback) {
+      // Deliberately NOT settings:themingSettings.languageLoadFailed, which
+      // opens with "Preference saved" — nothing is saved at select time here.
+      showToast({ type: 'error', message: i18n.t('auth:setup.regional.errors.languageLoadFailed') });
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -260,7 +277,7 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
           <select
             id="setup-language"
             value={language}
-            onChange={(e) => handleLanguageChange(e.target.value as SupportedLocale)}
+            onChange={(e) => void handleLanguageChange(e.target.value as SupportedLocale)}
             data-testid="setup-language"
             className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary"
           >
