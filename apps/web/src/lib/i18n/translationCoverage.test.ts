@@ -80,7 +80,9 @@ const namespaceDuplicateBaselines = {
     // +1: order breakdown — "SKU" is a locale-invariant acronym.
     // +1: partnerBillingSettings.defaults.documentPageSizeA4 — "A4" is the
     // ISO 216 paper size code, identical in every catalog.
-    'billing.json': 41,
+    // 41 -> 40: `contracts.contractPax8Drawer.priceEach` is no longer a
+    // duplicate; its "/ea" was genuinely untranslated, not a literal.
+    'billing.json': 40,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -320,12 +322,13 @@ const namespaceDuplicateBaselines = {
     'alerts.json': 25,
     'auth.json': 14,
     'backup.json': 25,
-    // +2: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
+    // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
     // pure interpolation with no prose to translate, so they are necessarily
     // identical to English. They arrived from #3501 after tr-TR (#3497) forked,
-    // which is why the PR was green on its base and this baseline was short by
-    // two on main.
-    'billing.json': 18,
+    // which is why the PR was green on its base and this baseline was short on
+    // main. 18 -> 17 because `contracts.contractPax8Drawer.priceEach` is no
+    // longer a duplicate: it was genuinely untranslated, not a literal.
+    'billing.json': 17,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,
