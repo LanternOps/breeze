@@ -26,8 +26,10 @@ func NewSystemWingetProvider(wingetPath string, run cmdRunner) *SystemWingetProv
 
 var _ PatchProvider = (*SystemWingetProvider)(nil)
 
-func (p *SystemWingetProvider) ID() string   { return "winget" }
-func (p *SystemWingetProvider) Name() string { return "winget (Windows Package Manager, machine scope)" }
+func (p *SystemWingetProvider) ID() string { return "winget" }
+func (p *SystemWingetProvider) Name() string {
+	return "winget (Windows Package Manager, machine scope)"
+}
 
 func systemScanArgs() []string {
 	return []string{"upgrade", "--include-unknown", "--scope", "machine",

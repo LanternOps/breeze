@@ -654,7 +654,7 @@ func installDMG(ctx context.Context, dmgPath string) (int, string, error) {
 	if out, err := mountCmd.CombinedOutput(); err != nil {
 		return 1, procoutput.BytesToUTF8(out), fmt.Errorf("failed to mount DMG: %w", err)
 	}
-	defer exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run()
+	defer func() { _ = exec.Command("hdiutil", "detach", mountPoint, "-quiet").Run() }()
 
 	// Look for .pkg first, then .app
 	entries, _ := os.ReadDir(mountPoint)

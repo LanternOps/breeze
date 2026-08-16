@@ -153,7 +153,7 @@ func bootstrapHomebrew(payload map[string]any, deps bootstrapDeps) (result Comma
 	if err != nil {
 		return fail(fmt.Errorf("failed to create temp dir: %w", err))
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	scriptPath := filepath.Join(tempDir, "install.sh")
 	if err := os.WriteFile(scriptPath, body, 0o600); err != nil {
@@ -272,7 +272,7 @@ func downloadHomebrewInstaller(rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
