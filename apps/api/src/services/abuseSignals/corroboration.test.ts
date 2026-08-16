@@ -4,6 +4,7 @@ import {
   computeCorroborationSignals,
   axisFor,
   SIGNAL_AXIS,
+  CORROBORATION_INELIGIBLE,
   CORROBORATED_SIGNAL_KEY,
 } from './corroboration';
 import type { ComputedSignal } from './types';
@@ -144,7 +145,10 @@ describe('computeCorroborationSignals', () => {
     expect(out[0]!.severity).toBe('alert');
   });
 
-  it('is idempotent — re-running over its own output adds nothing', () => {
+  it('does not stack when re-run over its own output', () => {
+    // Feeding the synthetic signal back in must not produce a second one.
+    // (Its own alert severity trips the already-alerting suppression, which
+    // is the desired outcome either way.)
     const first = computeCorroborationSignals(
       [
         watch('p1', 'rmm.session_intensity', 65),
@@ -152,6 +156,8 @@ describe('computeCorroborationSignals', () => {
       ],
       cfg,
     );
+    expect(first).toHaveLength(1);
+
     const second = computeCorroborationSignals(
       [
         watch('p1', 'rmm.session_intensity', 65),
@@ -160,8 +166,7 @@ describe('computeCorroborationSignals', () => {
       ],
       cfg,
     );
-    expect(second).toHaveLength(1);
-    expect(second[0]!.score).toBe(first[0]!.score);
+    expect(second).toHaveLength(0);
   });
 
   it('respects a raised min_axes override', () => {
@@ -176,9 +181,20 @@ describe('computeCorroborationSignals', () => {
     expect(out).toHaveLength(0);
   });
 
-  it('stays watch rather than claiming an alert its score contradicts', () => {
-    // Lowering per_extra_axis must demote the result, not produce a severity
-    // that disagrees with the score.
+  it('emits nothing rather than a synthetic watch when the aggregate misses alert', () => {
+    // Two weak axes: 45 + 15 = 60, below the 70 alert threshold. A synthetic
+    // watch row would notify nobody and crowd the digest's 20-row watch list.
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'rmm.provider_default_hostname', 45),
+        watch('p1', 'rmm.device_ip_scatter', 45),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('emits nothing when per_extra_axis is lowered below the alert threshold', () => {
     const timid = { ...cfg, 'fraud.corroborated_watch.per_extra_axis': 1 };
     const out = computeCorroborationSignals(
       [
@@ -187,9 +203,96 @@ describe('computeCorroborationSignals', () => {
       ],
       timid,
     );
-    expect(out).toHaveLength(1);
-    expect(out[0]!.score).toBe(56);
-    expect(out[0]!.severity).toBe('watch');
+    expect(out).toHaveLength(0);
+  });
+
+  it('never emits a non-alert signal for any input', () => {
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'rmm.provider_default_hostname', 41),
+        watch('p1', 'rmm.device_ip_scatter', 42),
+        watch('p2', 'billing.card_testing', 40),
+        watch('p2', 'rmm.consumer_devices', 44),
+        watch('p3', 'rmm.session_intensity', 65),
+        watch('p3', 'billing.cardholder_name_mismatch', 55),
+      ],
+      cfg,
+    );
+    expect(out.every((s) => s.severity === 'alert')).toBe(true);
+  });
+
+  it('leads the evidence with a compact axis summary for the 800-char alert body', () => {
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'rmm.session_intensity', 65),
+        watch('p1', 'billing.cardholder_name_mismatch', 55),
+      ],
+      cfg,
+    );
+    expect(out[0]!.evidence.summary).toBe(
+      'enrollment_burst:rmm.session_intensity=65 + billing_identity:billing.cardholder_name_mismatch=55',
+    );
+    // partnerName and summary must survive truncation of the serialised body.
+    const keys = Object.keys(out[0]!.evidence);
+    expect(keys.indexOf('partnerName')).toBeLessThan(keys.indexOf('contributors'));
+    expect(keys.indexOf('summary')).toBeLessThan(keys.indexOf('contributors'));
+  });
+});
+
+describe('corroboration eligibility', () => {
+  it('does not let a failed-login burst corroborate — the partner may be the victim', () => {
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'fraud.failed_login_cluster', 65),
+        watch('p1', 'rmm.consumer_devices', 60),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('does not let resource-volume signals corroborate — heavy automation is normal', () => {
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'resource.volume_outlier', 65),
+        watch('p1', 'resource.enrollment_denied', 60),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('suppresses the synthetic page when the partner already has a direct alert', () => {
+    const direct: ComputedSignal = {
+      partnerId: 'p1',
+      signalKey: 'rmm.remote_access_installer',
+      score: 100,
+      severity: 'alert',
+      evidence: { partnerName: 'Acme' },
+    };
+    const out = computeCorroborationSignals(
+      [
+        direct,
+        watch('p1', 'rmm.session_intensity', 65),
+        watch('p1', 'billing.cardholder_name_mismatch', 55),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  it('treats the enrollment burst and fast enroll-to-remote as ONE axis', () => {
+    // A legitimate onboarding bulk-enrolls and immediately connects to each
+    // box, firing both. They must not corroborate each other.
+    expect(axisFor('rmm.session_intensity')).toBe(axisFor('rmm.enrollment_velocity'));
+    const out = computeCorroborationSignals(
+      [
+        watch('p1', 'rmm.session_intensity', 65),
+        watch('p1', 'rmm.enrollment_velocity', 60),
+      ],
+      cfg,
+    );
+    expect(out).toHaveLength(0);
   });
 });
 
@@ -214,8 +317,18 @@ describe('SIGNAL_AXIS coverage', () => {
     'resource.volume_outlier',
   ];
 
-  it.each(EMITTED_KEYS)('%s has an explicit axis', (key) => {
-    expect(SIGNAL_AXIS[key]).toBeDefined();
+  it.each(EMITTED_KEYS)('%s is either mapped to an axis or explicitly ineligible', (key) => {
+    // The invariant that matters: no emitted key may fall through to the
+    // "own axis" default, which would silently make it paging-grade
+    // corroboration without anyone deciding that.
+    const decided = SIGNAL_AXIS[key] !== undefined || CORROBORATION_INELIGIBLE.has(key);
+    expect(decided).toBe(true);
+  });
+
+  it('keeps the two sets disjoint', () => {
+    for (const key of CORROBORATION_INELIGIBLE) {
+      expect(SIGNAL_AXIS[key]).toBeUndefined();
+    }
   });
 
   it('groups the two IP-scatter signals onto one axis', () => {
