@@ -1272,6 +1272,7 @@
       "notStarted": "Çalıştırma başlatılmadı (cihaz bakımda olabilir).",
       "pollDeadline": "Hâlâ sonuç yok — sonucu görmek için çalıştırma geçmişini kontrol edin.",
       "pollFailed": "Çalıştırma sonucu okunamadı — silinmiş olabilir veya erişiminiz değişmiş olabilir."
-    }
+    },
+    "devicesLoadFailed": "Cihazlar yüklenemedi"
   }
 }
