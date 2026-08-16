@@ -5,6 +5,7 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import SetupStepper from './SetupStepper';
 import AccountSetupStep from './AccountSetupStep';
 import OrganizationSetupStep from './OrganizationSetupStep';
+import RegionalSetupStep from './RegionalSetupStep';
 import EnrollDeviceStep from './EnrollDeviceStep';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -14,13 +15,14 @@ import '../../lib/i18n';
 const STORAGE_KEY = 'breeze-setup-step';
 const SETUP_ORG_KEY = 'breeze-setup-org';
 const SETUP_SITE_KEY = 'breeze-setup-site';
-const SETUP_STEP_COUNT = 3;
+const SETUP_STEP_COUNT = 4;
 
 export default function SetupWizard() {
   const { t } = useTranslation('auth');
   const steps = [
     { label: t('setup.steps.account') },
     { label: t('setup.steps.organization') },
+    { label: t('setup.steps.regional') },
     { label: t('setup.steps.installAgent') },
   ];
   const [currentStep, setCurrentStep] = useState(0);
@@ -116,12 +118,20 @@ export default function SetupWizard() {
     setCurrentStep(2);
   };
 
+  const handleRegionalStepComplete = () => {
+    setCurrentStep(3);
+  };
+
   const handleStepClick = (step: number) => {
     setCurrentStep(step);
   };
 
   const handleBackToOrg = () => {
     setCurrentStep(1);
+  };
+
+  const handleBackToRegional = () => {
+    setCurrentStep(2);
   };
 
   const handleSkipAll = async () => {
@@ -164,11 +174,18 @@ export default function SetupWizard() {
         {currentStep === 1 && (
           <OrganizationSetupStep onNext={handleOrgStepComplete} />
         )}
-        {currentStep === 2 && orgId && siteId && (
+        {currentStep === 2 && (
+          <RegionalSetupStep
+            siteId={siteId}
+            onNext={handleRegionalStepComplete}
+            onBack={handleBackToOrg}
+          />
+        )}
+        {currentStep === 3 && orgId && siteId && (
           <EnrollDeviceStep
             orgId={orgId}
             siteId={siteId}
-            onBack={handleBackToOrg}
+            onBack={handleBackToRegional}
             onFinish={handleEnrollFinish}
           />
         )}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import '../../lib/i18n';
+import { i18n } from '../../lib/i18n';
+import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -176,12 +177,20 @@ export default function PartnerBillingSettings() {
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-sm font-medium" htmlFor="pb-currency">{t('partnerBillingSettings.defaults.currencyCode')}</label>
-            <input
-              id="pb-currency" type="text" maxLength={3} value={currencyCode}
-              onChange={(e) => setCurrencyCode(e.target.value.toUpperCase())}
+            {/* #3204: was a free-text maxLength={3} input, which accepted a
+                typo'd or non-existent code and only surfaced it once a document
+                rendered. Any already-stored off-list code stays selectable via
+                currencyOptions so an existing setting is never silently reset. */}
+            <select
+              id="pb-currency" value={currencyCode}
+              onChange={(e) => setCurrencyCode(e.target.value)}
               data-testid="partner-billing-currency"
-              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm uppercase"
-            />
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+            >
+              {currencyOptions(currencyCode).map((code) => (
+                <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="text-sm font-medium" htmlFor="pb-tax">{t('partnerBillingSettings.defaults.defaultTaxRate')}</label>
