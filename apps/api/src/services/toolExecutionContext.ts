@@ -1,4 +1,6 @@
+import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
+import type { TenantVariableScope } from './tenantVariableResolution';
 
 /**
  * Material a release path has ALREADY resolved and verified against the
@@ -30,6 +32,41 @@ import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
  * HOST-INTERNAL. `executeTool` passes this to CORE handlers only; extension
  * handlers are invoked with exactly two arguments. See `executeTool`.
  */
+/**
+ * One `run_script` release, resolved once and verified against the approval's
+ * pinned digest.
+ *
+ * THREE SIBLINGS, ONE OBSERVATION. All three come from the same
+ * `buildRunScriptSnapshot` call, and they are kept flat rather than nested for
+ * the reason `runScriptSnapshot.ts`'s header spells out: `snapshot` is pure
+ * digest material, and `scope` holds DECRYPTED tenant-variable plaintext.
+ * Hanging the scope off the snapshot would make one stray
+ * `JSON.stringify(snapshot)` in a log or audit path a leak; as siblings, the
+ * leak is structurally absent rather than merely avoided.
+ *
+ * They also travel together or not at all — a handler given the row but not
+ * the scope would silently re-resolve variables the digest already pinned —
+ * which is why this is one grouped payload and not three optional fields on
+ * `ToolExecutionContext`.
+ */
+export type VerifiedRunScript = {
+  /** What the effect digest was computed over. Never carries a variable VALUE. */
+  snapshot: RunScriptSnapshot;
+  /**
+   * The whole `scripts` row that observation read. Dispatch needs columns the
+   * digest does not pin (`osTypes`, `partnerId`, the raw `parameters` jsonb),
+   * and re-reading for them would reopen the window the digest closes.
+   *
+   * Read under a SYSTEM context with no org filter, so a handler consuming it
+   * still owes the caller's own authorization checks — see `run_script` in
+   * `aiToolsScripts.ts`, which re-applies the org filter its skipped query
+   * carried.
+   */
+  scriptRow: typeof scripts.$inferSelect;
+  /** The exact resolved scope the digest's variable references were pinned from. */
+  scope: TenantVariableScope;
+};
+
 export type ToolExecutionContext = {
-  verifiedRunScript?: RunScriptSnapshot;
+  verifiedRunScript?: VerifiedRunScript;
 };

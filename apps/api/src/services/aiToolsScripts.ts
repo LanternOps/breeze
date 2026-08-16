@@ -31,6 +31,7 @@ import { eq, and, desc, sql, ilike, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
+import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
@@ -94,6 +95,61 @@ async function verifyDeviceAccess(
   }
   if (requireOnline && device.status !== 'online') return { error: `Device ${device.hostname} is not online (status: ${device.status})` };
   return { device };
+}
+
+/**
+ * The `run_script` script lookup, unchanged from the pre-#3409-PR4c-1 inline
+ * version — extracted only so the handler can choose between it and a verified
+ * release's already-resolved row without nesting the query in a conditional.
+ */
+async function queryRunScriptRow(
+  scriptId: string,
+  auth: AuthContext,
+): Promise<typeof scripts.$inferSelect | undefined> {
+  const scriptConditions: SQL[] = [eq(scripts.id, scriptId), isNull(scripts.deletedAt)];
+  // Partner-wide scripts have org_id NULL; the plain orgCondition would
+  // exclude them even though RLS makes them visible to this session.
+  // Defense-in-depth stays: org-owned scripts must satisfy orgCondition,
+  // org-less rows pass here and are constrained per-device below.
+  const orgCond = auth.orgCondition(scripts.orgId);
+  if (orgCond) scriptConditions.push(or(isNull(scripts.orgId), orgCond)!);
+
+  const [script] = await db
+    .select()
+    .from(scripts)
+    .where(and(...scriptConditions))
+    .limit(1);
+  return script;
+}
+
+/**
+ * The verified release material for THIS call, or `undefined` — in which case
+ * `run_script` behaves exactly as it always has (direct chat, MCP and the
+ * script builder never supply a context).
+ *
+ * The pinned row's id is re-checked against the requested `scriptId` because
+ * the context and the arguments arrive on different channels: the release
+ * paths compute both from the same `action_intents.arguments`, so a
+ * disagreement can only mean a plumbing bug, and executing SOMEONE ELSE'S
+ * verified script would be the worst possible response to one. Falling back to
+ * the ordinary query keeps the call correct; the log + Sentry capture keep the
+ * bug from being invisible (a silent fallback would look exactly like the
+ * feature never shipping).
+ */
+function verifiedRunScriptFor(
+  context: ToolExecutionContext | undefined,
+  scriptIdArg: unknown,
+): VerifiedRunScript | undefined {
+  const verified = context?.verifiedRunScript;
+  if (!verified) return undefined;
+  if (verified.scriptRow.id !== scriptIdArg) {
+    const message =
+      '[aiToolsScripts] run_script verified snapshot does not match the requested scriptId; re-querying';
+    console.error(message, { requested: scriptIdArg, verified: verified.scriptRow.id });
+    captureException(new Error(message));
+    return undefined;
+  }
+  return verified;
 }
 
 export function registerScriptTools(aiTools: Map<string, AiTool>): void {
@@ -169,25 +225,32 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         required: ['scriptId', 'deviceIds']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const { waitForCommandResult } = await getCommandQueue();
       const deviceIds = input.deviceIds as string[];
       const results: Record<string, unknown> = {};
 
-      // Resolve script content upfront so the agent receives the full payload
-      const scriptConditions: SQL[] = [eq(scripts.id, input.scriptId as string), isNull(scripts.deletedAt)];
-      // Partner-wide scripts have org_id NULL; the plain orgCondition would
-      // exclude them even though RLS makes them visible to this session.
-      // Defense-in-depth stays: org-owned scripts must satisfy orgCondition,
-      // org-less rows pass here and are constrained per-device below.
-      const orgCond = auth.orgCondition(scripts.orgId);
-      if (orgCond) scriptConditions.push(or(isNull(scripts.orgId), orgCond)!);
+      // #3409 PR4c-1 — a release path may have ALREADY read this script row and
+      // resolved its tenant variables, in order to recompute the approval's
+      // pinned effect digest. Reading them again here would reopen the exact
+      // check/use window the digest exists to close: the digest proves the
+      // target was unchanged as of THAT read, and a second read proves nothing.
+      const verified = verifiedRunScriptFor(context, input.scriptId);
 
-      const [script] = await db
-        .select()
-        .from(scripts)
-        .where(and(...scriptConditions))
-        .limit(1);
+      // AUTHORIZATION, NOT CACHING. The query the verified branch skips carried
+      // `or(isNull(orgId), auth.orgCondition(orgId))`, and the release path
+      // resolved its row under a SYSTEM context with no org filter at all.
+      // `canAccessOrg` is that same filter expressed in code (both derive from
+      // `accessibleOrgIds` — middleware/auth.ts's buildOrgAccessClosures), so an
+      // org the caller cannot reach is refused here exactly as the query would
+      // have returned no row. The digest verifies CONTENT IDENTITY; it says
+      // nothing about this caller's authority.
+      if (verified && verified.scriptRow.orgId !== null && !auth.canAccessOrg(verified.scriptRow.orgId)) {
+        return JSON.stringify({ error: 'Script not found or has no content' });
+      }
+
+      // Resolve script content upfront so the agent receives the full payload
+      const script = verified ? verified.scriptRow : await queryRunScriptRow(input.scriptId as string, auth);
 
       if (!script || !script.content) {
         return JSON.stringify({ error: 'Script not found or has no content' });
@@ -297,9 +360,18 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
               // content tokens alone — a `tenantVariable`-bound parameter
               // lives in `scripts.parameters`, and a content-only gate would
               // hand dispatch an empty scope for it.
-              const variableScope = await loadTenantVariableScope(
-                scriptNeedsVariableScope(script) ? [access.device.orgId] : []
-              );
+              //
+              // #3409 PR4c-1: with a verified release, the scope is the one
+              // the digest's variable references were pinned from — reusing
+              // it is the point of the whole exercise. It was loaded through
+              // the SAME gate over the SAME row, for every device org in the
+              // call, so it is a superset of what this per-device load would
+              // have produced (and equally empty when the script needs none).
+              const variableScope = verified
+                ? verified.scope
+                : await loadTenantVariableScope(
+                    scriptNeedsVariableScope(script) ? [access.device.orgId] : []
+                  );
               return dispatchScriptToDevice({
                 device: access.device,
                 source: { kind: 'saved', script },

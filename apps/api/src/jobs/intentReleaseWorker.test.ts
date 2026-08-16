@@ -56,7 +56,15 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     // re-derive scripts/quotes/invoices table mocks it has no other reason
     // to know about.
     effectDigestMock: {
-      computeEffectDigest: vi.fn(async () => null as string | null),
+      // The RELEASE-path compute (#3409 PR4c-1): returns the digest AND, for
+      // run_script, the verified material the handler can execute from
+      // without re-reading. `computeEffectDigest` (the flattening `string |
+      // null` wrapper) still exists for other callers but the worker no
+      // longer uses it — the whole point is that the worker keeps what the
+      // recompute already resolved.
+      computeEffectDigestForRelease: vi.fn(
+        async () => ({ digest: null }) as { digest: string | null; context?: unknown },
+      ),
       // hasPinnedDigest is the SHARED "is a digest pinned on this intent?"
       // predicate both release paths must use (the worker here and the
       // inline chat path in services/aiAgentSdk.ts) — they previously
@@ -118,7 +126,7 @@ vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
 }));
 vi.mock('../services/actionIntents/effectDigest', () => ({
-  computeEffectDigest: effectDigestMock.computeEffectDigest,
+  computeEffectDigestForRelease: effectDigestMock.computeEffectDigestForRelease,
   hasPinnedDigest: effectDigestMock.hasPinnedDigest,
 }));
 vi.mock('../services/tenantStatus', () => ({
@@ -339,7 +347,7 @@ describe('releaseApprovedIntent', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
-    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
   });
 
   it('double delivery: CAS approved->executing returns false — exits without touching anything else', async () => {
@@ -764,7 +772,7 @@ describe('releaseApprovedIntent', () => {
     it('content_changed: recomputed digest no longer matches the stored one — fails before executeTool, audit records the code', async () => {
       const intent = baseIntent({ effectDigest: 'a'.repeat(64) });
       primeThroughRevalidation(intent);
-      effectDigestMock.computeEffectDigest.mockResolvedValueOnce('b'.repeat(64)); // drifted
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'b'.repeat(64) }); // drifted
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
 
       await releaseApprovedIntent(intent.id);
@@ -776,7 +784,7 @@ describe('releaseApprovedIntent', () => {
       // handle (or any truthy value) was threaded through — and a resolver
       // reading through a GUC-less handle silently returns zero rows, which
       // would fail EVERY pinned release as content_changed.
-      expect(effectDigestMock.computeEffectDigest).toHaveBeenCalledWith(
+      expect(effectDigestMock.computeEffectDigestForRelease).toHaveBeenCalledWith(
         intent.actionName,
         intent.arguments,
         mockedDb,
@@ -802,18 +810,71 @@ describe('releaseApprovedIntent', () => {
       const digest = 'c'.repeat(64);
       const intent = baseIntent({ effectDigest: digest });
       primeThroughRevalidation(intent);
-      effectDigestMock.computeEffectDigest.mockResolvedValueOnce(digest); // unchanged
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest }); // unchanged
       aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
       await releaseApprovedIntent(intent.id);
 
+      // No verified material came back (this tool has no snapshot to carry),
+      // so the call stays at three arguments — unchanged for every non-
+      // run_script tool.
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
         'executing',
         'completed',
         expect.anything(),
+      );
+    });
+
+    // #3409 PR4c-1: the recompute already read the script row and resolved the
+    // tenant variables. Handing that verified material to the handler is what
+    // closes the check/use window — a handler that re-reads can execute
+    // something the digest never saw.
+    it('hands the verified material from the matching recompute to executeTool as the execution context', async () => {
+      const digest = 'c'.repeat(64);
+      const intent = baseIntent({ effectDigest: digest });
+      primeThroughRevalidation(intent);
+      const verifiedRunScript = {
+        snapshot: { script: { id: 'script-1' } },
+        scriptRow: { id: 'script-1' },
+        scope: { orgIds: new Set(['org-1']) },
+      };
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({
+        digest,
+        context: { verifiedRunScript },
+      });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      const call = aiToolsMock.executeTool.mock.calls[0]!;
+      expect(call.slice(0, 3)).toEqual([intent.actionName, intent.arguments, fakeAuth]);
+      // Identity, not shape: the handler must receive the very object the
+      // recompute resolved, not an equal-looking reconstruction.
+      expect((call[3] as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
+        .toBe(verifiedRunScript);
+    });
+
+    it('never executes — and never forwards the verified material — when the digest mismatches', async () => {
+      const intent = baseIntent({ effectDigest: 'a'.repeat(64) });
+      primeThroughRevalidation(intent);
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({
+        digest: 'b'.repeat(64), // drifted
+        context: { verifiedRunScript: { snapshot: {}, scriptRow: {}, scope: {} } },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'content_changed' }),
       );
     });
 
@@ -830,7 +891,7 @@ describe('releaseApprovedIntent', () => {
       // services/aiAgentSdk.ts) is what made the two release paths behave
       // oppositely on an `undefined` effectDigest.
       expect(effectDigestMock.hasPinnedDigest).toHaveBeenCalledWith(intent);
-      expect(effectDigestMock.computeEffectDigest).not.toHaveBeenCalled();
+      expect(effectDigestMock.computeEffectDigestForRelease).not.toHaveBeenCalled();
       expect(aiToolsMock.executeTool).toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
@@ -851,7 +912,7 @@ describe('releaseApprovedIntent', () => {
       // since the failure happens strictly before execution.
       const intent = baseIntent({ effectDigest: 'd'.repeat(64) });
       primeThroughRevalidation(intent);
-      effectDigestMock.computeEffectDigest.mockRejectedValueOnce(new Error('connection terminated'));
+      effectDigestMock.computeEffectDigestForRelease.mockRejectedValueOnce(new Error('connection terminated'));
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
 
       await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
@@ -887,7 +948,7 @@ describe('releaseApprovedIntent', () => {
       // them would make a DB blip read as tampering.
       const intent = baseIntent({ effectDigest: 'e'.repeat(64) });
       primeThroughRevalidation(intent);
-      effectDigestMock.computeEffectDigest.mockResolvedValueOnce('f'.repeat(64));
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'f'.repeat(64) });
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
 
       await releaseApprovedIntent(intent.id);
@@ -1130,7 +1191,7 @@ describe('secret-bearing release', () => {
     resetGoogleSecretActions();
     googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
     m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
-    effectDigestMock.computeEffectDigest.mockResolvedValue(null);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
   });
 
   it('seals a google_reset_password credential instead of storing prose', async () => {

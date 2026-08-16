@@ -164,9 +164,14 @@ vi.mock('./actionIntents/revalidateRelease', () => ({
     mockRevalidateApprovedIntentForRelease(...args),
 }));
 
-const mockComputeEffectDigest = vi.fn((..._args: unknown[]) => Promise.resolve<string | null>(null));
+const mockComputeEffectDigest = vi.fn((..._args: unknown[]) =>
+  Promise.resolve<{ digest: string | null; context?: unknown }>({ digest: null }),
+);
 vi.mock('./actionIntents/effectDigest', () => ({
-  computeEffectDigest: (...args: unknown[]) => mockComputeEffectDigest(...args),
+  // `computeEffectDigestForRelease` is the RELEASE-path compute (#3409
+  // PR4c-1) — it returns `{ digest, context? }` so the inline path can keep
+  // the material it already resolved instead of letting the handler re-read.
+  computeEffectDigestForRelease: (...args: unknown[]) => mockComputeEffectDigest(...args),
   hasPinnedDigest: (intent: { effectDigest?: string | null }) =>
     typeof intent?.effectDigest === 'string' && intent.effectDigest.length > 0,
 }));

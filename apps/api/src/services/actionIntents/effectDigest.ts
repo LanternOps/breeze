@@ -6,6 +6,7 @@ import {
   tickets, drPlans, partners,
 } from '../../db/schema';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
 /**
  * Effect-digest pinning for tier-3 action intents (spec
@@ -82,7 +83,17 @@ import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnap
  * mean "nothing to pin", but for reasons the caller must be able to tell
  * apart (see the DESIGN CHOICE note above). */
 type ResolverResult =
-  | { kind: 'material'; material: string | Buffer }
+  | {
+      kind: 'material';
+      material: string | Buffer;
+      /**
+       * What the resolver ALREADY resolved in order to produce `material`,
+       * for a release path to hand to the tool handler instead of making it
+       * read the same rows again (#3409 PR4c-1). Only `run_script` sets it;
+       * the creation path drops it (see `computeEffectDigestOutcome`).
+       */
+      verified?: VerifiedRunScript;
+    }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
 
@@ -152,13 +163,17 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     const built = await buildRunScriptSnapshot(args, database);
     if (built.kind === 'missing_arg') return MISSING_ARG;
     if (built.kind === 'target_absent') return TARGET_ABSENT;
-    // `built.scope` (plaintext-bearing) is deliberately dropped: this path
-    // only needs the digest, and this map's `ResolverResult` has nowhere to
-    // put a scope. Keeping it is the release side's job — see
-    // buildRunScriptSnapshot's `{ snapshot, scope }` return, which lets a
-    // caller that also DISPATCHES reuse the exact scope the digest was
-    // checked against rather than re-resolving it.
-    return material(runScriptDigestMaterial(built.snapshot));
+    // The three siblings ride along as `verified` so a caller that also
+    // DISPATCHES can execute from the SAME observation the digest was
+    // computed over — the scope in particular, whose re-resolution is the
+    // fastest-moving part of a run_script release. `computeEffectDigestOutcome`
+    // (the CREATION path) projects it back off, so the plaintext-bearing scope
+    // never reaches a caller that has no use for it.
+    return {
+      kind: 'material',
+      material: runScriptDigestMaterial(built.snapshot),
+      verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
+    };
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a
@@ -368,14 +383,36 @@ export async function computeEffectDigestOutcome(
   args: Record<string, unknown>,
   database: Database,
 ): Promise<EffectDigestOutcome> {
+  const resolved = await resolveEffectDigest(toolName, args, database);
+  // Project `verified` back off. The creation path has no dispatch to feed and
+  // no business holding decrypted tenant plaintext one property access away —
+  // narrowing the declared return type alone would leave the object carrying
+  // it at runtime.
+  return resolved.outcome.kind === 'pinned'
+    ? { kind: 'pinned', digest: resolved.outcome.digest }
+    : resolved.outcome;
+}
+
+/**
+ * Everything one resolver produced: the outcome the creation path stores, plus
+ * the material a RELEASE path can execute from without reading it again.
+ */
+async function resolveEffectDigest(
+  toolName: string,
+  args: Record<string, unknown>,
+  database: Database,
+): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript }> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
-  if (!key) return { kind: 'not_applicable' };
+  if (!key) return { outcome: { kind: 'not_applicable' } };
 
   const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
-  if (result.kind !== 'material') return { kind: 'unresolved', reason: result.kind };
+  if (result.kind !== 'material') return { outcome: { kind: 'unresolved', reason: result.kind } };
 
-  return { kind: 'pinned', digest: createHash('sha256').update(result.material).digest('hex') };
+  return {
+    outcome: { kind: 'pinned', digest: createHash('sha256').update(result.material).digest('hex') },
+    verified: result.verified,
+  };
 }
 
 /**
@@ -394,6 +431,48 @@ export async function computeEffectDigest(
 ): Promise<string | null> {
   const outcome = await computeEffectDigestOutcome(toolName, args, database);
   return outcome.kind === 'pinned' ? outcome.digest : null;
+}
+
+/** What a release path gets back: the digest to compare, and — when the
+ *  resolver produced one — the verified material to EXECUTE from. */
+export type EffectDigestReleaseResult = {
+  /** Same value `computeEffectDigest` returns, for the same comparison. */
+  digest: string | null;
+  /** Absent unless the resolver resolved something a handler can reuse. */
+  context?: ToolExecutionContext;
+};
+
+/**
+ * The RELEASE-path recompute (#3409 PR4c-1) — `computeEffectDigest`'s sibling,
+ * not its replacement.
+ *
+ * Both release paths (jobs/intentReleaseWorker.ts and the inline chat release
+ * in services/aiAgentSdk.ts) already read the target in order to recompute the
+ * digest. Before this existed they then threw that read away and let the tool
+ * handler read it AGAIN at dispatch — which reopens precisely the check/use
+ * window the digest exists to close: everything the digest just proved
+ * unchanged could change between the comparison and the handler's own query.
+ *
+ * So this returns the digest AND the resolved material, and the caller hands
+ * the latter to `executeTool` as its `ToolExecutionContext`. A caller that
+ * ignores `context` behaves exactly as `computeEffectDigest` — which is why
+ * that flattener keeps its `string | null` signature for every non-release
+ * caller rather than being widened.
+ *
+ * The context is returned even on a MISMATCH (the digest is what decides), so
+ * a caller must compare first and only then dispatch. Both call sites fail
+ * closed before reaching `executeTool`, and their tests pin that.
+ */
+export async function computeEffectDigestForRelease(
+  toolName: string,
+  args: Record<string, unknown>,
+  database: Database,
+): Promise<EffectDigestReleaseResult> {
+  const resolved = await resolveEffectDigest(toolName, args, database);
+  const digest = resolved.outcome.kind === 'pinned' ? resolved.outcome.digest : null;
+  return resolved.verified
+    ? { digest, context: { verifiedRunScript: resolved.verified } }
+    : { digest };
 }
 
 /**

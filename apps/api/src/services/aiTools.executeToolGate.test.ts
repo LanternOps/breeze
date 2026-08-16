@@ -115,23 +115,30 @@ describe('executeTool runs the declarative device gate before the handler', () =
 const CONTEXT_PROBE = '__tool_context_probe__';
 
 /**
- * A snapshot-shaped fixture. Its contents are irrelevant here — this suite only
- * proves the CHANNEL: the same object identity the caller handed to
- * `executeTool` is what the handler receives.
+ * A verified-release-shaped fixture: the digest material, the row dispatch
+ * consumes and the resolved scope, as SIBLINGS. Its contents are irrelevant
+ * here — this suite only proves the CHANNEL: the same object identity the
+ * caller handed to `executeTool` is what the handler receives. The `scriptRow`
+ * and `scope` casts stand in for a full `scripts` row and an opaque
+ * `TenantVariableScope`, neither of which this suite has any reason to build.
  */
 const VERIFIED_SNAPSHOT = {
-  script: {
-    id: 'script-1',
-    orgId: 'org-123',
-    language: 'powershell',
-    content: 'Write-Host 1',
-    timeoutSeconds: 300,
-    runAs: 'system',
+  snapshot: {
+    script: {
+      id: 'script-1',
+      orgId: 'org-123',
+      language: 'powershell',
+      content: 'Write-Host 1',
+      timeoutSeconds: 300,
+      runAs: 'system',
+    },
+    parameterDefinitions: '[]',
+    deviceOrgIds: ['org-123'],
+    variableReferences: [],
   },
-  parameterDefinitions: '[]',
-  deviceOrgIds: ['org-123'],
-  variableReferences: [],
-} satisfies NonNullable<ToolExecutionContext['verifiedRunScript']>;
+  scriptRow: { id: 'script-1', orgId: 'org-123' },
+  scope: { orgIds: new Set(['org-123']) },
+} as unknown as NonNullable<ToolExecutionContext['verifiedRunScript']>;
 
 /**
  * A handler declared with the FULL three-parameter shape, so the recorded call

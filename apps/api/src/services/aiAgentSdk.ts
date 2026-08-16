@@ -30,7 +30,8 @@ import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 import { createActionIntent, waitForIntentDecision, transitionIntent } from './actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
-import { computeEffectDigest, hasPinnedDigest } from './actionIntents/effectDigest';
+import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   assertNoPlaintextSecret,
   isSecretBearingTool,
@@ -468,6 +469,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
+
+    // Material the inline RELEASE below resolved and verified against the
+    // intent's pinned effect digest (#3409 PR4c-1). It rides the same terminal
+    // `return` as `createdIntentId` — that return value is the ONLY channel
+    // between this callback and aiAgentSdkTools.ts's makeHandler, which is
+    // where the tool actually runs. Without it the handler re-reads the script
+    // row and re-resolves the tenant variables the digest just verified,
+    // reopening the check/use window the digest exists to close.
+    let verifiedToolContext: ToolExecutionContext | undefined;
 
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
     if (!TOOL_TIERS[toolName]) {
@@ -1192,12 +1202,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // every pinned release would have been content_changed). One
           // predicate, one behavior, in one place.
           if (hasPinnedDigest(intentRow)) {
-            const recomputedEffectDigest = await runOutsideDbContext(() =>
+            const recomputed = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>
-                computeEffectDigest(intentRow.actionName, intentRow.arguments, db),
+                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db),
               ),
             );
-            if (recomputedEffectDigest !== intentRow.effectDigest) {
+            if (recomputed.digest !== intentRow.effectDigest) {
               await transitionIntent(intent.id, 'executing', 'failed', {
                 errorCode: 'content_changed',
               });
@@ -1209,6 +1219,11 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 error: 'The referenced content changed after approval; it was not executed.',
               });
             }
+            // Digest matched, so the material the recompute resolved IS what
+            // the approver approved — hand it to the handler rather than
+            // letting it read the same rows again. Only reached on a match:
+            // the mismatch branch above returns.
+            verifiedToolContext = recomputed.context;
           }
 
           // Won the release: track the intent id so createSessionPostToolUse can
@@ -1524,7 +1539,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             : 'per_step_user',
       });
     }
-    return { allowed: true, intentId: createdIntentId };
+    return { allowed: true, intentId: createdIntentId, context: verifiedToolContext };
   };
 }
 

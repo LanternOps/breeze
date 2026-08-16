@@ -105,6 +105,18 @@ export type BuildRunScriptSnapshotResult =
       snapshot: RunScriptSnapshot;
       /** The SAME scope dispatch will resolve against. Plaintext-bearing: never digested, never serialized. */
       scope: TenantVariableScope;
+      /**
+       * The WHOLE `scripts` row this observation read, a third sibling for the
+       * same reason the scope is a second one: dispatch needs columns the
+       * digest deliberately does not pin (`osTypes`, `partnerId`, and the raw
+       * `parameters` jsonb rather than its canonical serialization), and the
+       * only way to hand it those without a second read is to carry the row
+       * itself. It is NOT folded into `snapshot.script` — that stays the exact
+       * narrow set `runScriptDigestMaterial` hashes, so "everything on the
+       * snapshot is digest material" remains true by construction rather than
+       * by remembering which fields the material projects.
+       */
+      scriptRow: typeof scripts.$inferSelect;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -205,16 +217,15 @@ export async function buildRunScriptSnapshot(
   const deviceIds = readDeviceIds(args.deviceIds);
   if (!deviceIds) return { kind: 'missing_arg' };
 
+  // WHOLE ROW, not a projection (#3409 PR4c-1 Task 6). The digest needs seven
+  // columns; DISPATCH needs several more (`osTypes`, `partnerId`, the raw
+  // `parameters` jsonb). Selecting the row once and returning it as
+  // `scriptRow` is what lets the release path hand the handler everything it
+  // needs from ONE observation — a projection here would have forced the
+  // handler to re-read for the rest, which is exactly the check/use window
+  // this task closes.
   const [script] = await database
-    .select({
-      id: scripts.id,
-      orgId: scripts.orgId,
-      language: scripts.language,
-      content: scripts.content,
-      timeoutSeconds: scripts.timeoutSeconds,
-      runAs: scripts.runAs,
-      parameters: scripts.parameters,
-    })
+    .select()
     .from(scripts)
     // Same filter as the tool handler and the pre-PR4c resolver: a script
     // soft-deleted after approval is `target_absent`, so the release fails
@@ -296,6 +307,7 @@ export async function buildRunScriptSnapshot(
       variableReferences,
     },
     scope: variableScope,
+    scriptRow: script,
   };
 }
 
