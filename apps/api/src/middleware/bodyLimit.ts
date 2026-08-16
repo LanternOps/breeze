@@ -74,5 +74,25 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   if (path.match(/^\/api\/v1\/contracts\/contract-templates\/[^/]+\/versions\/upload$/)) {
     return { maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File exceeds the 10MB upload limit' };
   }
+  // Agent inventory/heartbeat ingest (#3516). Every one of these routes already
+  // registers its OWN `bodyLimit({ maxSize: 5MB })` — hardware/software/disks/
+  // network (routes/agents/inventory.ts), heartbeat (heartbeat.ts) and
+  // connections (connections.ts) — but a route-level limit can only make a path
+  // TIGHTER, never looser: this gate runs at `app.use('*')` before any route is
+  // mounted, so without a carve-out here they all 413 at the 1MB default. That
+  // fired silently in the field: a Linux host with 2,500-4,000 dpkg/rpm packages
+  // (schema cap: 10,000 items, ~4.5MB) exceeds 1MB, the agent's 413 is not
+  // retryable and its error is discarded, and software inventory goes
+  // permanently stale with no server- or agent-side signal.
+  //
+  // 5MB matches what every one of these routes already declared, so the intent
+  // is on record, not a new capacity decision — it sizes the byte gate so the
+  // schema's 10,000-item cap is the limit that actually binds. Explicit
+  // final-segment allowlist (not a broad `agents/:id/.*`) so it does NOT match
+  // `/monitoring-results` (deliberately 1MB in heartbeat.ts) or the already
+  // carved-out `/commands/:id/result` above.
+  if (path.match(/^\/api\/v1\/agents\/[^/]+\/(hardware|software|disks|network|connections|heartbeat)$/)) {
+    return { maxSize: 5 * 1024 * 1024, error: 'Request body too large' };
+  }
   return { maxSize: 1024 * 1024, error: 'Request body too large' };
 }

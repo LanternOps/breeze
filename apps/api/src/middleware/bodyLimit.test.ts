@@ -40,9 +40,11 @@ describe('bodyLimitForPath', () => {
       maxSize: 12 * MB,
       error: 'Command result too large (max 12MB)',
     });
-    // Sibling agent routes keep the default.
+    // The bare /commands collection route keeps the default; it is not one of
+    // the carved-out ingest segments.
     expect(bodyLimitForPath('/api/v1/agents/agent-1/commands').maxSize).toBe(1 * MB);
-    expect(bodyLimitForPath('/api/v1/agents/agent-1/heartbeat').maxSize).toBe(1 * MB);
+    // /heartbeat is now carved to 5MB (#3516) — covered by its own test below.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/heartbeat').maxSize).toBe(5 * MB);
   });
 
   // Sized from the agent's 4MB file_write cap (~5.6MB base64 + JSON envelope);
@@ -69,6 +71,34 @@ describe('bodyLimitForPath', () => {
     // The version metadata route (no file body) and the catalog list must stay at the default.
     expect(bodyLimitForPath('/api/v1/software/catalog/cat-123/versions').maxSize).toBe(1 * MB);
     expect(bodyLimitForPath('/api/v1/software/catalog/cat-123/versions/upload/extra').maxSize).toBe(1 * MB);
+  });
+
+  // #3516: agent inventory/heartbeat ingest routes each declare a route-level
+  // 5MB bodyLimit that the global 1MB gate was silently overriding, so a large
+  // software inventory 413'd and sync went permanently stale.
+  it('carves out agent inventory/heartbeat ingest routes at 5MB (#3516)', () => {
+    for (const seg of ['hardware', 'software', 'disks', 'network', 'connections', 'heartbeat']) {
+      expect(
+        bodyLimitForPath(`/api/v1/agents/agent-1/${seg}`).maxSize,
+        `agents/${seg} should be carved to 5MB`,
+      ).toBe(5 * MB);
+    }
+  });
+
+  it('does not widen the deliberately-1MB agent routes or over-match siblings (#3516)', () => {
+    // monitoring-results declares its own 1MB route limit — must NOT be widened.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/monitoring-results').maxSize).toBe(1 * MB);
+    // warranty-info declares 1MB too.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/warranty-info').maxSize).toBe(1 * MB);
+    // logs/process-sample declare tighter route limits and are not in the allowlist.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/logs').maxSize).toBe(1 * MB);
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/process-sample').maxSize).toBe(1 * MB);
+    // The commands result route keeps its own (earlier, more specific) 12MB carve-out.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/commands/cmd-1/result').maxSize).toBe(12 * MB);
+    // Anchored: a deeper path under a matched segment must not match.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/software/extra').maxSize).toBe(1 * MB);
+    // A non-listed sibling stays at the default.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/status').maxSize).toBe(1 * MB);
   });
 
   // Script bundle intake (#3245): a bundle can carry a whole script library;
@@ -169,7 +199,14 @@ describe('bodyLimitForPath', () => {
  */
 const ROUTE_LEVEL_BODY_LIMITS: Record<
   string,
-  { paths: string[]; globalMaxSize: number; note: string }
+  {
+    // A bare string path gets `globalMaxSize`; a `{ path, maxSize }` entry
+    // carries its own expected limit, for files whose routes legitimately differ
+    // (e.g. heartbeat.ts serves /heartbeat at 5MB and /monitoring-results at 1MB).
+    paths: (string | { path: string; maxSize: number })[];
+    globalMaxSize: number;
+    note: string;
+  }
 > = {
   'devPush.ts': {
     paths: ['/api/v1/dev/push'],
@@ -197,25 +234,34 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     note: 'carved out — 5MB quote image (#3482)',
   },
   'agents/heartbeat.ts': {
-    paths: ['/api/v1/agents/agent-1/heartbeat', '/api/v1/agents/agent-1/monitoring-results'],
-    globalMaxSize: 1 * MB,
-    note: 'KNOWN GAP (#3516), not a decision on record: the route declares 5MB but this gate caps it at 1MB. Do NOT relabel this "intentional" without a capacity/DoS decision written down somewhere.',
+    // /heartbeat carved to 5MB (#3516). /monitoring-results deliberately stays
+    // at the 1MB default: its own route-level bodyLimit is 1MB, so the gate must
+    // agree — this per-path override is the guard against widening it by accident.
+    paths: [
+      '/api/v1/agents/agent-1/heartbeat',
+      { path: '/api/v1/agents/agent-1/monitoring-results', maxSize: 1 * MB },
+    ],
+    globalMaxSize: 5 * MB,
+    note: 'carved out — 5MB agent heartbeat ingest (#3516); monitoring-results kept at its declared 1MB.',
   },
   'agents/inventory.ts': {
+    // hardware/software/disks/network carved to 5MB (#3516) so the schema item
+    // caps (software: 10,000 items) bind instead of the 1MB byte gate.
+    // warranty-info declares its own 1MB route limit and stays there.
     paths: [
       '/api/v1/agents/agent-1/hardware',
       '/api/v1/agents/agent-1/software',
       '/api/v1/agents/agent-1/disks',
       '/api/v1/agents/agent-1/network',
-      '/api/v1/agents/agent-1/warranty-info',
+      { path: '/api/v1/agents/agent-1/warranty-info', maxSize: 1 * MB },
     ],
-    globalMaxSize: 1 * MB,
-    note: 'KNOWN GAP (#3516): the route declares 5MB but this gate caps it at 1MB, so a >1MB software inventory (Linux dpkg/rpm hosts run 2-4k packages against a 5000-item collector limit and a 10000-item server schema) 413s. The agent discards the send error and 413 is not retryable, so inventory silently goes stale. Not an intentional cap — see the issue.',
+    globalMaxSize: 5 * MB,
+    note: 'carved out — 5MB agent inventory ingest (#3516); warranty-info kept at its declared 1MB.',
   },
   'agents/connections.ts': {
     paths: ['/api/v1/agents/agent-1/connections'],
-    globalMaxSize: 1 * MB,
-    note: 'KNOWN GAP (#3516): declares 5MB, capped at 1MB by this gate — same shape as heartbeat/inventory.',
+    globalMaxSize: 5 * MB,
+    note: 'carved out — 5MB agent connections ingest (#3516); same shape as heartbeat/inventory.',
   },
   'agents/logs.ts': {
     paths: ['/api/v1/agents/agent-1/logs'],
@@ -273,11 +319,13 @@ describe('route-level bodyLimit registrations vs the global gate', () => {
 
   it('the global gate grants each recorded path the limit it claims', () => {
     for (const [file, { paths, globalMaxSize, note }] of Object.entries(ROUTE_LEVEL_BODY_LIMITS)) {
-      for (const path of paths) {
+      for (const entry of paths) {
+        const path = typeof entry === 'string' ? entry : entry.path;
+        const expected = typeof entry === 'string' ? globalMaxSize : entry.maxSize;
         expect(
           { file, path, maxSize: bodyLimitForPath(path).maxSize },
           `${file} (${note})`,
-        ).toEqual({ file, path, maxSize: globalMaxSize });
+        ).toEqual({ file, path, maxSize: expected });
       }
     }
   });
