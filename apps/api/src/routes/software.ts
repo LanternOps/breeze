@@ -41,6 +41,7 @@ import { randomUUID } from 'node:crypto';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { softwareUploadRoutes } from './softwareUploads';
 import { softwareInstallMethodRoutes } from './softwareInstallMethods';
+import { packageSearchRoutes } from './packageSearch';
 import {
   buildAndDispatchSoftwareInstalls,
   createSoftwareDeployment,
@@ -2417,3 +2418,9 @@ softwareRoutes.route('/', softwareUploadRoutes);
 // pattern as softwareUploadRoutes above.
 // ---------------------------------------------------------------------------
 softwareRoutes.route('/', softwareInstallMethodRoutes);
+
+// ---------------------------------------------------------------------------
+// GET /software/package-search — winget/Homebrew typeahead. Same mounting
+// pattern as the sub-routers above.
+// ---------------------------------------------------------------------------
+softwareRoutes.route('/', packageSearchRoutes);
