@@ -9,7 +9,8 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { transitionIntent } from '../services/actionIntents/intentService';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
-import { computeEffectDigest, hasPinnedDigest } from '../services/actionIntents/effectDigest';
+import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
@@ -353,9 +354,17 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // ("possibly minutes to (for `mcp_api` intents) a day"). Do not restate the
   // chat numbers as if they were universal.
   //
-  // A pinned digest is ABSENT for supervised intents (never pinned) and for
-  // legacy/unpinnable four_eyes intents (no resolver existed, or the target
-  // didn't exist yet, at creation); both skip this check by design.
+  // A pinned digest is ABSENT only when no resolver existed for the intent's
+  // tool/action at creation (`not_applicable`), or a resolver existed but
+  // couldn't resolve the target (`unresolved` — legacy pre-pinning rows, or a
+  // missing/deleted target); both skip this check by design. Approval scope
+  // is NOT a factor: pinning is scope-independent (changed 2026-08-06, see
+  // effectDigest.ts's header) — a SUPERVISED intent whose tool has a
+  // resolver (run_script is the flagship case) IS pinned and DOES run this
+  // check below, same as a four_eyes intent. It used to be skipped for every
+  // supervised intent when pinning was gated on
+  // `approvalScope === 'four_eyes'`; that gate is gone — don't assume it's
+  // still there and conclude this branch is unreachable for supervised.
   // `hasPinnedDigest` is the SHARED predicate with the inline chat release
   // path (services/aiAgentSdk.ts): the two previously guarded the same
   // invariant with different predicates (`!== null` here, truthiness there),
@@ -366,6 +375,14 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   //
   // A pinned digest that no longer matches the freshly-recomputed one means
   // the target changed underneath the approval — fail closed, never execute.
+  //
+  // #3409 PR4c-1: the recompute below does not just produce a digest — for
+  // run_script it reads the script row and resolves the tenant variables. That
+  // work is CARRIED to executeTool as `verifiedContext` instead of being
+  // thrown away and redone inside the handler, because a second read reopens
+  // the very window this check just closed (the digest proves the target was
+  // unchanged AS OF THE READ; a later read proves nothing).
+  let verifiedContext: ToolExecutionContext | undefined;
   if (hasPinnedDigest(intent)) {
     // Runs in its own short system-scoped context (same discipline as Step 2
     // above) — this point in the function is between DB contexts (Step 2's
@@ -374,10 +391,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     // would silently filter to zero rows rather than error on (see db/index.ts's
     // getCurrentDb). Without this wrap every resolver would read "not found"
     // and this check would fail EVERY pinned release, not just drifted ones.
-    let recomputedEffectDigest: string | null;
+    let recomputed: { digest: string | null; context?: ToolExecutionContext };
     try {
-      recomputedEffectDigest = await withSystemDbAccessContext(() =>
-        computeEffectDigest(intent.actionName, intent.arguments, db),
+      recomputed = await withSystemDbAccessContext(() =>
+        computeEffectDigestForRelease(intent.actionName, intent.arguments, db),
       );
     } catch (err) {
       // Fail closed with a categorized code, like every other step in this
@@ -405,10 +422,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       });
       return;
     }
-    if (recomputedEffectDigest !== intent.effectDigest) {
+    if (recomputed.digest !== intent.effectDigest) {
       await failIntent(intent, 'content_changed', { details: { actionName: intent.actionName } });
       return;
     }
+    // Only a MATCHING digest licenses reuse: the material is what the approver
+    // approved. On a mismatch we returned above and nothing is carried.
+    verifiedContext = recomputed.context;
   }
 
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
@@ -456,7 +476,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
-        : () => executeTool(intent.actionName, intent.arguments, auth);
+        : // The options bag is passed ONLY when something was actually
+          // verified, so every other release keeps the exact three-argument
+          // call it has always made.
+          () =>
+            verifiedContext
+              ? executeTool(intent.actionName, intent.arguments, auth, { context: verifiedContext })
+              : executeTool(intent.actionName, intent.arguments, auth);
       rawResult = await withToolTimeout(
         withAuthDbAccessContext(auth, invoke),
         getToolTimeout(intent.actionName),

@@ -464,7 +464,7 @@ const dayScheduleSchema = z.object({
   closed: z.boolean().optional()
 });
 
-const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT'] as const satisfies readonly SupportedLocale[];
+const supportedLocales = ['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const satisfies readonly SupportedLocale[];
 
 /*
  * The partner-settings URL fields below are restricted to http/https by the

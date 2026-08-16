@@ -299,3 +299,52 @@ describe('a failed read is never rendered as an all-clear (#2472)', () => {
     expect(screen.getByTestId('vulnerabilities-action-error')).toBeInTheDocument();
   });
 });
+
+/**
+ * A 500 (errorKind "other") must not paint the summary stat tiles from the
+ * zeroed initial state — that's a confident, fabricated all-clear for a fleet we
+ * simply failed to read. Each tile shows an em dash instead; a genuinely empty
+ * 200 tenant still shows real 0s (covered by the pages' own tests). (#2485)
+ */
+const SUMMARY_TILE_PAGES = [
+  ['VulnerabilitiesPage', <VulnerabilitiesPage />, 4],
+  ['EncryptionPage', <EncryptionPage />, 4],
+  ['FirewallPage', <FirewallPage />, 4],
+  ['PasswordPolicyPage', <PasswordPolicyPage />, 4],
+  ['RecommendationsPage', <RecommendationsPage />, 4],
+  ['AdminAuditPage', <AdminAuditPage />, 6],
+] as const;
+
+describe('a 500 shows "—" in the security stat tiles, never fabricated zeros (#2485)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe.each(SUMMARY_TILE_PAGES)('%s', (_name, element, tileCount) => {
+    it('renders em dashes, not 0 / 0%, when the summary load 500s', async () => {
+      fetchWithAuth.mockResolvedValue(serverError());
+      const { container } = await renderSettled(element);
+
+      // Every summary tile is an em dash (the presence assertion also proves the
+      // flush is long enough for the absence assertion below to mean something).
+      expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(tileCount);
+
+      // No stat tile paints a bare 0 / 0% from the zeroed default.
+      const fabricatedZeros = Array.from(container.querySelectorAll('p'))
+        .map((el) => el.textContent?.trim() ?? '')
+        .filter((text) => /^0%?$/.test(text));
+      expect(fabricatedZeros).toEqual([]);
+    });
+  });
+});
+
+describe('FirewallPage hides its coverage bar on a failed read (#2485)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not render the 0%-width coverage bar when the load 500s', async () => {
+    fetchWithAuth.mockResolvedValue(serverError());
+    const { container } = await renderSettled(<FirewallPage />);
+    // An empty (0%-width) bar reads as "0% coverage" — it must be gone on error.
+    expect(container.querySelector('.bg-sky-500')).toBeNull();
+  });
+});

@@ -389,7 +389,11 @@ export async function getTicketConfig(partnerId: string) {
         : 'quarantine';
 
   const inbound = {
-    enabled: inboundCfg.enabled ?? false,
+    // Must use the SAME default as loadPartnerInboundPolicy (absent → true), or the
+    // card renders an "off" toggle for a partner whose mail is still being ingested —
+    // which is precisely the display-only bug #3597 fixed. Absent means "never
+    // configured", and ingestion has been on for those partners since day one.
+    enabled: inboundCfg.enabled !== false,
     address: addressOverride ?? derived,
     addressOverride,
     defaultTriageOrgId: inboundCfg.defaultTriageOrgId ?? null,

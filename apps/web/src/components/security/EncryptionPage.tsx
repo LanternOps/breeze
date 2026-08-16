@@ -170,6 +170,11 @@ export default function EncryptionPage() {
     );
   }
   const mc = summary.methodCounts;
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant keeps its real 0s. Mirrors AntivirusPage (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -183,25 +188,25 @@ export default function EncryptionPage() {
         <SecurityStatCard
           icon={Lock}
           label={t("securityEncryptionPage.totalDevices")}
-          value={formatNumber(summary.total)}
+          value={stat(summary.total)}
         />
         <SecurityStatCard
           icon={Lock}
           label={t("securityEncryptionPage.fullyEncrypted")}
-          value={formatNumber(summary.fullyEncrypted)}
-          variant="success"
+          value={stat(summary.fullyEncrypted)}
+          variant={hasData ? "success" : "default"}
         />
         <SecurityStatCard
           icon={HardDrive}
           label={t("securityEncryptionPage.partial")}
-          value={formatNumber(summary.partial)}
-          variant="warning"
+          value={stat(summary.partial)}
+          variant={hasData ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={HardDrive}
           label={t("securityEncryptionPage.unencrypted")}
-          value={formatNumber(summary.unencrypted)}
-          variant="danger"
+          value={stat(summary.unencrypted)}
+          variant={hasData ? "danger" : "default"}
         />
       </div>
 
@@ -210,25 +215,25 @@ export default function EncryptionPage() {
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.bitlocker")}
           </p>
-          <p className="text-lg font-semibold">{mc.bitlocker}</p>
+          <p className="text-lg font-semibold">{stat(mc.bitlocker)}</p>
         </div>
         <div className="rounded-md border bg-muted/30 p-3 text-center">
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.filevault")}
           </p>
-          <p className="text-lg font-semibold">{mc.filevault}</p>
+          <p className="text-lg font-semibold">{stat(mc.filevault)}</p>
         </div>
         <div className="rounded-md border bg-muted/30 p-3 text-center">
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.luks")}
           </p>
-          <p className="text-lg font-semibold">{mc.luks}</p>
+          <p className="text-lg font-semibold">{stat(mc.luks)}</p>
         </div>
         <div className="rounded-md border bg-muted/30 p-3 text-center">
           <p className="text-xs text-muted-foreground">
             {t("securityEncryptionPage.none")}
           </p>
-          <p className="text-lg font-semibold">{mc.none}</p>
+          <p className="text-lg font-semibold">{stat(mc.none)}</p>
         </div>
       </div>
 

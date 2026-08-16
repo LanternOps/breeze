@@ -239,7 +239,9 @@ describe('QuotesPage', () => {
       (c) => String(c[0]) === '/quotes' && (c[1] as RequestInit | undefined)?.method === 'POST',
     );
     expect(createCall).toBeTruthy();
-    expect(JSON.parse((createCall![1] as RequestInit).body as string)).toEqual({ orgId: 'org-1', currencyCode: 'USD' });
+    // No hardcoded currencyCode (#3200): the create omits it so the server
+    // defaults the new quote to the partner's currency, not always 'USD'.
+    expect(JSON.parse((createCall![1] as RequestInit).body as string)).toEqual({ orgId: 'org-1' });
     // No clone endpoint involved in a blank create.
     expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/clone'))).toBe(false);
   });

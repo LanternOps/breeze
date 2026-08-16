@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 
+// #3521: a truncated array carries a trailing in-band sentinel string. When a
+// test cross-checks kept-vs-dropped counts, exclude that synthetic element.
+const SENTINEL_RE = /more items omitted/;
+const realLen = (arr: unknown[]): number =>
+  arr.filter((x) => !(typeof x === 'string' && SENTINEL_RE.test(x))).length;
+
 // SR5-16: tool_input is persisted UNCONDITIONALLY to the transcript (even for
 // denied calls). Sensitive keys must be masked at that chokepoint.
 describe('redactSensitiveToolInput', () => {
@@ -242,7 +248,7 @@ describe('compactToolResultForChat', () => {
     expect(stdout.totalPages).toBe(3);
     expect(Array.isArray(stdout.processes)).toBe(true);
     // 120 in → capped at 50 (or tighter): the compaction must actually fire.
-    expect((stdout.processes as unknown[]).length).toBeLessThanOrEqual(50);
+    expect(realLen(stdout.processes as unknown[])).toBeLessThanOrEqual(50);
     expect((parsed.stdoutTruncation as Record<string, unknown>).itemsDropped).toBeGreaterThanOrEqual(70);
     expect(parsed.stdoutChars).toBeGreaterThan(2_000);
   });
@@ -281,7 +287,7 @@ describe('compactToolResultForChat', () => {
     expect(Array.isArray(stdout.events)).toBe(true);
     expect((stdout.events as unknown[]).length).toBeGreaterThan(0);
     const truncation = parsed.stdoutTruncation as Record<string, unknown>;
-    expect(truncation.itemsDropped).toBe(300 - (stdout.events as unknown[]).length);
+    expect(truncation.itemsDropped).toBe(300 - realLen(stdout.events as unknown[]));
     expect(String(truncation.note)).toContain('event_logs_query');
   });
 
@@ -350,7 +356,7 @@ describe('compactToolResultForChat', () => {
     expect(compacted.length).toBeLessThanOrEqual(8_000);
     const parsed = JSON.parse(compacted) as Record<string, unknown>;
     const stdout = parsed.stdout as Record<string, unknown>;
-    const kept = (stdout.processes as unknown[]).length;
+    const kept = realLen(stdout.processes as unknown[]);
 
     expect(kept).toBeLessThan(45);
     const truncation = parsed.stdoutTruncation as Record<string, unknown>;
@@ -520,5 +526,64 @@ describe('compactToolResultForChat', () => {
     expect(Array.isArray(parsed.runs)).toBe(true);
     expect((parsed.runs as unknown[]).length).toBeLessThanOrEqual(40);
     expect(parsed.runsDropped).toBeGreaterThan(0);
+  });
+});
+
+describe('array truncation in-band sentinel (#3521)', () => {
+  it('appends an in-band sentinel element when a truncated array would otherwise read as complete', () => {
+    // get_quote is not a fleet tool, so its nested `blocks` array flows through
+    // the generic compactValue path — where truncation used to leave no in-band
+    // marker, only a buried `_chat.arrayItemsDropped` stat.
+    const blocks = Array.from({ length: 60 }, (_, i) => ({ id: i, type: 'text', content: 'x'.repeat(200) }));
+    const raw = JSON.stringify({ data: { blocks } });
+
+    const parsed = JSON.parse(compactToolResultForChat('get_quote', raw)) as {
+      data: { blocks: unknown[] };
+    };
+    const outBlocks = parsed.data.blocks;
+
+    expect(outBlocks.length).toBeLessThan(blocks.length);
+    const last = outBlocks[outBlocks.length - 1];
+    expect(typeof last).toBe('string');
+    expect(last as string).toMatch(/truncated: \d+ more items omitted/);
+    // Everything before the sentinel is a real (object) block.
+    expect(typeof outBlocks[0]).toBe('object');
+  });
+
+  it('does not add a sentinel to an array that fits within the cap', () => {
+    const raw = JSON.stringify({ data: { blocks: [{ id: 1, type: 'text' }, { id: 2, type: 'text' }] } });
+    const parsed = JSON.parse(compactToolResultForChat('get_quote', raw)) as {
+      data: { blocks: unknown[] };
+    };
+    expect(parsed.data.blocks).toHaveLength(2);
+    expect(parsed.data.blocks.every((b) => typeof b === 'object')).toBe(true);
+  });
+
+  it('is idempotent: a pre-existing array marker is not counted as a real item when re-truncated', () => {
+    // 45 real items + a marker left by a prior compaction. Re-truncating must
+    // count only the 45 real items, so `keptReal + N === 45` (NOT 46). Without
+    // the idempotence strip, the marker inflates the count by one.
+    const REAL = 45;
+    const PRIOR = 999;
+    const blocks: unknown[] = [
+      ...Array.from({ length: REAL }, (_, i) => ({ id: i, type: 'text', content: 'x'.repeat(150) })),
+      `...[truncated: ${PRIOR} more items omitted. Use pagination or the REST API]`,
+    ];
+    const raw = JSON.stringify({ data: { blocks } });
+
+    const parsed = JSON.parse(compactToolResultForChat('get_quote', raw)) as {
+      data: { blocks: unknown[] };
+    };
+    const out = parsed.data.blocks;
+    const keptReal = out.filter((b) => typeof b === 'object').length;
+    const markers = out.filter((b) => typeof b === 'string' && SENTINEL_RE.test(b));
+
+    expect(markers).toHaveLength(1); // exactly one marker, not stacked
+    expect(keptReal).toBeLessThan(REAL); // truncation happened
+    const n = Number(/truncated: (\d+) more/.exec(markers[0] as string)![1]);
+    // Cumulative: prior omissions + the real items dropped THIS pass. The prior
+    // marker is not counted as one of the real items (that would give PRIOR + 1
+    // too many), and the prior count is carried forward, not reset.
+    expect(n).toBe(PRIOR + (REAL - keptReal));
   });
 });

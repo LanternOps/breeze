@@ -3,9 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * Coverage for the get_script_execution tier-1 tool (script-editor test loop):
  * single-execution lookup with the script-org condition applied and the site
- * axis enforced after the row loads. The tool exists so the AI can read a
- * run's output after the user's editor Test Run (or after a run outlives the
- * 60s tool window), so the shape of the returned JSON is part of the contract.
+ * axis enforced after the row loads. The tool exists so the AI can read the
+ * output of a run started outside the current tool call (the editor's Test Run
+ * button, or an id from get_script_execution_history), so the shape of the
+ * returned JSON is part of the contract. It is NOT a recovery path for a
+ * run_script that hit its 60s wait: that timeout terminalizes the command row,
+ * so the agent's late result loses the CAS in routes/agentWs.ts and never
+ * reaches handleScriptResult — stdout/exitCode stay null forever.
  */
 
 vi.mock('../db', () => ({
@@ -17,6 +21,7 @@ vi.mock('../db', () => ({
 
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
+import { scriptExecutions } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
@@ -98,6 +103,22 @@ function flattenSql(node: unknown, out: string[] = []): string[] {
   return out;
 }
 
+/** Token stream of a condition tree, joined with a separator that cannot occur
+ *  inside a column name or a uuid — so `toContain` on it is a contiguous
+ *  subsequence check (column adjacent to its bound param), not a loose
+ *  "the string appears somewhere" check. */
+function sqlTokenText(node: unknown): string {
+  return flattenSql(node).join('|');
+}
+
+/** The bound parameter values drizzle carries in the clause (drizzle `Param`
+ *  nodes surface through flattenSql's `'value' in node` branch). Asserting on
+ *  these is what makes a where-clause test non-vacuous: a predicate that was
+ *  deleted takes its bound value with it. */
+function boundParamValues(node: unknown): string[] {
+  return flattenSql(node).filter((t) => /^[0-9a-f-]{36}$/.test(t));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -108,8 +129,16 @@ describe('get_script_execution', () => {
   });
 
   it('returns the execution with output fields and without the internal site id', async () => {
-    mockExecutionRows([executionRow]);
+    const captured: unknown[] = [];
+    mockExecutionRows([executionRow], captured);
     const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
+
+    // Without an id predicate the query is `.limit(1)` over an unfiltered join
+    // and would return an ARBITRARY execution — including another org's, since
+    // the org condition is absent on a partner/system session. The clause must
+    // therefore BIND the requested id, not merely mention an `id` column.
+    expect(boundParamValues(captured[0])).toContain(EXECUTION_ID);
+    expect(sqlTokenText(captured[0])).toContain(sqlTokenText(eq(scriptExecutions.id, EXECUTION_ID)));
 
     expect(result.execution).toMatchObject({
       id: EXECUTION_ID,
@@ -124,7 +153,12 @@ describe('get_script_execution', () => {
     expect(result.execution).not.toHaveProperty('deviceSiteId');
   });
 
-  it('returns "Execution not found" when the org-scoped query matches nothing (cross-org lookup)', async () => {
+  // Renamed from "...when the org-scoped query matches nothing (cross-org
+  // lookup)": this test mocks an empty result set, so it exercises the
+  // no-row branch only and says nothing about scoping. The clause itself is
+  // asserted by the happy path (executionId binding) and by the org-condition
+  // test below; duplicating those here would only re-hide what this covers.
+  it('returns "Execution not found" when the query matches no row', async () => {
     mockExecutionRows([]);
     const result = JSON.parse(await getTool().handler({ executionId: EXECUTION_ID }, makeAuth()));
 

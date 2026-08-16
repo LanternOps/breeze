@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 import { eq, and, ilike, sql, desc } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
@@ -65,7 +66,7 @@ const catalogQuerySchema = z.object({
   type: z.enum(['integration', 'automation', 'reporting', 'collector', 'notification', 'ui']).optional(),
   category: z.string().optional(),
   search: z.string().optional(),
-  verified: z.coerce.boolean().optional(),
+  verified: optionalQueryBoolean,
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(20)
 });

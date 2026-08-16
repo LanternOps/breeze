@@ -318,3 +318,41 @@ describe('vulnerability tools reach the chat model (#2605)', () => {
     expect(description).toContain('get_device_vulnerabilities');
   });
 });
+
+/**
+ * #3485: get_quote gained block-pagination params, but the model only sees the
+ * shape declared in `tool('get_quote', ...)` inside createBreezeMcpServer. If
+ * that shape drifts from the canonical `toolInputSchemas` entry, the SDK strips
+ * the new params before the handler runs — the exact gap that shipped here.
+ */
+describe("get_quote's MCP declaration matches its canonical schema (#3485)", () => {
+  it('declares exactly the params the canonical get_quote schema validates', () => {
+    // Extract just the shape object — the 3rd argument to tool() — between the
+    // description and makeHandler, so comments/description text can't be mistaken
+    // for a declared key.
+    const shape = SOURCE.match(
+      /tool\(\s*'get_quote',[\s\S]*?registryDescription\('get_quote'\),[\s\S]*?\{([\s\S]*?)\},\s*makeHandler\('get_quote'/,
+    );
+    expect(shape, "tool('get_quote', registryDescription(...), { ... }) not found").not.toBeNull();
+    const shapeBody = (shape![1] ?? '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+    const declaredKeys = [...shapeBody.matchAll(/^\s*(\w+):/gm)]
+      .map((m) => m[1])
+      .filter((k): k is string => k !== undefined)
+      .sort();
+
+    const canonicalKeys = Object.keys(
+      (toolInputSchemas['get_quote'] as z.ZodObject<z.ZodRawShape>).shape,
+    );
+    // Sanity: the canonical schema really did gain the pagination params (#3485).
+    expect(canonicalKeys).toEqual(
+      expect.arrayContaining(['quoteId', 'blocksOffset', 'blocksLimit', 'includeBlockContent']),
+    );
+    // Exact, bidirectional parity: the MCP declaration must not drift from the
+    // canonical schema in EITHER direction (a param the SDK strips, or one it
+    // advertises that nothing validates).
+    expect(declaredKeys).toEqual([...canonicalKeys].sort());
+  });
+});

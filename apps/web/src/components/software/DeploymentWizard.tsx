@@ -16,6 +16,8 @@ import { showToast } from "../shared/Toast";
 import ProgressBar from "../shared/ProgressBar";
 import type { DeploymentTargetConfig } from "@breeze/shared";
 import { DeviceTargetSelector } from "../filters/DeviceTargetSelector";
+import { ScopeBadge } from "../shared/ScopeBadge";
+import { useOrgScope } from "../../hooks/useOrgScope";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type WizardStep = "software" | "targets" | "configure" | "review";
@@ -287,6 +289,10 @@ export default function DeploymentWizard({
   const steps = createSteps();
   const scheduleOptions = createScheduleOptions();
   const [activeStepIndex, setActiveStepIndex] = useState(0);
+  // The deployment silently inherits the header's customer context (fetchWithAuth
+  // injects ?orgId= and the API stamps the deployment's org from it), so state
+  // that context explicitly instead of leaving the user to infer it.
+  const orgScope = useOrgScope();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [deploying, setDeploying] = useState(false);
@@ -1392,6 +1398,24 @@ export default function DeploymentWizard({
             </h3>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {orgScope.scope === "org" && (
+              <div
+                className="rounded-md border bg-muted/30 p-4"
+                data-testid="deployment-review-customer"
+              >
+                <p className="text-xs uppercase text-muted-foreground">
+                  {i18n.t("policies:software.deploymentWizard.customer")}
+                </p>
+                <p className="mt-2 text-sm font-semibold">
+                  {orgScope.org?.name ?? "—"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:software.deploymentWizard.allTargetsBelongToThisCustomer",
+                  )}
+                </p>
+              </div>
+            )}
             <div className="rounded-md border bg-muted/30 p-4">
               <p className="text-xs uppercase text-muted-foreground">
                 {i18n.t("policies:software.deploymentWizard.software")}
@@ -1506,15 +1530,40 @@ export default function DeploymentWizard({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">
-          {i18n.t("policies:software.deploymentWizard.deploymentWizard")}
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-xl font-semibold tracking-tight">
+            {i18n.t("policies:software.deploymentWizard.deploymentWizard")}
+          </h1>
+          {orgScope.scope === "org" && (
+            <span
+              className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
+              data-testid="deployment-org-context"
+            >
+              {i18n.t("policies:software.deploymentWizard.deployingTo")}
+              <ScopeBadge
+                orgId={orgScope.orgId}
+                partnerId={null}
+                isSystem={false}
+                orgName={orgScope.org?.name}
+              />
+            </span>
+          )}
+        </div>
         <p className="text-sm text-muted-foreground">
           {i18n.t(
             "policies:software.deploymentWizard.guideADeploymentThroughSelectionTargetingAnd",
           )}
         </p>
       </div>
+
+      {orgScope.scope === "all" && (
+        <div
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
+          data-testid="deployment-all-orgs-notice"
+        >
+          {i18n.t("policies:software.deploymentWizard.allOrgsSelectCustomer")}
+        </div>
+      )}
 
       {error && activeStep !== "review" && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">

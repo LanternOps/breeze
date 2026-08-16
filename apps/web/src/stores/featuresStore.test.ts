@@ -19,8 +19,32 @@ describe('featuresStore', () => {
       features: { billing: false, support: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
+      softwarePackages: { uploadsEnabled: true },
       loaded: false,
     });
+  });
+
+  // Package uploads gate is deliberately FAIL-OPEN (opposite of registration):
+  // a missing field (older API) or unreachable /config must never gray out
+  // uploads that would work — worst case the user hits the routes' own 503.
+  it('softwarePackages.uploadsEnabled false only when /config says false', async () => {
+    fetchMock.mockResolvedValueOnce(res({ softwarePackages: { uploadsEnabled: false } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().softwarePackages).toEqual({ uploadsEnabled: false });
+  });
+
+  it('softwarePackages.uploadsEnabled stays open when /config omits the field (older API)', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { billing: true, support: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().softwarePackages).toEqual({ uploadsEnabled: true });
+  });
+
+  it('softwarePackages.uploadsEnabled stays open when /config is unreachable', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockRejectedValueOnce(new Error('network'));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().softwarePackages).toEqual({ uploadsEnabled: true });
+    errSpy.mockRestore();
   });
 
   it('loads features from /config', async () => {

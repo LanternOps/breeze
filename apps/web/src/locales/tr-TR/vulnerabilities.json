@@ -1,0 +1,332 @@
+{
+  "vulnerabilityLandingPage": {
+    "title": "Güvenlik Açıkları",
+    "subtitle": "Triyaj için gruplandırılmış Filo CVE maruziyeti - iyileştirme, riski kabul etme veya bilet."
+  },
+  "createVulnTicketModal": {
+    "title": "Bilet oluştur",
+    "heading": "Bilet oluştur — {{count}} bulgular",
+    "heading_one": "Bilet oluştur — {{count}} bulma",
+    "heading_other": "Bilet oluştur — {{count}} bulgular",
+    "crossOrgNote": "Seçim {{count}} organizasyonu kapsar — organizasyon başına bir bilet oluşturulacaktır.",
+    "crossOrgNote_one": "Seçim {{count}} organizasyonu kapsar — ​​organizasyon başına bir bilet oluşturulacaktır.",
+    "crossOrgNote_other": "Seçim {{count}} organizasyonu kapsar — ​​organizasyon başına bir bilet oluşturulacaktır.",
+    "autoDetailNote": "Cihaz ve CVE ayrıntıları kuruluşa göre otomatik olarak eklenir.",
+    "fields": {
+      "title": "Başlık",
+      "note": "Not (isteğe bağlı)",
+      "notePlaceholder": "Teknisyen için herhangi bir bağlam ekleyin (isteğe bağlı)",
+      "priority": "Öncelik"
+    },
+    "priorities": {
+      "low": "Düşük",
+      "normal": "Normal",
+      "high": "Yüksek",
+      "urgent": "Acil"
+    },
+    "actions": {
+      "create": "Bilet oluştur"
+    }
+  },
+  "cveDrawer": {
+    "errors": {
+      "load": "CVE yüklenemedi",
+      "reopen": "Bulgu yeniden açılamadı",
+      "scheduleRemediation": "Düzeltme planlanamadı",
+      "acceptRisk": "Risk kabul edilemedi",
+      "mitigate": "Etki azaltılamadı",
+      "createTicket": "Bilet oluşturulamadı"
+    },
+    "meta": {
+      "cvss": "CVSS {{version}}",
+      "vector": "Vektör",
+      "epss": "EPSS",
+      "knownExploited": "Kullanıldığı biliniyor",
+      "published": "Yayınlandı",
+      "modified": "Değiştirildi"
+    },
+    "sections": {
+      "devices": "Cihazlar ({{count}} bulgular)",
+      "devices_one": "Cihazlar ({{count}} bulma)",
+      "devices_other": "Cihazlar ({{count}} bulgular)"
+    },
+    "selection": {
+      "selectAll": "Tümünü seç",
+      "selectAllAria": "Tüm bulguları seç",
+      "deselectAllAria": "Tüm bulguların seçimini kaldır",
+      "selectFindingAria": "{{deviceName}} ile ilgili bulguyu seçin",
+      "selected": "{{count}} seçildi",
+      "selected_one": "{{count}} seçildi",
+      "selected_other": "{{count}} seçildi"
+    },
+    "empty": {
+      "noFindings": "Filonuzdaki hiçbir cihaz şu anda bu CVE'den etkilenmiyor; üzerinde işlem yapılacak bir şey yok."
+    },
+    "findings": {
+      "patch": "Yama",
+      "ticket": "Bilet"
+    },
+    "actions": {
+      "reopen": "Yeniden aç",
+      "remediate": "Düzelt",
+      "acceptRisk": "Riski kabul et",
+      "mitigate": "Azaltma",
+      "createTicket": "Bilet oluştur"
+    },
+    "ticket": {
+      "defaultTitle": "Düzeltin {{cveId}}"
+    }
+  },
+  "findingStatus": {
+    "acceptedUntil": "{{date}} tarihine kadar kabul edildi",
+    "status": {
+      "open": "açık",
+      "accepted": "kabul edildi",
+      "mitigated": "hafifletildi",
+      "patched": "yamalı"
+    }
+  },
+  "kevBadge": {
+    "label": "KEV",
+    "title": "Bilinen İstismar Edilen Güvenlik Açığı (CISA KEV kataloğu)"
+  },
+  "severityBadge": {
+    "critical": "Kritik",
+    "high": "Yüksek",
+    "medium": "Orta",
+    "low": "Düşük",
+    "unknown": "Bilinmiyor"
+  },
+  "softwareGroupDrawer": {
+    "titleFallback": "Yazılım grubu",
+    "errors": {
+      "load": "Yazılım grubu yüklenemedi",
+      "reopen": "Bulgu yeniden açılamadı",
+      "scheduleRemediation": "Düzeltme planlanamadı",
+      "acceptRisk": "Risk kabul edilemedi",
+      "mitigate": "Etki azaltılamadı",
+      "createTicket": "Bilet oluşturulamadı"
+    },
+    "summary": {
+      "devices": "{{count}} cihazlar",
+      "devices_one": "{{count}} cihaz",
+      "devices_other": "{{count}} cihazlar",
+      "maxRisk": "maksimum risk {{risk}}"
+    },
+    "tickets": {
+      "number": "Bilet {{number}}",
+      "view": "Bileti görüntüle"
+    },
+    "sections": {
+      "cves": "CVE'ler ({{count}})",
+      "devices": "Cihazlar ({{count}} bulgular)",
+      "devices_one": "Cihazlar ({{count}} bulma)",
+      "devices_other": "Cihazlar ({{count}} bulgular)"
+    },
+    "cveMeta": {
+      "cvss": "CVSS {{score}}",
+      "epss": "EPSS {{score}}"
+    },
+    "selection": {
+      "selectAll": "Tümünü seç",
+      "selectAllAria": "Tüm bulguları seç",
+      "deselectAllAria": "Tüm bulguların seçimini kaldır",
+      "selectFindingAria": "{{deviceName}} üzerinde {{cveId}} bulmayı seçin",
+      "selected": "{{count}} seçildi",
+      "selected_one": "{{count}} seçildi",
+      "selected_other": "{{count}} seçildi"
+    },
+    "empty": {
+      "noFindings": "Bu grupta hiçbir cihaz bulgusu kalmadı; üzerinde işlem yapılacak bir şey yok."
+    },
+    "findings": {
+      "patch": "Yama",
+      "ticket": "Bilet"
+    },
+    "actions": {
+      "reopen": "Yeniden aç",
+      "remediate": "Düzelt",
+      "acceptRisk": "Riski kabul et",
+      "mitigate": "Azaltma",
+      "createTicket": "Bilet oluştur"
+    },
+    "ticket": {
+      "defaultTitle": "Düzeltin {{name}}"
+    }
+  },
+  "softwareGroupTable": {
+    "errors": {
+      "load": "Yazılım grupları yüklenemedi"
+    },
+    "table": {
+      "software": "Yazılım",
+      "severity": "Önem",
+      "risk": "Risk",
+      "cves": "CVE'ler",
+      "devices": "Cihazlar",
+      "patch": "Yama"
+    },
+    "help": {
+      "riskAria": "Risk puanı hakkında"
+    },
+    "actions": {
+      "openDetailsAria": "{{name}} güvenlik açığı ayrıntılarını açın"
+    },
+    "patch": {
+      "ready": "Hazır · {{ready}}/{{total}} cihazlar",
+      "ready_one": "Hazır · {{ready}}/{{total}} cihaz",
+      "ready_other": "Hazır · {{ready}}/{{total}} cihazlar"
+    },
+    "hasMore": "Riske göre ilk 500 grup gösteriliyor — geri kalanını görmek için filtreleri daraltın."
+  },
+  "vulnBulkActionModal": {
+    "headings": {
+      "remediate": "Bulguları düzeltin",
+      "accept": "Riski kabul et",
+      "mitigate": "İşareti hafifletildi"
+    },
+    "headingWithCount": "{{heading}} — {{count}} bulgular",
+    "headingWithCount_one": "{{heading}} — {{count}} bulma",
+    "headingWithCount_other": "{{heading}} — {{count}} bulgular",
+    "counts": {
+      "devices": "{{count}} cihazlar",
+      "devices_one": "{{count}} cihaz",
+      "devices_other": "{{count}} cihazlar",
+      "findings": "{{count}} bulgular",
+      "findings_one": "{{count}} bulma",
+      "findings_other": "{{count}} bulgular"
+    },
+    "selection": {
+      "more": "ve {{count}} daha"
+    },
+    "consequence": {
+      "remediate": "Her CVE için onaylanmış yamayı {{deviceText}} ({{findingText}}) üzerine yükler. Onaylanmış, geçerli bir düzeltme eki olmayan bulgular atlanır.",
+      "accept": "Belirlediğiniz tarihe kadar {{deviceText}} üzerindeki {{findingText}}'yi açık kuyruktan gizler. Otomatik olarak yeniden açılmazlar; süresi dolan kabuller \"Kabul edildi, süresi yakında doluyor\" kartında görünür.",
+      "mitigate": "{{deviceText}} üzerindeki {{findingText}} işaretleri hafifletildi ve notunuz telafi edici kontrol olarak kaydedildi. Breeze cihazları değiştirmez."
+    },
+    "fields": {
+      "reason": "Sebep",
+      "mitigationNote": "Azaltma notu",
+      "acceptedUntil": "Şu tarihe kadar kabul edildi:"
+    },
+    "actions": {
+      "working": "Çalışıyor…",
+      "remediate": "Düzelt",
+      "accept": "Riski kabul et",
+      "mitigate": "İşareti hafifletildi"
+    }
+  },
+  "vulnEmptyState": {
+    "filtered": {
+      "message": "Mevcut filtrelerle eşleşen güvenlik açığı yok.",
+      "clearFilters": "Filtreleri temizle"
+    },
+    "clean": {
+      "title": "Filonuzda açık güvenlik açığı yok",
+      "description": "Tespit edilen her bulguya yama uygulandı, etkileri hafifletildi veya kabul edildi. Taramalar yürütüldükçe yeni bulgular burada görünecektir.",
+      "lastDetected": "Son bulgu tespit edildi {{date}}"
+    },
+    "unscanned": {
+      "title": "Henüz güvenlik açığı bulgusu yok",
+      "description": "Breeze her cihazın yazılımını ve işletim sistemi envanterini bilinen CVE'lere göre kontrol eder ve yama, hafifletme veya risk kabulü gerektiren her şeyi burada sıraya koyar.",
+      "setupHint": "Tarama varsayılan olarak kapalıdır; bunu bir yapılandırma ilkesinin Güvenlik Açığı sekmesinde etkinleştirin.",
+      "setupAction": "Güvenlik açığı taramasını ayarlayın"
+    },
+    "unknown": {
+      "message": "Gösterilecek güvenlik açığı yok."
+    }
+  },
+  "vulnFilterBar": {
+    "searchPlaceholder": {
+      "software": "Yazılımı veya CVE'yi arayın…",
+      "cves": "CVE kimliğini arayın…"
+    },
+    "labels": {
+      "severity": "Önem"
+    },
+    "statusOptions": {
+      "open": "Aç",
+      "accepted": "Kabul edildi",
+      "mitigated": "Azaltılmış",
+      "patched": "Yamalı",
+      "all": "Tüm durumlar"
+    },
+    "filters": {
+      "kevOnly": "yalnızca KEV",
+      "patchAvailable": "Yama mevcut"
+    },
+    "expiring": {
+      "clearAria": "Süresi {{count}} gün içinde dolacak filtreyi temizle",
+      "clearAria_one": "Süresi {{count}} gün içinde dolacak filtreyi temizle",
+      "clearAria_other": "Süresi {{count}} gün içinde dolacak filtreyi temizle",
+      "label": "Süresi {{count}} gün içinde doluyor",
+      "label_one": "Süresi {{count}} gün içinde doluyor",
+      "label_other": "Süresi {{count}} gün içinde doluyor"
+    }
+  },
+  "vulnerabilityFleetPage": {
+    "stats": {
+      "critical": {
+        "label": "Kritik açık",
+        "detail": "{{count}} açık bulgular kritik olarak derecelendirildi",
+        "detail_one": "{{count}} açık bulgu kritik olarak değerlendirildi",
+        "detail_other": "{{count}} açık bulgular kritik olarak derecelendirildi"
+      },
+      "kev": {
+        "label": "KEV pozlaması",
+        "detail": "{{count}} bilinen-istismar edilen CVE'ler · {{deviceText}}",
+        "detail_one": "{{count}} bilinen-istismar edilen CVE · {{deviceText}}",
+        "detail_other": "{{count}} bilinen-istismar edilen CVE'ler · {{deviceText}}",
+        "devices": "{{count}} cihazlar",
+        "devices_one": "{{count}} cihaz",
+        "devices_other": "{{count}} cihazlar"
+      },
+      "patchReady": {
+        "label": "Yama hazır",
+        "detail": "{{count}} mevcut bir yamayla bulguları açın",
+        "detail_one": "{{count}} yamayla birlikte açık bulgu",
+        "detail_other": "{{count}} mevcut bir yamayla bulguları açın"
+      },
+      "acceptedExpiring": {
+        "label": "Kabul edildi, süresi yakında doluyor",
+        "detail": "{{count}} kabul edilen bulguların süresi {{days}} gün içinde dolacak",
+        "detail_one": "{{count}}, süresi {{days}} gün içinde dolacak bulguyu kabul etti",
+        "detail_other": "{{count}} kabul edilen bulguların süresi {{days}} gün içinde dolacak"
+      }
+    },
+    "tabs": {
+      "ariaLabel": "Güvenlik açığı görünümleri",
+      "software": "Yazılım tarafından",
+      "cves": "CVE tarafından"
+    }
+  },
+  "vulnerabilityTable": {
+    "errors": {
+      "load": "Güvenlik açıkları yüklenemedi"
+    },
+    "table": {
+      "cve": "CVE",
+      "severity": "Önem",
+      "cvss": "CVSS",
+      "risk": "Risk",
+      "epss": "EPS",
+      "patch": "Yama",
+      "affectedDevices": "Etkilenen cihazlar",
+      "kev": "KEV",
+      "knownExploited": "Kullanıldığı Bilinen"
+    },
+    "help": {
+      "cvssAria": "CVSS puanı hakkında",
+      "riskAria": "Risk puanı hakkında",
+      "epssAria": "EPSS puanı hakkında",
+      "kevAria": "KEV bayrağı hakkında"
+    },
+    "actions": {
+      "openDetailsAria": "{{cveId}} ayrıntılarını aç"
+    },
+    "patch": {
+      "ready": "Hazır"
+    },
+    "hasMore": "Riske göre ilk 500 CVE gösteriliyor — geri kalanını görmek için filtreleri daraltın."
+  }
+}

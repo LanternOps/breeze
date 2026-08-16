@@ -160,6 +160,11 @@ export default function PasswordPolicyPage() {
       </div>
     );
   }
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant keeps its real 0s. Mirrors AntivirusPage (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -175,25 +180,27 @@ export default function PasswordPolicyPage() {
         <SecurityStatCard
           icon={KeyRound}
           label={t("securityPasswordPolicyPage.totalDevices")}
-          value={formatNumber(summary.total)}
+          value={stat(summary.total)}
         />
         <SecurityStatCard
           icon={KeyRound}
           label={t("securityPasswordPolicyPage.compliant")}
-          value={formatNumber(summary.compliant)}
-          variant="success"
+          value={stat(summary.compliant)}
+          variant={hasData ? "success" : "default"}
         />
         <SecurityStatCard
           icon={KeyRound}
           label={t("securityPasswordPolicyPage.nonCompliant")}
-          value={formatNumber(summary.nonCompliant)}
-          variant="danger"
+          value={stat(summary.nonCompliant)}
+          variant={hasData ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={KeyRound}
           label={t("securityPasswordPolicyPage.compliance")}
-          value={`${summary.compliancePercent}%`}
-          variant={summary.compliancePercent >= 90 ? "success" : "warning"}
+          value={hasData ? `${summary.compliancePercent}%` : "—"}
+          variant={
+            hasData ? (summary.compliancePercent >= 90 ? "success" : "warning") : "default"
+          }
         />
       </div>
 

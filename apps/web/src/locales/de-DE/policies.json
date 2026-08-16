@@ -1245,7 +1245,15 @@
       "installerType": "Installationstyp",
       "autoDetectFromUrl": "Automatisch aus URL erkennen",
       "autoDetectedType": "Automatisch erkannt ({{type}})",
-      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt."
+      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt.",
+      "uploadsRequireS3Storage": "Datei-Uploads erfordern einen auf dem Server konfigurierten S3-Objektspeicher.",
+      "scope": "Geltungsbereich",
+      "allOrganizations": "Alle Organisationen",
+      "sharedAcrossAllYourOrganizations": "— für alle Ihre Organisationen freigegeben",
+      "thisOrganizationOnly": "Nur diese Organisation",
+      "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar.",
+      "selectedFileRemoved": "Die ausgewählte Datei wurde entfernt — partnerweite Pakete verwenden eine Download-URL.",
+      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",
@@ -1479,7 +1487,11 @@
       "osWindows": "Windows",
       "osMacos": "macOS",
       "osLinux": "Linux",
-      "osUnknown": "unbekanntes Betriebssystem"
+      "osUnknown": "unbekanntes Betriebssystem",
+      "deployingTo": "Bereitstellung für",
+      "customer": "Kunde",
+      "allTargetsBelongToThisCustomer": "Alle ausgewählten Ziele gehören zu diesem Kunden.",
+      "allOrgsSelectCustomer": "Sie sehen alle Organisationen. Wählen Sie im Organisations-Umschalter einen Kunden aus, um diese Bereitstellung zu adressieren."
     },
     "detectionRulesEditor": {
       "detectionRules": "Erkennungsregeln",
@@ -1758,7 +1770,12 @@
       "installerType": "Installationstyp",
       "autoDetectFromUrl": "Automatisch aus URL erkennen",
       "autoDetectedType": "Automatisch erkannt ({{type}})",
-      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt."
+      "installerTypeUndetected": "Diese URL hat keine erkennbare Installationsdatei-Endung. Wählen Sie den Typ explizit aus — andernfalls wird die heruntergeladene Datei direkt ausgeführt, was bei einer MSI fehlschlägt.",
+      "advancedOptions": "Erweiterte Optionen",
+      "uploadsRequireS3Storage": "Datei-Uploads erfordern einen auf dem Server konfigurierten S3-Objektspeicher.",
+      "editingVersion": "Version bearbeiten",
+      "failedToUpdateVersion": "Version konnte nicht aktualisiert werden",
+      "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",

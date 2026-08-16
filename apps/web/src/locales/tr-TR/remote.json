@@ -1,0 +1,839 @@
+{
+  "remoteAccessPage": {
+    "title": "Uzaktan Erişim",
+    "subtitle": "Çevrimiçi cihazlar için uzak araçları başlatın.",
+    "terminal": {
+      "title": "Terminali Başlat",
+      "description": "Bağlanmak için bir cihaz seçin"
+    },
+    "files": {
+      "title": "Dosya Aktarımı",
+      "description": "Dosyaları cihazlardan/cihazlardan aktarın"
+    },
+    "sessions": {
+      "title": "Oturum Geçmişi",
+      "description": "Geçmiş oturumları görüntüle"
+    },
+    "quickSupport": {
+      "title": "Hızlı Destek",
+      "description": "Geçici destek için tek seferlik kod"
+    }
+  },
+  "connectDesktopButton": {
+    "connectDesktop": "Masaüstünü Bağlayın",
+    "connecting": "Bağlanılıyor...",
+    "creatingSession": "Oturum oluşturuluyor...",
+    "denied": {
+      "description": "Kullanıcı uzak bağlantıyı reddetti.",
+      "title": "Bağlantı reddedildi"
+    },
+    "desktopUnavailable": "Masaüstü Kullanılamıyor",
+    "dismiss": "Kapat",
+    "downloadFor": "{{platform}} için indirin",
+    "errors": {
+      "connectionFailed": "Bağlantı başarısız oldu",
+      "createDesktopCode": "Masaüstü bağlantı kodu oluşturulamadı",
+      "createDesktopSession": "Masaüstü oturumu oluşturulamadı",
+      "createVncTunnel": "VNC tüneli oluşturulamadı",
+      "deviceChanged": "Uzaktan başlatma başarısız oldu: cihaz kaydı değiştirildi. Lütfen yenileyin ve tekrar deneyin.",
+      "http": "Uzaktan başlatma başarısız oldu (HTTP {{status}})",
+      "invalidDesktopCode": "Geçersiz masaüstü bağlantı kodu yanıtı",
+      "issueVncCode": "VNC bağlantı kodu verilemedi",
+      "securityCheckToast": "Uzaktan başlatma kullanılamıyor: güvenlik kontrolü başarısız oldu. Lütfen yöneticinizle iletişime geçin.",
+      "securityPolicy": "Uzaktan başlatma güvenlik politikası tarafından engellendi",
+      "server": "Uzaktan başlatma başarısız oldu: sunucu hatası. Lütfen yöneticinizle iletişime geçin.",
+      "vncTunnelFailed": "VNC tüneli açılamadı"
+    },
+    "fallback": {
+      "linuxFirstRun": "Linux'ta indirmeyi yürütülebilir hale getirin (chmod +x) ve bir kez çalıştırın. Bu, izleyiciyi kaydeder, böylece oturumlar bundan sonra otomatik olarak açılır.",
+      "linuxFuse": "Pencere açmadan kapanırsa FUSE 2 gerekir: Debian 13 / Ubuntu 24.04+ için libfuse2t64, eski sürümler için libfuse2 yükleyin ya da --appimage-extract-and-run ile çalıştırın.",
+      "title": "Görüntüleyici açılmadı mı?",
+      "viewerDescription": "Görüntüleyici açıldıysa bunu kapatabilirsiniz. Aksi takdirde aşağıdan indirin.",
+      "vncDescription": "Bunun yerine tarayıcınızda VNC oturumunu açın."
+    },
+    "launcherSkip": {
+      "configError": "İş ortağı tarafından yapılandırılmış uzak araç çözülemedi (yapılandırma hatası). Yerleşik uzak masaüstüne geri dönme.",
+      "emptyUrlTemplate": "Ortak tarafından yapılandırılan uzak aracın ayarlanmış bir URL şablonu yok. Yerleşik uzak masaüstüne geri dönme.",
+      "missingIdentifier": "Bu cihazda, iş ortağı tarafından yapılandırılmış uzak aracın ihtiyaç duyduğu cihaz başına tanımlayıcı eksik (örneğin, RustDesk eş kimliği). Yerleşik uzak masaüstüne geri dönme. Tanımlayıcıyı Cihaz Ayarları → Özel Alanlar bölümünde ayarlayın.",
+      "providerDisabled": "Bu cihaz için ortak tarafından yapılandırılmış uzak araç şu anda devre dışı. Yerleşik uzak masaüstüne geri dönme."
+    },
+    "launching": "Başlatılıyor...",
+    "launchingViewer": "Görüntüleyici başlatılıyor...",
+    "openInBrowser": "Tarayıcıda Aç",
+    "policyDisabled": "Uzak masaüstü politika nedeniyle devre dışı bırakıldı",
+    "policyDisabledNamed": "Uzak masaüstü \"{{name}}\" politikası tarafından devre dışı bırakıldı",
+    "unavailable": {
+      "default": "Masaüstü bu cihazda kullanılamıyor",
+      "headless": "Bu cihazın ekranı yok — uzak masaüstü kullanılamıyor",
+      "helperNotConnected": "macOS masaüstü yardımcısı henüz bağlanmadı. macOS Ekran Paylaşımı yoluyla bağlanmak için VNC Aktarmasını etkinleştirin.",
+      "manualInstall": "Oturum açma penceresi masaüstü yalnızca yönetilen yüklemeler için desteklenir",
+      "missingEntitlement": "Oturum açma penceresi masaüstü, gerekli Apple yetkisi onaylanana kadar engellenir",
+      "missingPermission": "macOS gözetimsiz masaüstü erişimi için gereken izinler hâlâ eksik",
+      "noDisplaySession": "Aktif grafik oturumu yok — önce RDP veya konsol aracılığıyla oturum açın",
+      "unsupportedOs": "Oturum açma penceresi masaüstü, macOS 14 (Sonoma) veya üzerini gerektirir. Oturum açma ekranına bağlanmak için cihazın yapılandırma ilkesinde VNC Aktarmasını etkinleştirin.",
+      "virtualDisplay": "Bu Mac için yakalanabilir ekran mevcut değil. macOS Ekran Paylaşımı yoluyla bağlanmak için VNC Aktarmasını etkinleştirin.",
+      "waylandUnsupported": "Bu bir Wayland masaüstü — uzak masaüstünün daha yeni bir aracıya ihtiyacı var",
+      "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
+      "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
+    }
+  },
+  "connectVncButton": {
+    "creatingTunnel": "Tünel oluşturuluyor...",
+    "errors": {
+      "connectionFailed": "Bağlantı başarısız oldu",
+      "createTunnel": "Tünel oluşturulamadı",
+      "createVncTunnel": "VNC tüneli oluşturulamadı",
+      "issueConnectCode": "VNC bağlantı kodu verilemedi",
+      "tunnelFailed": "Tünel açılamadı"
+    },
+    "fallback": {
+      "description": "Bunun yerine tarayıcınızda VNC oturumunu açın.",
+      "title": "Görüntüleyici açılmadı mı?"
+    },
+    "launching": "Başlatılıyor...",
+    "openInBrowser": "Tarayıcıda Aç",
+    "policyDisabled": "VNC geçişi politika tarafından devre dışı bırakıldı",
+    "policyDisabledNamed": "VNC geçişi \"{{name}}\" politikası tarafından devre dışı bırakıldı",
+    "unavailable": "VNC Kullanılamıyor",
+    "vncDesktop": "VNC Masaüstü",
+    "vncRemote": "VNC Uzaktan Kumanda"
+  },
+  "deleteConfirmDialog": {
+    "deletePermanently": "Kalıcı Olarak Sil",
+    "headingMultiple": "{{count}} öğe silinsin mi?",
+    "headingSingle": "{{name}} silinsin mi?",
+    "itemCount": "Öğe Sayısı",
+    "moveToTrash": "Çöp Kutusuna Taşı",
+    "recycleBinNotice": "Geri Dönüşüm Kutusu Bildirimi",
+    "totalSize": "Toplam: {{size}}",
+    "itemCount_one": "{{count}} öğe",
+    "itemCount_other": "{{count}} öğe"
+  },
+  "eventViewer": {
+    "allSources": "Tüm Kaynaklar",
+    "auto": "Otomatik",
+    "categories": "Kategoriler",
+    "clearAll": "Tümünü Temizle",
+    "copyMessage": "Mesajı Kopyala",
+    "dateRange": "Tarih Aralığı",
+    "detailsTitle": "Ayrıntılar Başlığı",
+    "eventCount": "Etkinlik Sayısı",
+    "eventIdPlaceholder": "Etkinlik Kimliği Yer Tutucusu",
+    "eventLogs": "Olay Günlükleri",
+    "eventsTitle": "{{name}} Etkinlikler",
+    "fields": {
+      "category": "Kategori",
+      "computer": "Bilgisayar",
+      "dateTime": "Tarih Saat",
+      "details": "Ayrıntılar",
+      "eventId": "Etkinlik Kimliği",
+      "keywords": "Anahtar Kelimeler",
+      "level": "Seviye",
+      "logName": "Günlük Adı",
+      "message": "Mesaj",
+      "processId": "İşlem Kimliği",
+      "rawXml": "Ham Xml",
+      "source": "Kaynak",
+      "taskCategory": "Görev Kategorisi",
+      "threadId": "Konu Kimliği"
+    },
+    "filters": "Filtreler",
+    "levels": {
+      "critical": "Kritik",
+      "error": "Hata",
+      "information": "Bilgi",
+      "warning": "Uyarı"
+    },
+    "logTitle": "{{name}} Günlük",
+    "lookupEventId": "Arama Etkinliği Kimliği",
+    "noEvents": "Etkinlik Yok",
+    "noHandler": "İşleyici Yok",
+    "noMatches": "Eşleşme Yok",
+    "page": "Sayfa {{current}} / {{total}}",
+    "ranges": {
+      "allTime": "Tüm Zamanlar",
+      "last24Hours": "Son24 Saat",
+      "last30Days": "Son30 Gün",
+      "last7Days": "Son7 Gün",
+      "lastHour": "Son Saat"
+    },
+    "recordId": "Kayıt Kimliği: {{id}}",
+    "searchPlaceholder": "Arama Yer Tutucusu",
+    "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+    "time": {
+      "daysAgo": "{{count}}d önce",
+      "hoursAgo": "{{count}}h önce",
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce"
+    },
+    "eventCount_one": "{{count}} etkinliği",
+    "eventCount_other": "{{count}} etkinlikler"
+  },
+  "fileActivityPanel": {
+    "actions": {
+      "copy": "Kopyala",
+      "delete": "Sil",
+      "download": "İndir",
+      "move": "Taşı",
+      "purge": "Temizle",
+      "restore": "Geri Yükle",
+      "upload": "Yükle"
+    },
+    "clearActivity": "Etkinliği temizle",
+    "clear": "Temizle",
+    "empty": "Boş",
+    "hideActivity": "Etkinliği Gizle",
+    "operationFailed": "İşlem Başarısız",
+    "results": {
+      "failed": "Başarısız",
+      "success": "Başarılı",
+      "unverified": "Doğrulanmamış"
+    },
+    "showActivity": "Etkinliği Göster",
+    "time": {
+      "daysAgo": "{{count}}d önce",
+      "hoursAgo": "{{count}}h önce",
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce"
+    },
+    "title": "Başlık",
+    "unverifiedHint": "Doğrulanmamış İpucu"
+  },
+  "fileManager": {
+    "activeCount": "{{count}} aktif",
+    "activity": "Etkinlik",
+    "cancelled": "İptal edildi",
+    "cancelledUploadNote": "Bu tarayıcıda yükleme durduruldu. Yazma komutu zaten cihaza ulaştıysa, dosya hala orada kayıtlı olabilir.",
+    "copyTo": "Kopyala",
+    "disk": {
+      "analyze": "Analiz et",
+      "baseline": "Temel",
+      "candidates": "{{count}} adaylar · {{size}} potansiyel",
+      "captured": "Yakalanan: {{date}}",
+      "categories": {
+        "browser_cache": "Tarayıcı önbelleği",
+        "package_cache": "Paket önbelleği",
+        "temp_files": "Geçici dosyalar",
+        "trash": "Çöp Kutusu"
+      },
+      "cleanupPreview": "Temizleme Önizlemesi",
+      "cleanupResult": "Temizleme {{status}}: {{size}}, {{count}} hedeflerinden geri alındı, {{failed}} başarısız oldu.",
+      "data": "Veri: {{size}}",
+      "deleteFiles": "Dosyaları Sil",
+      "deleteTargets": "Hedefleri Sil",
+      "deleteTargetsConfirm": "Seçilen {{count}} temizleme hedefi/hedefleri silinsin mi? Bu dosyalar cihazdan kalıcı olarak kaldırılacaktır.",
+      "description": "{{path}} için hızlı tarama ve güvenli temizleme planlaması",
+      "execute": "Çalıştır ({{count}})",
+      "incremental": "Artımlı",
+      "largestDirectories": "En Büyük Dizinler",
+      "largestFiles": "En Büyük Dosyalar",
+      "lowerBound": "Alt Sınır",
+      "mode": "Mod: {{value}}",
+      "onDemand": "İsteğe Bağlı",
+      "partialScan": "Kısmi Tarama",
+      "previewCleanup": "Önizleme Temizleme",
+      "scanRunning": "Tarama çalışıyor ({{status}})",
+      "scanned": "Taranan: {{count}} dosya",
+      "selected": "Seçilen: {{count}} · {{size}}",
+      "threshold": "Eşik",
+      "title": "Başlık",
+      "trigger": "Tetikleyici: {{value}}"
+    },
+    "dismiss": "Kapat",
+    "dropFiles": "Dosyaları Bırak",
+    "emptyDirectory": "Boş Dizin",
+    "errors": {
+      "copy": "Kopyalanamadı",
+      "delete": "Silinemedi",
+      "download": "İndirilemedi",
+      "loadDirectory": "Dizin yüklenemedi",
+      "move": "Taşınamadı",
+      "readFile": "Dosya okunamadı",
+      "upload": "Yükleme başarısız oldu",
+      "uploadTimeout": "Yükleme 2 dakika sonra zaman aşımına uğradı. Dosya hâlâ cihazda yazılı olabilir; doğrulamak için yenileyin."
+    },
+    "freeOf": "{{free}} ücretsiz {{total}}",
+    "goUp": "Yukarı Git",
+    "home": "Ana Sayfa",
+    "modified": "Değiştirildi",
+    "moveTo": "Şuraya Taşı",
+    "selectedCount": "Seçilen Sayı",
+    "size": "Boyut",
+    "title": "Başlık",
+    "transfers": "Transferler",
+    "trash": "Çöp Kutusu",
+    "selectedCount_one": "{{count}} seçildi",
+    "selectedCount_other": "{{count}} seçildi"
+  },
+  "folderPickerDialog": {
+    "errors": {
+      "loadDirectory": "Dizin yüklenemedi"
+    },
+    "goUp": "Yukarı Çık",
+    "noSubdirectories": "Alt Dizin Yok",
+    "selectFolder": "Klasör Seçin",
+    "selectedFolder": "Seçilen Klasör"
+  },
+  "processManager": {
+    "autoRefresh": "Otomatik Yenileme",
+    "columns": {
+      "memory": "Bellek",
+      "processName": "Süreç Adı"
+    },
+    "details": {
+      "commandLine": "Komut Satırı",
+      "parentPid": "Ebeveyn Kimliği",
+      "priority": "Öncelik",
+      "startTime": "Başlangıç Zamanı",
+      "threads": "Konular"
+    },
+    "errors": {
+      "handlerNotConfigured": "İşleyici yapılandırılamadı",
+      "killFailed": "Öldürme başarısız oldu"
+    },
+    "killConfirm": "Sonlandırma Onayı",
+    "killProcess": "İşlemi Sonlandır",
+    "killing": "Öldürmek",
+    "loadingDetails": "Yükleniyor Ayrıntılar",
+    "noData": "Veri Yok",
+    "noMatches": "Eşleşme Yok",
+    "processMemory": "İşlem Belleği",
+    "processes": "Süreçler",
+    "searchPlaceholder": "Arama Yer Tutucusu",
+    "showing": "{{total}} işlemlerden {{shown}} gösteriliyor",
+    "status": {
+      "idle": "Boşta",
+      "running": "Koşuyor",
+      "sleeping": "Uyuyor",
+      "stopped": "Durduruldu",
+      "zombie": "Zombi"
+    },
+    "title": "Süreç Yöneticisi",
+    "totalCpu": "Toplam CPU",
+    "pid": "PID",
+    "cpu": "CPU"
+  },
+  "proxyTunnelPage": {
+    "errors": {
+      "invalidTicket": "Bu bağlantı geçersiz veya süresi dolmuş.",
+      "obtainTicket": "Bilet alınamadı",
+      "prepareConnection": "Bağlantı hazırlanamadı",
+      "tlsUntrusted": "Bu cihaz güvenilmeyen veya kendinden imzalı bir sertifika sundu.",
+      "tunnelFailed": "Tünel açılamadı"
+    },
+    "openInNewTab": "Yeni Sekmede Aç",
+    "preparingConnection": "Proxy bağlantısı hazırlanıyor…",
+    "proxiedService": "Vekil Hizmet",
+    "reconnectSelfSigned": "Kendinden imzalı sertifikaya izin vererek yeniden bağlanın",
+    "sessionExpired": {
+      "title": "Oturumun süresi doldu",
+      "body": "Proxy oturumunuz zaman aşımına uğradı.",
+      "reconnect": "Yeniden bağlan"
+    },
+    "status": {
+      "connected": "Bağlandı",
+      "connecting": "Bağlanılıyor...",
+      "disconnected": "Bağlantı Kesildi",
+      "failed": "Başarısız"
+    },
+    "target": "Hedef",
+    "title": "Ağ Proxy'si",
+    "tunnelDetails": "Tünel Detayları",
+    "tunnelId": "Tünel Kimliği"
+  },
+  "registryEditor": {
+    "copyPath": "Yolu Kopyala",
+    "data": "Veri",
+    "decimal": "Ondalık",
+    "deleteKey": "Anahtarı Sil",
+    "deleteKeyConfirm": "\"{{name}}\" anahtarını ve onun tüm alt anahtarlarını ve değerlerini silmek istediğinizden emin misiniz? Bu eylem geri alınamaz.",
+    "deleteValue": "Değeri Sil",
+    "deleteValueConfirm": "\"{{name}}\" değerini silmek istediğinizden emin misiniz? Bu eylem geri alınamaz.",
+    "device": "Cihaz: {{id}}",
+    "editValue": "Değeri Düzenle",
+    "enterDecimalValue": "Ondalık Değeri Girin",
+    "enterHexBytes": "Onaltılı Bayt Girin",
+    "enterHexValue": "Onaltılık Değeri Girin",
+    "enterKeyName": "Anahtar Adını Girin",
+    "enterStringValue": "Dize Değerini Girin",
+    "enterStrings": "Dizeleri Girin",
+    "enterValueName": "Değer Adını Girin",
+    "errors": {
+      "createKey": "Anahtar oluşturulamadı",
+      "createKeyDetail": "Kayıt defteri anahtarı oluşturulamadı: {{message}}",
+      "deleteKey": "Anahtar silinemedi",
+      "deleteKeyDetail": "Kayıt defteri anahtarı silinemedi: {{message}}",
+      "deleteValue": "Değer silinemedi",
+      "deleteValueDetail": "Kayıt değeri silinemedi: {{message}}",
+      "invalidFormat": "Geçersiz biçimlendirme başarısız oldu",
+      "invalidNumber": "Geçersiz numara başarısız oldu",
+      "keyNameBackslash": "Adın ters eğik çizgisi tuşlanamadı",
+      "keyNameRequired": "Gerekli ad anahtarlanamadı",
+      "keyProvider": "Anahtar sağlayıcıya ulaşılamadı",
+      "loadKeys": "Anahtarlar yüklenemedi",
+      "loadKeysDetail": "Kayıt defteri anahtarları yüklenemedi: {{message}}",
+      "loadValues": "Değerler yüklenemedi",
+      "loadValuesDetail": "Kayıt defteri değerleri yüklenemedi: {{message}}",
+      "saveValue": "Değer kaydedilemedi",
+      "saveValueDetail": "Kayıt değeri kaydedilemedi: {{message}}",
+      "valueNameRequired": "Gerekli adın değeri belirlenemedi",
+      "valueProvider": "Sağlayıcıya değer verilemedi"
+    },
+    "hexadecimal": "Onaltılı",
+    "key": "Anahtar",
+    "keyName": "Anahtar Adı",
+    "newKey": "Yeni Anahtar",
+    "newValue": "Yeni Değer",
+    "noMatchingValues": "Eşleşen Değer Yok",
+    "noValues": "Değer Yok",
+    "parentPath": "Ana Yol",
+    "root": "Kök",
+    "searchPlaceholder": "Arama Yer Tutucusu",
+    "title": "Kayıt Defteri Düzenleyicisi",
+    "value": "Değer",
+    "valueCount": "Değer Sayımı",
+    "valueData": "Değer Verisi",
+    "valueName": "Değer Adı",
+    "valueNotSet": "Değer Ayarlanmadı",
+    "valueCount_one": "{{count}} değeri",
+    "valueCount_other": "{{count}} değerleri"
+  },
+  "remoteDeviceLauncherPage": {
+    "action": "Eylem",
+    "backToRemoteAccess": "Uzaktan Erişime Geri Dön",
+    "errors": {
+      "loadDevices": "Cihazlar yüklenemedi"
+    },
+    "lastSeen": "Son Görülme",
+    "modes": {
+      "files": {
+        "action": "Dosyaları Aç",
+        "description": "Uzak dosya yöneticisini açmak için çevrimiçi bir cihaz seçin.",
+        "title": "Dosya Aktarımını Başlat"
+      },
+      "terminal": {
+        "action": "Terminali Aç",
+        "description": "Uzak terminali açmak için çevrimiçi bir cihaz seçin.",
+        "title": "Terminal Oturumunu Başlat"
+      }
+    },
+    "noOnlineDevices": "Çevrimiçi Cihaz Yok",
+    "noSearchMatches": "Arama Eşleşmesi Yok",
+    "openDeviceList": "Cihaz Listesini Aç",
+    "os": "İşletim Sistemi",
+    "searchPlaceholder": "Arama Yer Tutucusu"
+  },
+  "remoteFilesPage": {
+    "breadcrumbs": {
+      "devices": "Cihazlar",
+      "fileManager": "Dosya Yöneticisi"
+    },
+    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
+    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "deviceOfflineDescription": "Cihaz şu anda {{status}}. Uzaktan dosya erişimi yalnızca cihaz çevrimiçi olduğunda kullanılabilir.",
+    "deviceOfflineTitle": "Cihaz Çevrimdışı Başlığı",
+    "errorTitle": "Hata Başlığı",
+    "errors": {
+      "deviceNotFound": "Cihaz bulunamadı",
+      "fetchDevice": "Cihaz getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "refreshStatus": "Durumu Yenile",
+    "title": "Başlık"
+  },
+  "remoteTerminal": {
+    "connectedBang": "Bağlantılı Patlama",
+    "connectingTo": "{{hostname}}'ye bağlanılıyor...",
+    "copySelection": "Seçimi Kopyala",
+    "disconnect": "Bağlantıyı kes",
+    "errorMessage": "Hata: {{message}}",
+    "errors": {
+      "closedUnexpectedly": "Beklenmedik bir şekilde kapatılamadı",
+      "connection": "Bağlantı kurulamadı",
+      "createSession": "Oturum oluşturulamadı",
+      "createTicket": "Bilet oluşturulamadı",
+      "failed": "Başarısız oldu",
+      "initialize": "Başlatılamadı",
+      "invalidTicket": "Geçersiz bilet başarısız oldu",
+      "webSocket": "Web soketi başarısız oldu"
+    },
+    "exitFullscreen": "Tam Ekrandan Çık",
+    "fullscreen": "Tam Ekran",
+    "reconnect": "Yeniden bağlan",
+    "sessionEnded": "Oturum Sona Erdi",
+    "status": {
+      "connected": "Bağlandı",
+      "connecting": "Bağlanılıyor...",
+      "disconnected": "Bağlantı Kesildi",
+      "failed": "Başarısız",
+      "reconnecting": "Yeniden bağlanılıyor"
+    },
+    "welcome": "Hoş geldiniz"
+  },
+  "remoteTerminalPage": {
+    "deviceNotFoundDescription": "Cihaz Bulunamadı Açıklama",
+    "deviceNotFoundTitle": "Cihaz Bulunamadı Başlığı",
+    "errorTitle": "Hata Başlığı",
+    "errors": {
+      "deviceNotFound": "Cihaz bulunamadı",
+      "fetchDevice": "Cihaz getirilemedi",
+      "generic": "Bir hata oluştu"
+    },
+    "offlineWarning": "Cihaz durumu şu anda {{status}}. Yine de bağlanmaya çalışıyorum.",
+    "title": "Başlık"
+  },
+  "remoteToolsPage": {
+    "agentRestartingDescription": "Breeze aracısı yeniden başlatılıyor. Cihaz otomatik olarak yeniden bağlanacaktır...",
+    "agentRestartingTitle": "Temsilci Yeniden Başlatılıyor",
+    "errors": {
+      "createRegistryKey": "Kayıt defteri anahtarı oluşturulamadı",
+      "deleteRegistryKey": "Kayıt defteri anahtarı silinemedi",
+      "deleteRegistryValue": "Kayıt defteri değeri silinemedi",
+      "disableTask": "Görev devre dışı bırakılamadı",
+      "enableTask": "Görev etkinleştirilemedi",
+      "eventDetails": "Etkinlik ayrıntıları başarısız oldu",
+      "fetchEventLogs": "Olay günlükleri getirilemedi",
+      "fetchProcesses": "İşlemler getirilemedi",
+      "fetchServices": "Hizmetler getirilemedi",
+      "fetchTasks": "Görevler getirilemedi",
+      "killProcess": "İşlem sonlandırılamadı",
+      "processDetails": "Ayrıntılar işlenemedi",
+      "queryEvents": "Etkinlikler sorgulanamadı",
+      "registryKeys": "Kayıt defteri anahtarları başarısız oldu",
+      "registryValues": "Değerler kaydedilemedi",
+      "restartService": "Hizmet yeniden başlatılamadı",
+      "runTask": "Görev çalıştırılamadı",
+      "setRegistryValue": "Kayıt defteri değeri ayarlanamadı",
+      "startService": "Hizmet başlatılamadı",
+      "stopService": "Hizmet durdurulamadı",
+      "taskDetails": "Görev ayrıntıları başarısız oldu",
+      "taskHistory": "Görev geçmişi başarısız oldu"
+    },
+    "policyDisabled": "Bir yapılandırma ilkesi uzak sistem araçlarını devre dışı bıraktı.",
+    "policyDisabledNamed": "\"{{name}}\" yapılandırma politikası uzak sistem araçlarını devre dışı bıraktı.",
+    "policyDisabledTitle": "Bu cihaz için uzak araçlar devre dışı bırakıldı",
+    "tabs": {
+      "eventlog": "Olay Günlüğü",
+      "files": "Dosya Tarayıcı",
+      "processes": "Süreçler",
+      "registry": "Kayıt",
+      "services": "Hizmetler",
+      "tasks": "Zamanlanmış Görevler",
+      "terminal": "Terminal"
+    },
+    "title": "Uzaktan Araçlar"
+  },
+  "scheduledTasks": {
+    "action": {
+      "restart": "Yeniden başlat",
+      "start": "Başlat",
+      "stop": "Durdur"
+    },
+    "adjustSearch": "Aramayı Ayarla",
+    "arguments": "Tartışmalar",
+    "author": "Yazar",
+    "deviceId": "Cihaz Kimliği: {{id}}",
+    "inFolder": " {{folder}} klasöründe",
+    "lastResult": "Son Sonuç",
+    "lastRun": "Son Çalıştırma",
+    "matching": "eşleşen \"{{query}}\"",
+    "nextRun": "Sonraki Çalıştırma",
+    "noActions": "Yapılandırılan eylem yok",
+    "noConditions": "Hiçbir koşul yapılandırılmadı",
+    "noDescription": "Açıklama yok",
+    "noHistory": "Geçmiş mevcut değil",
+    "noTasksAvailable": "Zamanlanmış görev yok",
+    "noTriggers": "Yapılandırılmış tetikleyici yok",
+    "noneInFolder": "Bu klasörde zamanlanmış görev yok",
+    "notLoaded": "Bu cihaz için hiçbir zamanlanmış görev yüklenmedi",
+    "programScript": "Program/komut dosyası",
+    "runAs": "Farklı Çalıştır",
+    "runNow": "Şimdi Çalıştır",
+    "searchPlaceholder": "Görevleri arayın...",
+    "startIn": "Başla",
+    "startProgram": "Programı Başlat",
+    "status": {
+      "disabled": "Devre Dışı",
+      "queued": "Sıraya alındı",
+      "ready": "Hazır",
+      "running": "Koşuyor",
+      "unknown": "Bilinmiyor"
+    },
+    "tabs": {
+      "actions": "Eylemler",
+      "conditions": "Koşullar",
+      "general": "Genel",
+      "history": "Geçmiş",
+      "settings": "Ayarlar",
+      "triggers": "Tetikleyiciler"
+    },
+    "taskCount": "Görev Sayısı",
+    "title": "Zamanlanmış Görevler",
+    "idleConditions": "Boşta Kalma Koşulları",
+    "powerConditions": "Güç Koşulları",
+    "networkConditions": "Ağ Koşulları",
+    "generalSettings": "Genel Ayarlar",
+    "restartOnFailure": "Arıza Durumunda Yeniden Başlatma",
+    "waitForIdle": "Boşta kalmayı bekleyin: {{value}}",
+    "waitTimeout": "Bekleme zaman aşımı: {{value}}",
+    "stopOnIdleEnd": "Boşta uçta dur: {{value}}",
+    "restartOnIdle": "Boştayken yeniden başlat: {{value}}",
+    "startOnAcOnly": "Yalnızca AC'de başlatın: {{value}}",
+    "stopOnBattery": "Pil varsa dur: {{value}}",
+    "requiredNetwork": "Gerekli: {{name}}",
+    "allowOnDemand": "Görevin talep üzerine çalıştırılmasına izin ver",
+    "runOnlyIfNetwork": "Yalnızca ağ mevcutsa çalıştır",
+    "executionTimeLimit": "Yürütme süresi sınırı: {{value}}",
+    "multipleInstances": "Birden fazla örnek varsa: {{value}}",
+    "restartCount": "Yeniden başlatma sayısı: {{count}}",
+    "restartInterval": "Yeniden başlatma aralığı: {{value}}",
+    "taskCount_one": "{{count}} görev",
+    "taskCount_other": "{{count}} görevler"
+  },
+  "servicesManager": {
+    "account": "Hesap",
+    "action": {
+      "restart": "Yeniden başlat",
+      "start": "Başlat",
+      "stop": "Durdur"
+    },
+    "actionBlocked": "İşlem Engellendi",
+    "adjustHint": "İpucunu Ayarla",
+    "agentRestartConfirm": "Temsilciyi Yeniden Başlat Onayla",
+    "agentStopBlocked": "Temsilci Durdurma Engellendi",
+    "allStatus": "Tüm Durumlar",
+    "cannotStopAgent": "Temsilci Durdurulamıyor",
+    "changeStartupType": "Başlangıç Türünü Değiştir",
+    "confirmAction": "Eylemi Onayla",
+    "dependencies": "Bağımlılıklar",
+    "dependentServices": "Bağımlı Hizmetler",
+    "displayName": "Görünen Ad",
+    "executablePath": "Yürütülebilir Yol",
+    "loading": "Yükleniyor",
+    "noDescription": "Açıklama yok",
+    "noServicesAvailable": "Mevcut Hizmet Yok",
+    "noServicesFound": "Hiçbir Hizmet Bulunamadı",
+    "ok": "Tamam",
+    "page": "Sayfa {{current}} / {{total}}",
+    "refreshHint": "Yenileme İpucu",
+    "restartService": "Hizmeti Yeniden Başlatın",
+    "searchPlaceholder": "Arama Yer Tutucusu",
+    "serviceConfirm": "{{action}} hizmetini {{service}} yapmak istediğinizden emin misiniz?",
+    "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+    "startService": "Hizmeti Başlat",
+    "startup": "Başlatma",
+    "status": {
+      "running": "Çalışıyor",
+      "stopped": "Durduruldu"
+    },
+    "stopService": "Hizmeti Durdur\n__BREEZE_TOKEN_2__ üzerindeki __BREEZE_TOKEN_1__ hizmetlerinden ",
+    "summary": "{{device}} üzerindeki {{total}} hizmetten {{shown}} tanesi",
+    "title": "Başlık",
+    "windowsOnlyDescription": "Hizmetler Yöneticisi yalnızca Windows cihazlar için kullanılabilir. {{device}}, {{os}} çalıştırıyor.",
+    "windowsOnlyTitle": "Windows Yalnızca Başlık"
+  },
+  "sessionHistory": {
+    "columns": {
+      "data": "Veri",
+      "duration": "Süre",
+      "started": "Başlatıldı"
+    },
+    "filters": {
+      "allTime": "Tüm Zamanlar",
+      "allTypes": "Tüm Türler",
+      "allUsers": "Tüm Kullanıcılar",
+      "lastSevenDays": "Son Yedi Gün",
+      "lastThirtyDays": "Son Otuz Gün",
+      "today": "Bugün",
+      "yesterday": "Dün"
+    },
+    "noSessions": "Oturum Yok",
+    "page": "Sayfa {{current}} / {{total}}",
+    "searchPlaceholder": "Arama Yer Tutucusu",
+    "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+    "stats": {
+      "averageDuration": "Ortalama Süre",
+      "dataTransferred": "Aktarılan Veriler",
+      "totalDuration": "Toplam Süre",
+      "totalSessions": "Toplam Oturum Sayısı"
+    },
+    "status": {
+      "active": "Aktif",
+      "connecting": "Bağlanılıyor...",
+      "disconnected": "Bağlantı Kesildi",
+      "failed": "Başarısız",
+      "pending": "Beklemede"
+    },
+    "subtitle": "Uzaktan erişim denetim günlüğü",
+    "title": "Oturum Geçmişi",
+    "todayAt": "Bugün {{time}}",
+    "types": {
+      "desktop": "Masaüstü",
+      "fileTransfer": "Dosya Aktarımı",
+      "terminal": "Terminal"
+    },
+    "viewDetails": "Ayrıntıları Görüntüle",
+    "yesterdayAt": "Dün {{time}}"
+  },
+  "sessionHistoryPage": {
+    "detailsTitle": "Ayrıntılar Başlığı",
+    "errors": {
+      "exportFetch": "Getirme dışa aktarılamadı"
+    },
+    "fields": {
+      "dataTransferred": "Aktarılan Veriler",
+      "deviceId": "Cihaz Kimliği",
+      "duration": "Süre",
+      "ended": "Sona erdi",
+      "hostname": "Ana Bilgisayar Adı",
+      "sessionId": "Oturum Kimliği",
+      "started": "Başlatıldı",
+      "userId": "Kullanıcı Kimliği",
+      "os": "İşletim Sistemi",
+      "email": "E-posta"
+    },
+    "sections": {
+      "recording": "Kaydediliyor",
+      "sessionInformation": "Oturum Bilgileri",
+      "timeline": "Zaman Çizelgesi"
+    },
+    "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
+    "title": "Oturum Geçmişi",
+    "viewDevice": "Cihazı Görüntüle",
+    "viewRecording": "Kaydı Görüntüle"
+  },
+  "trashView": {
+    "columns": {
+      "deletedAt": "Silinme Tarihi",
+      "deletedBy": "Silinen",
+      "originalPath": "Orijinal Yol",
+      "size": "Boyut"
+    },
+    "deleteConfirm": "{{count}} öğeyi/öğeleri kalıcı olarak silmek istiyor musunuz? Bu geri alınamaz.",
+    "deletePermanently": "Kalıcı Olarak Sil",
+    "deleteSelected": "Kalıcı Olarak Sil ({{count}})",
+    "empty": "Boş",
+    "emptyConfirm": "Boş Onayla",
+    "emptyTrash": "Çöp Kutusunu Boşalt",
+    "errors": {
+      "empty": "Boşaltılamadı",
+      "load": "yüklenemedi",
+      "purge": "Temizlenemedi",
+      "restore": "Geri yüklenemedi",
+      "unverified": "Doğrulanamadı"
+    },
+    "itemCount": "Öğe Sayısı",
+    "loading": "Yükleniyor",
+    "permanentlyDelete": "Kalıcı Olarak Sil",
+    "restoreSelected": "Seçileni Geri Yükle ({{count}})",
+    "itemCount_one": "{{count}} öğe çöp kutusunda",
+    "itemCount_other": "{{count}} öğe çöp kutusunda"
+  },
+  "vncViewer": {
+    "connect": "Bağlan",
+    "credentials": {
+      "macDescription": "Mac Açıklaması",
+      "macLoginRequired": "Mac Girişi Gerekli",
+      "macPassword": "Mac Şifresi",
+      "macUsername": "Mac Kullanıcı Adı",
+      "password": "Şifre",
+      "passwordRequired": "Şifre gerekli",
+      "vncDescription": "Vnc Açıklaması"
+    },
+    "disconnect": "Bağlantıyı kes",
+    "errors": {
+      "authenticationDetail": "Kimlik doğrulama ayrıntısı başarısız oldu",
+      "authenticationFailed": "Kimlik doğrulama başarısız oldu",
+      "connectionLost": "Bağlantı başarısız oldu",
+      "loadViewer": "Görüntüleyici yüklenemedi",
+      "securityFailure": "Güvenlik hatası nedeniyle başarısız oldu",
+      "securityType": "Güvenlik türü başarısız oldu"
+    },
+    "exitFullscreen": "Tam Ekrandan Çık",
+    "fullscreen": "Tam Ekran",
+    "scalingFit": "Ölçeklendirme Uyumu",
+    "scalingNative": "Yerel Ölçeklendirme",
+    "status": {
+      "connected": "Bağlandı",
+      "connecting": "Bağlanılıyor...",
+      "disconnected": "Bağlantı Kesildi",
+      "error": "Hata",
+      "passwordRequired": "Şifre gerekli"
+    },
+    "syncClipboard": "Senkronizasyon Panosu",
+    "tunnel": "Tünel {{id}}"
+  },
+  "vncViewerPage": {
+    "connecting": "Bağlanılıyor...",
+    "disconnect": "Bağlantıyı kes",
+    "errors": {
+      "connect": "Bağlantı kurulamadı",
+      "invalidTicket": "Geçersiz bilet başarısız oldu",
+      "obtainTicket": "Bilet alınamadı"
+    },
+    "sessionTitle": "Oturum Başlığı"
+  },
+  "quickSupport": {
+    "title": "Hızlı Destek",
+    "subtitle": "Kayıtlı olmayan bir cihazda anlık destek için tek seferlik bir kod oluşturun.",
+    "newSession": "Yeni destek oturumu",
+    "form": {
+      "title": "Bir destek oturumu başlatın",
+      "attributionOrg": "Müşteriye atıf (isteğe bağlı)",
+      "attributionOrgHint": "Yalnızca raporlama — bu, söz konusu müşterinin verilerine erişim izni vermez veya bu erişimi değiştirmez.",
+      "attributionOrgNone": "İlişkilendirilmemiş",
+      "attributionLabel": "Referans etiketi (isteğe bağlı)",
+      "attributionLabelPlaceholder": "Bu oturum kim veya ne için?",
+      "submit": "Kod oluştur",
+      "submitting": "Kod oluşturuluyor…"
+    },
+    "code": {
+      "heading": "Bu kodu yardım ettiğiniz kişiye okuyun",
+      "shownOnce": "Bu kod yalnızca bir kez görünür. Bu sayfadan ayrılmadan önce kopyalayın; bir daha asla görüntülenemez.",
+      "expires": "Süresi {{time}} tarihinde doluyor",
+      "instructions": "Onlara bağlantıyı gönderin, ardından indirilen istemciyi çalıştırıp kodu yazmalarını sağlayın.",
+      "copyCode": "Kodu kopyala",
+      "copyLink": "İndirme bağlantısını kopyala",
+      "copiedCode": "Kod panoya kopyalandı",
+      "copiedLink": "İndirme bağlantısı panoya kopyalandı",
+      "copyFailed": "Panoya kopyalanamadı"
+    },
+    "detail": {
+      "heading": "Oturum ayrıntısı",
+      "noCode": "Tek kullanımlık kod yalnızca bu oturum oluşturulduğunda gösterildi ve geri alınamıyor. Kişinin başka bir koda ihtiyacı varsa yeni bir oturum başlatın.",
+      "attribution": "Referans",
+      "close": "Oturum ayrıntısını kapat"
+    },
+    "status": {
+      "heading": "Oturum ilerlemesi",
+      "pending": "Kullanıcının istemciyi çalıştırması bekleniyor…",
+      "claimed": "İstemci bağlanıyor…",
+      "ready": "Bağlanmaya hazır",
+      "active": "Oturum devam ediyor",
+      "ended": "Oturum sona erdi",
+      "expired": "Oturumun süresi doldu"
+    },
+    "connect": {
+      "waitingForDevice": "Cihaz kaydediliyor. Çevrimiçi olduğu anda bağlan düğmesi görünür."
+    },
+    "end": {
+      "button": "Oturumu sonlandır",
+      "success": "Destek oturumu sona erdi",
+      "error": "Destek oturumu sonlandırılamadı",
+      "alreadyEnded": "Bu destek oturumu zaten sona ermişti"
+    },
+    "errors": {
+      "create": "Destek oturumu oluşturulamadı",
+      "list": "En son destek oturumları yüklenemedi",
+      "notFound": "Bu destek oturumu artık mevcut değil."
+    },
+    "list": {
+      "heading": "En son destek oturumları",
+      "empty": "Henüz destek oturumu yok.",
+      "columnCreated": "Başlatıldı",
+      "columnEnded": "Bitti",
+      "unlabeled": "Etiketlenmemiş oturum",
+      "openSession": "Oturum ayrıntısını aç"
+    }
+  }
+}

@@ -13,6 +13,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError } from "../../lib/runAction";
 import { useHashState } from "@/lib/useHashState";
 import { Dialog } from "../shared/Dialog";
+import { ScopeBadge } from "../shared/ScopeBadge";
 import DeploymentWizard from "./DeploymentWizard";
 import DeploymentList from "./DeploymentList";
 import DeploymentProgress from "./DeploymentProgress";
@@ -622,6 +623,17 @@ export default function SoftwareCatalog() {
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1.5">
+                  {/* Partner-wide custom packages (#2135) wear the canonical
+                      ownership badge; built-ins keep their own pill below. */}
+                  {!item.orgId &&
+                    item.partnerId &&
+                    !isIntegrationProvider(item.integrationProvider) && (
+                      <ScopeBadge
+                        orgId={null}
+                        partnerId={item.partnerId}
+                        isSystem={false}
+                      />
+                    )}
                   {isIntegrationProvider(item.integrationProvider) && (
                     <div className="flex items-center gap-1.5">
                       <ReadinessPill
@@ -756,6 +768,17 @@ export default function SoftwareCatalog() {
                       selectedSoftware.category.slice(1)}
                   </span>
                 )}
+                {!selectedSoftware.orgId &&
+                  selectedSoftware.partnerId &&
+                  !isIntegrationProvider(
+                    selectedSoftware.integrationProvider,
+                  ) && (
+                    <ScopeBadge
+                      orgId={null}
+                      partnerId={selectedSoftware.partnerId}
+                      isSystem={false}
+                    />
+                  )}
               </div>
               <button
                 type="button"

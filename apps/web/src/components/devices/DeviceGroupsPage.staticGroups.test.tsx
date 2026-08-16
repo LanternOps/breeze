@@ -195,12 +195,49 @@ describe('DeviceGroupsPage static groups', () => {
     await user.click(screen.getByRole('button', { name: 'Static' }));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    await waitFor(() => expect(findWrite('PUT')).toBeDefined());
+    // The update route is PATCH /:id (#3554 — the app used to send PUT, which
+    // has no handler and 404s).
+    await waitFor(() => expect(findWrite('PATCH')).toBeDefined());
 
-    const body = parseBody(findWrite('PUT'));
+    const body = parseBody(findWrite('PATCH'));
     // Unlike create, the update path MUST say `null` out loud: the API reads an
     // absent key as "leave the filter alone", which would strand the old filter
     // on a group the user just made static.
     expect(body.filterConditions).toBeNull();
+    // Phantom fields are gone (#3554): no description column, no group policyId,
+    // and membership isn't editable on update.
+    expect(body.description).toBeUndefined();
+    expect(body.policyId).toBeUndefined();
+    expect(body.deviceIds).toBeUndefined();
+  });
+
+  // #3554: the form used to show Description and Policy Assignment controls that
+  // the API silently dropped (no column / no group-policy field). They're gone.
+  it('create form omits the phantom Description and Policy Assignment controls', async () => {
+    const user = userEvent.setup();
+    serveGroups([]);
+
+    render(<DeviceGroupsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Create Group' }));
+
+    expect(screen.queryByText('Description')).toBeNull();
+    expect(screen.queryByText('Policy Assignment')).toBeNull();
+    // The real static membership chooser is still offered on create.
+    expect(screen.getByText('Manual Device Assignment')).toBeInTheDocument();
+  });
+
+  it('hides the static device chooser on edit (membership is not editable there)', async () => {
+    const user = userEvent.setup();
+    serveGroups([
+      { id: 'group-1', name: 'Web Servers', type: 'static', deviceCount: 1, deviceIds: ['device-1'] },
+    ]);
+
+    render(<DeviceGroupsPage />);
+    await screen.findByText('Web Servers');
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+
+    // Editing a static group must not present a membership chooser that a PATCH
+    // would silently ignore — it's create-only now.
+    expect(screen.queryByText('Manual Device Assignment')).toBeNull();
   });
 });

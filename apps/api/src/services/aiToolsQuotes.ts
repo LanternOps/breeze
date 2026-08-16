@@ -165,11 +165,20 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
       name: 'get_quote',
       description:
         'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category ' +
-        'breakdown), content blocks, and line items — the same view the web UI shows. Read-only.',
+        'breakdown), content blocks, and line items — the same view the web UI shows. Read-only. ' +
+        'Large quotes can exceed the output limit: page the content blocks with blocksOffset/blocksLimit, ' +
+        'or pass includeBlockContent:false first for a lightweight block overview (types + order, no content). ' +
+        'A blocksPagination object reports total/returned/hasMore.',
       input_schema: {
         type: 'object' as const,
         properties: {
-          quoteId: { type: 'string', description: 'Quote UUID' }
+          quoteId: { type: 'string', description: 'Quote UUID' },
+          blocksOffset: { type: 'number', description: 'Index of the first content block to return (default 0)' },
+          blocksLimit: { type: 'number', description: 'Max content blocks to return (1-100). Omit for all from the offset.' },
+          includeBlockContent: {
+            type: 'boolean',
+            description: 'Default true. false returns block metadata only (id/type/order, no content) — a compact overview of a large quote.'
+          }
         },
         required: ['quoteId']
       }
@@ -179,7 +188,34 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
         return validationErrorJson('Missing required parameter: quoteId');
       }
       try {
-        return JSON.stringify(await getQuote(String(input.quoteId), actorFromAuth(auth)));
+        const full = await getQuote(String(input.quoteId), actorFromAuth(auth));
+        const allBlocks = full.blocks;
+        const offset = typeof input.blocksOffset === 'number' ? input.blocksOffset : 0;
+        const limit = typeof input.blocksLimit === 'number' ? input.blocksLimit : undefined;
+        const pagedBlocks =
+          limit != null ? allBlocks.slice(offset, offset + limit) : allBlocks.slice(offset);
+        // Default keeps the full block content (backward compatible); false drops
+        // the heavy `content` field for a compact metadata overview.
+        const includeBlockContent = input.includeBlockContent !== false;
+        const blocks = includeBlockContent
+          ? pagedBlocks
+          : pagedBlocks.map((block) => {
+              const withoutContent: Record<string, unknown> = { ...block };
+              delete withoutContent.content;
+              return withoutContent;
+            });
+        return JSON.stringify({
+          ...full,
+          blocks,
+          blocksPagination: {
+            total: allBlocks.length,
+            offset,
+            limit: limit ?? null,
+            returned: pagedBlocks.length,
+            hasMore: offset + pagedBlocks.length < allBlocks.length,
+            includeBlockContent,
+          },
+        });
       } catch (err) {
         const json = serviceErrorToJson(err) ?? zodErrorToJson(err);
         if (json) return json;
@@ -253,7 +289,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Create-quote payload (create_draft). Required: orgId (UUID). Optional: siteId (UUID), ' +
-              'title, currencyCode (3-letter, default USD), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
+              'title, currencyCode (3-letter; defaults to the partner\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
               'termsAndConditions.',
           },
           patch: {

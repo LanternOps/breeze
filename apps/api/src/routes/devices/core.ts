@@ -91,7 +91,11 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 // row is the audit trail for an ad-hoc support session and must outlive the
 // ephemeral device the reaper purges 6h after the session ends. Its device_id
 // FK is declared ON DELETE SET NULL to match.
-export const DEVICE_DETACH_DEVICE_ID_TABLES = ['support_sessions', 'tickets'] as const;
+// abuse_endpoint_fingerprints (recidivist-endpoint abuse detector) also
+// detaches: it's an operator corpus that must survive device hard-delete so
+// cross-partner endpoint correlation still works after the originating
+// device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['abuse_endpoint_fingerprints', 'support_sessions', 'tickets'] as const;
 
 /**
  * Subset of {@link getDeviceCascadeDeleteTables} ∪
@@ -146,7 +150,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'security_threats',
   'sensitive_data_findings', 'sensitive_data_scans',
   'service_process_check_results',
-  'software_inventory', 'software_policy_audit', 'sql_instances',
+  'software_inventory', 'software_policy_audit', 'software_remediation_requests', 'sql_instances',
   'support_sessions',
   'tickets', 'time_series_metrics', 'tunnel_sessions',
 ] as const;
@@ -227,7 +231,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
   'deployment_devices', 'deployment_results', 'software_inventory',
-  'software_compliance_status', 'software_policy_audit',
+  'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
   // Remote access
   'remote_sessions', 'tunnel_sessions',
   // Monitoring & logs

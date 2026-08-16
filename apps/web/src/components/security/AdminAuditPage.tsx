@@ -175,6 +175,11 @@ export default function AdminAuditPage() {
       </div>
     );
   }
+  // On a 500/network failure (errorKind "other") the summary is still the zeroed
+  // initial state — show an em dash instead of fabricated zeros. A genuinely
+  // empty 200 tenant keeps its real 0s. Mirrors AntivirusPage (#2485).
+  const hasData = errorKind !== "other";
+  const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -190,36 +195,36 @@ export default function AdminAuditPage() {
         <SecurityStatCard
           icon={User}
           label={t("securityAdminAuditPage.totalDevices")}
-          value={formatNumber(summary.totalDevices)}
+          value={stat(summary.totalDevices)}
         />
         <SecurityStatCard
           icon={Shield}
           label={t("securityAdminAuditPage.withIssues")}
-          value={formatNumber(summary.devicesWithIssues)}
-          variant="warning"
+          value={stat(summary.devicesWithIssues)}
+          variant={hasData ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={User}
           label={t("securityAdminAuditPage.totalAdmins")}
-          value={formatNumber(summary.totalAdmins)}
+          value={stat(summary.totalAdmins)}
         />
         <SecurityStatCard
           icon={User}
           label={t("securityAdminAuditPage.defaultAccts")}
-          value={formatNumber(summary.defaultAccounts)}
-          variant={summary.defaultAccounts > 0 ? "warning" : "default"}
+          value={stat(summary.defaultAccounts)}
+          variant={hasData && summary.defaultAccounts > 0 ? "warning" : "default"}
         />
         <SecurityStatCard
           icon={User}
           label={t("securityAdminAuditPage.weakPasswords")}
-          value={formatNumber(summary.weakPasswords)}
-          variant={summary.weakPasswords > 0 ? "danger" : "default"}
+          value={stat(summary.weakPasswords)}
+          variant={hasData && summary.weakPasswords > 0 ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={User}
           label={t("securityAdminAuditPage.staleAccts")}
-          value={formatNumber(summary.staleAccounts)}
-          variant={summary.staleAccounts > 0 ? "warning" : "default"}
+          value={stat(summary.staleAccounts)}
+          variant={hasData && summary.staleAccounts > 0 ? "warning" : "default"}
         />
       </div>
 

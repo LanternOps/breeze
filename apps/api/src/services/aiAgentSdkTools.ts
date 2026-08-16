@@ -14,6 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -72,11 +73,22 @@ const SECRET_ACTION_REFUSED_TEXT =
  * intent row it can seal a secret into. Secret-bearing tools use its absence
  * to fail closed (see makeSessionAwareHandler) rather than mint a credential
  * with nowhere safe to store it.
+ *
+ * `context` (#3409 PR4c-1) is the same idea one step further: the inline chat
+ * RELEASE path verifies an approved intent's pinned effect digest inside this
+ * callback (aiAgentSdk.ts's createSessionPreToolUse), but the tool itself runs
+ * later, from makeHandler below. This return value is the only channel between
+ * the two, so the material the verification already resolved rides it across
+ * and the handler executes from it instead of reading the same rows again.
+ * Absent for every other caller, and the handler must behave identically then.
  */
 export type PreToolUseCallback = (
   toolName: string,
   input: Record<string, unknown>,
-) => Promise<{ allowed: true; intentId?: string } | { allowed: false; error: string }>;
+) => Promise<
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext }
+  | { allowed: false; error: string }
+>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
@@ -360,9 +372,18 @@ function makeHandler(
     return runOutsideDbContext(async (): Promise<SdkToolResult> => {
     const startTime = Date.now();
 
+    // Material the preToolUse gate already verified against an approved
+    // intent's pinned effect digest (#3409 PR4c-1). Declared out here because
+    // the check happens in this block and the tool runs further down; stays
+    // `undefined` for every caller that verified nothing, which is what keeps
+    // the executeTool call three arguments wide.
+    let verifiedContext: ToolExecutionContext | undefined;
+
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
-      let check: { allowed: true } | { allowed: false; error: string };
+      let check:
+        | { allowed: true; context?: ToolExecutionContext }
+        | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
       } catch (err) {
@@ -372,6 +393,7 @@ function makeHandler(
         const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
+      if (check.allowed) verifiedContext = check.context;
       if (!check.allowed) {
         const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
         await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);
@@ -401,7 +423,14 @@ function makeHandler(
       // identical to the one authMiddleware opened — not wider.
       const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
       const result = await withToolTimeout(
-        withDbAccessContext(dbContext, () => executeTool(toolName, args, auth)),
+        withDbAccessContext(dbContext, () =>
+          // Three arguments unless something was actually verified — an
+          // options bag carrying `context: undefined` would be a behaviour
+          // change for every ordinary chat tool call.
+          verifiedContext
+            ? executeTool(toolName, args, auth, { context: verifiedContext })
+            : executeTool(toolName, args, auth),
+        ),
         toolTimeout,
         toolName,
       );
@@ -663,8 +692,9 @@ function makeSessionAwareHandler(
   };
 }
 
-// Exported for unit tests that lock in the enforcement ordering.
-export const __test__ = { makeSessionAwareHandler };
+// Exported for unit tests that lock in the enforcement ordering, and (for
+// makeHandler) the preToolUse -> executeTool context hand-off (#3409 PR4c-1).
+export const __test__ = { makeSessionAwareHandler, makeHandler };
 
 // ============================================
 // SDK MCP Server Factory
@@ -1146,7 +1176,7 @@ export function createBreezeMcpServer(
 
     tool(
       'get_script_execution',
-      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use to read the result of a run that was still running when run_script returned.',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the script editor Test Run button, or an execution id from get_script_execution_history) — not to re-check a run_script call that already returned.',
       {
         executionId: uuid,
       },
@@ -2186,9 +2216,17 @@ export function createBreezeMcpServer(
 
     tool(
       'get_quote',
-      'Get the full view of one quote/proposal by id: header (with derived totals, deposit and category breakdown), content blocks, and line items — the same view the web UI shows. Read-only.',
+      // Single source of truth: the registry definition (aiToolsQuotes.ts) carries
+      // the pagination guidance, so the MCP description can't drift from it.
+      registryDescription('get_quote'),
       {
         quoteId: uuid,
+        // Large quotes exceed the MCP output cap — let the model page the content
+        // blocks or fetch a metadata-only overview (#3485). Must mirror the
+        // canonical get_quote schema in aiToolSchemas.ts.
+        blocksOffset: z.number().int().min(0).optional(),
+        blocksLimit: z.number().int().min(1).max(100).optional(),
+        includeBlockContent: z.boolean().optional(),
       },
       makeHandler('get_quote', getAuth, onPreToolUse, onPostToolUse)
     ),

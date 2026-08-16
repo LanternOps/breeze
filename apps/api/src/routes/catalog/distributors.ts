@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
+import { optionalQueryBoolean } from '@breeze/shared';
 import { requireMfa, requirePermission, requireScope, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { checkSsrfSafe } from '../../services/ssrfGuard';
@@ -348,7 +349,7 @@ const sftpConfigSchema = z.object({
 
 const sftpListSchema = z.object({
   q: z.string().max(120).optional(),
-  inStockOnly: z.coerce.boolean().optional(),
+  inStockOnly: optionalQueryBoolean,
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });

@@ -119,6 +119,37 @@ export const SIGNAL_DEFAULTS = {
   'billing.card_testing.base_score': 50,
   'billing.card_testing.per_extra_method': 15,
   'billing.card_testing.per_failed_attempt': 5,
+  // Recidivist-endpoint detector (recidivistEndpoint.ts): a partner's box
+  // reappears in a DIFFERENT (non-active) partner's fingerprint corpus —
+  // same ScreenConnect client GUID, same hostname, same egress IP. Backtested
+  // against production fingerprint history with zero false positives across
+  // 10/10 flagged US matches and 1/1 EU match, so this ships at score 100
+  // rather than the corroboration-only ceiling other single-signal detectors
+  // in this file are held to.
+  //
+  // Axis scores (never summed — score is the max of whichever axes matched,
+  // see computeRecidivistSignals): fingerprint_score is a direct reuse of the
+  // same remote-management client identity and scores at the ceiling.
+  // hostname_ip_score requires a hostname AND an egress_ip match against the
+  // SAME other partner (strong corroboration, just short of a hard
+  // identifier) and sits just above severity.alert_score, clearing alert on
+  // its own. hostname_score alone is weaker (hostnames can coincidentally
+  // collide, e.g. an unrenamed vendor image) and at defaults caps at
+  // severity.watch_score — it does NOT clear alert by itself; only the
+  // fingerprint and hostname_ip axes do that at defaults. ip_score is RESERVED
+  // and never emitted alone in v1 — an IP alone is too easily explained by
+  // NAT/ISP/hosting-range reuse, so it only exists to upgrade a hostname
+  // match to hostname_ip; do not wire it to fire standalone without new
+  // backtest evidence.
+  //
+  // Not age-decayed, same structural rule as the script/billing detectors
+  // above: see the no-clock comment on computeRecidivistSignals itself for
+  // why an aged account matching a suspended partner's fingerprint is MORE
+  // suspicious, not less.
+  'rmm.recidivist_endpoint.fingerprint_score': 100,
+  'rmm.recidivist_endpoint.hostname_ip_score': 90,
+  'rmm.recidivist_endpoint.hostname_score': 60,
+  'rmm.recidivist_endpoint.ip_score': 40,
 } as const satisfies Record<string, number>;
 
 export type SignalConfigKey = keyof typeof SIGNAL_DEFAULTS;

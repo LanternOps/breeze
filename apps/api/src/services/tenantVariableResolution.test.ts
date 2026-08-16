@@ -7,26 +7,45 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // plain strings would make those assertions vacuous (see
 // services/tenantVariables.test.ts, whose `boundParams` helper this file
 // copies for the same reason).
+// runOutsideDbContext / withSystemDbAccessContext are mocked as flag-tracking
+// passthroughs (vi.fn() wrapping the real behaviour), not bare identity
+// functions, specifically so Task 3b's "database supplied -> escape hatch
+// NOT invoked" tests can assert on call counts rather than merely on side
+// effects. Same pattern as aiToolsScripts.runScript.orgEquality.test.ts.
+// getCurrentDbAccessContext backs the `opts.database` system-scope assertion;
+// it defaults to the system context the real callers hold, and the assertion
+// test below overrides it per-case.
 vi.mock('../db', () => {
   const dbMock = { select: vi.fn() };
   return {
     db: dbMock,
-    runOutsideDbContext: <T>(fn: () => T): T => fn(),
-    withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn()
+    getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
+    runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
+    withSystemDbAccessContext: vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => fn())
   };
 });
 
-import { db } from '../db';
+import {
+  db,
+  getCurrentDbAccessContext,
+  runOutsideDbContext,
+  withSystemDbAccessContext,
+  type Database
+} from '../db';
 import { encryptTenantVariableValue } from './tenantVariables';
 import {
   describeVariableFailure,
   loadTenantVariableScope,
   resolveForOrg,
   substituteTenantVariables,
+  unreadableForOrg,
   type ResolvedVariable
 } from './tenantVariableResolution';
 
 const dbMock = db as unknown as { select: ReturnType<typeof vi.fn> };
+const runOutsideDbContextMock = runOutsideDbContext as unknown as ReturnType<typeof vi.fn>;
+const withSystemDbAccessContextMock = withSystemDbAccessContext as unknown as ReturnType<typeof vi.fn>;
+const getCurrentDbAccessContextMock = getCurrentDbAccessContext as unknown as ReturnType<typeof vi.fn>;
 
 const ORG_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ORG_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -98,9 +117,9 @@ function encryptedRow(id: string, plaintext: string, overrides: Partial<StubRow>
 }
 
 /** Chainable select stub matching `.select().from().innerJoin().where()`. */
-function stubSelect(rows: StubRow[]) {
+function stubSelectOn(select: ReturnType<typeof vi.fn>, rows: StubRow[]) {
   const captured: { on?: unknown; where?: unknown } = {};
-  dbMock.select.mockReturnValue({
+  select.mockReturnValue({
     from: () => ({
       innerJoin: (_table: unknown, on: unknown) => {
         captured.on = on;
@@ -114,6 +133,10 @@ function stubSelect(rows: StubRow[]) {
     })
   });
   return captured;
+}
+
+function stubSelect(rows: StubRow[]) {
+  return stubSelectOn(dbMock.select, rows);
 }
 
 function mapWith(entry: Partial<ResolvedVariable> & { key: string }): Map<string, ResolvedVariable> {
@@ -213,6 +236,183 @@ describe('loadTenantVariableScope', () => {
     const scope = await loadTenantVariableScope([ORG_A]);
     const resolved = resolveForOrg(scope, ORG_A);
     expect(resolved.get('s1_token')).toMatchObject({ isSecret: true, value: 'shh' });
+  });
+
+  it('an undecryptable row is reported as unreadable, not merely absent — and is still never given a value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    // Never resolves to a value — no placeholder, no empty string.
+    expect(resolved.has('broken')).toBe(false);
+    // But it must be distinguishable from a key that was never defined at all.
+    expect(unreadableForOrg(scope, ORG_A).has('broken')).toBe(true);
+    warn.mockRestore();
+  });
+
+  // A bare empty-rows stub would pass against ANY implementation that
+  // returns empty collections (including a stub that never populates
+  // `unreadableKeysByOrg` at all) — not discriminating. Mix in one readable
+  // and one unreadable key so "never defined" is asserted against a
+  // populated snapshot, proving the never-defined key is excluded from both
+  // collections rather than both collections simply being empty.
+  it('a key that was never defined is absent from BOTH the resolved map and the unreadable set, alongside other readable/unreadable keys', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      encryptedRow(ROW_ORG, 'v', { key: 'defined_readable', ownerOrgId: ORG_A, forOrgId: ORG_A }),
+      { id: ROW_BAD, key: 'defined_unreadable', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    const unreadable = unreadableForOrg(scope, ORG_A);
+    // Sanity: the mixed snapshot actually populated both collections.
+    expect(resolved.has('defined_readable')).toBe(true);
+    expect(unreadable.has('defined_unreadable')).toBe(true);
+    // The never-defined key is in neither.
+    expect(resolved.has('never_defined')).toBe(false);
+    expect(unreadable.has('never_defined')).toBe(false);
+    warn.mockRestore();
+  });
+
+  // An unreadable row in the PARTNER-WIDE pass (not just the org-owned pass
+  // above) must also be reported as unreadable, never as absent. This is the
+  // likelier real case for an MSP-defined default that fails to decrypt (no
+  // org override involved at all) — and it exercises a different code path
+  // (the second loop in loadTenantVariableScope) than the org-owned case
+  // above, so it needs its own coverage rather than being assumed from it.
+  it('an unreadable partner-wide row (no org override) is reported as unreadable, not absent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken_default', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: null, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    expect(resolved.has('broken_default')).toBe(false);
+    expect(unreadableForOrg(scope, ORG_A).has('broken_default')).toBe(true);
+    warn.mockRestore();
+  });
+
+  // The subtle precedence case: an org-owned row for key `k` fails to
+  // decrypt, and a readable partner-wide row for the SAME key `k` also
+  // exists. The org row won the precedence contest (org > partner, see the
+  // two-pass loop above), so `k` must be UNREADABLE for this org — it must
+  // NOT silently fall back to the partner-wide value. That value is this
+  // org's own DEFAULT (not another tenant's data — the join and every write
+  // are keyed by `forOrgId`), and falling back to it would mean the default
+  // silently wins over the override that was meant to replace it. Before
+  // this task, `orgOwnedKeys` was only populated on a *successful* decrypt,
+  // so an unreadable org row left the key unclaimed and the partner-wide
+  // pass resolved right over it with the default's value.
+  it('an unreadable org row shadows a readable partner row — it must NOT fall back to the partner value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      encryptedRow(ROW_PARTNER, 'partner-value', { key: 'k', ownerOrgId: null, forOrgId: ORG_A }),
+      { id: ROW_BAD, key: 'k', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const resolved = resolveForOrg(scope, ORG_A);
+    expect(resolved.has('k')).toBe(false);
+    expect(resolved.get('k')?.value).not.toBe('partner-value');
+    expect(unreadableForOrg(scope, ORG_A).has('k')).toBe(true);
+    warn.mockRestore();
+  });
+});
+
+// Task 3b (#3409 PR4c-1): the digest path computes inside an
+// already-open, already-system-scoped transaction (intentService.ts:385-408)
+// and must reuse THAT connection rather than acquiring a second pooled one
+// via the escape hatch — see tenantVariableResolution.ts's doc comment on
+// `opts.database` for the caller contract this enforces.
+describe('loadTenantVariableScope given an explicit database', () => {
+  it('queries the supplied database directly and does NOT call the escape helpers', async () => {
+    const suppliedSelect = vi.fn();
+    stubSelectOn(suppliedSelect, []);
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    const scope = await loadTenantVariableScope([ORG_A], { database: suppliedDb });
+
+    expect(scope.orgIds.has(ORG_A)).toBe(true);
+    expect(suppliedSelect).toHaveBeenCalledTimes(1);
+    // The module-level `db` (today's ambient escape target) must be
+    // untouched — the query ran on the supplied connection, not a second one.
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(runOutsideDbContextMock).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns an empty scope without querying ANYTHING for an empty input, database or not', async () => {
+    const suppliedSelect = vi.fn();
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    const scope = await loadTenantVariableScope([], { database: suppliedDb });
+
+    expect(scope.orgIds.size).toBe(0);
+    expect(suppliedSelect).not.toHaveBeenCalled();
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(runOutsideDbContextMock).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
+  // `opts.database` is a caller ASSERTION that a system context is already
+  // open, and nothing but this check enforces it. A false assertion never
+  // errors on its own: the query just runs under the caller's RLS, which can
+  // NARROW the result set silently — for the effect-digest callers that means
+  // a recomputed digest that no longer matches the pinned one and
+  // `content_changed` on every approved release.
+  it.each([
+    ['an org-scoped context', { scope: 'organization' }],
+    ['a partner-scoped context', { scope: 'partner' }],
+    ['no context at all', undefined]
+  ])('refuses the supplied database under %s', async (_case, ambient) => {
+    getCurrentDbAccessContextMock.mockReturnValueOnce(ambient);
+    const suppliedSelect = vi.fn();
+    stubSelectOn(suppliedSelect, []);
+    const suppliedDb = { select: suppliedSelect } as unknown as Database;
+
+    await expect(loadTenantVariableScope([ORG_A], { database: suppliedDb })).rejects.toThrow(
+      /requires an already-open system-scoped DB context/i
+    );
+    // Fails BEFORE the query — an RLS-narrowed row set never reaches a snapshot.
+    expect(suppliedSelect).not.toHaveBeenCalled();
+  });
+});
+
+// Byte-for-byte-unaffected proof for the five existing callers (Step 3 of
+// Task 3b): omitting `opts` — exactly what all five call sites do — must
+// still ride the escape hatch, on the module's own `db`, exactly as before
+// this task.
+describe('loadTenantVariableScope with no explicit database (today\'s five callers)', () => {
+  it('escapes via runOutsideDbContext + withSystemDbAccessContext and queries the module-level db', async () => {
+    stubSelect([]);
+
+    await loadTenantVariableScope([ORG_A]);
+
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(dbMock.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('unreadableForOrg', () => {
+  it('throws when asked to resolve for an org the snapshot was not built for', async () => {
+    stubSelect([]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    expect(() => unreadableForOrg(scope, ORG_B)).toThrow(/not in this snapshot/i);
+  });
+
+  it('returns a fresh set each call — mutating the result cannot corrupt the snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+    const scope = await loadTenantVariableScope([ORG_A]);
+    const first = unreadableForOrg(scope, ORG_A);
+    (first as Set<string>).delete('broken');
+    const second = unreadableForOrg(scope, ORG_A);
+    expect(second.has('broken')).toBe(true);
+    warn.mockRestore();
   });
 });
 

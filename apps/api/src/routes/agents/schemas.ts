@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { vpnPresenceIngestSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -591,8 +590,10 @@ export const updateNetworkSchema = z.object({
     isPrimary: z.boolean().optional()
   })).max(100),
   // Active-VPN-client presence (#2139). Optional so older agents that don't
-  // report VPNs still validate. The API stamps reportedAt per entry on ingest.
-  vpns: z.array(vpnPresenceIngestSchema).max(50).optional()
+  // report VPNs still validate. Entries are validated PER-ENTRY in the handler
+  // (against vpnPresenceIngestSchema), not here, so one malformed VPN can't 400
+  // the whole payload and silently discard the valid adapter inventory (#3550).
+  vpns: z.array(z.unknown()).max(50).optional()
 });
 
 // ============================================

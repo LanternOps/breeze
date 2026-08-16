@@ -5,7 +5,7 @@ import AddPackageModal from './AddPackageModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { uploadPackageVersion } from '../../lib/softwarePackageUpload';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn(), useAuthStore: { getState: () => ({ tokens: null }) } }));
 vi.mock('../../lib/softwarePackageUpload', () => ({ uploadPackageVersion: vi.fn() }));
 
 const showToast = vi.fn();

@@ -150,7 +150,18 @@ gh api graphql -f query='mutation($id:ID!,$body:String!){addDiscussionComment(in
   gh api graphql -f query='mutation($id:ID!){closeDiscussion(input:{discussionId:$id,reason:RESOLVED}){discussion{number closed}}}' -f id="$DID"
   ```
   `reason: RESOLVED` for answered/shipped, `OUTDATED` for superseded. Leave open anything with genuine outstanding work even if I wrote "closing as resolved" earlier — verify the work actually shipped (e.g. a discussion whose prerequisite PR merged but whose feature PR never did → stays open).
-- **Issues:** defer to the `github-issues` skill. **NEVER close community issues yourself** — reporter verifies and closes, or owner closes after reporter confirms, or owner closes stale ones with a note. A commit/deploy is not a verification.
+- **Issues:** defer to the `github-issues` skill, which splits the rule by who filed it. **NEVER close community issues yourself** — reporter verifies and closes, or owner closes after reporter confirms, or owner closes stale ones with a note. A commit/deploy is not a verification. **Internally-filed issues are the opposite**: close them once their fix is merged, since no third party is waiting to verify.
+
+**Fixed-but-open sweep.** Because PRs historically used `Refs #N` rather than `Closes #N`, merged fixes do not close their issue. When the open count looks wrong, run the sweep rather than reading titles:
+
+```bash
+gh issue list --state open --limit 400 --json number --jq '.[].number' > /tmp/open.txt
+git log origin/main --since=<date> --pretty=format:'%H%x09%s%x0a%b%x00' > /tmp/log.txt
+# match each open number against every commit subject+body; a subject of the form
+# `fix(scope): summary (#ISSUE) (#PR)` is the repo's fully-fixed signature
+```
+
+Then read the commit **body** before closing, not the subject: several deliberately say "this is half of #N" or "leaving open for the reporter". Close only the ones with no such caveat, and comment with the fixing PR + SHA.
 
 ### 6. After every action
 

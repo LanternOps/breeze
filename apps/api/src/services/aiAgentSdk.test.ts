@@ -151,9 +151,14 @@ vi.mock('./actionIntents/revalidateRelease', () => ({
 // without wiring a real resolver's DB reads through the ../db mock. Default:
 // resolves to null (no digest computed) — irrelevant to every pre-existing
 // test in this file, since none of them set a truthy intentRow.effectDigest.
-const mockComputeEffectDigest = vi.fn((..._args: unknown[]) => Promise.resolve<string | null>(null));
+const mockComputeEffectDigest = vi.fn((..._args: unknown[]) =>
+  Promise.resolve<{ digest: string | null; context?: unknown }>({ digest: null }),
+);
 vi.mock('./actionIntents/effectDigest', () => ({
-  computeEffectDigest: (...args: unknown[]) => mockComputeEffectDigest(...args),
+  // The RELEASE-path compute (#3409 PR4c-1) — returns `{ digest, context? }`
+  // so this path can compare the digest AND keep the material the recompute
+  // already resolved, instead of letting the handler read it a second time.
+  computeEffectDigestForRelease: (...args: unknown[]) => mockComputeEffectDigest(...args),
   // Faithful stand-in for the SHARED pinned-digest predicate both release
   // paths now use (jobs/intentReleaseWorker.ts and the inline path here);
   // its real semantics live in services/actionIntents/effectDigest.ts and
@@ -2605,7 +2610,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       ]),
     };
     vi.mocked(db.select).mockReturnValue(selectChain as any);
-    mockComputeEffectDigest.mockResolvedValueOnce('recomputed-digest-xyz');
+    mockComputeEffectDigest.mockResolvedValueOnce({ digest: 'recomputed-digest-xyz' });
     const session = makeActiveSession({
       approvalMode: 'action_plan',
       activePlanId: 'plan-1',
@@ -2637,7 +2642,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
   // pin one; unpinnable four_eyes intents skip it too) must skip the
   // recompute entirely and let the step execute normally — proves the check
   // is opt-in on a stored digest, not a blanket recompute-and-compare.
-  it('executes normally and never calls computeEffectDigest when the stored effect digest is null', async () => {
+  it('executes normally and never calls the digest recompute when the stored effect digest is null', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,
       tier: 3,
@@ -2675,6 +2680,9 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(result).toEqual({ allowed: true, intentId: 'intent-plan-digest-null' });
     expect(session.currentPlanStepIndex).toBe(1);
     expect(mockComputeEffectDigest).not.toHaveBeenCalled();
+    // Nothing was verified, so nothing is handed to the handler — the
+    // no-context path must stay byte-identical for every unpinned tool call.
+    expect((result as { context?: unknown }).context).toBeUndefined();
     // No content_changed CAS — only the approved -> executing CAS ran.
     expect(mockTransitionIntent).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -2682,6 +2690,62 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       'failed',
       expect.objectContaining({ errorCode: 'content_changed' }),
     );
+  });
+
+  // #3409 PR4c-1: the inline path verifies here (createSessionPreToolUse) but
+  // the tool runs later, from aiAgentSdkTools.ts's makeHandler. The two are
+  // coupled by this callback's RETURN VALUE (the same channel `intentId`
+  // already travels on), so the material the recompute resolved is carried
+  // across rather than re-read inside the handler.
+  it('carries the verified material from a MATCHING recompute back to the handler', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-plan-digest-match' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-plan-digest-match', approvalRequestIds: ['appr-plan-digest-match'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true); // wins the release CAS
+    const selectChain: Record<string, unknown> = {
+      from: vi.fn(() => selectChain),
+      where: vi.fn(() => selectChain),
+      limit: vi.fn(async () => [
+        {
+          id: 'intent-plan-digest-match',
+          boundArgumentDigest: 'digest',
+          actionName: 'execute_command',
+          arguments: { command: 'whoami' },
+          effectDigest: 'stored-digest-abc',
+        },
+      ]),
+    };
+    vi.mocked(db.select).mockReturnValue(selectChain as any);
+    const verifiedRunScript = {
+      snapshot: { script: { id: 's-1' } },
+      scriptRow: { id: 's-1' },
+      scope: { orgIds: new Set(['org-1']) },
+    };
+    mockComputeEffectDigest.mockResolvedValueOnce({
+      digest: 'stored-digest-abc', // matches
+      context: { verifiedRunScript },
+    });
+    const session = makeActiveSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'execute_command', input: { command: 'whoami' } }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    expect(result.allowed).toBe(true);
+    // Identity, not shape: the handler must get the very object the recompute
+    // resolved, so a re-read cannot masquerade as the verified one.
+    expect((result as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
+      .toBe(verifiedRunScript);
   });
 
   // Regression guards restored from PR #2853. Task 1 necessarily inverted the

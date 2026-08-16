@@ -1,0 +1,481 @@
+{
+  "patchApprovalModal": {
+    "title": "Yamayı İncele",
+    "close": "Kapat",
+    "cancel": "İptal",
+    "deferUntil": "Ertele",
+    "actions": {
+      "approve": {
+        "label": "Onayla",
+        "description": "Bu yamanın otomatik olarak veya bir sonraki bakım penceresinde dağıtılmasına izin verin."
+      },
+      "decline": {
+        "label": "Reddet",
+        "description": "Tekrar incelenene kadar bu yamanın dağıtılmasını engelleyin."
+      },
+      "defer": {
+        "label": "Ertele",
+        "description": "Kararı erteleyin ve daha sonra tekrar ziyaret edin."
+      }
+    },
+    "notes": {
+      "label": "Notlar",
+      "placeholder": "Kararın bağlamını veya nedenini ekleyin..."
+    },
+    "errors": {
+      "partnerLevel": "Yama onayları iş ortağı düzeyinde yönetilir",
+      "chooseDeferUntil": "Yamanın ne zamana kadar erteleneceğini seçin",
+      "updateFailed": "Yama onayı güncellenemedi"
+    },
+    "toast": {
+      "approved": "Yama onaylandı",
+      "declined": "Yama reddedildi",
+      "deferred": "Yama ertelendi"
+    },
+    "confirm": {
+      "title": "Yama onayını onaylayın",
+      "selectedOrganization": "seçilen kuruluş",
+      "messageOne": "{{count}} cihazındaki yamayı {{org}}'de onaylasın mı?",
+      "messageMany": "{{count}} cihazlarda {{org}} içindeki yama onaylansın mı?"
+    }
+  },
+  "patchComplianceView": {
+    "unknownDevice": "Bilinmiyor",
+    "emptyValue": "—",
+    "searchPlaceholder": "Cihazları arayın...",
+    "showing": "{{total}} / {{shown}} gösteriliyor",
+    "empty": "Cihaz bulunamadı.",
+    "emptyFiltered": "Filtrelerinizle eşleşen cihaz yok.",
+    "errors": {
+      "fetchData": "Yama verileri getirilemedi",
+      "loadPendingPatches": "Cihaz için bekleyen yamalar yüklenemedi {{deviceId}}"
+    },
+    "actions": {
+      "tryAgain": "Tekrar deneyin",
+      "export": "Dışa aktar",
+      "refreshCompliance": "Uyumluluk verilerini yenile",
+      "clear": "Temizle",
+      "scan": "Tara",
+      "install": "Yükle",
+      "installCount": "Yükle ({{count}})",
+      "view": "Görüntüle"
+    },
+    "export": {
+      "selectOrganization": "Uyumluluk raporunu dışa aktarmak için bir kuruluş seçin",
+      "generateFailed": "Rapor oluşturulamadı",
+      "queued": "Uyumluluk raporu {{reportId}} sıraya alındı. İndirmeye hazırlanıyor...",
+      "ready": "Uyumluluk raporu {{reportId}} hazır. İndirme başlatılıyor...",
+      "failed": "Uyumluluk raporu {{reportId}} başarısız oldu",
+      "checkFailed": "Rapor durumu kontrol edilemedi",
+      "noReportId": "Rapor sıraya alındı ancak rapor kimliği döndürülmedi"
+    },
+    "summary": {
+      "compliantPercent": "{{percent}}% uyumlu",
+      "devices": "{{compliant}} / {{total}} cihaz",
+      "pendingDevices": "{{count}} bekleyen yamalar var",
+      "approved": "{{count}} onaylandı",
+      "pendingApproval": "{{count}} onay bekleniyor",
+      "critical": "{{count}} kritik",
+      "reboot": "{{count}} yeniden başlat"
+    },
+    "filters": {
+      "allDevices": "Tüm Cihazlar ({{count}})",
+      "pendingPatches": "Bekleyen Yamalar ({{count}})",
+      "critical": "Kritik ({{count}})",
+      "pendingReboot": "Yeniden Başlatma Bekleniyor ({{count}})",
+      "thirdPartyPending": "3. Taraf Beklemede ({{count}})",
+      "compliant": "Uyumlu ({{count}})"
+    },
+    "selection": {
+      "selected": "{{count}} seçildi",
+      "selectAll": "Tümünü seç",
+      "deselectAll": "Tümünün seçimini kaldır",
+      "selectDevice": "{{name}} seçeneğini seçin",
+      "deselectDevice": "{{name}} seçimini kaldır"
+    },
+    "table": {
+      "device": "Cihaz",
+      "status": "Durum",
+      "approved": "Onaylandı",
+      "approvedTitle": "Kurulum için onaylanan olağanüstü yamalar",
+      "pendingApproval": "Onay Bekleniyor",
+      "pendingApprovalTitle": "Öne çıkan yamalar hâlâ onay bekliyor",
+      "osPatches": "İşletim Sistemi Yamaları",
+      "osPatchesTitle": "Windows Update, Apple veya Linux paket yöneticilerinden olağanüstü güncellemeler",
+      "thirdParty": "3. Taraf",
+      "thirdPartyTitle": "Üçüncü taraf veya özel kaynaklardan gelen olağanüstü güncellemeler",
+      "critical": "Kritik",
+      "criticalTitle": "Kritik önem derecesine sahip olağanüstü yamalar",
+      "lastActivity": "Son Etkinlik",
+      "lastActivityTitle": "En son yama yükleme veya tarama etkinliği",
+      "reboot": "Yeniden başlat",
+      "rebootTitle": "İşletim sistemi, herhangi bir nedenden ötürü bekleyen bir yeniden başlatma rapor ediyor (Windows güncellemeler, CBS, bekleyen dosya yeniden adlandırmaları); acente tarafından bildirildi. Çevrimdışı cihazlar için bu, son check-in sırasındaki durumu yansıtır.",
+      "actions": "Eylemler"
+    },
+    "status": {
+      "ok": "Tamam",
+      "outstanding": "{{count}} olağanüstü"
+    },
+    "reboot": {
+      "offlineTitle": "Cihaz çevrimdışı — bu, son check-in sırasındaki işletim sistemi durumunu yansıtır ve eski olabilir.",
+      "yes": "Evet",
+      "yesAsOf": "Evet · {{time}} itibarıyla"
+    },
+    "relative": {
+      "justNow": "az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "activity": {
+      "noActivity": "Hiçbir aktivite kaydedilmedi",
+      "installed": "Yüklendi {{time}}",
+      "scanned": "Tarandı {{time}}",
+      "lastScanned": "Son taranan tarih {{time}}",
+      "lastInstalled": "Son yükleme {{time}}",
+      "noScan": "Tarama kaydedilmedi",
+      "noInstall": "Kurulum kaydedilmedi"
+    },
+    "confirm": {
+      "title": "Filo işlemini onaylayın",
+      "selectedOrganization": "seçilen kuruluş",
+      "scanAction": "Yamaları tarayın",
+      "installAction": "Yamaları yükleyin\n__BREEZE_TOKEN_2__ içindeki __BREEZE_TOKEN_1__ cihazında ",
+      "messageOne": "{{action}}?\n{{org}} içindeki {{count}} cihazlarda ",
+      "messageMany": "{{action}}?\n{{org}} kuruluşlardaki {{count}} cihazlarda ",
+      "messageMultiOrg": "{{action}}, {{orgNames}} dahil {{orgCount}} kuruluşta bulunan {{count}} cihazda uygulansın mı?"
+    }
+  },
+  "patchInstallHistory": {
+    "title": "Yama İşlem Geçmişi",
+    "loading": "Yama geçmişi yükleniyor...",
+    "empty": "Hiçbir yama işlemi bulunamadı.",
+    "emptyValue": "--",
+    "unknownPatch": "Bilinmeyen yama",
+    "operationCountOne": "{{count}} işlemi",
+    "operationCountMany": "{{count}} işlemleri",
+    "errors": {
+      "fetchHistory": "Yama geçmişi getirilemedi"
+    },
+    "actions": {
+      "retry": "Tekrar dene",
+      "refresh": "Yenile",
+      "refreshing": "Yenileniyor...",
+      "clearFilters": "Filtreleri temizle"
+    },
+    "filters": {
+      "allTypes": "Tüm Türler",
+      "allStatus": "Tüm Durumlar"
+    },
+    "operationTypes": {
+      "install": "Yükle",
+      "scan": "Tara",
+      "rollback": "Geri alma",
+      "download": "İndir"
+    },
+    "status": {
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "pending": "Beklemede",
+      "running": "Koşuyor",
+      "timeout": "Zaman Aşımı",
+      "unknown": "Bilinmiyor"
+    },
+    "table": {
+      "operation": "Çalıştırma",
+      "status": "Durum",
+      "patches": "Yamalar",
+      "duration": "Süre",
+      "date": "Tarih"
+    },
+    "pagination": {
+      "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",
+      "pageStatus": "Sayfa {{current}} / {{total}}"
+    },
+    "duration": {
+      "lessThanSecond": "<1s",
+      "seconds": "{{count}}s",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s"
+    },
+    "relative": {
+      "justNow": "Az önce",
+      "minutesAgo": "{{count}}m önce",
+      "hoursAgo": "{{count}}h önce",
+      "daysAgo": "{{count}}d önce"
+    },
+    "detail": {
+      "installed": "Yüklendi",
+      "failed": "Başarısız",
+      "pending": "Beklemede",
+      "scanned": "Tarandı",
+      "rebootRequired": "Yeniden Başlatma Gerekli",
+      "yes": "Evet",
+      "started": "Başlatıldı",
+      "completed": "Tamamlandı",
+      "error": "Hata",
+      "patchResults": "Yama Sonuçları",
+      "reboot": "Yeniden Başlat",
+      "empty": "Ayrıntılı yama sonucu mevcut değil.",
+      "table": {
+        "patch": "Yama",
+        "kb": "KB",
+        "status": "Durum",
+        "error": "Hata"
+      }
+    }
+  },
+  "patchList": {
+    "title": "Yamalar",
+    "summary": "{{shown}} / {{total}} yama",
+    "searchPlaceholder": "Yamaları ara...",
+    "loading": "Yamalar yükleniyor...",
+    "empty": "Yama bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
+    "vendorBy": "yazan: {{vendor}}",
+    "moreCves": "+{{count}} daha fazla",
+    "sortBy": "Şuna göre sırala: {{label}}",
+    "errors": {
+      "approvePatches": "Yamalar onaylanamadı",
+      "declinePatches": "Yamalar reddedilemedi",
+      "staleList": "{{message}} Daha önce yüklenen, eski olabilecek liste gösteriliyor."
+    },
+    "severity": {
+      "critical": "Kritik",
+      "important": "Önemli",
+      "moderate": "Orta",
+      "low": "Düşük"
+    },
+    "approval": {
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "declined": "Reddedildi",
+      "deferred": "Ertelendi"
+    },
+    "filters": {
+      "allSeverities": "Tüm Önem Dereceleri",
+      "allStatus": "Tüm Durumlar",
+      "moreFilters": "Daha fazla filtre",
+      "lessFilters": "Daha az filtre",
+      "allSources": "Tüm Kaynaklar",
+      "allOs": "Tüm İşletim Sistemi"
+    },
+    "actions": {
+      "deploy": "Dağıt",
+      "review": "İnceleme",
+      "details": "Ayrıntılar",
+      "approveCount": "Onayla {{count}}",
+      "declineCount": "Reddet {{count}}",
+      "deployCount": "Dağıtın {{count}}",
+      "clearSelection": "Seçimi temizle",
+      "tryAgain": "Tekrar deneyin"
+    },
+    "selection": {
+      "selected": "{{count}} seçildi",
+      "selectAll": "Tümünü seç",
+      "deselectAll": "Tümünün seçimini kaldır",
+      "selectAllPatches": "Tüm yamaları seç",
+      "deselectAllPatches": "Tüm yamaların seçimini kaldırın",
+      "selectPatch": "{{title}} seçeneğini seçin",
+      "deselectPatch": "{{title}} seçimini kaldır",
+      "selectAllMatching": "Tüm {{count}} eşleşenleri seç"
+    },
+    "table": {
+      "patch": "Yama",
+      "severity": "Önem",
+      "source": "Kaynak",
+      "os": "İşletim Sistemi",
+      "release": "Yayınla",
+      "approval": "Onay",
+      "actions": "Eylemler"
+    },
+    "pagination": {
+      "rowsPerPage": "Sayfa başına satır",
+      "pageStatus": "Sayfa {{current}} / {{total}}"
+    }
+  },
+  "patchesPage": {
+    "title": "Yama Yönetimi",
+    "description": "Güncelleme halkalarını, onayları, uyumluluğu ve yama dağıtımlarını yönetin.",
+    "ringScopeHint": "Güncelleme halkaları iş ortağı düzeyinde yönetilir",
+    "loadingRings": "Güncelleme halkaları yükleniyor...",
+    "tabs": {
+      "compliance": "Uyumluluk",
+      "patches": "Yamalar",
+      "updateRings": "Zilleri Güncelle"
+    },
+    "actions": {
+      "runScan": "Taramayı Çalıştır",
+      "scanning": "Taranıyor...",
+      "newRing": "Yeni Yüzük",
+      "tryAgain": "Tekrar deneyin",
+      "scan": "Tara",
+      "close": "Kapat",
+      "saving": "Kaydediliyor...",
+      "creating": "Oluşturuluyor...",
+      "saveChanges": "Değişiklikleri Kaydet",
+      "createRing": "Yüzük Oluştur"
+    },
+    "errors": {
+      "fetchRings": "Güncelleme halkaları getirilemedi",
+      "fetchPatches": "Yamalar getirilemedi",
+      "partnerLevel": "Yama onayları iş ortağı düzeyinde yönetilir",
+      "approvePatches": "Yamalar onaylanamadı",
+      "approveCountOne": "{{count}} yaması onaylanamadı",
+      "approveCountMany": "{{count}} yaması onaylanamadı",
+      "declineCount": "{{count}} yaması reddedilemedi",
+      "loadDevicesForScan": "Cihazlar tarama için yüklenemedi",
+      "noDevicesForScan": "Tarama için uygun cihaz yok",
+      "updateRing": "Zil güncellenemedi",
+      "createRing": "Güncelleme halkası oluşturulamadı",
+      "deleteRing": "Zil silinemedi",
+      "approveUnknown": "Onay durumu bilinmiyor — sunucu yanıtı okunamadı. Hangi yamaların onaylandığını onaylamak için yenileyin.",
+      "approveAbortedWithFailures": "{{message}} ({{count}} yamaları da bundan önce sunucu tarafından reddedilmişti.)"
+    },
+    "toast": {
+      "ringSaved": "Güncelleme halkası kaydedildi",
+      "ringCreated": "Güncelleme halkası oluşturuldu",
+      "ringDeleted": "Güncelleme halkası silindi",
+      "chooseDevicesForInstall": "Uyumluluk sekmesinden bu yamanın yükleneceği cihazları seçin."
+    },
+    "scan": {
+      "confirmTitle": "Yama taramasını onaylayın",
+      "selectedOrganization": "seçilen kuruluş",
+      "confirmMessageOne": "{{count}} cihazındaki yamalar {{org}}'de taransın mı?",
+      "confirmMessageMany": "{{count}} cihazlarda {{org}} içindeki yamalar taransın mı?",
+      "confirmMessageMultiOrg": "{{orgCount}} kuruluşlardaki ({{orgNames}}) {{count}} cihazlarda yamalar taransın mı?",
+      "failedFallback": "Yama taraması başarısız oldu",
+      "deviceOne": "cihaz",
+      "deviceMany": "cihazlar",
+      "failedToQueue": "{{count}} sıraya giremedi",
+      "skipped": "{{count}} atlandı (erişim yok / bulunamadı)",
+      "failedZero": "Yama taraması başarısız oldu: {{requested}} {{noun}}'den 0 tanesi sıraya alındı.",
+      "failedZeroWithShortfall": "Yama taraması başarısız oldu: 0/{{requested}} {{noun}} sıraya alındı ​​({{shortfall}}).",
+      "queuedPartial": "Yama taraması {{queued}} / {{requested}} {{noun}} — {{shortfall}} için sıraya alındı.",
+      "dispatchedSuffix": ", {{count}} hemen gönderildi",
+      "queuedSuccess": "Yama taraması {{queued}} {{noun}}{{dispatchSuffix}} için sıraya alındı."
+    },
+    "ringModal": {
+      "editTitle": "Güncelleme halkasını düzenle",
+      "createTitle": "Güncelleme halkası oluştur"
+    },
+    "truncatedNotice": "{{total}} yamalardan {{shown}} gösteriliyor. Buradaki filtreler yalnızca önceden yüklenmiş olanları daraltır, dolayısıyla geri kalanlara bu görünümden erişilemez; kataloğun tamamı üzerinde çalışmak için API yamalarını kullanın.",
+    "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin."
+  },
+  "ringSelector": {
+    "label": "Güncelleme Zil Sesi:",
+    "allRings": "Tüm Yüzükler",
+    "ringOption": "{{name}} (Sipariş {{order}}, +{{days}}d)"
+  },
+  "sourceFilterChips": {
+    "sources": {
+      "all": "Hepsi",
+      "microsoft": "Microsoft",
+      "apple": "Apple",
+      "linux": "Linux",
+      "thirdParty": "Üçüncü taraf"
+    }
+  },
+  "updateRingForm": {
+    "validation": {
+      "selectCategory": "Bir kategori seçin",
+      "selectSeverity": "Otomatik onay için en az bir önem derecesi seçin.",
+      "selectSeverityOrThirdParty": "En az bir önem derecesi seçin veya üçüncü taraf uygulamalarının otomatik onayını etkinleştirin.",
+      "nameRequired": "Zil adı gerekli"
+    },
+    "categories": {
+      "security": "Güvenlik Güncellemeleri",
+      "feature": "Özellik Güncellemeleri",
+      "firmware": "Firmware",
+      "driver": "Sürücüler",
+      "definitions": "Tanım Güncellemeleri"
+    },
+    "severities": {
+      "critical": "Kritik",
+      "important": "Önemli",
+      "moderate": "Orta",
+      "low": "Düşük"
+    },
+    "approveToggle": {
+      "ariaLabel": "Yamaları otomatik olarak onaylama",
+      "autoApprove": "Otomatik onaylama",
+      "manual": "Kılavuz"
+    },
+    "holdAfterRelease": "Serbest bırakıldıktan sonra basılı tutun",
+    "days": "gün",
+    "fields": {
+      "name": "Ad",
+      "rolloutOrder": "Kullanıma sunma sırası",
+      "description": "Açıklama",
+      "deadlineDays": "Son tarih (gün)",
+      "rebootGraceHours": "Yeniden başlatma yetkisiz süresi (saat)",
+      "autoApproveSeverities": "Otomatik onaylama önem dereceleri",
+      "category": "Kategori"
+    },
+    "placeholders": {
+      "name": "ör. Pilot, Geniş",
+      "description": "İsteğe bağlı — bu yüzük ne işe yarar?",
+      "noDeadline": "Son tarih yok"
+    },
+    "help": {
+      "rolloutOrder": "Önce düşük sayılar ortaya çıkar."
+    },
+    "installEnforcement": {
+      "title": "Yaptırımı yükle",
+      "description": "Cihazların onaylı yamaları ne kadar süreyle yüklemesi gerektiği ve kullanıcının yeniden başlatmayı ne kadar süreyle erteleyebileceği. Yeniden başlatma davranışının kendisi, Yama sekmesindeki politikaya göre ayarlanır."
+    },
+    "approvalPolicy": {
+      "title": "Onay politikası",
+      "description": "Bu ringde nelerin otomatik olarak onaylandığı ve satıcı tarafından yayınlandıktan sonra bir yamanın ne kadar süreyle tutulacağı. Varsayılan her kategori için geçerlidir; birini farklı şekilde ele almak için geçersiz kılma ekleyin.",
+      "allCategories": "Tüm kategoriler",
+      "default": "Varsayılan",
+      "severityNote": "Önem dereceleri yalnızca işletim sistemi güncellemeleri için geçerlidir. Üçüncü taraf uygulama güncellemeleri aşağıdaki geçişle kontrol edilir; ciddiyet kontrollü değildir.",
+      "manualDefault": "Bu halkadaki her yamanın manuel olarak onaylanması gerekiyor.",
+      "manualCategory": "Bu kategorideki yamaların manuel olarak onaylanması gerekir.",
+      "noOverrides": "Tüm kategoriler varsayılanı takip eder. Birine farklı davranmak için geçersiz kılma ekleyin."
+    },
+    "thirdParty": {
+      "title": "Üçüncü taraf uygulamaları",
+      "description": "winget, Chocolatey ve Homebrew'den gelen uygulama güncellemelerini otomatik olarak onaylayın. Uygulama engelleme/sabitleme kuralları hâlâ geçerlidir; bekletme, her cihazın güncellemeyi ilk bildirdiği andan itibaren ölçülür.",
+      "policyNote": "Yalnızca yapılandırma politikası üçüncü taraf yazılım güncellemelerini (politika Yaması ayarları) içeren cihazlar için geçerlidir.",
+      "holdNote": "Yüzüğün otomatik onaylama bekletme özelliğinden önceden doldurulmuştur. Kaydedildikten sonra bu bekletme bağımsızdır ve artık onu takip etmez."
+    },
+    "usage": {
+      "messageOne": "Bu zil sesi {{count}} cihazı için geçerlidir. Değişiklikler bir sonraki check-in işleminde geçerli olacaktır.",
+      "messageMany": "Bu zil sesi {{count}} cihazlar için geçerlidir. Değişiklikler bir sonraki check-in işleminde geçerli olacaktır."
+    },
+    "actions": {
+      "addOverride": "Geçersiz kılma ekle",
+      "removeOverride": "Geçersiz kılmayı kaldır",
+      "cancel": "İptal",
+      "saving": "Kaydediliyor...",
+      "saveRing": "Zil Sesini Kaydet"
+    }
+  },
+  "updateRingList": {
+    "title": "Zilleri Güncelle",
+    "summary": "{{shown}} / {{total}} çalıyor",
+    "searchPlaceholder": "Arama zilleri çalıyor...",
+    "empty": "Güncelleme zil sesi bulunamadı.",
+    "emptyValue": "—",
+    "none": "Hiçbiri",
+    "days": "{{count}} gün",
+    "editRing": "Düzenle {{name}}",
+    "deleteRing": "Sil {{name}}",
+    "pageStatus": "Sayfa {{current}} / {{total}}",
+    "table": {
+      "order": "Sipariş Ver",
+      "ring": "Yüzük",
+      "deferral": "Erteleme",
+      "deadline": "Son tarih",
+      "devices": "Cihazlar",
+      "compliance": "Uyumluluk",
+      "updated": "Güncellendi",
+      "actions": "Eylemler",
+      "autoApprove": "Otomatik onaylama"
+    },
+    "badges": {
+      "manual": "Manuel",
+      "os": "İşletim Sistemi: {{severities}}",
+      "thirdParty": "3. taraf uygulamalar"
+    }
+  }
+}

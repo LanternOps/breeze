@@ -1,0 +1,631 @@
+{
+  "admin": {
+    "accountDeletionRequestDetail": {
+      "back": "Silme isteklerine geri dön",
+      "retry": "Tekrar deneyin",
+      "errors": {
+        "network": "Ağ hatası",
+        "requestFailed": "İstek başarısız oldu ({{status}})"
+      },
+      "toast": {
+        "emailMismatch": "Yazdığınız e-posta eşleşmiyor.",
+        "rejectNoteRequired": "Reddederken bir not gereklidir.",
+        "actionFailed": "İşlem başarısız oldu ({{status}})",
+        "approved": "İstek onaylandı ve işlenmek üzere sıraya alındı.",
+        "rejected": "İstek reddedildi. Kullanıcıya bilgi verildi."
+      },
+      "unauthorized": {
+        "title": "İzin verilmiyor",
+        "description": "Bu isteği inceleme izniniz yok."
+      },
+      "notFound": {
+        "title": "İstek bulunamadı",
+        "description": "Kaldırılmış olabilir veya kiracınızda mevcut değil."
+      },
+      "header": {
+        "title": "Hesap silme talebi",
+        "reference": "Referans"
+      },
+      "user": {
+        "title": "Talep eden kullanıcı",
+        "name": "Ad",
+        "email": "E-posta",
+        "joined": "Katıldım",
+        "userId": "Kullanıcı Kimliği"
+      },
+      "request": {
+        "title": "Ayrıntıları isteyin",
+        "status": "Durum",
+        "requested": "İstendi",
+        "processBy": "İşlemi yapan:",
+        "processed": "İşlendi",
+        "reasonFromUser": "Kullanıcının nedeni",
+        "noReasonGiven": "Sebep belirtilmedi",
+        "adminNote": "Yönetici notu"
+      },
+      "status": {
+        "pending": "Beklemede",
+        "processing": "İşleniyor",
+        "completed": "Tamamlandı",
+        "cancelled": "İptal edildi"
+      },
+      "actions": {
+        "reject": "Reddet",
+        "approveAndQueue": "Onaylayın ve işlenmek üzere sıraya alın"
+      },
+      "processedNotice": {
+        "processing": "Onaylandı ve işlenmek üzere sıraya alındı.",
+        "cancelled": "Reddedildi. Kullanıcı bilgilendirildi.",
+        "completed": "Tamamlandı.",
+        "processed": "İşlendi {{time}}."
+      },
+      "confirm": {
+        "approveTitle": "Silme işlemi onaylansın mı?",
+        "rejectTitle": "Silinmesi reddedilsin mi?",
+        "close": "Kapat",
+        "approveDescription": "Onaylandığında bu hesap silinmek üzere sıraya alınır. Gerçek silme işlemi bant dışında gerçekleştirilir; isteği aldıktan sonra kullanıcı arayüzünden bunu geri alamazsınız.",
+        "rejectDescription": "Reddetmek isteği iptal eder. Kullanıcıya, isteğinin neden reddedildiğini açıklayan notunuz e-postayla gönderilecektir.",
+        "emailLabel": "Onaylamak için kullanıcının e-posta adresini yazın",
+        "noteLabel": "Not",
+        "optionalSuffix": "(isteğe bağlı)",
+        "approvePlaceholder": "Denetim günlüğü için isteğe bağlı dahili içerik…",
+        "rejectPlaceholder": "Neden reddediyorsunuz? Bu kullanıcıya e-postayla gönderilir.",
+        "cancel": "İptal",
+        "approving": "Onaylanıyor…",
+        "rejecting": "Reddediliyor…",
+        "approve": "Onayla",
+        "reject": "Reddet"
+      }
+    },
+    "accountDeletionRequestsList": {
+      "title": "Hesap silme talepleri",
+      "description": "Kiracınızda Breeze hesaplarını silmek isteyen kullanıcılar. Bunları işlenmek üzere sıraya koymayı onaylayın veya nedenini açıklayan bir notla reddedin.",
+      "filterLabel": "Duruma göre filtrele",
+      "refresh": "Yenile",
+      "retry": "Tekrar deneyin",
+      "errors": {
+        "network": "Ağ hatası",
+        "requestFailed": "İstek başarısız oldu ({{status}})"
+      },
+      "status": {
+        "pending": "Beklemede",
+        "processing": "İşleniyor",
+        "cancelled": "İptal edildi",
+        "completed": "Tamamlandı"
+      },
+      "unauthorized": {
+        "title": "İzin verilmiyor",
+        "prefix": "Şunlara sahip değilsiniz:\nHesap silme isteklerini incelemek için ",
+        "suffix": "izni gerekiyor."
+      },
+      "empty": {
+        "title": "{{status}} istek yok",
+        "description": "Hepiniz hazırsınız."
+      },
+      "table": {
+        "user": "Kullanıcı",
+        "requested": "İstendi",
+        "processBy": "İşlemi gerçekleştiren",
+        "reason": "Sebep",
+        "status": "Durum",
+        "action": "Eylem"
+      },
+      "noReasonGiven": "Sebep belirtilmedi",
+      "review": "İncele",
+      "pagination": {
+        "showing": "Gösterilen {{from}}–{{to}}",
+        "previous": "Önceki",
+        "next": "Sonraki"
+      }
+    },
+    "orgConnectedAppsPage": {
+      "title": "Bağlantılı uygulamalar (kurum çapında)",
+      "description": {
+        "prefix": "AI asistanları ve kullanıcıların içinde bulunduğu diğer MCP istemcileri",
+        "yourOrganization": "kuruluşunuz",
+        "suffix": "yetkilendirdik. Her aktif izni anında iptal etmek için herhangi bir müşteriyi engelleyin."
+      },
+      "refresh": "Yenile",
+      "retry": "Tekrar deneyin",
+      "noOrg": "Bağlı uygulamalarını görüntülemek için kuruluş değiştiriciden bir kuruluş seçin.",
+      "thisOrganization": "bu kuruluş",
+      "errors": {
+        "network": "Ağ hatası",
+        "requestFailed": "İstek başarısız oldu ({{status}})"
+      },
+      "toast": {
+        "reasonRequired": "Neden gereklidir.",
+        "blockFailed": "Blok başarısız oldu ({{status}})",
+        "blocked": "{{name}} kuruluş için engellendi. Kullanıcılar kendi belirteçlerinin TTL'si (≤15 dakika) dahilinde oturumu kapatacaktır.",
+        "unblockFailed": "Engellemeyi kaldırma başarısız oldu ({{status}})",
+        "unblocked": "{{name}} engellemesi kaldırıldı. Belirteçlerin yeniden verilmesinden önce kullanıcıların yeniden yetkilendirme yapması gerekir."
+      },
+      "unauthorized": {
+        "title": "İzin verilmiyor",
+        "prefix": "Şunlara sahip değilsiniz:\nKuruluş çapında bağlı uygulama bloklarını yönetmek için ",
+        "suffix": "izni gereklidir."
+      },
+      "empty": {
+        "title": "Henüz yetkili müşteri yok",
+        "description": "Bu kuruluştaki bir kullanıcı bir MCP istemcisine yetki verdiğinde, burada görünecektir."
+      },
+      "table": {
+        "app": "Uygulama",
+        "activeUsers": "Aktif kullanıcılar",
+        "lastUsed": "Son kullanılan",
+        "status": "Durum",
+        "actions": "Eylemler"
+      },
+      "everUsers": "{{count}} hiç",
+      "blockReasonTitle": "Sebep: {{reason}}",
+      "status": {
+        "blocked": "Engellendi",
+        "until": "{{time}} tarihine kadar",
+        "allowed": "İzin verildi"
+      },
+      "actions": {
+        "unblock": "Engellemeyi kaldır",
+        "blockOrgWide": "Kuruluş çapında engelle"
+      },
+      "blockDialog": {
+        "title": "{{name}} engellensin mi?",
+        "close": "Kapat",
+        "descriptionPrefix": "Bu engeller",
+        "descriptionMiddle": "her kullanıcı için",
+        "descriptionSuffix": "Tüm aktif hibeler ve yenileme jetonları derhal iptal edilir. Kullanıcılar, erişim belirteci TTL'sinde (~15 dakika) bir oturum kapatma göreceklerdir. Engellemeyi kaldırana kadar yeniden yetkilendiremezler.\nŞu anda yetkili ",
+        "authorizedUsers": "kullanıcı var; bu kullanıcılar bu uygulamaya erişimlerini kaybedecekler.",
+        "authorizedUsers_one": "kullanıcısı şu anda yetkili; bu uygulamaya erişimi kaybedecek.\nŞu anda yetkili ",
+        "authorizedUsers_other": "kullanıcılar — bu uygulamaya erişimlerini kaybedecekler.",
+        "reason": "Sebep",
+        "reasonPlaceholder": "Satıcı risk incelemesi, şüpheli uzlaşma, politika değişikliği…",
+        "cancel": "İptal",
+        "blocking": "Engelleniyor…",
+        "blockOrgWide": "Kuruluş çapında engelle"
+      },
+      "unblockDialog": {
+        "title": "{{name}} engellemesi kaldırılsın mı?",
+        "close": "Kapat",
+        "descriptionPrefix": "Bu kuruluştaki kullanıcılar yetki verebilecek\nTekrar ",
+        "descriptionSuffix": ". Mevcut izinler iptal edilmiş durumda; her kullanıcının OAuth akışı üzerinden yeniden oturum açması gerekiyor.",
+        "cancel": "İptal",
+        "unblocking": "Engelleme kaldırılıyor…",
+        "unblock": "Engellemeyi kaldır"
+      }
+    },
+    "quarantinedDevices": {
+      "title": "Karantinaya Alınmış Cihazlar",
+      "description": "Süresi dolmuş veya geçersiz mTLS sertifikaları nedeniyle karantinaya alınan cihazlar. Sertifikaların yeniden verilmesini onaylayın veya kullanımdan kaldırmayı reddedin.",
+      "loading": "Karantinaya alınmış cihazlar yükleniyor...",
+      "refresh": "Yenile",
+      "retry": "Tekrar deneyin",
+      "errors": {
+        "fetch": "Karantinaya alınan cihazlar getirilemedi",
+        "generic": "Bir hata oluştu",
+        "approve": "Cihaz onaylanamadı",
+        "deny": "Cihaz reddedilemedi"
+      },
+      "empty": {
+        "title": "Karantinaya alınmış cihaz yok",
+        "description": "Tüm cihazların geçerli mTLS sertifikaları vardır. Süresi dolmuş veya iptal edilmiş sertifikalara sahip cihazlar incelenmek üzere burada görünecektir."
+      },
+      "table": {
+        "hostname": "Ana Bilgisayar Adı",
+        "os": "İşletim Sistemi",
+        "quarantinedAt": "Karantinaya Alındı",
+        "reason": "Sebep",
+        "actions": "Eylemler"
+      },
+      "actions": {
+        "approve": "Onayla",
+        "deny": "Reddet"
+      },
+      "count": "{{count}} karantinaya alınmış cihaz",
+      "count_one": "{{count}} karantinaya alınmış cihaz",
+      "count_other": "{{count}} karantinaya alınmış cihazlar",
+      "denyDialog": {
+        "title": "Cihazı Reddet",
+        "descriptionPrefix": "Reddetmek istediğinizden emin misiniz?",
+        "descriptionSuffix": "Bu, cihazın kullanımdan kalıcı olarak çıkarılmasına ve sertifikasının iptal edilmesine neden olacaktır. Temsilci raporlamayı durduracak ve cihaz artık yönetilmeyecek.",
+        "cancel": "İptal",
+        "denying": "Reddediliyor...",
+        "confirm": "Reddet ve Hizmetten Çıkarma"
+      }
+    },
+    "thirdPartyCatalog": {
+      "title": "Üçüncü Taraf Paket Kataloğu",
+      "description": "winget tarafından aracılarda tespit edilen üçüncü taraf yazılımlar için Breeze seçilmiş meta veriler.",
+      "totalEntries": "Toplam giriş:",
+      "refresh": "Yenile",
+      "addPackage": "Paket ekle",
+      "searchPlaceholder": "Ada, satıcıya veya winget kimliğine göre arayın…",
+      "breezeTestedOnly": "Breeze-yalnızca test edildi",
+      "breezeTested": "Breeze-test edildi",
+      "dismiss": "Kapat",
+      "loading": "Katalog yükleniyor…",
+      "empty": "Mevcut filtrelerle eşleşen katalog girişi yok.",
+      "confirmDelete": "\"{{name}}\" katalogdan silinsin mi?",
+      "errors": {
+        "load": "Katalog yüklenemedi",
+        "generic": "Bir hata oluştu",
+        "queueTestStatus": "Test sıraya alınamadı ({{status}})",
+        "queueTest": "Test sıraya alınamadı",
+        "deleteEntry": "Giriş silinemedi",
+        "delete": "Silinemedi"
+      },
+      "notice": {
+        "testComplete": "Test tamamlandı — {{summary}}",
+        "testQueued": "Test {{name}} için sıraya alındı. Sonuç için oylama…"
+      },
+      "prompt": {
+        "runSmokeTest": "{{name}} için duman testini hangi sürümde çalıştırın?"
+      },
+      "platformAdmin": {
+        "title": "Platform yöneticisi erişimi gerekli",
+        "prefix": "Üçüncü taraf kataloğu Breeze platform yöneticileri tarafından yönetilmektedir. Hesabınız",
+        "role": "bir kuruluş/iş ortağı yöneticisi",
+        "suffix": ", seçilmiş kataloğu normal yama akışları aracılığıyla görüntüleyebilir ancak doğrudan düzenleyemez."
+      },
+      "table": {
+        "vendor": "Satıcı",
+        "package": "Paket",
+        "wingetId": "Winget Kimliği",
+        "severity": "Önem",
+        "status": "Durum",
+        "lastTest": "Son test",
+        "actions": "Eylemler"
+      },
+      "severity": {
+        "critical": "kritik",
+        "important": "önemli",
+        "moderate": "orta",
+        "low": "düşük",
+        "unknown": "bilinmiyor"
+      },
+      "test": {
+        "running": "çalışıyor…",
+        "versionTitle": "v{{version}}",
+        "pass": "geçer",
+        "fail": "başarısız",
+        "inconclusive": "sonuçsuz",
+        "skipped": "atlandı"
+      },
+      "actions": {
+        "retest": "Yeniden test edin",
+        "runSmokeTest": "Duman testini çalıştırın",
+        "edit": "Düzenle",
+        "delete": "Sil"
+      }
+    },
+    "thirdPartyCatalogEditor": {
+      "title": {
+        "edit": "Katalog girişini düzenle",
+        "add": "Katalog girişi ekle"
+      },
+      "errors": {
+        "saveStatus": "Kaydetme başarısız oldu ({{status}})",
+        "save": "Kaydedilemedi"
+      },
+      "fields": {
+        "packageId": "Winget paket kimliği",
+        "vendor": "Satıcı",
+        "friendlyName": "Kolay isim",
+        "defaultSeverity": "Varsayılan önem derecesi",
+        "breezeTested": "Breeze-test edildi",
+        "homepageUrl": "Ana Sayfa URL'si",
+        "notes": "Notlar"
+      },
+      "placeholders": {
+        "packageId": "ör. Mozilla.Firefox",
+        "vendor": "Mozilla",
+        "friendlyName": "Mozilla Firefox",
+        "homepageUrl": "https://example.com"
+      },
+      "severity": {
+        "critical": "kritik",
+        "important": "önemli",
+        "moderate": "orta",
+        "low": "düşük",
+        "unknown": "bilinmiyor"
+      },
+      "packageIdLocked": "Paket Kimliği kaydedildikten sonra değiştirilemez.",
+      "cancel": "İptal",
+      "saveChanges": "Değişiklikleri kaydet",
+      "addPackage": "Paket ekle"
+    },
+    "userDevicesPage": {
+      "title": "Güvenilir cihazlar",
+      "backToUsers": "Kullanıcılara geri dön",
+      "retry": "Tekrar deneyin",
+      "unknownDevice": "Bilinmeyen cihaz",
+      "thisUser": "bu kullanıcı",
+      "blockThisDevice": "Bu cihazı engelle",
+      "empty": "Bu kullanıcının eşleştirilmiş cihazı yok.",
+      "auditLink": "İlgili denetim etkinliklerine bakın\nOnayların, oturum açma işlemlerinin ve engellemelerin tam geçmişi için ",
+      "auditSuffix": ".",
+      "errors": {
+        "missingUserId": "Kullanıcı kimliği eksik",
+        "requestFailed": "İstek başarısız oldu ({{status}})",
+        "network": "Ağ hatası"
+      },
+      "toast": {
+        "reasonRequired": "Neden gereklidir.",
+        "blockFailed": "Bloklama başarısız oldu ({{status}})",
+        "blocked": "Cihaz engellendi. {{name}}, yeniden eşleştirilene kadar artık bu cihazdan onay veremez."
+      },
+      "unauthorized": {
+        "title": "İzin verilmiyor",
+        "description": "Bu kullanıcıyı yönetme izniniz yok. Kuruluş veya iş ortağı yöneticisi olarak oturum açtığınızdan ve bu kullanıcının kiracınızda olduğundan emin olun."
+      },
+      "description": {
+        "prefix": "Şununla eşleştirilen mobil cihazlar:",
+        "suffix": "Bir aygıtın engellenmesi, aygıtın push belirteçlerini temizler ve yeniden eşleştirmeyi zorunlu kılar."
+      },
+      "selfWarning": {
+        "prefix": "Bu",
+        "own": "sizin",
+        "middle": "hesabı. Kullanım",
+        "suffix": "kendi cihazlarınızı yönetmek için — yönetici bloğu kendini hedefleyemez."
+      },
+      "status": {
+        "active": "Aktif",
+        "blocked": "Engellendi"
+      },
+      "fields": {
+        "platform": "Platform",
+        "appVersion": "uygulama {{version}}",
+        "lastActive": "Son aktif",
+        "paired": "Eşleştirildi",
+        "blocked": "Engellendi",
+        "installId": "Kurulum Kimliği"
+      },
+      "blockDialog": {
+        "title": "Cihazı engelle",
+        "close": "Kapat",
+        "descriptionPrefix": "Bu engelleyecektir",
+        "descriptionMiddle": "için",
+        "descriptionSuffix": "Push jetonları hemen silinir ve kullanıcının telefonundan herhangi bir şeyi onaylamadan önce yeniden eşleştirme yapması gerekir.",
+        "reason": "Sebep",
+        "reasonPlaceholder": "Telefon kayboldu, çalışan gemiden çıkarıldı, şüpheli güvenlik ihlali…",
+        "reasonRequired": "Denetim günlüğü için bir neden gereklidir.",
+        "cancel": "İptal",
+        "blocking": "Engelleniyor…",
+        "blockDevice": "Cihazı engelle"
+      }
+    }
+  },
+  "audit": {
+    "auditExport": {
+      "title": "Denetim Günlüklerini Dışa Aktarma",
+      "description": "Geçerli filtreleri ve sütunları kullanarak girişleri indirin.",
+      "dateRange": "Tarih Aralığı",
+      "defaultRange": "Son 30 gün",
+      "format": "Biçimi",
+      "columns": "Sütunlar",
+      "includeDetails": "Ayrıntıları ve değişiklikleri ekle",
+      "exporting": "Dışa aktarılıyor...",
+      "exportFormat": "Dışa aktar {{format}}",
+      "formats": {
+        "csv": "CSV",
+        "json": "JSON"
+      },
+      "columnLabels": {
+        "timestamp": "Zaman Damgası",
+        "user": "Kullanıcı",
+        "action": "Eylem",
+        "resource": "Kaynak",
+        "details": "Ayrıntılar",
+        "ipAddress": "IP Adres"
+      },
+      "errors": {
+        "status": "{{status}} {{statusText}}",
+        "export": "Denetim günlükleri dışa aktarılamadı"
+      }
+    },
+    "auditFilters": {
+      "title": "Denetim Filtreleri",
+      "description": "Denetim girişlerini kullanıcıya, eyleme ve kaynağa göre hassaslaştırın.",
+      "dateRange": "Tarih Aralığı",
+      "start": "Başlat",
+      "end": "Bitir",
+      "user": "Kullanıcı",
+      "searchUsers": "Kullanıcıları arayın",
+      "loadingUsers": "Kullanıcılar yükleniyor...",
+      "noUsersFound": "Kullanıcı bulunamadı",
+      "filteringBy": "Filtreleme ölçütü",
+      "clear": "Temizle",
+      "actionTypes": "Eylem Türleri",
+      "resourceTypes": "Kaynak Türleri",
+      "searchDetails": "Arama Ayrıntıları",
+      "searchDetailsPlaceholder": "Arama etkinliği ayrıntıları",
+      "applyFilters": "Filtreleri Uygula",
+      "clearAll": "Tümünü Temizle",
+      "presets": {
+        "today": "Bugün",
+        "last7Days": "Son 7 gün",
+        "last30Days": "Son 30 gün",
+        "custom": "Özel"
+      },
+      "actions": {
+        "login": "giriş yap",
+        "update": "güncelleme",
+        "delete": "sil",
+        "create": "oluştur",
+        "export": "dışa aktar",
+        "access": "erişim"
+      },
+      "resources": {
+        "policy": "politikası",
+        "report": "rapor",
+        "dataset": "veri kümesi",
+        "identity": "kimlik",
+        "automation": "otomasyon",
+        "asset": "varlık"
+      }
+    },
+    "auditLogDetail": {
+      "title": "Denetim Günlüğü Ayrıntısı",
+      "subtitle": "{{action}}, {{resource}} üzerinde",
+      "close": "Kapat",
+      "activitySummary": "Etkinlik Özeti",
+      "changesSnapshot": "Anlık Görüntüyü Değiştirir",
+      "before": "Önce",
+      "after": "Sonra",
+      "userInfo": "Kullanıcı Bilgileri",
+      "requestMetadata": "Meta Veri İste",
+      "fields": {
+        "timestamp": "Zaman damgası:",
+        "action": "Eylem:",
+        "resource": "Kaynak:",
+        "details": "Ayrıntılar:",
+        "ip": "IP:",
+        "userAgent": "Kullanıcı Aracısı:",
+        "session": "Oturum:"
+      }
+    },
+    "auditLogViewer": {
+      "title": "Denetim İzi",
+      "description": "Kullanıcı eylemlerini, hassas işlemleri ve sistem değişikliklerini izleyin.",
+      "retry": "Tekrar deneyin",
+      "filters": "Filtreler",
+      "clear": "Temizle",
+      "exportLogs": "Günlükleri Dışa Aktar",
+      "empty": "Denetim günlüğü bulunamadı.",
+      "viewDetails": "Ayrıntıları görüntüle",
+      "errors": {
+        "fetch": "Denetim günlükleri getirilemedi",
+        "load": "Denetim günlükleri yüklenemedi"
+      },
+      "columns": {
+        "timestamp": "Zaman Damgası",
+        "user": "Kullanıcı",
+        "action": "Eylem",
+        "resource": "Kaynak",
+        "details": "Ayrıntılar",
+        "ipAddress": "IP"
+      },
+      "expanded": {
+        "fullDetails": "Tüm Ayrıntılar",
+        "session": "Oturum",
+        "changes": "Değişiklikler",
+        "fieldsUpdated": "{{count}} alanları güncellendi",
+        "fieldsUpdated_one": "{{count}} alanı güncellendi",
+        "fieldsUpdated_other": "{{count}} alanları güncellendi",
+        "reviewFullSnapshot": "Tam anlık görüntüyü inceleyin"
+      },
+      "pagination": {
+        "showingRange": "Gösterilen {{from}}-{{to}}",
+        "showingOf": "{{from}}-{{to}} / {{total}} gösteriliyor",
+        "previous": "Önceki",
+        "page": "Sayfa {{page}}",
+        "next": "Sonraki"
+      }
+    },
+    "complianceReport": {
+      "title": "Uyumluluk Raporu",
+      "description": "Uyumluluk kontrollerine uygun, denetime hazır özetler oluşturun.",
+      "generateReport": "Rapor Oluştur",
+      "dataAccessAudit": "Veri Erişim Denetimi",
+      "sensitiveOperations": "Hassas İşlemler",
+      "reviewRequired": "İnceleme gerekli",
+      "categories": {
+        "gdpr": {
+          "label": "GDPR"
+        },
+        "soc2": {
+          "label": "SOC 2"
+        },
+        "hipaa": {
+          "label": "HIPAA"
+        }
+      },
+      "summary": {
+        "gdpr": {
+          "dataAccessEvents": "Veri erişim etkinlikleri",
+          "dsarRequests": "DSAR istekleri",
+          "retentionAlerts": "Saklama uyarıları"
+        },
+        "soc2": {
+          "controlExceptions": "Kontrol istisnaları",
+          "privilegedActions": "Ayrıcalıklı işlemler",
+          "policyAttestations": "Politika onayları"
+        },
+        "hipaa": {
+          "phiAccessEvents": "PHI erişim etkinlikleri",
+          "roleChanges": "Rol değişiklikleri",
+          "encryptionChecks": "Şifreleme kontrolleri"
+        },
+        "helpers": {
+          "past30Days": "son 30 gün",
+          "pending2": "beklemede 2",
+          "overdue": "gecikmiş",
+          "last7Days": "son 7 gün",
+          "withinScope": "kapsam dahilinde",
+          "complete": "tamamlandı",
+          "past14Days": "son 14 gün",
+          "requiresReview": "inceleme gerektiriyor",
+          "compliant": "uyumlu"
+        }
+      },
+      "table": {
+        "user": "Kullanıcı",
+        "data": "Veri",
+        "purpose": "Amaç",
+        "time": "Zaman"
+      },
+      "data": {
+        "customerRecords": "Müşteri Kayıtları",
+        "adminPortal": "Yönetici Portalı",
+        "payrollRecords": "Bordro Kayıtları",
+        "deviceGroupVip": "Cihaz Grubu - VIP"
+      },
+      "purpose": {
+        "billingReview": "Faturalandırma incelemesi",
+        "securityAudit": "Güvenlik denetimi",
+        "complianceSampling": "Uyumluluk örneklemesi",
+        "accessProvisioning": "Erişim yetkilendirmesi"
+      },
+      "operations": {
+        "exportedCustomerDataset": "Müşteri veri kümesi CSV'ye aktarıldı",
+        "mfaWindowReduced": "MFA penceresi 15 dakikaya düşürüldü",
+        "roleChangedExternalContractor": "Harici yüklenicinin rolü değiştirildi"
+      },
+      "severity": {
+        "high": "Yüksek",
+        "medium": "Orta"
+      }
+    },
+    "userActivityReport": {
+      "title": "Kullanıcı Etkinliği Raporu",
+      "description": "Etkinlik eğilimlerini ve dışa aktarma geçmişini inceleyin.",
+      "allUsers": "Tüm kullanıcılar",
+      "unknown": "Bilinmiyor",
+      "retry": "Tekrar deneyin",
+      "exportActivity": "Dışa Aktarma Etkinliği",
+      "selectedActivity": "{{user}} etkinliği",
+      "totalActions": "Toplam İşlemler",
+      "topAction": "En İyi İşlem",
+      "notApplicable": "yok",
+      "occurrences": "{{count}} olay",
+      "occurrences_one": "{{count}} olay",
+      "occurrences_other": "{{count}} olay",
+      "distinctActions": "Farklı Eylemler",
+      "activityTimeline": "Etkinlik Zaman Çizelgesi",
+      "noActivity": "Etkinlik bulunamadı.",
+      "actionsByType": "Türe göre Eylemler",
+      "noActionsRecorded": "Hiçbir işlem kaydedilmedi.",
+      "recentActions": "Son Eylemler",
+      "noRecentActions": "Son zamanlarda yapılan bir işlem bulunamadı.",
+      "errors": {
+        "fetchUsers": "Kullanıcılar getirilemedi",
+        "fetchActivity": "Etkinlik getirilemedi",
+        "loadData": "Veri yüklenemedi"
+      },
+      "table": {
+        "time": "Saat",
+        "action": "Eylem",
+        "resource": "Kaynak",
+        "ip": "IP"
+      }
+    }
+  }
+}

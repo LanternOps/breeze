@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, timestamp, jsonb, pgEnum, real, index, uniqueIn
 import { sql } from 'drizzle-orm';
 import { partners } from './orgs';
 import { scripts } from './scripts';
+import { devices } from './devices';
 
 export const abuseSignalSeverityEnum = pgEnum('abuse_signal_severity', ['info', 'watch', 'alert']);
 
@@ -46,6 +47,35 @@ export const abuseScriptHosts = pgTable('abuse_script_hosts', {
 }, (t) => [
   uniqueIndex('abuse_script_hosts_partner_host_source_uq').on(t.partnerId, t.host, t.source),
   index('abuse_script_hosts_host_idx').on(t.host),
+]);
+
+export const abuseEndpointFingerprintKindEnum = pgEnum('abuse_endpoint_fingerprint_kind', [
+  'remote_tool_guid',
+  'hostname',
+  'egress_ip',
+]);
+
+// Cross-partner corpus of endpoint fingerprints (ScreenConnect remote-tool
+// GUIDs, hostnames, egress IPs) used by the recidivist-endpoint detector
+// (rmm.recidivist_endpoint) to correlate the same endpoint re-enrolling under
+// a different partner after suspension. Deliberately spans ALL partners
+// regardless of status, and is retained indefinitely (see migration header).
+// device_id is SET NULL on device hard-delete (DEVICE_DETACH_DEVICE_ID_TABLES
+// in routes/devices/core.ts) so the corpus outlives the device; partner_id
+// still cascades on partner hard-delete (GDPR erasure boundary). System-only
+// RLS, same as partner_abuse_signals / abuse_script_hosts above: partners
+// must never see the corpus.
+export const abuseEndpointFingerprints = pgTable('abuse_endpoint_fingerprints', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  kind: abuseEndpointFingerprintKindEnum('kind').notNull(),
+  value: varchar('value', { length: 255 }).notNull(),
+  deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  uniqueIndex('abuse_endpoint_fingerprints_partner_kind_value_uq').on(t.partnerId, t.kind, t.value),
+  index('abuse_endpoint_fingerprints_kind_value_idx').on(t.kind, t.value),
 ]);
 
 // Tiny key/value scan state for the abuse sweep (e.g. the incremental

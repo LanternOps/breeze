@@ -1,0 +1,472 @@
+{
+  "slaChip": {
+    "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
+    "left": "{{relative}} kaldı",
+    "breached": "İhlal edildi"
+  },
+  "slaTimers": {
+    "title": "SLA",
+    "firstResponse": "İlk yanıt",
+    "resolution": "Çözünürlük",
+    "state": {
+      "met": "Buluştuk",
+      "notMet": "Karşılanılmadı",
+      "breached": "İhlal edildi",
+      "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
+      "left": "{{relative}} kaldı"
+    },
+    "clockPaused": "Bilet {{status}} iken saat duraklatıldı.",
+    "status": {
+      "onHold": "beklemede",
+      "pending": "beklemede"
+    }
+  },
+  "cannedResponsePicker": {
+    "button": "Hazır yanıt"
+  },
+  "deviceTicketsTab": {
+    "loading": "Biletler yükleniyor...",
+    "loadFailed": "Biletler yüklenemedi.",
+    "empty": "Bu cihaz için bilet yok.",
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "priority": {
+      "urgent": "Acil",
+      "high": "Yüksek",
+      "normal": "Normal",
+      "low": "Düşük"
+    }
+  },
+  "ticketQueueList": {
+    "empty": "Bilet eşleşmesi yok.",
+    "clearFilters": "Filtreleri temizle",
+    "ariaLabel": "Bilet kuyruğu",
+    "selectTicket": "{{ticket}} seçeneğini seçin",
+    "timeAgo": {
+      "minutes": "{{count}}m önce",
+      "minutes_one": "{{count}}m önce",
+      "minutes_other": "{{count}}m önce",
+      "hours": "{{count}}h önce",
+      "hours_one": "{{count}}h önce",
+      "hours_other": "{{count}}h önce",
+      "days": "{{count}}d önce",
+      "days_one": "{{count}}d önce",
+      "days_other": "{{count}}d önce"
+    },
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "priority": {
+      "urgent": "Acil",
+      "high": "Yüksek",
+      "normal": "Normal",
+      "low": "Düşük"
+    }
+  },
+  "ticketArchivedList": {
+    "emptyTitle": "Arşivlenmiş bilet yok.",
+    "emptyDescription": "Silinen biletler buraya gelir. Canlı kuyruklara geri döndürmek için birini geri yükleyin.",
+    "ariaLabel": "Arşivlenmiş biletler",
+    "deleted": "silindi {{relative}}",
+    "restore": "Geri Yükle",
+    "restoring": "Geri yükleniyor…",
+    "timeAgo": {
+      "minutes": "{{count}}m önce",
+      "minutes_one": "{{count}}m önce",
+      "minutes_other": "{{count}}m önce",
+      "hours": "{{count}}h önce",
+      "hours_one": "{{count}}h önce",
+      "hours_other": "{{count}}h önce",
+      "days": "{{count}}d önce",
+      "days_one": "{{count}}d önce",
+      "days_other": "{{count}}d önce"
+    },
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "priority": {
+      "urgent": "Acil",
+      "high": "Yüksek",
+      "normal": "Normal",
+      "low": "Düşük"
+    }
+  },
+  "ticketComposer": {
+    "reply": "Yanıtla",
+    "internalNote": "Dahili not",
+    "internalBanner": "Dahili: istekte bulunan kişi tarafından görülemez",
+    "replyPlaceholder": "{{requester}}'e yanıt ver…",
+    "requesterFallback": "istek sahibi",
+    "internalPlaceholder": "Dahili bir not ekleyin…",
+    "sending": "Gönderiliyor",
+    "sendReply": "Yanıt gönder",
+    "addInternalNote": "Dahili not ekle"
+  },
+  "ticketFeed": {
+    "empty": "Henüz etkinlik yok.",
+    "commentDeleted": "{{author}} — silindi",
+    "commentFallback": "Bir yorum",
+    "requester": "Talep Eden",
+    "technician": "Teknisyen",
+    "internal": "Dahili",
+    "edited": "düzenlendi",
+    "system": {
+      "systemAuthor": "Sistem",
+      "technicianAuthor": "Teknisyen",
+      "statusChanged": "{{author}} durumu değiştirildi: {{from}}, {{to}} olarak değiştirildi",
+      "assigned": "{{author}} bu bileti atadı",
+      "unassigned": "{{author}} bu biletin atamasını kaldırdı",
+      "loggedTime": "{{author}} kayıtlı süre",
+      "systemEvent": "Sistem olayı",
+      "collapsed": "{{count}} değişiklikler. Göster",
+      "collapsed_one": "{{count}} değişiklik. Göster",
+      "collapsed_other": "{{count}} değişiklikler. Göster"
+    },
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "deleteDialog": {
+      "title": "Yorumu sil",
+      "message": "Bu yorumu silmek istediğinizden emin misiniz? Bu eylem geri alınamaz."
+    }
+  },
+  "ticketPartsCard": {
+    "title": "Parçalar",
+    "empty": "Parça yok.",
+    "nonBillableSuffix": "· faturalandırılamaz",
+    "marginTitle": "Marj",
+    "deletePrompt": "Silinsin mi?",
+    "addPart": "Parça ekle",
+    "fromCatalogPrefix": "Katalogdan:",
+    "unlink": "Bağlantıyı kaldır",
+    "catalogPlaceholder": "Katalogdan ekle (isteğe bağlı)",
+    "quantity": "Adet",
+    "unitPrice": "Birim fiyatı",
+    "costPlaceholder": "Maliyet (isteğe bağlı)",
+    "cost": "Maliyet",
+    "billable": "Faturalandırılabilir",
+    "update": "Güncelle",
+    "toast": {
+      "updateFailed": "Parça güncellenemedi",
+      "updated": "Parça güncellendi",
+      "addFailed": "Parça eklenemedi",
+      "added": "Parça eklendi",
+      "updateFailedSentence": "Parça güncellenemedi.",
+      "addFailedSentence": "Parça eklenemedi.",
+      "deleteFailed": "Parça silinemedi",
+      "deleted": "Bölüm silindi",
+      "deleteFailedSentence": "Parça silinemedi."
+    }
+  },
+  "ticketTimeBilling": {
+    "title": "Zaman ve Faturalandırma",
+    "totalTime": "Toplam süre",
+    "billable": "Faturalandırılabilir",
+    "timeAmount": "Süre miktarı",
+    "partsCount": "Parçalar ({{count}})",
+    "partsCount_one": "Parçalar ({{count}})",
+    "partsCount_other": "Parçalar ({{count}})",
+    "starting": "Başlıyor…",
+    "startTimer": "Zamanlayıcıyı başlat",
+    "logTime": "Kayıt süresi",
+    "minutes": "Dakika",
+    "descriptionPlaceholder": "Açıklama (isteğe bağlı)",
+    "techFallback": "Teknoloji",
+    "running": "çalışıyor",
+    "toast": {
+      "startTimerFailed": "Zamanlayıcı başlatılamadı.",
+      "logFailed": "Zaman kaydedilemedi",
+      "logged": "Kaydedilen zaman",
+      "logFailedSentence": "Zaman kaydedilemedi."
+    }
+  },
+  "inboundReviewQueue": {
+    "title": "İnceleme kuyruğu",
+    "description": "Karantinaya alındı (bilinmeyen gönderen) ve gelen e-postalar başarısız oldu. Bir bilete dönüştürün veya reddedin.",
+    "loading": "Yükleniyor.",
+    "loadFailed": "İnceleme kuyruğu yüklenemedi.",
+    "adminsOnly": "İnceleme kuyruğu yalnızca yöneticilere açıktır.",
+    "empty": "İncelenecek bir şey yok.",
+    "unknownSender": "(bilinmeyen gönderen)",
+    "noSubject": "(konu yok)",
+    "selectOrganization": "Kuruluşu seçin…",
+    "createTicket": "Bilet oluştur",
+    "convertToTicket": "bilete dönüştür",
+    "dismiss": "Kapat",
+    "prev": "Önceki",
+    "pageOf": "Sayfa {{page}} / {{totalPages}}",
+    "pickOrgFirst": "Önce bir kuruluş seçin.",
+    "convertFailed": "bilete dönüştürme işlemi başarısız oldu. Tekrar dene.",
+    "ticketCreated": "E-postadan bilet oluşturuldu",
+    "dismissFailed": "Kapatma başarısız oldu. Tekrar dene.",
+    "dismissed": "Gelen e-posta reddedildi",
+    "parseStatus": {
+      "quarantined": "karantinaya alındı",
+      "failed": "başarısız oldu"
+    },
+    "friendly": {
+      "orgNotAccessible": "Bu organizasyon ortağınızın bünyesinde mevcut değil.",
+      "rowNotFound": "Bu gelen e-posta artık kullanılamıyor.",
+      "rowAlreadyResolved": "Bu gelen e-posta zaten işlendi. Liste yenileniyor.",
+      "noSender": "Bu e-postanın kullanılabilir bir gönderen adresi bulunmadığından destek talebi haline getirilemez. Reddedin veya bant dışı takip edin."
+    }
+  },
+  "createTicketPage": {
+    "title": "Bilet oluştur",
+    "orgsLoadFailed": "Kuruluşlar yüklenemedi.",
+    "selectOrganization": "Kuruluşu seçin",
+    "subject": "Konu",
+    "requesterOptional": "İstek Sahibi (isteğe bağlı)",
+    "defaultYou": "Varsayılan (siz)",
+    "someoneElse": "Başka biri…",
+    "requesterName": "Talep edenin adı",
+    "emailOptional": "E-posta (isteğe bağlı)",
+    "requesterEmail": "Talep sahibinin e-postası",
+    "deviceOptional": "Cihaz (isteğe bağlı)",
+    "category": "Kategori",
+    "priority": "Öncelik",
+    "creating": "Oluşturuluyor",
+    "createTicket": "Bilet oluştur",
+    "creationFailed": "Bilet oluşturma işlemi başarısız oldu. Tekrar dene.",
+    "createdToast": "Bilet {{number}} oluşturuldu",
+    "startFromForm": "Bir formdan başlayın (isteğe bağlı)",
+    "blankTicketOption": "Boş bilet",
+    "priorityOptions": {
+      "low": "Düşük",
+      "normal": "Normal",
+      "high": "Yüksek",
+      "urgent": "Acil"
+    }
+  },
+  "ticketFormFields": {
+    "selectPlaceholder": "Seçin…"
+  },
+  "ticketsPage": {
+    "title": "Biletler",
+    "createTicket": "Bilet oluştur",
+    "reviewQueue": "İnceleme kuyruğu",
+    "archived": "Arşivlendi",
+    "searchPlaceholder": "Bilet arayın",
+    "filterByPriority": "Önceliğe göre filtrele",
+    "allPriorities": "Tüm öncelikler",
+    "filterByCategory": "Kategoriye göre filtrele",
+    "allCategories": "Tüm kategoriler",
+    "assigneeLockedTitle": "Sekme zaten atanan kişiye göre filtreliyor",
+    "filterByAssignee": "Atanana göre filtrele",
+    "allAssignees": "Tüm atananlar",
+    "sortTickets": "Biletleri sırala",
+    "loadFailed": "Biletler yüklenemedi.",
+    "selectAll": "Tümünü seç",
+    "selectedCount": "{{count}} seçildi",
+    "selectedCount_one": "{{count}} seçildi",
+    "selectedCount_other": "{{count}} seçildi",
+    "clearSelection": "Temizle",
+    "noSelection": "Bir bilet seçin. Taşımak için j/k'yi, genişletmek için Enter'ı kullanın.",
+    "ticketingSettings": "Biletleme ayarları",
+    "assignFailed": "Atama başarısız oldu. Tekrar dene.",
+    "assignedToYou": "Size atandı",
+    "restoreFailed": "Geri yükleme başarısız oldu. Tekrar dene.",
+    "ticketRestored": "Bilet geri yüklendi",
+    "tabs": {
+      "mine": "Biletlerim",
+      "unassigned": "Atanmamış",
+      "open": "Hepsi açık",
+      "breaching": "Yakında ihlal edilecek",
+      "closed": "Kapalı"
+    },
+    "sort": {
+      "triage": "Triyaj sırası",
+      "newest": "Önce en yeni",
+      "oldest": "Önce en eski",
+      "due": "Son tarih"
+    },
+    "priority": {
+      "urgent": "Acil",
+      "high": "Yüksek",
+      "normal": "Normal",
+      "low": "Düşük"
+    },
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "empty": {
+      "title": "Henüz bilet yok",
+      "description": "Biletler müşteri portalından, uyarı kurallarından ve teknisyenlerden gelir. İlkini oluşturun veya biletlerin otomatik olarak açılması için bir uyarı kuralı bağlayın."
+    },
+    "bulk": {
+      "assignToAria": "Toplu atama",
+      "assignTo": "Ata…",
+      "unassign": "Atamayı kaldır",
+      "setStatusAria": "Toplu ayarlama durumu",
+      "setStatus": "Durumu ayarla…",
+      "updateFailed": "Toplu güncelleme başarısız oldu. Tekrar dene.",
+      "deleteFailed": "Toplu silme başarısız oldu. Tekrar dene.",
+      "updatedPast": "güncellendi",
+      "deletedPast": "silindi",
+      "reasonCount": "{{count}} {{reason}}",
+      "reasonCount_one": "{{count}} {{reason}}",
+      "reasonCount_other": "{{count}} {{reason}}",
+      "partialToast": "{{updated}} {{verb}}, {{skipped}} atlandı{{failedSuffix}}{{reasonsSuffix}}",
+      "successToast": "{{updated}} {{verb}}",
+      "failedSuffix": ", {{failed}} başarısız oldu",
+      "reasonsSuffix": "— {{reasons}}",
+      "reason": {
+        "outOfScope": "kapsamınız dışında",
+        "invalidTransition": "geçersiz durum değişikliği",
+        "assigneeNotFound": "atanan kişi bulunamadı",
+        "assigneeWrongPartner": "atanan kişi başka bir ortağa ait",
+        "concurrentModification": "başkası tarafından değiştirildi",
+        "ticketPartnerUnresolvable": "bilet ortağı çözülemiyor",
+        "other": "diğer hatalar"
+      }
+    },
+    "bulkDeleteDialog": {
+      "title": "{{count}} bileti silinsin mi?",
+      "title_one": "{{count}} bileti silinsin mi?",
+      "title_other": "{{count}} bilet silinsin mi?",
+      "message": "Bu, onları tüm kuyruklardan gizler; bir yönetici bunları Arşivlenmiş'ten geri yükleyebilir.",
+      "confirm": "Biletleri sil"
+    }
+  },
+  "ticketWorkbench": {
+    "notFound": "Bilet bulunamadı. Silinmiş olabilir veya erişiminiz olmayabilir.",
+    "loadFailed": "Bilet yüklenemedi.",
+    "backToQueue": "Sıraya geri dön",
+    "ticketSubject": "Bilet konusu",
+    "openFullPage": "Tam sayfayı aç",
+    "priorityLabel": "Öncelik",
+    "categoryLabel": "Kategori",
+    "noCategory": "Kategori yok",
+    "currentCategory": "Mevcut kategori",
+    "assignee": "Vekil",
+    "unassigned": "Atanmamış",
+    "mspStaff": "MSP personel",
+    "assigneeValue": "Vekil: {{assignee}} ✕",
+    "source": "Kaynak",
+    "dueDate": "Son tarih",
+    "waitingOn": "Bekliyoruz",
+    "resolution": "Çözünürlük",
+    "linkedAlerts": "Bağlantılı uyarılar",
+    "status": {
+      "new": "Yeni",
+      "open": "Aç",
+      "pending": "Beklemede",
+      "on_hold": "Beklemede",
+      "resolved": "Çözüldü",
+      "closed": "Kapalı"
+    },
+    "priority": {
+      "urgent": "Acil",
+      "high": "Yüksek",
+      "normal": "Normal",
+      "low": "Düşük"
+    },
+    "tags": {
+      "label": "Etiketler",
+      "removeTag": "Etiketi kaldır {{tag}}",
+      "addTag": "Etiket ekle…",
+      "addTagAria": "Etiket ekle"
+    },
+    "invoice": {
+      "create": "Fatura oluştur",
+      "creating": "Oluşturuluyor…",
+      "createFailed": "Bu biletten fatura oluşturulamadı.",
+      "created": "Taslak fatura oluşturuldu"
+    },
+    "move": {
+      "open": "Başka bir kuruluşa taşıyın…",
+      "label": "Kuruluşa taşı",
+      "selectOrganization": "Kuruluşu seçin…",
+      "confirm": "Taşı",
+      "failed": "Taşıma işlemi başarısız oldu. Tekrar dene."
+    },
+    "triage": {
+      "title": "Önerilen önceliklendirme",
+      "checking": "Bilet sinyalleri kontrol ediliyor…",
+      "priority": "Öncelik: {{priority}}",
+      "category": "Kategori: {{category}}",
+      "confidence": "{{percent}}% güven",
+      "notRight": "Doğru değil",
+      "applying": "Başvuruluyor…",
+      "suggestedCategory": "Önerilen kategori",
+      "applyFailed": "Bilet önceliklendirme önerisi uygulanamadı.",
+      "applied": "Bilet önceliklendirme önerisi uygulandı",
+      "feedbackFailed": "Bilet önceliklendirme geri bildirimi kaydedilemedi.",
+      "feedbackSaved": "Bilet önceliklendirme geri bildirimi kaydedildi"
+    },
+    "resolve": {
+      "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
+      "submit": "Bileti çözümle"
+    },
+    "pending": {
+      "reasonLabel": "Ne bekliyorsunuz? (isteğe bağlı)",
+      "setPending": "Ayarlama bekleniyor",
+      "putOnHold": "Beklemeye al"
+    },
+    "description": {
+      "empty": "Açıklama yok.",
+      "add": "Açıklama ekle"
+    },
+    "requester": {
+      "label": "İstek Sahibi",
+      "someoneElse": "Başka biri…",
+      "nameAria": "Talep edenin adı",
+      "emailPlaceholder": "E-posta (isteğe bağlı)",
+      "emailAria": "Talep sahibinin e-postası"
+    },
+    "device": {
+      "none": "Cihaz yok",
+      "unlink": "Bağlantıyı kaldır"
+    },
+    "toast": {
+      "statusUpdated": "Durum güncellendi",
+      "statusUpdateFailed": "Durum güncellemesi başarısız oldu. Tekrar dene.",
+      "ticketResolved": "Bilet çözüldü",
+      "resolveFailed": "Çözümleme başarısız oldu. Tekrar dene.",
+      "replyFailed": "Yanıt başarısız oldu. Tekrar dene.",
+      "updateFailed": "Güncelleme başarısız oldu. Tekrar dene.",
+      "commentEditFailed": "Yorum düzenleme başarısız oldu. Tekrar dene.",
+      "commentDeleteFailed": "Yorum silinemedi. Tekrar dene.",
+      "priorityUpdateFailed": "Öncelikli güncelleme başarısız oldu. Tekrar dene.",
+      "categoryUpdateFailed": "Kategori güncellemesi başarısız oldu. Tekrar dene.",
+      "assigned": "Atandı",
+      "unassigned": "Atanmamış",
+      "assignFailed": "Atama başarısız oldu. Tekrar dene."
+    },
+    "delete": {
+      "failed": "Silinemedi. Tekrar dene.",
+      "deleted": "Bilet silindi"
+    },
+    "deleteDialog": {
+      "title": "Bu bilet silinsin mi?",
+      "message": "Bu, bileti tüm kuyruklardan gizler. Bir yönetici bunu Arşivlendi kuyruğundan geri yükleyebilir.",
+      "confirm": "Bileti sil"
+    }
+  }
+}

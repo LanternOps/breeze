@@ -17,6 +17,10 @@ function cacheKey(source: string, packageId: string): string {
   return `${source}::${packageId}`;
 }
 
+// The agent prefixes winget patch ids as "winget:<id>" (formatPatchID, provider
+// id "winget", ":" separator). The catalog stores the bare winget id.
+const WINGET_PACKAGE_ID_PREFIX = 'winget:';
+
 async function loadCache(): Promise<Map<string, CatalogEntry>> {
   const rows = await db.select({
     id: thirdPartyPackageCatalog.id,
@@ -97,7 +101,23 @@ export async function enrichFromCatalog(input: EnrichmentInput): Promise<Enrichm
   }
 
   const map = await getCache();
-  const hit = map.get(cacheKey(input.source, input.packageId));
+  let hit = map.get(cacheKey(input.source, input.packageId));
+
+  // Agents report provider-prefixed package ids ("winget:Mozilla.Firefox",
+  // built by formatPatchID with a ":" separator), but the catalog seeds bare
+  // winget ids ("Mozilla.Firefox"). On an exact-match miss, retry once with a
+  // leading "winget:" prefix stripped so curated title/vendor/severity/category
+  // still apply (#3559). ONLY the winget prefix is stripped: winget, chocolatey
+  // and homebrew all collapse to source 'third_party' and the catalog has no
+  // provider dimension, so stripping any prefix would let e.g. "chocolatey:foo"
+  // wrongly inherit a winget-curated "foo" row. The catalog's ids are winget's,
+  // so only winget-prefixed ids can safely resolve to a catalog row. Exact-match
+  // is tried first, so a bare (or already-exact) id keeps matching.
+  if (!hit && input.packageId.startsWith(WINGET_PACKAGE_ID_PREFIX)) {
+    const barePackageId = input.packageId.slice(WINGET_PACKAGE_ID_PREFIX.length);
+    hit = map.get(cacheKey(input.source, barePackageId));
+  }
+
   if (!hit) {
     return {
       title: input.title,

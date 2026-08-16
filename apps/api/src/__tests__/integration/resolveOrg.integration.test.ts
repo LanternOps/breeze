@@ -120,7 +120,7 @@ describe('loadPartnerInboundPolicy', () => {
   it('reads routing policy from partners.settings JSONB, defaulting absent to quarantine', async () => {
     const { p } = await seedPartnerOrg();
     const defaults = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(defaults).toEqual({ unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
+    expect(defaults).toEqual({ enabled: true, unknownSenderMode: 'quarantine', defaultTriageOrgId: null, dropUnverifiedSenders: false });
 
     const adminDb = getTestDb() as any;
     await adminDb
@@ -129,7 +129,34 @@ describe('loadPartnerInboundPolicy', () => {
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'drop', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: true });
+  });
+
+  // #3597. `enabled` is the ONE field here that defaults permissive: the toggle was
+  // display-only until the gate shipped, so ingestion has always been on and a
+  // default of false would silently stop ticketing on upgrade.
+  it('reads enabled, defaulting an absent flag to true and honoring an explicit false', async () => {
+    const { p } = await seedPartnerOrg();
+    const adminDb = getTestDb() as any;
+
+    // A stored inbound object that predates the flag entirely.
+    await adminDb
+      .update(partners)
+      .set({ settings: { ticketing: { inbound: { unknownSenderMode: 'quarantine' } } } })
+      .where(eq(partners.id, p.id));
+    expect((await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id))).enabled).toBe(true);
+
+    await adminDb
+      .update(partners)
+      .set({ settings: { ticketing: { inbound: { enabled: false } } } })
+      .where(eq(partners.id, p.id));
+    expect((await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id))).enabled).toBe(false);
+
+    await adminDb
+      .update(partners)
+      .set({ settings: { ticketing: { inbound: { enabled: true } } } })
+      .where(eq(partners.id, p.id));
+    expect((await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id))).enabled).toBe(true);
   });
 
   it('maps the legacy triageUnknownSenders boolean to unknownSenderMode for back-compat', async () => {
@@ -141,6 +168,6 @@ describe('loadPartnerInboundPolicy', () => {
       .where(eq(partners.id, p.id));
 
     const set = await withSystemDbAccessContext(() => loadPartnerInboundPolicy(p.id));
-    expect(set).toEqual({ unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false });
+    expect(set).toEqual({ enabled: true, unknownSenderMode: 'triage', defaultTriageOrgId: 'org-triage', dropUnverifiedSenders: false });
   });
 });

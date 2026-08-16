@@ -226,12 +226,37 @@ export function normalizeScriptParameterDefinitions(value: unknown): ScriptParam
   return parsed.success ? parsed.data : null;
 }
 
-/** Stable serialization of one definition — key order independent, arm aware. */
+/** Stable serialization of one definition — key order independent, arm aware.
+ * Sorted by UTF-16 CODE POINT (`<` / `>`), never `localeCompare`: the output
+ * feeds a hash that must be byte-reproducible across processes, and
+ * `localeCompare` depends on the runtime's ICU data and default locale. */
 function canonicalizeDefinition(definition: ScriptParameterDefinition): string {
   const entries = Object.entries(definition as Record<string, unknown>)
     .filter(([, value]) => value !== undefined)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return JSON.stringify(entries);
+}
+
+/**
+ * Canonical serialization of a whole definition list, or `null` when the value
+ * is not a valid definition list.
+ *
+ * Two lists describe the same parameter contract exactly when their canonical
+ * strings are equal — {@link scriptParameterDefinitionsEqual} is defined in
+ * terms of this function precisely so the two can never drift. The string is
+ * also the form a HASH of the contract should be taken over (#3409 PR4c pins
+ * `scripts.parameters` into the `run_script` effect digest): it is normalized
+ * through the schema, so a legacy `{name,type}` and its default-materialized
+ * equivalent serialize identically, and it is object-key-order independent,
+ * so a jsonb round-trip that reorders keys is not mistaken for a change.
+ *
+ * Element ORDER is significant (parameter order is user-visible in the run
+ * modal), so the list is not sorted.
+ */
+export function canonicalizeScriptParameterDefinitions(value: unknown): string | null {
+  const normalized = normalizeScriptParameterDefinitions(value);
+  if (normalized === null) return null;
+  return JSON.stringify(normalized.map(canonicalizeDefinition));
 }
 
 /**
@@ -246,15 +271,14 @@ function canonicalizeDefinition(definition: ScriptParameterDefinition): string {
  *
  * An unparseable value on either side returns `false` (i.e. "changed"), which
  * is the safe answer for the one caller that matters: `script.version` gets
- * bumped rather than silently held back.
+ * bumped rather than silently held back. Note this means two IDENTICALLY
+ * unparseable values are still reported as changed — deliberate, and the
+ * reason this is not simply `canonical(a) === canonical(b)` with nulls
+ * compared.
  */
 export function scriptParameterDefinitionsEqual(a: unknown, b: unknown): boolean {
-  const left = normalizeScriptParameterDefinitions(a);
-  const right = normalizeScriptParameterDefinitions(b);
+  const left = canonicalizeScriptParameterDefinitions(a);
+  const right = canonicalizeScriptParameterDefinitions(b);
   if (left === null || right === null) return false;
-  if (left.length !== right.length) return false;
-  return left.every((definition, index) => {
-    const other = right[index];
-    return other !== undefined && canonicalizeDefinition(definition) === canonicalizeDefinition(other);
-  });
+  return left === right;
 }
