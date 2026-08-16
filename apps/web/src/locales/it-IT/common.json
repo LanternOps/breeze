@@ -706,7 +706,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} dispositivo/i utilizzano l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
+    "message_one": "{{count}} dispositivo utilizza l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
+    "message_other": "{{count}} dispositivi utilizzano l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
     "cta": "Come eseguire la migrazione"
   },
   "longTail": {

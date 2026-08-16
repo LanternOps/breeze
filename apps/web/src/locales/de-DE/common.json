@@ -706,7 +706,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} Gerät(e) verwenden auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
+    "message_one": "{{count}} Gerät verwendet auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
+    "message_other": "{{count}} Geräte verwenden auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
     "cta": "Anleitung zur Migration"
   },
   "longTail": {

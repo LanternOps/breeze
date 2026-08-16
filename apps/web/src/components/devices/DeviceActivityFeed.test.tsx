@@ -137,6 +137,18 @@ describe('DeviceActivityFeed', () => {
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 
+  it('collapsed: shows a "0" count badge and appends the empty-state copy to aria-label when there is nothing to show (#3452)', async () => {
+    // Without this, an empty device rendered a bare "Activity" rail —
+    // indistinguishable from still-loading.
+    mockFeed([], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() => expect(within(bar).getByTestId('activity-rail-count')).toBeInTheDocument());
+    expect(within(bar).getByTestId('activity-rail-count')).toHaveTextContent('0');
+    expect(bar).toHaveAttribute('aria-label', 'Activity, No recent actions on this device.');
+  });
+
   it('expanded: the header chevron fires onToggleCollapse to collapse', async () => {
     mockFeed([evt('e1')], []);
     const onToggleCollapse = vi.fn();

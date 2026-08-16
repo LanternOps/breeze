@@ -706,7 +706,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} cihaz(lar), kendi kendine barındırılan bu sunucuda barındırılan aracı sürümünü çalıştırıyor. Kendi kendine barındırılan aracı sürümüne geçiş yapın.",
+    "message_one": "{{count}} cihaz, kendi kendine barındırılan bu sunucuda barındırılan aracı sürümünü çalıştırıyor. Kendi kendine barındırılan aracı sürümüne geçiş yapın.",
+    "message_other": "{{count}} cihaz, kendi kendine barındırılan bu sunucuda barındırılan aracı sürümünü çalıştırıyor. Kendi kendine barındırılan aracı sürümüne geçiş yapın.",
     "cta": "Nasıl geçiş yapılır?"
   },
   "longTail": {

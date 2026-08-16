@@ -131,3 +131,44 @@ describe('MigrationRequiredBanner', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 });
+
+// The i18next 't' function is stubbed above (key:count) so the tests can
+// assert the banner reaches the store/permission gates without depending on
+// locale content. The `migrationBanner.message` key itself was split into
+// `message_one`/`message_other` (#3452) — verifying that split needs the real
+// i18next pluralization, so these two tests unmock 'react-i18next' and
+// '@/lib/i18n' and re-import the component fresh against the real locale
+// resources instead of the mocked translator.
+describe('MigrationRequiredBanner message pluralization (#3452)', () => {
+  it('uses the singular string for exactly 1 device', async () => {
+    vi.resetModules();
+    vi.doUnmock('react-i18next');
+    vi.doUnmock('@/lib/i18n');
+
+    const { fetchWithAuth: freshFetchWithAuth } = await import('../../stores/auth');
+    vi.mocked(freshFetchWithAuth).mockResolvedValue(statsResponse(1));
+    const { default: MigrationRequiredBannerReal } = await import('./MigrationRequiredBanner');
+
+    render(<MigrationRequiredBannerReal />);
+
+    const message = await screen.findByText(/device is running the hosted agent edition/);
+    expect(message.textContent).toContain('1 device is running');
+    expect(message.textContent).not.toMatch(/device\(s\)/);
+  });
+
+  it('uses the plural string for 3 devices', async () => {
+    vi.resetModules();
+    vi.doUnmock('react-i18next');
+    vi.doUnmock('@/lib/i18n');
+
+    const { fetchWithAuth: freshFetchWithAuth } = await import('../../stores/auth');
+    vi.mocked(freshFetchWithAuth).mockResolvedValue(statsResponse(3));
+    const { default: MigrationRequiredBannerReal } = await import('./MigrationRequiredBanner');
+
+    render(<MigrationRequiredBannerReal />);
+
+    const message = await screen.findByText(/devices are running the hosted agent edition/);
+    expect(message.textContent).toContain('3 devices are running');
+    expect(message.textContent).not.toMatch(/device\(s\)/);
+  });
+});

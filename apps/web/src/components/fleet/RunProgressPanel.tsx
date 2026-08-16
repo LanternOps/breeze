@@ -93,6 +93,33 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
 
   const terminal = run ? isTerminalRunStatus(run.status) : false;
 
+  // The run row's succeeded/failed/skipped columns are a denormalised roll-up
+  // that only `pollRunProgress` recomputes; the dispatcher's own
+  // `markTargetSkipped`/`markTargetFailed` writes touch the target row alone.
+  // Between dispatch and the first poll tick the panel therefore read
+  // "0 succeeded, 0 failed, 0 skipped of 4 targeted" directly above four rows
+  // already showing Skipped (#3452). The target rows in this same snapshot are
+  // the authoritative statuses, so count them instead.
+  //
+  // Only when the snapshot holds every target: a site-restricted caller gets a
+  // `targets` array filtered to their allowed sites (see `getRemediationRun`)
+  // while the roll-up still covers the whole run, and counting a subset there
+  // would under-report rather than fix anything.
+  const counts = (() => {
+    if (!run) return null;
+    const serverCounts = {
+      succeeded: run.succeededCount,
+      failed: run.failedCount,
+      skipped: run.skippedCount,
+    };
+    if (run.targets.length !== run.targetCount) return serverCounts;
+    return {
+      succeeded: run.targets.filter((target) => target.status === 'succeeded').length,
+      failed: run.targets.filter((target) => target.status === 'failed').length,
+      skipped: run.targets.filter((target) => target.status === 'skipped').length,
+    };
+  })();
+
   return (
     <div
       data-testid="run-progress"
@@ -156,13 +183,13 @@ export default function RunProgressPanel({ runId, onClose }: RunProgressPanelPro
           </div>
         )}
 
-        {run && (
+        {run && counts && (
           <div className="space-y-4">
             <p data-testid="run-progress-summary" className="text-sm text-muted-foreground">
               {t('longTail.fleet.RunProgress.counts', {
-                succeeded: formatNumber(run.succeededCount),
-                failed: formatNumber(run.failedCount),
-                skipped: formatNumber(run.skippedCount),
+                succeeded: formatNumber(counts.succeeded),
+                failed: formatNumber(counts.failed),
+                skipped: formatNumber(counts.skipped),
                 targets: formatNumber(run.targetCount),
               })}
             </p>
