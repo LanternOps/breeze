@@ -327,6 +327,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'software_inventory',
   'software_policies',
   'software_policy_audit',
+  'software_remediation_requests',
   'software_upload_sessions',
   'sql_instances',
   'sso_providers',

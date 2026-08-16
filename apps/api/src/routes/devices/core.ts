@@ -227,7 +227,7 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
   'deployment_devices', 'deployment_results', 'software_inventory',
-  'software_compliance_status', 'software_policy_audit',
+  'software_compliance_status', 'software_policy_audit', 'software_remediation_requests',
   // Remote access
   'remote_sessions', 'tunnel_sessions',
   // Monitoring & logs
