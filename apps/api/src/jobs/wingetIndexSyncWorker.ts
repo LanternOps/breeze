@@ -35,14 +35,19 @@
  * withdrawn packages are never pruned and linger in the typeahead. That is a
  * cosmetic staleness; deleting 27k live packages every run is not.
  *
- * `WINGET_INDEX_GITHUB_TOKEN` (#3602) raises the ceiling to 5000 req/h. That
- * fixes the SKIPPING problem — on a shared/CGNAT egress IP an unauthenticated
- * run can lose the 60 req/h race repeatedly and the index quietly goes stale —
- * and nothing more. The token needs no scopes: winget-pkgs is public and this
- * only reads trees.
+ * #3602 proposed an optional GitHub token (5000 req/h) to fix two things. Both
+ * were investigated against the live API on 2026-08-16 and NEITHER justified it,
+ * so no token is read here — deliberately, not by omission.
  *
- * It does NOT re-enable the prune, and splitting a truncated bucket into
- * smaller subtrees is a dead end. Measured against the live API 2026-08-16:
+ * Skipped runs: not observed and not expected. One run costs 37 requests, once
+ * per 24h; the only other GitHub callers in this API are latestVersion (1/h,
+ * TTL-cached) and binarySync (around releases), so steady state is ~39 of the
+ * 60/h anonymous budget on a dedicated egress IP. A shared/CGNAT IP could still
+ * lose that race — the `degraded` flag on GET /software/package-search is the
+ * instrument that would SHOW it, and a token can be added then, with evidence.
+ *
+ * Pruning: unreachable by splitting a truncated bucket into smaller subtrees.
+ * The split does not bottom out at any affordable depth:
  *
  *   manifests/m                     -> truncated (550 vendor directories,
  *                                      not the 351 #3602 assumed)
@@ -52,16 +57,16 @@
  *
  * Truncation is on RESPONSE BYTES, not entry count (Microsoft's 27,696-entry
  * subtree comes back complete), and winget's per-version locale manifests blow
- * that budget three levels deep. A split that actually bottomed out would have
- * to descend to version directories for the worst packages — hundreds of
- * requests for ONE package, unbounded across 36 buckets. So the prune stays
- * suppressed whenever anything truncates, as it always has.
+ * that budget three levels deep. Bottoming out means descending to version
+ * directories for the worst packages — hundreds of requests for ONE package,
+ * unbounded across 36 buckets. Even at 5000 req/h that is not affordable, so a
+ * token would not have bought pruning either.
  *
  * The real fix is to stop walking git trees altogether: Microsoft publishes the
  * prebuilt index the winget client itself searches at
  * https://cdn.winget.microsoft.com/cache/source2.msix — 3.5 MB, a SQLite
- * database, no rate limit and no truncation. Tracked separately; that work
- * retires this worker and the token along with it.
+ * database, no rate limit and no truncation. Tracked in #3622; that work
+ * retires this worker.
  *
  * Truncation has a second, quieter consequence: a truncated response's version
  * list is a SUBSET of reality, so the `latest_version` computed from it can be
@@ -94,32 +99,9 @@ const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const GITHUB_API = 'https://api.github.com';
 const REPO = 'microsoft/winget-pkgs';
 const FETCH_TIMEOUT_MS = 30_000;
-/**
- * Inter-request spacing. Anonymous callers get 60 req/h, so a 37-request walk
- * is already most of the budget and is paced conservatively. An authenticated
- * caller has 5000 req/h and no reason to crawl.
- */
 const REQUEST_SPACING_MS = 2_000;
-const AUTHENTICATED_REQUEST_SPACING_MS = 250;
 const MAX_RESPONSE_BYTES = 40_000_000;
 const UPSERT_CHUNK_SIZE = 500;
-
-/**
- * Optional PAT for the Trees API (#3602). No scopes are needed — winget-pkgs is
- * public and this only ever reads trees — so a fine-grained token with
- * "Public repositories (read-only)" is the right shape. Read at call time (not
- * module load) so tests and a hot-reloaded env behave predictably.
- *
- * Deliberately ONE variable name rather than also honouring a bare
- * `GITHUB_TOKEN`: every var this API reads must be threaded into the compose
- * `api` service to have any effect (see config/envComposeParity.test.ts), and a
- * second, undocumented name is exactly the silently-inert-setting trap that
- * test exists to prevent.
- */
-export function getWingetGitHubToken(): string | null {
-  const trimmed = (process.env.WINGET_INDEX_GITHUB_TOKEN ?? '').trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
 
 type WingetIndexSyncJobData = Record<string, never>;
 
@@ -278,13 +260,11 @@ export function buildTreeUrl(pathExpr: string, recursive: boolean): string {
 
 async function fetchGitTree(pathExpr: string, recursive: boolean): Promise<GitTreeResponse> {
   const url = buildTreeUrl(pathExpr, recursive);
-  const token = getWingetGitHubToken();
 
   const res = await fetch(url, {
     headers: {
       Accept: 'application/vnd.github+json',
       'User-Agent': 'breeze-rmm-winget-index-sync',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
@@ -328,8 +308,6 @@ export interface WingetIndexSyncSummary {
   truncatedBuckets: string[];
   /** Whether the stale-generation delete actually ran. */
   pruned: boolean;
-  /** True when a GitHub token was present (5000 req/h instead of 60). */
-  authenticated: boolean;
   /** Trees API calls this run made — the thing the rate limit actually counts. */
   requests: number;
   skipped?: 'rate_limited';
@@ -345,12 +323,8 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     complete: true,
     truncatedBuckets: [],
     pruned: false,
-    authenticated: getWingetGitHubToken() !== null,
     requests: 0,
   };
-  const spacingMs = summary.authenticated
-    ? AUTHENTICATED_REQUEST_SPACING_MS
-    : REQUEST_SPACING_MS;
 
   let root: GitTreeResponse;
   try {
@@ -405,7 +379,7 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
   };
 
   for (const bucket of buckets) {
-    await sleep(spacingMs);
+    await sleep(REQUEST_SPACING_MS);
     let tree: GitTreeResponse;
     try {
       tree = await fetchGitTree(`HEAD:manifests/${bucket}`, true);
@@ -430,10 +404,9 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     // are precisely the packages a prune would then delete, so a truncated
     // bucket makes the whole run non-authoritative. Upserts still proceed
     // (they are additive and cannot lose data); only the prune is suppressed.
-    // A token does NOT help here — see the header block: subtree splitting was
-    // measured against the live API and does not bottom out at any affordable
-    // depth, so a truncated bucket suppresses the prune whether or not we are
-    // authenticated.
+    // Not rescuable — see the header block: subtree splitting was measured
+    // against the live API and does not bottom out at any affordable depth,
+    // with or without a token.
     const bucketComplete = !tree.truncated;
     if (!bucketComplete) {
       summary.complete = false;
@@ -441,7 +414,6 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
       console.warn('[WingetIndexSync] bucket response truncated; prune suppressed for this run', {
         bucket,
         entries: (tree.tree ?? []).length,
-        authenticated: summary.authenticated,
       });
     }
 
@@ -562,7 +534,6 @@ export function createWingetIndexSyncWorker(): Worker<WingetIndexSyncJobData> {
           complete: false,
           truncatedBuckets: [],
           pruned: false,
-          authenticated: false,
           requests: 0,
           skipped: true,
         };

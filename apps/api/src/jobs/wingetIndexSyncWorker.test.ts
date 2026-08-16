@@ -487,21 +487,18 @@ describe('runWingetIndexSync', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GitHub token (#3602)
+// No GitHub token, by design (#3602 / #3622)
 // ---------------------------------------------------------------------------
 
-describe('runWingetIndexSync — GitHub token (#3602)', () => {
-  let insertMock: ReturnType<typeof vi.fn>;
+describe('runWingetIndexSync — unauthenticated by design', () => {
   let deleteMock: ReturnType<typeof vi.fn>;
   let upserts: UpsertCall[];
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    delete process.env.WINGET_INDEX_GITHUB_TOKEN;
-
     upserts = [];
-    insertMock = vi.fn(() => ({
+    (db as unknown as { insert: unknown }).insert = vi.fn(() => ({
       values: vi.fn((rows: Array<Record<string, unknown>>) => ({
         onConflictDoUpdate: vi.fn(async (cfg: { set: Record<string, unknown> }) => {
           upserts.push({ rows, latestVersionSet: renderSql(cfg.set.latestVersion) });
@@ -509,14 +506,12 @@ describe('runWingetIndexSync — GitHub token (#3602)', () => {
       })),
     }));
     deleteMock = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) }));
-    (db as unknown as { insert: unknown }).insert = insertMock;
     (db as unknown as { delete: unknown }).delete = deleteMock;
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    delete process.env.WINGET_INDEX_GITHUB_TOKEN;
   });
 
   async function runWithTimers<T>(p: Promise<T>): Promise<T> {
@@ -531,8 +526,8 @@ describe('runWingetIndexSync — GitHub token (#3602)', () => {
   }
 
   /** One bucket `m` whose recursive fetch comes back TRUNCATED. */
-  function fixtureFetch() {
-    return vi.fn(async (url: string) => {
+  const fixtureFetch = () =>
+    vi.fn(async (url: string) => {
       if (url.includes('manifests%2Fm')) {
         return treeResponse({
           sha: 'm',
@@ -542,69 +537,53 @@ describe('runWingetIndexSync — GitHub token (#3602)', () => {
       }
       return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
     });
-  }
-
-  it('sends no Authorization header when no token is set', async () => {
-    const fetchMock = fixtureFetch();
-    vi.stubGlobal('fetch', fetchMock);
-
-    const summary = await runWithTimers(runWingetIndexSync());
-
-    expect(summary.authenticated).toBe(false);
-    expect(summary.requests).toBe(2);
-    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
-      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
-    }
-  });
-
-  it('sends a bearer token on every request when one is set', async () => {
-    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
-    const fetchMock = fixtureFetch();
-    vi.stubGlobal('fetch', fetchMock);
-
-    const summary = await runWithTimers(runWingetIndexSync());
-
-    expect(summary.authenticated).toBe(true);
-    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
-      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ghp_test_token');
-    }
-  });
-
-  it('ignores a whitespace-only token rather than sending an empty bearer', async () => {
-    process.env.WINGET_INDEX_GITHUB_TOKEN = '   ';
-    const fetchMock = fixtureFetch();
-    vi.stubGlobal('fetch', fetchMock);
-
-    const summary = await runWithTimers(runWingetIndexSync());
-
-    expect(summary.authenticated).toBe(false);
-    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
-      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
-    }
-  });
 
   /**
-   * The token buys request headroom, NOT completeness. Subtree splitting was
-   * measured against the live API on 2026-08-16 and does not bottom out at any
-   * affordable depth (manifests/m/Mozilla and .../Mozilla/Firefox both come
-   * back truncated), so a truncated bucket must still suppress the prune while
-   * authenticated — and must not spend extra requests trying.
+   * #3602 proposed an optional GitHub token. It was investigated against the
+   * live API on 2026-08-16 and deliberately NOT added: a run costs 37 requests
+   * per 24h against a 60/h budget (no skipping observed), and a token would not
+   * have restored pruning either, because subtree splitting does not bottom out
+   * at an affordable depth (manifests/m/Mozilla and .../Mozilla/Firefox both
+   * come back truncated). #3622 retires this worker instead.
+   *
+   * This test is the guard: no credential ever leaves the process, whatever a
+   * GITHUB_TOKEN-shaped variable happens to be set in the environment.
    */
-  it('still suppresses the prune for a truncated bucket when authenticated, with no extra requests', async () => {
-    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
+  it('never sends an Authorization header, even with GitHub tokens in the environment', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_should_be_ignored';
+    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_should_also_be_ignored';
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await runWithTimers(runWingetIndexSync());
+
+      expect(fetchMock).toHaveBeenCalled();
+      for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+        const headers = init.headers as Record<string, string>;
+        expect(headers.Authorization).toBeUndefined();
+        expect(JSON.stringify(headers)).not.toContain('ghp_');
+      }
+    } finally {
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.WINGET_INDEX_GITHUB_TOKEN;
+    }
+  });
+
+  it('counts the Trees API calls a run made, and spends none rescuing a truncated bucket', async () => {
     const fetchMock = fixtureFetch();
     vi.stubGlobal('fetch', fetchMock);
 
     const summary = await runWithTimers(runWingetIndexSync());
 
+    // Root listing + the one bucket. No split walk.
+    expect(summary.requests).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(summary.truncatedBuckets).toEqual(['m']);
     expect(summary.complete).toBe(false);
     expect(summary.pruned).toBe(false);
     expect(deleteMock).not.toHaveBeenCalled();
-    // Root listing + the one bucket. No vendor walk, authenticated or not.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(summary.requests).toBe(2);
-    // Rows still land, and still preserve the stored latest_version.
+    // Rows still land, still preserving the stored latest_version.
     expect(upserts.length).toBeGreaterThan(0);
     expect(upserts.every((u) => u.latestVersionSet.includes('latest_version'))).toBe(true);
   });
