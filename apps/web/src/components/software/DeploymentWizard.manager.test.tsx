@@ -164,6 +164,39 @@ describe('DeploymentWizard — package-manager deploys', () => {
     });
   });
 
+  it('reflects a split (Windows+macOS) deployment response in the confirmation summary and toast', async () => {
+    const { showToast } = await import('../shared/Toast');
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/software/deployments' && init?.method === 'POST') {
+        return Promise.resolve(
+          ok({
+            data: { id: 'dep-win', name: 'VLC Media Player (Windows)' },
+            deployments: [
+              { id: 'dep-win', name: 'VLC Media Player (Windows)' },
+              { id: 'dep-mac', name: 'VLC Media Player (macOS)' },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(makeRoute([WINGET_METHOD, BREW_METHOD])(url));
+    });
+
+    render(
+      <DeploymentWizard initialCatalogId="cat-m" initialDeviceIds={[WIN_DEVICE]} />,
+    );
+    await waitForLoad();
+    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Deployment' }));
+
+    const summary = await screen.findByTestId('deployment-summary');
+    expect(summary.textContent).toMatch(/2/);
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringMatching(/2/), type: 'success' }),
+      );
+    });
+  });
+
   it('warns on the targets step about selected devices with no install method', async () => {
     mountWizard([WINGET_METHOD], [WIN_DEVICE, LINUX_DEVICE_A, LINUX_DEVICE_B]);
     await waitForLoad();

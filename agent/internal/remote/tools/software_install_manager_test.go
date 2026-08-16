@@ -185,6 +185,40 @@ func TestInstallViaManagerWingetExactVersionMissNeverFallsBack(t *testing.T) {
 	}
 }
 
+// TestInstallViaManagerWingetExactVersionMissingRequestedVersionFailsFast pins
+// the contract that versionMode "exact" with no requestedVersion must never
+// silently proceed as an unpinned (latest) install: it must fail before any
+// exec, regardless of whether an upstream caller validated the payload.
+func TestInstallViaManagerWingetExactVersionMissingRequestedVersionFailsFast(t *testing.T) {
+	cases := []struct {
+		name             string
+		requestedVersion string
+	}{
+		{name: "missing", requestedVersion: ""},
+		{name: "whitespace-only", requestedVersion: "   "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, runner := testManagerDeps(t, map[string]fakeManagerResponse{}, nil)
+
+			payload := map[string]any{
+				"installMethod":    map[string]any{"kind": "winget", "packageId": "Google.Chrome"},
+				"versionMode":      "exact",
+				"requestedVersion": tc.requestedVersion,
+				"softwareName":     "Chrome",
+			}
+
+			res := installViaManager(payload, deps)
+			if res.Status != "failed" {
+				t.Fatalf("status = %q, want failed for exact mode with no requestedVersion", res.Status)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("must not exec when exact mode has no requestedVersion, got calls=%v", runner.calls)
+			}
+		})
+	}
+}
+
 func TestInstallViaManagerWingetUnavailableWhenUnresolvable(t *testing.T) {
 	deps, runner := testManagerDeps(t, map[string]fakeManagerResponse{}, fmt.Errorf("not found under WindowsApps"))
 

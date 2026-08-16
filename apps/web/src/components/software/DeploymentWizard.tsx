@@ -292,6 +292,10 @@ export default function DeploymentWizard({
   const [deploying, setDeploying] = useState(false);
   const [deploymentComplete, setDeploymentComplete] = useState(false);
   const [deploymentId, setDeploymentId] = useState<string>("");
+  // >1 when a mixed Windows+macOS deploy was split by the API into one
+  // deployment per platform (POST /software/deployments always returns a
+  // `deployments` array; length is 1 for the common, unsplit case).
+  const [deploymentCount, setDeploymentCount] = useState(1);
   const [query, setQuery] = useState("");
   const [softwareOptions, setSoftwareOptions] = useState<SoftwareOption[]>([]);
   const [targetTree, setTargetTree] = useState<TargetNode[]>([]);
@@ -775,6 +779,7 @@ export default function DeploymentWizard({
         id?: string;
         status?: string;
         message?: string;
+        deployments?: unknown[];
       }>({
         request: () =>
           fetchWithAuth("/software/deployments", {
@@ -785,16 +790,11 @@ export default function DeploymentWizard({
           "policies:software.deploymentWizard.deploymentFailed",
         ),
         parseSuccess: (data) => {
-          const d =
-            (
-              data as {
-                data?: unknown;
-              }
-            )?.data ?? data;
-          return (d ?? {}) as {
-            id?: string;
-            status?: string;
-            message?: string;
+          const raw = data as { data?: unknown; deployments?: unknown[] };
+          const d = raw?.data ?? data;
+          return {
+            ...((d ?? {}) as { id?: string; status?: string; message?: string }),
+            deployments: raw?.deployments,
           };
         },
       });
@@ -806,10 +806,22 @@ export default function DeploymentWizard({
         showToast({ message: failureMessage, type: "error" });
         return;
       }
+      // A mixed Windows+macOS deploy is split by the API into one deployment
+      // per platform (see createManagerDeployments in routes/software.ts) —
+      // reflect that split in the confirmation view and toast rather than
+      // silently describing only the first half.
+      const splitCount = result?.deployments?.length ?? 1;
+      setDeploymentCount(splitCount);
       setDeploymentId(result?.id ?? "deployment-created");
       setDeploymentComplete(true);
       showToast({
-        message: i18n.t("policies:software.deploymentWizard.deploymentStarted"),
+        message:
+          splitCount > 1
+            ? i18n.t(
+                "policies:software.deploymentWizard.deploymentsStartedSplit",
+                { count: splitCount },
+              )
+            : i18n.t("policies:software.deploymentWizard.deploymentStarted"),
         type: "success",
       });
     } catch (err) {
@@ -825,6 +837,7 @@ export default function DeploymentWizard({
   const resetWizard = () => {
     const firstDeployable = softwareOptions.find(isDeployableSoftware);
     setDeploymentComplete(false);
+    setDeploymentCount(1);
     setActiveStepIndex(0);
     setSelectedSoftwareId(firstDeployable?.id ?? "");
     setSelectedVersionId(
@@ -881,10 +894,15 @@ export default function DeploymentWizard({
         <h2 className="text-xl font-semibold">
           {i18n.t("policies:software.deploymentWizard.deploymentCreated")}
         </h2>
-        <p className="text-sm text-muted-foreground">
-          {i18n.t(
-            "policies:software.deploymentWizard.yourDeploymentHasBeenQueuedSuccessfully",
-          )}
+        <p className="text-sm text-muted-foreground" data-testid="deployment-summary">
+          {deploymentCount > 1
+            ? i18n.t(
+                "policies:software.deploymentWizard.yourDeploymentsWereSplitAndQueuedSuccessfully",
+                { count: deploymentCount },
+              )
+            : i18n.t(
+                "policies:software.deploymentWizard.yourDeploymentHasBeenQueuedSuccessfully",
+              )}
         </p>
         <div className="flex items-center justify-center gap-2 pt-4">
           {linkableDeploymentId && (

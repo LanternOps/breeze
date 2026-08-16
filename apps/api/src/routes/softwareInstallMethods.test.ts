@@ -309,6 +309,25 @@ describe('softwareInstallMethodRoutes', () => {
         expect.objectContaining({ action: 'software.install_method.delete', resourceId: METHOD_ID }),
       );
     });
+
+    it('maps a referencing-deployment FK violation to 409 without auditing', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(chainMock([ownedCatalogItem()]) as any)
+        .mockReturnValueOnce(chainMock([installedMethod()]) as any);
+      vi.mocked(db.delete).mockImplementationOnce(() => {
+        throw Object.assign(new Error('update or delete on table violates foreign key constraint'), { code: '23503' });
+      });
+
+      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/referenced by past deployments/i);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /software/catalog/:id/install-methods', () => {

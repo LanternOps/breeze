@@ -109,6 +109,14 @@ func installWingetManaged(packageID, versionMode, requestedVersion string, force
 		return NewErrorResult(fmt.Errorf("manager_unavailable: winget is Windows-only"), time.Since(startTime).Milliseconds())
 	}
 
+	// Belt-and-suspenders: the API is expected to reject an exact request with
+	// no requestedVersion before it ever reaches the agent, but "exact never
+	// falls back to latest" must not depend on upstream courtesy — fail fast,
+	// before any exec, rather than silently installing latest.
+	if versionMode == "exact" && requestedVersion == "" {
+		return NewErrorResult(fmt.Errorf("exact version mode requires requestedVersion"), time.Since(startTime).Milliseconds())
+	}
+
 	wingetPath, err := resolveManagerWingetCommand(deps)
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("manager_unavailable: %s", err.Error()), time.Since(startTime).Milliseconds())

@@ -279,8 +279,17 @@ softwareInstallMethodRoutes.delete(
     const existing = await loadInstallMethod(item.id, c.req.param('methodId')!);
     if (!existing) return c.json({ error: 'Install method not found' }, 404);
 
-    await db.delete(softwareInstallMethods)
-      .where(and(eq(softwareInstallMethods.id, existing.id), eq(softwareInstallMethods.catalogId, item.id)));
+    try {
+      await db.delete(softwareInstallMethods)
+        .where(and(eq(softwareInstallMethods.id, existing.id), eq(softwareInstallMethods.catalogId, item.id)));
+    } catch (err: unknown) {
+      if ((err as { code?: string }).code === '23503') {
+        return c.json({
+          error: 'This install method is referenced by past deployments — disable it instead of deleting it',
+        }, 409);
+      }
+      throw err;
+    }
 
     writeRouteAudit(c, {
       orgId: orgResult.orgId,
