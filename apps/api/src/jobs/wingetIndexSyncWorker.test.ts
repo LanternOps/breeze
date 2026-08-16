@@ -487,7 +487,7 @@ describe('runWingetIndexSync', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Authenticated sync + per-vendor split of a truncated bucket (#3602)
+// GitHub token (#3602)
 // ---------------------------------------------------------------------------
 
 describe('runWingetIndexSync — GitHub token (#3602)', () => {
@@ -530,70 +530,34 @@ describe('runWingetIndexSync — GitHub token (#3602)', () => {
     return outcome.value;
   }
 
-  /**
-   * One bucket `m` whose recursive fetch comes back TRUNCATED, holding two
-   * vendor directories. The per-vendor subtrees are complete and their paths
-   * are vendor-RELATIVE, exactly as the Trees API returns them.
-   */
+  /** One bucket `m` whose recursive fetch comes back TRUNCATED. */
   function fixtureFetch() {
     return vi.fn(async (url: string) => {
-      if (url.includes('manifests%2Fm%2FMicrosoft')) {
-        return treeResponse({
-          sha: 'ms',
-          tree: [
-            { path: 'Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' },
-            { path: 'Edge/127.0/Microsoft.Edge.installer.yaml', type: 'blob' },
-          ],
-        });
-      }
-      if (url.includes('manifests%2Fm%2FMozilla')) {
-        return treeResponse({
-          sha: 'mz',
-          tree: [{ path: 'Firefox/130.0/Mozilla.Firefox.yaml', type: 'blob' }],
-        });
-      }
-      if (url.includes('manifests%2Fm') && url.includes('recursive=1')) {
+      if (url.includes('manifests%2Fm')) {
         return treeResponse({
           sha: 'm',
           truncated: true,
           tree: [{ path: 'Microsoft/Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
         });
       }
-      if (url.includes('manifests%2Fm')) {
-        // Non-recursive vendor LISTING for the split.
-        return treeResponse({
-          sha: 'm',
-          tree: [
-            { path: 'Microsoft', type: 'tree' },
-            { path: 'Mozilla', type: 'tree' },
-          ],
-        });
-      }
       return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
     });
   }
 
-  it('sends no Authorization header and never splits when no token is set', async () => {
+  it('sends no Authorization header when no token is set', async () => {
     const fetchMock = fixtureFetch();
     vi.stubGlobal('fetch', fetchMock);
 
     const summary = await runWithTimers(runWingetIndexSync());
 
     expect(summary.authenticated).toBe(false);
-    expect(summary.splitBuckets).toEqual([]);
-    expect(summary.truncatedBuckets).toEqual(['m']);
-    expect(summary.complete).toBe(false);
-    expect(summary.pruned).toBe(false);
-    expect(deleteMock).not.toHaveBeenCalled();
-    // Root listing + the one (truncated) bucket — no vendor walk.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(summary.requests).toBe(2);
     for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
       expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
     }
   });
 
-  it('authenticates, splits the truncated bucket by vendor and re-enables the prune', async () => {
+  it('sends a bearer token on every request when one is set', async () => {
     process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
     const fetchMock = fixtureFetch();
     vi.stubGlobal('fetch', fetchMock);
@@ -601,63 +565,47 @@ describe('runWingetIndexSync — GitHub token (#3602)', () => {
     const summary = await runWithTimers(runWingetIndexSync());
 
     expect(summary.authenticated).toBe(true);
-    expect(summary.splitBuckets).toEqual(['m']);
-    expect(summary.truncatedBuckets).toEqual([]);
-    expect(summary.complete).toBe(true);
-    expect(summary.pruned).toBe(true);
-    expect(deleteMock).toHaveBeenCalled();
-    // root + truncated bucket + vendor listing + 2 vendor subtrees.
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(summary.requests).toBe(5);
-
     for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ghp_test_token');
     }
-
-    // The vendor segment survives the re-prefixing — a package parsed from a
-    // vendor-relative subtree must NOT lose `Microsoft`/`Mozilla`.
-    const rows = upserts.flatMap((u) => u.rows);
-    expect(rows.map((r) => r.packageId).sort()).toEqual(['Microsoft.Edge', 'Mozilla.Firefox']);
-    // 127.0 only exists in the split response, so the split genuinely merged in.
-    expect(rows.find((r) => r.packageId === 'Microsoft.Edge')?.latestVersion).toBe('127.0');
-    // A rescued bucket is authoritative, so latest_version overwrites outright.
-    expect(upserts.every((u) => u.latestVersionSet === 'excluded.latest_version')).toBe(true);
   });
 
-  it('keeps the bucket incomplete when a vendor subtree itself truncates', async () => {
-    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (url.includes('manifests%2Fm%2FMicrosoft')) {
-          return treeResponse({
-            sha: 'ms',
-            truncated: true,
-            tree: [{ path: 'Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
-          });
-        }
-        if (url.includes('manifests%2Fm') && url.includes('recursive=1')) {
-          return treeResponse({
-            sha: 'm',
-            truncated: true,
-            tree: [{ path: 'Microsoft/Edge/126.0/Microsoft.Edge.installer.yaml', type: 'blob' }],
-          });
-        }
-        if (url.includes('manifests%2Fm')) {
-          return treeResponse({ sha: 'm', tree: [{ path: 'Microsoft', type: 'tree' }] });
-        }
-        return treeResponse({ sha: 'root-sha', tree: [{ path: 'm', type: 'tree' }] });
-      }),
-    );
+  it('ignores a whitespace-only token rather than sending an empty bearer', async () => {
+    process.env.WINGET_INDEX_GITHUB_TOKEN = '   ';
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
 
     const summary = await runWithTimers(runWingetIndexSync());
 
-    expect(summary.splitBuckets).toEqual([]);
+    expect(summary.authenticated).toBe(false);
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+      expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    }
+  });
+
+  /**
+   * The token buys request headroom, NOT completeness. Subtree splitting was
+   * measured against the live API on 2026-08-16 and does not bottom out at any
+   * affordable depth (manifests/m/Mozilla and .../Mozilla/Firefox both come
+   * back truncated), so a truncated bucket must still suppress the prune while
+   * authenticated — and must not spend extra requests trying.
+   */
+  it('still suppresses the prune for a truncated bucket when authenticated, with no extra requests', async () => {
+    process.env.WINGET_INDEX_GITHUB_TOKEN = 'ghp_test_token';
+    const fetchMock = fixtureFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const summary = await runWithTimers(runWingetIndexSync());
+
     expect(summary.truncatedBuckets).toEqual(['m']);
     expect(summary.complete).toBe(false);
     expect(summary.pruned).toBe(false);
     expect(deleteMock).not.toHaveBeenCalled();
+    // Root listing + the one bucket. No vendor walk, authenticated or not.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(summary.requests).toBe(2);
     // Rows still land, and still preserve the stored latest_version.
+    expect(upserts.length).toBeGreaterThan(0);
     expect(upserts.every((u) => u.latestVersionSet.includes('latest_version'))).toBe(true);
   });
 });

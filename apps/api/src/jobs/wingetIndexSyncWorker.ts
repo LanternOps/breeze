@@ -29,20 +29,39 @@
  * `truncated: true` today (verified 2026-08-15). GitHub truncates below our
  * byte guard and still answers 200, and the entries it drops are exactly the
  * rows a prune would then delete — for `m` that is most of the 27k-entry
- * Microsoft namespace. Splitting a truncated bucket by vendor is not an option
- * inside the anonymous request budget (`m` alone holds 351 vendor directories),
- * and the truncation cut point is not a clean alphabetical boundary, so the
- * complete subset cannot be identified either. We therefore upsert what we got
- * and skip the prune. Consequence to be aware of: while any bucket truncates,
+ * Microsoft namespace. The truncation cut point is not a clean alphabetical
+ * boundary either, so the complete subset cannot be identified. We therefore
+ * upsert what we got and skip the prune. Consequence to be aware of: while any bucket truncates,
  * withdrawn packages are never pruned and linger in the typeahead. That is a
  * cosmetic staleness; deleting 27k live packages every run is not.
  *
- * ...UNLESS a token is configured (#3602). `WINGET_INDEX_GITHUB_TOKEN` raises
- * the ceiling to 5000 req/h, which buys two things: a rate-limited skip becomes effectively impossible, and a truncated
- * bucket can be re-walked one VENDOR directory at a time (~1 + 351 requests for
- * `m`) so every response stays under the truncation ceiling and the prune runs
- * again. The token needs no scopes — winget-pkgs is public and this only reads
- * trees. Unauthenticated behavior is unchanged, truncation and all.
+ * `WINGET_INDEX_GITHUB_TOKEN` (#3602) raises the ceiling to 5000 req/h. That
+ * fixes the SKIPPING problem — on a shared/CGNAT egress IP an unauthenticated
+ * run can lose the 60 req/h race repeatedly and the index quietly goes stale —
+ * and nothing more. The token needs no scopes: winget-pkgs is public and this
+ * only reads trees.
+ *
+ * It does NOT re-enable the prune, and splitting a truncated bucket into
+ * smaller subtrees is a dead end. Measured against the live API 2026-08-16:
+ *
+ *   manifests/m                     -> truncated (550 vendor directories,
+ *                                      not the 351 #3602 assumed)
+ *   manifests/m/Mozilla             -> 61,700 entries, STILL truncated
+ *   manifests/m/Mozilla/Firefox     -> 66,194 entries, STILL truncated
+ *   manifests/m/Mozilla/Firefox/*   -> 277 version directories
+ *
+ * Truncation is on RESPONSE BYTES, not entry count (Microsoft's 27,696-entry
+ * subtree comes back complete), and winget's per-version locale manifests blow
+ * that budget three levels deep. A split that actually bottomed out would have
+ * to descend to version directories for the worst packages — hundreds of
+ * requests for ONE package, unbounded across 36 buckets. So the prune stays
+ * suppressed whenever anything truncates, as it always has.
+ *
+ * The real fix is to stop walking git trees altogether: Microsoft publishes the
+ * prebuilt index the winget client itself searches at
+ * https://cdn.winget.microsoft.com/cache/source2.msix — 3.5 MB, a SQLite
+ * database, no rate limit and no truncation. Tracked separately; that work
+ * retires this worker and the token along with it.
  *
  * Truncation has a second, quieter consequence: a truncated response's version
  * list is a SUBSET of reality, so the `latest_version` computed from it can be
@@ -78,19 +97,10 @@ const FETCH_TIMEOUT_MS = 30_000;
 /**
  * Inter-request spacing. Anonymous callers get 60 req/h, so a 37-request walk
  * is already most of the budget and is paced conservatively. An authenticated
- * caller gets 5000 req/h, which makes the per-vendor split of a truncated
- * bucket affordable — but only if we are not sleeping 2s between each of a few
- * hundred requests.
+ * caller has 5000 req/h and no reason to crawl.
  */
 const REQUEST_SPACING_MS = 2_000;
 const AUTHENTICATED_REQUEST_SPACING_MS = 250;
-/**
- * Hard ceiling on Trees API calls per run, authenticated only (the anonymous
- * walk is self-limiting at 37). Well under the 5000/h authenticated ceiling so
- * a pathological upstream restructuring cannot burn the token's whole budget;
- * hitting it marks the run incomplete, which suppresses the prune.
- */
-const MAX_AUTHENTICATED_REQUESTS_PER_RUN = 2_000;
 const MAX_RESPONSE_BYTES = 40_000_000;
 const UPSERT_CHUNK_SIZE = 500;
 
@@ -318,79 +328,11 @@ export interface WingetIndexSyncSummary {
   truncatedBuckets: string[];
   /** Whether the stale-generation delete actually ran. */
   pruned: boolean;
-  /** True when a GitHub token was present (5000 req/h, per-vendor split enabled). */
+  /** True when a GitHub token was present (5000 req/h instead of 60). */
   authenticated: boolean;
   /** Trees API calls this run made — the thing the rate limit actually counts. */
   requests: number;
-  /** Buckets that truncated but were RESCUED by a complete per-vendor re-walk. */
-  splitBuckets: string[];
   skipped?: 'rate_limited';
-}
-
-/**
- * Re-walk one bucket a vendor directory at a time (#3602).
- *
- * A recursive fetch of a large bucket (`m`) comes back `truncated: true`, which
- * suppresses the prune for the entire run. Splitting it by vendor keeps every
- * response under the truncation ceiling, but costs ~1 + <vendor count>
- * requests (351 for `m`) — unaffordable anonymously, routine at 5000 req/h.
- * Callers therefore only reach this when a token is configured.
- *
- * `complete` is false if the vendor LISTING itself truncated (we don't know
- * every vendor), if any vendor subtree truncated, or if the caller's remaining
- * request budget could not cover the walk. Rate-limit / fetch errors propagate
- * to the caller, which handles them exactly as it does for a bucket fetch.
- */
-async function walkBucketByVendor(
-  bucket: string,
-  spacingMs: number,
-  requestBudget: number,
-): Promise<{ packages: Map<string, ParsedWingetPackage>; complete: boolean; requests: number }> {
-  const packages = new Map<string, ParsedWingetPackage>();
-
-  await sleep(spacingMs);
-  const listing = await fetchGitTree(`HEAD:manifests/${bucket}`, false);
-  let requests = 1;
-  let complete = !listing.truncated;
-
-  const vendors = (listing.tree ?? [])
-    .filter((e) => e.type === 'tree')
-    .map((e) => e.path)
-    .sort();
-
-  if (vendors.length === 0 || vendors.length > requestBudget - requests) {
-    return { packages, complete: false, requests };
-  }
-
-  for (const vendor of vendors) {
-    await sleep(spacingMs);
-    const sub = await fetchGitTree(`HEAD:manifests/${bucket}/${vendor}`, true);
-    requests++;
-    if (sub.truncated) complete = false;
-
-    // Subtree paths are relative to the VENDOR directory
-    // (`Chrome/126.0/Google.Chrome.installer.yaml`), so re-prefix them to the
-    // repo-absolute form parseWingetTreePaths expects — its bucket-prefix strip
-    // then removes exactly `manifests/<bucket>/`, leaving the vendor segment in
-    // place. Prefixing with only `<vendor>/` would be wrong: a single-character
-    // vendor directory would itself be eaten by that strip.
-    const entries = (sub.tree ?? []).map((e) => ({
-      path: `manifests/${bucket}/${vendor}/${e.path}`,
-      type: e.type,
-    }));
-    for (const [pkgId, parsed] of parseWingetTreePaths(entries)) {
-      const existing = packages.get(pkgId);
-      if (existing) {
-        for (const v of parsed.versions) {
-          if (!existing.versions.includes(v)) existing.versions.push(v);
-        }
-      } else {
-        packages.set(pkgId, parsed);
-      }
-    }
-  }
-
-  return { packages, complete, requests };
 }
 
 export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
@@ -405,7 +347,6 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     pruned: false,
     authenticated: getWingetGitHubToken() !== null,
     requests: 0,
-    splitBuckets: [],
   };
   const spacingMs = summary.authenticated
     ? AUTHENTICATED_REQUEST_SPACING_MS
@@ -489,38 +430,11 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
     // are precisely the packages a prune would then delete, so a truncated
     // bucket makes the whole run non-authoritative. Upserts still proceed
     // (they are additive and cannot lose data); only the prune is suppressed.
-    let bucketComplete = !tree.truncated;
-    if (tree.truncated && summary.authenticated) {
-      // Authenticated only (#3602): re-walk the bucket per vendor so every
-      // response stays under the truncation ceiling and the prune can run
-      // again. The truncated result is KEPT and merged with the split's, so a
-      // partial split can only ever add packages, never lose them.
-      const budget = MAX_AUTHENTICATED_REQUESTS_PER_RUN - summary.requests;
-      try {
-        const split = await walkBucketByVendor(bucket, spacingMs, budget);
-        summary.requests += split.requests;
-        mergeInto(bucketPackages, split.packages);
-        if (split.complete && split.packages.size > 0) {
-          bucketComplete = true;
-          summary.splitBuckets.push(bucket);
-          console.log('[WingetIndexSync] truncated bucket rescued by per-vendor walk', {
-            bucket,
-            packages: split.packages.size,
-            requests: split.requests,
-          });
-        }
-      } catch (err) {
-        if (err instanceof WingetRateLimitError) {
-          console.warn('[WingetIndexSync] rate limited during per-vendor split; skipping run', {
-            bucket,
-            error: err.message,
-          });
-          return { ...summary, complete: false, skipped: 'rate_limited' };
-        }
-        throw err;
-      }
-    }
-
+    // A token does NOT help here — see the header block: subtree splitting was
+    // measured against the live API and does not bottom out at any affordable
+    // depth, so a truncated bucket suppresses the prune whether or not we are
+    // authenticated.
+    const bucketComplete = !tree.truncated;
     if (!bucketComplete) {
       summary.complete = false;
       summary.truncatedBuckets.push(bucket);
@@ -528,9 +442,6 @@ export async function runWingetIndexSync(): Promise<WingetIndexSyncSummary> {
         bucket,
         entries: (tree.tree ?? []).length,
         authenticated: summary.authenticated,
-        hint: summary.authenticated
-          ? undefined
-          : 'set WINGET_INDEX_GITHUB_TOKEN to enable the per-vendor split and re-enable pruning',
       });
     }
 
@@ -653,7 +564,6 @@ export function createWingetIndexSyncWorker(): Worker<WingetIndexSyncJobData> {
           pruned: false,
           authenticated: false,
           requests: 0,
-          splitBuckets: [],
           skipped: true,
         };
       }
