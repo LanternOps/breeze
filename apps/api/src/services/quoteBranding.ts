@@ -86,7 +86,9 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
     // also matches what the web preview already does (InvoiceDocument /
     // QuoteDocument: `branding.partnerName || seller.name`), so PDF and preview
     // now degrade identically instead of diverging on the same missing row.
-    partnerName: partner?.name ?? seller?.name ?? 'Proposal',
+    // `||`, not `??`: neither column is constrained non-empty, and a blank
+    // wordmark is a worse document than the generic word.
+    partnerName: partner?.name || seller?.name || 'Proposal',
     logoUrl: brand?.logoUrl ?? null,
     primaryColor: brand?.primaryColor ?? null,
     footer: quote.terms ?? partner?.invoiceFooter ?? brand?.footerText ?? null,

@@ -96,6 +96,18 @@ describe('resolveQuoteBranding', () => {
     expect(b.partnerName).toBe('Proposal');
   });
 
+  it('blank names are skipped, not printed — a wordmark is never empty', async () => {
+    // Neither partners.name nor the snapshot's name is constrained non-empty,
+    // and `??` would happily hand an empty string to the renderer.
+    queue({ ...basePartner, name: '' }, baseBrand);
+    const frozen = { name: '', address: null, phone: null, email: null, website: null };
+    expect((await resolveQuoteBranding(source({ sellerSnapshot: frozen }))).partnerName).toBe('Proposal');
+
+    queue({ ...basePartner, name: '' }, baseBrand);
+    const named = { name: 'Frozen Co', address: null, phone: null, email: null, website: null };
+    expect((await resolveQuoteBranding(source({ sellerSnapshot: named }))).partnerName).toBe('Frozen Co');
+  });
+
   it('frozen sellerSnapshot wins; buildSellerSnapshot is not synthesized', async () => {
     queue(basePartner, baseBrand);
     const frozen = { name: 'Frozen Co', address: null, phone: null, email: null, website: null };

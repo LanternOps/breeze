@@ -825,11 +825,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // What the announcement is ABOUT: the figures themselves, independent of the
   // sentence that wraps them. Gating on this rather than on `srSentence` is the
   // #2151 fix — the sentence also changes when nothing about the quote does.
-  // i18next hydrates its resources asynchronously, so `t` (and therefore
-  // `srSentence`) changes identity shortly after mount even on a quote nobody
-  // has touched. A skip-the-first-render guard can't see that: the re-render is
-  // the SECOND one, so it sailed through and announced the untouched totals
-  // ~800ms after load. Comparing figures instead makes the i18n settle a no-op.
+  // i18n resources arriving after the first paint rewrite the sentence TEXT
+  // (raw key → real copy) on a quote nobody has touched, which refires an effect
+  // keyed on the sentence. A skip-the-first-render guard can't help: that is the
+  // SECOND run, so it sailed through and announced the untouched totals ~800ms
+  // after load. Keying on the figures makes any copy-only change a no-op.
   const srTotalsKey = useMemo(
     () => [railOneTime, railMonthly, railAnnual, railTax, railDue, currency].join('|'),
     [railOneTime, railMonthly, railAnnual, railTax, railDue, currency],
@@ -838,9 +838,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // that settles after the i18n resources land still announces real copy.
   const srSentenceRef = useRef(srSentence);
   useEffect(() => { srSentenceRef.current = srSentence; }, [srSentence]);
-  // null until the first post-mount figures are recorded as the baseline — the
-  // starting totals are what the visible rail already shows, so they are never
-  // announced. Only a CHANGE from them (an edit) announces.
+  // The first run only records the mount-time figures as the baseline: they are
+  // what the visible rail already shows, so they are never announced. Only a
+  // CHANGE from them (an edit) reaches the debounce below.
   const srFirstKey = useRef(true);
   useEffect(() => {
     if (srFirstKey.current) { srFirstKey.current = false; return; }

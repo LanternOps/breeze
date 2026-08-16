@@ -394,7 +394,9 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
       // snapshot above still carries the company name — printing the word
       // "Invoice" in the wordmark slot (beside the header's own INVOICE
       // eyebrow) threw that away.
-      partnerName: partner?.name ?? (invoice.sellerSnapshot as SellerSnapshot | null)?.name ?? 'Invoice',
+      // `||`, not `??`: neither name column is constrained non-empty, and a
+      // blank wordmark is a worse document than the generic word.
+      partnerName: partner?.name || (invoice.sellerSnapshot as SellerSnapshot | null)?.name || 'Invoice',
       logoUrl: branding?.logoUrl ?? null,
       primaryColor: branding?.primaryColor ?? null,
       footerText: invoice.terms ?? partner?.invoiceFooter ?? branding?.footerText ?? null,
