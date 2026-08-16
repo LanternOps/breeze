@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
@@ -181,6 +181,89 @@ export async function listRequestersForOrg(
         .limit(500)
     )
   );
+}
+
+const ADDIN_OPEN_STATUSES: TicketStatus[] = ['new', 'open', 'pending', 'on_hold'];
+const ADDIN_TICKET_LIST_LIMIT = 10;
+
+export interface AddinTicketSummary {
+  id: string;
+  internalNumber: string | null;
+  subject: string;
+  status: string;
+  priority: string | null;
+  updatedAt: Date;
+  submitterEmail: string | null;
+  matchesSubmitter: boolean;
+}
+
+function toAddinTicketSummary(
+  row: {
+    id: string;
+    internalNumber: string | null;
+    subject: string;
+    status: string;
+    priority: string | null;
+    updatedAt: Date;
+    submitterEmail: string | null;
+  },
+  submitterEmail?: string | null
+): AddinTicketSummary {
+  const matchesSubmitter = Boolean(
+    submitterEmail && row.submitterEmail && row.submitterEmail.toLowerCase() === submitterEmail.toLowerCase()
+  );
+  return { ...row, matchesSubmitter };
+}
+
+/**
+ * Outlook add-in ticket lookup for the current email's org: an "open" list
+ * (active statuses, most-recently-updated first) and a "recent" list (any
+ * status, most-recently-created first), both hard-scoped by org AND partner.
+ * matchesSubmitter is computed here (not filtered) so the add-in can highlight
+ * the caller's own tickets — it is a service-level annotation, not a public
+ * list filter.
+ */
+export async function listOrgTicketsForAddin(input: {
+  orgId: string;
+  partnerId: string;
+  submitterEmail?: string | null;
+}): Promise<{ openTickets: AddinTicketSummary[]; recentTickets: AddinTicketSummary[] }> {
+  const selectCols = {
+    id: tickets.id,
+    internalNumber: tickets.internalNumber,
+    subject: tickets.subject,
+    status: tickets.status,
+    priority: tickets.priority,
+    updatedAt: tickets.updatedAt,
+    submitterEmail: tickets.submitterEmail
+  };
+
+  const [openRows, recentRows] = await Promise.all([
+    db
+      .select(selectCols)
+      .from(tickets)
+      .where(
+        and(
+          eq(tickets.orgId, input.orgId),
+          eq(tickets.partnerId, input.partnerId),
+          inArray(tickets.status, ADDIN_OPEN_STATUSES),
+          isNull(tickets.deletedAt)
+        )
+      )
+      .orderBy(desc(tickets.updatedAt))
+      .limit(ADDIN_TICKET_LIST_LIMIT),
+    db
+      .select(selectCols)
+      .from(tickets)
+      .where(and(eq(tickets.orgId, input.orgId), eq(tickets.partnerId, input.partnerId), isNull(tickets.deletedAt)))
+      .orderBy(desc(tickets.createdAt))
+      .limit(ADDIN_TICKET_LIST_LIMIT)
+  ]);
+
+  return {
+    openTickets: openRows.map((row) => toAddinTicketSummary(row, input.submitterEmail)),
+    recentTickets: recentRows.map((row) => toAddinTicketSummary(row, input.submitterEmail))
+  };
 }
 
 /**

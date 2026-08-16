@@ -4,6 +4,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const valuesMock = vi.fn();
 const setMock = vi.fn();
 const whereMock = vi.fn();
+const selectWhereMock = vi.fn();
+const orderByMock = vi.fn();
+const selectLimitMock = vi.fn();
 
 const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
   const insertReturning = vi.fn();
@@ -61,9 +64,24 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => dbMocks.selectResult())
-        }))
+        where: vi.fn((w) => {
+          selectWhereMock(w);
+          return {
+            limit: vi.fn((l) => {
+              selectLimitMock(l);
+              return dbMocks.selectResult();
+            }),
+            orderBy: vi.fn((o) => {
+              orderByMock(o);
+              return {
+                limit: vi.fn((l) => {
+                  selectLimitMock(l);
+                  return dbMocks.selectResult();
+                })
+              };
+            })
+          };
+        })
       }))
     })),
     insert: vi.fn(() => ({
@@ -119,7 +137,21 @@ vi.mock('../db', () => ({
   }
 }));
 vi.mock('../db/schema', () => ({
-  tickets: { id: 'id', orgId: 'orgId', status: 'status', assignedTo: 'assignedTo', statusId: 'statusId' },
+  tickets: {
+    id: 'id',
+    orgId: 'orgId',
+    partnerId: 'partnerId',
+    status: 'status',
+    assignedTo: 'assignedTo',
+    statusId: 'statusId',
+    internalNumber: 'internalNumber',
+    subject: 'subject',
+    priority: 'priority',
+    updatedAt: 'updatedAt',
+    createdAt: 'createdAt',
+    submitterEmail: 'submitterEmail',
+    deletedAt: 'deletedAt'
+  },
   ticketComments: {},
   ticketAlertLinks: { ticketId: 'ticketId', alertId: 'alertId' },
   ticketParts: { ticketId: 'ticketId', orgId: 'orgId' },
@@ -137,7 +169,7 @@ import {
   createTicket, changeTicketStatus, assignTicket, addTicketComment,
   linkAlertToTicket, unlinkAlertFromTicket, createTicketFromAlert,
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
-  moveTicketOrg, softDeleteTicket, restoreTicket,
+  moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 
@@ -2575,5 +2607,130 @@ describe('moveTicketOrg', () => {
     expect(err.status).toBe(404);
     expect(err.message).toMatch(/target organization not found/i);
     expect(setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('listOrgTicketsForAddin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Walks the real (unmocked) drizzle-orm SQL tree instead of token-scanning the
+  // rendered string — see memory/vacuous_drizzle_where_clause_assertions. Column
+  // refs are plain strings in the schema mock (tickets.orgId === 'orgId'), so a
+  // literal only shows up here if the corresponding eq/inArray/isNull call was
+  // actually made — not supplied for free by a real Column's schema metadata.
+  function flattenSql(node: unknown, out: unknown[] = []): unknown[] {
+    if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+      for (const c of (node as { queryChunks: unknown[] }).queryChunks) flattenSql(c, out);
+    } else if (node && typeof node === 'object' && Array.isArray((node as { value?: unknown[] }).value)) {
+      // StringChunk: SQL punctuation ("(", " and ", " = ", " desc", ...) — not a bound value.
+    } else {
+      out.push(node);
+    }
+    return out;
+  }
+
+  const openRow = {
+    id: 't-open-1',
+    internalNumber: 'T-1001',
+    subject: 'Printer offline',
+    status: 'open',
+    priority: 'high',
+    updatedAt: new Date('2026-08-14T00:00:00Z'),
+    submitterEmail: 'User@Example.com'
+  };
+  const recentRow = {
+    id: 't-recent-1',
+    internalNumber: 'T-0900',
+    subject: 'VPN drops',
+    status: 'closed',
+    priority: 'normal',
+    updatedAt: new Date('2026-08-01T00:00:00Z'),
+    submitterEmail: null
+  };
+
+  it('scopes the open-ticket query by org, partner, active statuses, and not-deleted; orders by updatedAt desc; limits 10', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([openRow]).mockResolvedValueOnce([]);
+
+    await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    const openWhere = flattenSql(selectWhereMock.mock.calls[0]![0]);
+    expect(openWhere).toEqual([
+      'orgId', 'org-1',
+      'partnerId', 'partner-1',
+      'status', ['new', 'open', 'pending', 'on_hold'],
+      'deletedAt'
+    ]);
+    expect(flattenSql(orderByMock.mock.calls[0]![0])).toEqual(['updatedAt']);
+    expect(selectLimitMock.mock.calls[0]![0]).toBe(10);
+  });
+
+  it('scopes the recent-ticket query by org, partner, and not-deleted only (no status filter); orders by createdAt desc; limits 10', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]).mockResolvedValueOnce([recentRow]);
+
+    await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    const recentWhere = flattenSql(selectWhereMock.mock.calls[1]![0]);
+    expect(recentWhere).toEqual(['orgId', 'org-1', 'partnerId', 'partner-1', 'deletedAt']);
+    expect(recentWhere).not.toContain('status');
+    expect(flattenSql(orderByMock.mock.calls[1]![0])).toEqual(['createdAt']);
+    expect(selectLimitMock.mock.calls[1]![0]).toBe(10);
+  });
+
+  it('sets matchesSubmitter true on a case-insensitive email match', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([openRow]).mockResolvedValueOnce([]);
+
+    const result = await listOrgTicketsForAddin({
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      submitterEmail: 'user@example.com'
+    });
+
+    expect(result.openTickets).toHaveLength(1);
+    expect(result.openTickets[0]!.matchesSubmitter).toBe(true);
+    expect(result.openTickets[0]!.id).toBe('t-open-1');
+  });
+
+  it('sets matchesSubmitter false when the submitter email does not match', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([openRow]).mockResolvedValueOnce([]);
+
+    const result = await listOrgTicketsForAddin({
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      submitterEmail: 'someone-else@example.com'
+    });
+
+    expect(result.openTickets[0]!.matchesSubmitter).toBe(false);
+  });
+
+  it('sets matchesSubmitter false for every row when no submitterEmail is provided', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([openRow]).mockResolvedValueOnce([recentRow]);
+
+    const result = await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    expect(result.openTickets[0]!.matchesSubmitter).toBe(false);
+    expect(result.recentTickets[0]!.matchesSubmitter).toBe(false);
+  });
+
+  it('sets matchesSubmitter false when the row has no submitter email', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([]).mockResolvedValueOnce([recentRow]);
+
+    const result = await listOrgTicketsForAddin({
+      orgId: 'org-1',
+      partnerId: 'partner-1',
+      submitterEmail: 'user@example.com'
+    });
+
+    expect(result.recentTickets[0]!.matchesSubmitter).toBe(false);
+  });
+
+  it('returns openTickets and recentTickets keyed from their respective queries', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([openRow]).mockResolvedValueOnce([recentRow]);
+
+    const result = await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    expect(result.openTickets.map(t => t.id)).toEqual(['t-open-1']);
+    expect(result.recentTickets.map(t => t.id)).toEqual(['t-recent-1']);
   });
 });
