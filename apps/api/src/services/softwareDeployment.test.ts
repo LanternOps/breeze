@@ -1510,3 +1510,4 @@ describe('dispatchSoftwareInstallToDevice', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 });
+

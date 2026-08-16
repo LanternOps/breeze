@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, desc, like, or, inArray, isNotNull, type SQL } from 'drizzle-orm';
+import { and, eq, sql, desc, like, or, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   softwareCatalog,
@@ -12,7 +12,8 @@ import {
   devices,
   deviceCommands,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, requireSiteAccess, type AuthContext } from '../middleware/auth';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
 import { resolveDeploymentTargets } from '../services/deploymentTargetResolver';
 import {
@@ -55,6 +56,7 @@ import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
   getFileExtension,
+  authorizeCatalogItemRead,
   resolveScopedOrgId,
   setLatestSoftwareVersion,
   insertLatestSoftwareVersion,
@@ -97,6 +99,36 @@ function resolveCatalogListScope(
   }
 
   return scopedOrg;
+}
+
+/**
+ * Authorize a write against a catalog row fetched by id (dual-axis, #2135).
+ * Org-owned rows: the same resolved-org narrowing as the reads
+ * (authorizeCatalogItemRead) — a partner caller acting as org A must not
+ * mutate sibling org B's package, with the canAccessOrg fallback only in the
+ * org-less All-organizations view. Partner-wide rows (org_id NULL): system
+ * scope, or a full-partner admin of the owning partner.
+ * Returns null when allowed, else the error response to send. 404 (not 403)
+ * for foreign rows, matching the read routes' don't-reveal-existence behavior.
+ */
+function authorizeCatalogItemWrite(
+  auth: AuthContext,
+  item: { orgId: string | null; partnerId: string | null },
+  requestedOrgId: string | undefined,
+): { error: string; status: 403 | 404 } | null {
+  if (item.orgId !== null) {
+    return authorizeCatalogItemRead(auth, item.orgId, requestedOrgId);
+  }
+  if (auth.scope === 'system') return null;
+  if (auth.scope !== 'partner' || !auth.partnerId || item.partnerId !== auth.partnerId) {
+    return { error: 'Catalog item not found', status: 404 };
+  }
+  return canManagePartnerWidePolicies(auth)
+    ? null
+    : {
+        error: 'Modifying a partner-wide package requires full partner org access (orgAccess must be "all")',
+        status: 403,
+      };
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -339,7 +371,11 @@ const createCatalogSchema = z.object({
   iconUrl: z.string().url().optional(),
   websiteUrl: z.string().url().optional(),
   isManaged: z.boolean().optional(),
-  orgId: z.string().guid().optional()
+  orgId: z.string().guid().optional(),
+  // Ownership axis (#2135 Partner-Wide First): 'partner' creates a package
+  // shared by every org under the caller's partner (org_id NULL). Create-only —
+  // ownership never changes after creation.
+  ownerScope: z.enum(['organization', 'partner']).optional()
 });
 
 const updateCatalogSchema = z.object({
@@ -388,6 +424,23 @@ function safeUrlHost(rawUrl: string): string {
     return 'unparseable';
   }
 }
+
+// PATCH body: only provided keys change; explicit null clears a nullable
+// field (notes, URL, OS, args, detection rules — version/releaseDate/
+// architecture reject null). The binary-describing fields (checksum, fileSize,
+// s3Key) and scripts are not editable — replacing the installer means adding
+// a new version.
+const updateVersionSchema = z.object({
+  version: z.string().min(1).max(100).optional(),
+  releaseDate: z.string().datetime().optional(),
+  releaseNotes: z.string().max(5000).nullable().optional(),
+  downloadUrl: z.string().url().nullable().optional(),
+  supportedOs: z.array(platformSchema).nullable().optional(),
+  architecture: z.string().max(20).optional(),
+  silentInstallArgs: z.string().max(2000).nullable().optional(),
+  silentUninstallArgs: z.string().max(2000).nullable().optional(),
+  detectionRules: detectionRulesSchema.nullable().optional()
+});
 
 const listDeploymentsSchema = z.object({
   status: z.enum(['pending', 'in_progress', 'completed', 'completed_with_errors', 'failed', 'cancelled']).optional(),
@@ -512,9 +565,16 @@ softwareRoutes.get(
     const conditions: SQL[] = [];
     // Include partner-scoped built-in (integration) packages alongside the caller's
     // own org packages. RLS scopes built-ins to the caller's partner, so widening
-    // the WHERE here cannot leak another partner's rows.
+    // the WHERE here cannot leak another partner's rows. Partner-scope callers
+    // additionally see their own partner-wide custom packages (#2135) — gated on
+    // scope === 'partner' because org tokens never pass breeze_has_partner_access
+    // and must not get an app-layer condition RLS won't back.
     if (scopeResult.orgCondition) {
-      conditions.push(or(scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider))!);
+      const branches: SQL[] = [scopeResult.orgCondition, isNotNull(softwareCatalog.integrationProvider)];
+      if (auth.scope === 'partner' && auth.partnerId) {
+        branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+      }
+      conditions.push(or(...branches)!);
     }
     if (searchTerm) {
       const term = `%${searchTerm}%`;
@@ -572,12 +632,32 @@ softwareRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
-    const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
+
+    // Ownership axis (#2135): partner-wide packages are shared by every org
+    // under the partner, so creation is gated on the partner-wide capability —
+    // same gate as software policies. The partner is ALWAYS the caller's own.
+    let owner: { orgId: string | null; partnerId: string | null };
+    if (payload.ownerScope === 'partner') {
+      if (auth.scope !== 'system' && !auth.partnerId) {
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: 'Partner-wide packages require full partner org access (orgAccess must be "all")' }, 403);
+      }
+      if (!auth.partnerId) {
+        // System scope has no partner of its own to stamp.
+        return c.json({ error: 'Partner-wide packages require partner scope' }, 403);
+      }
+      owner = { orgId: null, partnerId: auth.partnerId };
+    } else {
+      const orgResult = resolveScopedOrgId(auth, payload.orgId ?? c.req.query('orgId'));
+      if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+      owner = { orgId: orgResult.orgId, partnerId: null };
+    }
 
     const [item] = await db.insert(softwareCatalog).values({
-      orgId,
+      orgId: owner.orgId,
+      partnerId: owner.partnerId,
       name: payload.name,
       vendor: payload.vendor ?? null,
       description: payload.description ?? null,
@@ -588,7 +668,7 @@ softwareRoutes.post(
     }).returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: owner.orgId,
       action: 'software.catalog.create',
       resourceType: 'software_catalog_item',
       resourceId: item!.id,
@@ -614,8 +694,15 @@ softwareRoutes.get(
 
     const query = c.req.valid('query');
     const term = `%${query.q}%`;
+    // Same dual-axis widening as GET /catalog: built-ins for everyone, the
+    // caller's own partner-wide custom packages for partner scope (#2135) —
+    // search must not return a narrower set than the list it searches.
+    const scopeBranches: SQL[] = [eq(softwareCatalog.orgId, orgId), isNotNull(softwareCatalog.integrationProvider)];
+    if (auth.scope === 'partner' && auth.partnerId) {
+      scopeBranches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);
+    }
     const conditions = [
-      eq(softwareCatalog.orgId, orgId),
+      or(...scopeBranches)!,
       or(
         like(softwareCatalog.name, term),
         like(softwareCatalog.vendor, term),
@@ -639,21 +726,23 @@ softwareRoutes.get(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
-    // Look up by id alone, then authorize in JS. RLS restricts visibility to the
-    // caller's org rows + their partner's built-ins; the org guard below rejects a
-    // (visible) org-scoped row belonging to a different org. Built-in integration
-    // packages (Huntress/SentinelOne) are partner-scoped with org_id NULL, so an
+    // Look up by id alone, then authorize in JS. RLS bounds what is visible:
+    // the caller's org rows, plus NULL-org partner rows — built-ins for any
+    // caller, but partner-wide custom packages only for partner-scope tokens
+    // (org tokens never pass breeze_has_partner_access, so those rows are
+    // simply invisible here and 404). Partner rows have org_id NULL, so an
     // `eq(orgId)` filter would exclude them — matching the /deploy route (#1957).
+    // authorizeCatalogItemRead narrows org-owned rows to the request's resolved
+    // org (a partner caller acting as org A must not read sibling org B's
+    // package), falling back to canAccessOrg only in the org-less
+    // All-organizations view.
     const [item] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!item || (item.orgId !== null && item.orgId !== orgId)) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!item) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, item.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionCount] = await db.select({ count: sql<number>`count(*)` })
       .from(softwareVersions).where(eq(softwareVersions.catalogId, id));
@@ -672,16 +761,19 @@ softwareRoutes.patch(
   zValidator('json', updateCatalogSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
     const [existing] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
+    // Built-ins are provisioned in system context and stay immutable here.
+    if (existing.integrationProvider !== null && auth.scope !== 'system') {
+      return c.json({ error: 'Built-in integration packages cannot be modified' }, 403);
+    }
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [updated] = await db.update(softwareCatalog)
       .set(payload)
@@ -689,7 +781,7 @@ softwareRoutes.patch(
       .returning();
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: existing.orgId,
       action: 'software.catalog.update',
       resourceType: 'software_catalog_item',
       resourceId: id,
@@ -710,14 +802,17 @@ softwareRoutes.delete(
   zValidator('param', catalogIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const [existing] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!existing) return c.json({ error: 'Catalog item not found' }, 404);
+    // Built-ins are provisioned in system context and stay immutable here.
+    if (existing.integrationProvider !== null && auth.scope !== 'system') {
+      return c.json({ error: 'Built-in integration packages cannot be deleted' }, 403);
+    }
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A version that is still referenced by a deployment cannot be deleted —
     // software_deployments.software_version_id is an ON DELETE RESTRICT FK, so
@@ -744,7 +839,7 @@ softwareRoutes.delete(
     await db.delete(softwareCatalog).where(eq(softwareCatalog.id, id));
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: existing.orgId,
       action: 'software.catalog.delete',
       resourceType: 'software_catalog_item',
       resourceId: existing.id,
@@ -767,22 +862,22 @@ softwareRoutes.get(
   zValidator('param', versionParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
-    // Built-in integration packages (Huntress/SentinelOne) are partner-scoped with
-    // org_id NULL, so an `eq(orgId)` filter excludes the catalog row entirely and
-    // the endpoint 404s — which the deploy wizard renders as "No versions" with a
-    // grayed-out deploy. Look up by id and authorize in JS, mirroring the /deploy
-    // route: for an org/partner-scoped caller RLS binds a visible built-in to their
-    // own partner, so a NULL-org row here is the caller's own (system scope sees all).
+    // Partner-scoped rows (built-in EDR packages and partner-wide custom
+    // packages, #2135) have org_id NULL, so an `eq(orgId)` filter excludes the
+    // catalog row entirely and the endpoint 404s — which the deploy wizard
+    // renders as "No versions" with a grayed-out deploy. Look up by id and
+    // authorize in JS, mirroring the /deploy route: RLS binds a visible
+    // NULL-org row to the caller's own partner (system scope sees all).
+    // authorizeCatalogItemRead narrows org-owned rows to the request's
+    // resolved org; only the org-less All-organizations view falls back to
+    // canAccessOrg.
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
-    if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
-      return c.json({ error: 'Catalog item not found' }, 404);
-    }
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const versions = await db.select().from(softwareVersions)
       .where(eq(softwareVersions.catalogId, id))
@@ -802,16 +897,17 @@ softwareRoutes.post(
   zValidator('json', createVersionSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
 
+    // Dual-axis fetch + write authorization (#2135): partner-wide packages have
+    // org_id NULL and take versions from full-partner admins only.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A URL-created version never recorded a fileType, so the dispatcher fell
     // back to 'exe' and the agent exec'd the downloaded file directly — which
@@ -829,7 +925,10 @@ softwareRoutes.post(
     // scripted clients.
     if (payload.downloadUrl && fileType === null) {
       captureMessage('software version created with undetermined installer type', 'warning', {
-        orgId,
+        // Dual-axis (#2135): a partner-wide package has org_id NULL, so log both
+        // axes — orgId alone would attribute those rows to nothing at all.
+        orgId: catalogItem.orgId,
+        partnerId: catalogItem.partnerId,
         catalogId: id,
         version: payload.version,
         // Host only — a managed-software URL can carry a presigned capability
@@ -860,7 +959,7 @@ softwareRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: catalogItem.orgId,
       action: 'software.catalog.version.create',
       resourceType: 'software_version',
       resourceId: version.id,
@@ -1075,6 +1174,71 @@ softwareRoutes.post(
   }
 );
 
+// PATCH /catalog/:id/versions/:versionId - Update version metadata
+softwareRoutes.patch(
+  '/catalog/:id/versions/:versionId',
+  requireScope('organization', 'partner', 'system'),
+  requireSoftwareWrite,
+  requireMfa(),
+  zValidator('param', versionIdParamSchema),
+  zValidator('json', updateVersionSchema),
+  async (c) => {
+    const auth = c.get('auth');
+
+    const { id, versionId } = c.req.valid('param');
+    const payload = c.req.valid('json');
+
+    // Dual-axis fetch + write authorization (#2135) — see version create above.
+    const [catalogItem] = await db.select().from(softwareCatalog)
+      .where(eq(softwareCatalog.id, id));
+    if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
+
+    const [existingVersion] = await db.select().from(softwareVersions)
+      .where(and(
+        eq(softwareVersions.id, versionId),
+        eq(softwareVersions.catalogId, id),
+      ));
+    if (!existingVersion) return c.json({ error: 'Version not found' }, 404);
+
+    const updates: Record<string, unknown> = {};
+    if (payload.version !== undefined) updates.version = payload.version;
+    if (payload.releaseDate !== undefined) updates.releaseDate = new Date(payload.releaseDate);
+    if (payload.releaseNotes !== undefined) updates.releaseNotes = payload.releaseNotes;
+    if (payload.downloadUrl !== undefined) updates.downloadUrl = payload.downloadUrl;
+    if (payload.supportedOs !== undefined) updates.supportedOs = payload.supportedOs;
+    if (payload.architecture !== undefined) updates.architecture = payload.architecture;
+    if (payload.silentInstallArgs !== undefined) updates.silentInstallArgs = payload.silentInstallArgs;
+    if (payload.silentUninstallArgs !== undefined) updates.silentUninstallArgs = payload.silentUninstallArgs;
+    if (payload.detectionRules !== undefined) updates.detectionRules = payload.detectionRules;
+    if (Object.keys(updates).length === 0) {
+      return c.json({ error: 'No fields to update' }, 400);
+    }
+    // A URL-sourced version must not end up with neither URL nor uploaded file.
+    if (updates.downloadUrl === null && !existingVersion.s3Key) {
+      return c.json({ error: 'This version has no uploaded file — it needs a download URL' }, 400);
+    }
+
+    const [updated] = await db.update(softwareVersions)
+      .set(updates)
+      .where(eq(softwareVersions.id, versionId))
+      .returning();
+    if (!updated) return c.json({ error: 'Failed to update software version' }, 500);
+
+    writeRouteAudit(c, {
+      orgId: catalogItem.orgId,
+      action: 'software.catalog.version.update',
+      resourceType: 'software_version',
+      resourceId: versionId,
+      resourceName: catalogItem.name,
+      details: { version: updated.version, updatedFields: Object.keys(updates) },
+    });
+
+    return c.json({ data: updated });
+  }
+);
+
 // POST /catalog/:id/versions/:versionId/promote - Mark an existing version as latest
 softwareRoutes.post(
   '/catalog/:id/versions/:versionId/promote',
@@ -1084,14 +1248,14 @@ softwareRoutes.post(
   zValidator('param', versionIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const { id, versionId } = c.req.valid('param');
+    // Dual-axis fetch + write authorization (#2135) — see version create above.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, id), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
+    if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(
@@ -1109,7 +1273,7 @@ softwareRoutes.post(
     }
 
     writeRouteAudit(c, {
-      orgId,
+      orgId: catalogItem.orgId,
       action: 'software.catalog.version.promote',
       resourceType: 'software_version',
       resourceId: promotedVersion.id,
@@ -1128,17 +1292,18 @@ softwareRoutes.get(
   requireSoftwareRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const { orgId } = orgResult;
 
     const catalogId = c.req.param('id')!;
     const versionId = c.req.param('versionId')!;
 
-    // Verify catalog belongs to org
+    // Dual-axis read authorization: org rows are narrowed to the request's
+    // resolved org (canAccessOrg fallback only in the org-less All-orgs view);
+    // partner rows (org_id NULL) are already bound to the caller's partner by RLS.
     const [catalogItem] = await db.select().from(softwareCatalog)
-      .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId)));
+      .where(eq(softwareCatalog.id, catalogId));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    const readError = authorizeCatalogItemRead(auth, catalogItem.orgId, c.req.query('orgId'));
+    if (readError) return c.json({ error: readError.error }, readError.status);
 
     const [versionRecord] = await db.select().from(softwareVersions)
       .where(and(eq(softwareVersions.id, versionId), eq(softwareVersions.catalogId, catalogId)));
@@ -1342,9 +1507,11 @@ softwareRoutes.post(
       integrationProvider: softwareCatalog.integrationProvider,
     }).from(softwareCatalog)
       .where(eq(softwareCatalog.id, versionRecord.catalogId));
-    // RLS already restricts visibility to the caller's org rows + their partner's
-    // built-ins. Extra guard: an org-scoped (non-built-in) row must match the
-    // authenticated org; built-in packages have org_id NULL and are allowed.
+    // RLS already restricts visibility to the caller's org rows + partner-scoped
+    // NULL-org rows (built-in EDR packages, and — for partner-scope tokens —
+    // partner-wide custom packages, #2135). Extra guard: an org-owned row must
+    // match the authenticated org; NULL-org rows are allowed and the deployment
+    // itself is stamped with the resolved context org.
     if (!catalogItem || (catalogItem.orgId !== null && catalogItem.orgId !== orgId)) {
       return c.json({ error: 'Catalog item not found or access denied' }, 404);
     }
@@ -1446,8 +1613,9 @@ softwareRoutes.post(
     const deviceIds = body.targets?.deviceIds ?? [];
 
     // Look up the catalog item + version. RLS restricts visibility to the caller's
-    // org rows + their partner's built-ins; the org guard below rejects a (visible)
-    // org-scoped row that belongs to a different org. Built-ins have org_id NULL.
+    // org rows + partner-scoped NULL-org rows (built-in EDR packages, and — for
+    // partner-scope tokens — partner-wide custom packages, #2135); the org guard
+    // below rejects a (visible) org-owned row that belongs to a different org.
     const [catalogItem] = await db.select({
       id: softwareCatalog.id,
       orgId: softwareCatalog.orgId,

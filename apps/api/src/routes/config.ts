@@ -3,6 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { cfAccessTrustEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
+import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 
@@ -33,6 +34,13 @@ configRoutes.get('/', (c) => {
     // /auth/register-partner enforcement reads (issue #1308).
     registration: {
       enabled: envFlag('ENABLE_REGISTRATION', false),
+    },
+    // Whether software package file uploads can succeed (S3 object storage
+    // fully configured). The web uses this to gray out upload affordances up
+    // front instead of letting the user pick a file and then hit the 503 the
+    // upload routes return when storage is missing.
+    softwarePackages: {
+      uploadsEnabled: isS3Configured(),
     },
   });
 });

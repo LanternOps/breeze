@@ -26,10 +26,12 @@ const EXISTING_VERSION = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /** Open the add-version form, type a version, and attach a file. */
@@ -302,9 +304,18 @@ describe('SoftwareVersionManager chunked upload path', () => {
     });
 
     it('still reports a genuine failure after a previous upload was cancelled', async () => {
-      const { signal } = await startUpload();
+      const { gate, signal } = await startUpload();
       fireEvent.click(screen.getByTestId('version-form-cancel'));
       expect(signal.aborted).toBe(true);
+      // The real uploader REJECTS on abort; emulate it so the submit's cleanup
+      // runs and re-enables the Add Version entry point (disabled while a save
+      // is in flight).
+      await act(async () => {
+        gate.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /add version/i })).toBeEnabled(),
+      );
 
       // A fresh submission gets a fresh controller — the stale aborted one must
       // not swallow a real error.

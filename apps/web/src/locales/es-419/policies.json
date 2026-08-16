@@ -1215,7 +1215,15 @@
       "installerType": "Tipo de instalador",
       "autoDetectFromUrl": "Detectar automáticamente desde la URL",
       "autoDetectedType": "Detección automática ({{type}})",
-      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI."
+      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI.",
+      "uploadsRequireS3Storage": "La carga de archivos requiere un almacenamiento de objetos S3 configurado en el servidor.",
+      "scope": "Alcance",
+      "allOrganizations": "Todas las organizaciones",
+      "sharedAcrossAllYourOrganizations": "— compartido entre todas tus organizaciones",
+      "thisOrganizationOnly": "Solo esta organización",
+      "partnerWideUrlOnly": "Los paquetes a nivel de socio usan una URL de descarga — la carga de archivos aún no está disponible para ellos.",
+      "selectedFileRemoved": "Se quitó el archivo seleccionado — los paquetes a nivel de socio usan una URL de descarga.",
+      "scopeLockedAfterCreate": "El paquete ya se creó con este alcance — la propiedad no puede cambiar después de la creación."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Gestionado integrado",
@@ -1435,7 +1443,11 @@
       "deviceCount_other": "dispositivos {{count}}",
       "groupCount_one": "grupo {{count}}",
       "groupCount_other": "grupos {{count}}",
-      "viewDeployment": "Ver implementación"
+      "viewDeployment": "Ver implementación",
+      "deployingTo": "Implementando en",
+      "customer": "Cliente",
+      "allTargetsBelongToThisCustomer": "Todos los objetivos seleccionados pertenecen a este cliente.",
+      "allOrgsSelectCustomer": "Estás viendo todas las organizaciones. Elige un cliente en el selector de organizaciones para dirigir esta implementación."
     },
     "detectionRulesEditor": {
       "detectionRules": "Reglas de detección",
@@ -1714,7 +1726,12 @@
       "installerType": "Tipo de instalador",
       "autoDetectFromUrl": "Detectar automáticamente desde la URL",
       "autoDetectedType": "Detección automática ({{type}})",
-      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI."
+      "installerTypeUndetected": "Esta URL no tiene una extensión de instalador reconocible. Elija el tipo explícitamente; de lo contrario, el archivo descargado se ejecuta directamente, lo que falla con un MSI.",
+      "advancedOptions": "Opciones avanzadas",
+      "uploadsRequireS3Storage": "La carga de archivos requiere un almacenamiento de objetos S3 configurado en el servidor.",
+      "editingVersion": "Editando versión",
+      "failedToUpdateVersion": "No se pudo actualizar la versión",
+      "replaceFileAddNewVersion": "Para reemplazar el archivo del instalador, agrega una nueva versión."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insertar una variable de tiempo de implementación",

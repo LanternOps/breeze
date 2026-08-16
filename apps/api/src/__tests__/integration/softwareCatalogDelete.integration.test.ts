@@ -28,6 +28,10 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         partnerId: null,
         orgId: activeOrgId,
         accessibleOrgIds: [activeOrgId],
+        // Mirrors buildOrgAccessClosures in middleware/auth.ts: canAccessOrg is a
+        // required member of AuthContext that both real constructors always set,
+        // so a stub that omits it makes the route throw instead of authorizing.
+        canAccessOrg: (orgId: string) => orgId === activeOrgId,
         user: { id: null, email: 'integration@test' },
       });
       return withDbAccessContext(

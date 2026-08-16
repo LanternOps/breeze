@@ -311,7 +311,9 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'cis_baselines',
   // software_catalog: a package is org-scoped (org_id set, partner_id NULL — the
   // baseline shape for custom packages) OR partner-wide (partner_id set, org_id
-  // NULL — built-in EDR integration packages). Converted from org-only to
+  // NULL — built-in EDR integration packages, and user-created partner-wide
+  // custom packages via POST /software/catalog ownerScope:'partner', #2135).
+  // Converted from org-only to
   // dual-axis in 2026-06-26-a-software-catalog-partner-axis. The org_id column
   // means org-tenant auto-discovery already asserts the breeze_has_org_access
   // branch; this entry asserts the breeze_has_partner_access (built-in) branch.

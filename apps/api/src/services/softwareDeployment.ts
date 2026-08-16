@@ -467,14 +467,25 @@ export async function buildAndDispatchSoftwareInstalls(
     // reconciliation keys on it) and the WS command id.
     const retryCount = deviceRetryCounts?.[device.id] ?? 0;
 
-    const resolvedFileType = isSoftwareFileType(versionRecord.fileType)
-      ? versionRecord.fileType
-      : 'exe';
 
     // deploymentId MUST be in the payload: the WS transport tracks it via
     // the sw-install-<deployment>-<device>-<attempt> command id, but the
     // queued fallback's device_commands row only has the payload to key
     // result reconciliation on (deploymentId AND retryCount).
+    // file_type is a plain nullable varchar with no CHECK constraint, so the
+    // column can hold anything a future route, import or manual UPDATE puts
+    // there. Narrow on read: an unrecognized value would otherwise be
+    // dispatched verbatim and only rejected by the agent AFTER the download,
+    // as `unsupported fileType`. 'exe' remains the historical fallback for a
+    // NULL — see deriveSoftwareFileTypeFromUrl on why we never guess better.
+    //
+    // Deliberately NOT inferred from deviceDownloadUrl here. Doing so would fix
+    // dispatch for legacy URL-only rows created before #3571 stamped file_type,
+    // but it reverses an explicit decision in that PR, so it is left as a
+    // separate call rather than smuggled in by a rebase.
+    const effectiveFileType = isSoftwareFileType(versionRecord.fileType)
+      ? versionRecord.fileType
+      : 'exe';
     const payload: AgentCommand['payload'] = {
       deploymentId,
       retryCount,
@@ -484,19 +495,13 @@ export async function buildAndDispatchSoftwareInstalls(
         approvedPrivateOrigins,
       },
       checksum: versionRecord.checksum,
-      // file_type is a plain nullable varchar with no CHECK constraint, so the
-      // column can hold anything a future route, import or manual UPDATE puts
-      // there. Narrow on read: an unrecognized value would otherwise be
-      // dispatched verbatim and only rejected by the agent AFTER the download,
-      // as `unsupported fileType`. 'exe' remains the historical fallback for a
-      // NULL — see deriveSoftwareFileTypeFromUrl on why we never guess better.
-      //
       // fileName and fileType are a COUPLED pair, not two independent fields:
       // the agent's validateInstallFileName rejects the command outright when
       // the filename's extension doesn't equal '.' + fileType. Building the
       // fallback name from the same resolved type is what keeps them in step.
-      fileName: versionRecord.originalFileName ?? `package.${resolvedFileType}`,
-      fileType: resolvedFileType,
+      fileName:
+        versionRecord.originalFileName ?? `package.${effectiveFileType}`,
+      fileType: effectiveFileType,
       silentInstallArgs: deviceSilentInstallArgs,
       softwareName: catalogItem.name,
       version: versionRecord.version,

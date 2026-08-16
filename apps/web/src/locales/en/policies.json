@@ -1215,7 +1215,15 @@
       "installerType": "Installer type",
       "autoDetectFromUrl": "Auto-detect from URL",
       "autoDetectedType": "Auto-detect ({{type}})",
-      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI."
+      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI.",
+      "uploadsRequireS3Storage": "File uploads require S3 object storage to be configured on the server.",
+      "scope": "Scope",
+      "allOrganizations": "All organizations",
+      "sharedAcrossAllYourOrganizations": "— shared across all your organizations",
+      "thisOrganizationOnly": "This organization only",
+      "partnerWideUrlOnly": "Partner-wide packages use a download URL — file upload is not available for them yet.",
+      "selectedFileRemoved": "The selected file was removed — partner-wide packages use a download URL.",
+      "scopeLockedAfterCreate": "The package was already created with this scope — ownership cannot change after creation."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Managed built-in",
@@ -1435,7 +1443,11 @@
       "deviceCount_other": "{{count}} devices",
       "groupCount_one": "{{count}} group",
       "groupCount_other": "{{count}} groups",
-      "viewDeployment": "View deployment"
+      "viewDeployment": "View deployment",
+      "deployingTo": "Deploying to",
+      "customer": "Customer",
+      "allTargetsBelongToThisCustomer": "All selected targets belong to this customer.",
+      "allOrgsSelectCustomer": "You're viewing all organizations. Pick a customer in the organization switcher to target this deployment."
     },
     "detectionRulesEditor": {
       "detectionRules": "Detection Rules",
@@ -1714,7 +1726,12 @@
       "installerType": "Installer type",
       "autoDetectFromUrl": "Auto-detect from URL",
       "autoDetectedType": "Auto-detect ({{type}})",
-      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI."
+      "installerTypeUndetected": "This URL has no recognizable installer extension. Pick the type explicitly — otherwise the downloaded file is run directly, which fails for an MSI.",
+      "advancedOptions": "Advanced options",
+      "uploadsRequireS3Storage": "File uploads require S3 object storage to be configured on the server.",
+      "editingVersion": "Editing version",
+      "failedToUpdateVersion": "Failed to update version",
+      "replaceFileAddNewVersion": "To replace the installer file, add a new version instead."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insert a deploy-time variable",
