@@ -1,4 +1,5 @@
 import type { WarrantyProvider, WarrantyLookupResult, WarrantyEntitlement } from './types';
+import { lenovoRateLimiter } from './throttle';
 
 export const lenovoProvider: WarrantyProvider = {
   name: 'lenovo',
@@ -28,7 +29,11 @@ export const lenovoProvider: WarrantyProvider = {
       return results;
     }
 
+    // Rate-limit at the request boundary so a whole-fleet sync (one single-serial
+    // call per device, across concurrent workers) doesn't burst Lenovo's API and
+    // get the source IP rate-limited (#3201).
     for (const sn of serialNumbers) {
+      await lenovoRateLimiter.acquire();
       try {
         const response = await fetch(
           `https://pcsupport.lenovo.com/us/en/api/v4/upsell/redport/getIbaseInfo?Serial=${encodeURIComponent(sn)}`,
