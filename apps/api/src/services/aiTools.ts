@@ -20,6 +20,12 @@ import {
   createExtensionStateStore,
   type ExtensionStateStore,
 } from '../extensions/stateStore';
+// Type-only, deliberately: `toolExecutionContext.ts` names a type from
+// `actionIntents/runScriptSnapshot.ts`, and sibling `actionIntents/*` modules
+// (intentService, revalidateRelease) already import back into this hub. Keeping
+// the edge type-only means it is erased at build time and no import cycle can
+// form.
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 // Pre-existing domain modules
 import { registerAgentLogTools } from './aiToolsAgentLogs';
@@ -88,7 +94,19 @@ export type AiToolTier = 1 | 2 | 3 | 4;
 export interface AiTool {
   definition: Anthropic.Tool;
   tier: AiToolTier;
-  handler: (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
+  /**
+   * `context` carries material a release path already verified against the
+   * approval's pinned effect digest (see `toolExecutionContext.ts`). It is
+   * OPTIONAL and trailing, so the 188 handlers declared `(input, auth)` are
+   * unaffected; only a handler that has a re-query worth skipping declares it,
+   * and it must behave identically when it is absent (direct chat, MCP and
+   * script-builder callers never supply one).
+   */
+  handler: (
+    input: Record<string, unknown>,
+    auth: AuthContext,
+    context?: ToolExecutionContext,
+  ) => Promise<string>;
   /**
    * Names of the tool's input properties that carry a device id (each a string
    * or string[]). When set, the central dispatch gates every supplied id
@@ -426,6 +444,12 @@ export async function executeTool(
   auth: AuthContext,
   registry: ExtensionContributionRegistry = extensionContributionRegistry,
   store: AiToolEnabledStore = defaultExtensionEnabledStore(),
+  /**
+   * Pre-verified release material for THIS invocation. Supplied only by a
+   * release path that has already checked the approval's pinned effect digest;
+   * every other caller omits it and the handler sees `undefined`.
+   */
+  context?: ToolExecutionContext,
 ): Promise<string> {
   const coreTool = aiTools.get(toolName);
   const extensionTool = resolveExtensionTool(toolName, registry);
@@ -473,5 +497,11 @@ export async function executeTool(
   const gate = await enforceDeviceArgs(tool, effectiveInput, auth);
   if (!gate.ok) return JSON.stringify({ error: gate.error });
 
-  return tool.handler(effectiveInput, auth);
+  // Only CORE handlers receive the execution context. Extension handlers are
+  // third-party code and are called with exactly two arguments — not merely
+  // typed without a third one, since a handler written `(input, auth, ...rest)`
+  // or reading `arguments` would otherwise capture pre-verified release
+  // material the host never intended to hand out.
+  if (coreTool) return coreTool.handler(effectiveInput, auth, context);
+  return (tool as RegistryAiTool).handler(effectiveInput, auth);
 }
