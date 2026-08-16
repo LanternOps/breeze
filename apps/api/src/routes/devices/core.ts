@@ -91,7 +91,11 @@ export const DEVICE_LINKED_DEVICE_ID_TABLES = [
 // row is the audit trail for an ad-hoc support session and must outlive the
 // ephemeral device the reaper purges 6h after the session ends. Its device_id
 // FK is declared ON DELETE SET NULL to match.
-export const DEVICE_DETACH_DEVICE_ID_TABLES = ['support_sessions', 'tickets'] as const;
+// abuse_endpoint_fingerprints (recidivist-endpoint abuse detector) also
+// detaches: it's an operator corpus that must survive device hard-delete so
+// cross-partner endpoint correlation still works after the originating
+// device is gone. Its device_id FK is declared ON DELETE SET NULL to match.
+export const DEVICE_DETACH_DEVICE_ID_TABLES = ['abuse_endpoint_fingerprints', 'support_sessions', 'tickets'] as const;
 
 /**
  * Subset of {@link getDeviceCascadeDeleteTables} ∪
