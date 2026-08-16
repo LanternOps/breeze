@@ -187,6 +187,11 @@
         "title": "Cancella sessioni",
         "message": "Terminare tutte le sessioni remote attive per {{hostname}}? Verranno disconnessi tutti gli utenti attualmente collegati tramite terminale, desktop o trasferimento file.",
         "confirm": "Cancella sessioni"
+      },
+      "installHomebrew": {
+        "title": "Installa Homebrew",
+        "message": "Installa Homebrew con l'utente attualmente connesso, usando una copia fissata e verificata tramite checksum del programma di installazione ufficiale. Richiede una sessione console con privilegi di amministratore.",
+        "confirm": "Installa Homebrew"
       }
     },
     "runScript": "Esegui script",
@@ -209,7 +214,8 @@
     "gateHint": {
       "liveSessionOnly": "{{reason}} — il Terminale remoto richiede un agente connesso. I comandi in coda verranno comunque eseguiti alla riconnessione.",
       "allCommands": "{{reason}} — non ha un agente per eseguire comandi."
-    }
+    },
+    "installHomebrew": "Installa Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Attività",

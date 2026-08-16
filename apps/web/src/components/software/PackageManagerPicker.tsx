@@ -305,7 +305,7 @@ export default function PackageManagerPicker({
                 className="inline-flex items-center gap-2 rounded-full border bg-muted/40 px-3 py-1 text-xs"
               >
                 <span className="font-semibold">
-                  {i18n.t(KIND_LABEL_KEYS[m.kind])}
+                  {i18n.t(/* i18n-dynamic */ KIND_LABEL_KEYS[m.kind])}
                 </span>
                 <span className="font-mono">{m.packageId}</span>
                 <button
@@ -358,7 +358,7 @@ export default function PackageManagerPicker({
               >
                 {KINDS_BY_PLATFORM[platform].map((k) => (
                   <option key={k} value={k}>
-                    {i18n.t(KIND_LABEL_KEYS[k])}
+                    {i18n.t(/* i18n-dynamic */ KIND_LABEL_KEYS[k])}
                   </option>
                 ))}
               </select>
@@ -390,7 +390,7 @@ export default function PackageManagerPicker({
             </button>
             {manualError && (
               <p className="text-xs text-destructive sm:col-span-3">
-                {i18n.t(PACKAGE_ID_ERROR_KEYS[manualError])}
+                {i18n.t(/* i18n-dynamic */ PACKAGE_ID_ERROR_KEYS[manualError])}
               </p>
             )}
           </div>

@@ -191,6 +191,11 @@
         "title": "Encerrar sessões",
         "message": "Encerrar todas as sessões remotas ativas de {{hostname}}? Isso desconectará todos os usuários conectados por terminal, desktop ou transferência de arquivos.",
         "confirm": "Encerrar sessões"
+      },
+      "installHomebrew": {
+        "title": "Instalar o Homebrew",
+        "message": "Instala o Homebrew como o usuário conectado no momento, usando uma cópia fixada e verificada por checksum do instalador oficial. Requer uma sessão de console com privilégios de administrador.",
+        "confirm": "Instalar o Homebrew"
       }
     },
     "runScript": "Executar script",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Enviar um pacote Wake-on-LAN por um agente par online na LAN do dispositivo",
     "power": "Energia",
     "shutdown": "Desligar",
-    "deviceSettings": "Configurações do dispositivo"
+    "deviceSettings": "Configurações do dispositivo",
+    "installHomebrew": "Instalar o Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Atividade",

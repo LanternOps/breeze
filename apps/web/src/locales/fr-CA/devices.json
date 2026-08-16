@@ -187,6 +187,11 @@
         "title": "Effacer les sessions",
         "message": "Mettre fin à toutes les séances à distance actives pour {{hostname}} ? Cela déconnectera tous les utilisateurs actuellement connectés via terminal, bureau ou transfert de fichiers.",
         "confirm": "Effacer les sessions"
+      },
+      "installHomebrew": {
+        "title": "Installer Homebrew",
+        "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur.",
+        "confirm": "Installer Homebrew"
       }
     },
     "runScript": "Exécuter un script",
@@ -209,7 +214,8 @@
     "gateHint": {
       "liveSessionOnly": "{{reason}} — le terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent tout de même à la reconnexion.",
       "allCommands": "{{reason}} — aucun agent n'est disponible pour exécuter des commandes."
-    }
+    },
+    "installHomebrew": "Installer Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Activité",

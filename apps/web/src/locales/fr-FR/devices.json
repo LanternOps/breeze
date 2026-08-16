@@ -191,6 +191,11 @@
         "title": "Effacer les sessions",
         "message": "Mettre fin à toutes les séances à distance actives pour {{hostname}} ? Cela déconnectera tous les utilisateurs actuellement connectés via terminal, bureau ou transfert de fichiers.",
         "confirm": "Effacer les sessions"
+      },
+      "installHomebrew": {
+        "title": "Installer Homebrew",
+        "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur.",
+        "confirm": "Installer Homebrew"
       }
     },
     "runScript": "Exécuter un script",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "power": "Puissance",
     "shutdown": "Éteindre",
-    "deviceSettings": "Paramètres de l’appareil"
+    "deviceSettings": "Paramètres de l’appareil",
+    "installHomebrew": "Installer Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Activité",

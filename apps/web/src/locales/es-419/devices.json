@@ -191,6 +191,11 @@
         "title": "Borrar sesiones",
         "message": "¿Finalizar todas las sesiones remotas activas para {{hostname}}? Esto desconectará a todos los usuarios actualmente conectados a través de terminal, escritorio o transferencia de archivos.",
         "confirm": "Borrar sesiones"
+      },
+      "installHomebrew": {
+        "title": "Instalar Homebrew",
+        "message": "Instala Homebrew como el usuario que tiene la sesión iniciada, usando una copia fija y verificada por suma de comprobación del instalador oficial. Requiere una sesión de consola con permisos de administrador.",
+        "confirm": "Instalar Homebrew"
       }
     },
     "runScript": "Ejecutar secuencia de comandos",
@@ -209,7 +214,8 @@
     "sendAWakeOnLanPacket": "Enviar un paquete Wake-on-LAN a través de un agente par en línea en el LAN del dispositivo",
     "power": "Energía",
     "shutdown": "Apagar",
-    "deviceSettings": "Configuración del dispositivo"
+    "deviceSettings": "Configuración del dispositivo",
+    "installHomebrew": "Instalar Homebrew"
   },
   "deviceActivityFeed": {
     "activity": "Actividad",
