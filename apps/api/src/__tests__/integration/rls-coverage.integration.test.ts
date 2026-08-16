@@ -263,6 +263,13 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Functional forge proof: partnerServicePrincipalRls.integration.test.ts.
   ['partner_service_principals', 'partner_id'],
   ['partner_service_principal_keys', 'partner_id'],
+  // office_addin_user_bindings (spec 2026-08-15, outlook-tech-addin): MFA-
+  // established Entra identity -> Breeze technician binding for the Office
+  // add-in tech persona. Partner-axis (Shape 3), no org_id column. GRANT
+  // includes DELETE — cascadeDeletePartner's dynamic partner_id sweep issues
+  // hard DELETEs as breeze_app under a system RLS context (no role switch).
+  // Functional cross-partner forge proof: officeAddinBindingsRls.integration.test.ts.
+  ['office_addin_user_bindings', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

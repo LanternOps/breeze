@@ -88,6 +88,7 @@ export * from './manifestSigningKeys';
 export * from './refreshTokenFamilies';
 export * from './tenantVariables';
 export * from './tickets';
+export * from './officeAddin';
 export * from './ticketConfig';
 export * from './ticketEmailLinks';
 export * from './ticketResponseTemplates';
