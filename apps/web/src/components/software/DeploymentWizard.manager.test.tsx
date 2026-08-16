@@ -3,7 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeploymentWizard from './DeploymentWizard';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// orgStore calls registerOrgIdProvider at module scope, and useOrgScope pulls
+// orgStore in, so the mock has to expose it or the whole suite fails to import.
+// Same shape as the sibling DeploymentWizard.preselect.test.tsx.
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: { getState: () => ({ tokens: null }) },
+}));
 vi.mock('../filters/DeviceTargetSelector', () => ({ DeviceTargetSelector: () => null }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 const fetchMock = vi.mocked(fetchWithAuth);

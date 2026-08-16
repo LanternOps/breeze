@@ -327,7 +327,12 @@ const namespaceDuplicateBaselines = {
     'integrations.json': 22,
     'patches.json': 11,
     'peripherals.json': 4,
-    'policies.json': 115,
+    // +8: package-manager software library — OS names ("Windows", "macOS",
+    // "Linux" in both addPackageModal and deploymentWizard) and package-manager
+    // identifiers ("winget", "Homebrew cask", "Homebrew formula") are proper
+    // nouns and command-line tokens, so they are intentionally identical in
+    // every catalog.
+    'policies.json': 123,
     'portal.json': 2,
     'quick.json': 1,
     'remote.json': 4,
