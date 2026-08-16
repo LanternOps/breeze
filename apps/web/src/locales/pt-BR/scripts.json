@@ -1246,6 +1246,7 @@
     "title": "Execução de teste",
     "devicePlaceholder": "Selecionar dispositivo de teste…",
     "noDevices": "Nenhum dispositivo compatível",
+    "devicesLoadFailed": "Não foi possível carregar os dispositivos",
     "deviceStatus": {
       "offline": "desconectado",
       "maintenance": "manutenção"

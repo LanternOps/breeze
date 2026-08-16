@@ -1246,6 +1246,7 @@
     "title": "Testlauf",
     "devicePlaceholder": "Testgerät auswählen…",
     "noDevices": "Keine kompatiblen Geräte",
+    "devicesLoadFailed": "Geräte konnten nicht geladen werden",
     "deviceStatus": {
       "offline": "nicht verbunden",
       "maintenance": "Wartung"

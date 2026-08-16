@@ -26,7 +26,7 @@ describe('ScriptTestRunner', () => {
   beforeEach(() => {
     localStorage.clear();
     fetchWithAuthMock.mockImplementation(async (url: string) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       return jsonResponse({}, 404);
     });
   });
@@ -52,7 +52,7 @@ describe('ScriptTestRunner', () => {
 
   it('filters the device list to the script OS targets', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
-      if (url === '/devices') {
+      if (url.startsWith('/devices')) {
         return jsonResponse({ data: [
           onlineDevice,
           { id: 'dddddddd-dddd-dddd-dddd-dddddddddddd', hostname: 'mac-box', osType: 'macos', status: 'online' },
@@ -71,7 +71,7 @@ describe('ScriptTestRunner', () => {
   it('runs on the selected device and renders the execution output when it completes', async () => {
     let polls = 0;
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -158,7 +158,7 @@ describe('ScriptTestRunner', () => {
 
   it('treats a cancelled execution as terminal and shows its status', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -185,7 +185,7 @@ describe('ScriptTestRunner', () => {
 
   it('stops polling on a permanent 404 instead of retrying to the deadline', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -213,7 +213,7 @@ describe('ScriptTestRunner', () => {
       <ScriptTestRunner osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
     );
     await screen.findByText(/save the script once/i);
-    expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/devices')).toBe(false);
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => url.startsWith('/devices'))).toBe(false);
   });
 
   it('remembers the pinned device per script and reports it to the parent', async () => {
@@ -238,7 +238,7 @@ describe('ScriptTestRunner', () => {
     let polls = 0;
     let pollGone = true;
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -280,7 +280,7 @@ describe('ScriptTestRunner', () => {
     vi.useFakeTimers();
     let polls = 0;
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -308,7 +308,7 @@ describe('ScriptTestRunner', () => {
   it('terminalises the run when the poll deadline expires', async () => {
     vi.useFakeTimers();
     fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/devices') return jsonResponse({ data: [onlineDevice] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [onlineDevice] });
       if (url === `/scripts/${SCRIPT_ID}/execute` && init?.method === 'POST') {
         return jsonResponse({ executions: [{ executionId: EXECUTION_ID, deviceId: DEVICE_ID }] }, 201);
       }
@@ -368,12 +368,130 @@ describe('ScriptTestRunner', () => {
       />
     );
 
+    // Wait on the pin actually being dropped, not on the <select>'s value: a
+    // select whose value has no matching <option> already reports '' in the DOM,
+    // which is the very bug this test exists for and would pass vacuously.
     await waitFor(() =>
-      expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe('')
+      expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBeNull()
     );
+    expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe('');
     // Run must be blocked, not silently targeting the now-hidden device.
     expect(screen.getByTestId('test-run-button')).toBeDisabled();
     expect(onTestDeviceChange).toHaveBeenLastCalledWith(null);
-    expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBeNull();
+  });
+
+  it('asks for the fleet per OS target and at the API page-size cap', async () => {
+    render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows', 'macos']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+      />
+    );
+
+    await waitFor(() => expect(screen.getByText('test-box')).toBeInTheDocument());
+
+    const deviceUrls = fetchWithAuthMock.mock.calls
+      .map(([url]) => url as string)
+      .filter(url => url.startsWith('/devices'));
+    // One server-filtered request per OS target — an unparameterised '/devices'
+    // would default to 500 rows and silently hide the rest of the fleet.
+    expect(deviceUrls).toHaveLength(2);
+    expect(deviceUrls.some(u => u.includes('osType=windows'))).toBe(true);
+    expect(deviceUrls.some(u => u.includes('osType=macos'))).toBe(true);
+    expect(deviceUrls.every(u => u.includes('limit=1000'))).toBe(true);
+  });
+
+  it('says the device list failed to load instead of showing an empty picker', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/devices')) return jsonResponse({ error: 'boom' }, 500);
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <ScriptTestRunner scriptId={SCRIPT_ID} osTypes={['windows']} isDirty={false} onSaveChanges={async () => true} />
+    );
+
+    // "No compatible devices" would read as a settled, correct answer — the
+    // operator would go looking for a device that is in fact right there.
+    await waitFor(() => expect(screen.getByText(/couldn't load devices/i)).toBeInTheDocument());
+    expect(screen.queryByText(/no compatible devices/i)).toBeNull();
+  });
+
+  it('keeps a pinned device when the fetch fails rather than discarding the pin', async () => {
+    const onTestDeviceChange = vi.fn();
+    localStorage.setItem(`breeze:script-test-device:${SCRIPT_ID}`, DEVICE_ID);
+    const { rerender } = render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe(DEVICE_ID)
+    );
+
+    // The fleet fetch now fails, and the OS targets moved off windows so the
+    // stale cached device no longer looks compatible either. That combination is
+    // exactly when "not in the list" carries no information about the pin — the
+    // reconcile must not fire on an unsettled fetch.
+    fetchWithAuthMock.mockImplementation(async () => jsonResponse({ error: 'boom' }, 500));
+    rerender(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['linux']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+    await waitFor(() => expect(screen.getByText(/couldn't load devices/i)).toBeInTheDocument());
+
+    expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBe(DEVICE_ID);
+    expect(onTestDeviceChange).not.toHaveBeenCalledWith(null);
+  });
+
+  it('keeps a pinned device when the fleet page came back truncated', async () => {
+    const onTestDeviceChange = vi.fn();
+    localStorage.setItem(`breeze:script-test-device:${SCRIPT_ID}`, DEVICE_ID);
+    const { rerender } = render(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId('test-device-select') as HTMLSelectElement).value).toBe(DEVICE_ID)
+    );
+
+    // A full page means the pinned device may simply be past the cap. Deleting
+    // the pin on that basis destroys the operator's choice permanently.
+    const cappedPage = Array.from({ length: 1000 }, (_, i) => ({
+      id: `filler-${i}`, hostname: `filler-${i}`, osType: 'windows', status: 'online',
+    }));
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/devices')) return jsonResponse({ data: cappedPage });
+      return jsonResponse({}, 404);
+    });
+    rerender(
+      <ScriptTestRunner
+        scriptId={SCRIPT_ID}
+        osTypes={['windows', 'linux']}
+        isDirty={false}
+        onSaveChanges={async () => true}
+        onTestDeviceChange={onTestDeviceChange}
+      />
+    );
+    await waitFor(() => expect(screen.getByText('filler-0')).toBeInTheDocument());
+
+    expect(localStorage.getItem(`breeze:script-test-device:${SCRIPT_ID}`)).toBe(DEVICE_ID);
+    expect(onTestDeviceChange).not.toHaveBeenCalledWith(null);
   });
 });
