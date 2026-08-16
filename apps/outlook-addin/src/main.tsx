@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App, bootAddin } from '@breeze/office-addin-core';
 import { outlookHostAdapter } from './host/outlook';
+import { TechPane } from './tech/TechPane';
 import './index.css';
 
 const rootEl = document.getElementById('root');
@@ -11,7 +12,12 @@ const root = createRoot(rootEl);
 function render(): void {
   root.render(
     <React.StrictMode>
-      <App host={outlookHostAdapter} clientHost="outlook" />
+      <App
+        host={outlookHostAdapter}
+        clientHost="outlook"
+        exchangePath="/office-addin/auth/exchange"
+        techPane={TechPane}
+      />
     </React.StrictMode>,
   );
 }
