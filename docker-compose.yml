@@ -353,6 +353,9 @@ services:
       MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
       MAILGUN_FROM: ${MAILGUN_FROM:-}
       MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+      # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
+      TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
+      MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
       # SMS MFA + alert notifications (Twilio)
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
