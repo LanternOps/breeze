@@ -22,6 +22,22 @@ describe('apply_script_code normalization wiring', () => {
     expect((args as { code: string }).code).toBe('Write-Host "done - ok"');
   });
 
+  it('delivers the status glyphs from the real failure transliterated', async () => {
+    const spy = vi.fn();
+    const handler = makeApplyHandler('apply_script_code', spy);
+
+    // Verbatim from the payload that produced the reported parse errors.
+    await handler({
+      code: 'Write-Host "✓ Download completed successfully ($fileSizeRounded MB)"',
+      language: 'powershell',
+    });
+
+    const [, args] = spy.mock.calls[0]!;
+    expect((args as { code: string }).code).toBe(
+      'Write-Host "[OK] Download completed successfully ($fileSizeRounded MB)"'
+    );
+  });
+
   it('reports codeChars for the normalized code', async () => {
     const spy = vi.fn();
     const handler = makeApplyHandler('apply_script_code', spy);

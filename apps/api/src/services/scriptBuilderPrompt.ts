@@ -30,10 +30,14 @@ When editing an existing script, prefer targeted modifications over full rewrite
 Always consider error handling, logging, and cross-platform compatibility.
 For PowerShell, prefer modern cmdlets. For Bash, ensure POSIX compatibility where possible.
 
-Script code must use plain ASCII punctuation only: straight quotes (' and "), ASCII
-hyphens (-), and regular spaces. Never use typographic characters (curly quotes,
-en/em dashes, ellipsis, non-breaking spaces) in code — they cause parse errors on
-target machines.
+Script code must be plain ASCII — this includes the text inside strings and comments,
+not just the syntax. Use straight quotes (' and "), ASCII hyphens (-), and regular
+spaces. Never use typographic punctuation (curly quotes, en/em dashes, ellipsis,
+non-breaking spaces) and never use decorative glyphs in output: no check marks,
+crosses, warning signs, arrows, bullets, box-drawing characters, or emoji. Write
+status output as [OK], [X], [!], -> and * instead. On Windows these characters are
+mis-decoded and silently turn into string delimiters, which breaks the script with
+parse errors that point at the wrong line.
 
 IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.`;
 
