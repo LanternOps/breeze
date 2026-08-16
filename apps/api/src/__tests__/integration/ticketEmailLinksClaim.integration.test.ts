@@ -307,10 +307,24 @@ describe('add-in create vs. inbound poller (Task 16)', () => {
     } as unknown as NormalizedInboundEmail;
   }
 
-  function callAddin(body: Record<string, unknown>) {
+  function addinApp() {
     const app = new Hono();
-    app.route('/', officeAddinTicketRoutes);
-    return app.request('/tickets/from-email', {
+    // Mirrors routes/officeAddin/index.ts: the router registers '/from-email'
+    // and '/:id/link-email' and is mounted under '/tickets'.
+    app.route('/tickets', officeAddinTicketRoutes);
+    return app;
+  }
+
+  function callAddin(body: Record<string, unknown>) {
+    return addinApp().request('/tickets/from-email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function callAddinLink(ticketId: string, body: Record<string, unknown>) {
+    return addinApp().request(`/tickets/${ticketId}/link-email`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -442,6 +456,112 @@ describe('add-in create vs. inbound poller (Task 16)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.parse_status).toBe('matched');
     expect(rows[0]!.ticket_id).toBe(addinTicketId);
+  });
+
+  /**
+   * REVIEW FINDING 1 (PR #3596). A public link-email whose sender has NO
+   * portal_users row inserts an email-authored comment (user_id NULL,
+   * portal_user_id NULL) under the technician's PARTNER scope. Before the
+   * breeze_ticket_parent_email_insert policy
+   * (2026-08-23-ticket-comments-email-authored-insert.sql) this raised 42501
+   * out of the savepoint and the route 500'd.
+   */
+  it('public link-email from an unknown sender succeeds under partner scope (email-authored INSERT policy)', async () => {
+    const { suffix } = await seedTechAndSender();
+    const ticketId = await seedTicket('open');
+    const messageId = `<link-unknown-${suffix}@customer.test>`;
+    const strangerEmail = `stranger-${suffix}@unknown.test`; // deliberately NO portal_users row
+
+    const res = await callAddinLink(ticketId, {
+      visibility: 'public',
+      from: { email: strangerEmail, name: 'Unknown Stranger' },
+      internetMessageId: messageId,
+      subject: `Link ${suffix}`,
+      bodyText: 'Forwarded customer email body.',
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.linked).toBe(true);
+    expect(body.commentId).toBeTruthy();
+
+    // The comment row really exists, email-authored and unattributed.
+    const comments = await admin()
+      .select({
+        id: ticketComments.id,
+        userId: ticketComments.userId,
+        portalUserId: ticketComments.portalUserId,
+        authorType: ticketComments.authorType,
+        isPublic: ticketComments.isPublic,
+      })
+      .from(ticketComments)
+      .where(eq(ticketComments.id, body.commentId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      userId: null,
+      portalUserId: null,
+      authorType: 'email',
+      isPublic: true,
+    });
+
+    // And the ledger row points at the comment.
+    const link = await withSystemDbAccessContext(() => findLinkByMessageId(fx.partnerId, messageId));
+    expect(link).not.toBeNull();
+    expect(link!.ticketId).toBe(ticketId);
+    expect(link!.origin).toBe('addin_link');
+    expect(link!.commentId).toBe(body.commentId);
+  });
+
+  /**
+   * REVIEW FINDING 2 (PR #3596). The unique index is (partner_id, message_id)
+   * but RLS on ticket_email_links is ORG-scoped, so when the poller has
+   * claimed the message for an org OUTSIDE a 'selected'-access technician's
+   * grant: the pre-check sees nothing, the insert no-ops on the conflict, and
+   * the scoped read-back also saw nothing — 500 instead of the designed 409.
+   * claimMessageLink now re-reads the winner under a short system context.
+   */
+  it('cross-org blind claim answers 409 message_linked_elsewhere with ticket null (not 500)', async () => {
+    const { suffix, senderEmail } = await seedTechAndSender();
+
+    // A second org in the SAME partner, outside the technician's grant.
+    const orgB = await createOrganization({ partnerId: fx.partnerId });
+    seeded.orgIds.push(orgB.id);
+    const orgBTicketId = await seedTicket('open', { orgId: orgB.id });
+
+    const messageId = `<cross-org-${suffix}@customer.test>`;
+    await withSystemDbAccessContext(() =>
+      claimMessageLink({
+        ticketId: orgBTicketId,
+        orgId: orgB.id,
+        partnerId: fx.partnerId,
+        messageId,
+        origin: 'inbound',
+        visibility: 'public',
+      })
+    );
+
+    const addinSubject = `Addin ${suffix}`;
+    const res = await callAddin({
+      orgId: fx.orgId,
+      subject: addinSubject,
+      description: 'Technician-composed body.',
+      from: { email: senderEmail, name: 'Known Sender' },
+      internetMessageId: messageId,
+      requester: { kind: 'raw' },
+    });
+
+    // Designed conflict answer — the winner's ticket is NOT echoed (other-org).
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'message_linked_elsewhere', ticket: null });
+
+    // The loser's ticket rolled back to the savepoint; the winner's link stands.
+    expect(await ticketsWithSubject(addinSubject)).toBe(0);
+    const links = await admin()
+      .select()
+      .from(ticketEmailLinks)
+      .where(and(eq(ticketEmailLinks.partnerId, fx.partnerId), eq(ticketEmailLinks.messageId, messageId)));
+    expect(links).toHaveLength(1);
+    expect(links[0].ticketId).toBe(orgBTicketId);
+    expect(links[0].origin).toBe('inbound');
   });
 
   it('concurrent add-in create and poller ingest of the same message yield exactly one association', async () => {

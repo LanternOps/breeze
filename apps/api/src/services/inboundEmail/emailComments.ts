@@ -11,9 +11,13 @@ export interface EmailCommentInput {
 }
 
 // Shared email-authored comment semantics. Inserted directly (NOT via addTicketComment,
-// which forces authorType:'internal' / user_id=actor). Under system scope the
-// ticket_comments INSERT policy permits user_id IS NULL. Email-sourced comments are
-// ALWAYS public (spec §4: email can never create an internal note).
+// which forces authorType:'internal' / user_id=actor). Precondition per caller: either
+// system scope (inbound pipeline — breeze_user_isolation_insert's user_id-NULL branch),
+// or partner scope where the email-authored INSERT policy applies
+// (breeze_ticket_parent_email_insert, 2026-08-23 — user_id NULL + author_type 'email'
+// on an org-accessible ticket; a resolved sender's portal_user_id path is also covered
+// by breeze_ticket_parent_portal_insert). Email-sourced comments are ALWAYS public
+// (spec §4: email can never create an internal note).
 export async function insertEmailAuthoredComment(input: EmailCommentInput): Promise<{ commentId: string }> {
   const { ticketId, orgId, senderPortalUserId, authorName, content } = input;
 

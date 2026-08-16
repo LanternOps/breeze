@@ -147,6 +147,82 @@ describe('office_addin_user_bindings RLS — cross-partner forge (breeze_app rol
     );
   });
 
+  it('a cross-partner UPDATE forge affects 0 rows (USING filters the row out)', async () => {
+    const { b, partnerAContext } = await seedTwoTenants();
+
+    const [seeded] = await withSystemDbAccessContext(() =>
+      db
+        .insert(officeAddinUserBindings)
+        .values({
+          entraTenantId: randomUUID(),
+          entraOid: randomUUID(),
+          userId: b.userId,
+          partnerId: b.partnerId,
+          boundAuthEpoch: 1,
+          mfaVerifiedAt: new Date(),
+        })
+        .returning({ id: officeAddinUserBindings.id })
+    );
+    expect(seeded?.id).toBeDefined();
+
+    // Partner A attempts the admin-revoke write shape against partner B's
+    // binding. The single FOR ALL policy's USING clause hides the row, so this
+    // is a silent 0-row no-op rather than a 42501 (unlike INSERT, where the
+    // forged row reaches WITH CHECK).
+    const updated = await withDbAccessContext(partnerAContext, () =>
+      db
+        .update(officeAddinUserBindings)
+        .set({ revokedAt: new Date() })
+        .where(eq(officeAddinUserBindings.id, seeded!.id))
+        .returning({ id: officeAddinUserBindings.id })
+    );
+    expect(updated).toEqual([]);
+
+    // The victim's binding is untouched (still active).
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ revokedAt: officeAddinUserBindings.revokedAt })
+        .from(officeAddinUserBindings)
+        .where(eq(officeAddinUserBindings.id, seeded!.id))
+    );
+    expect(row?.revokedAt).toBeNull();
+  });
+
+  it('a cross-partner DELETE forge affects 0 rows and the row persists', async () => {
+    const { b, partnerAContext } = await seedTwoTenants();
+
+    const [seeded] = await withSystemDbAccessContext(() =>
+      db
+        .insert(officeAddinUserBindings)
+        .values({
+          entraTenantId: randomUUID(),
+          entraOid: randomUUID(),
+          userId: b.userId,
+          partnerId: b.partnerId,
+          boundAuthEpoch: 1,
+          mfaVerifiedAt: new Date(),
+        })
+        .returning({ id: officeAddinUserBindings.id })
+    );
+    expect(seeded?.id).toBeDefined();
+
+    const deleted = await withDbAccessContext(partnerAContext, () =>
+      db
+        .delete(officeAddinUserBindings)
+        .where(eq(officeAddinUserBindings.id, seeded!.id))
+        .returning({ id: officeAddinUserBindings.id })
+    );
+    expect(deleted).toEqual([]);
+
+    const survivors = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: officeAddinUserBindings.id })
+        .from(officeAddinUserBindings)
+        .where(eq(officeAddinUserBindings.id, seeded!.id))
+    );
+    expect(survivors).toHaveLength(1);
+  });
+
   it('hides a partner-B binding from a partner-A SELECT (seeded via system scope)', async () => {
     const { a, b, partnerAContext } = await seedTwoTenants();
 

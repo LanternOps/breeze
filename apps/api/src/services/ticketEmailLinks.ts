@@ -1,9 +1,14 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { ticketEmailLinks } from '../db/schema';
 
 // Cross-channel email<->ticket association + idempotency ledger (spec §4).
 // See apps/api/src/db/schema/ticketEmailLinks.ts for the tenancy contract.
+
+/** Mirrors ticket_email_links_origin_chk (2026-08-22-ticket-email-links.sql). */
+export type TicketEmailLinkOrigin = 'addin_link' | 'addin_create' | 'inbound' | 'backfill';
+/** Mirrors ticket_email_links_visibility_chk (same migration). */
+export type TicketEmailLinkVisibility = 'public' | 'internal';
 
 export interface TicketEmailLink {
   id: string;
@@ -12,8 +17,8 @@ export interface TicketEmailLink {
   partnerId: string;
   messageId: string;
   commentId: string | null;
-  origin: string;
-  visibility: string;
+  origin: TicketEmailLinkOrigin;
+  visibility: TicketEmailLinkVisibility;
   linkedBy: string | null;
 }
 
@@ -32,8 +37,10 @@ export interface ClaimInput {
   orgId: string;
   partnerId: string;
   messageId: string;
-  origin: 'addin_link' | 'addin_create' | 'inbound';
-  visibility: 'public' | 'internal';
+  // 'backfill' is a DB-legal origin (see the CHECK constraint) but is never
+  // written through this claim path — only the three live channels are.
+  origin: Exclude<TicketEmailLinkOrigin, 'backfill'>;
+  visibility: TicketEmailLinkVisibility;
   linkedBy?: string | null;
   commentId?: string | null;
 }
@@ -62,8 +69,29 @@ export async function claimMessageLink(input: ClaimInput): Promise<ClaimResult> 
     .onConflictDoNothing({ target: [ticketEmailLinks.partnerId, ticketEmailLinks.messageId] })
     .returning();
   if (inserted.length > 0) return { created: true, link: inserted[0] as TicketEmailLink };
-  const existing = await findLinkByMessageId(input.partnerId, messageId);
-  if (!existing) throw new Error('claim conflict but no existing link visible'); // RLS-invisible winner; treat as retryable
+  // Conflict read-back, in two steps:
+  //   1. Caller-scoped, on the CURRENT connection — finds an org-visible winner,
+  //      including one written earlier in this same (uncommitted) transaction.
+  //   2. Fallback under a short system context on a fresh connection. The
+  //      unique index is (partner_id, message_id) but RLS on this table is
+  //      ORG-scoped, so a committed winner in an org outside the caller's grant
+  //      (e.g. the poller claimed the message for an org a 'selected'-access
+  //      technician cannot see) is invisible to step 1 — without this step the
+  //      route 500'd instead of answering its designed 409
+  //      (message_linked_elsewhere). No data leak: the route responders
+  //      re-check canAccessOrg before echoing the winner's ticket.
+  const existing =
+    (await findLinkByMessageId(input.partnerId, messageId)) ??
+    (await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => findLinkByMessageId(input.partnerId, messageId))
+    ));
+  if (!existing) {
+    // True impossibility: the unique index just rejected our insert, so the
+    // winner is either in this transaction (step 1) or committed (a cross-
+    // transaction conflict blocks until the winner commits), and system scope
+    // sees every committed row.
+    throw new Error('claim conflict but no existing link found');
+  }
   return { created: false, existing };
 }
 
@@ -76,20 +104,26 @@ export async function findLinkByMessageId(partnerId: string, messageId: string):
   return (rows[0] as TicketEmailLink) ?? null;
 }
 
-// Looks up every ticket that has a claimed link row for any of the given
-// message-ids, scoped to the partner. `messageIds` arrives as raw header
-// values (In-Reply-To / References — already angle-bracket wrapped, but not
-// guaranteed trimmed/normalized the same way stored rows are), so normalize
-// each one the same way claimMessageLink does before querying — and filter
-// empties first since normalizeMessageId throws on an empty string.
-export async function findTicketIdsByMessageIds(partnerId: string, messageIds: string[]): Promise<string[]> {
-  const normalized = Array.from(
+// Normalize a list of raw header values (In-Reply-To / References) into the
+// distinct set of stored-form message ids: drop empties (normalizeMessageId
+// throws on an empty string), normalize each the same way claimMessageLink
+// does, and dedupe. Exported for direct unit coverage.
+export function normalizeMessageIds(messageIds: string[]): string[] {
+  return Array.from(
     new Set(
       messageIds
         .filter((id): id is string => !!id && id.trim().length > 0)
         .map((id) => normalizeMessageId(id))
     )
   );
+}
+
+// Looks up every ticket that has a claimed link row for any of the given
+// message-ids, scoped to the partner. `messageIds` arrives as raw header
+// values (already angle-bracket wrapped, but not guaranteed trimmed/normalized
+// the same way stored rows are) — see normalizeMessageIds above.
+export async function findTicketIdsByMessageIds(partnerId: string, messageIds: string[]): Promise<string[]> {
+  const normalized = normalizeMessageIds(messageIds);
   if (normalized.length === 0) return [];
   const rows = await db
     .selectDistinct({ ticketId: ticketEmailLinks.ticketId })
