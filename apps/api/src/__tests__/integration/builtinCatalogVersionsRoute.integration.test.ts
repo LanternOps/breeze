@@ -311,4 +311,42 @@ describe('built-in package versions via route (#1957)', () => {
     );
     expect(foreignRes.status).toBe(404);
   });
+
+  // Same narrowing on the WRITE side (authorizeCatalogItemWrite): a partner
+  // caller acting as org A must not mutate sibling org B's RLS-visible package,
+  // while the same request against org B's own context succeeds.
+  it('partner-scope caller: cannot PATCH a sibling org-owned package while acting as another org', async () => {
+    const partner = await createPartner();
+    const orgA = await createOrganization({ partnerId: partner.id });
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const { catalog: orgBPkg } = await seedOrgOwned(orgB.id);
+
+    activeAuth = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: partner.id,
+      accessibleOrgIds: [orgA.id, orgB.id],
+    };
+
+    const app = await buildApp();
+    const crossRes = await app.request(
+      `/software/catalog/${orgBPkg.id}?orgId=${orgA.id}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'tampered from org A context' }),
+      },
+    );
+    expect(crossRes.status).toBe(404);
+
+    const ownRes = await app.request(
+      `/software/catalog/${orgBPkg.id}?orgId=${orgB.id}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'legitimate update in org B context' }),
+      },
+    );
+    expect(ownRes.status).toBe(200);
+  });
 });

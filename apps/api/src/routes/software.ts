@@ -103,19 +103,21 @@ function resolveCatalogListScope(
 
 /**
  * Authorize a write against a catalog row fetched by id (dual-axis, #2135).
- * Org-owned rows: any caller with access to that org. Partner-wide rows
- * (org_id NULL): system scope, or a full-partner admin of the owning partner.
+ * Org-owned rows: the same resolved-org narrowing as the reads
+ * (authorizeCatalogItemRead) — a partner caller acting as org A must not
+ * mutate sibling org B's package, with the canAccessOrg fallback only in the
+ * org-less All-organizations view. Partner-wide rows (org_id NULL): system
+ * scope, or a full-partner admin of the owning partner.
  * Returns null when allowed, else the error response to send. 404 (not 403)
  * for foreign rows, matching the read routes' don't-reveal-existence behavior.
  */
 function authorizeCatalogItemWrite(
   auth: AuthContext,
   item: { orgId: string | null; partnerId: string | null },
+  requestedOrgId: string | undefined,
 ): { error: string; status: 403 | 404 } | null {
   if (item.orgId !== null) {
-    return auth.canAccessOrg(item.orgId)
-      ? null
-      : { error: 'Catalog item not found', status: 404 };
+    return authorizeCatalogItemRead(auth, item.orgId, requestedOrgId);
   }
   if (auth.scope === 'system') return null;
   if (auth.scope !== 'partner' || !auth.partnerId || item.partnerId !== auth.partnerId) {
@@ -770,7 +772,7 @@ softwareRoutes.patch(
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
       return c.json({ error: 'Built-in integration packages cannot be modified' }, 403);
     }
-    const denied = authorizeCatalogItemWrite(auth, existing);
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [updated] = await db.update(softwareCatalog)
@@ -809,7 +811,7 @@ softwareRoutes.delete(
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
       return c.json({ error: 'Built-in integration packages cannot be deleted' }, 403);
     }
-    const denied = authorizeCatalogItemWrite(auth, existing);
+    const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A version that is still referenced by a deployment cannot be deleted —
@@ -904,7 +906,7 @@ softwareRoutes.post(
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
-    const denied = authorizeCatalogItemWrite(auth, catalogItem);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
     // A URL-created version never recorded a fileType, so the dispatcher fell
@@ -1190,7 +1192,7 @@ softwareRoutes.patch(
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
-    const denied = authorizeCatalogItemWrite(auth, catalogItem);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [existingVersion] = await db.select().from(softwareVersions)
@@ -1252,7 +1254,7 @@ softwareRoutes.post(
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(eq(softwareCatalog.id, id));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
-    const denied = authorizeCatalogItemWrite(auth, catalogItem);
+    const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
     const [existingVersion] = await db.select().from(softwareVersions)
