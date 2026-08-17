@@ -437,7 +437,7 @@ logsRoutes.get(
         .from(logCorrelations)
         .leftJoin(logCorrelationRules, eq(logCorrelations.ruleId, logCorrelationRules.id))
         .where(whereCondition)
-        .orderBy(desc(logCorrelations.lastSeen))
+        .orderBy(desc(logCorrelations.lastSeen), desc(logCorrelations.id))
         .limit(limit)
         .offset(offset),
       db

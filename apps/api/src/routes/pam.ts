@@ -210,7 +210,7 @@ pamRoutes.get('/elevation-requests', requirePamRead, zValidator('query', listQue
       .leftJoin(revokedByUser, eq(elevationRequests.revokedByUserId, revokedByUser.id))
       .leftJoin(softwarePolicies, eq(elevationRequests.softwarePolicyMatchId, softwarePolicies.id))
       .where(where)
-      .orderBy(desc(elevationRequests.requestedAt))
+      .orderBy(desc(elevationRequests.requestedAt), desc(elevationRequests.id))
       .limit(limit)
       .offset(offset),
     db

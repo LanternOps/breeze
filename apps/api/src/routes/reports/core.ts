@@ -230,7 +230,7 @@ coreRoutes.get(
       .select()
       .from(reports)
       .where(whereCondition)
-      .orderBy(desc(reports.updatedAt))
+      .orderBy(desc(reports.updatedAt), desc(reports.id))
       .limit(limit)
       .offset(offset);
 
@@ -277,7 +277,7 @@ coreRoutes.get(
       .select()
       .from(reports)
       .where(whereCondition)
-      .orderBy(desc(reports.updatedAt))
+      .orderBy(desc(reports.updatedAt), desc(reports.id))
       .limit(limit)
       .offset(offset);
 

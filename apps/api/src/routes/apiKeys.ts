@@ -309,7 +309,7 @@ apiKeyRoutes.get(
       })
       .from(apiKeys)
       .where(whereCondition)
-      .orderBy(desc(apiKeys.createdAt))
+      .orderBy(desc(apiKeys.createdAt), desc(apiKeys.id))
       .limit(limit)
       .offset(offset);
 

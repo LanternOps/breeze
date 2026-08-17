@@ -39,7 +39,7 @@ deviceRoutes.get('/devices', zValidator('query', listSchema), async (c) => {
     })
     .from(devices)
     .where(and(eq(devices.orgId, auth.user.orgId), eq(devices.isEphemeral, false)))
-    .orderBy(desc(devices.lastSeenAt))
+    .orderBy(desc(devices.lastSeenAt), desc(devices.id))
     .limit(limit)
     .offset(offset);
 

@@ -239,6 +239,43 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
     expect(withoutTotalBody.pagination.total).toBeUndefined();
   });
 
+  // #3462: apps/web/src/lib/devicesFetch.ts's fetchAllNetworkDevices pages
+  // through this endpoint with LIMIT/OFFSET. A discovery sweep writes every
+  // asset it found in one transaction, so `last_seen_at` ties in bulk —
+  // ordering on that tied key alone leaves row order undefined between two
+  // page fetches, and the walk would silently drop an asset and duplicate
+  // another. The unique `id` tiebreaker is what makes the walk a true
+  // enumeration.
+  it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
+    let capturedOrderBy: unknown[] = [];
+    const offset = vi.fn().mockResolvedValue([]);
+    const limit = vi.fn().mockReturnValue({ offset });
+    const orderBy = vi.fn().mockImplementation((...args: unknown[]) => {
+      capturedOrderBy = args;
+      return { limit };
+    });
+    vi.mocked(db.select).mockImplementation(((arg: any) => {
+      const isCount = arg && typeof arg === 'object' && 'count' in arg && Object.keys(arg).length === 1;
+      const where = isCount
+        ? vi.fn().mockResolvedValue([{ count: 0 }])
+        : vi.fn().mockReturnValue({ orderBy });
+      const from = vi.fn().mockReturnValue({ where });
+      return { from } as never;
+    }) as never);
+
+    const res = await app.request('/devices/network', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(capturedOrderBy).toHaveLength(2);
+    const dialect = new PgDialect();
+    const [first, second] = capturedOrderBy as [never, never];
+    expect(dialect.sqlToQuery(first).sql).toMatch(/"last_seen_at" desc/);
+    expect(dialect.sqlToQuery(second).sql).toMatch(/"id" desc/);
+  });
+
   it('rejects a single-org filter the caller cannot access with 403', async () => {
     rigNetworkRows([]);
     const res = await app.request('/devices/network?orgId=00000000-0000-4000-8000-000000000000', {

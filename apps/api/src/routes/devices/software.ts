@@ -57,7 +57,7 @@ softwareRoutes.get(
       .select()
       .from(softwareInventory)
       .where(whereCondition)
-      .orderBy(asc(softwareInventory.name))
+      .orderBy(asc(softwareInventory.name), asc(softwareInventory.id))
       .limit(limit)
       .offset(offset);
 

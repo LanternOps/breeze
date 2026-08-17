@@ -693,7 +693,7 @@ export async function listEmailInboundQueue(
     })
     .from(ticketEmailInbound)
     .where(where)
-    .orderBy(desc(ticketEmailInbound.createdAt))
+    .orderBy(desc(ticketEmailInbound.createdAt), desc(ticketEmailInbound.id))
     .limit(limit)
     .offset(offset);
 

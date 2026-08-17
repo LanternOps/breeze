@@ -164,7 +164,7 @@ dataRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .where(whereCondition)
-      .orderBy(desc(devices.lastSeenAt))
+      .orderBy(desc(devices.lastSeenAt), desc(devices.id))
       .limit(limit)
       .offset(offset);
 
@@ -242,7 +242,7 @@ dataRoutes.get(
       .from(deviceSoftware)
       .innerJoin(devices, eq(deviceSoftware.deviceId, devices.id))
       .where(whereCondition)
-      .orderBy(deviceSoftware.name)
+      .orderBy(deviceSoftware.name, deviceSoftware.id)
       .limit(limit)
       .offset(offset);
 

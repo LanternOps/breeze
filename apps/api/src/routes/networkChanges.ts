@@ -193,7 +193,7 @@ networkChangeRoutes.get(
       .from(networkChangeEvents)
       .leftJoin(networkBaselines, eq(networkChangeEvents.baselineId, networkBaselines.id))
       .where(where)
-      .orderBy(desc(networkChangeEvents.detectedAt))
+      .orderBy(desc(networkChangeEvents.detectedAt), desc(networkChangeEvents.id))
       .limit(limit)
       .offset(offset);
 

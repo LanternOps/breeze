@@ -309,7 +309,7 @@ export async function listConfigPolicies(
     .from(configurationPolicies)
     .leftJoin(organizations, eq(configurationPolicies.orgId, organizations.id))
     .where(whereCondition)
-    .orderBy(desc(configurationPolicies.updatedAt))
+    .orderBy(desc(configurationPolicies.updatedAt), desc(configurationPolicies.id))
     .limit(pagination.limit)
     .offset(offset);
 

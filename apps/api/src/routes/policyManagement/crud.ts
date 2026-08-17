@@ -80,7 +80,7 @@ crudRoutes.get(
       .select()
       .from(automationPolicies)
       .where(whereCondition)
-      .orderBy(desc(automationPolicies.updatedAt))
+      .orderBy(desc(automationPolicies.updatedAt), desc(automationPolicies.id))
       .limit(limit)
       .offset(offset);
 

@@ -80,7 +80,7 @@ groupsRoutes.get(
       .select()
       .from(deviceGroups)
       .where(whereCondition)
-      .orderBy(asc(deviceGroups.name))
+      .orderBy(asc(deviceGroups.name), asc(deviceGroups.id))
       .limit(pagination.limit)
       .offset(pagination.offset);
 

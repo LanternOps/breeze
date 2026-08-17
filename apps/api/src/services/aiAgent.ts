@@ -219,7 +219,7 @@ export async function listSessions(auth: AuthContext, options: { status?: string
     })
     .from(aiSessions)
     .where(and(...conditions))
-    .orderBy(desc(aiSessions.lastActivityAt))
+    .orderBy(desc(aiSessions.lastActivityAt), desc(aiSessions.id))
     .limit(limit)
     .offset(offset);
 

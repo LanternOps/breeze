@@ -205,7 +205,7 @@ networkBaselineRoutes.get(
       .select()
       .from(networkBaselines)
       .where(where)
-      .orderBy(desc(networkBaselines.createdAt))
+      .orderBy(desc(networkBaselines.createdAt), desc(networkBaselines.id))
       .limit(limit)
       .offset(offset);
 
@@ -489,7 +489,7 @@ networkBaselineRoutes.get(
       .select()
       .from(networkChangeEvents)
       .where(where)
-      .orderBy(desc(networkChangeEvents.detectedAt))
+      .orderBy(desc(networkChangeEvents.detectedAt), desc(networkChangeEvents.id))
       .limit(limit)
       .offset(offset);
 

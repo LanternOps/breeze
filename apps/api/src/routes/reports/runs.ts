@@ -276,7 +276,7 @@ runsRoutes.get(
       .from(reportRuns)
       .innerJoin(reports, eq(reportRuns.reportId, reports.id))
       .where(whereCondition)
-      .orderBy(desc(reportRuns.createdAt))
+      .orderBy(desc(reportRuns.createdAt), desc(reportRuns.id))
       .limit(limit)
       .offset(offset);
 

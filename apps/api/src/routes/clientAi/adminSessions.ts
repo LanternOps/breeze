@@ -110,7 +110,7 @@ clientAiAdminSessionRoutes.get(
       .leftJoin(organizations, eq(aiSessions.orgId, organizations.id))
       .leftJoin(portalUsers, eq(aiSessions.clientUserId, portalUsers.id))
       .where(where)
-      .orderBy(desc(aiSessions.createdAt))
+      .orderBy(desc(aiSessions.createdAt), desc(aiSessions.id))
       .limit(q.limit)
       .offset(q.offset);
 

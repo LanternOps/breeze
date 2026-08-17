@@ -180,7 +180,13 @@ networkRoutes.get(
       })
       .from(discoveredAssets)
       .where(whereCondition)
-      .orderBy(desc(discoveredAssets.lastSeenAt))
+      // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
+      // A discovery sweep writes every asset it found in one transaction, so
+      // `last_seen_at` ties in bulk. Ordering on a tied key alone leaves row
+      // order undefined between two LIMIT/OFFSET queries, so the page walk in
+      // `apps/web/src/lib/devicesFetch.ts` (`fetchAllNetworkDevices`) would
+      // silently drop an asset and duplicate another.
+      .orderBy(desc(discoveredAssets.lastSeenAt), desc(discoveredAssets.id))
       .limit(limit)
       .offset(offset);
 

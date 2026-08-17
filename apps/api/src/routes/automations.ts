@@ -653,7 +653,7 @@ automationRoutes.get(
       .select()
       .from(automations)
       .where(whereCondition)
-      .orderBy(desc(automations.updatedAt))
+      .orderBy(desc(automations.updatedAt), desc(automations.id))
       .limit(limit)
       .offset(offset);
 
@@ -820,7 +820,7 @@ automationRoutes.get(
       .select()
       .from(automationRuns)
       .where(whereCondition)
-      .orderBy(desc(automationRuns.startedAt))
+      .orderBy(desc(automationRuns.startedAt), desc(automationRuns.id))
       .limit(limit)
       .offset(offset);
 

@@ -220,7 +220,7 @@ incidentRoutes.get(
         .select()
         .from(incidents)
         .where(whereCondition)
-        .orderBy(desc(incidents.detectedAt), desc(incidents.createdAt))
+        .orderBy(desc(incidents.detectedAt), desc(incidents.createdAt), desc(incidents.id))
         .limit(limit)
         .offset(offset),
     ]);

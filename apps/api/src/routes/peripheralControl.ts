@@ -403,7 +403,7 @@ peripheralControlRoutes.get(
       .select()
       .from(peripheralEvents)
       .where(where)
-      .orderBy(desc(peripheralEvents.occurredAt), desc(peripheralEvents.createdAt))
+      .orderBy(desc(peripheralEvents.occurredAt), desc(peripheralEvents.createdAt), desc(peripheralEvents.id))
       .limit(limit)
       .offset(offset);
 
@@ -458,7 +458,7 @@ peripheralControlRoutes.get(
       .select()
       .from(peripheralPolicies)
       .where(where)
-      .orderBy(desc(peripheralPolicies.updatedAt))
+      .orderBy(desc(peripheralPolicies.updatedAt), desc(peripheralPolicies.id))
       .limit(limit)
       .offset(offset);
 

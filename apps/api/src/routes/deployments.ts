@@ -259,7 +259,7 @@ deploymentRoutes.get(
       .select()
       .from(deployments)
       .where(whereCondition)
-      .orderBy(desc(deployments.createdAt))
+      .orderBy(desc(deployments.createdAt), desc(deployments.id))
       .limit(query.limit)
       .offset(query.offset);
 
@@ -800,7 +800,7 @@ deploymentRoutes.get(
       .from(deploymentDevices)
       .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
       .where(whereCondition)
-      .orderBy(deploymentDevices.batchNumber, deploymentDevices.status)
+      .orderBy(deploymentDevices.batchNumber, deploymentDevices.status, deploymentDevices.id)
       .limit(query.limit)
       .offset(query.offset);
 

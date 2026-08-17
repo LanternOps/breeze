@@ -1305,7 +1305,7 @@ groupRoutes.get(
           .from(groupMembershipLog)
           .innerJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
           .where(and(...conditions, inArray(devices.siteId, perms.allowedSiteIds)))
-          .orderBy(desc(groupMembershipLog.createdAt))
+          .orderBy(desc(groupMembershipLog.createdAt), desc(groupMembershipLog.id))
           .limit(query.limit)
           .offset(query.offset)
       : await db
@@ -1322,7 +1322,7 @@ groupRoutes.get(
           .from(groupMembershipLog)
           .leftJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
           .where(and(...conditions))
-          .orderBy(desc(groupMembershipLog.createdAt))
+          .orderBy(desc(groupMembershipLog.createdAt), desc(groupMembershipLog.id))
           .limit(query.limit)
           .offset(query.offset);
 

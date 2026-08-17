@@ -627,7 +627,7 @@ abuseRoutes.get(
         .select()
         .from(partnerAbuseSignals)
         .where(conds.length > 0 ? and(...conds) : undefined)
-        .orderBy(desc(partnerAbuseSignals.computedAt))
+        .orderBy(desc(partnerAbuseSignals.computedAt), desc(partnerAbuseSignals.id))
         .limit(limit)
         .offset(offset),
     );

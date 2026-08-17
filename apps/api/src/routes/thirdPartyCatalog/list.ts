@@ -32,7 +32,7 @@ listRoutes.get('/', zValidator('query', listCatalogQuerySchema), async (c) => {
   const [rows, totalRows] = await Promise.all([
     db.select().from(thirdPartyPackageCatalog)
       .where(where)
-      .orderBy(thirdPartyPackageCatalog.vendor, thirdPartyPackageCatalog.friendlyName)
+      .orderBy(thirdPartyPackageCatalog.vendor, thirdPartyPackageCatalog.friendlyName, thirdPartyPackageCatalog.id)
       .limit(q.limit)
       .offset(q.offset),
     db.select({ count: sql<number>`count(*)::int` }).from(thirdPartyPackageCatalog).where(where),

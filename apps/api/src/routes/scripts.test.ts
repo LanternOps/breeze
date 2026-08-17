@@ -57,7 +57,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  scripts: {},
+  scripts: { id: 'scripts.id', updatedAt: 'scripts.updatedAt' },
   scriptExecutions: {},
   scriptExecutionBatches: {},
   devices: {},
@@ -88,6 +88,14 @@ vi.mock('../db/schema', () => ({
   },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] }
 }));
+
+// Spy on `desc` while keeping the real implementation, so the pagination
+// tiebreaker test can assert exactly which columns were passed to it without
+// changing behavior for the rest of the file's tests.
+vi.mock('drizzle-orm', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('drizzle-orm')>();
+  return { ...actual, desc: vi.fn(actual.desc) };
+});
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -128,7 +136,9 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+import { desc } from 'drizzle-orm';
 import { db } from '../db';
+import { scripts } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 
 describe('scripts routes', () => {
@@ -171,6 +181,41 @@ describe('scripts routes', () => {
     const body = await res.json();
     expect(body.data).toHaveLength(2);
     expect(body.pagination.total).toBe(2);
+  });
+
+  // #3462: apps/web/src/lib/scriptsFetch.ts pages through GET /scripts with
+  // LIMIT/OFFSET. `updated_at` defaults to the TRANSACTION timestamp, so a
+  // bundle import writes many scripts with a byte-identical value — ordering
+  // on that alone leaves row order undefined between two page fetches, and
+  // the walk would silently drop a script and duplicate another. The unique
+  // `id` tiebreaker is what makes the walk a true enumeration.
+  it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ count: 0 }])
+        })
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([])
+              })
+            })
+          })
+        })
+      } as any);
+
+    const res = await app.request('/scripts?limit=10&page=1', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' }
+    });
+
+    expect(res.status).toBe(200);
+    expect(desc).toHaveBeenNthCalledWith(1, scripts.updatedAt);
+    expect(desc).toHaveBeenNthCalledWith(2, scripts.id);
   });
 
   it('should get a script by id', async () => {

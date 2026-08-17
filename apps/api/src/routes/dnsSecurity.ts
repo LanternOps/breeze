@@ -562,7 +562,7 @@ dnsSecurityRoutes.get(
         .from(dnsSecurityEvents)
         .leftJoin(devices, eq(dnsSecurityEvents.deviceId, devices.id))
         .where(where)
-        .orderBy(desc(dnsSecurityEvents.timestamp))
+        .orderBy(desc(dnsSecurityEvents.timestamp), desc(dnsSecurityEvents.id))
         .limit(limit)
         .offset(offset),
       db
