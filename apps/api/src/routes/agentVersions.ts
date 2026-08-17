@@ -602,6 +602,41 @@ agentVersionRoutes.post(
     const data = c.req.valid("json");
     const edition = data.edition ?? getBinaryEdition();
 
+    // Reject a row that GET /:version/download would refuse to serve, BEFORE
+    // any write. `validateReleaseManifest` is mandatory on the serving path
+    // (line ~526), and there is no route that can complete a half-registered
+    // row afterwards — so a row failing it here is dead on arrival: every
+    // agent pointed at it 409s on every heartbeat, forever, with no terminal
+    // state. Issue #3544 is exactly that: manifest-less rows were accepted
+    // silently at write time and only surfaced as thousands of opaque 409s.
+    // The columns being nullable in the schema while the serving path treats
+    // them as mandatory is the inconsistency; this closes it at the door.
+    //
+    // Ordering matters: this runs before the isLatest demotion below.
+    // Demoting first and validating later would strip the last WORKING
+    // upgrade target off the fleet on behalf of a row we are about to
+    // refuse — turning a rejected request into an outage.
+    const createManifestCheck = await validateReleaseManifest({
+      manifest: data.releaseManifest,
+      signature: data.manifestSignature,
+      version: data.version,
+      platform: data.platform,
+      arch: data.architecture,
+      component: data.component,
+      downloadUrl: data.downloadUrl,
+      checksum: data.checksum,
+      fileSize: data.fileSize,
+    });
+    if (!createManifestCheck.ok) {
+      return c.json(
+        {
+          error: "Release manifest is not trusted",
+          reason: createManifestCheck.reason,
+        },
+        422,
+      );
+    }
+
     // If this version is marked as latest, unset isLatest for other versions
     // with the same platform/architecture/component/edition. Scoped by
     // edition too — otherwise promoting a "self-host" row could demote a
@@ -850,6 +885,12 @@ agentVersionRoutes.post(
         component: agentVersions.component,
         platform: agentVersions.platform,
         architecture: agentVersions.architecture,
+        version: agentVersions.version,
+        downloadUrl: agentVersions.downloadUrl,
+        checksum: agentVersions.checksum,
+        fileSize: agentVersions.fileSize,
+        releaseManifest: agentVersions.releaseManifest,
+        manifestSignature: agentVersions.manifestSignature,
       })
       .from(agentVersions)
       .where(
@@ -873,6 +914,57 @@ agentVersionRoutes.post(
             : `No registered rows for version ${version}`,
         },
         404,
+      );
+    }
+
+    // Refuse to promote a version any of whose rows GET /:version/download
+    // would reject. Promotion is what actually points the fleet at a version,
+    // so an untrusted row here is the difference between a harmless
+    // unreachable DB row and every device in the fleet retrying a 409 every
+    // ~60s indefinitely (issue #3544).
+    //
+    // Rejected if ANY target row fails, not merely if all do: promotion is
+    // atomic across its slots by design, and a partial promotion would split
+    // the fleet — some platforms or components moved to the new version while
+    // the rest stayed behind — which is the very all-or-nothing-vs-partial
+    // confusion that made #3544 hard to diagnose. This also runs BEFORE the
+    // demotion transaction below, so a refused promotion never strips the
+    // currently-working target.
+    const invalidTargets: Array<{
+      component: string;
+      platform: string;
+      architecture: string;
+      reason: string;
+    }> = [];
+    for (const row of targetRows) {
+      const check = await validateReleaseManifest({
+        manifest: row.releaseManifest,
+        signature: row.manifestSignature,
+        version: row.version,
+        platform: row.platform,
+        arch: row.architecture,
+        component: row.component,
+        downloadUrl: row.downloadUrl,
+        checksum: row.checksum,
+        fileSize: row.fileSize,
+      });
+      if (!check.ok) {
+        invalidTargets.push({
+          component: row.component,
+          platform: row.platform,
+          architecture: row.architecture,
+          reason: check.reason,
+        });
+      }
+    }
+    if (invalidTargets.length > 0) {
+      return c.json(
+        {
+          error: "Release manifest is not trusted",
+          reason: invalidTargets[0]!.reason,
+          invalidTargets,
+        },
+        409,
       );
     }
 

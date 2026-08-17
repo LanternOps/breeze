@@ -149,6 +149,59 @@ function makeSignedReleaseArtifactManifest(args: {
   };
 }
 
+// POST /agent-versions now requires a signed release manifest (issue #3544).
+// With no trust roots configured (the default in this suite — no env keys,
+// getActivePublicKeys mocked to []), verifyEd25519ManifestSignature soft-
+// passes any signature string, so tests only need the manifest's metadata
+// fields to exactly match the submitted payload. Reuses the exact-match
+// contract from validateReleaseManifest's non-schemaVersion-1 branch.
+function withValidManifest(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const manifest = JSON.stringify({
+    version: payload.version,
+    component: payload.component ?? "agent",
+    platform: payload.platform,
+    arch: payload.architecture,
+    url: payload.downloadUrl,
+    checksum: payload.checksum,
+  });
+  return {
+    ...payload,
+    releaseManifest: manifest,
+    manifestSignature: "test-signature",
+  };
+}
+
+// Same idea for POST /agent-versions/promote's target-row select mock: the
+// row shape validateReleaseManifest needs (downloadUrl/checksum/manifest/
+// signature) plus a manifest whose fields match the row exactly.
+function makeValidatedTargetRow(row: {
+  component: string;
+  platform: string;
+  architecture: string;
+  version: string;
+}) {
+  const downloadUrl = `https://s3.example.com/${row.component}-${row.version}`;
+  const checksum = "f".repeat(64);
+  const manifest = JSON.stringify({
+    version: row.version,
+    component: row.component,
+    platform: row.platform,
+    arch: row.architecture,
+    url: downloadUrl,
+    checksum,
+  });
+  return {
+    ...row,
+    downloadUrl,
+    checksum,
+    fileSize: null,
+    releaseManifest: manifest,
+    manifestSignature: "test-signature",
+  };
+}
+
 describe("agentVersions routes", () => {
   let app: Hono;
 
@@ -313,8 +366,8 @@ describe("agentVersions routes", () => {
       // The pre-tx target-rows lookup: two components on the same platform/arch.
       vi.mocked(db.select).mockReturnValue(
         selectResolving([
-          { component: "agent", platform: "linux", architecture: "amd64" },
-          { component: "watchdog", platform: "linux", architecture: "amd64" },
+          makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+          makeValidatedTargetRow({ component: "watchdog", platform: "linux", architecture: "amd64", version: "0.71.0" }),
         ]) as any,
       );
 
@@ -377,7 +430,7 @@ describe("agentVersions routes", () => {
     it("promotes only the requested single component", async () => {
       vi.mocked(db.select).mockReturnValue(
         selectResolving([
-          { component: "agent", platform: "linux", architecture: "amd64" },
+          makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
         ]) as any,
       );
 
@@ -416,7 +469,7 @@ describe("agentVersions routes", () => {
       process.env.BINARY_EDITION = "hosted";
 
       const targetRowsWhere = vi.fn().mockResolvedValue([
-        { component: "agent", platform: "linux", architecture: "amd64" },
+        makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
       ]);
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: targetRowsWhere }),
@@ -461,9 +514,9 @@ describe("agentVersions routes", () => {
     it("promoting with component omitted includes backup rows alongside agent/watchdog", async () => {
       vi.mocked(db.select).mockReturnValue(
         selectResolving([
-          { component: "agent", platform: "linux", architecture: "amd64" },
-          { component: "watchdog", platform: "linux", architecture: "amd64" },
-          { component: "backup", platform: "linux", architecture: "amd64" },
+          makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+          makeValidatedTargetRow({ component: "watchdog", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+          makeValidatedTargetRow({ component: "backup", platform: "linux", architecture: "amd64", version: "0.71.0" }),
         ]) as any,
       );
 
@@ -492,6 +545,115 @@ describe("agentVersions routes", () => {
             components: expect.arrayContaining(["backup"]),
           }),
         }),
+      );
+    });
+
+    // Regression coverage for issue #3544: promote must refuse a target row
+    // that GET /:version/download would itself reject, BEFORE the demotion
+    // transaction runs — otherwise the fleet's currently-working upgrade
+    // target gets stripped on behalf of a promotion that's about to fail.
+    it("409s with signed_release_manifest_required when a target row has a NULL release manifest, and never runs the demotion transaction", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          {
+            component: "agent",
+            platform: "linux",
+            architecture: "amd64",
+            version: "0.71.0",
+            downloadUrl: "https://s3.example.com/agent-0.71.0",
+            checksum: "f".repeat(64),
+            fileSize: null,
+            releaseManifest: null,
+            manifestSignature: null,
+          },
+        ]) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0", component: "agent" }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toBe("Release manifest is not trusted");
+      expect(body.reason).toBe("signed_release_manifest_required");
+      expect(body.invalidTargets).toEqual([
+        {
+          component: "agent",
+          platform: "linux",
+          architecture: "amd64",
+          reason: "signed_release_manifest_required",
+        },
+      ]);
+      // The demotion/promotion transaction never ran — the previously
+      // promoted row for this slot is untouched.
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("409s when only SOME target rows fail validation — any failure rejects the whole promotion, never a partial one", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+          {
+            component: "watchdog",
+            platform: "linux",
+            architecture: "amd64",
+            version: "0.71.0",
+            downloadUrl: "https://s3.example.com/watchdog-0.71.0",
+            checksum: "f".repeat(64),
+            fileSize: null,
+            releaseManifest: null,
+            manifestSignature: null,
+          },
+        ]) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0" }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.reason).toBe("signed_release_manifest_required");
+      expect(body.invalidTargets).toEqual([
+        expect.objectContaining({ component: "watchdog", reason: "signed_release_manifest_required" }),
+      ]);
+      // Even the valid "agent" slot must not be promoted — the whole
+      // operation is atomic across its target rows.
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("still succeeds when every target row carries a valid signed manifest (happy-path regression guard)", async () => {
+      vi.mocked(db.select).mockReturnValue(
+        selectResolving([
+          makeValidatedTargetRow({ component: "agent", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+          makeValidatedTargetRow({ component: "watchdog", platform: "linux", architecture: "amd64", version: "0.71.0" }),
+        ]) as any,
+      );
+
+      const { tx } = makeTx({ version: "0.70.0" });
+      vi.mocked(db.transaction).mockImplementation(
+        async (fn: any) => fn(tx) as any,
+      );
+
+      const res = await app.request("/agent-versions/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "0.71.0" }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(db.transaction).toHaveBeenCalled();
+      const body = await res.json();
+      expect(body.promoted).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ component: "agent", version: "0.71.0" }),
+          expect.objectContaining({ component: "watchdog", version: "0.71.0" }),
+        ]),
       );
     });
   });
@@ -1599,13 +1761,15 @@ describe("agentVersions routes", () => {
       const res = await app.request("/agent-versions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "1.0.0",
-          platform: "linux",
-          architecture: "amd64",
-          downloadUrl: "https://s3.example.com/agent-1.0.0",
-          checksum: "c".repeat(64),
-        }),
+        body: JSON.stringify(
+          withValidManifest({
+            version: "1.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-1.0.0",
+            checksum: "c".repeat(64),
+          }),
+        ),
       });
 
       expect(res.status).toBe(201);
@@ -1626,13 +1790,15 @@ describe("agentVersions routes", () => {
       const res = await app.request("/agent-versions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "1.0.0",
-          platform: "linux",
-          architecture: "amd64",
-          downloadUrl: "https://s3.example.com/agent-1.0.0",
-          checksum: "c".repeat(64),
-        }),
+        body: JSON.stringify(
+          withValidManifest({
+            version: "1.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-1.0.0",
+            checksum: "c".repeat(64),
+          }),
+        ),
       });
 
       expect(res.status).toBe(201);
@@ -1654,14 +1820,16 @@ describe("agentVersions routes", () => {
       const res = await app.request("/agent-versions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "1.0.0",
-          platform: "linux",
-          architecture: "amd64",
-          downloadUrl: "https://s3.example.com/agent-1.0.0",
-          checksum: "c".repeat(64),
-          edition: "hosted",
-        }),
+        body: JSON.stringify(
+          withValidManifest({
+            version: "1.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-1.0.0",
+            checksum: "c".repeat(64),
+            edition: "hosted",
+          }),
+        ),
       });
 
       expect(res.status).toBe(201);
@@ -1705,15 +1873,17 @@ describe("agentVersions routes", () => {
       const res = await app.request("/agent-versions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "3.0.0",
-          platform: "linux",
-          architecture: "amd64",
-          downloadUrl: "https://s3.example.com/agent-3.0.0",
-          checksum: "e".repeat(64),
-          isLatest: true,
-          edition: "hosted",
-        }),
+        body: JSON.stringify(
+          withValidManifest({
+            version: "3.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-3.0.0",
+            checksum: "e".repeat(64),
+            isLatest: true,
+            edition: "hosted",
+          }),
+        ),
       });
 
       expect(res.status).toBe(201);
@@ -1753,14 +1923,16 @@ describe("agentVersions routes", () => {
       const res = await app.request("/agent-versions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: "2.0.0",
-          platform: "linux",
-          architecture: "amd64",
-          downloadUrl: "https://s3.example.com/agent-2.0.0",
-          checksum: "d".repeat(64),
-          isLatest: true,
-        }),
+        body: JSON.stringify(
+          withValidManifest({
+            version: "2.0.0",
+            platform: "linux",
+            architecture: "amd64",
+            downloadUrl: "https://s3.example.com/agent-2.0.0",
+            checksum: "d".repeat(64),
+            isLatest: true,
+          }),
+        ),
       });
 
       expect(res.status).toBe(201);
@@ -1798,6 +1970,77 @@ describe("agentVersions routes", () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    // Regression coverage for issue #3544: a manifest-less row used to be
+    // accepted silently at write time and only ever surfaced later as an
+    // opaque 409 on every agent heartbeat trying to download it.
+    it("422s with signed_release_manifest_required when releaseManifest/manifestSignature are omitted", async () => {
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+        }),
+      });
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toBe("Release manifest is not trusted");
+      expect(body.reason).toBe("signed_release_manifest_required");
+      // Rejected before any write.
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it("422s with invalid_release_manifest_json when the manifest is present but not valid JSON", async () => {
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          releaseManifest: "this is not json",
+          manifestSignature: "test-signature",
+        }),
+      });
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toBe("Release manifest is not trusted");
+      expect(body.reason).toBe("invalid_release_manifest_json");
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    // Critical ordering property: a rejected isLatest:true row must NOT strip
+    // the currently-working upgrade target off the fleet on its way to being
+    // refused. The manifest check must run BEFORE the isLatest demotion.
+    it("rejects isLatest:true with no manifest WITHOUT demoting the currently-promoted row (outage-prevention ordering, #3544)", async () => {
+      const res = await app.request("/agent-versions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: "1.0.0",
+          platform: "linux",
+          architecture: "amd64",
+          downloadUrl: "https://s3.example.com/agent-1.0.0",
+          checksum: "c".repeat(64),
+          isLatest: true,
+        }),
+      });
+
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.reason).toBe("signed_release_manifest_required");
+      // The isLatest demotion UPDATE never ran, and neither did the insert.
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
     });
   });
 });

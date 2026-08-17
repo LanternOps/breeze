@@ -278,6 +278,79 @@ var ErrReadOnlyFS = fmt.Errorf("binary path is on a read-only filesystem")
 // but this sentinel prevents misclassification as ErrReadOnlyFS.
 var ErrTextBusy = fmt.Errorf("binary is currently executing")
 
+// ErrUntrustedRelease is returned when the control plane refuses to serve
+// download info for the requested version because the registered release is
+// not trusted (HTTP 409). This is TERMINAL for the current target version:
+// nothing on the device can fix it, and it stays broken until an operator
+// re-registers the version with a signed manifest. Callers must back off
+// rather than retry every heartbeat (issue #3544).
+var ErrUntrustedRelease = fmt.Errorf("release is not trusted by the server")
+
+// downloadInfoError is the control plane's error body for a refused
+// download-info request. `reason` is a machine-readable enum produced by
+// validateReleaseManifest in apps/api/src/routes/agentVersions.ts (e.g.
+// "signed_release_manifest_required", "invalid_release_manifest_signature").
+// Only `reason` is consumed — `error` is human prose that may change freely.
+type downloadInfoError struct {
+	Reason string `json:"reason"`
+}
+
+// maxDownloadInfoErrorBodyBytes bounds how much of a non-2xx body we read
+// before giving up on finding a reason. The real bodies are well under 200
+// bytes; the cap keeps a hostile or misconfigured endpoint from streaming
+// unbounded data into the agent just to produce a log line.
+const maxDownloadInfoErrorBodyBytes = 4 << 10
+
+// downloadInfoRejectionReason extracts the machine-readable `reason` from a
+// refused download-info response.
+//
+// The value is deliberately sanitized rather than echoed verbatim: it lands in
+// agent logs, and the surrounding code is careful never to let server-supplied
+// text reach them unfiltered (see SafeDownloadErrorFields and the redirect
+// branch of parseDownloadInfo). Reasons are a closed set of lowercase
+// snake_case identifiers, so anything else is refused.
+//
+// The two failure modes are reported separately (`malformed`), because
+// collapsing them is itself a silent failure — the exact class of bug this
+// whole change exists to remove. If the API's reason vocabulary ever drifts
+// outside the charset the agent accepts (a digit, a capital, over-length),
+// returning a bare "" would make a REFUSED reason indistinguishable from a
+// server that sent none, and the drift would be invisible in agent logs
+// forever. The raw value is still never returned: naming the shape of the
+// problem is enough to diagnose it without letting server text into logs.
+func downloadInfoRejectionReason(body io.Reader) (reason string, malformed bool) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxDownloadInfoErrorBodyBytes))
+	if err != nil {
+		return "", false
+	}
+	// Reading exactly the cap means the body was cut off, so anything we
+	// failed to parse below is inconclusive rather than absent — a reason may
+	// well have been present and simply truncated mid-string. Folding that
+	// into "server gave no reason" would be the same collapse this function
+	// exists to avoid, reached through size instead of charset.
+	truncated := len(raw) == maxDownloadInfoErrorBodyBytes
+
+	var parsed downloadInfoError
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		// Otherwise the body is not the JSON error envelope at all (an empty
+		// body, or an intermediary's HTML error page). Nothing was refused —
+		// there was nothing to refuse.
+		return "", truncated
+	}
+	if parsed.Reason == "" {
+		return "", false
+	}
+	if len(parsed.Reason) > 64 {
+		return "", true
+	}
+	for _, r := range parsed.Reason {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return "", true
+		}
+	}
+	return parsed.Reason, false
+}
+
 // maxUpdateBinaryBytes bounds both the netpolicy transport (Policy.
 // MaxResponseBytes) and the explicit CopyBounded call in downloadFromURL. A
 // var (not const), matching the trustedUpdateManifestPublicKeys pattern in
@@ -1014,6 +1087,27 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		// SafeDownloadErrorFields's stripping does not apply to it), and the
 		// target may carry a capability query string.
 		return downloadInfo{}, fmt.Errorf("download redirects are not trusted without a signed release manifest")
+
+	case http.StatusConflict:
+		// The server registered this version but refuses to serve it: the
+		// release manifest is missing or does not verify. Before #3544 this
+		// fell through to the bare status-code message below, so the agent
+		// logged "download info request failed with status 409" every ~60s
+		// forever while the body's specific, actionable `reason` was thrown
+		// away. Surface the reason and mark the failure terminal so callers
+		// can back off.
+		reason, malformed := downloadInfoRejectionReason(resp.Body)
+		switch {
+		case reason != "":
+			return downloadInfo{}, fmt.Errorf("%w: %s", ErrUntrustedRelease, reason)
+		case malformed:
+			// The server DID send a reason, but not one this agent will put in
+			// a log. Say so explicitly: silently reporting "no reason" would
+			// hide a server/agent vocabulary drift indefinitely.
+			return downloadInfo{}, fmt.Errorf("%w: server sent an unrecognized reason code (refused as unsafe to log)", ErrUntrustedRelease)
+		default:
+			return downloadInfo{}, fmt.Errorf("%w: server gave no reason", ErrUntrustedRelease)
+		}
 
 	default:
 		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)
