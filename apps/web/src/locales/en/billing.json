@@ -885,10 +885,10 @@
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
+        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
         "noEmailService": "Proposal marked Sent, but no email was delivered — email is not configured on this server.",
         "pdfRenderFailed": "Proposal marked Sent, but the PDF could not be generated, so no email was delivered. Check the attached contract files, then resend.",
-        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually.",
+        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address, then resend.",
         "shareLinkHint": "Use \"{{action}}\" on this proposal to copy the link and send it yourself."
       },
       "sendError": "Could not send the proposal.",

@@ -53,10 +53,20 @@ export function quoteShareLinkAvailable(
  *  persistent banner — unknown codes fall back to the generic send-failed
  *  copy so a new server-side reason never renders blank.
  *
- *  `shareHint` is appended when the Copy share link control is on screen. The
- *  base copy only says the link can be shared by hand; the hint is what makes
- *  that instruction followable, and it is withheld when the control is not
- *  offered rather than pointing at a button that isn't there (#3431). */
+ *  The hint naming the Copy share link control is appended only when the
+ *  control is actually on screen — pointing at a button that isn't there is
+ *  the very bug this copy exists to fix (#3431). The base strings therefore
+ *  promise nothing about sharing by hand; the hint carries that instruction
+ *  in full, so suppressing it leaves honest copy rather than a dead end.
+ *
+ *  `pdf_render_failed` is excluded from the hint even when the control IS
+ *  offered. That reason covers contract-input load and uploaded-contract merge
+ *  failures (quoteLifecycle.ts), and the public accept page re-runs the same
+ *  path (`renderContractBlocksForClient` / `loadContractBlockRenderData` in
+ *  routes/quotesPublic.ts) every time the link is opened. Recommending the
+ *  link here would send the customer at a page that fails for the identical
+ *  reason — its own copy ("check the attached contract files, then resend")
+ *  is the remedy that actually works. */
 function sendEmailWarningMessage(
   t: TFunction,
   reason: QuoteSendEmailReason | string,
@@ -72,7 +82,7 @@ function sendEmailWarningMessage(
     schedule_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
   };
   const message = warnByReason[reason as QuoteSendEmailReason] ?? warnByReason.send_failed;
-  if (!shareLinkAvailable) return message;
+  if (!shareLinkAvailable || reason === 'pdf_render_failed') return message;
   // Interpolating the control's own label keeps the name in the hint identical
   // to the name on the button in every locale — a hand-translated duplicate
   // would drift the moment either side is retranslated.

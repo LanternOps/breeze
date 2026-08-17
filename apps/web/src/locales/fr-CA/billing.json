@@ -885,10 +885,10 @@
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez une adresse courriel ou ajoutez-en une dans les <orgLink>paramètres de l'organisation</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — {{orgName}} n'a pas d'adresse courriel de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
+        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — {{orgName}} n'a pas d'adresse courriel de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation, puis renvoyez.",
         "noEmailService": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — le service de courriel n'est pas configuré sur ce serveur.",
         "pdfRenderFailed": "Proposition marquée comme Envoyée, mais le PDF n'a pas pu être généré, aucun courriel n'a donc été remis. Vérifiez les fichiers de contrat joints, puis renvoyez-la.",
-        "sendFailed": "Proposition marquée comme Envoyée, mais le courriel n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement.",
+        "sendFailed": "Proposition marquée comme Envoyée, mais le courriel n'a pas pu être remis. Vérifiez l'adresse, puis renvoyez.",
         "shareLinkHint": "Utilisez « {{action}} » sur cette proposition pour copier le lien et l’envoyer vous-même."
       },
       "sendError": "Impossible d'envoyer la proposition.",

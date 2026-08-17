@@ -673,6 +673,57 @@ describe('QuoteDetail — persisted send-outcome banners', () => {
     expect(screen.queryByTestId('quote-copy-share-link')).not.toBeInTheDocument();
   });
 
+  // pdf_render_failed covers contract-input load and uploaded-contract merge
+  // failures, and the PUBLIC accept page re-runs that same path on every open.
+  // Recommending the link for this reason would aim the customer at a page that
+  // breaks for the identical cause, so the hint is withheld even though the
+  // control is right there.
+  it('omits the Copy share link hint for pdf_render_failed even though the control is offered', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          sendEmailReason: 'pdf_render_failed',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).toHaveTextContent('Check the attached contract files');
+    expect(banner).not.toHaveTextContent('Copy share link');
+    // The control IS on screen — this exclusion is about the reason code, not
+    // about availability.
+    expect(screen.getByTestId('quote-copy-share-link')).toBeInTheDocument();
+  });
+
+  // The base copy must not promise a manual share on its own: when the hint is
+  // suppressed there is no control to follow it with (#3431).
+  it('base failure copy no longer instructs an unfollowable manual share', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }];
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          sendEmailReason: 'send_failed',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).not.toHaveTextContent('manually');
+    expect(banner).toHaveTextContent('then resend');
+  });
+
   it('a VIEWED quote retires the banner even with a failure marker still set', async () => {
     render(<QuoteDetail
       detail={{
