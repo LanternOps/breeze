@@ -931,7 +931,7 @@ enrollmentKeyRoutes.get(
       .select()
       .from(enrollmentKeys)
       .where(whereCondition)
-      .orderBy(desc(enrollmentKeys.createdAt))
+      .orderBy(desc(enrollmentKeys.createdAt), desc(enrollmentKeys.id))
       .limit(limit)
       .offset(offset);
 

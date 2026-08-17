@@ -809,7 +809,7 @@ export async function getSessionHistory(orgId: string, options: { limit?: number
     })
     .from(aiSessions)
     .where(and(...conditions))
-    .orderBy(desc(aiSessions.createdAt))
+    .orderBy(desc(aiSessions.createdAt), desc(aiSessions.id))
     .limit(limit)
     .offset(offset);
 }

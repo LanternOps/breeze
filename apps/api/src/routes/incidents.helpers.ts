@@ -356,7 +356,15 @@ export function buildIncidentFeedQueries(
     // first), `detectedAt` descending. Referencing `sub.rank`/`sub.detectedAt`
     // emits correctly-quoted identifiers — raw unquoted `detected_at` would
     // fold to lowercase and fail (`column "detected_at" does not exist`).
-    .orderBy(asc(sub.rank), desc(sub.detectedAt))
+    // `(source, sourceId)` is the mandatory tiebreaker (#3462). `rank` is a
+    // small integer and `detectedAt` ties in bulk (one provider sync writes
+    // every finding it pulled in a single transaction), so ordering on those
+    // two alone leaves row order undefined between two LIMIT/OFFSET queries and
+    // a client paging the feed would see some rows twice and miss others. There
+    // is no single base-table PK here — the feed is a UNION ALL over three
+    // sources — but `source` is a constant per leg and `sourceId` is unique
+    // within its leg, so the pair is a complete key across the union.
+    .orderBy(asc(sub.rank), desc(sub.detectedAt), asc(sub.source), asc(sub.sourceId))
     .limit(params.limit)
     .offset(params.offset);
 

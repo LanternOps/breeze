@@ -1710,7 +1710,16 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
       .from(deviceReliability)
       .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
       .where(where)
-      .orderBy(asc(deviceReliability.reliabilityScore), desc(deviceReliability.computedAt))
+      // `device_reliability`'s primary key is `device_id` (there is no `id`
+      // column), so that is the unique tiebreaker here (#3462). Without it,
+      // `reliability_score` is a 0-100 integer over a whole fleet — ties are
+      // the norm, not the exception — and consecutive LIMIT/OFFSET pages could
+      // repeat and skip devices.
+      .orderBy(
+        asc(deviceReliability.reliabilityScore),
+        desc(deviceReliability.computedAt),
+        asc(deviceReliability.deviceId)
+      )
       .limit(limit)
       .offset(offset),
   ]);

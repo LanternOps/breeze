@@ -87,7 +87,7 @@ diagnosticLogsRoutes.get(
           .select()
           .from(agentLogs)
           .where(and(...conditions))
-          .orderBy(desc(agentLogs.timestamp))
+          .orderBy(desc(agentLogs.timestamp), desc(agentLogs.id))
           .limit(limit)
           .offset(offset),
         db

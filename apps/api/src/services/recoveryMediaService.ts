@@ -669,7 +669,7 @@ export async function listRecoveryMediaArtifacts(orgId: string, filters: {
         filters.status ? eq(recoveryMediaArtifacts.status, filters.status as never) : undefined
       )
     )
-    .orderBy(desc(recoveryMediaArtifacts.createdAt))
+    .orderBy(desc(recoveryMediaArtifacts.createdAt), desc(recoveryMediaArtifacts.id))
     .limit(filters.limit)
     .offset(filters.offset);
 

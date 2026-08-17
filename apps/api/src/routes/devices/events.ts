@@ -253,7 +253,7 @@ eventsRoutes.get(
         .from(auditLogs)
         .leftJoin(users, eq(auditLogs.actorId, users.id))
         .where(whereClause)
-        .orderBy(desc(auditLogs.timestamp))
+        .orderBy(desc(auditLogs.timestamp), desc(auditLogs.id))
         .limit(limit)
         .offset(offset),
     ]);

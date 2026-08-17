@@ -63,7 +63,7 @@ approvalsRoutes.get(
       .select()
       .from(patchApprovals)
       .where(whereClause)
-      .orderBy(desc(patchApprovals.createdAt))
+      .orderBy(desc(patchApprovals.createdAt), desc(patchApprovals.id))
       .limit(limit)
       .offset(offset);
 

@@ -323,7 +323,7 @@ cisHardeningRoutes.get(
       .select()
       .from(cisBaselines)
       .where(where)
-      .orderBy(desc(cisBaselines.updatedAt))
+      .orderBy(desc(cisBaselines.updatedAt), desc(cisBaselines.id))
       .limit(limit)
       .offset(offset);
 
@@ -688,7 +688,7 @@ cisHardeningRoutes.get(
       })
       .from(rankedResults)
       .where(and(...latestConditions))
-      .orderBy(desc(rankedResults.checkedAt))
+      .orderBy(desc(rankedResults.checkedAt), desc(rankedResults.resultId))
       .limit(limit)
       .offset(offset);
 
@@ -1241,7 +1241,7 @@ cisHardeningRoutes.get(
       .innerJoin(devices, eq(cisRemediationActions.deviceId, devices.id))
       .leftJoin(cisBaselines, eq(cisRemediationActions.baselineId, cisBaselines.id))
       .where(where)
-      .orderBy(desc(cisRemediationActions.createdAt))
+      .orderBy(desc(cisRemediationActions.createdAt), desc(cisRemediationActions.id))
       .limit(limit)
       .offset(offset);
 

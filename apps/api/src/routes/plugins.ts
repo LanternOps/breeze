@@ -155,7 +155,7 @@ pluginRoutes.get(
         })
         .from(pluginCatalog)
         .where(whereClause)
-        .orderBy(desc(pluginCatalog.isFeatured), desc(pluginCatalog.installCount))
+        .orderBy(desc(pluginCatalog.isFeatured), desc(pluginCatalog.installCount), desc(pluginCatalog.id))
         .limit(query.limit)
         .offset(offset),
       db
@@ -254,7 +254,7 @@ pluginRoutes.get(
         .from(pluginInstallations)
         .innerJoin(pluginCatalog, eq(pluginInstallations.catalogId, pluginCatalog.id))
         .where(whereClause)
-        .orderBy(desc(pluginInstallations.createdAt))
+        .orderBy(desc(pluginInstallations.createdAt), desc(pluginInstallations.id))
         .limit(query.limit)
         .offset(offset),
       db
@@ -742,7 +742,7 @@ pluginRoutes.get(
         .select()
         .from(pluginLogs)
         .where(whereClause)
-        .orderBy(desc(pluginLogs.timestamp))
+        .orderBy(desc(pluginLogs.timestamp), desc(pluginLogs.id))
         .limit(query.limit)
         .offset(offset),
       db

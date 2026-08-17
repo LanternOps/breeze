@@ -288,7 +288,7 @@ export async function listRecoveryBootMediaArtifacts(orgId: string, filters: {
         filters.status ? eq(recoveryBootMediaArtifacts.status, filters.status as never) : undefined
       )
     )
-    .orderBy(desc(recoveryBootMediaArtifacts.createdAt))
+    .orderBy(desc(recoveryBootMediaArtifacts.createdAt), desc(recoveryBootMediaArtifacts.id))
     .limit(filters.limit)
     .offset(filters.offset);
 }

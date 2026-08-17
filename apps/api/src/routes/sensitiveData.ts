@@ -609,7 +609,7 @@ sensitiveDataRoutes.get(
       .from(sensitiveDataFindings)
       .innerJoin(devices, eq(devices.id, sensitiveDataFindings.deviceId))
       .where(whereClause)
-      .orderBy(desc(sensitiveDataFindings.lastSeenAt))
+      .orderBy(desc(sensitiveDataFindings.lastSeenAt), desc(sensitiveDataFindings.id))
       .limit(pagination.limit)
       .offset(pagination.offset);
 

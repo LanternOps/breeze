@@ -267,7 +267,7 @@ patchesRoutes.get(
       .from(deviceCommands)
       .leftJoin(users, eq(deviceCommands.createdBy, users.id))
       .where(whereClause)
-      .orderBy(desc(deviceCommands.createdAt))
+      .orderBy(desc(deviceCommands.createdAt), desc(deviceCommands.id))
       .limit(limit)
       .offset(offset);
 

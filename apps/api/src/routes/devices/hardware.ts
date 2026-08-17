@@ -113,7 +113,7 @@ hardwareRoutes.get(
         .select()
         .from(deviceIpHistory)
         .where(and(...conditions))
-        .orderBy(desc(deviceIpHistory.firstSeen))
+        .orderBy(desc(deviceIpHistory.firstSeen), desc(deviceIpHistory.id))
         .limit(limit)
         .offset(offset);
 

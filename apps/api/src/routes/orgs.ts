@@ -389,7 +389,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
     .where(conditions)
     .limit(limit)
     .offset(offset)
-    .orderBy(partners.createdAt);
+    .orderBy(partners.createdAt, partners.id);
 
   return c.json({
     data,
@@ -1177,7 +1177,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
       .where(ownOrgCondition)
       .limit(limit)
       .offset(offset)
-      .orderBy(organizations.createdAt);
+      .orderBy(organizations.createdAt, organizations.id);
     return c.json({
       data,
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
@@ -1216,7 +1216,14 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     .where(conditions)
     .limit(limit)
     .offset(offset)
-    .orderBy(organizations.createdAt);
+    // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
+    // `created_at` is `defaultNow()` and Postgres `now()` is the TRANSACTION
+    // timestamp, so every org written in one transaction (seed, bulk import,
+    // migration) shares a byte-identical value. Ordering on a tied key alone
+    // leaves row order undefined between two LIMIT/OFFSET queries, so the page
+    // walk in `apps/web/src/lib/fetchAllOrganizations.ts` would silently see
+    // some orgs twice and miss others.
+    .orderBy(organizations.createdAt, organizations.id);
 
   // Apply the partner's preferred organization order, when one is set.
   // - partner scope: load own partner settings.
@@ -1947,7 +1954,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     .where(whereCondition)
     .limit(limit)
     .offset(offset)
-    .orderBy(sites.createdAt);
+    .orderBy(sites.createdAt, sites.id);
 
   // Enrich each site with its device count. The `sites` row carries no count
   // column, so without this the API omits `deviceCount` entirely and the web

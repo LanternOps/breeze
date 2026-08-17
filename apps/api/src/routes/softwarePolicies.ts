@@ -237,7 +237,7 @@ softwarePoliciesRoutes.get(
       .select()
       .from(softwarePolicies)
       .where(where)
-      .orderBy(desc(softwarePolicies.updatedAt))
+      .orderBy(desc(softwarePolicies.updatedAt), desc(softwarePolicies.id))
       .limit(limit)
       .offset(offset);
 

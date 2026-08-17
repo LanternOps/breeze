@@ -1027,7 +1027,7 @@ export async function listUserRiskScores(filter: UserRiskScoreListFilter): Promi
         )
       )
       .where(whereClause)
-      .orderBy(desc(userRiskScores.score), desc(userRiskScores.calculatedAt))
+      .orderBy(desc(userRiskScores.score), desc(userRiskScores.calculatedAt), desc(userRiskScores.id))
       .limit(limit)
       .offset(offset)
   ]);
@@ -1227,7 +1227,7 @@ export async function listUserRiskEvents(filter: UserRiskEventFilter): Promise<{
       .from(userRiskEvents)
       .innerJoin(users, eq(userRiskEvents.userId, users.id))
       .where(whereClause)
-      .orderBy(desc(userRiskEvents.occurredAt))
+      .orderBy(desc(userRiskEvents.occurredAt), desc(userRiskEvents.id))
       .limit(limit)
       .offset(offset)
   ]);

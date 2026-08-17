@@ -45,7 +45,7 @@ c2cItemsRoutes.get(
       .select()
       .from(c2cBackupItems)
       .where(and(...conditions))
-      .orderBy(desc(c2cBackupItems.createdAt))
+      .orderBy(desc(c2cBackupItems.createdAt), desc(c2cBackupItems.id))
       .limit(limit)
       .offset(offset);
 

@@ -661,7 +661,7 @@ softwareRoutes.get(
         methodKinds: sql<string[]>`(SELECT coalesce(array_agg(DISTINCT software_install_methods.kind), ARRAY[]::varchar[]) FROM software_install_methods WHERE software_install_methods.catalog_id = ${softwareCatalog}.id AND software_install_methods.enabled)`,
       }).from(softwareCatalog)
         .where(whereClause)
-        .orderBy(softwareCatalog.name)
+        .orderBy(softwareCatalog.name, softwareCatalog.id)
         .limit(limit)
         .offset(offset),
       db.select({ count: sql<number>`count(*)` }).from(softwareCatalog)
@@ -1406,7 +1406,7 @@ softwareRoutes.get(
     const [items, countRows] = await Promise.all([
       db.select().from(softwareDeployments)
         .where(orgCondition)
-        .orderBy(desc(softwareDeployments.createdAt))
+        .orderBy(desc(softwareDeployments.createdAt), desc(softwareDeployments.id))
         .limit(limit)
         .offset(offset),
       db.select({ count: sql<number>`count(*)::int` })
@@ -2423,7 +2423,7 @@ softwareRoutes.get(
         .leftJoin(devices, eq(deploymentResults.deviceId, devices.id))
         .leftJoin(deviceCommands, eq(deploymentResults.deviceCommandId, deviceCommands.id))
         .where(whereClause)
-        .orderBy(devices.hostname, deploymentResults.deviceId)
+        .orderBy(devices.hostname, deploymentResults.deviceId, deploymentResults.id)
         .limit(limit)
         .offset(offset),
       db.select({ count: sql<number>`count(*)::int` })

@@ -141,7 +141,7 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
     .from(tickets)
     .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
     .where(conditions)
-    .orderBy(desc(tickets.createdAt))
+    .orderBy(desc(tickets.createdAt), desc(tickets.id))
     .limit(limit)
     .offset(offset);
 

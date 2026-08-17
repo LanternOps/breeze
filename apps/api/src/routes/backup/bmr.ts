@@ -429,7 +429,7 @@ bmrRoutes.get(
           allowedSnapshotIds ? inArray(recoveryTokens.snapshotId, allowedSnapshotIds) : undefined
         )
       )
-      .orderBy(desc(recoveryTokens.createdAt))
+      .orderBy(desc(recoveryTokens.createdAt), desc(recoveryTokens.id))
       .limit(query.limit)
       .offset(query.offset);
 
