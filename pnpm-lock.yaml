@@ -124,14 +124,14 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1
       '@hono/node-server':
-        specifier: ^2.1.0
-        version: 2.1.0(hono@4.13.1)
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
       '@hono/node-ws':
         specifier: ^1.3.1
-        version: 1.3.1(@hono/node-server@2.1.0(hono@4.13.1))(hono@4.13.1)
+        version: 1.3.1(@hono/node-server@2.1.1(hono@4.13.2))(hono@4.13.2)
       '@hono/zod-validator':
         specifier: ^0.9.0
-        version: 0.9.0(hono@4.13.1)(zod@4.4.3)
+        version: 0.9.0(hono@4.13.2)(zod@4.4.3)
       '@network-utils/vendor-lookup':
         specifier: ^1.0.12
         version: 1.0.12
@@ -172,8 +172,8 @@ importers:
         specifier: ^10.9.1
         version: 10.9.1
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1
@@ -461,11 +461,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hono/node-server':
-        specifier: ^2.1.0
-        version: 2.1.0(hono@4.13.1)
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
       jose:
         specifier: ^6.2.3
         version: 6.2.4
@@ -504,11 +504,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hono/node-server':
-        specifier: ^2.1.0
-        version: 2.1.0(hono@4.13.1)
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -544,11 +544,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hono/node-server':
-        specifier: ^2.1.0
-        version: 2.1.0(hono@4.13.1)
+        specifier: ^2.1.1
+        version: 2.1.1(hono@4.13.2)
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
       jose:
         specifier: ^6.2.3
         version: 6.2.3
@@ -1194,8 +1194,8 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.21.0)(gel@2.2.0)(pg@8.22.0)(postgres@3.4.9)
       hono:
-        specifier: 4.13.1
-        version: 4.13.1
+        specifier: 4.13.2
+        version: 4.13.2
       mailparser:
         specifier: ^3.9.14
         version: 3.9.15
@@ -1250,8 +1250,8 @@ importers:
         specifier: ^7.8.0
         version: 7.8.0
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -1268,8 +1268,8 @@ importers:
         specifier: workspace:*
         version: link:../extension-web-sdk
       hono:
-        specifier: ^4.13.1
-        version: 4.13.1
+        specifier: ^4.13.2
+        version: 4.13.2
     devDependencies:
       happy-dom:
         specifier: ^20.11.1
@@ -2986,8 +2986,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@hono/node-server@2.1.0':
-    resolution: {integrity: sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg==}
+  '@hono/node-server@2.1.1':
+    resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4
@@ -5818,10 +5818,12 @@ packages:
   '@xmldom/xmldom@0.8.14':
     resolution: {integrity: sha512-T4EDRUBVZYRldYApjEJiU0e1stYWaRAX7CuSnKzrpwdZKo53zGV8/pqfzV6FfwNl9YThD2OumQYvqtvjvgG7aQ==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xmldom/xmldom@0.9.11':
     resolution: {integrity: sha512-tW8bcK3hsG0/uqSnNz6TK4BkcuZSezoU7DlnYssILmZDktPnSHHuDJJFM0AJv+13gz2r0iGdrj6qqKeUnxXEDg==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -8034,8 +8036,8 @@ packages:
   hoist-non-react-statics@3.3.2:
     resolution: {integrity: sha512-/gGivxi8JPKWNm/W0jSmzcMPpfpPLc3dY/6GxhX2hQ9iGj3aDfklV4ET7NjKpSinLpJ5vafa9iiGIEZg10SfBw==}
 
-  hono@4.13.1:
-    resolution: {integrity: sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw==}
+  hono@4.13.2:
+    resolution: {integrity: sha512-JydRilDRkYBQMt9qR9U92mXxmbGqsqSn/IKOrh4e7/gEbn+0zSr8igTu0obwJoNGN4sez28DIql7FBHWydoJpA==}
     engines: {node: '>=16.9.0'}
 
   hosted-git-info@7.0.2:
@@ -14008,26 +14010,26 @@ snapshots:
 
   '@hexagon/base64@1.1.28': {}
 
-  '@hono/node-server@1.19.17(hono@4.13.1)':
+  '@hono/node-server@1.19.17(hono@4.13.2)':
     dependencies:
-      hono: 4.13.1
+      hono: 4.13.2
 
-  '@hono/node-server@2.1.0(hono@4.13.1)':
+  '@hono/node-server@2.1.1(hono@4.13.2)':
     dependencies:
-      hono: 4.13.1
+      hono: 4.13.2
 
-  '@hono/node-ws@1.3.1(@hono/node-server@2.1.0(hono@4.13.1))(hono@4.13.1)':
+  '@hono/node-ws@1.3.1(@hono/node-server@2.1.1(hono@4.13.2))(hono@4.13.2)':
     dependencies:
-      '@hono/node-server': 2.1.0(hono@4.13.1)
-      hono: 4.13.1
+      '@hono/node-server': 2.1.1(hono@4.13.2)
+      hono: 4.13.2
       ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.9.0(hono@4.13.1)(zod@4.4.3)':
+  '@hono/zod-validator@0.9.0(hono@4.13.2)(zod@4.4.3)':
     dependencies:
-      hono: 4.13.1
+      hono: 4.13.2
       zod: 4.4.3
 
   '@hookform/resolvers@5.4.0(react-hook-form@7.81.0(react@19.2.8))':
@@ -14277,7 +14279,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.1)
+      '@hono/node-server': 1.19.17(hono@4.13.2)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -14287,7 +14289,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.6.2(express@5.2.1)
-      hono: 4.13.1
+      hono: 4.13.2
       jose: 6.2.8
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -15430,9 +15432,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.86.2': {}
 
@@ -19775,7 +19775,7 @@ snapshots:
     dependencies:
       react-is: 16.13.1
 
-  hono@4.13.1: {}
+  hono@4.13.2: {}
 
   hosted-git-info@7.0.2:
     dependencies:
