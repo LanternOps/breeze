@@ -228,6 +228,96 @@ describe('maintenance routes', () => {
     expect(body.name).toBe('New Name');
   });
 
+  // Regression guard for #3256: `notifyBefore` / `notifyOnStart` / `notifyOnEnd`
+  // were accepted and persisted but never read by anything, so a window promised
+  // notifications it never sent. They are off the write surface now. These tests
+  // fail if the fields are wired back into the request schemas without a real
+  // consumer landing first.
+  describe('retired notification fields (#3256)', () => {
+    it('should not persist notifyBefore/notifyOnStart/notifyOnEnd on create', async () => {
+      const occurrencesValues = vi.fn().mockResolvedValue(undefined);
+      const windowValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'win-1', orgId: 'org-123', name: 'W', status: 'scheduled' }])
+      });
+      vi.mocked(db.insert)
+        .mockReturnValueOnce({ values: windowValues } as any)
+        .mockReturnValueOnce({ values: occurrencesValues } as any);
+
+      const res = await app.request('/maintenance/windows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({
+          name: 'W',
+          startTime: '2024-01-01T10:00:00.000Z',
+          endTime: '2024-01-01T12:00:00.000Z',
+          timezone: 'UTC',
+          recurrence: 'once',
+          targetType: 'all',
+          notifyBefore: 30,
+          notifyOnStart: true,
+          notifyOnEnd: true
+        })
+      });
+
+      // Still a 201: the keys are stripped, not rejected, so existing clients
+      // that send them keep working.
+      expect(res.status).toBe(201);
+
+      const insertCall = windowValues.mock.calls[0];
+      if (!insertCall) throw new Error('Expected window insert call');
+      const inserted = insertCall[0] as Record<string, unknown>;
+      expect(inserted).not.toHaveProperty('notifyBefore');
+      expect(inserted).not.toHaveProperty('notifyOnStart');
+      expect(inserted).not.toHaveProperty('notifyOnEnd');
+      // The rest of the payload is untouched.
+      expect(inserted).toMatchObject({ orgId: 'org-123', name: 'W' });
+    });
+
+    it('should not write notifyBefore/notifyOnStart/notifyOnEnd on update', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'win-1', orgId: 'org-123', name: 'Old Name' }])
+          })
+        })
+      } as any);
+      const setSpy = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'win-1', name: 'New Name' }])
+        })
+      });
+      vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+      const res = await app.request('/maintenance/windows/win-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ name: 'New Name', notifyBefore: 30, notifyOnStart: true, notifyOnEnd: true })
+      });
+
+      expect(res.status).toBe(200);
+      const setCall = setSpy.mock.calls[0];
+      if (!setCall) throw new Error('Expected update set call');
+      const updated = setCall[0] as Record<string, unknown>;
+      expect(updated).not.toHaveProperty('notifyBefore');
+      expect(updated).not.toHaveProperty('notifyOnStart');
+      expect(updated).not.toHaveProperty('notifyOnEnd');
+      expect(updated).toMatchObject({ name: 'New Name' });
+    });
+
+    it('should reject an update that carries only retired notification fields', async () => {
+      const res = await app.request('/maintenance/windows/win-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+        body: JSON.stringify({ notifyBefore: 30, notifyOnStart: true })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('No updates provided');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+  });
+
   it('should delete a maintenance window and future occurrences', async () => {
     vi.mocked(db.select).mockReturnValue({
       from: vi.fn().mockReturnValue({
