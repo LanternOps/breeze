@@ -50,10 +50,20 @@ describe('WhatsNewSplash', () => {
     });
   });
 
-  it('renders nothing when there is no applicable entry', async () => {
-    window.localStorage.clear(); // first-ever load => baseline only, no show
+  // #3646: with no stored floor (existing user upgrading from a pre-feature
+  // build) the newest shipped entry must still auto-show rather than be
+  // silently baselined away.
+  it('shows the newest entry when no floor is stored', async () => {
+    window.localStorage.clear();
+    render(<WhatsNewSplash />);
+    expect(await screen.findByText(/whatsNew\.title:/)).toBeInTheDocument();
+    // Nothing is written until the user acknowledges it.
+    expect(window.localStorage.getItem(LAST_SEEN_KEY)).toBeNull();
+  });
+
+  it('renders nothing once the newest entry has been acknowledged', async () => {
+    window.localStorage.setItem(LAST_SEEN_KEY, '99.0.0');
     const { container } = render(<WhatsNewSplash />);
-    // Give the mount effect a tick to run (it will write the baseline and stay closed).
     await waitFor(() => {
       expect(container).toBeEmptyDOMElement();
     });

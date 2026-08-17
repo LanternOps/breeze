@@ -7,7 +7,11 @@ export const LAST_SEEN_KEY = 'breeze.whatsNew.lastSeenVersion';
 export interface WhatsNewDecision {
   /** The entry to show, or null. */
   entry: WhatsNewEntry | null;
-  /** First-ever load only: caller writes this baseline and shows nothing. */
+  /**
+   * Set only when there is no stored floor AND nothing to show: the caller
+   * writes this baseline so the *next* release still surfaces. When there is an
+   * entry to show, this is null and the floor is written by "Got it" instead.
+   */
   baselineToSet: string | null;
 }
 
@@ -27,15 +31,29 @@ export function decideWhatsNew(
 ): WhatsNewDecision {
   if (webVersion === 'dev') return { entry: null, baselineToSet: null };
 
-  const floor = storage.getItem(LAST_SEEN_KEY);
-  if (!floor) return { entry: null, baselineToSet: webVersion };
+  // Treat an empty value as absent — a blank floor is not a version.
+  const floor = storage.getItem(LAST_SEEN_KEY) || null;
 
   const applicable = entries.filter((e) => {
-    const aboveFloor = semverCompare(e.version, floor);
     const atMostWeb = semverCompare(e.version, webVersion);
-    return aboveFloor !== null && aboveFloor > 0 && atMostWeb !== null && atMostWeb <= 0;
+    if (atMostWeb === null || atMostWeb > 0) return false;
+    // No floor yet: every entry the running build shipped is a candidate, so
+    // `highest` picks the release the user just landed on.
+    if (floor === null) return true;
+    const aboveFloor = semverCompare(e.version, floor);
+    return aboveFloor !== null && aboveFloor > 0;
   });
-  return { entry: highest(applicable), baselineToSet: null };
+  const entry = highest(applicable);
+
+  // A missing floor means either a brand-new user or an existing user upgrading
+  // from a build that predates this feature. The two are indistinguishable, and
+  // baselining both away meant the entry that shipped the feature could never
+  // auto-show (#3646). Both populations now see the newest shipped entry once.
+  // Only when there is nothing to show do we write a baseline, so the next
+  // release still surfaces.
+  if (floor === null && !entry) return { entry: null, baselineToSet: webVersion };
+
+  return { entry, baselineToSet: null };
 }
 
 export function markSeen(storage: Pick<Storage, 'setItem'>, version: string): void {
