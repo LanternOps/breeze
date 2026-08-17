@@ -533,8 +533,56 @@ export async function restoreAccessTokenFromCookie(): Promise<boolean> {
 export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
   const outcome = await requestTokenRefreshShared();
   if (outcome.kind !== 'restored' || !outcome.tokens.accessToken) return false;
-  const tokens = outcome.tokens;
+  return completeBootstrapLogin(outcome.tokens);
+}
 
+/**
+ * Bootstraps the auth store after an SSO (OIDC/SAML) redirect login (#3700).
+ *
+ * The SSO callback mints a one-time token-exchange grant and redirects to the
+ * app with `#ssoCode=<grant>` in the fragment (never a query param, so the
+ * grant is not sent to the server or logged in access logs). AuthOverlay
+ * consumes the fragment and calls this helper, which:
+ *
+ *   1. Trades the grant for an access token via POST `/sso/exchange` (which
+ *      also sets the HttpOnly refresh cookie server-side)
+ *   2. Fetches the user record (`/users/me`) with that token
+ *   3. Populates the store via `login(user, tokens)`
+ *
+ * Returns true if the store was populated; false if any step failed (the
+ * caller should bounce to /login with an error notice). The grant is
+ * single-use and short-lived, so a failed exchange is not retryable — the
+ * user re-initiates SSO login instead.
+ */
+export async function bootstrapFromSsoCode(code: string): Promise<boolean> {
+  let exchangeResponse: Response;
+  try {
+    exchangeResponse = await fetch(buildApiUrl('/sso/exchange'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ code }),
+    });
+  } catch {
+    return false;
+  }
+
+  if (!exchangeResponse.ok) return false;
+
+  const data = (await exchangeResponse.json().catch(() => null)) as
+    | { accessToken?: string; expiresInSeconds?: number }
+    | null;
+  if (!data?.accessToken) return false;
+
+  return completeBootstrapLogin({
+    accessToken: data.accessToken,
+    expiresInSeconds: data.expiresInSeconds ?? 900,
+  });
+}
+
+// Shared tail of the redirect-login bootstraps (CF Access, SSO): fetch the
+// user record with the freshly-minted access token and populate the store.
+async function completeBootstrapLogin(tokens: Tokens): Promise<boolean> {
   let meResponse: Response;
   try {
     meResponse = await fetch(buildApiUrl('/users/me'), {

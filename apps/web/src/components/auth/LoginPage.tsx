@@ -75,6 +75,12 @@ function getSsoLoginNotice(t: ReturnType<typeof useTranslation<'auth'>>['t']): s
     identity_in_use: t('login.ssoErrors.identityInUse', {
       defaultValue: 'That sign-in identity is already linked to a different account. Contact your administrator.',
     }),
+  // #3700: AuthOverlay's `#ssoCode` → POST /sso/exchange handoff failed (the
+  // single-use grant expired or was already consumed, or the exchange request
+  // itself failed). The IdP login succeeded — the user just re-initiates.
+    sso_exchange_failed: t('login.ssoErrors.ssoExchangeFailed', {
+      defaultValue: 'Single sign-on almost completed, but the final sign-in step failed. Please start the sign-in again.',
+    }),
   };
   return error ? ssoLoginErrorCopy[error] : undefined;
 }

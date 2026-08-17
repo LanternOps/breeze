@@ -156,3 +156,118 @@ describe('AuthOverlay session-expiry mask', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 });
+
+describe('AuthOverlay #ssoCode exchange bootstrap (#3700)', () => {
+  const UNAUTHENTICATED = {
+    isAuthenticated: false,
+    isLoading: false,
+    tokens: null,
+    user: null,
+    sessionExpiredReason: null,
+  } as const;
+
+  const originalFetch = global.fetch;
+  let fetchCalls: Array<{ url: string; init?: RequestInit }>;
+
+  function stubFetch(routes: Record<string, () => Response>) {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      fetchCalls.push({ url, init });
+      for (const [needle, respond] of Object.entries(routes)) {
+        if (url.includes(needle)) return respond();
+      }
+      throw new Error(`unexpected fetch in test: ${url}`);
+    }) as typeof fetch;
+  }
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchCalls = [];
+    useAuthStore.setState({ ...UNAUTHENTICATED });
+    window.history.replaceState({}, '', '/');
+  });
+
+  afterEach(async () => {
+    const { navigateTo } = await import('../../lib/navigation');
+    vi.mocked(navigateTo).mockClear();
+    global.fetch = originalFetch;
+    vi.useRealTimers();
+    useAuthStore.setState({ ...UNAUTHENTICATED });
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('trades the fragment grant for a session and strips it from the URL', async () => {
+    stubFetch({
+      '/sso/exchange': () => json(200, { accessToken: 'sso-access', expiresInSeconds: 900 }),
+      '/users/me': () => json(200, { id: 'u-1', email: 'jhill@example.com', name: 'J Hill', mfaEnabled: false }),
+    });
+    window.history.replaceState({}, '', '/#ssoCode=grant-123');
+
+    render(<AuthOverlay />);
+    // The fragment must be stripped synchronously on consumption — before the
+    // async exchange settles — so a reload can't replay the single-use grant.
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+    expect(window.location.hash).toBe('');
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    });
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('sso-access');
+
+    const exchange = fetchCalls.find((c) => c.url.includes('/sso/exchange'));
+    expect(exchange).toBeDefined();
+    expect(JSON.parse(String(exchange!.init?.body))).toEqual({ code: 'grant-123' });
+
+    const { navigateTo } = await import('../../lib/navigation');
+    expect(navigateTo).not.toHaveBeenCalledWith(expect.stringContaining('/login'), expect.anything());
+  });
+
+  it('bounces to /login with an error notice when the exchange is rejected', async () => {
+    stubFetch({
+      '/sso/exchange': () => json(400, { error: 'Invalid or expired token exchange code' }),
+    });
+    window.history.replaceState({}, '', '/#ssoCode=stale-grant');
+    const { navigateTo } = await import('../../lib/navigation');
+    vi.mocked(navigateTo).mockClear();
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await waitFor(() => {
+      expect(navigateTo).toHaveBeenCalledWith('/login?error=sso_exchange_failed', { replace: true });
+    });
+    expect(window.location.hash).toBe('');
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    // The error-carrying redirect must be the ONLY navigation — the generic
+    // bare-/login branch would strip the notice if it raced and won.
+    expect(vi.mocked(navigateTo)).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips a leftover grant without exchanging when a live session already exists', async () => {
+    stubFetch({});
+    useAuthStore.setState({
+      isAuthenticated: true,
+      isLoading: false,
+      tokens: { accessToken: 'live-token', expiresInSeconds: 900 },
+      sessionExpiredReason: null,
+    });
+    window.history.replaceState({}, '', '/#ssoCode=old-grant');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+
+    expect(window.location.hash).toBe('');
+    expect(fetchCalls).toHaveLength(0);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('live-token');
+  });
+});

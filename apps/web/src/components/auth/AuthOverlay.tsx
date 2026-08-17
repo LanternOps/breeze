@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { bootstrapFromCfAccessRedirect, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
+import { bootstrapFromCfAccessRedirect, bootstrapFromSsoCode, restoreAccessTokenFromCookie, useAuthStore } from '../../stores/auth';
 import { Loader2 } from 'lucide-react';
 import { navigateTo } from '../../lib/navigation';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -9,6 +9,26 @@ import { navigateTo } from '../../lib/navigation';
 import '../../lib/i18n';
 
 const CF_ACCESS_LOGIN_PARAM = 'cf-access-login';
+const SSO_CODE_FRAGMENT_PREFIX = 'ssoCode=';
+
+// SSO callback token handoff (#3700): after a successful IdP login the API
+// redirects here with a one-time token-exchange grant in the URL FRAGMENT
+// (`/#ssoCode=<grant>`) — fragments never reach the server, so the grant can't
+// land in access logs or Referer headers. Consuming it strips the fragment
+// from the address bar immediately (before the async exchange settles) so the
+// single-use grant can't be re-triggered by a reload or copied out of the URL.
+function consumeSsoCodeFragment(): string | null {
+  if (typeof window === 'undefined') return null;
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash.startsWith(SSO_CODE_FRAGMENT_PREFIX)) return null;
+  const raw = hash.slice(SSO_CODE_FRAGMENT_PREFIX.length).split('&')[0] ?? '';
+  window.history.replaceState({}, '', window.location.pathname + window.location.search);
+  try {
+    return decodeURIComponent(raw) || null;
+  } catch {
+    return null;
+  }
+}
 
 function consumeCfAccessLoginParam(): boolean {
   if (typeof window === 'undefined') return false;
@@ -31,6 +51,7 @@ export default function AuthOverlay() {
   const [isRecovering, setIsRecovering] = useState(false);
   const [recoverAttempted, setRecoverAttempted] = useState(false);
   const [cfBootstrapAttempted, setCfBootstrapAttempted] = useState(false);
+  const [ssoBootstrapAttempted, setSsoBootstrapAttempted] = useState(false);
   const [fadeState, setFadeState] = useState<'visible' | 'fading' | 'hidden'>('visible');
 
   useEffect(() => {
@@ -64,9 +85,43 @@ export default function AuthOverlay() {
 
     if (isChecking || isLoading) return;
 
-    // Fast path: tokens were rehydrated from localStorage — no network needed
+    // Fast path: tokens were rehydrated from localStorage — no network needed.
+    // A leftover `#ssoCode=` fragment (e.g. a re-visited SSO redirect while
+    // already signed in) is stripped without an exchange: the live session wins
+    // and the stale single-use grant must not linger in the address bar.
     if (isAuthenticated && tokens?.accessToken) {
+      consumeSsoCodeFragment();
       return;
+    }
+
+    // SSO redirect bootstrap (#3700): the SSO callback completed the IdP login
+    // and handed us a one-time exchange grant in the fragment. Trade it for
+    // tokens before any other recovery path — it represents a FRESH login, so
+    // it outranks both the CF Access param and a possibly-dead refresh cookie
+    // from a previous session (which is exactly the state a user locked out by
+    // enforce-SSO arrives in). Runs once per overlay mount.
+    if (!ssoBootstrapAttempted) {
+      const ssoCode = consumeSsoCodeFragment();
+      if (ssoCode) {
+        setSsoBootstrapAttempted(true);
+        setIsRecovering(true);
+        void bootstrapFromSsoCode(ssoCode).then((ok) => {
+          if (!ok) {
+            // NOT gated on `cancelled`: the setSsoBootstrapAttempted /
+            // setIsRecovering calls above re-run this effect immediately,
+            // which flips `cancelled` on the old closure long before the
+            // exchange settles — gating here would silently swallow the
+            // failure redirect. isRecovering also deliberately stays true:
+            // dropping it re-arms the final !isAuthenticated branch, whose
+            // bare `/login` redirect races this one and strips the error
+            // param. The navigation below unmounts the overlay anyway.
+            void navigateTo('/login?error=sso_exchange_failed', { replace: true });
+            return;
+          }
+          if (!cancelled) setIsRecovering(false);
+        });
+        return () => { cancelled = true; };
+      }
     }
 
     // CF Access redirect bootstrap: the server's GET /api/v1/auth/cf-access-login
@@ -124,7 +179,7 @@ export default function AuthOverlay() {
     }
 
     return () => { cancelled = true; };
-  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted, sessionExpiredReason]);
+  }, [isAuthenticated, isLoading, isChecking, tokens, recoverAttempted, isRecovering, cfBootstrapAttempted, ssoBootstrapAttempted, sessionExpiredReason]);
 
   // Authenticated with token — fade out then unmount
   const shouldHide = !isChecking && !isLoading && isAuthenticated && !!tokens?.accessToken;
