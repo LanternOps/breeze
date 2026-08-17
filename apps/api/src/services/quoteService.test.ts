@@ -803,6 +803,30 @@ describe('sanitizeBlockContentForWrite loss reporting (#3520)', () => {
     ]);
   });
 
+  // Issue #3484: the write path must actually STORE the table, not just stop
+  // warning about it — this is the only coverage that a quote block write
+  // preserves table structure end to end.
+  it('stores a rich_text table intact and warns about nothing', () => {
+    const { content, warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<table><thead><tr><th>Item</th></tr></thead><tbody><tr><td>Setup</td></tr></tbody></table>' },
+    } as never);
+    expect((content as { html: string }).html)
+      .toBe('<table><thead><tr><th>Item</th></tr></thead><tbody><tr><td>Setup</td></tr></tbody></table>');
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns when a table CELL had block content flattened, and still stores the table', () => {
+    const { content, warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<table><tr><td><p>a</p><p>b</p></td></tr></table>' },
+    } as never);
+    expect((content as { html: string }).html).toBe('<table><tr><td>a<br />b</td></tr></table>');
+    expect(warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['p'] },
+    ]);
+  });
+
   it('reports nothing when the submitted html is already inside the subset', () => {
     const { warnings } = svc.sanitizeBlockContentForWrite({
       blockType: 'rich_text',

@@ -45,8 +45,26 @@ function isHttpOrHttpsUri(uri: string): boolean {
 // carry `colspan`/`rowspan`/`colwidth` attributes even at their defaults.
 //
 // The attributes stay in the SCHEMA (prosemirror-tables' TableMap needs
-// colspan/rowspan to exist) and are suppressed only at render time.
-const suppressAttribute = { renderHTML: () => ({}) };
+// colspan/rowspan to exist) but are pinned to their unmerged defaults on PARSE
+// and emitted by nobody on render.
+//
+// Pinning on parse is not belt-and-braces: TipTap's TableCell gives colspan and
+// rowspan no parseHTML override, so a pasted `<td colspan="2">` — routine in a
+// Word/Google-Docs table, the case this whole feature exists for — sets a real
+// span on the ProseMirror node. Suppressing it at render only would then leave
+// the row drawing FEWER <td> elements than the model believes it spans: the
+// table visibly misaligns inside the editor, and tableEditing's DOM-based cell
+// hit-testing (drag-select, Tab) desyncs from the TableMap. Clamping on parse
+// makes the merge split into ordinary cells instead, which prosemirror-tables
+// then pads out to a rectangular grid — the honest outcome, since merges are
+// unsupported end to end (see RICH_TEXT_TABLE_TAGS in richTextSanitize.ts).
+const unmergedSpan = { parseHTML: () => 1, renderHTML: () => ({}) };
+const noColumnWidth = { parseHTML: () => null, renderHTML: () => ({}) };
+const CELL_ATTRIBUTE_OVERRIDES: Record<string, object> = {
+  colspan: unmergedSpan,
+  rowspan: unmergedSpan,
+  colwidth: noColumnWidth,
+};
 
 function inlineOnlyCell<T extends typeof TableCell | typeof TableHeader>(node: T) {
   return node.extend({
@@ -56,12 +74,12 @@ function inlineOnlyCell<T extends typeof TableCell | typeof TableHeader>(node: T
     content: 'inline*',
     addAttributes() {
       const inherited: Record<string, unknown> = this.parent?.() ?? {};
-      const suppressed = Object.fromEntries(
-        ['colspan', 'rowspan', 'colwidth']
-          .filter((name) => name in inherited)
-          .map((name) => [name, { ...(inherited[name] as object), ...suppressAttribute }]),
+      const overridden = Object.fromEntries(
+        Object.entries(CELL_ATTRIBUTE_OVERRIDES)
+          .filter(([name]) => name in inherited)
+          .map(([name, override]) => [name, { ...(inherited[name] as object), ...override }]),
       );
-      return { ...inherited, ...suppressed };
+      return { ...inherited, ...overridden };
     },
   });
 }

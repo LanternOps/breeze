@@ -221,6 +221,29 @@ describe('RichTextEditor', () => {
       }
     });
 
+    it('splits a merged (colspan) cell instead of desyncing the model from the DOM', () => {
+      // A Word/Google-Docs table routinely carries colspan. TipTap parses it
+      // into a real span on the node, so suppressing the attribute at render
+      // time alone would draw fewer <td>s than the model spans — misaligning
+      // the table in the editor and desyncing cell hit-testing. Clamping on
+      // parse makes prosemirror-tables pad the row into a proper grid instead.
+      const onChange = vi.fn();
+      render(
+        <RichTextEditor
+          value="<table><tbody><tr><td colspan='2'>merged</td></tr><tr><td>b</td><td>c</td></tr></tbody></table>"
+          onChange={onChange}
+          ariaLabel="Proposal text"
+          testId="rte-test"
+        />,
+      );
+      const rows = screen.getByTestId('rte-test').querySelectorAll('tr');
+      expect(rows).toHaveLength(2);
+      // Every row is rendered with the same physical cell count.
+      expect(rows[0]!.querySelectorAll('td')).toHaveLength(rows[1]!.querySelectorAll('td').length);
+      expect(rows[0]!.querySelector('td')?.getAttribute('colspan')).toBeNull();
+      expect(screen.getByTestId('rte-test').textContent).toContain('merged');
+    });
+
     it('renders a stored table value instead of collapsing it to text', () => {
       render(
         <RichTextEditor

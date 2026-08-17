@@ -107,11 +107,21 @@ const CELL_BLOCK_BOUNDARY_RE = /<(\/?)(p|div|h[1-6]|li|ul|ol|tr|thead|tbody|tfoo
 /** Matches a `<td>`/`<th>` open or close tag in sanitize-html's own output. */
 const CELL_TAG_RE = /<(\/?)(?:td|th)(?:\s[^>]*)?>/gi;
 
+/** Line-break token as sanitize-html emits it. */
+const BREAK = '<br />';
+/** Single break tag — deliberately NOT a repeated group. A `(?:<br…>\s*){2,}`
+ *  form reads more directly but trips CodeQL's ReDoS rule (js/redos), so the
+ *  runs are collapsed by splitting on ONE break and rejoining, which is linear
+ *  in the input by construction. */
+const SINGLE_BREAK_RE = /<br\s*\/?>/i;
+
+/** Drop the empty segments that a run of `<br />` (or a leading/trailing one)
+ *  produces, so `<p>a</p><p>b</p>` reads "a / b" and not "/ a // b /". */
 function collapseBreaks(html: string): string {
   return html
-    .replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br />')
-    .replace(/^(?:\s*<br\s*\/?>\s*)+/i, '')
-    .replace(/(?:\s*<br\s*\/?>\s*)+$/i, '');
+    .split(SINGLE_BREAK_RE)
+    .filter((segment) => segment.trim().length > 0)
+    .join(BREAK);
 }
 
 function normalizeCellBody(inner: string, removed?: Set<string>): string {
@@ -120,7 +130,7 @@ function normalizeCellBody(inner: string, removed?: Set<string>): string {
   // silently, which is exactly the defect #3520 fixed.
   const withBreaks = inner.replace(CELL_BLOCK_BOUNDARY_RE, (_whole, closing: string, tag: string) => {
     if (removed && !closing) removed.add(tag.toLowerCase());
-    return '<br />';
+    return BREAK;
   });
   if (!removed) return collapseBreaks(sanitizeInlineRichText(withBreaks));
   const report = sanitizeInlineRichTextWithReport(withBreaks);

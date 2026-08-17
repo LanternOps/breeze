@@ -106,6 +106,21 @@ describe('table markup (#3484)', () => {
     expect(sanitizeRichTextHtml(once)).toBe(once);
   });
 
+  it('keeps empty cells rather than collapsing the row', () => {
+    expect(sanitizeRichTextHtml('<table><tr><td></td><td>x</td></tr></table>'))
+      .toBe('<table><tr><td></td><td>x</td></tr></table>');
+  });
+
+  it('survives cell tags that arrive unbalanced without dropping content', () => {
+    // The cell scan runs on sanitize-html output, which is balanced — but the
+    // stray-close and unclosed-cell branches must still be safe if that ever
+    // stops holding, and must never swallow the author's text.
+    expect(sanitizeRichTextHtml('</td>after')).toContain('after');
+    expect(sanitizeRichTextHtml('<table><tr><td>only')).toContain('only');
+    expect(sanitizeRichTextHtml('<table><tr><td>a<td>b</td></tr></table>')).toContain('a');
+    expect(sanitizeRichTextHtml('<table><tr><td>a<td>b</td></tr></table>')).toContain('b');
+  });
+
   it('leaves the inline profile table-free — cell/label editors are unchanged', () => {
     expect(sanitizeInlineRichText('<table><tr><td>z</td></tr></table>')).toBe('z');
   });

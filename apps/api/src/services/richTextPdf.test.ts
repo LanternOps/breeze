@@ -297,6 +297,31 @@ describe('rich-text tables (#3484)', () => {
     expect(renderRichTextIntoPdf(doc, '<table></table>', { x: 50, width: 495, startY: 100, ensureRoom: ensureRoomFor(doc) })).toBe(100);
   });
 
+  it('renders a table with more columns than fit without throwing or losing rows', () => {
+    // Column widths floor at a readable minimum rather than re-balancing, so a
+    // 15-column table overflows the content width by design. It must still
+    // draw, advance the cursor, and stay page-break-sane.
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.y = 100;
+    const cells = Array.from({ length: 15 }, (_, i) => `<td>c${i}</td>`).join('');
+    const html = `<table><tr>${cells}</tr><tr>${cells}</tr></table>`;
+    const after = renderRichTextIntoPdf(doc, html, {
+      x: 50, width: 495, startY: 100,
+      ensureRoom: (needed: number) => { if (doc.y > doc.page.height - doc.page.margins.bottom - needed) doc.addPage(); return doc.y; },
+    });
+    expect(after).toBeGreaterThan(100);
+    expect(measureRichText(doc, html, 495)).toBeGreaterThan(0);
+  });
+
+  it('handles empty cells (zero-length content) without collapsing the column', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const blocks = parseRichText('<table><tr><td></td><td>x</td></tr></table>');
+    const table = blocks[0]!;
+    if (table.kind !== 'table') throw new Error('expected a table block');
+    expect(table.rows[0]!.cells).toHaveLength(2);
+    expect(measureRichText(doc, '<table><tr><td></td><td>x</td></tr></table>', 495)).toBeGreaterThan(0);
+  });
+
   it('degrades a row taller than a whole page into stacked paragraphs instead of clipping it', () => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     doc.y = 60;

@@ -771,6 +771,11 @@ function measureTableRow(doc: PDFKit.PDFDocument, row: RichTextTableRow, widths:
   }
 }
 
+/** Height the table occupies with NO page breaks — repeated headers are not
+ *  counted, exactly as measureRichText ignores pagination for every other block
+ *  kind. Today's only caller (calloutPdf) passes a non-paginating ensureRoom, so
+ *  measure and draw agree; a future paginating caller would need this to grow a
+ *  page-aware variant rather than trusting this number. */
 function measureTableBlock(doc: PDFKit.PDFDocument, block: RichTextTableBlock, width: number, fonts: BodyFonts): number {
   const widths = tableColumnWidths(block, width);
   return block.rows.reduce((total, row) => total + measureTableRow(doc, row, widths, fonts), 0);
