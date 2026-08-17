@@ -61,7 +61,7 @@ describe('resolveQuoteBranding', () => {
     expect((await resolveQuoteBranding(source({ currencyCode: null }))).currencyCode).toBe('USD');
   });
 
-  it('partner absent → partnerName falls back to "Proposal", logo/color/seller null', async () => {
+  it('partner absent AND no frozen seller → partnerName falls back to "Proposal", logo/color/seller null', async () => {
     queue(null, baseBrand);
     const b = await resolveQuoteBranding(source());
     expect(b.partnerName).toBe('Proposal');
@@ -69,6 +69,43 @@ describe('resolveQuoteBranding', () => {
     // brand still resolves logo/color from the portal_branding read.
     expect(b.logoUrl).toBe('logo.png');
     expect(b.primaryColor).toBe('#1c8a9e');
+  });
+
+  it('partner absent but seller frozen → wordmark uses the frozen company name, not "Proposal" (#2151)', async () => {
+    // The realistic empty-partner case is the org-scoped RLS zero-row read the
+    // module header warns about, not a nameless partner — and a sent document
+    // still carries the seller name. Printing the document-type word in the
+    // wordmark slot threw away a name we already had.
+    queue(null, baseBrand);
+    const frozen = { name: 'Lantern IT Services', address: null, phone: null, email: null, website: null };
+    const b = await resolveQuoteBranding(source({ sellerSnapshot: frozen }));
+    expect(b.partnerName).toBe('Lantern IT Services');
+  });
+
+  it('a live partner still outranks the frozen seller name', async () => {
+    queue(basePartner, baseBrand);
+    const frozen = { name: 'Stale Co', address: null, phone: null, email: null, website: null };
+    const b = await resolveQuoteBranding(source({ sellerSnapshot: frozen }));
+    expect(b.partnerName).toBe('Lantern IT');
+  });
+
+  it('a frozen seller with a null name still degrades to "Proposal"', async () => {
+    queue(null, baseBrand);
+    const frozen = { name: null, address: null, phone: null, email: null, website: null };
+    const b = await resolveQuoteBranding(source({ sellerSnapshot: frozen }));
+    expect(b.partnerName).toBe('Proposal');
+  });
+
+  it('blank names are skipped, not printed — a wordmark is never empty', async () => {
+    // Neither partners.name nor the snapshot's name is constrained non-empty,
+    // and `??` would happily hand an empty string to the renderer.
+    queue({ ...basePartner, name: '' }, baseBrand);
+    const frozen = { name: '', address: null, phone: null, email: null, website: null };
+    expect((await resolveQuoteBranding(source({ sellerSnapshot: frozen }))).partnerName).toBe('Proposal');
+
+    queue({ ...basePartner, name: '' }, baseBrand);
+    const named = { name: 'Frozen Co', address: null, phone: null, email: null, website: null };
+    expect((await resolveQuoteBranding(source({ sellerSnapshot: named }))).partnerName).toBe('Frozen Co');
   });
 
   it('frozen sellerSnapshot wins; buildSellerSnapshot is not synthesized', async () => {

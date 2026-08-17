@@ -34,6 +34,7 @@ import { listCatalog, createCatalogItem, type CatalogItem } from '../../../lib/a
 import { ecExpressStatus, ecExpressImport, type EcProduct, type EcStatus, pax8Status, pax8Import, type Pax8Product, type Pax8PriceOption } from '../../../lib/api/distributors';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { showToast } from '../../shared/Toast';
+import { useToastRailOffset } from '../../shared/toastRailOffset';
 import RichTextEditor from '../../common/RichTextEditor';
 import InlineRichTextEditor from '../../common/InlineRichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
@@ -150,6 +151,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
+  // This editor is the page with the sticky bottom-anchored right rail (Live
+  // totals + Terms), so it — not the shared container — owns the toast lift.
+  useToastRailOffset();
   // Cost/margin is a read affordance, not a write one: read-only users already see
   // the per-line internal cost bands (ReadonlyLineRow) + the toggle, so the rail
   // Margin summary is gated the same way QuoteDetail gates it — on quotes:read —
@@ -818,16 +822,34 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const SR_SETTLE_MS = 800;
   const [srAnnouncement, setSrAnnouncement] = useState('');
   const srTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Skip the very first sentence: without this the debounce fires ~800ms after
-  // mount and announces the initial totals to an SR user who hasn't edited
-  // anything yet. Only CHANGES announce.
-  const srMounted = useRef(false);
+  // What the announcement is ABOUT: the figures themselves, independent of the
+  // sentence that wraps them. Gating on this rather than on `srSentence` is the
+  // #2151 fix — the sentence also changes when nothing about the quote does.
+  // i18n resources arriving after the first paint rewrite the sentence TEXT
+  // (raw key → real copy) on a quote nobody has touched, which refires an effect
+  // keyed on the sentence. A skip-the-first-render guard can't help: that is the
+  // SECOND run, so it sailed through and announced the untouched totals ~800ms
+  // after load. Keying on the figures makes any copy-only change a no-op.
+  const srTotalsKey = useMemo(
+    () => [railOneTime, railMonthly, railAnnual, railTax, railDue, currency].join('|'),
+    [railOneTime, railMonthly, railAnnual, railTax, railDue, currency],
+  );
+  // The sentence is read at FIRE time, not scheduled with the timer, so a burst
+  // that settles after the i18n resources land still announces real copy.
+  const srSentenceRef = useRef(srSentence);
+  useEffect(() => { srSentenceRef.current = srSentence; }, [srSentence]);
+  // The first run only records the mount-time figures as the baseline: they are
+  // what the visible rail already shows, so they are never announced. Only a
+  // CHANGE from them (an edit) reaches the debounce below.
+  const srFirstKey = useRef(true);
   useEffect(() => {
-    if (!srMounted.current) { srMounted.current = true; return; }
-    if (srTimer.current) clearTimeout(srTimer.current);
-    srTimer.current = setTimeout(() => setSrAnnouncement(srSentence), SR_SETTLE_MS);
+    if (srFirstKey.current) { srFirstKey.current = false; return; }
+    srTimer.current = setTimeout(() => setSrAnnouncement(srSentenceRef.current), SR_SETTLE_MS);
+    // Cleanup runs on unmount AND before the next key change, which is exactly
+    // the debounce reset: a second edit inside the settle window replaces the
+    // pending announcement rather than queuing another one.
     return () => { if (srTimer.current) clearTimeout(srTimer.current); };
-  }, [srSentence]);
+  }, [srTotalsKey]);
 
   // Internal net-profit summary for the rail's "Margin (internal)" block. Built
   // over the SAME merged line set as the totals: draft-or-persisted values plus

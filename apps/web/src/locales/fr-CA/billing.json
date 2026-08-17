@@ -630,6 +630,8 @@
         "partNumberOptional": "Part # (facultatif)",
         "profit": "Profit",
         "quantityAria": "Quantité",
+        "quantityForAria": "Quantité pour {{item}}",
+        "unitPriceForAria": "Prix unitaire pour {{item}}",
         "saveToCatalog": "Enregistrer dans le catalogue",
         "sku": "SKU",
         "skuOptional": "SKU (facultatif)",
@@ -768,7 +770,9 @@
       "ghost": {
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
-        "placeholder": "Saisissez le nom de l'article…"
+        "placeholder": "Saisissez le nom de l'article…",
+        "quantityAria": "Quantité de la nouvelle ligne",
+        "unitPriceAria": "Prix unitaire de la nouvelle ligne"
       },
       "bulk": {
         "applied_one": "{{count}} ligne mise à jour.",
@@ -1318,7 +1322,12 @@
       "lineName": "Nom de la ligne",
       "name": "Nom",
       "quantity": "Quantité",
+      "quantityFor": "Quantité pour {{item}}",
+      "quantityNewLine": "Quantité de la nouvelle ligne",
+      "unitPriceFor": "Prix unitaire pour {{item}}",
+      "unitPriceNewLine": "Prix unitaire de la nouvelle ligne",
       "taxable": "Taxable",
+      "untitledLine": "cette ligne",
       "unitPrice": "Prix unitaire"
     },
     "hiddenSuffix": " (masqué)",

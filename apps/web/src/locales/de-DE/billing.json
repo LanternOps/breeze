@@ -658,6 +658,8 @@
         "partNumberOptional": "Teilenummer (optional)",
         "profit": "Gewinn",
         "quantityAria": "Menge",
+        "quantityForAria": "Menge für {{item}}",
+        "unitPriceForAria": "Stückpreis für {{item}}",
         "saveToCatalog": "Im Katalog speichern",
         "showLess": "Weniger anzeigen",
         "showMore": "Mehr anzeigen",
@@ -805,7 +807,9 @@
       "ghost": {
         "add": "Hinzufügen",
         "nameAria": "Name der neuen Zeile",
-        "placeholder": "Artikelnamen eingeben…"
+        "placeholder": "Artikelnamen eingeben…",
+        "quantityAria": "Menge der neuen Zeile",
+        "unitPriceAria": "Stückpreis der neuen Zeile"
       },
       "unassigned": {
         "explainer": "Diese Positionen gehören zu keinem Preisabschnitt, erscheinen aber trotzdem im Angebot des Kunden und zählen zu dessen Summen. Verschieben Sie jede Position in einen Preisabschnitt, um zu bestimmen, wo sie erscheint.",
@@ -1318,7 +1322,12 @@
       "lineName": "Positionsname",
       "name": "Name",
       "quantity": "Menge",
+      "quantityFor": "Menge für {{item}}",
+      "quantityNewLine": "Menge der neuen Zeile",
+      "unitPriceFor": "Stückpreis für {{item}}",
+      "unitPriceNewLine": "Stückpreis der neuen Zeile",
       "taxable": "Steuerpflichtig",
+      "untitledLine": "diese Position",
       "unitPrice": "Stückpreis"
     },
     "hiddenSuffix": "(versteckt)",

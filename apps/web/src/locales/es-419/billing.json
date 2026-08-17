@@ -658,6 +658,8 @@
         "partNumberOptional": "Número de pieza (opcional)",
         "profit": "Ganancia",
         "quantityAria": "Cantidad",
+        "quantityForAria": "Cantidad de {{item}}",
+        "unitPriceForAria": "Precio unitario de {{item}}",
         "saveToCatalog": "Guardar en catálogo",
         "showLess": "Mostrar menos",
         "showMore": "Mostrar más",
@@ -805,7 +807,9 @@
       "ghost": {
         "add": "Agregar",
         "nameAria": "Nombre de la nueva línea",
-        "placeholder": "Escribe el nombre del ítem…"
+        "placeholder": "Escribe el nombre del ítem…",
+        "quantityAria": "Cantidad de la nueva línea",
+        "unitPriceAria": "Precio unitario de la nueva línea"
       },
       "unassigned": {
         "explainer": "Estas líneas no están en ninguna sección de precios, pero aun así aparecen en la cotización del cliente y se suman a sus totales. Mueve cada una a una sección de precios para controlar dónde aparece.",
@@ -1318,7 +1322,12 @@
       "lineName": "Nombre de línea",
       "name": "Nombre",
       "quantity": "Cantidad",
+      "quantityFor": "Cantidad de {{item}}",
+      "quantityNewLine": "Cantidad de la nueva línea",
+      "unitPriceFor": "Precio unitario de {{item}}",
+      "unitPriceNewLine": "Precio unitario de la nueva línea",
       "taxable": "Imponible",
+      "untitledLine": "esta linea",
       "unitPrice": "Precio unitario"
     },
     "hiddenSuffix": "(oculto)",

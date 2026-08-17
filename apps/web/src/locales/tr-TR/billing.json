@@ -666,6 +666,8 @@
         "partNumberOptional": "Parça No (isteğe bağlı)",
         "profit": "Kâr",
         "quantityAria": "Adet",
+        "quantityForAria": "{{item}} adedi",
+        "unitPriceForAria": "{{item}} birim fiyatı",
         "saveToCatalog": "Kataloğa kaydet",
         "showLess": "Daha az göster",
         "showMore": "Daha fazlasını göster",
@@ -813,7 +815,9 @@
       "ghost": {
         "add": "Ekle",
         "nameAria": "Yeni satır adı",
-        "placeholder": "Bir öğe adı yazın…"
+        "placeholder": "Bir öğe adı yazın…",
+        "quantityAria": "Yeni satır adedi",
+        "unitPriceAria": "Yeni satır birim fiyatı"
       },
       "unassigned": {
         "explainer": "Bu satırlar herhangi bir fiyatlandırma bölümünde yer almaz ancak yine de müşterinin teklifinde görünür ve toplamlara dahil edilir. Nerede görüneceğini kontrol etmek için her birini bir fiyatlandırma bölümüne taşıyın.",
@@ -1318,7 +1322,12 @@
       "lineName": "Satır adı",
       "name": "Ad",
       "quantity": "Adet",
+      "quantityFor": "{{item}} adedi",
+      "quantityNewLine": "Yeni satır adedi",
+      "unitPriceFor": "{{item}} birim fiyatı",
+      "unitPriceNewLine": "Yeni satır birim fiyatı",
       "taxable": "Vergiye tabi",
+      "untitledLine": "bu satır",
       "unitPrice": "Birim fiyatı"
     },
     "hiddenSuffix": "(gizli)",

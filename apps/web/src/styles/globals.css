@@ -34647,3 +34647,18 @@
   font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
   letter-spacing: 0.01em;
 }
+
+/* Toast bottom anchor (#2151). ToastContainer reads --breeze-toast-bottom; a
+   page that renders a sticky bottom-anchored right rail opts into the lift by
+   calling useToastRailOffset(), which stamps data-toast-rail on <html>. This
+   replaced a flat lg:bottom-24 on the shared container, which pushed EVERY
+   page's toasts up for one page's layout. lg-only because that is where the
+   rail stops stacking under the content and starts competing for the corner. */
+:root {
+  --breeze-toast-bottom: 1.5rem;
+}
+@media (min-width: 1024px) {
+  html[data-toast-rail] {
+    --breeze-toast-bottom: 6rem;
+  }
+}
