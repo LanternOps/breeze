@@ -15,7 +15,7 @@
 
 import { db } from '../db';
 import { devicePatches, patches, patchApprovals, organizations, OUTSTANDING_DEVICE_PATCH_STATUSES } from '../db/schema';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { captureException } from './sentry';
 
 // ============================================
@@ -344,7 +344,8 @@ export async function resolveApprovedPatchesForDevice(
       requiresReboot: patches.requiresReboot,
       source: patches.source,
       packageId: patches.packageId,
-      version: patches.version,
+      // Pins use THIS device's observed version, so another tenant's agent cannot move the global version out from under a pin.
+      version: sql<string | null>`COALESCE(${devicePatches.availableVersion}, ${patches.version})`,
       // First-seen timestamp for this device+patch. Third-party entries have no
       // vendor releaseDate, so deferral windows anchor on when we first saw the
       // patch instead of failing closed (#2218).

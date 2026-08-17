@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { configsRoutes } from './configs';
+import { __setLookupForTests } from '../../services/urlSafety';
 
 const CONFIG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -124,12 +125,72 @@ describe('backup config routes', () => {
     checkBackupProviderCapabilitiesMock.mockReset();
     s3SendMock.mockReset();
     s3ClientCtorMock.mockReset();
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
     selectMock.mockImplementation(() => chainMock([]));
     insertMock.mockImplementation(() => chainMock([]));
     updateMock.mockImplementation(() => chainMock([]));
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup', configsRoutes);
+  });
+
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
+  it.each([
+    ['cloud metadata', '169.254.169.254'],
+    ['loopback', '127.0.0.1'],
+    ['RFC1918', '10.0.0.5'],
+  ])('rejects an S3 endpoint resolving to %s before sending a request', async (_label, address) => {
+    __setLookupForTests(async () => [{ address, family: 4 }]);
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 'https://tenant-storage.example.test',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.status).toBe('failed');
+    expect(body.error).toContain('S3 endpoint is not reachable');
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
+  it('does not reject a publicly resolving S3 endpoint', async () => {
+    __setLookupForTests(async () => [{ address: '8.8.8.8', family: 4 }]);
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 'https://tenant-storage.example.test',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    s3SendMock.mockResolvedValue({});
+    checkBackupProviderCapabilitiesMock.mockResolvedValue({
+      objectLock: { supported: true, error: null },
+    });
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(s3SendMock).toHaveBeenCalledTimes(2);
   });
 
   it('redacts storage credentials from config list responses', async () => {

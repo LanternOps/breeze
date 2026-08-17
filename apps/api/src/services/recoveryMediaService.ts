@@ -8,8 +8,8 @@ import { createReadStream } from 'node:fs';
 import {
   GetObjectCommand,
   PutObjectCommand,
-  S3Client,
 } from '@aws-sdk/client-s3';
+import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { and, desc, eq } from 'drizzle-orm';
@@ -32,6 +32,7 @@ import {
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
+import { safeFetch } from './urlSafety';
 
 const execFileAsync = promisify(execFile);
 
@@ -78,7 +79,7 @@ function sha256Hex(buffer: Buffer): string {
 }
 
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
-  const response = await fetch(url);
+  const response = await safeFetch(url);
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
@@ -251,7 +252,7 @@ export function buildS3Client(config: Extract<RecoveryMediaStorageConfig, { prov
   // resolver (Sentry BREEZE-P). See coerceS3EndpointUrl for the two distinct
   // failure modes a scheme-less value produces.
   const endpoint = coerceS3EndpointUrl(config.endpoint);
-  return new S3Client({
+  return createGuardedS3Client({
     region: config.region,
     endpoint,
     forcePathStyle: Boolean(endpoint),

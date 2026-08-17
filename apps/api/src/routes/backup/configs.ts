@@ -5,7 +5,9 @@ import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { createGuardedS3Client } from '../../services/guardedS3Client';
+import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -173,7 +175,24 @@ async function probeS3Config(details: Record<string, unknown>): Promise<void> {
   // the two distinct failure modes a scheme-less value produces.
   const normalizedEndpoint = coerceS3EndpointUrl(endpoint);
 
-  const client = new S3Client({
+  // SSRF: the endpoint is tenant-controlled and this is the "test connection"
+  // route, i.e. the most directly triggerable outbound primitive on the backup
+  // surface. Validate up front so the operator gets an actionable message
+  // instead of an opaque socket error. This is UX, not the enforcement —
+  // createGuardedS3Client below pins every connection at connect time, which is
+  // what actually closes the DNS-rebinding window.
+  if (normalizedEndpoint) {
+    try {
+      await assertSafeUrl(normalizedEndpoint);
+    } catch (error) {
+      if (error instanceof SsrfBlockedError) {
+        throw new Error(`S3 endpoint is not reachable: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  const client = createGuardedS3Client({
     region,
     endpoint: normalizedEndpoint,
     forcePathStyle: Boolean(normalizedEndpoint),

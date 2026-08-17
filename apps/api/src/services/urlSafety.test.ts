@@ -9,6 +9,7 @@ import {
   isPrivateIp,
   isRfc1918OrUla,
   isAlwaysBlockedIp,
+  createGuardedLookup,
   SsrfBlockedError,
   ResponseTooLargeError,
   __setLookupForTests
@@ -123,6 +124,47 @@ describe('isAlwaysBlockedIp', () => {
   it('allows public IPs', () => {
     expect(isAlwaysBlockedIp('8.8.8.8')).toBe(false);
     expect(isAlwaysBlockedIp('1.1.1.1')).toBe(false);
+  });
+});
+
+describe('createGuardedLookup', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+  });
+
+  it('calls back with SsrfBlockedError when every resolved record is private', async () => {
+    __setLookupForTests(async () => [
+      { address: '10.0.0.5', family: 4 },
+      { address: '127.0.0.1', family: 4 },
+    ]);
+    const lookup = createGuardedLookup();
+
+    const error = await new Promise<Error | null>((resolve) => {
+      lookup('storage.example.test', { all: true }, (err) => resolve(err));
+    });
+
+    expect(error).toBeInstanceOf(SsrfBlockedError);
+  });
+
+  it('hands back only safe records when DNS returns public and private addresses', async () => {
+    __setLookupForTests(async () => [
+      { address: '10.0.0.5', family: 4 },
+      { address: '8.8.8.8', family: 4 },
+      { address: '127.0.0.1', family: 4 },
+    ]);
+    const lookup = createGuardedLookup();
+
+    const records = await new Promise<LookupAddress[]>((resolve, reject) => {
+      lookup('storage.example.test', { all: true }, (err, addresses) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(addresses);
+      });
+    });
+
+    expect(records).toEqual([{ address: '8.8.8.8', family: 4 }]);
   });
 });
 

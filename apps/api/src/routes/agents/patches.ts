@@ -44,22 +44,31 @@ function logRejections(agentId: string, kind: string, admission: PatchAdmission<
  * same row, and every tenant's UI, `patch_approvals` and patch jobs read it.
  * The two upserts below therefore classify each column:
  *
- * - **Volatile / operational** (`severity`, `category`, `description`,
- *   `requires_reboot`, `os_types`): these genuinely change between scans and
- *   keep refreshing. They are only hardened against *null downgrades* — a scan
- *   that omits a field must not blank a value an earlier scan established.
+ * - **Volatile / operational** (`category`, `description`, `requires_reboot`,
+ *   `os_types`): these genuinely change between scans and keep refreshing. They
+ *   are only hardened against *null downgrades* — a scan that omits a field must
+ *   not blank a value an earlier scan established.
  * - **Identity-bearing** (`title`, `vendor`, `package_id`, `version`): these say
  *   *what the row is* and, for `package_id`, what actually gets installed
  *   (`routes/devices/patches.ts` forwards it into the `install_patches` command
  *   payload). Raw agent strings may only **fill** them, never rewrite them;
  *   overwriting is reserved for server-side catalog enrichment.
+ * - **Authoritative-only** (`severity`): agent scans may fill or *raise* it and
+ *   nothing else. See `raiseOnlySeverity`.
  *
- * `patches.version` is the one asymmetric case. On the pending path it is the
- * *available* upgrade version and legitimately advances, so it keeps updating.
- * The installed path carries the *currently-installed* version — a different
- * value with the same shape — so letting it write this column drags the shared
- * row backwards (and defeats the version pins in `patchApprovalEvaluator`); the
- * installed path may only fill it when unset.
+ * Two columns are load-bearing for cross-tenant integrity, because a compromised
+ * agent in ONE tenant writes a row every OTHER tenant's approval engine reads:
+ *
+ * - `severity` gates auto-approval rules (`patchApprovalEvaluator`'s severity
+ *   filters). Letting an agent LOWER it globally would silently downgrade a
+ *   critical patch for every other MSP customer, so the agent path is now
+ *   fill-or-raise only. Lowering is reserved for server-authoritative writers —
+ *   today that is `jobs/cveEnrichmentWorker.ts`, which itself only ever raises.
+ * - `version` drives the version pin / block rules in `patchApprovalEvaluator`.
+ *   Agent scan data may only **fill** it on both paths, never rewrite it. The
+ *   per-device *observed available* version — which legitimately advances
+ *   between scans — now lives on the tenant-scoped `device_patches.available_version`
+ *   instead, so one tenant's agent cannot move another tenant's pin target.
  */
 
 /**
@@ -80,6 +89,29 @@ function fillIfNull(column: unknown, value: string | null) {
 /** Refresh when this scan reported a value; keep the stored one when it didn't. */
 function updateIfReported<T>(column: unknown, value: T | null | undefined) {
   return value === null || value === undefined ? sql`${column}` : value;
+}
+
+/** Enum ordering for `patch_severity`, weakest first. Mirrors SEVERITY_RANK in jobs/cveEnrichmentWorker.ts. */
+const SEVERITY_RANK_SQL = sql`ARRAY['unknown','low','moderate','important','critical']::text[]`;
+
+/**
+ * Agent-reported severity may only FILL or RAISE the shared row, never lower it.
+ * `patches` is global, so a compromised agent lowering a critical patch's
+ * severity mis-classifies it for every other tenant's auto-approval rules.
+ * Lowering is reserved for server-authoritative writers (the CVE enrichment
+ * worker, which itself only raises).
+ */
+export function raiseOnlySeverity(column: unknown, value: string | null | undefined) {
+  if (!value || value === 'unknown') {
+    return sql`COALESCE(${column}, 'unknown'::patch_severity)`;
+  }
+  return sql`CASE
+    WHEN ${column} IS NULL THEN ${value}::patch_severity
+    WHEN COALESCE(array_position(${SEVERITY_RANK_SQL}, ${value}), 0)
+       > COALESCE(array_position(${SEVERITY_RANK_SQL}, ${column}::text), 0)
+      THEN ${value}::patch_severity
+    ELSE ${column}
+  END`;
 }
 
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
@@ -214,17 +246,13 @@ async function upsertPendingPatches(
           packageId: fillIfNull(patches.packageId, packageId),
           // Volatile: refresh, but never blank out what an earlier scan set.
           description: updateIfReported(patches.description, description),
-          // `'unknown'` is the agent's "I couldn't tell", not an assessment —
-          // treat it as unreported so a scan that can't classify a patch doesn't
-          // reset a severity an earlier scan (or the CVE enrichment worker,
-          // which only ever raises severity) established.
-          severity: enriched.severity && enriched.severity !== 'unknown'
-            ? enriched.severity
-            : sql`COALESCE(${patches.severity}, 'unknown'::patch_severity)`,
+          // Agent severity is raise-only; only server-authoritative writers may lower it.
+          severity: raiseOnlySeverity(patches.severity, enriched.severity),
           category: updateIfReported(patches.category, enriched.category),
           requiresReboot: updateIfReported(patches.requiresReboot, patchData.requiresRestart),
-          // The available upgrade version legitimately advances between scans.
-          version: updateIfReported(patches.version, version),
+          // Agent scan data may only fill the shared column, never rewrite it;
+          // the per-device value lives on device_patches.available_version.
+          version: fillIfNull(patches.version, version),
           ...(inferredOsType
             ? {
                 osTypes: sql`CASE
@@ -265,12 +293,14 @@ async function upsertPendingPatches(
         patchId: patch.id,
         status: 'pending',
         scope: patchData.scope ?? null,
+        availableVersion: version,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
         target: [devicePatches.deviceId, devicePatches.patchId],
         set: {
           status: 'pending',
+          availableVersion: updateIfReported(devicePatches.availableVersion, version),
           // A scope-less report must not erase a scope an earlier scan
           // established: the same device keeps reporting machine-scope rows
           // from providers with no scope concept, and blanking the column

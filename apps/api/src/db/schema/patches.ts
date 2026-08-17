@@ -198,6 +198,8 @@ export const devicePatches = pgTable('device_patches', {
   status: devicePatchStatusEnum('status').notNull().default('pending'),
   installedAt: timestamp('installed_at'),
   installedVersion: varchar('installed_version', { length: 100 }),
+  // Agent-observed available upgrade version, scoped to this device and tenant.
+  availableVersion: varchar('available_version', { length: 64 }),
   lastCheckedAt: timestamp('last_checked_at'),
   failureCount: integer('failure_count').notNull().default(0),
   lastError: text('last_error'),
