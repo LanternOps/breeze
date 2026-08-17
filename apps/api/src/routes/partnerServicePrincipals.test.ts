@@ -76,7 +76,11 @@ const USER_ID = '44444444-4444-4444-8444-444444444444';
 function auth(partnerId: string | null = PARTNER_ID, scope = 'partner') {
   mocks.authMiddleware.mockImplementation((c: any, next: any) => {
     mocks.gateOrder.push('auth');
-    c.set('auth', { scope, partnerId, user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true } });
+    // partnerOrgAccess: 'all' — these routes mint partner-wide machine
+    // credentials, so every mutation now requires the full-partner capability
+    // (security review 2026-08-16 §1.1 #6). The denial cases live in
+    // partnerServicePrincipals.partnerWide.test.ts.
+    c.set('auth', { scope, partnerId, partnerOrgAccess: 'all', user: { id: USER_ID, email: 'admin@example.com' }, token: { mfa: true } });
     c.set('permissions', { permissions: [{ resource: '*', action: '*' }] });
     return next();
   });

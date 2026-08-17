@@ -56,6 +56,7 @@ function makeAuth() {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     scope: 'partner',
     partnerId: PARTNER_ID,
+    partnerOrgAccess: 'all',
     orgId: null,
     accessibleOrgIds: [],
     canAccessOrg: () => false,
