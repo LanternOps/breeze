@@ -8,6 +8,10 @@ import { requirePermission } from '../../middleware/auth';
 import { normalizeTemplateHosts } from '../../services/clientAiHosts';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../../services/partnerWideAccess';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { templateBodySchema, templateUpdateSchema, templateListQuerySchema } from './schemas';
 
@@ -40,6 +44,7 @@ const requireOrgsWrite = requirePermission(
 type TemplateAuth = {
   scope: 'system' | 'partner' | 'organization';
   partnerId: string | null;
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
   user?: { id: string };
 };
 
@@ -116,6 +121,13 @@ clientAiAdminTemplateRoutes.post(
       if (auth.scope === 'organization' || !auth.partnerId) {
         return c.json({ error: 'partner_scope_required' }, 403);
       }
+      // Scope alone is not the capability (epic #2135; security review
+      // 2026-08-16 §1.1 #4): a `selected` partner user must not author a
+      // template that lands in every org under the partner, including orgs
+      // created later.
+      if (!canManagePartnerWidePolicies(auth)) {
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      }
       values = {
         orgId: null,
         partnerId: auth.partnerId,
@@ -150,6 +162,7 @@ clientAiAdminTemplateRoutes.put(
   requireOrgsWrite,
   zValidator('json', templateUpdateSchema),
   async (c) => {
+    const auth = c.get('auth') as TemplateAuth;
     const id = c.req.param('id')!;
     const body = c.req.valid('json');
 
@@ -161,6 +174,11 @@ clientAiAdminTemplateRoutes.put(
       .where(eq(clientAiPromptTemplates.id, id))
       .limit(1);
     if (!existing) return c.json({ error: 'Template not found' }, 404);
+
+    // Partner-wide row (org_id NULL): same capability gate as create.
+    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     const set: Partial<typeof clientAiPromptTemplates.$inferInsert> = { updatedAt: new Date() };
     if (body.name !== undefined) set.name = body.name;
@@ -191,7 +209,20 @@ clientAiAdminTemplateRoutes.put(
 
 // ── DELETE /templates/:id ─────────────────────────────────────────────────────
 clientAiAdminTemplateRoutes.delete('/templates/:id', requireOrgsWrite, async (c) => {
+  const auth = c.get('auth') as TemplateAuth;
   const id = c.req.param('id')!;
+
+  // Read before deleting so the partner-wide capability gate can see the row's
+  // ownership axis (RLS already bounds visibility to the caller's tenancy).
+  const [target] = await db
+    .select({ orgId: clientAiPromptTemplates.orgId })
+    .from(clientAiPromptTemplates)
+    .where(eq(clientAiPromptTemplates.id, id))
+    .limit(1);
+  if (!target) return c.json({ error: 'Template not found' }, 404);
+  if (target.orgId === null && !canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
 
   const [row] = await db
     .delete(clientAiPromptTemplates)

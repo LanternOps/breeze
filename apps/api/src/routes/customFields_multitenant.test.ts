@@ -115,6 +115,7 @@ describe('customFields routes', () => {
           scope: 'partner',
           orgId: null,
           partnerId: PARTNER_ID,
+          partnerOrgAccess: 'all',
           accessibleOrgIds: [ORG_ID],
           canAccessOrg: (orgId: string) => orgId === ORG_ID
         });

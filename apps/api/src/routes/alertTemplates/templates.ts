@@ -10,6 +10,10 @@ import { parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
 import { retiredConditionTypeError } from '../../services/alertConditions';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../../services/partnerWideAccess';
 
 export const templateRoutes = new Hono();
 
@@ -75,7 +79,7 @@ export function templateScopeCondition(auth: AuthContext): ReturnType<typeof or>
 // rows belong to the MSP and are read-only for org scope; built-in rows are
 // read-only for everyone (only seeding creates them). Caller is the AuthContext.
 export function canWriteTemplate(
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg'>,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg' | 'partnerOrgAccess'>,
   row: { orgId: string | null; partnerId: string | null; isBuiltIn: boolean },
 ): { ok: true } | { ok: false; status: 403 | 404; error: string } {
   if (row.isBuiltIn) return { ok: false, status: 403, error: 'Built-in templates cannot be modified' };
@@ -85,8 +89,14 @@ export function canWriteTemplate(
     if (auth.scope === 'organization') {
       return { ok: false, status: 403, error: 'This template is shared across your organization and is read-only here' };
     }
-    if (row.partnerId === auth.partnerId) return { ok: true };
-    return { ok: false, status: 404, error: 'Template not found' };
+    if (row.partnerId !== auth.partnerId) return { ok: false, status: 404, error: 'Template not found' };
+    // Partner scope proves WHICH partner, not the capability to administer
+    // that partner's shared state (epic #2135; security review 2026-08-16
+    // §1.1 #5).
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { ok: false, status: 403, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
+    }
+    return { ok: true };
   }
   // Org-specific record: caller must be able to access that org.
   if (row.orgId !== null && auth.canAccessOrg(row.orgId)) return { ok: true };
@@ -237,6 +247,10 @@ templateRoutes.post(
           orgId = null;
           partnerId = auth.partnerId ?? null;
           if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+          // Partner-wide row: capability gate, not just scope (§1.1 #5).
+          if (!canManagePartnerWidePolicies(auth)) {
+            return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+          }
         } else {
           if (!orgId) {
             const single = auth.accessibleOrgIds?.[0];

@@ -54,6 +54,10 @@ import { customFieldDefinitions } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../services/partnerWideAccess';
 
 export const customFieldRoutes = new Hono();
 const requireCustomFieldRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -117,7 +121,7 @@ async function getOrgIdsForAuth(
 
 function canEditField(
   field: typeof customFieldDefinitions.$inferSelect,
-  auth: { scope: string; partnerId: string | null; orgId: string | null }
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'partnerOrgAccess'>
 ) {
   if (auth.scope === 'system') {
     return true;
@@ -132,7 +136,10 @@ function canEditField(
   }
 
   if (field.partnerId) {
-    return auth.scope === 'partner' && auth.partnerId === field.partnerId;
+    // Partner-wide row (org_id NULL): epic #2135 capability gate, not just
+    // scope. A `selected` partner user whose selection happens to cover every
+    // current org still must not administer partner-wide state.
+    return auth.partnerId === field.partnerId && canManagePartnerWidePolicies(auth);
   }
 
   return false;
@@ -306,6 +313,11 @@ customFieldRoutes.post(
         }
         partnerId = null;
       } else {
+        // Partner-wide definition (org_id NULL) — capability gate, not just
+        // scope (epic #2135; security review 2026-08-16 §1.1 #1).
+        if (!canManagePartnerWidePolicies(auth)) {
+          return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+        }
         partnerId = auth.partnerId;
       }
     } else if (!orgId && !partnerId) {

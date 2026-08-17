@@ -70,6 +70,23 @@ export function validateSupportedApiKeyScopes(requestedScopes: string[]): ApiKey
   return { ok: true, scopes: scopes as ApiKeyScope[] };
 }
 
+/**
+ * The permission set a key carrying `scopes` effectively confers, de-duplicated.
+ * Unknown scopes contribute nothing here — validation of the scope NAMES is
+ * `validateSupportedApiKeyScopes`'s job; this answers "what authority does this
+ * key hand out?" for the delegation-ceiling check on rotation.
+ */
+export function requiredPermissionsForApiKeyScopes(scopes: readonly string[]): Permission[] {
+  const byKey = new Map<string, Permission>();
+  for (const scope of scopes) {
+    const required = API_KEY_SCOPE_POLICIES[scope as ApiKeyScope] as readonly Permission[] | undefined;
+    for (const permission of required ?? []) {
+      byKey.set(`${permission.resource}:${permission.action}`, permission);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
 export function validateApiKeyScopeDelegation(
   requestedScopes: string[],
   creatorPermissions: UserPermissions | undefined,
