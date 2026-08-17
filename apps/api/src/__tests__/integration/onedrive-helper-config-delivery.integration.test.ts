@@ -523,6 +523,47 @@ describe('buildOnedriveHelperConfigUpdate', () => {
     expect(cfg!.libraries[0]!.allowedUpns).toEqual(['a@contoso.com', 'b@contoso.com']);
   });
 
+  // #2336: the per-UPN Graph resolutions used to run strictly one at a time.
+  // A multi-session host (RDS/VDI) reports one UPN per logged-on user, and
+  // serialized round-trips sum into the 15s tagging budget fast enough that the
+  // last users go untagged — their libraries then silently never mount. They
+  // now run through a small fixed-size pool.
+  runDb('resolves the per-UPN Graph memberships concurrently, capped, and order-stably', async () => {
+    const upns = ['a@contoso.com', 'b@contoso.com', 'c@contoso.com', 'd@contoso.com', 'e@contoso.com', 'f@contoso.com'];
+    const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
+      base: {},
+      libraries: [
+        { libraryId: 'lib-fin', displayName: 'Finance', targetingMode: 'graph_group', groupId: 'g-fin' },
+      ],
+    });
+    await seedSignedInUpns(deviceId, orgId, upns);
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    // Each call parks on a macrotask before resolving, so a serialized
+    // implementation can never show more than one call in flight at a time —
+    // making peakInFlight > 1 real evidence of overlap rather than an artifact
+    // of already-resolved promises.
+    vi.mocked(resolveUserGroupMembershipCached).mockImplementation(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return { kind: 'ok', data: { groupIds: ['g-fin'] } };
+    });
+
+    const cfg = await withSystemDbAccessContext(() => buildOnedriveHelperConfigUpdate(deviceId));
+
+    expect(resolveUserGroupMembershipCached).toHaveBeenCalledTimes(upns.length);
+    expect(peakInFlight).toBeGreaterThan(1);
+    // Capped on purpose: these calls share one org's Graph token and rate
+    // limit, so an unbounded fan-out trades 429s for the latency win.
+    expect(peakInFlight).toBeLessThanOrEqual(4);
+    // Reported in the ORIGINAL UPN order, not completion order — allowedUpns
+    // must be deterministic for a given input however the pool interleaved.
+    expect(cfg!.libraries[0]!.allowedUpns).toEqual(upns);
+  });
+
   runDb('group id matching is brace/case-insensitive (stored {UPPER} vs Graph lower)', async () => {
     const { deviceId, orgId } = await seedDeviceWithOnedrivePolicy({
       base: {},

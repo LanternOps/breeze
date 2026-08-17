@@ -327,6 +327,120 @@ func TestComputeDrift(t *testing.T) {
 	}
 }
 
+// Two sites can entitle libraries with the SAME display name ("Documents" is
+// the default for every SharePoint site). The pre-#2336 substring scan matched
+// the name anywhere in the path, so one site's mount suppressed the drift
+// report for the other — a false "everything is fine" seen in live QA.
+func TestComputeDriftIsSiteQualified(t *testing.T) {
+	hr := LibraryRule{LibraryID: "l-hr", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/HR"}
+	legal := LibraryRule{LibraryID: "l-legal", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/Legal"}
+
+	tests := []struct {
+		name    string
+		applied []LibraryRule
+		mounted []string
+		want    []string
+	}{
+		{
+			name:    "same-named libraries, only one site mounted",
+			applied: []LibraryRule{hr, legal},
+			mounted: []string{`C:\Users\bob\Contoso HR - Documents`},
+			want:    []string{"l-legal"},
+		},
+		{
+			name:    "same-named libraries, both sites mounted",
+			applied: []LibraryRule{hr, legal},
+			mounted: []string{`C:\Users\bob\Contoso HR - Documents`, `C:\Users\bob\Contoso Legal - Documents`},
+			want:    nil,
+		},
+		{
+			name:    "single unambiguous match needs no site hint",
+			applied: []LibraryRule{{LibraryID: "l-1", DisplayName: "Documents"}},
+			mounted: []string{`C:\Users\bob\Anything At All - Documents`},
+			want:    nil,
+		},
+		{
+			// Ambiguous AND no hint to disambiguate with: mounted somewhere is
+			// as much as we can prove, so we must not invent drift.
+			name:    "ambiguous with no site URL does not claim drift",
+			applied: []LibraryRule{{LibraryID: "l-1", DisplayName: "Documents"}},
+			mounted: []string{`C:\Users\bob\A - Documents`, `C:\Users\bob\B - Documents`},
+			want:    nil,
+		},
+		{
+			// The library name itself contains " - "; a naive split on the
+			// separator would compare the wrong halves and report false drift.
+			name:    "library name containing the separator",
+			applied: []LibraryRule{{LibraryID: "l-1", DisplayName: "Docs - Archive"}},
+			mounted: []string{`C:\Users\bob\Contoso HR - Docs - Archive`},
+			want:    nil,
+		},
+		{
+			// Unrecognized cache shape (no "<Site> - " prefix at all) must fall
+			// back to the legacy substring scan rather than report drift.
+			name:    "legacy fallback for an unprefixed folder name",
+			applied: []LibraryRule{{LibraryID: "l-1", DisplayName: "Finance"}},
+			mounted: []string{`C:\Users\bob\Finance Reports`},
+			want:    nil,
+		},
+		{
+			name:    "site mounted under a title unrelated to the URL slug",
+			applied: []LibraryRule{{LibraryID: "l-1", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/mktg"}},
+			mounted: []string{`C:\Users\bob\Marketing Team - Documents`},
+			want:    nil, // single match wins; the hint is never used to create drift
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComputeDrift(tt.applied, tt.mounted)
+			var ids []string
+			for _, d := range got {
+				ids = append(ids, d.LibraryID)
+			}
+			if len(ids) != len(tt.want) {
+				t.Fatalf("drift ids = %v, want %v", ids, tt.want)
+			}
+			for i := range ids {
+				if ids[i] != tt.want[i] {
+					t.Errorf("drift[%d] = %s, want %s", i, ids[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// When same-named libraries can't be told apart — neither site hint matches the
+// mounted folder's free-text site title — the assignment is right in COUNT but
+// arbitrary in attribution. The reported reason must say so instead of naming
+// one library with false confidence.
+func TestComputeDriftFlagsAmbiguousAttribution(t *testing.T) {
+	hr := LibraryRule{LibraryID: "l-hr", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/hrweb"}
+	legal := LibraryRule{LibraryID: "l-legal", DisplayName: "Documents", SiteURL: "https://contoso.sharepoint.com/sites/lgl"}
+	// The site title matches NEITHER url slug, so pass 1 resolves nothing.
+	mounted := []string{`C:\Users\bob\People Operations - Documents`}
+
+	got := ComputeDrift([]LibraryRule{hr, legal}, mounted)
+
+	// Exactly one library is genuinely unmounted, and that count must survive.
+	if len(got) != 1 {
+		t.Fatalf("drift = %+v, want exactly 1 entry", got)
+	}
+	if got[0].Reason != ReasonNotMountedAmbiguous {
+		t.Errorf("reason = %q, want %q — attribution was a positional guess", got[0].Reason, ReasonNotMountedAmbiguous)
+	}
+
+	// A site-confirmed resolution is NOT a guess and must keep the plain reason.
+	confirmedMount := []string{`C:\Users\bob\Contoso hrweb - Documents`}
+	confirmed := ComputeDrift([]LibraryRule{hr, legal}, confirmedMount)
+	if len(confirmed) != 1 || confirmed[0].LibraryID != "l-legal" {
+		t.Fatalf("drift = %+v, want exactly [l-legal]", confirmed)
+	}
+	if confirmed[0].Reason != ReasonNotMounted {
+		t.Errorf("reason = %q, want %q — the pairing was site-confirmed", confirmed[0].Reason, ReasonNotMounted)
+	}
+}
+
 func TestFolderRedirectionState(t *testing.T) {
 	tests := []struct{ raw, want string }{
 		{`C:\Users\bob\OneDrive - Contoso\Documents`, "redirected"},

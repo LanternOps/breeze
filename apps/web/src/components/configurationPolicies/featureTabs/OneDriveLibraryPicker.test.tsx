@@ -198,4 +198,42 @@ describe('OneDriveLibraryPicker', () => {
 
     await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-1')).toBeTruthy());
   });
+
+  it('a superseded org\'s slow response cannot clobber the current one (#2336)', async () => {
+    // Async effects are gated on a `requestRef` generation token. The visible
+    // consequence is ordering: Graph library enumeration is slow and varies
+    // wildly per tenant, so switching orgs while a fetch is in flight routinely
+    // lands the OLD response last. Ungated, it would overwrite the org the tech
+    // is actually looking at with another org's libraries — a cross-tenant
+    // display bug, not just a stray-setState warning.
+    //
+    // (Deliberately NOT asserted via a "setState after unmount" console
+    // warning: React 19 no longer emits one, so that assertion passes with the
+    // guards deleted — it proves nothing.)
+    const orgALib = lib({ driveId: 'drive-org-a', libraryName: 'Org A Docs' });
+    const orgBLib = lib({ driveId: 'drive-org-b', libraryName: 'Org B Docs' });
+
+    let resolveA!: (v: { libraries: OneDriveLibrary[]; skippedSites: [] }) => void;
+    const pendingA = new Promise<{ libraries: OneDriveLibrary[]; skippedSites: [] }>((r) => {
+      resolveA = r;
+    });
+
+    mockedStatus.mockResolvedValue(true);
+    mockedLibraries.mockImplementation(((orgId?: string) =>
+      orgId === 'org-a'
+        ? pendingA
+        : Promise.resolve({ libraries: [orgBLib], skippedSites: [] })) as typeof api.fetchOneDriveLibraries);
+
+    const { rerender } = render(<OneDriveLibraryPicker orgId="org-a" onAdd={onAdd} onClose={onClose} />);
+    // Switch orgs while org-a's enumeration is still outstanding.
+    rerender(<OneDriveLibraryPicker orgId="org-b" onAdd={onAdd} onClose={onClose} />);
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-org-b')).toBeTruthy());
+
+    // org-a finally answers — too late, and for an org we are no longer showing.
+    resolveA({ libraries: [orgALib], skippedSites: [] });
+    await pendingA;
+    await waitFor(() => expect(screen.getByTestId('onedrive-picker-add-drive-org-b')).toBeTruthy());
+    expect(screen.queryByTestId('onedrive-picker-add-drive-org-a')).toBeNull();
+    expect(screen.queryByText('Org A Docs')).toBeNull();
+  });
 });

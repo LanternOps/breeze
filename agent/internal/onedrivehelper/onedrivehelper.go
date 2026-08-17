@@ -40,6 +40,17 @@ type Config struct {
 	Libraries []LibraryRule `json:"libraries"`
 }
 
+// Drift reasons reported to the server (heartbeat onedriveDeviceState.driftEntries).
+const (
+	// ReasonNotMounted — the library is entitled but no mounted folder matches it.
+	ReasonNotMounted = "not_mounted"
+	// ReasonNotMountedAmbiguous — same as above, except one or more SAME-NAMED
+	// libraries from other sites are also entitled and the mounted folders can't
+	// be attributed between them. The count of unmounted libraries is right;
+	// which one this entry names is not certain. See ComputeDrift.
+	ReasonNotMountedAmbiguous = "not_mounted_ambiguous"
+)
+
 // DriftEntry records an applied library that OneDrive did not actually mount
 // (e.g. the user previously "stopped sync" — AutoMount will not re-mount it).
 type DriftEntry struct {
@@ -184,29 +195,156 @@ func TenantIDFromComposite(libraryID string) string {
 	return ""
 }
 
-// ComputeDrift flags applied libraries whose display name matches no mounted
-// local folder path. OneDrive's tenant cache stores mounted scopes as local
-// folder paths of the form "<Org> - <LibraryName>", so a case-insensitive
-// substring match on the display name is the practical detection (validated
-// against the live-spike cache shape, see the 2026-06-19 spike doc). A rule
-// the user previously stop-synced will never re-mount — that is exactly the
-// drift this surfaces (spec: report, don't rewrite forever).
+// pathBase returns the last path component of a mounted local folder path,
+// tolerating either separator (the values come from a Windows registry cache
+// but the logic is unit-tested on every OS).
+func pathBase(p string) string {
+	if i := strings.LastIndexAny(p, `\/`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// mountSiteForLibrary reports whether a mounted path is a mount OF the named
+// library, and if so returns the site-title portion of its folder name.
+//
+// OneDrive names these folders "<Site title> - <Library name>" (or bare
+// "<Library name>" for a library whose site title OneDrive omits). Matching on
+// the SUFFIX rather than splitting on " - " keeps library names that themselves
+// contain " - " intact, which a naive split would tear apart.
+func mountSiteForLibrary(p, displayName string) (site string, ok bool) {
+	base := pathBase(p)
+	if strings.EqualFold(base, displayName) {
+		return "", true
+	}
+	suffix := " - " + displayName
+	if len(base) > len(suffix) && strings.EqualFold(base[len(base)-len(suffix):], suffix) {
+		return base[:len(base)-len(suffix)], true
+	}
+	return "", false
+}
+
+// siteHintFromURL derives a comparable token from a SharePoint site URL — the
+// last non-empty path segment, e.g. ".../sites/Marketing" → "Marketing".
+//
+// It is only a HINT: the folder name carries the site TITLE, which is free text
+// and frequently differs from the URL slug ("Marketing Team" vs. /sites/mktg).
+// So it is used strictly to break a tie between several identically-named
+// libraries and never to turn a single unambiguous match into drift.
+func siteHintFromURL(siteURL string) string {
+	trimmed := strings.TrimRight(siteURL, "/")
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		return trimmed[i+1:]
+	}
+	return ""
+}
+
+// ComputeDrift flags applied libraries that OneDrive did not actually mount. A
+// rule the user previously stop-synced will never re-mount — that is exactly
+// the drift this surfaces (spec: report, don't rewrite forever).
+//
+// Matching is site-qualified and one-to-one. The old check asked, per rule,
+// "does the display name appear anywhere in any mounted path?", which cannot
+// tell "Contoso HR - Documents" from "Contoso Legal - Documents": two sites
+// entitling a same-named library (and "Documents" is the default name on EVERY
+// SharePoint site) meant a single mount suppressed the drift report for both.
+// That false negative was seen in live QA.
+//
+// Treating it as an assignment fixes it: each mounted folder can satisfy at
+// most one rule, so two rules and one mount always leaves one rule drifted.
+// Which one is decided in three passes, strongest evidence first:
+//
+//  1. Folder name is "<site> - <library>" AND the site title contains the hint
+//     from the rule's site URL — an unambiguous pairing.
+//  2. Folder name matches the library name, site unverified. Site TITLES are
+//     free text and routinely differ from the URL slug ("Marketing Team" vs.
+//     /sites/mktg), so a hint that fails to match is never taken as proof of
+//     drift — it only loses to a rule that did match in pass 1.
+//  3. Legacy substring scan, for cache shapes with no parseable folder name.
+//     Keeps an unrecognized shape degrading to the old behaviour rather than
+//     reporting drift on everything. Fuzzy, so it consumes nothing.
+//
+// When pass 2 has to resolve SEVERAL same-named rules against fewer mounts, the
+// assignment is correct in COUNT but arbitrary in attribution — nothing in the
+// data says which site the one mounted "Documents" belongs to. Those entries
+// are reported as ReasonNotMountedAmbiguous rather than ReasonNotMounted, so a
+// tech reading the panel knows the tool is saying "one of these same-named
+// libraries is unmounted and I can't tell which" instead of asserting a
+// coin-flip as fact.
 func ComputeDrift(applied []LibraryRule, mountedPaths []string) []DriftEntry {
-	out := []DriftEntry{}
-	for _, r := range applied {
-		if r.DisplayName == "" {
+	matched := make([]bool, len(applied))
+	consumed := make([]bool, len(mountedPaths))
+
+	// Pass 1 — site-confirmed pairings claim their mount first.
+	for i, r := range applied {
+		hint := siteHintFromURL(r.SiteURL)
+		if r.DisplayName == "" || hint == "" {
 			continue
 		}
-		needle := strings.ToLower(r.DisplayName)
-		found := false
-		for _, p := range mountedPaths {
-			if strings.Contains(strings.ToLower(p), needle) {
-				found = true
+		for j, p := range mountedPaths {
+			if consumed[j] {
+				continue
+			}
+			site, ok := mountSiteForLibrary(p, r.DisplayName)
+			if ok && strings.Contains(strings.ToLower(site), strings.ToLower(hint)) {
+				matched[i], consumed[j] = true, true
 				break
 			}
 		}
-		if !found {
-			out = append(out, DriftEntry{LibraryID: r.LibraryID, DisplayName: r.DisplayName, Reason: "not_mounted"})
+	}
+
+	// How many rules each display name still has outstanding after pass 1 — more
+	// than one means pass 2 is choosing between indistinguishable candidates.
+	contenders := map[string]int{}
+	for i, r := range applied {
+		if !matched[i] && r.DisplayName != "" {
+			contenders[strings.ToLower(r.DisplayName)]++
+		}
+	}
+
+	// Pass 2 — name-only pairings for whatever is left over.
+	guessedFor := map[string]bool{}
+	for i, r := range applied {
+		if matched[i] || r.DisplayName == "" {
+			continue
+		}
+		key := strings.ToLower(r.DisplayName)
+		for j, p := range mountedPaths {
+			if consumed[j] {
+				continue
+			}
+			if _, ok := mountSiteForLibrary(p, r.DisplayName); ok {
+				matched[i], consumed[j] = true, true
+				if contenders[key] > 1 {
+					guessedFor[key] = true
+				}
+				break
+			}
+		}
+	}
+
+	out := []DriftEntry{}
+	for i, r := range applied {
+		if r.DisplayName == "" || matched[i] {
+			continue
+		}
+		// Pass 3 — legacy substring fallback over the unclaimed mounts.
+		needle := strings.ToLower(r.DisplayName)
+		for j, p := range mountedPaths {
+			if !consumed[j] && strings.Contains(strings.ToLower(p), needle) {
+				matched[i] = true
+				break
+			}
+		}
+		if !matched[i] {
+			reason := ReasonNotMounted
+			// A same-named sibling took a mount by position, not by evidence —
+			// the COUNT of unmounted libraries is right, but which one is named
+			// here is a guess. Say so rather than assert it.
+			if guessedFor[needle] {
+				reason = ReasonNotMountedAmbiguous
+			}
+			out = append(out, DriftEntry{LibraryID: r.LibraryID, DisplayName: r.DisplayName, Reason: reason})
 		}
 	}
 	return out

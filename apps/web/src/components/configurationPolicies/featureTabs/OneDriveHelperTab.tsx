@@ -10,6 +10,16 @@ type TargetingMode = 'everyone' | 'graph_group' | 'local_ad_group';
 type KfmFolder = 'Desktop' | 'Documents' | 'Pictures';
 
 type LibraryMapping = {
+  /**
+   * Client-only identity for React's list key. The natural candidate —
+   * `libraryId` — is not guaranteed unique (nothing stops a tech adding the
+   * same library twice, and the manual-paste path bypasses the picker), and an
+   * array index is worse: removing a row shifts every later row's key, so React
+   * reuses the wrong DOM nodes and the group-name/group-id inputs appear to
+   * jump onto a different library. Never sent to the server — `toPayload` is an
+   * explicit allowlist.
+   */
+  rowKey: string;
   libraryId: string;
   displayName: string;
   siteUrl?: string | null;
@@ -65,8 +75,12 @@ function libraryError(lib: LibraryMapping): string | null {
   return null;
 }
 
+let rowKeySeq = 0;
+const nextRowKey = () => `lib-${++rowKeySeq}`;
+
 function normalizeLibrary(raw: Partial<LibraryMapping>): LibraryMapping {
   return {
+    rowKey: raw.rowKey ?? nextRowKey(),
     libraryId: raw.libraryId ?? '',
     displayName: raw.displayName ?? '',
     siteUrl: raw.siteUrl ?? null,
@@ -159,24 +173,34 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
 
   // EventLogTab-style allowlist: build the wire payload from known keys only so
   // legacy/unknown fields on an older link are never re-persisted.
+  //
+  // Every free-text field is trimmed on the way out: the row-level validation
+  // in `libraryError` already compares trimmed values, so an all-whitespace
+  // group name passes Save and then persists as a targeting value the agent
+  // can never match. Trimmed-to-empty optional fields collapse to null so the
+  // stored shape matches a field the tech never filled in.
+  const trimOrNull = (v?: string | null) => {
+    const t = v?.trim();
+    return t ? t : null;
+  };
   const toPayload = (s: OneDriveHelperSettings) => ({
     silentAccountConfig: s.silentAccountConfig,
     filesOnDemand: s.filesOnDemand,
     kfmSilentOptIn: s.kfmSilentOptIn,
     kfmFolders: s.kfmFolders,
     kfmBlockOptOut: s.kfmBlockOptOut,
-    tenantAssociationId: s.tenantAssociationId?.trim() ? s.tenantAssociationId.trim() : null,
+    tenantAssociationId: trimOrNull(s.tenantAssociationId),
     restartOnChange: s.restartOnChange,
     libraries: s.libraries.map((lib) => ({
-      libraryId: lib.libraryId,
-      displayName: lib.displayName,
-      siteUrl: lib.siteUrl ?? null,
-      siteId: lib.siteId ?? null,
-      webId: lib.webId ?? null,
-      listId: lib.listId ?? null,
+      libraryId: lib.libraryId.trim(),
+      displayName: lib.displayName.trim(),
+      siteUrl: trimOrNull(lib.siteUrl),
+      siteId: trimOrNull(lib.siteId),
+      webId: trimOrNull(lib.webId),
+      listId: trimOrNull(lib.listId),
       targetingMode: lib.targetingMode,
-      groupId: lib.groupId ?? null,
-      groupName: lib.groupName ?? null,
+      groupId: trimOrNull(lib.groupId),
+      groupName: trimOrNull(lib.groupName),
       hiveScope: lib.hiveScope,
       enabled: lib.enabled,
     })),
@@ -338,7 +362,7 @@ export default function OneDriveHelperTab({ policyId, existingLink, onLinkChange
               const hint = siteHint(lib.siteUrl);
               return (
                 <div
-                  key={idx}
+                  key={lib.rowKey}
                   data-testid={`onedrive-lib-row-${idx}`}
                   className="space-y-3 rounded-md border bg-background px-4 py-4"
                 >
