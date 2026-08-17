@@ -1158,9 +1158,32 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       render(<DevicesPage />);
       fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
 
+      // #3698: the row action is confirm-gated now, matching the device detail
+      // page. Nothing may reach the API until the operator confirms.
+      expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByTestId('confirm-device-action'));
+
       await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
       return vi.mocked(showToast).mock.calls.map(c => c[0]);
     }
+
+    // #3698: the reason this issue existed — the list fired immediately while
+    // the detail page confirmed. Pin both halves of the gate.
+    it('does not queue anything until the confirm is accepted', async () => {
+      const { sendDeviceCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+      } as never);
+
+      render(<DevicesPage />);
+      fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
+
+      // The dialog names the machine, so a mis-click on a dense list is
+      // recoverable rather than merely delayed.
+      expect(await screen.findByText(/host-alpha/)).toBeTruthy();
+      expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+    });
 
     it('online device: reports the command as sent, naming the device', async () => {
       const toasts = await rebootDeviceWithStatus('online');
