@@ -485,8 +485,16 @@ export function getSecurityStatusFromResult(resultData: Record<string, unknown> 
 
 export async function upsertSecurityStatusForDevice(deviceId: string, orgId: string, payload: SecurityStatusPayload): Promise<void> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
+  // `preferredProduct` only backfills the top-level summary when the payload
+  // omits it entirely. The current Go agent always marshals `provider` and
+  // `realTimeProtection` (non-pointer fields, no omitempty), so these fallbacks
+  // are unreachable from it — they exist for partial payloads from other
+  // producers (e.g. script-result ingestion via getSecurityStatusFromResult).
+  // The array itself is persisted below; it is the evidence behind the derived
+  // `realTimeProtection` boolean. See #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+  const avProductsValue = payload.avProducts ?? null;
 
   await db
     .insert(securityStatus)
@@ -506,6 +514,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
       encryptionDetails: payload.encryptionDetails ?? null,
       localAdminSummary: payload.localAdminSummary ?? null,
       passwordPolicySummary: payload.passwordPolicySummary ?? null,
+      avProducts: avProductsValue,
       gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
       updatedAt: new Date()
     })
@@ -525,6 +534,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
         encryptionDetails: payload.encryptionDetails ?? null,
         localAdminSummary: payload.localAdminSummary ?? null,
         passwordPolicySummary: payload.passwordPolicySummary ?? null,
+        avProducts: avProductsValue,
         gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
         updatedAt: new Date()
       }

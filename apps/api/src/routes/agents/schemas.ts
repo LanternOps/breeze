@@ -419,8 +419,9 @@ export const securityStatusIngestSchema = z.object({
   windowsSecurityCenterAvailable: z.boolean().optional(),
   avProducts: z.array(
     z.object({
-      displayName: z.string().optional(),
-      provider: z.string().optional(),
+      // Bounded because this array is persisted to security_status.av_products.
+      displayName: z.string().max(200).optional(),
+      provider: z.string().max(100).optional(),
       realTimeProtection: z.boolean().optional(),
       definitionsUpToDate: z.boolean().optional(),
       productState: z.number().int().optional()
