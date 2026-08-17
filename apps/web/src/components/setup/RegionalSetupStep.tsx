@@ -115,9 +115,7 @@ export default function RegionalSetupStep({ siteId, onNext, onBack }: RegionalSe
   const [invoicePrefix, setInvoicePrefix] = useState('INV');
   const [invoiceTermsDays, setInvoiceTermsDays] = useState(30);
 
-  console.log('RENDER t=', t);
   useEffect(() => {
-    console.log('EFFECT RUN');
     let cancelled = false;
 
     const load = async () => {
