@@ -77,9 +77,12 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
  * How many M365 mailboxes this partner actually receives mail through.
  * `connected` is the only status that polls (see listConnectedMailboxes) — a
  * pending/error/disabled row is NOT a working inbound path, so it must not
- * count as one. Runs in the caller's request DB context: an org-scoped reader
- * sees no partner rows and gets 0, which degrades to the "not configured"
- * copy rather than a false "you're all set".
+ * count as one. Runs in the caller's request DB context (like
+ * listMailboxConnections) and leans on the table's breeze_has_partner_access
+ * policy, so only a partner- or system-scoped caller sees rows. Its one caller,
+ * getTicketConfig, is reachable only behind requireScope('partner','system') —
+ * do NOT call it from an org-scoped path, where RLS returns 0 and would
+ * silently understate a working inbound setup.
  */
 export async function countConnectedMailboxes(partnerId: string): Promise<number> {
   const rows = await db.select({ id: ticketMailboxConnections.id })
