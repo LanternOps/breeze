@@ -117,7 +117,7 @@ async function makeFixture(): Promise<Fixture> {
 async function seedTimedOutRun(
   fx: Fixture,
   opts: {
-    executionStatus?: 'running' | 'timeout' | 'failed' | 'completed';
+    executionStatus?: 'running' | 'timeout' | 'failed' | 'completed' | 'cancelled';
     executionExitCode?: number;
     executionStdout?: string;
     commandStatus?: 'failed' | 'cancelled';
@@ -580,6 +580,34 @@ describe('#3607 late command result recovery', () => {
       const job = await readRestoreJob(restoreJobId);
       expect(job.status).toBe('failed');
       expect(job.restoredFiles).toBeNull();
+    },
+    30_000,
+  );
+
+  runDb(
+    'a CANCELLED execution is left alone — the operator abandoned the run',
+    async () => {
+      const fx = await makeFixture();
+      // routes/scripts.ts's cancel handler stamps the execution 'cancelled'
+      // but only cancels the paired command `WHERE status = 'pending'`. A
+      // command already 'sent' survives, later picks up the reaper's
+      // provisional timeout marker, and its real result now reaches
+      // handleScriptResult. Discarding the output is CORRECT here — and this
+      // is a routine race, so it must not be treated as a defect.
+      const { commandId, executionId } = await seedTimedOutRun(fx, {
+        executionStatus: 'cancelled',
+      });
+
+      await sendWsResult(fx, commandId, {
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'output for an abandoned run',
+      });
+
+      const execution = await readExecution(executionId);
+      expect(execution.status).toBe('cancelled');
+      expect(execution.stdout).toBeNull();
+      expect(execution.exitCode).toBeNull();
     },
     30_000,
   );

@@ -436,9 +436,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           // that acceptance is widened, this is the ONE remaining way an
           // agent's real output can be discarded here, so it must not be
           // silent (the #3162 lesson, two blocks down: report, never skip
-          // quietly). Expected causes are all defects — a mismatched
-          // execution/device pair, or a row already carrying output from a
-          // path that bypassed the compare-and-set.
+          // quietly).
           const [current] = await db
             .select({
               status: scriptExecutions.status,
@@ -448,21 +446,33 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             .from(scriptExecutions)
             .where(eq(scriptExecutions.id, executionId))
             .limit(1);
+          const currentStatus = current?.status ?? 'row-missing';
+
+          // `cancelled` is a BENIGN race, not a defect, and must not page.
+          // routes/scripts.ts's cancel handler sets the execution to
+          // 'cancelled' but only cancels the paired command `WHERE status =
+          // 'pending'`. A command already 'sent' survives that, later gets the
+          // reaper's provisional timeout marker, and its real result now
+          // reaches this function — where 'cancelled' matches neither update.
+          // Dropping the output is the CORRECT outcome there: the operator
+          // asked for the run to be abandoned. Log the trail, don't alert.
           const message = 'Late script result matched no script_executions row';
           console.warn(`[AgentWs] ${message}`, {
             executionId,
             commandId: command.id,
             resolvedDeviceId,
-            currentStatus: current?.status ?? 'row-missing',
+            currentStatus,
             currentExitCode: current?.exitCode ?? null,
             currentDeviceId: current?.deviceId ?? null,
           });
-          captureException(new Error(message), undefined, {
-            executionId,
-            commandId: command.id,
-            resolvedDeviceId,
-            currentStatus: current?.status ?? 'row-missing',
-          });
+          if (currentStatus !== 'cancelled') {
+            captureException(new Error(message), undefined, {
+              executionId,
+              commandId: command.id,
+              resolvedDeviceId,
+              currentStatus,
+            });
+          }
         }
       }
 
