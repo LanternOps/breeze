@@ -1176,7 +1176,7 @@ export function createBreezeMcpServer(
 
     tool(
       'get_script_execution',
-      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the script editor Test Run button, or an execution id from get_script_execution_history) — not to re-check a run_script call that already returned.',
+      'Fetch one script execution by ID with status, exit code, stdout, and stderr. Use for runs started outside the current tool call (the script editor Test Run button, or an execution id from get_script_execution_history), and to re-check a run_script device whose result came back status "timeout" — that means the 60s wait expired, not that the script failed, and the real outcome lands on the executionId run_script returned. Any other run_script outcome is final; do not re-check it.',
       {
         executionId: uuid,
       },
