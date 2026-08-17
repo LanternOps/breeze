@@ -415,6 +415,64 @@ describe('sources admin routes', () => {
     expect(await res.json()).toEqual({ error: 'smb_share requires crawlDeviceId' });
   });
 
+  // #3472: crawl_device_id is only meaningful for smb_share. A local_profile
+  // row carrying one is the shape deviceSummaryService's owned-sources branch
+  // absorbs with `device_id IS NULL`; enforce it on write instead.
+  it('rejects a local_profile POST that carries a crawl device', async () => {
+    const h = makeHarness();
+    const res = await h.app.request(
+      `/sources?orgId=${ORG_ID}`,
+      jsonRequest('POST', {
+        ...sourceInput, kind: 'local_profile', rootPath: '/Users', crawlDeviceId: DEVICE_ID,
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(h.sourcesService.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a PATCH that sets local_profile together with an explicit crawl device', async () => {
+    const h = makeHarness();
+    h.sourcesService.get.mockResolvedValueOnce(source({}) as never);
+    const res = await h.app.request(
+      `/sources/${SOURCE_ID}?orgId=${ORG_ID}`,
+      jsonRequest('PATCH', { kind: 'local_profile', crawlDeviceId: DEVICE_ID }),
+    );
+    expect(res.status).toBe(400);
+    expect(h.sourcesService.update).not.toHaveBeenCalled();
+  });
+
+  // A flip that would strand the crawl device is rejected rather than silently
+  // nulling operator configuration. The web form always submits crawlDeviceId
+  // explicitly, so a deliberate flip is unaffected — asserted below.
+  it('rejects a flip to local_profile that would strand an existing crawl device', async () => {
+    const h = makeHarness();
+    h.sourcesService.get.mockResolvedValueOnce(
+      source({ kind: 'smb_share', crawlDeviceId: DEVICE_ID }) as never,
+    );
+    const res = await h.app.request(
+      `/sources/${SOURCE_ID}?orgId=${ORG_ID}`,
+      jsonRequest('PATCH', { kind: 'local_profile', rootPath: '/Users' }),
+    );
+    expect(res.status).toBe(400);
+    expect(h.sourcesService.update).not.toHaveBeenCalled();
+  });
+
+  it('allows a deliberate flip that clears the crawl device explicitly', async () => {
+    const h = makeHarness();
+    h.sourcesService.get.mockResolvedValueOnce(
+      source({ kind: 'smb_share', crawlDeviceId: DEVICE_ID }) as never,
+    );
+    h.sourcesService.update.mockResolvedValueOnce(
+      source({ kind: 'local_profile', rootPath: '/Users', crawlDeviceId: null }) as never,
+    );
+    const res = await h.app.request(
+      `/sources/${SOURCE_ID}?orgId=${ORG_ID}`,
+      jsonRequest('PATCH', { kind: 'local_profile', rootPath: '/Users', crawlDeviceId: null }),
+    );
+    expect(res.status).toBe(200);
+    expect(h.sourcesService.update).toHaveBeenCalled();
+  });
+
   it('rejects a crawl cadence that would overflow the integer column', async () => {
     const h = makeHarness();
     const res = await h.app.request(

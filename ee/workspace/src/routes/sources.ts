@@ -35,6 +35,22 @@ type SmbConfig = {
 };
 
 function validateSmbConfig(input: SmbConfig, ctx: z.RefinementCtx): void {
+  if (input.kind === 'local_profile') {
+    // #3472: crawl_device_id is only meaningful for smb_share. A local_profile
+    // row carrying one is the exact shape deviceSummaryService's owned-sources
+    // branch defends against with `device_id IS NULL` — without that guard the
+    // source would attribute every OTHER device's device-scoped rows to its
+    // crawl device. Enforce the invariant on WRITE instead of relying on the
+    // read side to keep absorbing it.
+    if (input.crawlDeviceId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['crawlDeviceId'],
+        message: 'local_profile sources cannot have a crawl device',
+      });
+    }
+    return;
+  }
   if (input.kind !== 'smb_share') return;
   if (!input.crawlDeviceId) {
     ctx.addIssue({ code: 'custom', path: ['crawlDeviceId'], message: 'SMB sources require a crawl device' });
@@ -231,6 +247,12 @@ export function createSourcesRoutes(deps: SourcesRouteDeps): Hono<WorkspaceRoute
         await audit(auth, orgId, 'workspace.source.update', 'failure', sourceId);
         return c.json({ error: 'Source not found' }, 404);
       }
+      // Validate the plain merge — the state the row will actually hold. A flip
+      // to local_profile that leaves a stale crawl device is REJECTED here
+      // rather than silently nulled (#3472); the web form always sends
+      // `crawlDeviceId` explicitly, so a deliberate flip still passes.
+      // sourcesService.update re-validates the same merge, so a caller that
+      // bypasses this route cannot write the shape either.
       const mergedConfig = smbConfigSchema.safeParse({
         kind: parsed.data.kind ?? existing.kind,
         rootPath: parsed.data.rootPath ?? existing.rootPath,
@@ -239,7 +261,12 @@ export function createSourcesRoutes(deps: SourcesRouteDeps): Hono<WorkspaceRoute
           : parsed.data.crawlDeviceId,
       });
       if (!mergedConfig.success) {
-        return c.json({ error: 'Invalid request body' }, 400);
+        // Surface the specific issue rather than a generic string: the merged
+        // check is the only thing a caller sees when an existing row is the
+        // problem, so "Invalid request body" leaves them nothing to act on.
+        return c.json({
+          error: mergedConfig.error.issues[0]?.message ?? 'Invalid request body',
+        }, 400);
       }
       const updated = await deps.sourcesService.update(orgId, sourceId, parsed.data);
       if (!updated) {
@@ -250,6 +277,14 @@ export function createSourcesRoutes(deps: SourcesRouteDeps): Hono<WorkspaceRoute
       return c.json(publicSource(updated));
     } catch (error) {
       await audit(auth, orgId, 'workspace.source.update', 'failure', sourceId, error);
+      // The merged smbConfigSchema check above rejects the same states, so in
+      // practice this branch is unreachable through this route. It is here
+      // because the two validators are independent: if they ever drift, an
+      // invalid patch must still surface as a 400, not an opaque 500. POST
+      // already maps SourceValidationError this way.
+      if (error instanceof SourceValidationError) {
+        return c.json({ error: error.message }, 400);
+      }
       if (isForeignKeyViolation(error)) {
         return c.json({ error: 'crawlDeviceId does not reference a known device' }, 400);
       }
