@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -505,12 +506,21 @@ export async function scheduleCisScan(
     ? Array.from(new Set(options.deviceIds.filter((id) => typeof id === 'string' && id.length > 0))).sort()
     : undefined;
   const slot = Math.floor(Date.now() / ON_DEMAND_CIS_SCAN_DEDUPE_WINDOW_MS).toString(36);
+  // Keep the device component bounded now that authorized route fan-outs can
+  // contain thousands of explicit ids. The 'all' label remains reserved for a
+  // genuinely unscoped whole-baseline scan; explicit sets retain deterministic
+  // deduplication without producing unusably long Redis keys.
+  const deviceLabel = !normalizedDeviceIds || normalizedDeviceIds.length === 0
+    ? 'all'
+    : normalizedDeviceIds.length <= 4
+      ? normalizedDeviceIds.join(',')
+      : `n${normalizedDeviceIds.length}.${createHash('sha256').update(normalizedDeviceIds.join(',')).digest('hex').slice(0, 16)}`;
   // '-' separator (not ':') — BullMQ rejects custom jobIds whose colon-split
   // length !== 3, and this 4-part id would throw. See #1101.
   const jobId = [
     'cis-manual-scan',
     baselineId,
-    normalizedDeviceIds ? normalizedDeviceIds.join(',') : 'all',
+    deviceLabel,
     slot,
   ].join('-');
   const existing = await queue.getJob(jobId);

@@ -291,7 +291,10 @@ export async function processInboundEmail(
       return;
     }
 
-    const matched = await findTicketInPartner(n, partnerId);
+    // Resolve sender identity lazily so token binding and unmatched fallthrough
+    // reuse the same partner-scoped lookups.
+    const senderResolver = createSenderResolver(n.from, partnerId);
+    const matched = await findTicketInPartner(n, partnerId, senderResolver);
     if (matched) {
       // GUARD (spec §6 layer 2): never act across partners. A partner-scoped match query
       // should already make this impossible, but re-assert before ANY write and throw
@@ -302,7 +305,7 @@ export async function processInboundEmail(
       }
 
       // Append a public inbound comment, then reopen if resolved.
-      await appendInboundComment(matched.id, n, partnerId);
+      await appendInboundComment(matched.id, n, partnerId, senderResolver);
       if (matched.status === 'resolved') {
         await reopenResolvedTicket(matched.id, partnerId);
       }
@@ -315,7 +318,7 @@ export async function processInboundEmail(
     // SEPARATE from findTicketInPartner (which excludes closed) so the live-continuation
     // it spawns is what future replies match — the closed original is never re-matched,
     // which is what prevents a thread from forking into N tickets (FIX 2).
-    const closedOriginal = await findClosedTicketInPartner(n, partnerId);
+    const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber);
       await logInbound(n, partnerId, 'created', t.id);
@@ -325,7 +328,7 @@ export async function processInboundEmail(
     // (5) Known portal-user sender -> their home org. Most specific; wins over
     // domain rules (a user who belongs to a sub-org isn't overridden by a
     // broader domain mapping).
-    const sender = await findPortalUserInPartner(n.from, partnerId);
+    const sender = await senderResolver.portalUser();
     if (sender) {
       const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
       await logInbound(n, partnerId, 'created', t.id);
@@ -336,7 +339,7 @@ export async function processInboundEmail(
     // ticket; optionally onboard a password-less contact so future replies
     // thread + attribute. This sits behind the senderAuth.verified (DMARC) gate
     // above, so a forged From: @customer.com can't file into the customer's org.
-    const domainMatch = await resolveOrgBySenderDomain(n.from, partnerId);
+    const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
       const submittedBy = domainMatch.autoCreateContact
         ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
@@ -390,6 +393,8 @@ interface MatchedTicket {
   status: string;
   emailThreadKey: string | null;
   internalNumber: string | null;
+  submittedBy: string | null;
+  submitterEmail: string | null;
 }
 
 const MATCH_COLS = {
@@ -398,8 +403,59 @@ const MATCH_COLS = {
   orgId: tickets.orgId,
   status: tickets.status,
   emailThreadKey: tickets.emailThreadKey,
-  internalNumber: tickets.internalNumber
+  internalNumber: tickets.internalNumber,
+  submittedBy: tickets.submittedBy,
+  submitterEmail: tickets.submitterEmail
 };
+
+interface SenderIdentity {
+  portalUser: { id: string; orgId: string; name: string | null } | null;
+  domainOrg: { orgId: string; autoCreateContact: boolean } | null;
+}
+
+interface SenderResolver {
+  portalUser(): Promise<SenderIdentity['portalUser']>;
+  domainOrg(): Promise<SenderIdentity['domainOrg']>;
+}
+
+function createSenderResolver(from: string, partnerId: string): SenderResolver {
+  let portalUserPromise: Promise<SenderIdentity['portalUser']> | undefined;
+  let domainOrgPromise: Promise<SenderIdentity['domainOrg']> | undefined;
+
+  return {
+    portalUser() {
+      portalUserPromise ??= findPortalUserInPartner(from, partnerId);
+      return portalUserPromise;
+    },
+    domainOrg() {
+      domainOrgPromise ??= resolveOrgBySenderDomain(from, partnerId);
+      return domainOrgPromise;
+    }
+  };
+}
+
+/**
+ * Bind a subject-token (ticket-number) match to the sender. Ticket numbers are
+ * sequential and enumerable and the token path carries no org predicate, so
+ * without this ANY authenticated-domain sender could append a public comment to
+ * another customer org's ticket (and reopen it). The thread-key path is
+ * unguessable and needs no binding.
+ */
+async function senderIsBoundToTicket(
+  from: string,
+  ticket: MatchedTicket,
+  sender: SenderResolver
+): Promise<boolean> {
+  if (ticket.submitterEmail && ticket.submitterEmail.trim().toLowerCase() === from.trim().toLowerCase()) {
+    return true;
+  }
+
+  const pu = await sender.portalUser();
+  if (pu && (pu.orgId === ticket.orgId || pu.id === ticket.submittedBy)) return true;
+
+  const dom = await sender.domainOrg();
+  return !!dom && dom.orgId === ticket.orgId;
+}
 
 // Candidate threading keys: In-Reply-To + every References entry (a reply's parent
 // can be anywhere in the References chain), deduped.
@@ -417,7 +473,11 @@ function candidateThreadKeys(n: NormalizedInboundEmail): string[] {
 // and fork the thread into N tickets. Excluding closed here makes a reply to a closed
 // ticket fall through to the dedicated closed lookup (-> ONE new linked ticket), while
 // subsequent replies match the LIVE continuation. Resolved tickets still match (reopen).
-async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
+async function findTicketInPartner(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  sender: SenderResolver
+): Promise<MatchedTicket | null> {
   // 1) thread headers -> email_thread_key OR email_message_id (scoped to partner,
   // live tickets only). Candidate keys (In-Reply-To ∪ References) are matched
   // against EITHER column: email_thread_key carries the generated anchor (so a
@@ -457,7 +517,12 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
         eq(tickets.internalNumber, m[0])
       ))
       .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      // The token is enumerable, so require proof that this sender belongs to the ticket.
+      if (!(await senderIsBoundToTicket(n.from, row, sender))) return null;
+      return row;
+    }
   }
 
   return null;
@@ -468,7 +533,11 @@ async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string)
 // single new linked ticket when a customer replies to a closed thread. Kept separate from
 // findTicketInPartner (which returns live tickets only) so the closed original is never
 // re-matched for an append. Still partner-scoped (spec §6 layer 1).
-async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
+async function findClosedTicketInPartner(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  sender: SenderResolver
+): Promise<MatchedTicket | null> {
   const candidateKeys = candidateThreadKeys(n);
   if (candidateKeys.length > 0) {
     const rows = await db
@@ -496,7 +565,12 @@ async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: s
         eq(tickets.internalNumber, m[0])
       ))
       .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      // The token is enumerable, so require proof that this sender belongs to the ticket.
+      if (!(await senderIsBoundToTicket(n.from, row, sender))) return null;
+      return row;
+    }
   }
 
   return null;
@@ -625,11 +699,16 @@ async function createFromEmail(
   return ticket;
 }
 
-async function appendInboundComment(ticketId: string, n: NormalizedInboundEmail, partnerId: string): Promise<void> {
+async function appendInboundComment(
+  ticketId: string,
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  senderResolver: SenderResolver
+): Promise<void> {
   // Inserted directly (NOT via addTicketComment, which forces authorType:'internal' /
   // user_id=actor). Under system scope the ticket_comments INSERT policy permits user_id IS
   // NULL. Email-sourced comments are ALWAYS public (spec §4: email can never create an internal note).
-  const sender = await findPortalUserInPartner(n.from, partnerId);
+  const sender = await senderResolver.portalUser();
   // appendInboundComment is only reached on the verified-sender match path (R4 gate
   // upstream), so a matched portal user is an authenticated identity: prefer their
   // STORED name over the spoofable From display name. Fall back to the header only
