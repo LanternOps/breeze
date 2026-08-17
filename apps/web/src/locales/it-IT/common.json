@@ -252,7 +252,11 @@
       "viewAll": "Visualizza tutto",
       "allClear": "Tutto chiaro",
       "empty": "Nessun avviso attivo nella tua flotta",
-      "fallbackTitle": "Avviso"
+      "fallbackTitle": "Avviso",
+      "noDevicesTitle": "Nessun dispositivo sta ancora inviando dati",
+      "noDevicesHint": "Gli avvisi compariranno una volta registrato un dispositivo.",
+      "noActiveAlerts": "Nessun avviso attivo",
+      "deviceStatusUnavailable": "Stato dei dispositivi non disponibile: impossibile confermare la copertura della flotta."
     },
     "customizer": {
       "title": "Personalizzazione del dashboard",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVE",
       "kevDevices": "{{count}} dispositivi",
       "kevDevices_one": "{{count}} dispositivo",
-      "kevDevices_other": "{{count}} dispositivi"
+      "kevDevices_other": "{{count}} dispositivi",
+      "noDevicesTitle": "Nessun dispositivo sta ancora inviando dati",
+      "noDevicesHint": "Registra un dispositivo per avviare la scansione delle vulnerabilità.",
+      "noneReported": "Nessun rilevamento aperto segnalato",
+      "coverageUnknown": "Stato dei dispositivi non disponibile: impossibile confermare la copertura della scansione."
     },
     "refreshFailed": "Aggiornamento non riuscito — vengono mostrati dati meno recenti"
   },

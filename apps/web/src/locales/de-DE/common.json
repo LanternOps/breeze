@@ -252,7 +252,11 @@
       "viewAll": "Alle anzeigen",
       "allClear": "Alles in Ordnung",
       "empty": "Keine aktiven Warnmeldungen im Gerätebestand",
-      "fallbackTitle": "Warnmeldung"
+      "fallbackTitle": "Warnmeldung",
+      "noDevicesTitle": "Noch keine Geräte melden Daten",
+      "noDevicesHint": "Warnungen erscheinen, sobald ein Gerät registriert ist.",
+      "noActiveAlerts": "Keine aktiven Warnungen",
+      "deviceStatusUnavailable": "Gerätestatus nicht verfügbar — Flottenabdeckung kann nicht bestätigt werden."
     },
     "customizer": {
       "title": "Dashboard-Anpassung",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} Geräte",
       "kevDevices_one": "{{count}} Gerät",
-      "kevDevices_other": "{{count}} Geräte"
+      "kevDevices_other": "{{count}} Geräte",
+      "noDevicesTitle": "Noch keine Geräte melden Daten",
+      "noDevicesHint": "Registrieren Sie ein Gerät, um mit der Suche nach Schwachstellen zu beginnen.",
+      "noneReported": "Keine offenen Funde gemeldet",
+      "coverageUnknown": "Gerätestatus nicht verfügbar — Scan-Abdeckung kann nicht bestätigt werden."
     },
     "refreshFailed": "Aktualisierung fehlgeschlagen — ältere Daten werden angezeigt"
   },

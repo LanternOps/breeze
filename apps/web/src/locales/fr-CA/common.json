@@ -252,7 +252,11 @@
       "viewAll": "Voir tout",
       "allClear": "Tout est clair",
       "empty": "Aucune alerte active dans votre flotte",
-      "fallbackTitle": "Alerte"
+      "fallbackTitle": "Alerte",
+      "noDevicesTitle": "Aucun appareil ne transmet encore de données",
+      "noDevicesHint": "Les alertes s'afficheront dès qu'un appareil sera inscrit.",
+      "noActiveAlerts": "Aucune alerte active",
+      "deviceStatusUnavailable": "État des appareils indisponible : impossible de confirmer la couverture du parc."
     },
     "customizer": {
       "title": "Customizer de tableau de bord",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVE",
       "kevDevices": "{{count}} appareils",
       "kevDevices_one": "{{count}} appareil",
-      "kevDevices_other": "{{count}} appareils"
+      "kevDevices_other": "{{count}} appareils",
+      "noDevicesTitle": "Aucun appareil ne transmet encore de données",
+      "noDevicesHint": "Inscrivez un appareil pour lancer la recherche de vulnérabilités.",
+      "noneReported": "Aucune vulnérabilité ouverte signalée",
+      "coverageUnknown": "État des appareils indisponible : impossible de confirmer la couverture de l'analyse."
     },
     "refreshFailed": "Impossible d'actualiser — affichage de données plus anciennes"
   },

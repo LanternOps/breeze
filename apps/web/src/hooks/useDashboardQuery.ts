@@ -17,6 +17,16 @@ export interface DashboardQueryState<T> {
    * applies to transient failures.
    */
   unavailable: boolean;
+  /**
+   * True while the cached `data` was fetched under a *previous* org scope and
+   * the refetch for the current scope hasn't landed yet. Widgets that merely
+   * display their own numbers can ignore this (a stale number for one paint is
+   * better than a skeleton flash), but any widget that draws a *conclusion*
+   * from another widget's data must treat it as "not known yet" — otherwise
+   * switching from a populated org to an empty one paints the previous org's
+   * denominator over the new org's zeros. See `fleetPresence` (#3613).
+   */
+  staleScope: boolean;
 }
 
 /**
@@ -38,8 +48,13 @@ export function useDashboardQuery<T>(
     isLoading: true,
     isFetching: true,
     unavailable: false,
+    staleScope: false,
   });
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
+
+  // The org scope the currently-held `data` was fetched under. `undefined`
+  // until the first response lands.
+  const dataOrgId = useRef<string | null | undefined>(undefined);
 
   // Keep the latest selector without making it an effect dependency —
   // callers pass inline arrows.
@@ -52,7 +67,11 @@ export function useDashboardQuery<T>(
 
   useEffect(() => {
     const seq = ++requestSeq.current;
-    setState((prev) => ({ ...prev, isFetching: true }));
+    setState((prev) => ({
+      ...prev,
+      isFetching: true,
+      staleScope: prev.data != null && dataOrgId.current !== currentOrgId,
+    }));
 
     const run = async () => {
       try {
@@ -60,19 +79,29 @@ export function useDashboardQuery<T>(
         if (seq !== requestSeq.current) return;
 
         if (response.status === 403 || response.status === 404) {
-          setState({ data: null, error: null, isLoading: false, isFetching: false, unavailable: true });
+          dataOrgId.current = currentOrgId;
+          setState({
+            data: null,
+            error: null,
+            isLoading: false,
+            isFetching: false,
+            unavailable: true,
+            staleScope: false,
+          });
           return;
         }
         if (!response.ok) throw response;
 
         const json = await response.json();
         if (seq !== requestSeq.current) return;
+        dataOrgId.current = currentOrgId;
         setState({
           data: selectRef.current(json),
           error: null,
           isLoading: false,
           isFetching: false,
           unavailable: false,
+          staleScope: false,
         });
       } catch (err) {
         if (seq !== requestSeq.current) return;
@@ -90,6 +119,9 @@ export function useDashboardQuery<T>(
           isLoading: false,
           isFetching: false,
           unavailable: false,
+          // A failed refetch does NOT make old-scope data current — keep it
+          // flagged so conclusions drawn from it stay suspended.
+          staleScope: prev.data != null && dataOrgId.current !== currentOrgId,
         }));
       }
     };

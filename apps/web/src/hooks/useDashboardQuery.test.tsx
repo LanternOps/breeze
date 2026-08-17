@@ -127,3 +127,76 @@ describe('useDashboardQuery', () => {
     expect(lastState?.data).toBe(7);
   });
 });
+
+// `staleScope` exists so a widget that draws a conclusion from ANOTHER
+// widget's data (fleetPresence, #3613) can tell "the count I'm holding
+// belongs to the org you just switched away from" apart from "the count is
+// current". Widgets rendering their own numbers keep ignoring it.
+describe('useDashboardQuery staleScope', () => {
+  it('stays false through a settled load and a same-scope refresh poll', async () => {
+    const { rerender } = render(<Probe token={0} />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+    expect(lastState?.staleScope).toBe(false);
+
+    rerender(<Probe token={1} />);
+    expect(lastState?.staleScope).toBe(false);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    expect(lastState?.staleScope).toBe(false);
+  });
+
+  it('flags the cached value while an org switch is in flight, and clears it on arrival', async () => {
+    const { rerender } = render(<Probe token={0} />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+
+    // org-2's response is held open: the old org's count is still on screen.
+    let resolvePending!: (r: Response) => void;
+    fetchWithAuthMock.mockReturnValueOnce(
+      new Promise<Response>((r) => (resolvePending = r)) as any
+    );
+    mockOrgState.currentOrgId = 'org-2';
+    rerender(<Probe token={0} />);
+
+    expect(lastState?.data).toBe(7);
+    expect(lastState?.staleScope).toBe(true);
+
+    await act(async () => {
+      resolvePending(jsonResponse({ data: { total: 0 } }));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(lastState?.data).toBe(0));
+    expect(lastState?.staleScope).toBe(false);
+  });
+
+  it('keeps the flag set when the post-switch refetch fails', async () => {
+    const { rerender } = render(<Probe token={0} />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+
+    fetchWithAuthMock.mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+    mockOrgState.currentOrgId = 'org-2';
+    await act(async () => {
+      rerender(<Probe token={0} />);
+    });
+
+    await waitFor(() => expect(lastState?.error).not.toBeNull());
+    // Stale data survives the failure (deliberate) but must stay untrusted —
+    // a failed refetch does not make old-scope data current.
+    expect(lastState?.data).toBe(7);
+    expect(lastState?.staleScope).toBe(true);
+  });
+
+  it('clears the flag when the post-switch request is permission-hidden', async () => {
+    const { rerender } = render(<Probe token={0} />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+
+    fetchWithAuthMock.mockResolvedValue(jsonResponse({ error: 'forbidden' }, 403));
+    mockOrgState.currentOrgId = 'org-2';
+    await act(async () => {
+      rerender(<Probe token={0} />);
+    });
+
+    await waitFor(() => expect(lastState?.unavailable).toBe(true));
+    // A 403 clears `data` outright, so no stale value is left to flag.
+    expect(lastState?.data).toBeNull();
+    expect(lastState?.staleScope).toBe(false);
+  });
+});

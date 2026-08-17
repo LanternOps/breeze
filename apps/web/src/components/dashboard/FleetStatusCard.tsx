@@ -33,6 +33,19 @@ export default function FleetStatusCard({
   }
 
   const stats = devices.data;
+  // A failed /devices/stats must not vanish the card: an absent card reads as
+  // "nothing to report", which is the same false-negative #3613 is about. The
+  // 403/404 permission-hide is the one case where disappearing is deliberate.
+  if (!stats && devices.error && !devices.unavailable) {
+    return (
+      <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-fleet-status">
+        <a href="/devices" className="text-sm font-semibold transition-colors hover:text-primary">
+          {t('dashboard.fleetStatus.title')}
+        </a>
+        <p className="mt-3 text-xs text-muted-foreground">{t('dashboard.stats.loadFailed')}</p>
+      </div>
+    );
+  }
   if (!stats || stats.total === 0) return null;
 
   const other = Math.max(stats.total - stats.online - (stats.byStatus.offline ?? 0), 0);

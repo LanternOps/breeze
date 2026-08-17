@@ -9,15 +9,15 @@ import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AlertsSummary, DeviceStats, PatchCompliance, TicketStats } from './types';
 
 function loaded<T>(data: T): DashboardQueryState<T> {
-  return { data, error: null, isLoading: false, isFetching: false, unavailable: false };
+  return { data, error: null, isLoading: false, isFetching: false, unavailable: false, staleScope: false };
 }
 
 function unavailable<T>(): DashboardQueryState<T> {
-  return { data: null, error: null, isLoading: false, isFetching: false, unavailable: true };
+  return { data: null, error: null, isLoading: false, isFetching: false, unavailable: true, staleScope: false };
 }
 
 function failed<T>(): DashboardQueryState<T> {
-  return { data: null, error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false };
+  return { data: null, error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false, staleScope: false };
 }
 
 const deviceStats: DeviceStats = {

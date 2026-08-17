@@ -252,7 +252,11 @@
       "viewAll": "Ver todos",
       "allClear": "Tudo certo",
       "empty": "Nenhum alerta ativo em sua frota",
-      "fallbackTitle": "Alerta"
+      "fallbackTitle": "Alerta",
+      "noDevicesTitle": "Nenhum dispositivo reportando ainda",
+      "noDevicesHint": "Os alertas aparecerão assim que um dispositivo for registrado.",
+      "noActiveAlerts": "Nenhum alerta ativo",
+      "deviceStatusUnavailable": "Status dos dispositivos indisponível: não é possível confirmar a cobertura da frota."
     },
     "customizer": {
       "title": "Personalizador do painel",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} dispositivos",
       "kevDevices_one": "{{count}} dispositivo",
-      "kevDevices_other": "{{count}} dispositivos"
+      "kevDevices_other": "{{count}} dispositivos",
+      "noDevicesTitle": "Nenhum dispositivo reportando ainda",
+      "noDevicesHint": "Registre um dispositivo para começar a verificar vulnerabilidades.",
+      "noneReported": "Nenhuma ocorrência aberta reportada",
+      "coverageUnknown": "Status dos dispositivos indisponível: não é possível confirmar a cobertura da varredura."
     },
     "refreshFailed": "Falha ao atualizar — exibindo dados mais antigos"
   },

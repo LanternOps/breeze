@@ -252,7 +252,11 @@
       "viewAll": "Tümünü görüntüle",
       "allClear": "Her şey temiz",
       "empty": "Filonuzda aktif uyarı yok",
-      "fallbackTitle": "Uyarı"
+      "fallbackTitle": "Uyarı",
+      "noDevicesTitle": "Henüz veri gönderen cihaz yok",
+      "noDevicesHint": "Bir cihaz kaydedildiğinde uyarılar burada görünecek.",
+      "noActiveAlerts": "Etkin uyarı yok",
+      "deviceStatusUnavailable": "Cihaz durumu kullanılamıyor: filo kapsamı doğrulanamıyor."
     },
     "customizer": {
       "title": "Kontrol Paneli Özelleştirici",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVE'ler",
       "kevDevices": "{{count}} cihazlar",
       "kevDevices_one": "{{count}} cihaz",
-      "kevDevices_other": "{{count}} cihazlar"
+      "kevDevices_other": "{{count}} cihazlar",
+      "noDevicesTitle": "Henüz veri gönderen cihaz yok",
+      "noDevicesHint": "Güvenlik açığı taramasını başlatmak için bir cihaz kaydedin.",
+      "noneReported": "Açık bulgu bildirilmedi",
+      "coverageUnknown": "Cihaz durumu kullanılamıyor: tarama kapsamı doğrulanamıyor."
     },
     "refreshFailed": "Yenilenemedi — eski veriler gösteriliyor"
   },
