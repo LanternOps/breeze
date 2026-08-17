@@ -22,7 +22,11 @@ function source(overrides: Record<string, unknown> = {}) {
     kind: 'local_profile',
     displayName: 'Profiles',
     rootPath: '/Users',
-    crawlDeviceId: DEVICE_ID,
+    // #3472: a local_profile row must never carry a crawl device. This default
+    // used to be DEVICE_ID, which meant most tests exercised a row the service
+    // now refuses to write. Tests that want a device pass `kind: 'smb_share'`
+    // and `crawlDeviceId` explicitly.
+    crawlDeviceId: null,
     visibilityGroupIds: [],
     credentialEnc: null,
     excludeGlobs: [],
@@ -46,11 +50,15 @@ function safe(row: Record<string, unknown>) {
   return { ...rest, hasCredential: Boolean(credentialEnc) };
 }
 
+// #3472: this fixture used to be a local_profile carrying DEVICE_ID as its
+// crawl device — the exact shape the issue says must not exist. Nothing
+// rejected it, so the fixture drifted into it. A valid local_profile has no
+// crawl device; the SMB cases below set one explicitly.
 const input: SourceInput = {
   kind: 'local_profile',
   displayName: 'Profiles',
   rootPath: '/Users',
-  crawlDeviceId: DEVICE_ID,
+  crawlDeviceId: null,
   visibilityGroupIds: [],
   crawlCadenceMinutes: 60,
   excludeGlobs: ['**/.git/**'],
@@ -142,13 +150,57 @@ describe('sourcesService', () => {
     expect(raw.insert).not.toHaveBeenCalled();
   });
 
+  // #3472
+  it('rejects creating a local_profile source that carries a crawl device', async () => {
+    const { db, raw } = makeDb();
+    await expect(
+      createSourcesService(db).create(ORG_ID, {
+        ...input, kind: 'local_profile', rootPath: '/Users', crawlDeviceId: DEVICE_ID,
+      }),
+    ).rejects.toThrow('local_profile sources cannot have a crawl device');
+    expect(raw.insert).not.toHaveBeenCalled();
+  });
+
+  // The service is the second boundary: a caller reaching it directly must not
+  // be able to write the forbidden shape either.
+  it('rejects a direct service update that puts a crawl device on a local_profile', async () => {
+    const { db, raw } = makeDb([[source({ kind: 'local_profile', crawlDeviceId: null })]]);
+    await expect(
+      createSourcesService(db).update(ORG_ID, SOURCE_ID, { crawlDeviceId: DEVICE_ID }),
+    ).rejects.toThrow('local_profile sources cannot have a crawl device');
+    expect(raw.update).not.toHaveBeenCalled();
+  });
+
+  // Coverage the fixture cleanup would otherwise have removed: with source()
+  // now defaulting to a null device, nothing else proves an SMB assignment
+  // SURVIVES an unrelated update. A mutation that cleared crawlDeviceId on
+  // every update would pass every other service test.
+  it('preserves an smb_share crawl device across an unrelated update', async () => {
+    const { db, updated } = makeDb([[
+      source({ kind: 'smb_share', rootPath: '\\\\srv\\share', crawlDeviceId: DEVICE_ID }),
+    ]]);
+    await createSourcesService(db).update(ORG_ID, SOURCE_ID, { status: 'paused' });
+    // Asserting the SET payload, not the returned row: makeDb rebuilds the
+    // returned row from the payload alone, so a returned-value assertion would
+    // be testing the mock rather than the service.
+    expect(updated[0]).not.toHaveProperty('crawlDeviceId');
+  });
+
+  it('rejects a flip to local_profile that would strand an existing crawl device', async () => {
+    const { db, raw } = makeDb([[source({ kind: 'smb_share', rootPath: '\\\\srv\\share', crawlDeviceId: DEVICE_ID })]]);
+    await expect(
+      createSourcesService(db).update(ORG_ID, SOURCE_ID, { kind: 'local_profile' }),
+    ).rejects.toThrow('local_profile sources cannot have a crawl device');
+    expect(raw.update).not.toHaveBeenCalled();
+  });
+
   it('updates a source and returns null when no scoped row matches', async () => {
-    const first = makeDb();
+    const first = makeDb([[source()]]);
     await expect(createSourcesService(first.db).update(ORG_ID, SOURCE_ID, { status: 'paused' }))
       .resolves.toMatchObject({ status: 'paused' });
     expect(first.updated[0]).toMatchObject({ status: 'paused', updatedAt: expect.any(Date) });
 
-    const second = makeDb();
+    const second = makeDb([[source()]]);
     second.raw.update.mockReturnValueOnce({
       set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })),
     });
@@ -284,11 +336,16 @@ describe('sourcesService', () => {
   });
 
   it('clears the stored credential when a patch flips the kind to local_profile', async () => {
-    const flip = makeDb();
-    await createSourcesService(flip.db).update(ORG_ID, SOURCE_ID, { kind: 'local_profile' });
+    // #3472: the flip has to clear the crawl device EXPLICITLY now — a bare
+    // `{kind:'local_profile'}` against an SMB row is rejected, not silently
+    // stripped. credentialEnc is still cleared implicitly.
+    const flip = makeDb([[source({ kind: 'smb_share', rootPath: '\\\\srv\\share', crawlDeviceId: DEVICE_ID })]]);
+    await createSourcesService(flip.db).update(ORG_ID, SOURCE_ID, {
+      kind: 'local_profile', crawlDeviceId: null,
+    });
     expect(flip.updated[0]).toMatchObject({ kind: 'local_profile', credentialEnc: null });
 
-    const keep = makeDb();
+    const keep = makeDb([[source()]]);
     await createSourcesService(keep.db).update(ORG_ID, SOURCE_ID, { status: 'paused' });
     expect(keep.updated[0]).not.toHaveProperty('credentialEnc');
   });

@@ -38,7 +38,22 @@ export class SourceValidationError extends Error {
   }
 }
 
-function validateCreate(input: SourceInput): void {
+/**
+ * Validates a COMPLETE source state (post-merge on update, the input itself on
+ * create). #3472: this is the service-level boundary, so a caller that bypasses
+ * the Hono schema still cannot persist a forbidden shape.
+ */
+function validateSourceState(input: SourceInput): void {
+  if (input.kind === 'local_profile') {
+    // crawl_device_id is only meaningful for smb_share. A local_profile row
+    // carrying one is what deviceSummaryService's owned-sources branch absorbs
+    // with `device_id IS NULL`; without it the source would attribute every
+    // OTHER device's device-scoped rows to its crawl device.
+    if (input.crawlDeviceId) {
+      throw new SourceValidationError('local_profile sources cannot have a crawl device');
+    }
+    return;
+  }
   if (input.kind !== 'smb_share') return;
   if (!input.crawlDeviceId) {
     throw new SourceValidationError('smb_share requires crawlDeviceId');
@@ -65,7 +80,7 @@ export function createSourcesService(d: WorkspaceDatabase) {
     },
 
     async create(orgId: string, input: SourceInput): Promise<SafeSourceRow> {
-      validateCreate(input);
+      validateSourceState(input);
       const [row] = await d.insert(workspaceSources).values({ orgId, ...input }).returning();
       if (!row) throw new Error('Failed to create workspace source');
       return toSafeRow(row);
@@ -76,6 +91,34 @@ export function createSourcesService(d: WorkspaceDatabase) {
       id: string,
       patch: Partial<SourceInput>,
     ): Promise<SafeSourceRow | null> {
+      // #3472: validate the MERGED state here, not just at the route. A caller
+      // reaching the service directly (or a future second route) would
+      // otherwise write a local_profile carrying a crawl device, which is
+      // exactly the shape this invariant exists to prevent.
+      //
+      // A flip to local_profile is REJECTED rather than silently clearing the
+      // crawl device: that assignment is operator configuration, and a body
+      // that says only `{kind:'local_profile'}` has not authorised deleting it.
+      // The web form already submits `crawlDeviceId: null` explicitly
+      // (web/sourcesPage.ts), so intentional flips are unaffected.
+      const [current] = await d.select().from(workspaceSources)
+        .where(and(eq(workspaceSources.orgId, orgId), eq(workspaceSources.id, id)))
+        .limit(1);
+      if (!current) return null;
+      validateSourceState({
+        kind: patch.kind ?? current.kind,
+        displayName: patch.displayName ?? current.displayName,
+        rootPath: patch.rootPath ?? current.rootPath,
+        crawlDeviceId: patch.crawlDeviceId === undefined
+          ? current.crawlDeviceId
+          : patch.crawlDeviceId,
+        visibilityGroupIds: patch.visibilityGroupIds ?? current.visibilityGroupIds,
+        crawlCadenceMinutes: patch.crawlCadenceMinutes ?? current.crawlCadenceMinutes,
+        excludeGlobs: patch.excludeGlobs ?? current.excludeGlobs,
+        watch: patch.watch ?? current.watch,
+        status: patch.status ?? current.status,
+      } as SourceInput);
+
       const [row] = await d.update(workspaceSources)
         .set({
           ...patch,
