@@ -51,6 +51,7 @@ import {
 import {
   addFeatureLink,
   updateFeatureLink,
+  policyAccessCondition,
 } from './configurationPolicy';
 import {
   reports,
@@ -2476,9 +2477,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
-        // List all monitoring watches, optionally filtered by policy
+        // List all monitoring watches, optionally filtered by policy.
+        //
+        // `policyAccessCondition`, not a bare `orgWhere` on
+        // configurationPolicies.orgId (#3493): a partner-wide policy stores
+        // `org_id NULL`, so the org-equality form silently omits every
+        // partner-owned monitoring policy — including from the partner-scoped
+        // techs who authored them. The helper adds the dual-axis branch and is
+        // gated on partner scope so the app layer never claims more than RLS
+        // grants.
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, configurationPolicies.orgId);
+        const oc = policyAccessCondition(auth);
         if (oc) conditions.push(oc);
         if (typeof input.configPolicyId === 'string') {
           conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));

@@ -82,3 +82,82 @@ export async function withPartnerWideVisibility<T>(fn: () => Promise<T>): Promis
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
+
+/** Minimal shape of a drizzle executor this module needs: `db` or an open `tx`. */
+export interface PartnerVisibilityExecutor {
+  execute(query: SQL): Promise<unknown>;
+}
+
+/**
+ * The SAME-CONNECTION variant of {@link withPartnerWideVisibility}, for resolvers
+ * that must run their policy join through a CALLER-SUPPLIED executor (#3493).
+ *
+ * `withPartnerWideVisibility` escapes by opening a fresh system context, which
+ * means a fresh transaction on a SECOND pooled connection. That is fine when the
+ * read runs on the ambient `db`, but it is wrong — silently, in the worst
+ * direction — when the caller passed an open `tx`:
+ *
+ *  - the second connection cannot see the tx's UNCOMMITTED rows, so a
+ *    preview/diff that inserted proposed assignments would resolve as if they
+ *    did not exist; and
+ *  - wrapping `withPartnerWideVisibility(() => tx.select()...)` does not even
+ *    retarget the query — `tx` is bound to its own connection, so the escape
+ *    becomes a no-op that merely double-holds a connection.
+ *
+ * So instead of switching connections, this widens visibility IN PLACE on the
+ * caller's own transaction, and by the smallest possible amount: it appends
+ * exactly ONE partner id to `breeze.accessible_partner_ids` for the duration of
+ * `fn`, then restores the previous value. `breeze.scope` is never touched, so
+ * this is strictly narrower than a system escape — every other RLS axis
+ * (org access, user id, per-table policies) keeps evaluating unchanged, and the
+ * only rows that become legible are those owned by that one partner.
+ *
+ * CALLER CONTRACT: `partnerId` MUST have been read from a row the caller already
+ * resolved under its OWN RLS context (e.g. `organizations.partner_id` for a
+ * device the caller could see). Never pass a client-supplied partner id — that
+ * would turn this into a cross-tenant read.
+ *
+ * The widening is skipped entirely — `fn` runs untouched — when it cannot help
+ * or cannot work:
+ *  - no partner (`null`): nothing to widen to;
+ *  - no ambient DB context: there is no guaranteed open transaction, so
+ *    `SET LOCAL` would land on an arbitrary pooled connection and silently do
+ *    nothing. A contextless connection is already system-scoped, so the rows
+ *    are visible anyway;
+ *  - `scope === 'system'`: `breeze_has_partner_access` short-circuits true;
+ *  - the partner is ALREADY in the context's allowlist (the partner-scoped
+ *    caller's normal case) — `getCurrentDbAccessContext()` mirrors exactly what
+ *    was `SET LOCAL`, so an allowlist hit means RLS already passes.
+ */
+export async function withDevicePartnerPolicyVisibility<T, E extends PartnerVisibilityExecutor>(
+  executor: E,
+  partnerId: string | null,
+  fn: (executor: E) => Promise<T>,
+): Promise<T> {
+  if (!partnerId) return fn(executor);
+
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || ctx.scope === 'system') return fn(executor);
+
+  const current = ctx.accessiblePartnerIds ?? [];
+  if (current.includes(partnerId)) return fn(executor);
+
+  // `''` is the fail-closed "no partners" form the SQL helper reads as
+  // ARRAY[]::uuid[]; a non-empty list is comma-joined. Mirrors
+  // serializeAccessibleIds() in db/index.ts for a non-system scope.
+  const previous = current.join(',');
+  const widened = [...current, partnerId].join(',');
+
+  await executor.execute(sql`select set_config('breeze.accessible_partner_ids', ${widened}, true)`);
+  try {
+    return await fn(executor);
+  } finally {
+    try {
+      await executor.execute(sql`select set_config('breeze.accessible_partner_ids', ${previous}, true)`);
+    } catch {
+      // The only way this fails is an already-aborted transaction, in which case
+      // nothing further will run on it and the GUC dies with the rollback.
+      // Never let the restore mask fn's real error.
+    }
+  }
+}
