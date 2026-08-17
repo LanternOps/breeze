@@ -597,6 +597,7 @@
     "localPart": "Gelen adresin yerel kısmı",
     "domainNotConfigured": "Platform gelen etki alanı henüz yapılandırılmadı. Yöneticinizle iletişime geçin.",
     "domainNotConfiguredSelfHosted": "Platform gelen etki alanı yapılandırılmadığı için gelen adres oluşturulamıyor. Breeze sunucunuzda <var>TICKETS_INBOUND_DOMAIN</var> değerini ayarlayın ve API'yi yeniden başlatın — bkz. <docs>E-postadan talebe kurulumu</docs>. Alternatif olarak, bir Microsoft 365 paylaşılan posta kutusu bağlayabilirsiniz — bu yol gelen etki alanı gerektirmez.",
+    "addressViaMailbox": "Yerel bir gelen adres yapılandırılmadı, ancak e-postalar aşağıdaki bağlı Microsoft 365 posta kutusu üzerinden gelmeye devam ediyor — bu yol için gelen etki alanı gerekmez.",
     "triageOrganization": "Varsayılan triyaj organizasyonu",
     "unknownSenders": "Bilinmeyen gönderenler",
     "unknownDescription": "Göndereni portal kullanıcısı olmayan, eşlenen müşteri alanı olmayan veya mevcut bir destek bildirimine yanıt olmayan postalarla ne yapılmalı?",

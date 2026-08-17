@@ -73,6 +73,24 @@ export async function listMailboxConnections(partnerId: string): Promise<Mailbox
   }));
 }
 
+/**
+ * How many M365 mailboxes this partner actually receives mail through.
+ * `connected` is the only status that polls (see listConnectedMailboxes) — a
+ * pending/error/disabled row is NOT a working inbound path, so it must not
+ * count as one. Runs in the caller's request DB context: an org-scoped reader
+ * sees no partner rows and gets 0, which degrades to the "not configured"
+ * copy rather than a false "you're all set".
+ */
+export async function countConnectedMailboxes(partnerId: string): Promise<number> {
+  const rows = await db.select({ id: ticketMailboxConnections.id })
+    .from(ticketMailboxConnections)
+    .where(and(
+      eq(ticketMailboxConnections.partnerId, partnerId),
+      eq(ticketMailboxConnections.status, 'connected'),
+    ));
+  return rows.length;
+}
+
 /** System-context read across all partners — used by the poll worker (Plan 2). */
 export async function listConnectedMailboxes(): Promise<ConnectedMailbox[]> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {

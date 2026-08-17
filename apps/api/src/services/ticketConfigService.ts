@@ -8,6 +8,7 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { countConnectedMailboxes } from './ticketMailbox/connectionService';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
   OrgTicketSettingsInput, TicketPriorityValue,
@@ -337,7 +338,8 @@ async function readPriorities(partnerId: string): Promise<Record<TicketPriorityV
  * Full partner ticketing configuration: every custom + system status (ordered),
  * the merged per-priority SLA settings (nulls where unset), and the inbound-email
  * block (resolved address + override, enabled/autoresponder flags, defaultTriageOrgId,
- * slug, and whether TICKETS_INBOUND_DOMAIN is configured).
+ * slug, whether TICKETS_INBOUND_DOMAIN is configured, and how many M365
+ * mailboxes are connected — the second, domain-free inbound path).
  */
 export async function getTicketConfig(partnerId: string) {
   const statuses = await db
@@ -378,6 +380,14 @@ export async function getTicketConfig(partnerId: string) {
   const derived = domainConfigured && effectiveLocalPart ? `${effectiveLocalPart}@${domain}` : '';
   const addressOverride = (inboundCfg.address && inboundCfg.address.length > 0) ? inboundCfg.address : null;
 
+  // The M365 shared-mailbox path needs no inbound domain, no MX records and no
+  // Mailgun account, so `domainConfigured` alone can't answer "can this partner
+  // receive email as tickets at all?" — a partner running only M365 was being
+  // told their setup was broken (issue #3598). Count the mailboxes that are
+  // actually polling so the card can distinguish "no native address" from
+  // "no inbound path at all".
+  const connectedMailboxCount = await countConnectedMailboxes(partnerId);
+
   // Resolve the 3-way unknown-sender mode with the same back-compat rule as
   // loadPartnerInboundPolicy: explicit mode wins, else the legacy boolean maps
   // true→'triage', else 'quarantine'. `triageUnknownSenders` is still emitted
@@ -407,6 +417,7 @@ export async function getTicketConfig(partnerId: string) {
     slug,
     inboundLocalPart,
     domainConfigured,
+    connectedMailboxCount,
     // Lets the Inbound email card branch its "no domain configured" copy: on
     // hosted the reader can only escalate to us, but on self-host the reader IS
     // the operator and needs the variable name (issue #3599). Read at call time
