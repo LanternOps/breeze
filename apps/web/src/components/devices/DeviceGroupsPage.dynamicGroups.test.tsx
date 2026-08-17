@@ -6,9 +6,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DeviceGroupsPage from './DeviceGroupsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore registers an orgId provider at module load; the component now
+  // pulls in orgStore via useFleetOrgOwner, so this export must exist.
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../../hooks/useFilterPreview', () => ({
@@ -65,6 +69,23 @@ const exactText = (text: string) => (_content: string, element: Element | null) 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A resolved focused-org scope: no fleet picker, create proceeds normally
+  // (the injected ?orgId= supplies the owner).
+  useOrgStore.setState({
+    currentOrgId: 'org-focused',
+    allOrgs: false,
+    organizations: [
+      {
+        id: 'org-focused',
+        partnerId: 'p-1',
+        name: 'Focused Org',
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    ],
+    organizationsLoaded: true,
+    error: null,
+  });
 });
 
 describe('DeviceGroupsPage dynamic groups', () => {

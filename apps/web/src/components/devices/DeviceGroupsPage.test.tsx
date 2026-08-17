@@ -1,13 +1,17 @@
 import '@/lib/i18n';
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DeviceGroupsPage from './DeviceGroupsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore, type Organization } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore registers an orgId provider at module load; the component now
+  // pulls in orgStore via useFleetOrgOwner, so this export must exist.
+  registerOrgIdProvider: vi.fn(),
 }));
 
 // The preview hook fires its own request; the page's unwrap logic is what's
@@ -66,8 +70,31 @@ const ENVELOPE_RESPONSES: Record<string, unknown> = {
 
 const requestedPaths = () => mockFetch.mock.calls.map((call) => String(call[0]));
 
+const orgA: Organization = {
+  id: 'org-1',
+  partnerId: 'p-1',
+  name: 'Acme Corp',
+  status: 'active',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+const orgB: Organization = {
+  id: 'org-2',
+  partnerId: 'p-1',
+  name: 'Beta Inc',
+  status: 'active',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // Non-fleet default: the picker stays hidden unless a test opts into All-orgs.
+  useOrgStore.setState({
+    currentOrgId: null,
+    allOrgs: false,
+    organizations: [],
+    organizationsLoaded: false,
+    error: null,
+  });
   mockFetch.mockImplementation(async (url: string) => {
     const path = url.split('?')[0];
     if (path in ENVELOPE_RESPONSES) return jsonResponse(ENVELOPE_RESPONSES[path]);
@@ -135,5 +162,63 @@ describe('DeviceGroupsPage list unwrapping', () => {
     render(<DeviceGroupsPage />);
 
     expect(await screen.findByText(/failed to fetch device groups/i)).toBeInTheDocument();
+  });
+});
+
+describe('DeviceGroupsPage create in All-organizations (fleet) scope', () => {
+  beforeEach(() => {
+    useOrgStore.setState({
+      currentOrgId: null,
+      allOrgs: true,
+      organizations: [orgA, orgB],
+      organizationsLoaded: true,
+      error: null,
+    });
+  });
+
+  async function openCreateModal() {
+    render(<DeviceGroupsPage />);
+    await screen.findByText('Servers');
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group' }));
+  }
+
+  it('shows an Organization picker and disables submit until an org is chosen', async () => {
+    await openCreateModal();
+    const orgOption = await screen.findByRole('option', { name: 'Acme Corp' });
+    const orgSelect = orgOption.closest('select') as HTMLSelectElement;
+    expect(orgSelect).toBeInTheDocument();
+
+    const submit = screen.getByRole('button', { name: 'Create group' });
+    expect(submit).toBeDisabled();
+    fireEvent.change(orgSelect, { target: { value: 'org-2' } });
+    expect(submit).toBeEnabled();
+  });
+
+  it('sends the chosen orgId in the create POST body', async () => {
+    await openCreateModal();
+    fireEvent.change(screen.getByPlaceholderText(/production linux/i), {
+      target: { value: 'Fleet Group' },
+    });
+    const orgSelect = (await screen.findByRole('option', { name: 'Beta Inc' })).closest(
+      'select',
+    ) as HTMLSelectElement;
+    fireEvent.change(orgSelect, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create group' }));
+
+    await waitFor(() => {
+      const post = mockFetch.mock.calls.find(
+        (call) =>
+          String(call[0]) === '/device-groups' &&
+          (call[1] as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(post).toBeTruthy();
+    });
+    const post = mockFetch.mock.calls.find(
+      (call) =>
+        String(call[0]) === '/device-groups' &&
+        (call[1] as RequestInit | undefined)?.method === 'POST',
+    )!;
+    const body = JSON.parse(String((post[1] as RequestInit).body));
+    expect(body.orgId).toBe('org-2');
   });
 });

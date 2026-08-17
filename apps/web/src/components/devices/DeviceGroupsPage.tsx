@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Plus, Pencil, Trash2, Shield, Play, X } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
+import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
@@ -190,6 +191,9 @@ export default function DeviceGroupsPage() {
   const [selectedGroup, setSelectedGroup] = useState<DeviceGroup | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string>();
+  // All-orgs view injects no `?orgId=`, so a create needs an explicit owner org
+  // (the server would otherwise reject it with "orgId is required").
+  const fleet = useFleetOrgOwner();
   const EMPTY_FILTER: FilterConditionGroup = {
     operator: "AND",
     conditions: [{ field: "hostname", operator: "contains", value: "" }],
@@ -396,6 +400,9 @@ export default function DeviceGroupsPage() {
   const handleOpenCreate = () => {
     setSelectedGroup(null);
     resetForm();
+    // Start each create fresh — the hook is page-level, so a prior fleet pick
+    // would otherwise linger across close/reopen.
+    fleet.setOrgId("");
     setModalMode("create");
   };
 
@@ -471,6 +478,11 @@ export default function DeviceGroupsPage() {
       setFormError("Group name is required.");
       return;
     }
+    // A new group must land in one org; edits keep the group's existing owner.
+    if (modalMode === "create" && fleet.needsOrgSelection) {
+      setFormError(t("common:layout.orgRequired.title"));
+      return;
+    }
     if (groupForm.type === "dynamic") {
       const hasValidCondition = groupForm.filterConditions.conditions.some(
         (c) => {
@@ -502,6 +514,12 @@ export default function DeviceGroupsPage() {
         name: trimmedName,
         type: groupForm.type,
       };
+
+      // A create carries the concrete owner org in the body (the focused org, or
+      // the fleet picker's choice); edits never move a group between orgs.
+      if (!isEdit && fleet.bodyOrgId) {
+        payload.orgId = fleet.bodyOrgId;
+      }
 
       if (isDynamic) {
         payload.filterConditions = groupForm.filterConditions;
@@ -1045,6 +1063,27 @@ export default function DeviceGroupsPage() {
             </div>
 
             <form className="mt-6 space-y-6" onSubmit={handleSubmitGroup}>
+              {modalMode === "create" && fleet.isFleetScope && (
+                <div>
+                  <label className="text-sm font-medium">
+                    {t("common:labels.organization")}
+                  </label>
+                  <select
+                    value={fleet.orgId}
+                    onChange={(event) => fleet.setOrgId(event.target.value)}
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="" disabled>
+                      {t("common:layout.org.noSelection")}
+                    </option>
+                    {fleet.organizations.map((org) => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <div>
                   <label className="text-sm font-medium">
@@ -1242,7 +1281,10 @@ export default function DeviceGroupsPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={
+                    submitting ||
+                    (modalMode === "create" && fleet.needsOrgSelection)
+                  }
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting
