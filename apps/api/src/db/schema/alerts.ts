@@ -28,7 +28,7 @@ export const notificationChannelTypeEnum = pgEnum('notification_channel_type', N
 // An alert template is owned by EITHER an org (orgId set, partnerId NULL) OR a
 // partner (partnerId set, orgId NULL — "partner-wide / all orgs", #1357/#1425),
 // never both: CHECK `alert_templates_one_owner_chk` (migration
-// 2026-08-16-alert-templates-one-owner). Rows with NEITHER axis set are legal
+// 2026-08-25-alert-templates-one-owner). Rows with NEITHER axis set are legal
 // and mean "global" — the seeded built-ins, plus system-created rows with no
 // orgId — which is why the constraint is "never both" rather than a strict XOR.
 //

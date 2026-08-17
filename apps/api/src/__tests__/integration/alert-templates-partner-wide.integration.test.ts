@@ -98,7 +98,7 @@ describe('alert_templates partner-wide RLS — #1425', () => {
   // written with BOTH org_id and partner_id set; the read predicate's
   // `partner_id = <caller partner>` disjunct then spanned every org under the
   // partner. alert_templates_one_owner_chk
-  // (2026-08-16-alert-templates-one-owner) makes that shape unrepresentable.
+  // (2026-08-25-alert-templates-one-owner) makes that shape unrepresentable.
   describe('alert_templates_one_owner_chk', () => {
     it('rejects a row with BOTH org_id and partner_id set (23514)', async () => {
       const partner = await createPartner();

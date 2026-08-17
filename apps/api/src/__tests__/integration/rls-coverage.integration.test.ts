@@ -360,7 +360,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // PARTNER_TENANT_TABLES above — that entry asserts the partner-axis policy
   // coverage; this one asserts the dual-axis shape explicitly so the table is
   // not read as partner-only. CHECK alert_templates_one_owner_chk (migration
-  // 2026-08-16-alert-templates-one-owner) forbids the both-axes-set row that
+  // 2026-08-25-alert-templates-one-owner) forbids the both-axes-set row that
   // let a bare `partner_id = X` read predicate span every org under the
   // partner (security review 2026-08-16 §1.5). SELECT is additionally widened
   // to org sessions via the breeze_current_partner_id() catalog branch

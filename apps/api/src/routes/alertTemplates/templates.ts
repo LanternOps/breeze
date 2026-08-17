@@ -24,7 +24,7 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 // with orgAccess 'selected'/'none' that was a real cross-org read: partner-axis
 // RLS is flat, so the database did not catch it. The `org_id IS NULL` conjunct
 // below is the fix; `alert_templates_one_owner_chk` (migration
-// 2026-08-16-alert-templates-one-owner) stops the both-axes shape recurring.
+// 2026-08-25-alert-templates-one-owner) stops the both-axes shape recurring.
 const partnerWideCondition = (partnerId: string) =>
   and(eq(alertTemplates.partnerId, partnerId), isNull(alertTemplates.orgId)) as ReturnType<typeof eq>;
 
