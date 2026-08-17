@@ -1,20 +1,27 @@
-import { ShieldCheck } from 'lucide-react';
+import { ShieldCheck, HardDriveDownload, Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getErrorMessage } from '@/lib/errorMessages';
 import { useTranslation } from 'react-i18next';
 import { formatNumber } from '@/lib/i18n/format';
+import { fleetPresence } from './fleetPresence';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
-import type { VulnerabilityStats } from './types';
+import type { DeviceStats, VulnerabilityStats } from './types';
 
 /**
  * Open vulnerability exposure: critical findings, known-exploited (KEV)
  * reach, and how many findings already have a patch waiting. Hidden when
  * the caller can't read /vulnerabilities/stats.
+ *
+ * Zero findings only means "no open vulnerabilities" once the fleet
+ * denominator is known to be non-zero — "we scanned and found nothing" and
+ * "we never looked" are opposite facts (#3613).
  */
 export default function VulnerabilitiesCard({
   vulns,
+  devices,
 }: {
   vulns: DashboardQueryState<VulnerabilityStats>;
+  devices: DashboardQueryState<DeviceStats>;
 }) {
   const { t } = useTranslation('common');
 
@@ -48,7 +55,52 @@ export default function VulnerabilitiesCard({
   const data = vulns.data;
   if (!data) return null;
 
-  const allClear = data.totalFindings === 0;
+  const presence = fleetPresence(devices);
+  const noFindings = data.totalFindings === 0;
+
+  const renderNoFindings = () => {
+    if (presence === 'loading') {
+      return (
+        <div className="flex flex-col items-center gap-2.5 py-5" data-testid="dashboard-vuln-pending">
+          <div className="skeleton h-10 w-10 rounded-full" />
+          <div className="skeleton h-3.5 w-40 rounded" />
+        </div>
+      );
+    }
+
+    if (presence === 'none') {
+      return (
+        <div className="flex flex-col items-center py-5 text-center" data-testid="dashboard-vuln-no-devices">
+          <div className="mb-2.5 rounded-full bg-muted p-2.5">
+            <HardDriveDownload className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <p className="text-sm font-medium text-foreground">{t('dashboard.vuln.noDevicesTitle')}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('dashboard.vuln.noDevicesHint')}</p>
+        </div>
+      );
+    }
+
+    if (presence === 'unknown') {
+      return (
+        <div className="flex flex-col items-center py-5 text-center" data-testid="dashboard-vuln-coverage-unknown">
+          <div className="mb-2.5 rounded-full bg-muted p-2.5">
+            <Info className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <p className="text-sm font-medium text-foreground">{t('dashboard.vuln.noneReported')}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('dashboard.vuln.coverageUnknown')}</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col items-center py-5 text-center" data-testid="dashboard-vuln-all-clear">
+        <div className="mb-2.5 rounded-full bg-success/10 p-2.5">
+          <ShieldCheck className="h-5 w-5 text-success" />
+        </div>
+        <p className="text-sm font-medium text-foreground">{t('dashboard.vuln.allClear')}</p>
+      </div>
+    );
+  };
 
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-vulnerabilities-card">
@@ -56,20 +108,15 @@ export default function VulnerabilitiesCard({
         <a href="/vulnerabilities" className="text-sm font-semibold transition-colors hover:text-primary">
           {t('dashboard.vuln.title')}
         </a>
-        {!allClear && (
+        {!noFindings && (
           <span className="text-xs tabular-nums text-muted-foreground">
             {t('dashboard.vuln.totalOpen', { count: data.totalFindings })}
           </span>
         )}
       </div>
 
-      {allClear ? (
-        <div className="flex flex-col items-center py-5 text-center">
-          <div className="mb-2.5 rounded-full bg-success/10 p-2.5">
-            <ShieldCheck className="h-5 w-5 text-success" />
-          </div>
-          <p className="text-sm font-medium text-foreground">{t('dashboard.vuln.allClear')}</p>
-        </div>
+      {noFindings ? (
+        renderNoFindings()
       ) : (
         <dl className="space-y-2.5">
           <div className="flex items-center justify-between gap-3">

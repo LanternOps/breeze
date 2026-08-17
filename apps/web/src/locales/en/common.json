@@ -252,7 +252,11 @@
       "viewAll": "View all",
       "allClear": "All clear",
       "empty": "No active alerts across your fleet",
-      "fallbackTitle": "Alert"
+      "fallbackTitle": "Alert",
+      "noDevicesTitle": "No devices reporting yet",
+      "noDevicesHint": "Alerts will appear once a device is enrolled.",
+      "noActiveAlerts": "No active alerts",
+      "deviceStatusUnavailable": "Device status unavailable — fleet coverage can't be confirmed."
     },
     "customizer": {
       "title": "Dashboard Customizer",
@@ -353,7 +357,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} devices",
       "kevDevices_one": "{{count}} device",
-      "kevDevices_other": "{{count}} devices"
+      "kevDevices_other": "{{count}} devices",
+      "noDevicesTitle": "No devices reporting yet",
+      "noDevicesHint": "Enroll a device to start scanning for vulnerabilities.",
+      "noneReported": "No open findings reported",
+      "coverageUnknown": "Device status unavailable — scan coverage can't be confirmed."
     },
     "refreshFailed": "Couldn't refresh — showing older data"
   },

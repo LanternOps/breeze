@@ -165,7 +165,13 @@ export default function DashboardPage() {
 
       <div className="grid items-start gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <AlertsFeed alerts={alerts} summary={alertsSummary} showOrg={currentOrgId === null} onRetry={refresh} />
+          <AlertsFeed
+            alerts={alerts}
+            summary={alertsSummary}
+            devices={devices}
+            showOrg={currentOrgId === null}
+            onRetry={refresh}
+          />
         </div>
         <FleetStatusCard devices={devices} offline={offline} />
       </div>
@@ -174,7 +180,7 @@ export default function DashboardPage() {
         <div className="grid items-start gap-6 md:grid-cols-2 xl:grid-cols-3">
           <SecurityPostureCard security={security} />
           <PatchComplianceCard patch={patch} />
-          <VulnerabilitiesCard vulns={vulns} />
+          <VulnerabilitiesCard vulns={vulns} devices={devices} />
         </div>
       )}
 
