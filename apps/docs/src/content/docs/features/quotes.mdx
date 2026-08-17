@@ -145,6 +145,30 @@ Preview images support **click-to-zoom**: click an image on the quote preview to
 
 You can send or delete quotes in bulk from the quote list -- select quotes with the checkboxes to reveal the bulk action bar. Actions run per-item in isolation, so partial success is possible and the bar reports what succeeded and what failed.
 
+### Re-sending and share links
+
+A sent quote can be **re-sent** without rebuilding it — useful when a contact changes, a quote expires unread, or you need to record recipients on an older quote (see the caution above). The quote also shows **who it was sent to and when**, so you can tell at a glance whether the right person actually received it.
+
+**Copy share link** puts the customer-facing link on your clipboard, for when you would rather paste it into an existing email thread or a chat than send from Breeze.
+
+## Document themes and content blocks
+
+Quotes and contracts render as branded documents. Under **Settings → Partner → Branding** you choose a **document theme** — fonts, colors, and cover treatment — and every quote, contract, and PDF you generate uses it. Set it once and customer-facing documents stay consistent.
+
+Beyond priced line items, a quote body can contain content blocks that turn it into a full proposal:
+
+| Block | Use it for |
+|---|---|
+| **Rich text** | Scope, assumptions, terms — formatted paragraphs, lists, and headings |
+| **Table** | Comparison grids, schedules, responsibility matrices |
+| **Callout** | Pulling out a caveat, an inclusion, or a deadline |
+
+Tables and callouts are edited **in place** on the quote itself, so what you see while editing is what the customer receives — no round trip through a PDF to check the result.
+
+<Aside>
+  Rich text is sanitized before it is stored. If you paste markup Breeze does not allow, it tells you what was stripped rather than silently discarding it.
+</Aside>
+
 ## Cloning a Quote
 
 Reuse the structure and line items of an existing proposal instead of rebuilding it. From a quote's actions, choose **Clone quote** to open a dialog where you pick:
