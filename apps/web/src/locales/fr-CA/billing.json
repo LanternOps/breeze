@@ -436,7 +436,10 @@
       "uploadError": "Échec de l’import du PDF",
       "uploadSuccess": "Version PDF importée",
       "publishError": "Échec de la publication de la version",
-      "publishSuccess": "Version publiée"
+      "publishSuccess": "Version publiée",
+      "warnings": {
+        "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des contrats prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+      }
     }
   },
   "quotes": {

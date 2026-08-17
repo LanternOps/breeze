@@ -436,7 +436,10 @@
       "uploadError": "Impossibile caricare il PDF",
       "uploadSuccess": "Versione PDF caricata",
       "publishError": "Impossibile pubblicare la versione",
-      "publishSuccess": "Versione pubblicata"
+      "publishSuccess": "Versione pubblicata",
+      "warnings": {
+        "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il corpo dei contratti supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+      }
     }
   },
   "quotes": {

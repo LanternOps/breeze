@@ -436,7 +436,10 @@
       "uploadError": "Failed to upload the PDF",
       "uploadSuccess": "PDF version uploaded",
       "publishError": "Failed to publish the version",
-      "publishSuccess": "Version published"
+      "publishSuccess": "Version published",
+      "warnings": {
+        "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Contract bodies support headings, bold, italic, underline, lists and links."
+      }
     }
   },
   "quotes": {
