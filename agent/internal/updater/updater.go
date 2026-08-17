@@ -302,31 +302,46 @@ type downloadInfoError struct {
 const maxDownloadInfoErrorBodyBytes = 4 << 10
 
 // downloadInfoRejectionReason extracts the machine-readable `reason` from a
-// refused download-info response, or "" when the body carries none.
+// refused download-info response.
 //
 // The value is deliberately sanitized rather than echoed verbatim: it lands in
 // agent logs, and the surrounding code is careful never to let server-supplied
 // text reach them unfiltered (see SafeDownloadErrorFields and the redirect
 // branch of parseDownloadInfo). Reasons are a closed set of lowercase
-// snake_case identifiers, so anything else is dropped rather than logged.
-func downloadInfoRejectionReason(body io.Reader) string {
+// snake_case identifiers, so anything else is refused.
+//
+// The two failure modes are reported separately (`malformed`), because
+// collapsing them is itself a silent failure — the exact class of bug this
+// whole change exists to remove. If the API's reason vocabulary ever drifts
+// outside the charset the agent accepts (a digit, a capital, over-length),
+// returning a bare "" would make a REFUSED reason indistinguishable from a
+// server that sent none, and the drift would be invisible in agent logs
+// forever. The raw value is still never returned: naming the shape of the
+// problem is enough to diagnose it without letting server text into logs.
+func downloadInfoRejectionReason(body io.Reader) (reason string, malformed bool) {
 	raw, err := io.ReadAll(io.LimitReader(body, maxDownloadInfoErrorBodyBytes))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	var parsed downloadInfoError
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return ""
+		// Body is not the JSON error envelope at all (an empty body, or an
+		// intermediary's HTML error page). Nothing was refused — there was
+		// nothing to refuse.
+		return "", false
 	}
-	if parsed.Reason == "" || len(parsed.Reason) > 64 {
-		return ""
+	if parsed.Reason == "" {
+		return "", false
+	}
+	if len(parsed.Reason) > 64 {
+		return "", true
 	}
 	for _, r := range parsed.Reason {
 		if (r < 'a' || r > 'z') && r != '_' {
-			return ""
+			return "", true
 		}
 	}
-	return parsed.Reason
+	return parsed.Reason, false
 }
 
 // maxUpdateBinaryBytes bounds both the netpolicy transport (Policy.
@@ -1074,10 +1089,18 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		// forever while the body's specific, actionable `reason` was thrown
 		// away. Surface the reason and mark the failure terminal so callers
 		// can back off.
-		if reason := downloadInfoRejectionReason(resp.Body); reason != "" {
+		reason, malformed := downloadInfoRejectionReason(resp.Body)
+		switch {
+		case reason != "":
 			return downloadInfo{}, fmt.Errorf("%w: %s", ErrUntrustedRelease, reason)
+		case malformed:
+			// The server DID send a reason, but not one this agent will put in
+			// a log. Say so explicitly: silently reporting "no reason" would
+			// hide a server/agent vocabulary drift indefinitely.
+			return downloadInfo{}, fmt.Errorf("%w: server sent an unrecognized reason code (refused as unsafe to log)", ErrUntrustedRelease)
+		default:
+			return downloadInfo{}, fmt.Errorf("%w: server gave no reason", ErrUntrustedRelease)
 		}
-		return downloadInfo{}, fmt.Errorf("%w: server gave no reason", ErrUntrustedRelease)
 
 	default:
 		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)

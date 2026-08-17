@@ -93,27 +93,64 @@ func TestDownloadInfoRejectionReasonSanitizesServerText(t *testing.T) {
 	// than echoed — consistent with how the redirect branch of
 	// parseDownloadInfo and SafeDownloadErrorFields treat server-supplied
 	// text.
+	//
+	// `malformed` distinguishes "the server sent a reason we refused" from
+	// "the server sent no reason". Collapsing those would hide a future
+	// server/agent vocabulary drift forever — the exact silent failure this
+	// change exists to remove.
 	tests := []struct {
-		name string
-		body string
-		want string
+		name          string
+		body          string
+		want          string
+		wantMalformed bool
 	}{
-		{"valid reason", `{"reason":"invalid_release_manifest_signature"}`, "invalid_release_manifest_signature"},
-		{"uppercase rejected", `{"reason":"Signed_Manifest"}`, ""},
-		{"url rejected", `{"reason":"https://evil.example/?token=abc"}`, ""},
-		{"spaces rejected", `{"reason":"some prose with detail"}`, ""},
-		{"newline injection rejected", `{"reason":"ok\nfake=log line"}`, ""},
-		{"digits rejected", `{"reason":"reason123"}`, ""},
-		{"empty rejected", `{"reason":""}`, ""},
-		{"overlong rejected", `{"reason":"` + strings.Repeat("a", 65) + `"}`, ""},
-		{"max length accepted", `{"reason":"` + strings.Repeat("a", 64) + `"}`, strings.Repeat("a", 64)},
+		{"valid reason", `{"reason":"invalid_release_manifest_signature"}`, "invalid_release_manifest_signature", false},
+		{"max length accepted", `{"reason":"` + strings.Repeat("a", 64) + `"}`, strings.Repeat("a", 64), false},
+
+		// Refused, but the caller must still learn a reason WAS present.
+		{"uppercase refused", `{"reason":"Signed_Manifest"}`, "", true},
+		{"url refused", `{"reason":"https://evil.example/?token=abc"}`, "", true},
+		{"spaces refused", `{"reason":"some prose with detail"}`, "", true},
+		{"newline injection refused", `{"reason":"ok\nfake=log line"}`, "", true},
+		{"digits refused", `{"reason":"reason123"}`, "", true},
+		{"overlong refused", `{"reason":"` + strings.Repeat("a", 65) + `"}`, "", true},
+
+		// Genuinely absent — not malformed, nothing was refused.
+		{"empty reason field", `{"reason":""}`, "", false},
+		{"no reason field", `{"error":"nope"}`, "", false},
+		{"not json", `<html>gateway timeout</html>`, "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := downloadInfoRejectionReason(strings.NewReader(tc.body)); got != tc.want {
+			got, malformed := downloadInfoRejectionReason(strings.NewReader(tc.body))
+			if got != tc.want {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
 			}
+			if malformed != tc.wantMalformed {
+				t.Fatalf("malformed = %v, want %v", malformed, tc.wantMalformed)
+			}
 		})
+	}
+}
+
+// A refused reason must produce a DIFFERENT operator-visible message than an
+// absent one, and must never echo the raw server text.
+func TestDownloadBinary409RefusedReasonIsDistinguishable(t *testing.T) {
+	server := newDownloadInfo409Server(t, `{"reason":"https://evil.example/?token=SECRET"}`)
+	defer server.Close()
+
+	err := downloadBinaryAgainst(t, server)
+	if !errors.Is(err, ErrUntrustedRelease) {
+		t.Fatalf("expected ErrUntrustedRelease, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unrecognized reason code") {
+		t.Fatalf("a refused reason must be reported as such, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "gave no reason") {
+		t.Fatalf("a refused reason must not be reported as an absent one: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "evil.example") || strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("raw server text leaked into the error: %q", err.Error())
 	}
 }
 
@@ -122,7 +159,8 @@ func TestDownloadInfoRejectionReasonBoundsBodySize(t *testing.T) {
 	// agent just to produce a log line. The truncated read yields invalid
 	// JSON, so the reason is dropped.
 	huge := `{"reason":"` + strings.Repeat("a", maxDownloadInfoErrorBodyBytes*2) + `"}`
-	if got := downloadInfoRejectionReason(strings.NewReader(huge)); got != "" {
+	got, _ := downloadInfoRejectionReason(strings.NewReader(huge))
+	if got != "" {
 		t.Fatalf("expected oversized body to yield no reason, got %q", got)
 	}
 }
