@@ -215,9 +215,18 @@ describe('bodyLimitForPath', () => {
       expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
     }
     expect(bodyLimitForPath('/api/v1/devices').rule).toBe('default');
+    // agent-logs / agent-process-sample are route-level rules: their limits are
+    // TIGHTER than the global default, so the gate must NOT claim them.
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/logs').rule).toBe('default');
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/process-sample').rule).toBe('default');
     // Labels are Sentry tag values: bounded, and free of the characters
     // `sentry.ts` rejects (`/?#`, CR/LF) so they can never smuggle a path.
-    for (const rule of [...Object.keys(sampled), 'default']) {
+    for (const rule of [
+      ...Object.keys(sampled),
+      'default',
+      'agent-logs',
+      'agent-process-sample',
+    ]) {
       expect(rule).toMatch(/^[a-z][a-z0-9-]{0,31}$/);
     }
   });

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { bodyLimitOnError, reportBodyLimitRejection } from '../../middleware/bodyLimitGate';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { gunzipSync } from 'node:zlib';
@@ -21,6 +22,9 @@ export const logsRoutes = new Hono();
 //   - max(logs)=200: cap rows per request. Combined with the agent's ~60s
 //     ship interval and a 1-2s typical processing budget, this still scales
 //     to ~200 logs/min/agent, which is 5-10x the realistic steady-state rate.
+const LOG_BATCH_MAX_BODY_BYTES = 256 * 1024;
+const LOG_BATCH_TOO_LARGE = 'Log batch too large (max 256KB gzipped)';
+
 const agentLogEntrySchema = z.object({
   timestamp: z.string().datetime({ offset: true }),
   level: z.enum(['debug', 'info', 'warn', 'error']),
@@ -40,8 +44,10 @@ const agentLogIngestSchema = z.object({
 logsRoutes.post(
   '/:id/logs',
   bodyLimit({
-    maxSize: 256 * 1024,
-    onError: (c) => c.json({ error: 'Log batch too large (max 256KB gzipped)' }, 413),
+    maxSize: LOG_BATCH_MAX_BODY_BYTES,
+    // #3517: report the rejection — this limit is tighter than the global gate,
+    // so the instrumented gate never sees it.
+    onError: bodyLimitOnError('agent-logs', LOG_BATCH_MAX_BODY_BYTES, LOG_BATCH_TOO_LARGE),
   }),
   async (c) => {
   const agentId = c.req.param('id');
@@ -60,7 +66,11 @@ logsRoutes.post(
     // body exceeds the configured maxSize (no Content-Length header) — surface
     // it as 413 instead of the generic 400.
     if (err instanceof Error && err.name === 'BodyLimitError') {
-      return c.json({ error: 'Log batch too large (max 256KB gzipped)' }, 413);
+      // Chunked upload with no Content-Length: Hono's gate streams and throws
+      // here instead of calling onError, so this leg needs its own report or
+      // the rejection is still invisible (#3517).
+      reportBodyLimitRejection(c, 'agent-logs', LOG_BATCH_MAX_BODY_BYTES);
+      return c.json({ error: LOG_BATCH_TOO_LARGE }, 413);
     }
     console.error(`[AgentLogs] Failed to decode request body for agent ${agentId}:`, message);
     return c.json({ error: 'Failed to decode request body', detail: message }, 400);

@@ -32,7 +32,12 @@ export type BodyLimitRule =
   | 'image-upload'
   | 'avatar'
   | 'contract-template'
-  | 'agent-ingest';
+  | 'agent-ingest'
+  // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
+  // never returns them — the route's own gate is the one that answers. They
+  // share this namespace so all body-limit 413s group on one tag.
+  | 'agent-logs'
+  | 'agent-process-sample';
 
 export interface BodyLimitPolicy {
   rule: BodyLimitRule;

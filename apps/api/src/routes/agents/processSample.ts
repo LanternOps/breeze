@@ -1,11 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
+import { bodyLimitOnError } from '../../middleware/bodyLimitGate';
 import { db } from '../../db';
 import { deviceProcessSamples } from '../../db/schema';
 import { type AgentAuthContext } from '../../middleware/agentAuth';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { processSampleSchema } from './schemas';
+
+const PROCESS_SAMPLE_MAX_BODY_BYTES = 256 * 1024;
 
 export const processSampleRoutes = new Hono();
 // Process-sample ingest is the main agent's job; reject watchdog-role tokens so
@@ -14,7 +17,16 @@ processSampleRoutes.use('*', requireAgentRole);
 
 processSampleRoutes.post(
   '/:id/process-sample',
-  bodyLimit({ maxSize: 256 * 1024, onError: (c) => c.json({ error: 'Request body too large' }, 413) }),
+  bodyLimit({
+    maxSize: PROCESS_SAMPLE_MAX_BODY_BYTES,
+    // #3517: report the rejection — this limit is tighter than the global gate,
+    // so the instrumented gate never sees it.
+    onError: bodyLimitOnError(
+      'agent-process-sample',
+      PROCESS_SAMPLE_MAX_BODY_BYTES,
+      'Request body too large'
+    ),
+  }),
   zValidator('json', processSampleSchema),
   async (c) => {
     const agentId = c.req.param('id');
