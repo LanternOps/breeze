@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, type ComponentRef } from 'react';
 import { ScrollView, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 
 import { spacing } from '../../../theme';
@@ -28,7 +28,7 @@ function latestStreamSignature(messages: ChatMessage[]): string {
 // Auto-stick-to-bottom only when the user is already near the bottom.
 // If they've scrolled up mid-stream, we leave their position alone.
 export function ConversationList({ messages, inFlightTool, onRetry }: Props) {
-  const ref = useRef<ScrollView>(null);
+  const ref = useRef<ComponentRef<typeof ScrollView>>(null);
   const stickToBottom = useRef(true);
   const signature = latestStreamSignature(messages);
 

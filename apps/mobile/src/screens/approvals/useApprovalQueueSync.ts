@@ -51,7 +51,7 @@ export function useApprovalQueueSync(): void {
   // Refresh on background→foreground. AppState fires for 'inactive' too (the
   // app switcher, a Face ID sheet); only a real 'active' transition counts,
   // otherwise every biometric prompt during an approve would refetch.
-  const appState = useRef<AppStateStatus>(AppState.currentState);
+  const appState = useRef<AppStateStatus>((AppState.currentState ?? 'unknown') as AppStateStatus);
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       const wasBackground = appState.current.match(/inactive|background/) !== null;

@@ -59,7 +59,7 @@ export function AppLockGate({ children }: Props) {
   const [biometricName, setBiometricName] = useState('Face ID');
 
   const backgroundedAt = useRef<number | null>(null);
-  const appState = useRef<AppStateStatus>(AppState.currentState);
+  const appState = useRef<AppStateStatus>((AppState.currentState ?? 'unknown') as AppStateStatus);
 
   useEffect(() => {
     getBiometricTypeName().then(setBiometricName).catch(() => {});

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ComponentRef } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -165,7 +165,7 @@ function SkeletonRow({ borderColor, bg }: { borderColor: string; bg: string }) {
 export function SearchSheet({ visible, onCancel, onSelect }: Props) {
   const theme = useApprovalTheme('dark');
   const { query, results, loading, error, setQuery, clear } = useSearch();
-  const inputRef = useRef<TextInput | null>(null);
+  const inputRef = useRef<ComponentRef<typeof TextInput> | null>(null);
 
   // Auto-focus on open. iOS needs a tick after the modal animation begins
   // before the keyboard will reliably present; 60ms is enough in practice.
