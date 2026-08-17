@@ -67,6 +67,10 @@ export const securityStatus = pgTable('security_status', {
   encryptionDetails: jsonb('encryption_details'),
   localAdminSummary: jsonb('local_admin_summary'),
   passwordPolicySummary: jsonb('password_policy_summary'),
+  // Per-product AV array as reported by the agent (Windows Security Center
+  // enumeration on Windows). `real_time_protection` above is a single derived
+  // boolean; this is the evidence behind it. See #3641.
+  avProducts: jsonb('av_products'),
   gatekeeperEnabled: boolean('gatekeeper_enabled'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
