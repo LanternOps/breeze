@@ -597,6 +597,7 @@
     "localPart": "Adresse entrante : partie locale",
     "domainNotConfigured": "Le domaine entrant de la plateforme n’est pas encore configuré. Contactez votre administrateur.",
     "domainNotConfiguredSelfHosted": "Aucun domaine entrant de la plateforme n’est configuré, donc aucune adresse entrante ne peut être générée. Définissez <var>TICKETS_INBOUND_DOMAIN</var> sur votre serveur Breeze et redémarrez l’API — voir <docs>Configuration de l’e-mail vers ticket</docs>. Vous pouvez aussi connecter une boîte aux lettres partagée Microsoft 365 — cette voie ne nécessite aucun domaine entrant.",
+    "addressViaMailbox": "Aucune adresse entrante native n’est configurée, mais les e-mails arrivent toujours par la boîte aux lettres Microsoft 365 connectée ci-dessous — cette voie ne nécessite aucun domaine entrant.",
     "triageOrganization": "Organisation par défaut du triage",
     "unknownSenders": "Expéditeurs inconnus",
     "unknownDescription": "Que faire avec un courrier dont l’expéditeur n’est pas un utilisateur du portail, un domaine client mappé, ou une réponse à un ticket existant ?",

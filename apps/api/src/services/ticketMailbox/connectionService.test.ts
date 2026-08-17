@@ -122,6 +122,7 @@ vi.stubGlobal('fetch', fetchMock);
 import { ticketMailboxConnections, ticketMailboxTenantOwnerships } from '../../db/schema/ticketMailbox';
 import {
   bindVerifiedTenant,
+  countConnectedMailboxes,
   createPendingConnection,
   disableConnection,
   isConnectedMailboxSnapshotCurrent,
@@ -423,6 +424,28 @@ describe('ticket mailbox connection service', () => {
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt',
     ]);
+  });
+
+  // #3598: the inbound-email card uses this count to tell "no native address"
+  // apart from "no inbound path at all". A count that ignored `status` would
+  // report a pending/errored mailbox as a working path.
+  it('counts only connected mailboxes, filtered by partner AND status', async () => {
+    dbMocks.selectResults.push([{ id: CONNECTION_ID }, { id: OTHER_PARTNER_ID }]);
+
+    await expect(countConnectedMailboxes(PARTNER_ID)).resolves.toBe(2);
+
+    expect(dbMocks.selectWheres.at(-1)).toEqual({
+      op: 'and',
+      conditions: [
+        { op: 'eq', column: ticketMailboxConnections.partnerId, value: PARTNER_ID },
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+      ],
+    });
+  });
+
+  it('returns 0 when the partner has no connected mailboxes', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(countConnectedMailboxes(PARTNER_ID)).resolves.toBe(0);
   });
 
   it('only lists active mailboxes whose tenant ownership matches both tenant and partner', async () => {

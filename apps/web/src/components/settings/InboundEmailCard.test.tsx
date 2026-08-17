@@ -36,6 +36,7 @@ interface CfgShape {
   autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
+  connectedMailboxCount?: number;
   isHosted?: boolean;
 }
 
@@ -210,6 +211,38 @@ describe('InboundEmailCard', () => {
       'https://docs.breezermm.com/deploy/environment/#inbound-email-to-ticket-mailgun',
     );
     expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  // #3598: an operator running ONLY the M365 mailbox path needs no inbound
+  // domain — the amber "isn't configured" error told them their working setup
+  // was broken. Only the native address is missing; say that instead.
+  it.each([undefined, false] as const)(
+    'suppresses the unconfigured error when a mailbox is connected (isHosted=%s)',
+    async (isHosted) => {
+      routeFetch({ ...CFG, address: '', domainConfigured: false, connectedMailboxCount: 1, isHosted });
+      render(<InboundEmailCard />);
+      const hint = await screen.findByTestId('inbound-address-via-mailbox');
+      expect(hint.textContent).toContain('Microsoft 365');
+      expect(screen.queryByTestId('inbound-address-unconfigured')).toBeNull();
+      expect(screen.queryByTestId('inbound-address-unconfigured-docs')).toBeNull();
+    },
+  );
+
+  it('still shows the unconfigured error when no mailbox is connected', async () => {
+    routeFetch({ ...CFG, address: '', domainConfigured: false, connectedMailboxCount: 0 });
+    render(<InboundEmailCard />);
+    expect(await screen.findByTestId('inbound-address-unconfigured')).toBeTruthy();
+    expect(screen.queryByTestId('inbound-address-via-mailbox')).toBeNull();
+  });
+
+  // A connected mailbox must not hide the native address editor — both paths
+  // can run at once, and the local part is still editable.
+  it('keeps the native address editor when the domain IS configured and a mailbox is connected', async () => {
+    routeFetch({ ...CFG, connectedMailboxCount: 1 });
+    render(<InboundEmailCard />);
+    expect(await screen.findByTestId('inbound-localpart')).toBeTruthy();
+    expect(screen.queryByTestId('inbound-address-via-mailbox')).toBeNull();
+    expect(screen.queryByTestId('inbound-address-unconfigured')).toBeNull();
   });
 
   it.each([true, undefined])(

@@ -597,6 +597,7 @@
     "localPart": "Parte local do endereço de entrada",
     "domainNotConfigured": "O domínio de entrada da plataforma ainda não está configurado. Entre em contato com o administrador.",
     "domainNotConfiguredSelfHosted": "Nenhum domínio de entrada da plataforma está configurado, portanto não é possível gerar um endereço de entrada. Defina <var>TICKETS_INBOUND_DOMAIN</var> no seu servidor Breeze e reinicie a API — consulte <docs>Configuração de e-mail para ticket</docs>. Como alternativa, conecte uma caixa de correio compartilhada do Microsoft 365 — esse caminho não precisa de domínio de entrada.",
+    "addressViaMailbox": "Nenhum endereço de entrada nativo está configurado, mas os e-mails continuam chegando pela caixa de correio do Microsoft 365 conectada abaixo — esse caminho não precisa de um domínio de entrada.",
     "triageOrganization": "Organização de triagem padrão",
     "unknownSenders": "Remetentes desconhecidos",
     "unknownDescription": "O que fazer com mensagens cujo remetente não é usuário do portal, domínio de cliente mapeado nem resposta a um chamado existente.",

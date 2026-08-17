@@ -597,6 +597,7 @@
     "localPart": "Lokaler Teil der eingehenden Adresse",
     "domainNotConfigured": "Die Plattform-Eingangsdomäne ist noch nicht konfiguriert. Kontaktieren Sie Ihren Administrator.",
     "domainNotConfiguredSelfHosted": "Es ist keine Plattform-Eingangsdomäne konfiguriert, daher kann keine Eingangsadresse erzeugt werden. Setzen Sie <var>TICKETS_INBOUND_DOMAIN</var> auf Ihrem Breeze-Server und starten Sie die API neu — siehe <docs>Einrichtung von E-Mail-zu-Ticket</docs>. Alternativ können Sie ein freigegebenes Microsoft 365-Postfach verbinden — dieser Weg benötigt keine Eingangsdomäne.",
+    "addressViaMailbox": "Es ist keine native Eingangsadresse konfiguriert, E-Mails treffen aber weiterhin über Ihr unten verbundenes Microsoft 365-Postfach ein – dieser Weg benötigt keine Eingangsdomäne.",
     "triageOrganization": "Standard-Triage-Organisation",
     "unknownSenders": "Unbekannte Absender",
     "unknownDescription": "Was tun mit E-Mails, deren Absender kein Portalbenutzer, keine zugeordnete Kundendomäne oder eine Antwort auf ein vorhandenes Ticket ist?",

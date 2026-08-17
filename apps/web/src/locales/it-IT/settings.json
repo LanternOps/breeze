@@ -597,6 +597,7 @@
     "localPart": "Parte locale dell'indirizzo in ingresso",
     "domainNotConfigured": "Il dominio in ingresso della piattaforma non è ancora configurato. Contatta l'amministratore.",
     "domainNotConfiguredSelfHosted": "Non è configurato alcun dominio in ingresso della piattaforma, quindi non è possibile generare un indirizzo in ingresso. Imposta <var>TICKETS_INBOUND_DOMAIN</var> sul tuo server Breeze e riavvia l'API — vedi <docs>Configurazione da e-mail a ticket</docs>. In alternativa, collega una cassetta postale condivisa Microsoft 365 — questo percorso non richiede alcun dominio in ingresso.",
+    "addressViaMailbox": "Nessun indirizzo in ingresso nativo è configurato, ma le email continuano ad arrivare tramite la casella di posta Microsoft 365 collegata qui sotto: quel percorso non richiede un dominio in ingresso.",
     "triageOrganization": "Organizzazione di triage predefinita",
     "unknownSenders": "Mittenti sconosciuti",
     "unknownDescription": "Cosa fare con email il cui mittente non è un utente del portale, un dominio cliente mappato o una risposta a un ticket esistente.",
