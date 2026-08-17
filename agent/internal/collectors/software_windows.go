@@ -28,11 +28,18 @@ var softwareRegistryPaths = []struct {
 func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 	var software []SoftwareItem
 	seen := make(map[string]bool)
+	var pathErrs []string
 
 	for _, regPath := range softwareRegistryPaths {
 		items, err := collectFromRegistry(regPath.root, regPath.path)
 		if err != nil {
-			// Continue on error - some paths may not exist or be accessible
+			// Continue on error - some paths may not exist or be accessible.
+			// A single unreadable hive is normal (WOW6432Node is absent on
+			// 32-bit Windows; HKCU under the SYSTEM service is the SYSTEM
+			// profile), so it must not fail the whole collection — but record
+			// it so a total failure below can be distinguished from a genuinely
+			// empty machine.
+			pathErrs = append(pathErrs, fmt.Sprintf("%s: %v", regPath.path, err))
 			continue
 		}
 
@@ -44,6 +51,15 @@ func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 				software = append(software, item)
 			}
 		}
+	}
+
+	// Every registry path failed: this is "we could not look", not "nothing is
+	// installed". Returning (nil, nil) here would let callers that treat an
+	// empty list as ground truth — notably the uninstall post-condition check in
+	// remote/tools — conclude that software is absent without ever having read
+	// the registry (#3592).
+	if len(pathErrs) == len(softwareRegistryPaths) {
+		return nil, fmt.Errorf("no installed-software registry path could be read: %s", strings.Join(pathErrs, "; "))
 	}
 
 	return software, nil
@@ -70,6 +86,13 @@ func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, err
 		}
 
 		item := readSoftwareFromKey(subkey)
+		// Both reads must happen BEFORE the handle is closed. isSystemComponent
+		// used to be called on the already-closed `subkey`, where every registry
+		// read fails and the function therefore always answered false — so the
+		// SystemComponent=1 / "Update for …" filter below has never actually
+		// filtered anything, and Windows Update and system-component entries have
+		// been reported as ordinary installed software all along (#3592).
+		systemComponent := isSystemComponent(subkey, item.Name)
 		subkey.Close()
 
 		// Skip items without a display name or system components
@@ -78,7 +101,7 @@ func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, err
 		}
 
 		// Skip Windows updates and system components
-		if isSystemComponent(subkey) {
+		if systemComponent {
 			continue
 		}
 
@@ -160,7 +183,11 @@ func parseInstallDate(dateStr string) string {
 	return ""
 }
 
-func isSystemComponent(key registry.Key) bool {
+// isSystemComponent reports whether an Uninstall subkey describes a system
+// component or a Windows Update rather than user-facing installed software.
+// `key` must still be open; `displayName` is passed in because the caller has
+// already read it.
+func isSystemComponent(key registry.Key, displayName string) bool {
 	// Check SystemComponent flag
 	val, _, err := key.GetIntegerValue("SystemComponent")
 	if err == nil && val == 1 {
@@ -168,7 +195,7 @@ func isSystemComponent(key registry.Key) bool {
 	}
 
 	// Check for Windows Update entries
-	name, _ := readStringValue(key, "DisplayName")
+	name := displayName
 	if strings.HasPrefix(name, "Update for") ||
 		strings.HasPrefix(name, "Security Update for") ||
 		strings.HasPrefix(name, "Hotfix for") {

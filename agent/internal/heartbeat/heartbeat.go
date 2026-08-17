@@ -556,6 +556,12 @@ type Heartbeat struct {
 	// production — the real sendInventory method is invoked.
 	sendInventoryFn func()
 
+	// sendSoftwareInventoryFn is an optional override used by tests to replace
+	// the post-uninstall software re-report inside handleSoftwareUninstall. nil
+	// in production — the real sendSoftwareInventory method runs in its own
+	// goroutine.
+	sendSoftwareInventoryFn func()
+
 	// userHelperDownloader is an optional test seam: when non-nil,
 	// prefetchUserHelper calls this instead of constructing a real
 	// updater.Updater and invoking DownloadBinary. nil in production.
