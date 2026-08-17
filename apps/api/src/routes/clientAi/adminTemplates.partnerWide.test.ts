@@ -15,7 +15,7 @@ const {
       partnerOrgAccess: 'all' as 'all' | 'selected' | 'none' | null | undefined,
       orgId: null as string | null,
       accessibleOrgIds: [] as string[],
-      canAccessOrg: (_orgId: string) => false,
+      canAccessOrg: (_orgId: string): boolean => false,
       user: { id: 'u-1', email: 'admin@example.com' },
     },
   },
