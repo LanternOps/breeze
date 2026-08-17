@@ -261,7 +261,12 @@ export function createSourcesRoutes(deps: SourcesRouteDeps): Hono<WorkspaceRoute
           : parsed.data.crawlDeviceId,
       });
       if (!mergedConfig.success) {
-        return c.json({ error: 'Invalid request body' }, 400);
+        // Surface the specific issue rather than a generic string: the merged
+        // check is the only thing a caller sees when an existing row is the
+        // problem, so "Invalid request body" leaves them nothing to act on.
+        return c.json({
+          error: mergedConfig.error.issues[0]?.message ?? 'Invalid request body',
+        }, 400);
       }
       const updated = await deps.sourcesService.update(orgId, sourceId, parsed.data);
       if (!updated) {

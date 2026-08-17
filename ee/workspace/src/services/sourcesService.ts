@@ -54,7 +54,8 @@ function validateSourceState(input: SourceInput): void {
     }
     return;
   }
-  if (input.kind !== 'smb_share') return;
+  // kind is a two-value union, so everything past the local_profile branch is
+  // smb_share.
   if (!input.crawlDeviceId) {
     throw new SourceValidationError('smb_share requires crawlDeviceId');
   }
