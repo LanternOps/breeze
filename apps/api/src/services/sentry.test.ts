@@ -95,6 +95,10 @@ describe('sentry service', () => {
     captureMessage('database warning', 'warning', undefined, {
       pg_code: '42501',
       org_id: '00000000-0000-4000-8000-000000000001',
+      // #3517: without these the body-limit 413 event arrives contentless —
+      // scrubEvent strips message/logentry/extra, so the rule label IS the event.
+      body_limit_rule: 'image-upload',
+      body_limit_max_size: '5308416',
       path: '/quotes/raw-capability',
       route_template: '/quotes/:token',
       partner_id: 'x'.repeat(129),
@@ -105,6 +109,8 @@ describe('sentry service', () => {
       'org_id',
       '00000000-0000-4000-8000-000000000001',
     );
+    expect(setTagMock).toHaveBeenCalledWith('body_limit_rule', 'image-upload');
+    expect(setTagMock).toHaveBeenCalledWith('body_limit_max_size', '5308416');
     expect(setTagMock).not.toHaveBeenCalledWith('path', expect.anything());
     expect(setTagMock).not.toHaveBeenCalledWith('route_template', expect.anything());
     expect(setTagMock).not.toHaveBeenCalledWith('partner_id', expect.anything());
