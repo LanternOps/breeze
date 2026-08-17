@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../../services/commandCasDiagnostics';

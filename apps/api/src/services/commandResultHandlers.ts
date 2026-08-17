@@ -13,7 +13,7 @@
  */
 
 import { z } from 'zod';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext } from '../db';
 import {
   deviceCommands,
@@ -378,18 +378,31 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           scriptId: scriptExecutions.scriptId,
         });
 
-      // #3607 — second chance for an execution already stamped `timeout`.
+      // #3607 — second chance for an execution a server-side sweep already
+      // stamped terminal.
       //
       // Widening the device_commands acceptance predicate lets a result that
       // arrives after the 60s `waitForCommandResult` deadline reach this
-      // handler, but the execution row can meanwhile have been stamped by
-      // `jobs/staleCommandReaper.ts` (or by an earlier `result.status ===
-      // 'timeout'` frame). The guard above would then drop the real stdout at
-      // the last step, which is the same defect one table over. A server-side
-      // timeout is provisional here too: the agent's actual output wins.
+      // handler at all, but the execution row can meanwhile have been stamped
+      // by `jobs/staleCommandReaper.ts`. The guard above would then drop the
+      // real stdout at the last step — the same defect one table over.
+      //
+      // The predicate is NOT `status = 'timeout'`. The reaper derives the
+      // execution status from the COMMAND row, and in exactly the #3607
+      // scenario that row is `failed` with `result.status = 'timeout'`, so the
+      // reaper stamps the execution **'failed'** (with its "#3097 delivered but
+      // never recorded" message), not 'timeout'. Keying on 'timeout' alone
+      // would leave the dominant path still losing output.
+      //
+      // So the discriminator is "this execution never received the agent's
+      // output": no exit code and no stdout. Every server-side sweep leaves
+      // both NULL; the only writer that fills them is this function, and it is
+      // only reachable once the caller's compare-and-set has already
+      // transitioned the command row — so a duplicate frame cannot get here to
+      // overwrite a genuine earlier result.
       //
       // Deliberately does NOT touch the batch counters. Every writer of a
-      // `timeout` execution status already incremented one of them for this
+      // terminal execution status already incremented one of them for this
       // device, so the batch's slot is spent — bumping again would push
       // devicesCompleted + devicesFailed past devicesTargeted and corrupt the
       // batch's completion accounting. The cost is that a recovered success
@@ -403,16 +416,53 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           .where(and(
             eq(scriptExecutions.id, executionId),
             eq(scriptExecutions.deviceId, resolvedDeviceId),
-            eq(scriptExecutions.status, 'timeout')
+            inArray(scriptExecutions.status, ['timeout', 'failed']),
+            isNull(scriptExecutions.exitCode),
+            isNull(scriptExecutions.stdout)
           ))
           .returning({
             id: scriptExecutions.id,
             scriptId: scriptExecutions.scriptId,
           });
+
         if (recovered.length > 0) {
           console.warn(
-            `[AgentWs] Recovered late script result onto timed-out execution ${executionId} (command ${command.id})`
+            `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
           );
+        } else {
+          // Both updates matched nothing. Before this PR that outcome was
+          // unreachable for a late result — the command lookup rejected it
+          // upstream and `processOrphanedCommandResult` logged the drop. Now
+          // that acceptance is widened, this is the ONE remaining way an
+          // agent's real output can be discarded here, so it must not be
+          // silent (the #3162 lesson, two blocks down: report, never skip
+          // quietly). Expected causes are all defects — a mismatched
+          // execution/device pair, or a row already carrying output from a
+          // path that bypassed the compare-and-set.
+          const [current] = await db
+            .select({
+              status: scriptExecutions.status,
+              exitCode: scriptExecutions.exitCode,
+              deviceId: scriptExecutions.deviceId,
+            })
+            .from(scriptExecutions)
+            .where(eq(scriptExecutions.id, executionId))
+            .limit(1);
+          const message = 'Late script result matched no script_executions row';
+          console.warn(`[AgentWs] ${message}`, {
+            executionId,
+            commandId: command.id,
+            resolvedDeviceId,
+            currentStatus: current?.status ?? 'row-missing',
+            currentExitCode: current?.exitCode ?? null,
+            currentDeviceId: current?.deviceId ?? null,
+          });
+          captureException(new Error(message), undefined, {
+            executionId,
+            commandId: command.id,
+            resolvedDeviceId,
+            currentStatus: current?.status ?? 'row-missing',
+          });
         }
       }
 

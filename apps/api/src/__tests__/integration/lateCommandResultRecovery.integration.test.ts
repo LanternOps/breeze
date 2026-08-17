@@ -37,7 +37,17 @@ import { setupTestEnvironment } from './db-utils';
 import { withDbAccessContext } from '../../db';
 import { createAgentWsHandlers } from '../../routes/agentWs';
 import { commandsRoutes } from '../../routes/agents/commands';
-import { devices, deviceCommands, scripts, scriptExecutions } from '../../db/schema';
+import { updateRestoreJobFromResult } from '../../services/restoreResultPersistence';
+import {
+  devices,
+  deviceCommands,
+  scripts,
+  scriptExecutions,
+  backupConfigs,
+  backupJobs,
+  backupSnapshots,
+  restoreJobs,
+} from '../../db/schema';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -107,7 +117,9 @@ async function makeFixture(): Promise<Fixture> {
 async function seedTimedOutRun(
   fx: Fixture,
   opts: {
-    executionStatus?: 'running' | 'timeout';
+    executionStatus?: 'running' | 'timeout' | 'failed' | 'completed';
+    executionExitCode?: number;
+    executionStdout?: string;
     commandStatus?: 'failed' | 'cancelled';
     commandResult?: Record<string, unknown>;
   } = {},
@@ -124,6 +136,8 @@ async function seedTimedOutRun(
       triggerType: 'manual',
       status: opts.executionStatus ?? 'running',
       startedAt: new Date(Date.now() - 90_000),
+      exitCode: opts.executionExitCode ?? null,
+      stdout: opts.executionStdout ?? null,
     })
     .returning({ id: scriptExecutions.id });
   if (!execution) throw new Error('seedTimedOutRun: no execution');
@@ -208,6 +222,97 @@ async function sendHttpResult(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Seed a restore job already failed by a server-side sweep, with the full
+ * backup_configs → backup_jobs → backup_snapshots chain its FKs require.
+ */
+async function seedTimedOutRestore(
+  fx: Fixture,
+  opts: { result: Record<string, unknown> },
+): Promise<{ restoreJobId: string }> {
+  const tdb = getTestDb();
+
+  const [config] = await tdb
+    .insert(backupConfigs)
+    .values({
+      orgId: fx.orgId,
+      name: `late-restore-config-${fx.agentId}`,
+      type: 'file',
+      provider: 'local',
+      providerConfig: {},
+    })
+    .returning({ id: backupConfigs.id });
+  if (!config) throw new Error('seedTimedOutRestore: no config');
+
+  const [job] = await tdb
+    .insert(backupJobs)
+    .values({ orgId: fx.orgId, configId: config.id, deviceId: fx.deviceId, status: 'completed' })
+    .returning({ id: backupJobs.id });
+  if (!job) throw new Error('seedTimedOutRestore: no backup job');
+
+  const [snapshot] = await tdb
+    .insert(backupSnapshots)
+    .values({
+      orgId: fx.orgId,
+      jobId: job.id,
+      deviceId: fx.deviceId,
+      snapshotId: `snap-${fx.agentId}`,
+    })
+    .returning({ id: backupSnapshots.id });
+  if (!snapshot) throw new Error('seedTimedOutRestore: no snapshot');
+
+  const [restore] = await tdb
+    .insert(restoreJobs)
+    .values({
+      orgId: fx.orgId,
+      snapshotId: snapshot.id,
+      deviceId: fx.deviceId,
+      restoreType: 'selective',
+      // Exactly what propagateTimedOutDeviceCommand leaves behind.
+      status: 'failed',
+      completedAt: new Date(),
+      targetConfig: { result: opts.result },
+    })
+    .returning({ id: restoreJobs.id });
+  if (!restore) throw new Error('seedTimedOutRestore: no restore job');
+
+  return { restoreJobId: restore.id };
+}
+
+async function readRestoreJob(restoreJobId: string) {
+  const tdb = getTestDb();
+  const [row] = await tdb
+    .select({
+      status: restoreJobs.status,
+      restoredFiles: restoreJobs.restoredFiles,
+      restoredSize: restoreJobs.restoredSize,
+    })
+    .from(restoreJobs)
+    .where(eq(restoreJobs.id, restoreJobId))
+    .limit(1);
+  if (!row) throw new Error('restore job not found');
+  return row;
+}
+
+/**
+ * Run a service call under the same org DB access context the agent request
+ * path establishes. `restore_jobs` is RLS-guarded on `org_id`, so a contextless
+ * call is a 0-row no-op that would fail the test for a reason the product does
+ * not have.
+ */
+function asOrg<T>(fx: Fixture, fn: () => Promise<T>): Promise<T> {
+  return withDbAccessContext(
+    {
+      scope: 'organization',
+      orgId: fx.orgId,
+      accessibleOrgIds: [fx.orgId],
+      accessiblePartnerIds: [],
+      currentPartnerId: null,
+    },
+    fn,
+  );
 }
 
 async function readExecution(executionId: string) {
@@ -373,7 +478,7 @@ describe('#3607 late command result recovery', () => {
   );
 
   runDb(
-    'an execution already stamped `timeout` by the reaper still receives the real output',
+    'an execution already stamped `timeout` by a sweep still receives the real output',
     async () => {
       const fx = await makeFixture();
       const { commandId, executionId } = await seedTimedOutRun(fx, {
@@ -390,6 +495,118 @@ describe('#3607 late command result recovery', () => {
       expect(execution.stdout).toBe('recovered after reaping');
       expect(execution.exitCode).toBe(0);
       expect(execution.status).toBe('completed');
+    },
+    30_000,
+  );
+
+  runDb(
+    'an execution stamped `failed` by the reaper — the status it ACTUALLY writes here — still receives the real output',
+    async () => {
+      const fx = await makeFixture();
+      // reapStaleScriptExecutions derives the execution status from the command
+      // row. In the #3607 scenario that row is `failed` + `result.status =
+      // 'timeout'`, so `cmdIsTerminal` is true and `reapedStatus` resolves to
+      // 'failed' — NOT 'timeout'. A recovery predicate keyed on 'timeout'
+      // alone would leave this, the dominant post-reaper path, still losing
+      // the output. Exit code and stdout stay NULL, which is the real
+      // discriminator.
+      const { commandId, executionId } = await seedTimedOutRun(fx, {
+        executionStatus: 'failed',
+      });
+
+      await sendWsResult(fx, commandId, {
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'recovered from a reaper-failed stamp',
+      });
+
+      const execution = await readExecution(executionId);
+      expect(execution.stdout).toBe('recovered from a reaper-failed stamp');
+      expect(execution.exitCode).toBe(0);
+      expect(execution.status).toBe('completed');
+    },
+    30_000,
+  );
+
+  runDb(
+    'a restore job failed ONLY by the reaper\'s server-timeout stamp accepts the real result',
+    async () => {
+      const fx = await makeFixture();
+      // Widening device_commands acceptance means a late restore result now
+      // reaches handleVmRestoreResult. `propagateTimedOutDeviceCommand` had
+      // already failed the restore job in lockstep with the command timeout,
+      // and restore_jobs is what the UI reads — so without the matching
+      // carve-out the two rows would disagree: device_commands 'completed',
+      // restore_jobs 'failed'.
+      const { restoreJobId } = await seedTimedOutRestore(fx, {
+        result: { status: 'failed', error: 'timed out', timedOutBy: 'server' },
+      });
+
+      const applied = await asOrg(fx, () =>
+        updateRestoreJobFromResult(
+          { id: restoreJobId, status: 'failed', targetConfig: { result: { status: 'failed', error: 'timed out', timedOutBy: 'server' } } },
+          'backup_restore',
+          { status: 'completed', exitCode: 0, result: { status: 'completed', filesRestored: 42, bytesRestored: 4242 } },
+        ),
+      );
+      expect(applied).toBe(true);
+
+      const job = await readRestoreJob(restoreJobId);
+      expect(job.status).toBe('completed');
+      expect(job.restoredFiles).toBe(42);
+      expect(job.restoredSize).toBe(4242);
+    },
+    30_000,
+  );
+
+  runDb(
+    'a restore job the AGENT reported failed is NOT reopened',
+    async () => {
+      const fx = await makeFixture();
+      // No `timedOutBy` marker — this failure came from the device, so it is
+      // final. This is the bound on the carve-out above.
+      const agentReported = { status: 'failed', error: 'restore aborted on device' };
+      const { restoreJobId } = await seedTimedOutRestore(fx, { result: agentReported });
+
+      const applied = await asOrg(fx, () =>
+        updateRestoreJobFromResult(
+          { id: restoreJobId, status: 'failed', targetConfig: { result: agentReported } },
+          'backup_restore',
+          { status: 'completed', exitCode: 0, result: { status: 'completed', filesRestored: 42 } },
+        ),
+      );
+      expect(applied).toBe(false);
+
+      const job = await readRestoreJob(restoreJobId);
+      expect(job.status).toBe('failed');
+      expect(job.restoredFiles).toBeNull();
+    },
+    30_000,
+  );
+
+  runDb(
+    'an execution that already carries real output is NOT overwritten',
+    async () => {
+      const fx = await makeFixture();
+      // A terminal execution with a recorded exit code and stdout came from a
+      // genuine agent result, not a server-side sweep. The recovery branch must
+      // leave it alone — this is the bound on how far "provisional" reaches.
+      const { commandId, executionId } = await seedTimedOutRun(fx, {
+        executionStatus: 'failed',
+        executionExitCode: 1,
+        executionStdout: 'the genuine earlier output',
+      });
+
+      await sendWsResult(fx, commandId, {
+        status: 'completed',
+        exitCode: 0,
+        stdout: 'must not win',
+      });
+
+      const execution = await readExecution(executionId);
+      expect(execution.stdout).toBe('the genuine earlier output');
+      expect(execution.exitCode).toBe(1);
+      expect(execution.status).toBe('failed');
     },
     30_000,
   );

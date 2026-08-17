@@ -28,8 +28,11 @@ import { deviceCommands } from '../db/schema';
  * `result->>'status' = 'timeout'` discriminator is what keeps that narrow —
  * an agent-reported failure stores `status:'failed'` (see
  * `buildStoredCommandResult`) and a cancellation stores `status:'cancelled'`,
- * so neither is reopened. Both server-side timeout writers stamp the same
- * marker: the wait deadline above and `jobs/staleCommandReaper.ts`.
+ * so neither is reopened. All three server-side timeout writers stamp the same
+ * marker and are covered by it: the wait deadline above,
+ * `jobs/staleCommandReaper.ts`, and `markVerificationCommandTimedOut`
+ * (`routes/backup/verificationScheduled.ts`). A new one MUST keep writing
+ * `result.status = 'timeout'` or its commands go back to losing late results.
  *
  * Double-delivery stays protected because the acceptance test is re-evaluated
  * inside the terminal compare-and-set: the first late result rewrites `result`

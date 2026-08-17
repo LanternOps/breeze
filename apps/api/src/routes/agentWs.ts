@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import { z } from 'zod';
-import { eq, and, inArray, notInArray, sql } from 'drizzle-orm';
+import { eq, and, notInArray, sql } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
