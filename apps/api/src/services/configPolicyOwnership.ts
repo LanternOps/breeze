@@ -5,6 +5,7 @@ import {
   runOutsideDbContext,
   withSystemDbAccessContext,
 } from '../db';
+import { captureException } from './sentry';
 
 /**
  * The two halves of "a per-device resolver honours partner-wide policies".
@@ -154,10 +155,17 @@ export async function withDevicePartnerPolicyVisibility<T, E extends PartnerVisi
   } finally {
     try {
       await executor.execute(sql`select set_config('breeze.accessible_partner_ids', ${previous}, true)`);
-    } catch {
-      // The only way this fails is an already-aborted transaction, in which case
-      // nothing further will run on it and the GUC dies with the rollback.
-      // Never let the restore mask fn's real error.
+    } catch (restoreErr) {
+      // Expected only on an already-aborted transaction, where nothing further
+      // will run on it and the SET LOCAL dies with the rollback anyway — and
+      // the restore must never mask fn's real error. But that reasoning is an
+      // assumption, not something this code enforces, and the failure mode it
+      // assumes away (a widened partner allowlist outliving the resolve on a
+      // still-usable connection) is security-relevant. Report it so the
+      // assumption is falsifiable from production telemetry instead of resting
+      // on a comment.
+      console.error('[configPolicyOwnership] failed to restore breeze.accessible_partner_ids:', restoreErr);
+      captureException(restoreErr);
     }
   }
 }

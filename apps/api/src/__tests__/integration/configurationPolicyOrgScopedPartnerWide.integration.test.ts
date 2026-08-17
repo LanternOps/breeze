@@ -31,6 +31,13 @@
  *     ever assigns at level `partner` — never the org-level assignment the
  *     reporter of #3493 actually used.
  * Every mocked unit suite is blind to this by construction: no RLS runs.
+ *
+ * Scope note: every case here goes through `resolveEffectiveConfig` /
+ * `previewEffectiveConfig` rather than calling the visibility helper directly,
+ * so each one regresses if the WIRING in resolveEffectiveConfigWithExecutor is
+ * removed. The helper's own contract — that it widens by exactly one partner id
+ * and never `*` — is pinned by configPolicyOwnership.test.ts; a test here that
+ * called it directly would pass even with the wiring deleted.
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -46,7 +53,6 @@ import {
   devices,
 } from '../../db/schema';
 import { resolveEffectiveConfig, previewEffectiveConfig } from '../../services/configurationPolicy';
-import { withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
 import type { AuthContext } from '../../middleware/auth';
 import { createPartner, createOrganization, createSite, createUser } from './db-utils';
 
@@ -231,31 +237,6 @@ describe('effective-config resolution under an ORG-SCOPED RLS context (#3493)', 
 
     expect(resultA!.features.monitoring?.sourcePolicyId).toBe(policyId);
     expect(resultB!.features.monitoring?.sourcePolicyId).toBe(policyId);
-  });
-
-  it('widens visibility by exactly ONE partner id, never system-wide', async () => {
-    // This is the property that separates the fix from a blanket system-context
-    // escape, and it cannot be observed from the resolver's return value: a
-    // cross-partner assignment can't even be forged into the table to prove it
-    // negatively (the `config_policy_assignments_target_owner_fk` trigger
-    // raises 23503 on a target that isn't in the policy owner's partner). So
-    // assert the GUC directly, from inside the widened window.
-    const partner = await createPartner();
-    const org = await createOrganization({ partnerId: partner.id });
-
-    const seen: string[] = [];
-    await withDbAccessContext(orgDbContext(org!.id), async () => {
-      await withDevicePartnerPolicyVisibility(db, partner.id, async (ex) => {
-        const rows = await ex.execute(
-          sql`select current_setting('breeze.accessible_partner_ids', true) as ids`,
-        );
-        seen.push((rows as unknown as Array<{ ids: string | null }>)[0]?.ids ?? '');
-      });
-    });
-
-    // Exactly this partner — not '*' (which is how system scope serializes,
-    // i.e. every partner in the install).
-    expect(seen).toEqual([partner.id]);
   });
 
   it('restores the caller\'s partner visibility after the policy join', async () => {

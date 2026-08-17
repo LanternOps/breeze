@@ -132,8 +132,7 @@ describe('withDevicePartnerPolicyVisibility (#3493)', () => {
     const statements: string[] = [];
     return {
       statements,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      execute: vi.fn(async (query: any) => {
+      execute: vi.fn(async (query: Parameters<PgDialect['sqlToQuery']>[0]) => {
         // Only the VALUE is a bound param; the GUC name and the `true`
         // (SET LOCAL) flag are literals in the compiled SQL.
         statements.push(String(new PgDialect().sqlToQuery(query).params[0]));

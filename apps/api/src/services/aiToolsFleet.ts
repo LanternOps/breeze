@@ -960,12 +960,31 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const configPolicyId = input.configPolicyId as string | undefined;
 
         if (configPolicyId) {
-          // Check if policy exists and user has access
-          const oc = orgWhere(auth, configurationPolicies.orgId);
+          // Check if policy exists and user has access.
+          //
+          // NOTE: this whole action is currently unreachable — `setup_auto_approval`
+          // early-returns as disabled above (patch policies are managed through
+          // configuration policies). The two fixes below are defense-in-depth,
+          // kept correct so the block is not a trap if the gate is ever lifted
+          // — same convention as the disabled `manage_alert_rules` branch.
+          //
+          // `policyAccessCondition`, not a bare org-equality (#3493): a
+          // partner-wide policy stores `org_id NULL`, so the org form would tell
+          // the partner-scoped tech who AUTHORED the policy it "was not found".
           const policyConditions: SQL[] = [eq(configurationPolicies.id, configPolicyId)];
+          const oc = policyAccessCondition(auth);
           if (oc) policyConditions.push(oc);
           const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
           if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+          // Making a partner-wide policy REACHABLE is not the same as making it
+          // writable. Everything below mutates the policy's patch feature link,
+          // which lands on every org the policy covers — so it takes the same
+          // capability the HTTP feature-link route requires
+          // (routes/configurationPolicies/featureLinks.ts).
+          if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+            return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+          }
 
           // Check if patch feature link already exists
           const existingLinks = await db.select()
