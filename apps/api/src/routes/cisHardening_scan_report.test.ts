@@ -145,13 +145,22 @@ describe('CIS hardening routes', () => {
   // ============================================
   describe('POST /cis/scan', () => {
     it('triggers a scan for a baseline', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([makeBaseline()]),
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeBaseline()]),
+            }),
           }),
-        }),
-      } as any);
+        } as any)
+        // Omitting deviceIds no longer skips authorization: the route now resolves
+        // the target set server-side with the SAME predicates the explicit-list
+        // branch uses (security review §1.2). See cisHardening_scan_authz.test.ts.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: DEVICE_ID, siteId: 'site-1' }]),
+          }),
+        } as any);
       vi.mocked(scheduleCisScan).mockResolvedValueOnce('job-123');
 
       const res = await app.request('/cis/scan', {
@@ -165,6 +174,10 @@ describe('CIS hardening routes', () => {
       expect(body.message).toContain('CIS scan queued');
       expect(body.jobId).toBe('job-123');
       expect(scheduleCisScan).toHaveBeenCalledTimes(1);
+      // Never `undefined` — that is what let the worker fan out through the partner.
+      expect(vi.mocked(scheduleCisScan).mock.calls[0]![1]).toMatchObject({
+        deviceIds: [DEVICE_ID],
+      });
     });
 
     it('returns 404 for nonexistent baseline', async () => {

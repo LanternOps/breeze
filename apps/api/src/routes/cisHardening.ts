@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { optionalQueryBoolean } from '@breeze/shared';
 
@@ -124,6 +124,87 @@ function baselineVisibilityCondition(auth: AuthContext): SQL | undefined {
   // org-owned baseline from system callers.
   if (!orgCondition) return undefined;
   return partnerWide ? or(orgCondition, partnerWide) : orgCondition;
+}
+
+async function resolveAuthorizedCisScanDeviceIds(
+  auth: AuthContext,
+  permissions: UserPermissions | undefined,
+  baseline: typeof cisBaselines.$inferSelect,
+  requestedDeviceIds: string[] | undefined,
+): Promise<
+  | { deviceIds: string[] }
+  | { error: string; status: 400 | 403; deniedDeviceIds?: string[] }
+> {
+  const hasExplicitDeviceIds = Array.isArray(requestedDeviceIds) && requestedDeviceIds.length > 0;
+
+  // Device eligibility follows the baseline's OWNER. `eq(devices.orgId,
+  // baseline.orgId)` silently matches nothing when org_id is NULL, so a
+  // partner-wide baseline resolves its devices through the org's partner
+  // instead. Never widen past the caller's own org access, including when the
+  // caller omits deviceIds and asks the server to resolve the full scope.
+  const deviceOwnerCondition = baseline.partnerId
+    ? inArray(
+        devices.orgId,
+        db.select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.partnerId, baseline.partnerId))
+      )
+    : eq(devices.orgId, baseline.orgId!);
+  const deviceOrgAccess = auth.orgCondition(devices.orgId);
+  const conditions: SQL[] = [
+    deviceOwnerCondition,
+    ...(deviceOrgAccess ? [deviceOrgAccess] : []),
+    eq(devices.osType, baseline.osType),
+  ];
+
+  if (hasExplicitDeviceIds) {
+    conditions.push(inArray(devices.id, requestedDeviceIds));
+  } else {
+    // Mirror selectCisScanTargetDevices: server-resolved fan-out must never
+    // include Quick Support machines or devices that have been decommissioned.
+    conditions.push(eq(devices.isEphemeral, false), ne(devices.status, 'decommissioned'));
+  }
+
+  const rows = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(and(...conditions));
+
+  if (hasExplicitDeviceIds && rows.length !== requestedDeviceIds.length) {
+    return {
+      error: 'One or more deviceIds do not belong to the baseline org/os scope',
+      status: 400,
+    };
+  }
+
+  // Site is an app-layer axis only: RLS cannot prevent a site-restricted user
+  // from dispatching to another site within an otherwise authorized org.
+  if (permissions?.allowedSiteIds) {
+    const deniedDeviceIds = rows
+      .filter((device) =>
+        typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)
+      )
+      .map((device) => device.id);
+
+    if (hasExplicitDeviceIds && deniedDeviceIds.length > 0) {
+      return {
+        error: 'Access to one or more device sites denied',
+        status: 403,
+        deniedDeviceIds,
+      };
+    }
+
+    if (!hasExplicitDeviceIds && deniedDeviceIds.length > 0) {
+      const deniedDeviceIdSet = new Set(deniedDeviceIds);
+      return {
+        deviceIds: rows
+          .filter((device) => !deniedDeviceIdSet.has(device.id))
+          .map((device) => device.id),
+      };
+    }
+  }
+
+  return { deviceIds: rows.map((device) => device.id) };
 }
 
 function mapBaselineRow(row: typeof cisBaselines.$inferSelect) {
@@ -428,55 +509,27 @@ cisHardeningRoutes.post(
       return c.json({ error: 'Baseline is inactive' }, 400);
     }
 
-    if (Array.isArray(body.deviceIds) && body.deviceIds.length > 0) {
-      // Device eligibility follows the baseline's OWNER. `eq(devices.orgId,
-      // baseline.orgId)` silently matches nothing when org_id is NULL, so a
-      // partner-wide baseline resolves its devices through the org's partner
-      // instead. Never widen past the caller's own org access.
-      const deviceOwnerCondition = baseline.partnerId
-        ? inArray(
-            devices.orgId,
-            db.select({ id: organizations.id })
-              .from(organizations)
-              .where(eq(organizations.partnerId, baseline.partnerId))
-          )
-        : eq(devices.orgId, baseline.orgId!);
-      const deviceOrgAccess = auth.orgCondition(devices.orgId);
-
-      const scopedDevices = await db
-        .select({ id: devices.id, siteId: devices.siteId })
-        .from(devices)
-        .where(and(
-          inArray(devices.id, body.deviceIds),
-          deviceOwnerCondition,
-          ...(deviceOrgAccess ? [deviceOrgAccess] : []),
-          eq(devices.osType, baseline.osType),
-        ));
-
-      if (scopedDevices.length !== body.deviceIds.length) {
-        return c.json({ error: 'One or more deviceIds do not belong to the baseline org/os scope' }, 400);
-      }
-
-      // Site-scope check: partner-scope users restricted to a subset of sites
-      // must not be able to schedule a CIS scan against devices in other sites
-      // within the same org. RLS does not defend the site axis.
-      const permissions = c.get('permissions') as UserPermissions | undefined;
-      if (permissions?.allowedSiteIds) {
-        const deniedDeviceIds = scopedDevices
-          .filter((device) =>
-            typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId)
-          )
-          .map((device) => device.id);
-        if (deniedDeviceIds.length > 0) {
-          return c.json({ error: 'Access to one or more device sites denied', deniedDeviceIds }, 403);
-        }
-      }
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const resolved = await resolveAuthorizedCisScanDeviceIds(
+      auth,
+      permissions,
+      baseline,
+      body.deviceIds,
+    );
+    if ('error' in resolved) {
+      return c.json({
+        error: resolved.error,
+        ...(resolved.deniedDeviceIds ? { deniedDeviceIds: resolved.deniedDeviceIds } : {}),
+      }, resolved.status);
     }
 
-    const jobId = await scheduleCisScan(baseline.id, {
-      requestedBy: auth.user.id,
-      deviceIds: body.deviceIds,
-    });
+    const resolvedDeviceIds = resolved.deviceIds;
+    const jobId = resolvedDeviceIds.length > 0
+      ? await scheduleCisScan(baseline.id, {
+          requestedBy: auth.user.id,
+          deviceIds: resolvedDeviceIds,
+        })
+      : null;
 
     writeRouteAudit(c, {
       orgId: baseline.orgId,
@@ -485,9 +538,19 @@ cisHardeningRoutes.post(
       resourceId: baseline.id,
       details: {
         jobId,
-        deviceCount: body.deviceIds?.length ?? null,
+        deviceCount: resolvedDeviceIds.length,
+        requestedDeviceCount: body.deviceIds?.length ?? null,
       },
     });
+
+    if (jobId === null) {
+      return c.json({
+        message: 'CIS scan queued',
+        jobId: null,
+        baselineId: baseline.id,
+        deviceCount: 0,
+      }, 202);
+    }
 
     return c.json({
       message: 'CIS scan queued',

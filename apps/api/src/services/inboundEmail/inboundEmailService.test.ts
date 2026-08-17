@@ -162,7 +162,7 @@ vi.mock('../../db/schema', () => ({
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
     emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
     internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt',
-    deletedAt: 'deletedAt'
+    deletedAt: 'deletedAt', submittedBy: 'submittedBy', submitterEmail: 'submitterEmail'
   },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
@@ -1166,5 +1166,155 @@ describe('processInboundEmail — inbound enabled master switch (#3597)', () => 
     await processInboundEmail(email());
 
     expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security review 2026-08-16 §1.3 — cross-org ticket comment injection via the
+// enumerable subject token.
+//
+// The subject-token path used to key on partnerId + status + internalNumber ONLY.
+// Ticket numbers are sequential, so anyone whose mail passes SPF/DKIM/DMARC (which
+// only proves they own THEIR OWN domain) could email the MSP's support address with
+// `Re: [T-2026-0123]` and get a PUBLIC comment appended to another customer org's
+// ticket — reopening it if it was resolved. The thread-key path is unguessable and
+// is deliberately left unbound.
+// ---------------------------------------------------------------------------
+describe('subject-token matches are bound to the sender (§1.3)', () => {
+  const VICTIM_TOKEN = 'T-2026-0123';
+
+  function victimTicket(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 't-victim',
+      partnerId: 'p-1',
+      orgId: 'org-b',
+      status: 'resolved',
+      emailThreadKey: '<anchor-b@tickets.example.com>',
+      internalNumber: VICTIM_TOKEN,
+      submittedBy: 'pu-victim',
+      submitterEmail: 'victim@customer-b.example',
+      ...overrides,
+    };
+  }
+
+  function comments() {
+    return state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
+  }
+
+  function reopened() {
+    return state.updates.filter((u) => u.table === 'tickets' && u.set.status === 'open');
+  }
+
+  beforeEach(() => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = []; // no duplicate suppression
+    state.selectRows['tickets'] = [victimTicket()];
+    state.selectRows['portal_users'] = [];
+    state.selectRows['organizations'] = [{ id: 'org-a' }, { id: 'org-b' }];
+  });
+
+  it('EXPLOIT: an unaffiliated sender guessing the token gets NO comment and NO reopen', async () => {
+    // Attacker owns evil.example, so SPF/DKIM/DMARC pass. They know only the number.
+    await processInboundEmail(email({
+      from: 'attacker@evil.example',
+      fromName: 'Totally Legit',
+      subject: `Re: [${VICTIM_TOKEN}] please wire the funds`,
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(emitMock).not.toHaveBeenCalled();
+    // No new ticket carrying the victim's org either.
+    expect(createTicketMock).not.toHaveBeenCalled();
+
+    // The fallthrough is indistinguishable from a message that carried no token:
+    // quarantined, with no ticket id that would confirm T-2026-0123 exists.
+    const log = inboundOf();
+    expect(log).toHaveLength(1);
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.ticketId ?? null).toBeNull();
+  });
+
+  it('EXPLOIT: a portal user of a DIFFERENT org under the same partner cannot reach the ticket', async () => {
+    // The sharpest case: a genuine customer of the same MSP, just not of org-b.
+    state.selectRows['portal_users'] = [{ id: 'pu-a', orgId: 'org-a' }];
+    createTicketMock.mockResolvedValue({ id: 't-own-org', internalNumber: 'T-2026-0500' });
+
+    await processInboundEmail(email({
+      from: 'neighbour@customer-a.example',
+      subject: `Re: [${VICTIM_TOKEN}] status?`,
+    }));
+
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    // Falls through to the normal known-sender path: a fresh ticket in THEIR OWN org.
+    expect(createTicketMock).toHaveBeenCalledTimes(1);
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).orgId).toBe('org-a');
+    expect(inboundOf()[0]!.ticketId).toBe('t-own-org');
+  });
+
+  it('EXPLOIT: the CLOSED-ticket token path is bound too (no linked ticket in the victim org)', async () => {
+    state.selectRows['tickets'] = [victimTicket({ id: 't-closed-victim', status: 'closed' })];
+
+    await processInboundEmail(email({
+      from: 'attacker@evil.example',
+      subject: `Re: [${VICTIM_TOKEN}] reopening this`,
+    }));
+
+    expect(createTicketMock).not.toHaveBeenCalled();
+    expect(comments()).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+  });
+
+  it('ALLOWED: the ticket requester replying by token still matches (comment + reopen)', async () => {
+    await processInboundEmail(email({
+      from: 'Victim@Customer-B.example', // case-insensitive match on submitter_email
+      subject: `Re: [${VICTIM_TOKEN}] any update?`,
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(comments()[0]!.isPublic).toBe(true);
+    expect(reopened()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+    expect(inboundOf()[0]!.ticketId).toBe('t-victim');
+  });
+
+  it('ALLOWED: a portal user / email contact in the ticket org matches by token', async () => {
+    state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null })];
+    state.selectRows['portal_users'] = [{ id: 'pu-b2', orgId: 'org-b' }];
+
+    await processInboundEmail(email({
+      from: 'colleague@customer-b.example',
+      subject: `Re: [${VICTIM_TOKEN}] adding myself`,
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(comments()[0]!.portalUserId).toBe('pu-b2');
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('ALLOWED: a sender whose domain is mapped to the ticket org matches by token', async () => {
+    state.selectRows['tickets'] = [victimTicket({ submitterEmail: null, submittedBy: null })];
+    resolveOrgMock.mockResolvedValue({ orgId: 'org-b', autoCreateContact: false });
+
+    await processInboundEmail(email({
+      from: 'newperson@customer-b.example',
+      subject: `Re: [${VICTIM_TOKEN}] hello`,
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+  });
+
+  it('UNCHANGED: the unguessable thread-key path still matches without any sender binding', async () => {
+    await processInboundEmail(email({
+      from: 'stranger@somewhere.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+    expect(inboundOf()[0]!.ticketId).toBe('t-victim');
   });
 });
