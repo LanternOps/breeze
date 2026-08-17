@@ -54,6 +54,7 @@ const TOOLBAR_TESTIDS = [
   'rte-bullet-list',
   'rte-ordered-list',
   'rte-link',
+  'rte-insert-table',
 ];
 
 describe('RichTextEditor', () => {
@@ -180,5 +181,60 @@ describe('RichTextEditor', () => {
     expect(editable.querySelector('pre')).toBeNull();
     expect(editable.querySelector('code')).toBeNull();
     expect(editable.textContent).toContain('Body');
+  });
+
+  // Issue #3484: tables are part of the subset now. What matters here is that
+  // the editor emits EXACTLY the shape the API sanitizer keeps — anything else
+  // (an inline width style, a <colgroup>, default colspan/rowspan attributes, a
+  // <p> wrapper inside a cell) is rewritten server-side, which leaves the block
+  // permanently dirty and toasts a bogus "markup removed" warning on every blur.
+  describe('tables (#3484)', () => {
+    it('emits attribute-free <table><tbody><tr><th|td> with no colgroup or width style', async () => {
+      const onChange = vi.fn();
+      render(
+        <RichTextEditor value="<p>Hello</p>" onChange={onChange} ariaLabel="Proposal text" testId="rte-test" />,
+      );
+
+      fireEvent.click(screen.getByTestId('rte-insert-table'));
+      await waitFor(() => expect(onChange).toHaveBeenCalled());
+      const emitted = onChange.mock.calls.at(-1)?.[0] as string;
+
+      expect(emitted).toContain('<table><tbody><tr><th></th>');
+      expect(emitted).not.toMatch(/<colgroup|<col\b/);
+      expect(emitted).not.toMatch(/<table[^>]+>/); // no attributes on <table>
+      expect(emitted).not.toMatch(/<(?:td|th)[^>]+>/); // no colspan/rowspan/colwidth
+      // Cells are inline-only: no paragraph wrapper for the sanitizer to flatten.
+      expect(emitted).not.toMatch(/<(?:td|th)><p>/);
+    });
+
+    it('reveals row/column controls only while the caret is inside a table', async () => {
+      render(
+        <RichTextEditor value="<p>Hello</p>" onChange={() => {}} ariaLabel="Proposal text" testId="rte-test" />,
+      );
+      expect(screen.queryByTestId('rte-table-add-row')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('rte-insert-table'));
+
+      await waitFor(() => expect(screen.getByTestId('rte-table-add-row')).toBeInTheDocument());
+      for (const testId of ['rte-table-delete-row', 'rte-table-add-column', 'rte-table-delete-column', 'rte-table-delete']) {
+        expect(screen.getByTestId(testId)).toBeInTheDocument();
+      }
+    });
+
+    it('renders a stored table value instead of collapsing it to text', () => {
+      render(
+        <RichTextEditor
+          value="<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody><tr><td>Setup</td><td>$500</td></tr></tbody></table>"
+          onChange={() => {}}
+          ariaLabel="Proposal text"
+          testId="rte-test"
+        />,
+      );
+      const editable = screen.getByTestId('rte-test');
+      expect(editable.querySelector('table')).not.toBeNull();
+      expect(editable.querySelectorAll('tr')).toHaveLength(2);
+      expect(editable.querySelector('th')?.textContent).toBe('Item');
+      expect(editable.textContent).toContain('$500');
+    });
   });
 });

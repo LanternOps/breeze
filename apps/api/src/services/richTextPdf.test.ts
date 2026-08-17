@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import PDFDocument from 'pdfkit';
-import { parseRichText, renderRichTextIntoPdf, measureRichText, measureInlineRuns, type BodyFonts } from './richTextPdf';
+import { parseRichText, renderRichTextIntoPdf, measureRichText, measureInlineRuns, type BodyFonts, type RichTextTextBlock } from './richTextPdf';
 import { registerThemeFonts } from './documentThemes';
+
+function textBlocks(html: string): RichTextTextBlock[] {
+  const blocks = parseRichText(html);
+  for (const b of blocks) if (b.kind === 'table') throw new Error('unexpected table block');
+  return blocks as RichTextTextBlock[];
+}
 
 describe('parseRichText', () => {
   it('splits paragraphs and inline formatting runs', () => {
@@ -15,11 +21,11 @@ describe('parseRichText', () => {
     ]);
   });
   it('numbers ordered list items and bullets unordered ones', () => {
-    const blocks = parseRichText('<ol><li>a</li><li>b</li></ol><ul><li>c</li></ul>');
+    const blocks = textBlocks('<ol><li>a</li><li>b</li></ol><ul><li>c</li></ul>');
     expect(blocks.map((b) => [b.kind, b.ordinal ?? null])).toEqual([['li', 1], ['li', 2], ['li', null]]);
   });
   it('renders h3/h4 as heading blocks and br as run breaks', () => {
-    const blocks = parseRichText('<h3>Key Terms</h3><p>one<br>two</p>');
+    const blocks = textBlocks('<h3>Key Terms</h3><p>one<br>two</p>');
     expect(blocks[0]).toMatchObject({ kind: 'h3' });
     expect(blocks[1]!.runs.some((r) => r.text.includes('\n'))).toBe(true);
   });
@@ -29,7 +35,7 @@ describe('parseRichText', () => {
   it('folds stray root-level inline content into an implicit paragraph (raw API/MCP bodies)', () => {
     // Not producible by the TipTap editor, but a raw contract body can have bare
     // inline content at the root — it must render, not vanish, to match the HTML.
-    const blocks = parseRichText('Plain lead <strong>bold</strong> and <a href="https://x.example">link</a>');
+    const blocks = textBlocks('Plain lead <strong>bold</strong> and <a href="https://x.example">link</a>');
     expect(blocks).toHaveLength(1);
     expect(blocks[0]!.kind).toBe('p');
     expect(blocks[0]!.runs.map((r) => r.text).join('')).toBe('Plain lead bold and link');
@@ -44,7 +50,7 @@ describe('parseRichText', () => {
     // String.fromCodePoint(0x110000) throws RangeError — must fall back to the
     // original literal text instead of crashing the render.
     expect(() => parseRichText('<p>bad &#x110000; ref</p>')).not.toThrow();
-    const blocks = parseRichText('<p>bad &#x110000; ref</p>');
+    const blocks = textBlocks('<p>bad &#x110000; ref</p>');
     expect(blocks[0]!.runs.map((r) => r.text).join('')).toContain('&#x110000;');
   });
   it('does not throw on an out-of-range numeric character reference (attribute value)', () => {
@@ -178,6 +184,133 @@ describe('renderRichTextIntoPdf', () => {
     // y=200 — the renderer must call ensureRoom often enough (and reserve
     // enough per block) for at least one page break to actually fire.
     expect(pageAdds).toBeGreaterThan(0);
+  });
+});
+
+// Issue #3484: <table> survives sanitisation now, so the PDF renderer has to
+// draw a real grid instead of silently dropping the block.
+describe('rich-text tables (#3484)', () => {
+  function ensureRoomFor(doc: PDFKit.PDFDocument, onBreak?: () => void) {
+    return (needed: number): number => {
+      if (doc.y > doc.page.height - doc.page.margins.bottom - needed) {
+        doc.addPage();
+        onBreak?.();
+      }
+      return doc.y;
+    };
+  }
+
+  it('parses a table into rows of inline-run cells, flagging the header row', () => {
+    const blocks = parseRichText(
+      '<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody><tr><td>Setup</td><td>$500</td></tr></tbody></table>',
+    );
+    expect(blocks).toHaveLength(1);
+    const table = blocks[0]!;
+    expect(table.kind).toBe('table');
+    if (table.kind !== 'table') throw new Error('expected a table block');
+    expect(table.rows.map((r) => r.header)).toEqual([true, false]);
+    expect(table.rows.map((r) => r.cells.map((c) => c.map((run) => run.text).join('')))).toEqual([
+      ['Item', 'Price'],
+      ['Setup', '$500'],
+    ]);
+  });
+
+  it('treats a <th>-only row as a header even without <thead>, and keeps cell formatting', () => {
+    const blocks = parseRichText('<table><tr><th>H</th></tr><tr><td><strong>b</strong>t</td></tr></table>');
+    const table = blocks[0]!;
+    if (table.kind !== 'table') throw new Error('expected a table block');
+    expect(table.rows.map((r) => r.header)).toEqual([true, false]);
+    expect(table.rows[1]!.cells[0]).toEqual([
+      { text: 'b', bold: true, italic: false, underline: false },
+      { text: 't', bold: false, italic: false, underline: false },
+    ]);
+  });
+
+  it('keeps a table that follows and precedes paragraphs in document order', () => {
+    const blocks = parseRichText('<p>before</p><table><tr><td>x</td></tr></table><p>after</p>');
+    expect(blocks.map((b) => b.kind)).toEqual(['p', 'table', 'p']);
+  });
+
+  it('does not drop a <tr>/<td> orphaned from its <table>', () => {
+    // Reachable via the raw API/MCP; the browser lays the text out as flowing
+    // content, so the PDF must not silently lose it.
+    const blocks = parseRichText('<tr><td>orphan</td></tr>');
+    expect(blocks.map((b) => b.kind)).toEqual(['p']);
+    expect(JSON.stringify(blocks)).toContain('orphan');
+  });
+
+  it('advances the cursor by the table it drew, not by the last cell', () => {
+    // Regression guard for the trap tablePdf.ts documents: per-cell draws leave
+    // pdfkit's own y wherever the LAST column ended, which is shorter than the
+    // row whenever an earlier column wrapped. The returned cursor (and doc.y)
+    // must reflect the table's true bottom or the next block overlaps it.
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.y = 100;
+    const html = '<table><tr><td>' + 'wrap '.repeat(40) + '</td><td>short</td></tr></table>';
+    const after = renderRichTextIntoPdf(doc, html, { x: 50, width: 495, startY: 100, ensureRoom: ensureRoomFor(doc) });
+    const measured = measureRichText(doc, html, 495);
+    expect(after).toBeGreaterThan(100);
+    // Height consumed matches the measurement (plus the trailing block gap).
+    expect(after - 100).toBeCloseTo(measured, 0);
+    // doc.y is left at the table's true bottom — the returned cursor is that
+    // plus the trailing block gap every other block type also adds.
+    expect(doc.y).toBeCloseTo(after - 8, 5);
+  });
+
+  it('measures a table as taller than the same content with fewer rows', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const twoRows = measureRichText(doc, '<table><tr><td>a</td></tr><tr><td>b</td></tr></table>', 495);
+    const oneRow = measureRichText(doc, '<table><tr><td>a</td></tr></table>', 495);
+    expect(twoRows).toBeGreaterThan(oneRow);
+    expect(oneRow).toBeGreaterThan(0);
+  });
+
+  it('page-breaks between rows and redraws the header on the new page', async () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50, compress: false });
+    const chunks: Buffer[] = [];
+    const done = new Promise<Buffer>((resolve) => {
+      doc.on('data', (d: Buffer) => chunks.push(d));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    doc.y = 60;
+    let pageAdds = 0;
+    const rows = Array.from({ length: 60 }, (_, i) => `<tr><td>Row ${i + 1}</td><td>value</td></tr>`).join('');
+    const html = `<table><thead><tr><th>HeaderLabel</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
+    renderRichTextIntoPdf(doc, html, {
+      x: 50, width: 495, startY: 60,
+      ensureRoom: ensureRoomFor(doc, () => { pageAdds += 1; }),
+    });
+    doc.end();
+    const pdf = (await done).toString('latin1');
+
+    expect(pageAdds).toBeGreaterThan(0);
+    // "HeaderLabel" is drawn once per page the table spans. Hex-encoded shows
+    // are how pdfkit emits text with an embedded standard font.
+    const headerShows = (pdf.match(/486561646572/g) ?? []).length; // "Header"
+    expect(headerShows).toBeGreaterThan(1);
+  });
+
+  it('renders an empty <table> as nothing rather than throwing', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.y = 100;
+    expect(parseRichText('<table></table>')).toEqual([]);
+    expect(renderRichTextIntoPdf(doc, '<table></table>', { x: 50, width: 495, startY: 100, ensureRoom: ensureRoomFor(doc) })).toBe(100);
+  });
+
+  it('degrades a row taller than a whole page into stacked paragraphs instead of clipping it', () => {
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.y = 60;
+    const giant = 'word '.repeat(4000);
+    const html = `<table><tr><th>Label</th></tr><tr><td>${giant}</td></tr></table>`;
+    let pageAdds = 0;
+    // Must terminate (the degrade path never re-asks for room it cannot get)
+    // and must consume more than one page's worth of vertical space.
+    const after = renderRichTextIntoPdf(doc, html, {
+      x: 50, width: 495, startY: 60,
+      ensureRoom: ensureRoomFor(doc, () => { pageAdds += 1; }),
+    });
+    expect(pageAdds).toBeGreaterThan(0);
+    expect(after).toBeGreaterThan(60);
   });
 });
 

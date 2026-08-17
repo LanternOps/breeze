@@ -262,7 +262,7 @@ describe('createDraftVersion', () => {
     expect(persisted.bodyHtml).toContain('Hi');
   });
 
-  // Issue #3520: sanitizing away a pasted <table>/<blockquote> used to be
+  // Issue #3520: sanitizing away a pasted <pre>/<blockquote> used to be
   // invisible — the version saved and the author found out later.
   it('reports the tags it stripped from bodyHtml instead of saving silently', async () => {
     const auth = makeAuth({ scope: 'organization', canAccessOrg: () => true });
@@ -270,11 +270,11 @@ describe('createDraftVersion', () => {
     queueResult([{ maxVersion: null }]);
     queueResult([{ id: 'v1', versionNumber: 1 }]);
     const row = await svc.createDraftVersion(auth, ORG_TEMPLATE.id, {
-      bodyHtml: '<p>Terms</p><blockquote>note</blockquote><table><tr><td>c</td></tr></table>',
+      bodyHtml: '<p>Terms</p><blockquote>note</blockquote><pre>c</pre>',
     });
     expect(row.id).toBe('v1'); // still saves — warning, not rejection
     expect(row.warnings).toEqual([
-      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'bodyHtml', removedTags: ['blockquote', 'table', 'td', 'tr'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'bodyHtml', removedTags: ['blockquote', 'pre'] },
     ]);
   });
 

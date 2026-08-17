@@ -48,13 +48,76 @@ describe('sanitizeInlineRichText', () => {
   });
 });
 
+// Issue #3484: table markup used to be stripped entirely, collapsing a pasted
+// grid into run-together text. It now survives — structure only, cells inline.
+describe('table markup (#3484)', () => {
+  it('preserves table structure', () => {
+    const input = '<table><thead><tr><th>Item</th><th>Price</th></tr></thead><tbody><tr><td>Setup</td><td>$500</td></tr></tbody></table>';
+    expect(sanitizeRichTextHtml(input)).toBe(input);
+  });
+
+  it('keeps a bare table (no thead/tbody) as authored', () => {
+    expect(sanitizeRichTextHtml('<table><tr><td>a</td><td>b</td></tr></table>'))
+      .toBe('<table><tr><td>a</td><td>b</td></tr></table>');
+  });
+
+  it('keeps inline marks and links inside cells', () => {
+    expect(sanitizeRichTextHtml('<table><tr><td><strong>a</strong> <em>b</em></td></tr></table>'))
+      .toBe('<table><tr><td><strong>a</strong> <em>b</em></td></tr></table>');
+    expect(sanitizeRichTextHtml('<table><tr><td><a href="https://a.b">x</a></td></tr></table>'))
+      .toBe('<table><tr><td><a href="https://a.b" rel="noopener noreferrer" target="_blank">x</a></td></tr></table>');
+  });
+
+  it('drops colspan/rowspan/style/width — no attributes survive on table tags', () => {
+    expect(sanitizeRichTextHtml('<table style="width:100%" border="1"><tr><td colspan="2" rowspan="3" class="c">a</td></tr></table>'))
+      .toBe('<table><tr><td>a</td></tr></table>');
+  });
+
+  it('flattens block content inside a cell to inline runs separated by <br />', () => {
+    // Word/Google-Docs paste wraps cell text in <p>; the boundary becomes a
+    // line break rather than vanishing (which would read "ab").
+    expect(sanitizeRichTextHtml('<table><tr><td><p>a</p><p>b</p></td></tr></table>'))
+      .toBe('<table><tr><td>a<br />b</td></tr></table>');
+    expect(sanitizeRichTextHtml('<table><tr><td><ul><li>a</li><li>b</li></ul></td></tr></table>'))
+      .toBe('<table><tr><td>a<br />b</td></tr></table>');
+  });
+
+  it('flattens a NESTED table inside a cell — cells stay inline-only', () => {
+    expect(sanitizeRichTextHtml('<table><tr><td>x<table><tr><td>n1</td><td>n2</td></tr></table></td></tr></table>'))
+      .toBe('<table><tr><td>x<br />n1<br />n2</td></tr></table>');
+  });
+
+  it('reports what the cell pass removed so the author is still warned', () => {
+    const r = sanitizeRichTextHtmlWithReport('<table><tr><td><p>a</p></td></tr></table>');
+    expect(r.removedTags).toEqual(['p']);
+    const nested = sanitizeRichTextHtmlWithReport('<table><tr><td><table><tr><td>n</td></tr></table></td></tr></table>');
+    expect(nested.removedTags).toEqual(['table', 'td', 'tr']);
+  });
+
+  it('still strips script/style/event handlers inside cells', () => {
+    expect(sanitizeRichTextHtml('<table><tr><td onclick="x()"><script>evil()</script>ok</td></tr></table>'))
+      .toBe('<table><tr><td>ok</td></tr></table>');
+    expect(sanitizeRichTextHtml('<table><tr><td><a href="javascript:alert(1)">x</a></td></tr></table>'))
+      .toBe('<table><tr><td><a>x</a></td></tr></table>');
+  });
+
+  it('is idempotent — the read path re-sanitizes stored rows', () => {
+    const once = sanitizeRichTextHtml('<table><tr><td><p>a</p><p>b</p></td></tr></table>');
+    expect(sanitizeRichTextHtml(once)).toBe(once);
+  });
+
+  it('leaves the inline profile table-free — cell/label editors are unchanged', () => {
+    expect(sanitizeInlineRichText('<table><tr><td>z</td></tr></table>')).toBe('z');
+  });
+});
+
 // Issue #3520: the sanitizer used to discard out-of-subset tags without telling
 // anyone, so a write returned 200 with the author's content gone. The reporting
 // variants name what was dropped without changing what is produced.
 describe('loss reporting (#3520)', () => {
   it('sanitizeRichTextHtmlWithReport names every disallowed tag it removed', () => {
-    const r = sanitizeRichTextHtmlWithReport('<p>keep</p><blockquote><h1>x</h1></blockquote><table><tr><td>c</td></tr></table>');
-    expect(r.removedTags).toEqual(['blockquote', 'h1', 'table', 'td', 'tr']);
+    const r = sanitizeRichTextHtmlWithReport('<p>keep</p><blockquote><h1>x</h1></blockquote><pre>c</pre>');
+    expect(r.removedTags).toEqual(['blockquote', 'h1', 'pre']);
   });
 
   it('reports the same tag once and in sorted order however often it appears', () => {
@@ -62,9 +125,9 @@ describe('loss reporting (#3520)', () => {
       .toEqual(['div', 'span']);
   });
 
-  it('lowercases tag names so <TABLE> and <table> report identically', () => {
-    expect(sanitizeRichTextHtmlWithReport('<TABLE><TR><TD>x</TD></TR></TABLE>').removedTags)
-      .toEqual(['table', 'td', 'tr']);
+  it('lowercases tag names so <BLOCKQUOTE> and <blockquote> report identically', () => {
+    expect(sanitizeRichTextHtmlWithReport('<BLOCKQUOTE><PRE>x</PRE></BLOCKQUOTE>').removedTags)
+      .toEqual(['blockquote', 'pre']);
   });
 
   it('produces html byte-identical to the silent variant', () => {
@@ -73,6 +136,7 @@ describe('loss reporting (#3520)', () => {
       '<a href="javascript:alert(1)">x</a>',
       '<p style="color:red" class="x">hi</p>',
       '<h1>big</h1><table><tr><td>c</td></tr></table>',
+      '<table><tbody><tr><td><p>a</p><p>b</p></td><td><table><tr><td>n</td></tr></table></td></tr></tbody></table>',
       '',
     ];
     for (const input of inputs) {
@@ -108,7 +172,7 @@ describe('loss reporting (#3520)', () => {
   });
 
   it('collector state does not leak between calls', () => {
-    expect(sanitizeRichTextHtmlWithReport('<table>x</table>').removedTags).toEqual(['table']);
+    expect(sanitizeRichTextHtmlWithReport('<blockquote>x</blockquote>').removedTags).toEqual(['blockquote']);
     expect(sanitizeRichTextHtmlWithReport('<p>clean</p>').removedTags).toEqual([]);
   });
 

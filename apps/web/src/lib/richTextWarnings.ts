@@ -1,10 +1,13 @@
 /**
  * Client side of the rich-text loss report (issue #3520).
  *
- * The API's rich-text subset is narrow (11 block tags, 5 inline marks), and
- * sanitize-html discards anything outside it. Block/version writes used to 200
- * with the extra markup quietly gone, so an author who pasted a `<table>` or a
- * `<blockquote>` only found out by noticing their content missing later.
+ * The API's rich-text subset is narrow (a fixed list of block, table and inline
+ * tags — see richTextSanitize.ts), and sanitize-html discards anything outside
+ * it. Block/version writes used to 200 with the extra markup quietly gone, so
+ * an author who pasted a `<blockquote>` or an `<img>` only found out by
+ * noticing their content missing later. (Tables themselves now survive —
+ * issue #3484 — but block content inside a CELL is still flattened, and that
+ * flattening is reported through this same channel.)
  *
  * Those write responses now carry a top-level `warnings` array naming what was
  * removed. This module turns that array into the tag list a toast can show;

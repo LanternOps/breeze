@@ -149,7 +149,8 @@
   /*
    * rich_text quote blocks (quoteBlocks.tsx) render sanitized author HTML via
    * dangerouslySetInnerHTML — the API guarantees only richTextSanitize.ts's fixed
-   * subset (p/br/strong/em/u/h3/h4/ul/ol/li/a) ever reaches this class. Tailwind's
+   * subset (p/br/strong/em/u/h3/h4/ul/ol/li/a + table/thead/tbody/tfoot/tr/th/td)
+   * ever reaches this class. Tailwind's
    * base reset strips list markers and heading weight, so restore the minimal
    * styling that subset needs.
    */
@@ -184,6 +185,22 @@
   }
   .quote-rich-text a {
     @apply text-primary underline underline-offset-2;
+  }
+  /* Tables inside rich_text (issue #3484). The portal deliberately does not
+   * pull in Tailwind's typography plugin (apps/web gets table styling from
+   * `prose` for free), so the grid has to be drawn by hand here — without it a
+   * customer-facing proposal shows a borderless run of cells. Kept visually in
+   * step with the PDF renderer's table (richTextPdf.ts): tinted header row,
+   * hairline borders, no zebra. */
+  .quote-rich-text table {
+    @apply mb-3 w-full table-auto border-collapse text-left text-sm last:mb-0;
+  }
+  .quote-rich-text th,
+  .quote-rich-text td {
+    @apply border border-border px-2 py-1 align-top;
+  }
+  .quote-rich-text th {
+    @apply bg-muted font-semibold text-foreground;
   }
 }
 
