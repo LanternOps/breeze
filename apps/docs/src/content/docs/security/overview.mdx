@@ -474,10 +474,48 @@ Breeze's security controls align with SOC 2 Trust Service Criteria.
 
 ## Vulnerability Disclosure
 
+### Reporting a vulnerability to us
+
 We follow coordinated disclosure:
 
 - **Response timelines**: 48-hour acknowledgment, severity-based fix targets
 - **Email**: [security@lanternops.io](mailto:security@lanternops.io)
+
+### Staying informed (self-hosted operators)
+
+<Aside type="caution" title="Self-hosted installs are not patched automatically">
+Breeze Cloud is patched by us on deploy. **A self-hosted install stays vulnerable until you
+upgrade it.** Security fixes ship in the latest release only — there are no backports, so staying
+current *is* the patch strategy. Set up one of the notifications below during initial deployment;
+Breeze does not phone home, so we have no way to contact you otherwise.
+</Aside>
+
+**1. Watch security advisories (recommended).** Published advisories are the authoritative record
+of what was fixed, which versions are affected, and any workarounds:
+
+- Go to [github.com/LanternOps/breeze](https://github.com/LanternOps/breeze) → **Watch** →
+  **Custom** → tick **Security alerts**.
+- Browse existing advisories at
+  [/security/advisories](https://github.com/LanternOps/breeze/security/advisories).
+
+**2. Read the security sections of each release.** Release notes split security content by urgency:
+
+| Section | Meaning |
+|---|---|
+| `Security — action required` | Upgrade promptly. States the affected version range and what an attacker could do. |
+| `Security — hardening` | Routine defense-in-depth. No action needed beyond upgrading normally. |
+
+**3. Check your deployed version against the advisories.** `GET /health` reports the running
+version. Any advisory whose patched version is newer than yours applies to your deployment.
+
+<Aside type="note" title="Automated scanners will not warn you">
+Breeze is distributed as container images and signed binaries rather than through a package
+ecosystem (npm, PyPI, and similar). Dependabot and most SCA scanners therefore do **not** raise
+alerts for Breeze advisories. Watch the advisories directly — do not assume tooling will tell you.
+</Aside>
+
+Critical and High vulnerabilities receive a CVE and a GitHub Security Advisory, published **after**
+a fix has shipped and rolled out, so details are never public while operators are unpatched.
 
 ---
 
