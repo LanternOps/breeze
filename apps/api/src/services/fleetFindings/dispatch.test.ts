@@ -19,7 +19,7 @@ const h = vi.hoisted(() => {
   const updateReturningQueue: unknown[][] = [];
   const capturedWheres: unknown[] = [];
   const capturedInserts: Array<{ table: unknown; values: unknown }> = [];
-  const capturedUpdates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  const capturedUpdates: Array<{ table: unknown; values: Record<string, unknown>; where?: unknown }> = [];
   const capturedExecutes: unknown[] = [];
   const selectCallMeta: Array<{ limit?: unknown; offset?: unknown }> = [];
 
@@ -65,10 +65,19 @@ const h = vi.hoisted(() => {
 
   const mockUpdate = vi.fn((table: unknown) => ({
     set: (values: Record<string, unknown>) => {
-      capturedUpdates.push({ table, values });
+      const entry: { table: unknown; values: Record<string, unknown>; where?: unknown } = { table, values };
+      capturedUpdates.push(entry);
       return {
         where: (cond: unknown) => {
+          // Recorded both on the shared `capturedWheres` array (order-only
+          // assertions across select+update calls, e.g. markRunDispatchFailed's
+          // single update) AND directly on this update's own `capturedUpdates`
+          // entry (assertions that need THIS update's predicate specifically —
+          // `capturedWheres` is a single array shared with every `db.select`
+          // in the same flow, so its indices don't line up with `capturedUpdates`
+          // once a select and an update both run).
           capturedWheres.push(cond);
+          entry.where = cond;
           return {
             returning: () => Promise.resolve(updateReturningQueue.shift() ?? []),
             then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
@@ -78,6 +87,16 @@ const h = vi.hoisted(() => {
       };
     },
   }));
+
+  // `vi.fn`-wrapped (not a bare async function) so its `mock.invocationCallOrder`
+  // can be compared against `mockUpdate`'s — that's what proves
+  // `recalculateRunRollup`'s recompute runs strictly AFTER the per-target
+  // dispatch writes in a given `dispatchRunChunk`/`pollRunProgress` call,
+  // rather than merely asserting both happened somewhere.
+  const mockExecute = vi.fn(async (statement: unknown) => {
+    capturedExecutes.push(statement);
+    return [];
+  });
 
   return {
     selectQueue,
@@ -91,6 +110,7 @@ const h = vi.hoisted(() => {
     mockSelect,
     mockInsert,
     mockUpdate,
+    mockExecute,
   };
 });
 
@@ -104,12 +124,9 @@ vi.mock('../../db', () => {
     select: h.mockSelect,
     insert: h.mockInsert,
     update: h.mockUpdate,
-    // Raw set-based UPDATE used by pollRunProgress. Recorded rather than
-    // executed — assertions inspect h.capturedExecutes.
-    execute: async (statement: unknown) => {
-      h.capturedExecutes.push(statement);
-      return [];
-    },
+    // Raw set-based UPDATE used by pollRunProgress AND recalculateRunRollup.
+    // Recorded rather than executed — assertions inspect h.capturedExecutes.
+    execute: h.mockExecute,
   };
   dbMock.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock);
   return { db: dbMock };
@@ -217,7 +234,6 @@ vi.mock('../sensitiveCommandPayload', () => ({
   terminalPayloadErasureSet: () => ({ payload: 'ERASE_PAYLOAD' }),
 }));
 
-import { fleetRemediationRuns } from '../../db/schema/fleetFindings';
 import {
   createRemediationRun,
   DISPATCH_ENQUEUE_FAILED_REASON,
@@ -225,6 +241,7 @@ import {
   isTerminalRunStatus,
   markRunDispatchFailed,
   pollRunProgress,
+  recalculateRunRollup,
   REMEDIATION_CHUNK_SIZE,
   REMEDIATION_COMMAND_TYPE_ALLOWLIST,
   RemediationRequestError,
@@ -307,6 +324,7 @@ beforeEach(() => {
   h.mockSelect.mockClear();
   h.mockInsert.mockClear();
   h.mockUpdate.mockClear();
+  h.mockExecute.mockClear();
   getFleetFindingMock.mockReset();
   queueCommandForExecutionMock.mockReset();
   captureExceptionMock.mockReset();
@@ -678,6 +696,12 @@ describe('dispatchRunChunk', () => {
 
     expect(h.capturedUpdates[0]!.values).toMatchObject({ status: 'running' });
     expect(h.capturedUpdates[0]!.values.startedAt).toBeInstanceOf(Date);
+    // CAS on status = 'queued', not a bare id match — several chunks for the
+    // same run read 'queued' concurrently, and only the first writer through
+    // this predicate may flip it to 'running'. An id-only predicate would let
+    // a stalled chunk's write land on top of a status the poll has since
+    // moved to terminal, un-finishing a completed run.
+    expect(JSON.stringify(h.capturedUpdates[0]!.where)).toContain('queued');
   });
 
   it('does not re-flip a run that is already "running"', async () => {
@@ -839,8 +863,16 @@ describe('dispatchRunChunk', () => {
 
     await dispatchRunChunk(RUN_1, 0);
 
-    const failedUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    const failedIdx = h.capturedUpdates.findIndex((u) => (u.values as Record<string, unknown>).status === 'failed');
+    const failedUpdate = h.capturedUpdates[failedIdx]!;
     expect(failedUpdate.values).toMatchObject({ status: 'failed', resultSummary: 'Device is offline, cannot execute command' });
+    // markTargetFailed guards on status IN ('pending', 'queued'), not a bare
+    // id match — every caller reaches it having just won the pending->queued
+    // claim, but a BullMQ retry of the same chunk can replay this helper
+    // against a row another attempt already terminalized. Without the guard
+    // that replay rewrites a `succeeded` target as `failed`.
+    expect(JSON.stringify(failedUpdate.where)).toContain('pending');
+    expect(JSON.stringify(failedUpdate.where)).toContain('queued');
   });
 
   it('marks a target failed when queueCommandForExecution throws', async () => {
@@ -1000,6 +1032,36 @@ describe('dispatchRunChunk', () => {
 
     await expect(dispatchRunChunk(RUN_1, 3)).resolves.toBeUndefined();
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    // #3637 (pendingTargets.length === 0 branch): this is the all-skipped-at-
+    // creation-time run, whose counts must not sit stale until the next 30s
+    // poll tick — the early return still reconciles.
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
+  });
+
+  it('regression #3637: recomputes the run roll-up after a chunk finishes dispatching, without waiting for the next poll tick', async () => {
+    // Before the fix, dispatchRunChunk's markTargetSkipped/markTargetFailed
+    // wrote only the target row; the run's succeeded/failed/skipped columns
+    // stayed at their creation-time values (typically all zero) until
+    // pollRunProgress's next 30s tick. Every consumer other than the web UI
+    // (which counts target rows itself, #3633) read stale counts for that
+    // whole window.
+    h.selectQueue.push([runRow({ status: 'running' })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]); // claim succeeds
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-1' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
+    // Ordering matters: the recompute must run AFTER the per-target dispatch
+    // loop's writes (the claim + the deviceCommandId attach), never
+    // interleaved with them — otherwise it can read a target row mid-claim
+    // and recompute against a transient state. `mockUpdate`/`mockExecute` are
+    // both `vi.fn`s, so their `invocationCallOrder` is directly comparable.
+    const lastTargetUpdateOrder = Math.max(...h.mockUpdate.mock.invocationCallOrder);
+    const firstRecomputeOrder = Math.min(...h.mockExecute.mock.invocationCallOrder);
+    expect(firstRecomputeOrder).toBeGreaterThan(lastTargetUpdateOrder);
   });
 });
 
@@ -1024,6 +1086,139 @@ function resolvedTargetWrites(): Array<{ deviceId: string; status: string; summa
   }
   return rows;
 }
+
+/**
+ * Flattens a captured `db.execute`/`tx.execute` argument back into an
+ * inspectable `{ text, params }` pair, so a raw-SQL assertion doesn't have to
+ * hand-walk the mock's `{ op: 'sql', strings, values }` shape (or `sql.join`
+ * nesting) inline in every test.
+ *
+ * The `drizzle-orm` mock above (`sqlTag`) is what this repo's tests actually
+ * receive — a flat `{ op: 'sql', strings, values }` per tagged template, with
+ * nested `sql` calls (e.g. `sqlTimestamp(now)`) recursing to the same shape.
+ * Real (unmocked) drizzle `SQL` objects instead expose `.queryChunks` —
+ * `StringChunk`s carrying a `.value: string[]` for literals, `Param`/other
+ * objects for bindings. This helper is written to fall back to that shape too
+ * (defensively — nothing in THIS suite exercises it, since drizzle-orm is
+ * fully mocked) so it doesn't silently produce garbage if that ever changes.
+ */
+function renderExecuted(sqlObj: unknown): { text: string; params: unknown[] } {
+  const params: unknown[] = [];
+
+  function flatten(node: unknown): string {
+    if (node && typeof node === 'object' && (node as { op?: string }).op === 'sql') {
+      const { strings = [], values = [] } = node as { strings?: string[]; values?: unknown[] };
+      let text = strings[0] ?? '';
+      values.forEach((value, i) => {
+        text += value && typeof value === 'object' && (value as { op?: string }).op === 'sql' ? flatten(value) : bind(value);
+        text += strings[i + 1] ?? '';
+      });
+      return text;
+    }
+    if (node && typeof node === 'object' && Array.isArray((node as { queryChunks?: unknown[] }).queryChunks)) {
+      // Real-drizzle fallback (see doc comment) — not exercised by this mocked suite.
+      return (node as { queryChunks: unknown[] }).queryChunks
+        .map((chunk) => {
+          const value = (chunk as { value?: unknown }).value;
+          return Array.isArray(value) && value.every((v) => typeof v === 'string') ? value.join('') : bind(value ?? chunk);
+        })
+        .join('');
+    }
+    return bind(node);
+  }
+
+  function bind(value: unknown): string {
+    params.push(value);
+    return '?';
+  }
+
+  return { text: flatten(sqlObj), params };
+}
+
+/**
+ * `recalculateRunRollup` issues exactly two `tx.execute` calls back to back —
+ * the `FOR UPDATE` lock, then the aggregate `UPDATE ... FROM (...)`. Finds
+ * every such adjacent pair in `h.capturedExecutes` and renders both, so
+ * callers can assert order, the `runId` binding, and guard clauses in the
+ * aggregate text without re-deriving the pairing logic per test.
+ */
+function rollupRecomputeCalls(): Array<{
+  lock: { text: string; params: unknown[] };
+  update: { text: string; params: unknown[] };
+}> {
+  const rendered = (h.capturedExecutes as unknown[]).map(renderExecuted);
+  const calls: Array<{ lock: (typeof rendered)[number]; update: (typeof rendered)[number] }> = [];
+  for (let i = 0; i < rendered.length - 1; i++) {
+    if (rendered[i]!.text.includes('FOR UPDATE') && rendered[i + 1]!.text.includes('SET succeeded_count')) {
+      calls.push({ lock: rendered[i]!, update: rendered[i + 1]! });
+      i++; // consume the paired update so it isn't also matched as a stray lock/update
+    }
+  }
+  return calls;
+}
+
+/** True when `recalculateRunRollup(runId, ...)` was issued for this run. */
+function rollupWasRecomputedFor(runId: string): boolean {
+  return rollupRecomputeCalls().some((c) => c.lock.params.includes(runId) && c.update.params.includes(runId));
+}
+
+describe('recalculateRunRollup', () => {
+  it('locks the run row (SELECT ... FOR UPDATE) BEFORE issuing the aggregate UPDATE', async () => {
+    // Load-bearing ordering, not defensive ceremony (see the doc comment on
+    // recalculateRunRollup in dispatch.ts): under READ COMMITTED the
+    // aggregate UPDATE's subquery snapshot is taken at statement start, so
+    // without the lock going first, two concurrent recomputes can interleave
+    // and the earlier one can overwrite the later one's fresher counts.
+    h.selectQueue.push([]);
+    await markRunDispatchFailed(RUN_1);
+
+    const calls = rollupRecomputeCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.lock.text).toContain('FOR UPDATE');
+    expect(calls[0]!.update.text).toContain('SET succeeded_count');
+  });
+
+  it('runs inside db.transaction, not as bare db.execute calls', async () => {
+    const { db } = await import('../../db');
+    const transactionSpy = vi.spyOn(db, 'transaction');
+
+    await recalculateRunRollup(RUN_1);
+
+    expect(transactionSpy).toHaveBeenCalledTimes(1);
+    transactionSpy.mockRestore();
+  });
+
+  it('guards the aggregate UPDATE with r.status <> \'cancelled\' so a recompute can never resurrect a cancelled run', async () => {
+    await recalculateRunRollup(RUN_1);
+
+    const calls = rollupRecomputeCalls();
+    expect(calls[0]!.update.text).toContain("r.status <> 'cancelled'");
+  });
+
+  it('counts in-flight from status IN (\'pending\', \'queued\'), never derived from target_count', async () => {
+    // Deriving in-flight as `target_count - succeeded - failed - skipped`
+    // would defeat the point of a self-correcting recompute: a stale
+    // target_count pins the run in `running` forever (too high) or
+    // terminalizes it while targets are still live (too low).
+    await recalculateRunRollup(RUN_1);
+
+    const calls = rollupRecomputeCalls();
+    expect(calls[0]!.update.text).toContain("status IN ('pending', 'queued')");
+    expect(calls[0]!.update.text).not.toContain('target_count');
+  });
+
+  it('passes runId as a bound parameter, not string-interpolated into the statement text', async () => {
+    await recalculateRunRollup(RUN_1);
+
+    const calls = rollupRecomputeCalls();
+    expect(calls[0]!.lock.params).toContain(RUN_1);
+    expect(calls[0]!.update.params).toContain(RUN_1);
+    // The rendered text only ever contains placeholders for bound values —
+    // if the id had been interpolated instead, it would show up literally.
+    expect(calls[0]!.lock.text).not.toContain(RUN_1);
+    expect(calls[0]!.update.text).not.toContain(RUN_1);
+  });
+});
 
 describe('pollRunProgress', () => {
   function runRow(overrides: Record<string, unknown> = {}) {
@@ -1087,8 +1282,17 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const targetUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
-    expect(targetUpdate).toBeDefined();
+    // This used to assert via `h.capturedUpdates` — which only ever matched
+    // by coincidence, because the OLD run-level roll-up write happened to
+    // also carry `status: 'failed'` through the same `db.update` spy. The
+    // actual per-target write for a resolved command goes through the
+    // set-based raw-SQL UPDATE (`resolvedTargetWrites`), not `db.update`.
+    const write = resolvedTargetWrites().find((r) => r.status === 'failed')!;
+    expect(write).toBeDefined();
+    expect(write.deviceId).toBe(DEVICE_1);
+    // #3637: the run roll-up must be recomputed from the just-written target
+    // rows, not left stale until the next poll tick.
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
   it('times out a target queued more than 30 minutes ago with no resolved command', async () => {
@@ -1161,7 +1365,18 @@ describe('pollRunProgress', () => {
     expect(timedOut).toBeUndefined();
   });
 
-  it('recomputes run status as "running" while any target is still in flight', async () => {
+  // Status/count derivation for the run moved into SQL (recalculateRunRollup)
+  // — the mocked unit layer has no Postgres to actually run the aggregate
+  // against, so it can no longer prove the specific status these scenarios
+  // compute. Each of the 4 tests below still documents the target-state
+  // scenario it's guarding (so a future reader can find the equivalent
+  // integration coverage) and asserts what the unit layer CAN prove: that a
+  // recompute was issued for this run's committed target rows after this
+  // poll tick. The numeric/status outcomes are covered by
+  // `fleetFindings.integration.test.ts` (`succeededCount`/`run.status`
+  // assertions against a real Postgres aggregate).
+
+  it('recomputes the run roll-up while a target is still in flight', async () => {
     h.selectQueue.push([runRow({ targetCount: 2 })]);
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded', deviceCommandId: 'cmd-1', queuedAt: new Date() },
@@ -1171,11 +1386,10 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const runUpdate = h.capturedUpdates.find((u) => u.table === fleetRemediationRuns);
-    expect(runUpdate?.values).toMatchObject({ status: 'running' });
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
-  it('recomputes run status as "partial" when succeeded + failed are mixed and nothing is left in flight', async () => {
+  it('recomputes the run roll-up when succeeded + failed are mixed and nothing is left in flight', async () => {
     h.selectQueue.push([runRow({ targetCount: 2 })]);
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded', deviceCommandId: 'cmd-1', queuedAt: new Date() },
@@ -1184,12 +1398,10 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const runUpdate = h.capturedUpdates.find((u) => u.table === fleetRemediationRuns);
-    expect(runUpdate?.values).toMatchObject({ status: 'partial', succeededCount: 1, failedCount: 1 });
-    expect(runUpdate?.values.completedAt).toBeInstanceOf(Date);
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
-  it('recomputes run status as "succeeded" when every target succeeded', async () => {
+  it('recomputes the run roll-up when every target succeeded', async () => {
     h.selectQueue.push([runRow({ targetCount: 1 })]);
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded', deviceCommandId: 'cmd-1', queuedAt: new Date() },
@@ -1197,11 +1409,10 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const runUpdate = h.capturedUpdates.find((u) => u.table === fleetRemediationRuns);
-    expect(runUpdate?.values).toMatchObject({ status: 'succeeded' });
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
-  it('recomputes run status as "failed" when nothing succeeded', async () => {
+  it('recomputes the run roll-up when nothing succeeded', async () => {
     h.selectQueue.push([runRow({ targetCount: 1 })]);
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'failed', deviceCommandId: 'cmd-1', queuedAt: new Date() },
@@ -1209,11 +1420,10 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const runUpdate = h.capturedUpdates.find((u) => u.table === fleetRemediationRuns);
-    expect(runUpdate?.values).toMatchObject({ status: 'failed' });
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
-  it('counts pre-existing skipped targets toward completion without treating them as in-flight', async () => {
+  it('recomputes the run roll-up counting pre-existing skipped targets toward completion, not as in-flight', async () => {
     h.selectQueue.push([runRow({ targetCount: 2 })]);
     h.selectQueue.push([
       { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded', deviceCommandId: 'cmd-1', queuedAt: new Date() },
@@ -1222,8 +1432,7 @@ describe('pollRunProgress', () => {
 
     await pollRunProgress(RUN_1);
 
-    const runUpdate = h.capturedUpdates.find((u) => u.table === fleetRemediationRuns);
-    expect(runUpdate?.values).toMatchObject({ status: 'partial', succeededCount: 1, skippedCount: 1 });
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
   it('is a no-op when the run does not exist', async () => {
@@ -1277,82 +1486,62 @@ describe('pollRunProgress', () => {
     expect(targetUpdate).toBeDefined();
     expect(targetUpdate.values.status).toBe('failed');
 
-    const runUpdate = h.capturedUpdates[h.capturedUpdates.length - 1]!;
-    expect(runUpdate.values).toMatchObject({ status: 'failed', failedCount: 1 });
-    expect(runUpdate.values.completedAt).toBeInstanceOf(Date);
+    // The run-level status/failedCount used to be asserted off the last
+    // `db.update` — that write is now the SQL recompute (`recalculateRunRollup`),
+    // so the numeric outcome is covered by the integration suite; the unit
+    // layer proves the recompute fired for this run after the timeout write.
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 });
 
 describe('markRunDispatchFailed', () => {
-  it('leaves the run running when targets are still in flight, instead of forcing it terminal', async () => {
-    // Partial enqueue: the scheduler and some chunks landed, so those chunks
-    // already claimed targets to `queued` and sent real commands to real
-    // devices. Terminalizing here made the poll scheduler remove itself on its
-    // next tick without ever reconciling them — the commands still ran, but
-    // their targets stayed `queued` forever and the counts never added up.
-    h.selectQueue.push([
-      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'queued' },
-      { runId: RUN_1, targetDeviceUuid: DEVICE_2, status: 'succeeded' },
-    ]);
+  // markRunDispatchFailed used to re-read every target row (`db.select`) and
+  // hand-derive succeeded/failed/skipped/in-flight counts in JS, branching on
+  // whether anything was still `queued` to decide `running` vs `failed`. That
+  // re-read is DELETED entirely — the function now performs exactly ONE
+  // `db.update` (the pending->skipped flip) and then calls the shared
+  // `recalculateRunRollup`, which derives status/counts/completedAt from the
+  // committed target rows in SQL. None of these tests queue a `selectQueue`
+  // row for markRunDispatchFailed anymore — there is no `db.select` left to
+  // feed.
 
+  it('flips only still-pending targets to skipped via a single db.update, then defers status/counts entirely to the shared recompute', async () => {
     await markRunDispatchFailed(RUN_1);
 
-    const runUpdate = h.capturedUpdates.at(-1)!;
-    expect(runUpdate.values.status).toBe('running');
-    expect(runUpdate.values.completedAt).toBeUndefined();
-    expect(runUpdate.values).toMatchObject({ succeededCount: 1 });
-  });
-
-  it('flips only still-pending targets to skipped, recomputes counts, and terminates the run', async () => {
-    // The pending->skipped UPDATE is a single conditional statement, so the
-    // post-update re-read is what proves the succeeded/failed rows survived.
-    h.selectQueue.push([
-      { runId: RUN_1, targetDeviceUuid: DEVICE_1, status: 'succeeded' },
-      { runId: RUN_1, targetDeviceUuid: DEVICE_2, status: 'failed' },
-      { runId: RUN_1, targetDeviceUuid: DEVICE_3, status: 'skipped' },
-    ]);
-
-    await markRunDispatchFailed(RUN_1);
-
-    const [targetUpdate, runUpdate] = h.capturedUpdates;
-    expect(targetUpdate!.values).toMatchObject({
+    // Load-bearing: exactly one `db.update` total. This is what proves the
+    // duplicated run-level count derivation is GONE, not merely reordered —
+    // that duplication (this function hand-rolling the same derivation
+    // `recalculateRunRollup` now owns) is the shape issue #3637 was about.
+    expect(h.capturedUpdates).toHaveLength(1);
+    expect(h.capturedUpdates[0]!.values).toMatchObject({
       status: 'skipped',
       skipReason: DISPATCH_ENQUEUE_FAILED_REASON,
     });
-    expect(targetUpdate!.values.completedAt).toBeInstanceOf(Date);
-    // The status='pending' predicate is what protects already-resolved rows.
+    expect(h.capturedUpdates[0]!.values.completedAt).toBeInstanceOf(Date);
+    // The status='pending' predicate is what protects already-resolved rows
+    // (succeeded/failed/skipped targets are left untouched by this UPDATE).
     expect(JSON.stringify(h.capturedWheres[0])).toContain('pending');
 
-    expect(runUpdate!.values).toMatchObject({
-      status: 'failed',
-      succeededCount: 1,
-      failedCount: 1,
-      skippedCount: 1,
-    });
-    expect(runUpdate!.values.completedAt).toBeInstanceOf(Date);
+    expect(rollupWasRecomputedFor(RUN_1)).toBe(true);
   });
 
   it('accepts a custom reason and defaults to dispatch_enqueue_failed', async () => {
-    h.selectQueue.push([]);
     await markRunDispatchFailed(RUN_1, 'redis_unavailable');
     expect(h.capturedUpdates[0]!.values.skipReason).toBe('redis_unavailable');
 
     h.capturedUpdates.length = 0;
-    h.selectQueue.push([]);
     await markRunDispatchFailed(RUN_1);
     expect(h.capturedUpdates[0]!.values.skipReason).toBe(DISPATCH_ENQUEUE_FAILED_REASON);
   });
 
-  it('terminates a run with zero surviving targets as failed with all-zero counts', async () => {
-    h.selectQueue.push([]);
-
-    await markRunDispatchFailed(RUN_1);
-
-    const runUpdate = h.capturedUpdates[1]!;
-    expect(runUpdate.values).toMatchObject({
-      status: 'failed', succeededCount: 0, failedCount: 0, skippedCount: 0,
-    });
-  });
+  // Three run-level OUTCOMES this block used to assert directly — targets
+  // still in flight hold the run at `running` with no `completedAt`; an
+  // all-skipped run terminalizes as `failed` with all-zero counts; a run with
+  // prior successes terminalizes as `partial` rather than a blanket `failed`
+  // — are now derived in SQL by `recalculateRunRollup` and are not observable
+  // through the Drizzle mock (asserting them here would only re-assert the
+  // mock, not real behaviour). They're proven against real Postgres in
+  // `fleetFindings.integration.test.ts` cases (c), (c2), (c3).
 });
 
 describe('isTerminalRunStatus', () => {
