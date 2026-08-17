@@ -28,11 +28,18 @@ var softwareRegistryPaths = []struct {
 func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 	var software []SoftwareItem
 	seen := make(map[string]bool)
+	var pathErrs []string
 
 	for _, regPath := range softwareRegistryPaths {
 		items, err := collectFromRegistry(regPath.root, regPath.path)
 		if err != nil {
-			// Continue on error - some paths may not exist or be accessible
+			// Continue on error - some paths may not exist or be accessible.
+			// A single unreadable hive is normal (WOW6432Node is absent on
+			// 32-bit Windows; HKCU under the SYSTEM service is the SYSTEM
+			// profile), so it must not fail the whole collection — but record
+			// it so a total failure below can be distinguished from a genuinely
+			// empty machine.
+			pathErrs = append(pathErrs, fmt.Sprintf("%s: %v", regPath.path, err))
 			continue
 		}
 
@@ -44,6 +51,15 @@ func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 				software = append(software, item)
 			}
 		}
+	}
+
+	// Every registry path failed: this is "we could not look", not "nothing is
+	// installed". Returning (nil, nil) here would let callers that treat an
+	// empty list as ground truth — notably the uninstall post-condition check in
+	// remote/tools — conclude that software is absent without ever having read
+	// the registry (#3592).
+	if len(pathErrs) == len(softwareRegistryPaths) {
+		return nil, fmt.Errorf("no installed-software registry path could be read: %s", strings.Join(pathErrs, "; "))
 	}
 
 	return software, nil

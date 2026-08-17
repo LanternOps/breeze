@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -43,6 +44,15 @@ func softwareStillInstalled(name string) (bool, error) {
 	installed, err := softwareInventoryFn()
 	if err != nil {
 		return false, err
+	}
+
+	// An endpoint with zero installed software is not a real state — it means
+	// the enumeration did not work. The Linux collector in particular returns an
+	// empty list with a nil error when neither dpkg-query nor rpm is usable
+	// (software_linux.go), and treating that as "verified absent" would let the
+	// uninstall post-condition pass without ever having looked.
+	if len(installed) == 0 {
+		return false, fmt.Errorf("software inventory came back empty; cannot verify removal")
 	}
 
 	for _, item := range installed {

@@ -62,7 +62,7 @@ func TestRunUninstallAttemptsWingetNotFoundDoesNotShortCircuitSuccess(t *testing
 			err    error
 		}{
 			"winget": {output: "No installed package found matching input criteria.", err: fmt.Errorf("exit status 1")},
-			"wmic":   {output: "No Instance(s) Available.", err: fmt.Errorf("exit status 1")},
+			"wmic":   {output: "No Instance(s) Available.", err: nil}, // wmic exits 0 on no match — bug #2
 		},
 	}
 	env.install(t, true, nil)
@@ -94,7 +94,7 @@ func TestRunUninstallAttemptsNotFoundSucceedsWhenVerifiedAbsent(t *testing.T) {
 			err    error
 		}{
 			"winget": {output: "No installed package found matching input criteria.", err: fmt.Errorf("exit status 1")},
-			"wmic":   {output: "No Instance(s) Available.", err: fmt.Errorf("exit status 1")},
+			"wmic":   {output: "No Instance(s) Available.", err: nil}, // wmic exits 0 on no match — bug #2
 		},
 	}
 	env.install(t, false, nil)
@@ -125,8 +125,52 @@ func TestRunUninstallAttemptsExitZeroStillFailsWhenSoftwareRemains(t *testing.T)
 	if err == nil {
 		t.Fatal("exit code 0 from wmic must not be accepted as proof of removal")
 	}
+	// Exit 0 + a no-match message is classified as "this provider cannot see
+	// it", not as a removal claim.
+	if !strings.Contains(err.Error(), "could locate") {
+		t.Fatalf("wmic's exit-0 no-match must not read as a removal claim, got: %v", err)
+	}
+}
+
+// The counterpart: a genuine exit-0 removal that verification contradicts.
+func TestRunUninstallAttemptsClaimedRemovalStillFailsWhenSoftwareRemains(t *testing.T) {
+	env := &fakeUninstallEnv{
+		available: map[string]bool{"winget": true},
+		responses: map[string]struct {
+			output string
+			err    error
+		}{
+			"winget": {output: "Successfully uninstalled", err: nil},
+		},
+	}
+	env.install(t, true, nil)
+
+	err := runUninstallAttempts("Some App", []uninstallAttempt{{command: "winget"}})
+	if err == nil {
+		t.Fatal("a provider claiming success must not override a verified-still-present result")
+	}
 	if !strings.Contains(err.Error(), "reported success") {
 		t.Fatalf("error should distinguish the lying-provider case, got: %v", err)
+	}
+}
+
+// wmic's exit-0 no-match must not be the one signal still trusted when
+// verification is unavailable — that was the remaining route back to a silent
+// success.
+func TestRunUninstallAttemptsWmicExitZeroPlusUnverifiableIsAFailure(t *testing.T) {
+	env := &fakeUninstallEnv{
+		available: map[string]bool{"wmic": true},
+		responses: map[string]struct {
+			output string
+			err    error
+		}{
+			"wmic": {output: "No Instance(s) Available.", err: nil},
+		},
+	}
+	env.install(t, false, fmt.Errorf("registry unreadable"))
+
+	if err := runUninstallAttempts("Some App", []uninstallAttempt{{command: "wmic"}}); err == nil {
+		t.Fatal("wmic exit-0 no-match with verification unavailable must not report success")
 	}
 }
 
@@ -191,6 +235,57 @@ func TestRunUninstallAttemptsFallsBackToErrorWhenVerificationUnavailable(t *test
 	}
 }
 
+// Verification must not upgrade a hard provider failure into a success. The
+// uninstall name does not always appear verbatim in the collector's output (a
+// brew cask token is "google-chrome" while system_profiler reports
+// "Google Chrome"), so "absent" can mean "the collector cannot see this name" —
+// which would otherwise swallow a genuine apt/brew/msiexec error.
+func TestRunUninstallAttemptsHardErrorSurvivesVerifiedAbsent(t *testing.T) {
+	env := &fakeUninstallEnv{
+		available: map[string]bool{"brew": true},
+		responses: map[string]struct {
+			output string
+			err    error
+		}{
+			"brew": {output: "Error: Permission denied @ rb_sysopen", err: fmt.Errorf("exit status 1")},
+		},
+	}
+	env.install(t, false, nil)
+
+	err := runUninstallAttempts("google-chrome", []uninstallAttempt{{command: "brew"}})
+	if err == nil {
+		t.Fatal("a hard provider error must remain a failure even when verification cannot see the name")
+	}
+	if !strings.Contains(err.Error(), "Permission denied") {
+		t.Fatalf("error should carry the provider's failure detail, got: %v", err)
+	}
+}
+
+// "Every provider says it does not know this package" is not evidence of
+// removal. If verification is also unavailable, there is nothing left to stand
+// on and the operation must fail loudly rather than resurrect the #3592 silent
+// success behind a transient collector failure.
+func TestRunUninstallAttemptsNotFoundPlusUnverifiableIsAFailure(t *testing.T) {
+	env := &fakeUninstallEnv{
+		available: map[string]bool{"brew": true},
+		responses: map[string]struct {
+			output string
+			err    error
+		}{
+			"brew": {output: "Error: Cask 'foo' is not installed.", err: fmt.Errorf("exit status 1")},
+		},
+	}
+	env.install(t, false, fmt.Errorf("system_profiler timed out"))
+
+	err := runUninstallAttempts("foo", []uninstallAttempt{{command: "brew"}})
+	if err == nil {
+		t.Fatal("not-found-only with verification unavailable must not report success")
+	}
+	if !strings.Contains(err.Error(), "could not confirm") {
+		t.Fatalf("error should name the unverifiable post-condition, got: %v", err)
+	}
+}
+
 func TestRunUninstallAttemptsNoProviderAvailable(t *testing.T) {
 	env := &fakeUninstallEnv{available: map[string]bool{}}
 	env.install(t, false, nil)
@@ -252,6 +347,21 @@ func TestSoftwareStillInstalledNormalizesDotApp(t *testing.T) {
 	}
 	if !got {
 		t.Error(`softwareStillInstalled("Slack.app") = false, want true`)
+	}
+}
+
+// An empty inventory means the enumeration did not work, not that the endpoint
+// has no software. It must read as "cannot verify", not "verified absent".
+func TestSoftwareStillInstalledTreatsEmptyInventoryAsUnverifiable(t *testing.T) {
+	orig := softwareInventoryFn
+	t.Cleanup(func() { softwareInventoryFn = orig })
+
+	softwareInventoryFn = func() ([]collectors.SoftwareItem, error) {
+		return []collectors.SoftwareItem{}, nil
+	}
+
+	if _, err := softwareStillInstalled("Anything"); err == nil {
+		t.Fatal("an empty inventory must not be reported as verified-absent")
 	}
 }
 
