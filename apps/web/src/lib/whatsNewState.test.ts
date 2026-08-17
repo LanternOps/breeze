@@ -23,9 +23,67 @@ describe('decideWhatsNew', () => {
     expect(s._map.has(LAST_SEEN_KEY)).toBe(false);
   });
 
-  it('first-ever load sets baseline without showing', () => {
+  // #3646: an existing user upgrading from a build that predates the feature has
+  // no floor either, so "no floor" must not baseline the current entry away.
+  it('shows the newest shipped entry when there is no floor', () => {
     const s = fakeStorage();
-    expect(decideWhatsNew(s, '0.105.0', ENTRIES)).toEqual({ entry: null, baselineToSet: '0.105.0' });
+    const d = decideWhatsNew(s, '0.105.0', ENTRIES);
+    expect(d.entry?.version).toBe('0.105.0');
+    expect(d.baselineToSet).toBeNull();
+    expect(s._map.has(LAST_SEEN_KEY)).toBe(false);
+  });
+
+  it('shows at most one entry with no floor, even with a backlog', () => {
+    const s = fakeStorage();
+    expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry?.version).toBe('0.105.0');
+  });
+
+  it('no floor still respects the running web version', () => {
+    const s = fakeStorage();
+    expect(decideWhatsNew(s, '0.104.0', ENTRIES).entry?.version).toBe('0.104.0');
+  });
+
+  it('no floor and nothing applicable sets the baseline instead', () => {
+    const s = fakeStorage();
+    expect(decideWhatsNew(s, '0.103.0', ENTRIES)).toEqual({
+      entry: null,
+      baselineToSet: '0.103.0',
+    });
+  });
+
+  it('treats an empty stored floor as absent', () => {
+    const s = fakeStorage({ [LAST_SEEN_KEY]: '' });
+    expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry?.version).toBe('0.105.0');
+  });
+
+  // An unparseable floor makes every semverCompare null, which would otherwise
+  // suppress the splash forever with nothing left to rewrite the key.
+  it('treats an unparseable stored floor as absent', () => {
+    const s = fakeStorage({ [LAST_SEEN_KEY]: 'not-a-version' });
+    expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry?.version).toBe('0.105.0');
+  });
+
+  it('rewrites the baseline over an unparseable floor when nothing applies', () => {
+    const s = fakeStorage({ [LAST_SEEN_KEY]: 'garbage' });
+    expect(decideWhatsNew(s, '0.103.0', ENTRIES)).toEqual({
+      entry: null,
+      baselineToSet: '0.103.0',
+    });
+  });
+
+  it('shows nothing when the entry list is empty', () => {
+    const s = fakeStorage();
+    expect(decideWhatsNew(s, '0.105.0', [])).toEqual({
+      entry: null,
+      baselineToSet: '0.105.0',
+    });
+  });
+
+  it('does not re-show after the no-floor entry is acknowledged', () => {
+    const s = fakeStorage();
+    const first = decideWhatsNew(s, '0.105.0', ENTRIES);
+    markSeen(s, first.entry!.version);
+    expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry).toBeNull();
   });
 
   it('shows the newest entry above the floor and at/below web version', () => {
