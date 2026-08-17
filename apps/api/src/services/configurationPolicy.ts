@@ -1,5 +1,6 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
+import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -1784,8 +1785,28 @@ async function resolveEffectiveConfigWithExecutor(
     );
   }
 
-  // 5. Single query: assignments → policies (active) → feature links
-  const rows = await executor
+  // 5. Single query: assignments → policies (active) → feature links.
+  //
+  // Wrapped in the partner-wide visibility escape (#3493). The dual-axis
+  // ownership predicate below is only the APP layer; RLS is stricter. Every
+  // org-scoped caller — and that is who opens the device's Effective
+  // Configuration tab — carries `accessiblePartnerIds: []`, so
+  // `breeze_has_partner_access(cp.partner_id)` is false and Postgres silently
+  // drops every partner-owned row. The predicate then looks correct while the
+  // join returns ZERO partner-wide policies, which is exactly the "partner-wide
+  // policy never reaches the device" symptom.
+  //
+  // The SAME-CONNECTION variant is required here, not `withPartnerWideVisibility`:
+  // `executor` is a transaction on the preview/diff path, and a system escape
+  // would run on a different connection that cannot see that transaction's
+  // uncommitted proposed assignments. `org.partnerId` was read one step above
+  // under the CALLER's own RLS context, so this widens by exactly the device's
+  // own partner and nothing else. Steps 1-3 stay in the caller's context on
+  // purpose — they are the tenancy boundary.
+  const rows = await withDevicePartnerPolicyVisibility(
+    executor,
+    org?.partnerId ?? null,
+    (ex) => ex
     .select({
       assignmentId: configPolicyAssignments.id,
       assignmentLevel: configPolicyAssignments.level,
@@ -1817,7 +1838,8 @@ async function resolveEffectiveConfigWithExecutor(
       sql`(${configPolicyAssignments.roleFilter} IS NULL OR ${sql.param(device.deviceRole)} = ANY(${configPolicyAssignments.roleFilter}))`,
       sql`(${configPolicyAssignments.osFilter} IS NULL OR ${sql.param(device.osType)} = ANY(${configPolicyAssignments.osFilter}))`
     ))
-    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+      .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt),
+  );
 
   // 6. Sort by level priority (device=5 first), then priority ASC, then createdAt ASC
   const sorted = rows.sort((a, b) => {
