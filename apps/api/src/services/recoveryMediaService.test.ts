@@ -6,12 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // recoveryMediaService pulls in the db and the recovery-bootstrap/signing
 // stack at module load; none of it is exercised by resolveBackupBinary.
-vi.mock('../db', () => ({ db: {} }));
+// `safeFetch` (now on the download path) calls `assertOutsideHeldDbContext`,
+// so the `../db` mock has to expose it or the import fails at call time.
+vi.mock('../db', () => ({ db: {}, assertOutsideHeldDbContext: vi.fn() }));
 vi.mock('./recoveryBootstrap', () => ({
   asRecord: (v: unknown) => (v && typeof v === 'object' ? v : {}),
   getStringValue: () => null,
   resolveServerUrl: () => 'https://breeze.example.com',
   resolveSnapshotProviderConfig: vi.fn(),
+}));
+// `downloadFile` now goes through the SSRF-guarded `safeFetchFollowingRedirects`,
+// which resolves DNS and dials a pinned IP itself — it never touches global
+// `fetch`, so `stubFetch` below would otherwise be bypassed and these cases
+// would make real network calls. Route it back to the stubbed global; that the
+// guard is actually adopted here is covered by `backupSsrfAdoption.test.ts`, and
+// the redirect/SSRF semantics of the real helper by
+// `recoveryMediaService.redirect.test.ts` + `urlSafety.test.ts`.
+vi.mock('./urlSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./urlSafety')>()),
+  safeFetchFollowingRedirects: (url: string) => globalThis.fetch(url),
 }));
 vi.mock('./recoverySigning', () => ({
   getRecoverySigningKey: () => null,

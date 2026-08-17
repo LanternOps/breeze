@@ -90,6 +90,7 @@ async function getDevicePatchRow(deviceId: string, externalId: string) {
         status: devicePatches.status,
         installedAt: devicePatches.installedAt,
         installedVersion: devicePatches.installedVersion,
+        availableVersion: devicePatches.availableVersion,
         scope: devicePatches.scope,
       })
       .from(devicePatches)
@@ -220,12 +221,20 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
     expect(row?.packageId).toBe('Mozilla.Firefox');
     expect(row?.title).toBe('Mozilla Firefox');
     expect(row?.vendor).toBe('Mozilla');
+    // Identity: `version` drives the version pin/block rules in
+    // `patchApprovalEvaluator`, so agent scan data may only FILL it.
+    expect(row?.version).toBe('121.0');
+    // Severity is raise-only on the agent path — 'low' cannot lower 'critical'
+    // for every other tenant reading this shared row.
+    expect(row?.severity).toBe('critical');
     // Operational: refreshed, exactly as the legitimate rescan flow needs.
-    expect(row?.version).toBe('122.0');
-    expect(row?.severity).toBe('low');
     expect(row?.category).toBe('application');
     expect(row?.requiresReboot).toBe(false);
     expect(row?.description).toBe('Rewritten description');
+    // The per-device observed available version DOES advance — it lives on the
+    // tenant-scoped device_patches row, one value per device.
+    expect((await getDevicePatchRow(first.id, externalId))?.availableVersion).toBe('121.0');
+    expect((await getDevicePatchRow(second.id, externalId))?.availableVersion).toBe('122.0');
   });
 
   runDb('does not blank operational columns when a later scan simply omits them', async () => {
@@ -260,8 +269,11 @@ describe('patch ingest — shared catalog metadata must not be clobbered (real P
     expect(row?.category).toBe('security');
     expect(row?.requiresReboot).toBe(true);
     expect(row?.severity).toBe('critical');
-    // The one thing the sparser scan did report still lands.
-    expect(row?.version).toBe('2.55.1');
+    // The shared catalog version is fill-only, so the rescan cannot move it.
+    expect(row?.version).toBe('2.55.0');
+    // The one thing the sparser scan did report still lands — on the
+    // device-scoped column that legitimately advances between scans.
+    expect((await getDevicePatchRow(dev.id, externalId))?.availableVersion).toBe('2.55.1');
   });
 
   runDb('lets a later scan FILL columns the first report left empty', async () => {

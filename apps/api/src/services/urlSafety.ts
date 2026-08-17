@@ -193,6 +193,145 @@ export function __setLookupForTests(fn: LookupAllFn | null): void {
   lookupImpl = fn ?? ((hostname) => dnsLookup(hostname, { all: true, verbatim: true }));
 }
 
+export interface SsrfGuardOptions {
+  /** See `SafeFetchInit.allowPrivateNetwork`. */
+  allowPrivateNetwork?: boolean;
+}
+
+/** A hostname that is already an IP literal needs no DNS work. */
+function isIpLiteral(hostname: string): boolean {
+  return /^[\d.]+$/.test(hostname) || hostname.includes(':');
+}
+
+/** Strip the brackets Node keeps on IPv6 URL hostnames. */
+function bareHostname(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, '');
+}
+
+/**
+ * Resolve `hostname` and return only the records that are safe to dial.
+ *
+ * The single place the resolve-and-filter policy lives, shared by `safeFetch`,
+ * `assertSafeUrl` and `createGuardedLookup` so they can never drift apart.
+ * Throws `SsrfBlockedError` when nothing safe remains.
+ */
+async function resolveSafeRecords(
+  hostname: string,
+  opts?: SsrfGuardOptions
+): Promise<{ safe: LookupAddress[]; allIps: string[] }> {
+  // With `allowPrivateNetwork`, RFC1918/ULA appliance addresses are permitted
+  // but metadata/loopback/link-local/CGNAT (etc.) are STILL blocked.
+  const block = opts?.allowPrivateNetwork ? isAlwaysBlockedIp : isPrivateIp;
+
+  let records: LookupAddress[];
+  if (isIpLiteral(hostname)) {
+    if (block(hostname)) {
+      throw new SsrfBlockedError(`URL points to blocked address: ${hostname}`, {
+        hostname,
+        resolvedIps: [hostname]
+      });
+    }
+    records = [{ address: hostname, family: hostname.includes(':') ? 6 : 4 }];
+  } else {
+    records = await lookupImpl(hostname, { all: true });
+    if (records.length === 0) {
+      throw new SsrfBlockedError(`no DNS records for ${hostname}`, { hostname });
+    }
+  }
+
+  const allIps = records.map((r) => r.address);
+  const safe = records.filter((r) => !block(r.address));
+  if (safe.length === 0) {
+    throw new SsrfBlockedError(
+      `all resolved IPs for ${hostname} are private/loopback/link-local`,
+      { hostname, resolvedIps: allIps }
+    );
+  }
+  return { safe, allIps };
+}
+
+/**
+ * Validate a URL without sending anything: scheme must be http/https and the
+ * hostname must resolve to at least one non-blocked address.
+ *
+ * Exists so a user-facing "test connection" route can fail with an actionable
+ * `SsrfBlockedError` message instead of an opaque socket error. It is NOT a
+ * substitute for connect-time enforcement — pair it with `createGuardedLookup`
+ * (or the agents below), which is what actually closes the DNS-rebinding
+ * window.
+ */
+export async function assertSafeUrl(urlStr: string, opts?: SsrfGuardOptions): Promise<void> {
+  const u = new URL(urlStr);
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    throw new SsrfBlockedError(`unsupported URL scheme: ${u.protocol}`);
+  }
+  await resolveSafeRecords(bareHostname(u.hostname), opts);
+}
+
+/**
+ * A `net.LookupFunction` that resolves normally but only ever hands back
+ * addresses that pass the SSRF policy.
+ *
+ * Because it runs at CONNECT time and is the only resolution the socket sees,
+ * there is no validate-then-connect window at all — the rebinding class is
+ * closed by construction. Errors are delivered through the callback (never
+ * thrown synchronously) because that is what Node's connect path expects.
+ */
+export function createGuardedLookup(opts?: SsrfGuardOptions): LookupFunction {
+  return ((hostname: string, options: unknown, cb?: unknown) => {
+    const callback = (typeof options === 'function' ? options : cb) as
+      | ((e: NodeJS.ErrnoException | null, addr: string, family: number) => void)
+      | ((e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)
+      | undefined;
+
+    if (!callback) return;
+
+    const wantsAll =
+      typeof options === 'object' && options !== null && 'all' in options &&
+      (options as { all?: boolean }).all === true;
+
+    resolveSafeRecords(bareHostname(hostname), opts).then(
+      ({ safe }) => {
+        if (wantsAll) {
+          (callback as (e: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void)(null, safe);
+          return;
+        }
+        const first = safe[0]!;
+        (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
+          null,
+          first.address,
+          first.family
+        );
+      },
+      (err: Error) => {
+        (callback as (e: NodeJS.ErrnoException | null, addr: string, family: number) => void)(
+          err as NodeJS.ErrnoException,
+          '',
+          0
+        );
+      }
+    );
+  }) as LookupFunction;
+}
+
+/**
+ * HTTP/HTTPS agents whose DNS resolution is SSRF-guarded.
+ *
+ * For SDKs that build their own HTTP client and therefore cannot go through
+ * `safeFetch` (the AWS SDK is the motivating case), handing them these agents
+ * applies the same connect-time policy to every request they make.
+ */
+export function createGuardedHttpAgents(opts?: SsrfGuardOptions): {
+  httpAgent: http.Agent;
+  httpsAgent: https.Agent;
+} {
+  const lookup = createGuardedLookup(opts);
+  return {
+    httpAgent: new http.Agent({ lookup, keepAlive: true }),
+    httpsAgent: new https.Agent({ lookup, keepAlive: true })
+  };
+}
+
 export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -259,44 +398,16 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     throw new SsrfBlockedError(`unsupported URL scheme: ${u.protocol}`);
   }
 
-  const hostname = u.hostname.replace(/^\[|\]$/g, '');
+  const hostname = bareHostname(u.hostname);
 
-  // Pick the blocking predicate. With `allowPrivateNetwork`, RFC1918/ULA
-  // appliance addresses are permitted but metadata/loopback/link-local/CGNAT
-  // (etc.) are STILL blocked; otherwise every private range is blocked.
-  const block = init.allowPrivateNetwork ? isAlwaysBlockedIp : isPrivateIp;
-
-  // If the URL itself is a literal private IP, reject without any DNS work.
-  // (This also catches `localhost` via the DNS path below, but handling
-  // literals first avoids needing to resolve them.)
-  const isLiteral = /^[\d.]+$/.test(hostname) || hostname.includes(':');
-  if (isLiteral && block(hostname)) {
-    throw new SsrfBlockedError(`URL points to blocked address: ${hostname}`, {
-      hostname,
-      resolvedIps: [hostname]
-    });
-  }
-
-  // Resolve the hostname. Even literal IPs go through `dns.lookup` normally,
-  // but we skip that and treat them as pre-resolved.
-  let records: LookupAddress[];
-  if (isLiteral) {
-    records = [{ address: hostname, family: hostname.includes(':') ? 6 : 4 }];
-  } else {
-    records = await lookupImpl(hostname, { all: true });
-    if (records.length === 0) {
-      throw new SsrfBlockedError(`no DNS records for ${hostname}`, { hostname });
-    }
-  }
-
-  const allIps = records.map((r) => r.address);
-  const safeRecord = records.find((r) => !block(r.address));
-  if (!safeRecord) {
-    throw new SsrfBlockedError(
-      `all resolved IPs for ${hostname} are private/loopback/link-local`,
-      { hostname, resolvedIps: allIps }
-    );
-  }
+  // Resolve + filter through the SHARED policy helper, so `safeFetch`,
+  // `assertSafeUrl` and `createGuardedLookup` can never drift apart on what
+  // counts as a blocked address. It rejects literal private IPs without any DNS
+  // work, and throws when every resolved record is blocked.
+  const { safe, allIps } = await resolveSafeRecords(hostname, {
+    allowPrivateNetwork: init.allowPrivateNetwork
+  });
+  const safeRecord = safe[0]!;
 
   // Cleartext is only conceded for the on-LAN hop the operator owns. Checked
   // against the pinned record specifically, so it cannot drift from the address
@@ -469,4 +580,99 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
+}
+
+/** HTTP statuses that carry a `Location` we are willing to follow. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Default hop ceiling for `safeFetchFollowingRedirects`. */
+export const SAFE_FETCH_MAX_REDIRECTS = 5;
+
+/** Headers that must never survive a hop to a different origin. */
+const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
+
+function stripCredentialHeaders(headers: SafeFetchInit['headers']): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  const entries: Array<[string, string]> =
+    headers instanceof Headers
+      ? [...headers.entries()]
+      : Array.isArray(headers)
+        ? (headers as Array<[string, string]>)
+        : Object.entries(headers as Record<string, string>);
+  for (const [k, v] of entries) {
+    if (!CREDENTIAL_HEADERS.includes(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * `safeFetch`, plus an EXPLICIT, bounded redirect chain.
+ *
+ * `safeFetch` deliberately follows nothing: it hands back the 3xx so the caller
+ * decides whether the `Location` is worth trusting. That default must not
+ * change — every existing caller relies on it — but some server-configured
+ * endpoints simply cannot be reached without following, GitHub release assets
+ * being the motivating case (`github.com/.../releases/download/...` 302s to
+ * `objects.githubusercontent.com`). Converting such a caller to bare `safeFetch`
+ * turns a working download into `download failed with status 302`.
+ *
+ * The security property that matters: each hop is a fresh `safeFetch`, so every
+ * intermediate URL is independently DNS-resolved, filtered and IP-pinned. A
+ * redirect to `169.254.169.254`, loopback or RFC1918 is rejected exactly as a
+ * first-party URL would be — which is the whole reason naive
+ * `redirect: 'follow'` is an SSRF bypass and this loop is not.
+ *
+ * Method/credential handling follows the fetch spec's intent: a 303 (and a
+ * 301/302 on a non-GET/HEAD request) degrades to GET with no body, and
+ * credential headers are dropped when the hop crosses to a different origin.
+ */
+export async function safeFetchFollowingRedirects(
+  urlStr: string,
+  init: SafeFetchInit = {},
+  maxRedirects: number = SAFE_FETCH_MAX_REDIRECTS
+): Promise<Response> {
+  let currentUrl = urlStr;
+  let currentInit: SafeFetchInit = init;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const response = await safeFetch(currentUrl, currentInit);
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new SsrfBlockedError(
+        `redirect (${response.status}) from ${currentUrl} has no Location header`
+      );
+    }
+
+    let next: URL;
+    try {
+      // Relative Locations are legal, so resolve against the CURRENT url.
+      next = new URL(location, currentUrl);
+    } catch {
+      throw new SsrfBlockedError(
+        `redirect (${response.status}) from ${currentUrl} has an unparseable Location: ${location}`
+      );
+    }
+    if (next.protocol !== 'https:' && next.protocol !== 'http:') {
+      throw new SsrfBlockedError(`redirect to unsupported URL scheme: ${next.protocol}`);
+    }
+
+    const method = (currentInit.method || 'GET').toUpperCase();
+    const degradeToGet =
+      response.status === 303 || (response.status !== 307 && response.status !== 308 && method !== 'GET' && method !== 'HEAD');
+    const crossOrigin = new URL(currentUrl).origin !== next.origin;
+
+    currentInit = {
+      ...currentInit,
+      ...(degradeToGet ? { method: 'GET', body: undefined } : {}),
+      ...(crossOrigin ? { headers: stripCredentialHeaders(currentInit.headers) } : {})
+    };
+    currentUrl = next.toString();
+  }
+
+  // Exhausting the budget is an error, never a silent success: returning the
+  // last 3xx would hand the caller a body it did not ask for.
+  throw new Error(`too many redirects (more than ${maxRedirects}) starting at ${urlStr}`);
 }
