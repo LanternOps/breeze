@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '../../lib/validation';
+import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../db';
@@ -207,7 +207,15 @@ vaultRoutes.post(
   requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action),
   requireMfa(),
   zValidator('param', vaultIdParam),
-  zValidator('json', vaultSyncSchema),
+  // The body is genuinely optional (`snapshotId` is the only field and it is
+  // `.optional()`), and the web client posts NO body while `fetchWithAuth`
+  // still sets `Content-Type: application/json`. Under the strict validator
+  // Hono called `c.req.json()` on that empty body and threw
+  // `400 Malformed JSON in request body` before the handler ever ran, so every
+  // Sync Now from the UI failed — invisibly, because the old handler swallowed
+  // the error. See the `optionalJsonValidator` docs in lib/validation.ts, which
+  // names this exact `fetchWithAuth` interaction.
+  optionalJsonValidator(vaultSyncSchema),
   async (c) => {
     const auth = c.get('auth');
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
