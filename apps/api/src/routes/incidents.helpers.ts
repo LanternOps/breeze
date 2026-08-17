@@ -362,8 +362,20 @@ export function buildIncidentFeedQueries(
     // two alone leaves row order undefined between two LIMIT/OFFSET queries and
     // a client paging the feed would see some rows twice and miss others. There
     // is no single base-table PK here — the feed is a UNION ALL over three
-    // sources — but `source` is a constant per leg and `sourceId` is unique
-    // within its leg, so the pair is a complete key across the union.
+    // sources — so we key on `(source, sourceId)`: `source` is a constant per
+    // leg, and `sourceId` separates rows within a leg.
+    //
+    // Honest caveat: that pair is a COMPLETE key only for the tracked leg
+    // (`incidents.id`). The EDR legs carry the vendor's own id, and its unique
+    // index is per INTEGRATION (`huntress_incidents_external_idx` on
+    // `(integration_id, huntress_incident_id)`; likewise for S1), while these
+    // legs are scoped by `org_id` alone. An org with two integrations from the
+    // same vendor could therefore still tie — which needs identical rank AND
+    // identical detectedAt AND a colliding vendor incident id, so it is a
+    // remote corner rather than the everyday transaction-timestamp tie this
+    // fixes. Making it airtight means adding `integration_id` as a fourth
+    // aliased column to all three legs; not worth the surface today, but that
+    // is the fix if it ever bites.
     .orderBy(asc(sub.rank), desc(sub.detectedAt), asc(sub.source), asc(sub.sourceId))
     .limit(params.limit)
     .offset(params.offset);

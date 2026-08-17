@@ -159,7 +159,8 @@ vi.mock('../db/schema', () => ({
     id: { __column: 'organizations.id' },
     partnerId: { __column: 'organizations.partnerId' },
     status: { __column: 'organizations.status' },
-    deletedAt: { __column: 'organizations.deletedAt' }
+    deletedAt: { __column: 'organizations.deletedAt' },
+    createdAt: { __column: 'organizations.createdAt' }
   },
   // #2879 — the suspended-org lifecycle override re-reads the caller's raw
   // partner_users.org_ids selection under a system context.
@@ -1602,6 +1603,45 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+    });
+
+    // #3462: apps/web/src/lib/fetchAllOrganizations.ts pages through this
+    // general (partner/system-scope) branch with LIMIT/OFFSET. `created_at`
+    // is `defaultNow()` and Postgres `now()` is the TRANSACTION timestamp, so
+    // every org written in one transaction (seed, bulk import, migration)
+    // shares a byte-identical value — ordering on that tied key alone leaves
+    // row order undefined between two page fetches, and the walk would
+    // silently see some orgs twice and miss others. This exercises the
+    // general paginated branch (partner scope), NOT the own-org early-return
+    // branch covered by the projection test below.
+    it('appends a unique id tiebreaker to the sort so paging is stable', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      let capturedOrderBy: unknown[] = [];
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 0 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockImplementation((...args: unknown[]) => {
+                    capturedOrderBy = args;
+                    return Promise.resolve([]);
+                  })
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations');
+
+      expect(res.status).toBe(200);
+      expect(capturedOrderBy).toEqual([organizations.createdAt, organizations.id]);
     });
 
     // A partner with >50 orgs can't reach org #51+ via page/limit alone (#2280

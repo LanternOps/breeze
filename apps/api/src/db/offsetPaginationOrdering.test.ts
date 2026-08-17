@@ -34,6 +34,16 @@ const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  * `orderBy(...)` of any statement that also calls `.offset(...)`. Anything else
  * — a composite key, an aliased subquery column, an ordering built by a shared
  * helper — must be justified by name in ALLOWED_WITHOUT_LITERAL_ID below.
+ *
+ * What it does NOT catch (know this before trusting a green run): the check is
+ * textual, so it cannot tell the BASE table's `id` from some JOINED table's
+ * `id`. `.from(alerts).innerJoin(devices, …).orderBy(devices.hostname,
+ * devices.id)` satisfies the regex while still being non-deterministic, because
+ * many alerts share one device. Proving otherwise needs the join cardinality,
+ * which is in the schema, not in the call site. So: when you review a new
+ * offset-paginated query, confirm by eye that the tiebreaker is the `.from()`
+ * table's own key. The guard catches the common case — no tiebreaker at all —
+ * not every possible wrong one.
  */
 
 /** Files whose `.offset()` statements order deterministically without a literal
@@ -151,7 +161,20 @@ describe('offset pagination ordering (#3462)', () => {
             (entry) => entry.file === rel && haystack.includes(entry.orderByContains)
           );
 
-        const orderByAt = statement.indexOf('.orderBy(');
+        // Pair the `.offset(` with the TEXTUALLY NEAREST `.orderBy(`, not the
+        // first one in the chunk. A chunk can hold a subquery's `.orderBy()`
+        // ahead of the outer paginated one, and taking the first would check
+        // the wrong clause — possibly masking a real violation by finding an
+        // unrelated `.id`. Nearest rather than nearest-preceding because both
+        // chain orders occur in this codebase (`routes/orgs.ts` writes
+        // `.limit().offset().orderBy()`).
+        const offsetAt = statement.indexOf('.offset(');
+        let orderByAt = -1;
+        for (let at = statement.indexOf('.orderBy('); at !== -1; at = statement.indexOf('.orderBy(', at + 1)) {
+          if (orderByAt === -1 || Math.abs(at - offsetAt) < Math.abs(orderByAt - offsetAt)) {
+            orderByAt = at;
+          }
+        }
         if (orderByAt === -1) {
           // Either genuinely unordered, or the `.offset()` was chained in a
           // later statement than the `.orderBy()` (allowlisted by name).
