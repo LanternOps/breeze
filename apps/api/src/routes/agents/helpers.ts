@@ -479,7 +479,16 @@ export function getSecurityStatusFromResult(resultData: Record<string, unknown> 
   const nested = isObject(resultData.status) ? resultData.status : undefined;
   const candidate = nested ?? resultData;
   const parsed = securityStatusIngestSchema.safeParse(candidate);
-  if (!parsed.success) return undefined;
+  if (!parsed.success) {
+    // Previously this dropped the whole update with no trace at all, which is
+    // the same diagnostic dead end #3641 is about — a security-status update
+    // that vanishes between the device and the row.
+    console.warn(
+      '[agents/helpers] Discarding security status result: payload failed validation:',
+      parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+    );
+    return undefined;
+  }
   return parsed.data;
 }
 

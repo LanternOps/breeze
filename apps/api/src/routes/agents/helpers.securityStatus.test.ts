@@ -110,16 +110,21 @@ describe('upsertSecurityStatusForDevice — avProducts persistence (#3641)', () 
     expect(lastSet().avProducts).toBeNull();
   });
 
-  it('bounds the persisted strings so a rogue payload cannot bloat the jsonb column', () => {
+  it('truncates over-long strings instead of rejecting the whole submission', () => {
+    // displayName is raw WMI text. Rejecting would 400 the entire heartbeat's
+    // security status for one long vendor name, and keep doing so every cycle.
     const oversized = securityStatusIngestSchema.safeParse({
-      avProducts: [{ displayName: 'x'.repeat(201) }]
+      provider: 'windows_defender',
+      realTimeProtection: true,
+      avProducts: [{ displayName: 'x'.repeat(500), provider: 'y'.repeat(500) }]
     });
-    expect(oversized.success).toBe(false);
-
-    const overlongProvider = securityStatusIngestSchema.safeParse({
-      avProducts: [{ provider: 'y'.repeat(101) }]
+    expect(oversized.success).toBe(true);
+    expect(oversized.data?.avProducts?.[0]).toEqual({
+      displayName: 'x'.repeat(200),
+      provider: 'y'.repeat(100)
     });
-    expect(overlongProvider.success).toBe(false);
+    // The rest of the payload survives intact — no silent drop.
+    expect(oversized.data?.realTimeProtection).toBe(true);
 
     // The existing 50-product cap still holds.
     const tooMany = securityStatusIngestSchema.safeParse({
