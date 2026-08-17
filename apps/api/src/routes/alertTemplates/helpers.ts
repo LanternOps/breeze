@@ -48,7 +48,10 @@ export async function getAllTemplates(orgId: string) {
     .from(alertTemplates)
     .where(
       or(
-        eq(alertTemplates.isBuiltIn, true),
+        // Global built-ins only: policyAlertBridge creates ORG-OWNED rows with
+        // is_built_in true, so a bare is_built_in disjunct would leak another
+        // org's template here (security review 2026-08-16 §1.5, same class).
+        and(eq(alertTemplates.isBuiltIn, true), isNull(alertTemplates.orgId)),
         eq(alertTemplates.orgId, orgId)
       )
     )
@@ -66,7 +69,7 @@ export async function getTemplateById(templateId: string, orgId: string) {
       and(
         eq(alertTemplates.id, templateId),
         or(
-          eq(alertTemplates.isBuiltIn, true),
+          and(eq(alertTemplates.isBuiltIn, true), isNull(alertTemplates.orgId)),
           eq(alertTemplates.orgId, orgId)
         )
       )
