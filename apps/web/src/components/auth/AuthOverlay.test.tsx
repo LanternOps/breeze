@@ -271,3 +271,170 @@ describe('AuthOverlay #ssoCode exchange bootstrap (#3700)', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe('live-token');
   });
 });
+
+describe('AuthOverlay #ssoCode failure and race hardening (#3700 review round)', () => {
+  const UNAUTHENTICATED = {
+    isAuthenticated: false,
+    isLoading: false,
+    tokens: null,
+    user: null,
+    sessionExpiredReason: null,
+  } as const;
+
+  const originalFetch = global.fetch;
+  let fetchCalls: Array<{ url: string; init?: RequestInit }>;
+
+  function stubFetch(routes: Record<string, () => Response | Promise<Response>>) {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      fetchCalls.push({ url, init });
+      for (const [needle, respond] of Object.entries(routes)) {
+        if (url.includes(needle)) return respond();
+      }
+      throw new Error(`unexpected fetch in test: ${url}`);
+    }) as typeof fetch;
+  }
+
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+  async function expectErrorBounce() {
+    const { navigateTo } = await import('../../lib/navigation');
+    await waitFor(() => {
+      expect(navigateTo).toHaveBeenCalledWith('/login?error=sso_exchange_failed', { replace: true });
+    });
+    expect(window.location.hash).toBe('');
+    expect(vi.mocked(navigateTo)).toHaveBeenCalledTimes(1);
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    fetchCalls = [];
+    useAuthStore.setState({ ...UNAUTHENTICATED });
+    window.history.replaceState({}, '', '/');
+    const { navigateTo } = await import('../../lib/navigation');
+    vi.mocked(navigateTo).mockClear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    global.fetch = originalFetch;
+    vi.useRealTimers();
+    useAuthStore.setState({ ...UNAUTHENTICATED });
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('bounces a malformed grant to /login with the error notice, without attempting an exchange', async () => {
+    stubFetch({});
+    window.history.replaceState({}, '', '/#ssoCode=%E0%A4%A');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await expectErrorBounce();
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('bounces an empty grant to /login with the error notice', async () => {
+    stubFetch({});
+    window.history.replaceState({}, '', '/#ssoCode=');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await expectErrorBounce();
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('bounces to /login with the error notice when /users/me fails after a successful exchange', async () => {
+    stubFetch({
+      '/sso/exchange': () => json(200, { accessToken: 'sso-access', expiresInSeconds: 900 }),
+      '/users/me': () => json(500, { error: 'boom' }),
+    });
+    window.history.replaceState({}, '', '/#ssoCode=grant-1');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await expectErrorBounce();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('bounces cleanly when /users/me returns 200 with a non-JSON body (no unhandled rejection)', async () => {
+    stubFetch({
+      '/sso/exchange': () => json(200, { accessToken: 'sso-access', expiresInSeconds: 900 }),
+      '/users/me': () =>
+        new Response('<html>gateway interstitial</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+    });
+    window.history.replaceState({}, '', '/#ssoCode=grant-2');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await expectErrorBounce();
+  });
+
+  it('bounces with the error notice when the exchange request itself throws (offline)', async () => {
+    stubFetch({
+      '/sso/exchange': () => Promise.reject(new TypeError('Failed to fetch')),
+    });
+    window.history.replaceState({}, '', '/#ssoCode=grant-3');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    await expectErrorBounce();
+  });
+
+  it('completes the exchange for a stale persisted session with a dead refresh cookie, without an eviction race', async () => {
+    // The enforce-SSO lockout arrival state: localStorage still says
+    // isAuthenticated (tokens are memory-only), the refresh cookie is dead,
+    // and a fresh grant is in the fragment. The dead-cookie refresh must not
+    // fire from the slow path and evict mid-exchange.
+    let exchangeSettled = false;
+    stubFetch({
+      '/auth/refresh': () => {
+        if (!exchangeSettled) throw new Error('refresh raced the SSO exchange');
+        return json(401, { error: 'invalid refresh token' });
+      },
+      '/sso/exchange': async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        exchangeSettled = true;
+        return json(200, { accessToken: 'sso-access', expiresInSeconds: 900 });
+      },
+      '/users/me': () => json(200, { id: 'u-9', email: 'locked@example.com', name: 'Locked Out', mfaEnabled: false }),
+    });
+    useAuthStore.setState({
+      ...UNAUTHENTICATED,
+      isAuthenticated: true,
+      user: { id: 'u-9', email: 'locked@example.com', name: 'Locked Out', mfaEnabled: false },
+    });
+    window.history.replaceState({}, '', '/#ssoCode=grant-4');
+
+    render(<AuthOverlay />);
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+    });
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('sso-access');
+    });
+    const { navigateTo } = await import('../../lib/navigation');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(fetchCalls.some((c) => c.url.includes('/auth/refresh') && !exchangeSettled)).toBe(false);
+  });
+});

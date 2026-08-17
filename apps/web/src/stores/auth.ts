@@ -444,7 +444,65 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
 
 let tokenRefreshInFlight: Promise<RefreshOutcome> | null = null;
 
+// ---- SSO login gate (#3700) -------------------------------------------------
+//
+// When the page loads with `#ssoCode=` in the fragment, an SSO token exchange
+// is about to run — but it only starts once AuthOverlay mounts and its 50ms
+// rehydrate timer fires. Sibling islands (Header, AuthGuard, DashboardWrapper)
+// race ahead of that: with a stale persisted `isAuthenticated: true` and a
+// DEAD refresh cookie (exactly the state an enforce-SSO-locked-out user is
+// in), their first fetchWithAuth/restore call fails the cookie refresh and
+// hard-evicts to /login, abandoning the single-use grant mid-exchange.
+//
+// The gate is armed SYNCHRONOUSLY at module load (before any island effect can
+// run) and makes every refresh attempt wait until the exchange settles. After
+// a successful exchange the refresh cookie is fresh, so the queued refreshes
+// succeed; after a failed one they proceed to their normal eviction path. The
+// timeout is a deadlock backstop for the pathological case where nothing ever
+// consumes the fragment (e.g. the landing page renders no AuthOverlay).
+const SSO_LOGIN_GATE_TIMEOUT_MS = 15_000;
+let ssoLoginGate: Promise<void> | null = null;
+let ssoLoginGateSettle: (() => void) | null = null;
+let ssoLoginGateTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function armSsoLoginGate(): void {
+  if (ssoLoginGate) return;
+  ssoLoginGate = new Promise<void>((resolve) => {
+    ssoLoginGateSettle = resolve;
+  });
+  ssoLoginGateTimer = setTimeout(() => {
+    console.warn('[ssoLoginGate] timed out waiting for the SSO exchange to settle');
+    settleSsoLoginGate();
+  }, SSO_LOGIN_GATE_TIMEOUT_MS);
+}
+
+/** Release refreshes held by the gate. Safe to call when no gate is armed. */
+export function settleSsoLoginGate(): void {
+  if (ssoLoginGateTimer) {
+    clearTimeout(ssoLoginGateTimer);
+    ssoLoginGateTimer = null;
+  }
+  ssoLoginGateSettle?.();
+  ssoLoginGateSettle = null;
+  ssoLoginGate = null;
+}
+
+// Optional chaining: tests (and some embedders) stub `window.location` with a
+// partial object, and this runs at module load where a throw breaks every
+// importer of the store.
+if (typeof window !== 'undefined' && window.location?.hash?.startsWith('#ssoCode=')) {
+  armSsoLoginGate();
+}
+// ----------------------------------------------------------------------------
+
 async function requestTokenRefreshShared(): Promise<RefreshOutcome> {
+  // Hold every refresh while an SSO exchange is (about to be) in flight — a
+  // dead-cookie verdict reached mid-exchange evicts the session and abandons
+  // the grant. See the SSO login gate block above.
+  if (ssoLoginGate) {
+    await ssoLoginGate;
+  }
+
   if (tokenRefreshInFlight) {
     return tokenRefreshInFlight;
   }
@@ -552,7 +610,10 @@ export async function bootstrapFromCfAccessRedirect(): Promise<boolean> {
  * Returns true if the store was populated; false if any step failed (the
  * caller should bounce to /login with an error notice). The grant is
  * single-use and short-lived, so a failed exchange is not retryable — the
- * user re-initiates SSO login instead.
+ * user re-initiates SSO login instead. One partial-success shape to know
+ * about: if the exchange succeeded but the /users/me step failed, the
+ * HttpOnly refresh cookie IS already set, so the /login page's cookie-restore
+ * path may sign the user in without any re-initiation.
  */
 export async function bootstrapFromSsoCode(code: string): Promise<boolean> {
   let exchangeResponse: Response;
@@ -562,17 +623,27 @@ export async function bootstrapFromSsoCode(code: string): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ code }),
+      // Bounded so a black-holed request settles before AuthOverlay's 10s
+      // safety net fires its bare (error-less) /login redirect.
+      signal: AbortSignal.timeout(8000),
     });
-  } catch {
+  } catch (err) {
+    console.warn('[bootstrapFromSsoCode] /sso/exchange request failed', err);
     return false;
   }
 
-  if (!exchangeResponse.ok) return false;
+  if (!exchangeResponse.ok) {
+    console.warn('[bootstrapFromSsoCode] /sso/exchange rejected', exchangeResponse.status);
+    return false;
+  }
 
   const data = (await exchangeResponse.json().catch(() => null)) as
     | { accessToken?: string; expiresInSeconds?: number }
     | null;
-  if (!data?.accessToken) return false;
+  if (!data?.accessToken) {
+    console.warn('[bootstrapFromSsoCode] /sso/exchange returned no access token');
+    return false;
+  }
 
   return completeBootstrapLogin({
     accessToken: data.accessToken,
@@ -592,14 +663,23 @@ async function completeBootstrapLogin(tokens: Tokens): Promise<boolean> {
         'Content-Type': 'application/json',
       },
       credentials: 'include',
+      signal: AbortSignal.timeout(8000),
     });
-  } catch {
+  } catch (err) {
+    console.warn('[completeBootstrapLogin] /users/me request failed', err);
     return false;
   }
 
-  if (!meResponse.ok) return false;
+  if (!meResponse.ok) {
+    console.warn('[completeBootstrapLogin] /users/me rejected', meResponse.status);
+    return false;
+  }
 
-  const user = (await meResponse.json()) as User | null;
+  // .catch: a 200 with a non-JSON body (proxy/CDN interstitial) must resolve
+  // to a clean `false` — an uncaught rejection here escapes both bootstrap
+  // callers' .then chains, and the user hangs on the overlay spinner until
+  // the 10s safety net drops them on a bare /login with no error notice.
+  const user = (await meResponse.json().catch(() => null)) as User | null;
   if (!user || !user.id) return false;
 
   useAuthStore.getState().login(user, tokens);
