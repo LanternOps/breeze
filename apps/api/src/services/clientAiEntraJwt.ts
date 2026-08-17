@@ -39,6 +39,8 @@ export interface ClientAiEntraClaims {
   iss: string;
   exp: number;
   iat: number;
+  /** Raw space-delimited delegated-scope string (Entra `scp` claim), or null when absent. */
+  scp: string | null;
 }
 
 export class ClientAiEntraJwksUnavailableError extends Error {
@@ -113,6 +115,7 @@ export async function verifyEntraIdToken(
     preferred_username?: unknown;
     email?: unknown;
     name?: unknown;
+    scp?: unknown;
   };
 
   const tid = typeof payload.tid === 'string' ? payload.tid.toLowerCase() : '';
@@ -145,5 +148,6 @@ export async function verifyEntraIdToken(
     iss: payload.iss as string,
     exp: payload.exp as number,
     iat: payload.iat as number,
+    scp: typeof payload.scp === 'string' ? payload.scp : null,
   };
 }

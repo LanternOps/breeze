@@ -131,6 +131,18 @@ describe('verifyEntraIdToken', () => {
     expect(claims.email).toBeNull();
   });
 
+  it('returns the raw scp claim when present', async () => {
+    const token = await mintEntraToken({ tid, oid, scp: 'access_as_user profile' });
+    const claims = await verifyEntraIdToken(token, { audience });
+    expect(claims.scp).toBe('access_as_user profile');
+  });
+
+  it('returns null scp when the claim is absent', async () => {
+    const token = await mintEntraToken({ tid, oid });
+    const claims = await verifyEntraIdToken(token, { audience });
+    expect(claims.scp).toBeNull();
+  });
+
   it('rejects a token signed by a different key (forged signature)', async () => {
     const attacker = await generateRsaKeypair();
     const token = await mintEntraToken(

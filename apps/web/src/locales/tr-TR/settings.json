@@ -3349,5 +3349,25 @@
       "deleted": "Değişken silindi",
       "deleteFailed": "Değişken silinemedi"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Outlook eklenti bağlamaları",
+    "description": "Outlook teknisyen eklentisine bağlı teknisyenler. Bir bağlamayı iptal etmek, teknisyenin tüm cihazlardaki eklenti oturumunu kapatır.",
+    "loading": "Bağlamalar yükleniyor…",
+    "loadFailed": "Bağlamalar yüklenemedi.",
+    "retry": "Tekrar deneyin",
+    "empty": "Henüz hiçbir teknisyen Outlook eklentisini bağlamadı.",
+    "user": "Kullanıcı",
+    "entraTenant": "Entra kiracısı",
+    "boundOn": "Bağlanma tarihi",
+    "mfaVerified": "MFA doğrulandı",
+    "actions": "Eylemler",
+    "revoke": "İptal Et",
+    "revoked": "Bağlama iptal edildi",
+    "revokeFailed": "Bağlama iptal edilemedi",
+    "confirmTitle": "Outlook eklenti bağlamasını iptal et",
+    "confirmBody": "Bu işlem {{name}} kullanıcısının Outlook teknisyen eklentisi oturumunu tüm cihazlarda kapatır. Yeniden oturum açarak tekrar bağlanabilirler.",
+    "cancel": "İptal",
+    "confirmRevoke": "Bağlamayı iptal et"
   }
 }

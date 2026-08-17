@@ -695,6 +695,9 @@ importers:
       '@breeze/office-addin-core':
         specifier: workspace:*
         version: link:../../packages/office-addin-core
+      '@breeze/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       react:
         specifier: ^19.2.8
         version: 19.2.8

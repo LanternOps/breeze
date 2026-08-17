@@ -25,6 +25,8 @@ function fakeHost(overrides: Partial<HostAdapter> = {}): HostAdapter {
 }
 
 const SESSION: ClientSession = {
+  v: 2,
+  persona: 'client',
   sessionToken: 'tok',
   expiresAt: Date.now() + 60_000,
   user: { id: 'u1', email: 'u@x.com', name: 'U' },

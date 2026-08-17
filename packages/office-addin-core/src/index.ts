@@ -35,6 +35,7 @@ export { BlockedScreen } from './components/BlockedScreen';
 export { BrandingFooter } from './components/BrandingFooter';
 export { SignInScreen } from './components/SignInScreen';
 export { App } from './components/App';
+export type { AppProps } from './components/App';
 export { ChatPane } from './components/ChatPane';
 export * from './lib/address';
 export * from './lib/markdown';

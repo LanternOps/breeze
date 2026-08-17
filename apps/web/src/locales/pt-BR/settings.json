@@ -3349,5 +3349,25 @@
       "deleted": "Variável excluída",
       "deleteFailed": "Não foi possível excluir a variável"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Vínculos do add-in do Outlook",
+    "description": "Técnicos vinculados ao add-in técnico do Outlook. Revogar um vínculo desconecta o técnico do add-in em todos os dispositivos.",
+    "loading": "Carregando vínculos…",
+    "loadFailed": "Falha ao carregar os vínculos.",
+    "retry": "Tentar novamente",
+    "empty": "Nenhum técnico vinculou o add-in do Outlook ainda.",
+    "user": "Usuário",
+    "entraTenant": "Locatário do Entra",
+    "boundOn": "Vinculado em",
+    "mfaVerified": "MFA verificado",
+    "actions": "Ações",
+    "revoke": "Revogar",
+    "revoked": "Vínculo revogado",
+    "revokeFailed": "Falha ao revogar o vínculo",
+    "confirmTitle": "Revogar vínculo do add-in do Outlook",
+    "confirmBody": "Isso desconecta {{name}} do add-in técnico do Outlook em todos os dispositivos. É possível vincular novamente ao entrar na conta.",
+    "cancel": "Cancelar",
+    "confirmRevoke": "Revogar vínculo"
   }
 }

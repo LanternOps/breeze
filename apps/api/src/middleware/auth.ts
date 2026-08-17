@@ -266,7 +266,7 @@ interface OrgReach {
   partnerOrgAccess: 'all' | 'selected' | 'none' | null;
 }
 
-async function computeAccessibleOrgIds(
+export async function computeAccessibleOrgIds(
   scope: 'system' | 'partner' | 'organization',
   partnerId: string | null,
   orgId: string | null,

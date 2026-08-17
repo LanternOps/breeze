@@ -345,6 +345,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // 'tenant_variables' < 'ticket_alert_links' by localeCompare).
   'tenant_variables',
   'ticket_alert_links',
+  // ticket_email_links (spec 2026-08-15, outlook-tech-addin): cross-channel
+  // email<->ticket association + idempotency ledger. Shape 1 (direct org_id).
+  // ticket_id FK is ON DELETE CASCADE (child of tickets, deleted well before
+  // this table's own position anyway); comment_id/linked_by FKs are ON
+  // DELETE SET NULL. localeCompare sorts this BEFORE 'ticket_form_org_links'
+  // ('e' < 'f').
+  'ticket_email_links',
   // ticket_form_org_links (spec 2026-07-11): org allowlist for partner-wide
   // ticket_forms. Own org_id column is a direct FK to organizations (ON
   // DELETE CASCADE already clears rows on org delete; listed here anyway per
