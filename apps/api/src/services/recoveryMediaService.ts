@@ -32,7 +32,7 @@ import {
 import { verifyGithubReleaseArtifactBuffer } from './releaseArtifactManifest';
 import { getReleaseSourceRepository } from './releaseSource';
 import { getRecoverySigningKey, isRecoverySigningConfigured, signRecoveryArtifact } from './recoverySigning';
-import { safeFetch } from './urlSafety';
+import { safeFetchFollowingRedirects } from './urlSafety';
 
 const execFileAsync = promisify(execFile);
 
@@ -78,8 +78,16 @@ function sha256Hex(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+/**
+ * The GitHub release asset URL this is called with (`getGithubBackupUrl`) 302s
+ * to `objects.githubusercontent.com`, so a bare `safeFetch` — which follows
+ * nothing by design — would fail with "download failed with status 302" and no
+ * recovery media would ever build. Follow the chain explicitly instead: every
+ * hop is a fresh `safeFetch`, i.e. independently resolved, filtered and pinned,
+ * so a redirect into link-local/metadata/private space is still rejected.
+ */
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
-  const response = await safeFetch(url);
+  const response = await safeFetchFollowingRedirects(url);
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }

@@ -581,3 +581,98 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     req.end();
   });
 }
+
+/** HTTP statuses that carry a `Location` we are willing to follow. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Default hop ceiling for `safeFetchFollowingRedirects`. */
+export const SAFE_FETCH_MAX_REDIRECTS = 5;
+
+/** Headers that must never survive a hop to a different origin. */
+const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization'];
+
+function stripCredentialHeaders(headers: SafeFetchInit['headers']): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  const entries: Array<[string, string]> =
+    headers instanceof Headers
+      ? [...headers.entries()]
+      : Array.isArray(headers)
+        ? (headers as Array<[string, string]>)
+        : Object.entries(headers as Record<string, string>);
+  for (const [k, v] of entries) {
+    if (!CREDENTIAL_HEADERS.includes(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * `safeFetch`, plus an EXPLICIT, bounded redirect chain.
+ *
+ * `safeFetch` deliberately follows nothing: it hands back the 3xx so the caller
+ * decides whether the `Location` is worth trusting. That default must not
+ * change — every existing caller relies on it — but some server-configured
+ * endpoints simply cannot be reached without following, GitHub release assets
+ * being the motivating case (`github.com/.../releases/download/...` 302s to
+ * `objects.githubusercontent.com`). Converting such a caller to bare `safeFetch`
+ * turns a working download into `download failed with status 302`.
+ *
+ * The security property that matters: each hop is a fresh `safeFetch`, so every
+ * intermediate URL is independently DNS-resolved, filtered and IP-pinned. A
+ * redirect to `169.254.169.254`, loopback or RFC1918 is rejected exactly as a
+ * first-party URL would be — which is the whole reason naive
+ * `redirect: 'follow'` is an SSRF bypass and this loop is not.
+ *
+ * Method/credential handling follows the fetch spec's intent: a 303 (and a
+ * 301/302 on a non-GET/HEAD request) degrades to GET with no body, and
+ * credential headers are dropped when the hop crosses to a different origin.
+ */
+export async function safeFetchFollowingRedirects(
+  urlStr: string,
+  init: SafeFetchInit = {},
+  maxRedirects: number = SAFE_FETCH_MAX_REDIRECTS
+): Promise<Response> {
+  let currentUrl = urlStr;
+  let currentInit: SafeFetchInit = init;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const response = await safeFetch(currentUrl, currentInit);
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new SsrfBlockedError(
+        `redirect (${response.status}) from ${currentUrl} has no Location header`
+      );
+    }
+
+    let next: URL;
+    try {
+      // Relative Locations are legal, so resolve against the CURRENT url.
+      next = new URL(location, currentUrl);
+    } catch {
+      throw new SsrfBlockedError(
+        `redirect (${response.status}) from ${currentUrl} has an unparseable Location: ${location}`
+      );
+    }
+    if (next.protocol !== 'https:' && next.protocol !== 'http:') {
+      throw new SsrfBlockedError(`redirect to unsupported URL scheme: ${next.protocol}`);
+    }
+
+    const method = (currentInit.method || 'GET').toUpperCase();
+    const degradeToGet =
+      response.status === 303 || (response.status !== 307 && response.status !== 308 && method !== 'GET' && method !== 'HEAD');
+    const crossOrigin = new URL(currentUrl).origin !== next.origin;
+
+    currentInit = {
+      ...currentInit,
+      ...(degradeToGet ? { method: 'GET', body: undefined } : {}),
+      ...(crossOrigin ? { headers: stripCredentialHeaders(currentInit.headers) } : {})
+    };
+    currentUrl = next.toString();
+  }
+
+  // Exhausting the budget is an error, never a silent success: returning the
+  // last 3xx would hand the caller a body it did not ask for.
+  throw new Error(`too many redirects (more than ${maxRedirects}) starting at ${urlStr}`);
+}

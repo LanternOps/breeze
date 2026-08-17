@@ -43,10 +43,6 @@ const ALLOWLIST: Record<string, Record<string, string>> = {
     'new http(s).Agent(':
       'The guarded agents themselves; their lookup is urlSafety.createGuardedLookup.',
   },
-  'recoveryMediaService.ts': {
-    'global fetch(':
-      'downloadFile() fetches the backup binary from the server-configured GitHub release URL (getGithubBackupUrl), not from any tenant-supplied value, and the asset is then verified against the signed release manifest. safeFetch cannot be used here: it deliberately does not follow redirects, and GitHub release asset URLs redirect to objects.githubusercontent.com.',
-  },
 };
 
 /**

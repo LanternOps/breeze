@@ -10,6 +10,7 @@ import {
   isRfc1918OrUla,
   isAlwaysBlockedIp,
   createGuardedLookup,
+  safeFetchFollowingRedirects,
   SsrfBlockedError,
   ResponseTooLargeError,
   __setLookupForTests
@@ -658,5 +659,153 @@ describe('safeFetch — DNS pinning & rebinding defense', () => {
       SsrfBlockedError
     );
     expect(requestCount).toBe(0); // server was never contacted
+  });
+});
+
+describe('safeFetchFollowingRedirects', () => {
+  afterEach(() => {
+    __setLookupForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Stub https.request with a per-host script. Returns the hosts dialed, in
+   * order, so a test can prove a hop was NOT taken.
+   */
+  function stubHttps(
+    script: (host: string, path: string) => { status: number; headers?: Record<string, string>; body?: string }
+  ): string[] {
+    const hosts: string[] = [];
+    vi.spyOn(https, 'request').mockImplementation((options: any, callback?: any) => {
+      hosts.push(String(options.host));
+      const outcome = script(String(options.host), String(options.path));
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = outcome.status;
+        res.statusMessage = '';
+        res.headers = outcome.headers ?? {};
+        res.setEncoding = vi.fn();
+        callback?.(res);
+        if (outcome.body) res.emit('data', Buffer.from(outcome.body));
+        res.emit('end');
+      });
+      return req;
+    });
+    return hosts;
+  }
+
+  it('returns a non-redirect response untouched (single hop)', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const hosts = stubHttps(() => ({ status: 200, body: 'payload' }));
+
+    const res = await safeFetchFollowingRedirects('https://example.com/a');
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('payload');
+    expect(hosts).toEqual(['example.com']);
+  });
+
+  it('re-validates every hop, so a redirect into private space is blocked', async () => {
+    // Naive redirect-following (fetch's `redirect: 'follow'`) is a classic SSRF
+    // bypass precisely because only the FIRST url gets checked.
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const hosts = stubHttps(() => ({
+      status: 302,
+      headers: { location: 'https://127.0.0.1/admin' },
+    }));
+
+    await expect(safeFetchFollowingRedirects('https://example.com/a')).rejects.toBeInstanceOf(
+      SsrfBlockedError
+    );
+    expect(hosts).toEqual(['example.com']);
+  });
+
+  it('rejects a redirect to a non-http(s) scheme', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    stubHttps(() => ({ status: 302, headers: { location: 'file:///etc/passwd' } }));
+
+    await expect(safeFetchFollowingRedirects('https://example.com/a')).rejects.toThrow(
+      /unsupported URL scheme/
+    );
+  });
+
+  it('honours a caller-supplied hop budget', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    let n = 0;
+    const hosts = stubHttps(() => {
+      n += 1;
+      return { status: 302, headers: { location: `https://hop${n}.example/next` } };
+    });
+
+    await expect(
+      safeFetchFollowingRedirects('https://example.com/a', {}, 2)
+    ).rejects.toThrow(/too many redirects/);
+    expect(hosts).toHaveLength(3); // initial + 2 follow-ups
+  });
+
+  it('drops credential headers when the redirect crosses to another origin', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const seen: Array<Record<string, string>> = [];
+    vi.spyOn(https, 'request').mockImplementation((options: any, callback?: any) => {
+      seen.push(options.headers);
+      const first = String(options.host) === 'example.com';
+      const req = new EventEmitter() as any;
+      req.write = vi.fn();
+      req.destroy = vi.fn();
+      req.setTimeout = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as any;
+        res.statusCode = first ? 302 : 200;
+        res.statusMessage = '';
+        res.headers = first ? { location: 'https://cdn.example.net/asset' } : {};
+        res.setEncoding = vi.fn();
+        callback?.(res);
+        res.emit('end');
+      });
+      return req;
+    });
+
+    await safeFetchFollowingRedirects('https://example.com/a', {
+      headers: { Authorization: 'Bearer secret', 'X-Trace': 'keep-me' },
+    });
+
+    expect(seen[0]).toMatchObject({ Authorization: 'Bearer secret' });
+    expect(seen[1]).not.toHaveProperty('Authorization');
+    expect(seen[1]).toMatchObject({ 'X-Trace': 'keep-me' });
+  });
+
+  it('degrades a POST to GET on a 303 but preserves the method on a 307', async () => {
+    __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const methods: string[] = [];
+    const run = async (redirectStatus: number) => {
+      methods.length = 0;
+      vi.spyOn(https, 'request').mockImplementation((options: any, callback?: any) => {
+        methods.push(String(options.method));
+        const first = String(options.host) === 'example.com';
+        const req = new EventEmitter() as any;
+        req.write = vi.fn();
+        req.destroy = vi.fn();
+        req.setTimeout = vi.fn();
+        req.end = vi.fn(() => {
+          const res = new EventEmitter() as any;
+          res.statusCode = first ? redirectStatus : 200;
+          res.statusMessage = '';
+          res.headers = first ? { location: 'https://other.example/next' } : {};
+          res.setEncoding = vi.fn();
+          callback?.(res);
+          res.emit('end');
+        });
+        return req;
+      });
+      await safeFetchFollowingRedirects('https://example.com/a', { method: 'POST', body: 'x=1' });
+      return [...methods];
+    };
+
+    expect(await run(303)).toEqual(['POST', 'GET']);
+    expect(await run(307)).toEqual(['POST', 'POST']);
   });
 });

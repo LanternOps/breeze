@@ -15,14 +15,16 @@ vi.mock('./recoveryBootstrap', () => ({
   resolveServerUrl: () => 'https://breeze.example.com',
   resolveSnapshotProviderConfig: vi.fn(),
 }));
-// `downloadFile` now goes through the SSRF-guarded `safeFetch`, which resolves
-// DNS and dials a pinned IP itself — it never touches global `fetch`, so
-// `stubFetch` below would otherwise be bypassed and these cases would make real
-// network calls. Route it back to the stubbed global; that `safeFetch` is
-// actually adopted here is covered by `backupSsrfAdoption.test.ts`.
+// `downloadFile` now goes through the SSRF-guarded `safeFetchFollowingRedirects`,
+// which resolves DNS and dials a pinned IP itself — it never touches global
+// `fetch`, so `stubFetch` below would otherwise be bypassed and these cases
+// would make real network calls. Route it back to the stubbed global; that the
+// guard is actually adopted here is covered by `backupSsrfAdoption.test.ts`, and
+// the redirect/SSRF semantics of the real helper by
+// `recoveryMediaService.redirect.test.ts` + `urlSafety.test.ts`.
 vi.mock('./urlSafety', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./urlSafety')>()),
-  safeFetch: (url: string) => globalThis.fetch(url),
+  safeFetchFollowingRedirects: (url: string) => globalThis.fetch(url),
 }));
 vi.mock('./recoverySigning', () => ({
   getRecoverySigningKey: () => null,
