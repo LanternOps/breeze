@@ -354,6 +354,20 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // alert_rules_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: alertRulesPartnerRls.integration.test.ts.
   'alert_rules',
+  // alert_templates (#1357/#1425): org-scoped (org_id set, partner_id NULL) OR
+  // partner-wide (partner_id set, org_id NULL); rows with neither axis set are
+  // global (seeded built-ins, system-created rows). Also listed in
+  // PARTNER_TENANT_TABLES above — that entry asserts the partner-axis policy
+  // coverage; this one asserts the dual-axis shape explicitly so the table is
+  // not read as partner-only. CHECK alert_templates_one_owner_chk (migration
+  // 2026-08-16-alert-templates-one-owner) forbids the both-axes-set row that
+  // let a bare `partner_id = X` read predicate span every org under the
+  // partner (security review 2026-08-16 §1.5). SELECT is additionally widened
+  // to org sessions via the breeze_current_partner_id() catalog branch
+  // (2026-06-13-catalog-partner-read-branch) so org admins can read their
+  // MSP's shared templates read-only. Functional proof:
+  // alert-templates-partner-wide.integration.test.ts.
+  'alert_templates',
   // automation_policies (#2129, epic #2135): org-scoped OR partner-wide
   // compliance rule set (the config-policy "compliance" feature). Per-device
   // results (automation_policy_compliance) stay device-join — each result row

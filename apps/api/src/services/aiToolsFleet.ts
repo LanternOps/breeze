@@ -1804,7 +1804,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const oc = orgWhere(auth, alertTemplates.orgId);
         if (oc) {
           // Org/partner scope: built-in OR belonging to accessible org(s)
-          conditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${oc})`);
+          // `is_built_in AND org_id IS NULL` — policyAlertBridge creates
+          // ORG-OWNED built-in rows, so a bare is_built_in disjunct would show
+          // another org's template (security review 2026-08-16 §1.5, same class).
+          conditions.push(sql`((${alertTemplates.isBuiltIn} = true AND ${alertTemplates.orgId} IS NULL) OR ${oc})`);
         }
         // System scope (oc undefined): no filter — show all templates
         if (typeof input.category === 'string') conditions.push(eq(alertTemplates.category, input.category as string));

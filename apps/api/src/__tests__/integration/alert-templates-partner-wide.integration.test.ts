@@ -14,7 +14,7 @@
  */
 import './setup';
 import { describe, it, expect } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { alertTemplates } from '../../db/schema';
 import { createPartner, createOrganization } from './db-utils';
@@ -92,5 +92,82 @@ describe('alert_templates partner-wide RLS — #1425', () => {
 
     const truth = await getTestDb().select().from(alertTemplates).where(eq(alertTemplates.name, name));
     expect(truth).toHaveLength(0);
+  });
+
+  // Security review 2026-08-16 §1.5 (CRITICAL). Org-owned templates used to be
+  // written with BOTH org_id and partner_id set; the read predicate's
+  // `partner_id = <caller partner>` disjunct then spanned every org under the
+  // partner. alert_templates_one_owner_chk
+  // (2026-08-16-alert-templates-one-owner) makes that shape unrepresentable.
+  describe('alert_templates_one_owner_chk', () => {
+    it('rejects a row with BOTH org_id and partner_id set (23514)', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const name = `xor-both-${Date.now()}`;
+
+      let caught: unknown;
+      try {
+        await getTestDb()
+          .insert(alertTemplates)
+          .values({ orgId: org.id, partnerId: partner.id, ...baseValues(name) });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      const cause = (caught as { cause?: { code?: string; constraint_name?: string } } | undefined)?.cause;
+      expect(cause?.code).toBe('23514');
+      expect(cause?.constraint_name).toBe('alert_templates_one_owner_chk');
+
+      const truth = await getTestDb().select().from(alertTemplates).where(eq(alertTemplates.name, name));
+      expect(truth).toHaveLength(0);
+    });
+
+    // Deliberately NOT a strict XOR: seeded global built-ins and rows a
+    // system-scope caller created with no orgId both legitimately have neither
+    // axis set, and a strict XOR would have made ADD CONSTRAINT fail on an
+    // existing database. "Never both" is the security-relevant invariant.
+    it('accepts an ownerless row (neither axis set) — the constraint is "never both", not XOR', async () => {
+      const name = `xor-neither-${Date.now()}`;
+      await getTestDb()
+        .insert(alertTemplates)
+        .values({ orgId: null, partnerId: null, ...baseValues(name) });
+
+      const rows = await getTestDb().select().from(alertTemplates).where(eq(alertTemplates.name, name));
+      expect(rows).toHaveLength(1);
+    });
+
+    it('accepts the two legal customer shapes and the global built-in shape', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const stamp = Date.now();
+
+      // Org-owned: org_id set, partner_id NULL (what the create route now writes).
+      await getTestDb()
+        .insert(alertTemplates)
+        .values({ orgId: org.id, partnerId: null, ...baseValues(`xor-org-${stamp}`) });
+      // Partner-wide: partner_id set, org_id NULL.
+      await getTestDb()
+        .insert(alertTemplates)
+        .values({ orgId: null, partnerId: partner.id, ...baseValues(`xor-partner-${stamp}`) });
+      // Built-in: global, both axes NULL.
+      await getTestDb()
+        .insert(alertTemplates)
+        .values({ orgId: null, partnerId: null, ...baseValues(`xor-builtin-${stamp}`), isBuiltIn: true });
+
+      const rows = await getTestDb()
+        .select()
+        .from(alertTemplates)
+        .where(inArray(alertTemplates.name, [`xor-org-${stamp}`, `xor-partner-${stamp}`, `xor-builtin-${stamp}`]));
+      expect(rows).toHaveLength(3);
+    });
+
+    it('no stored row carries both axes (the migration backfill held)', async () => {
+      const offenders = await getTestDb()
+        .select({ id: alertTemplates.id, name: alertTemplates.name })
+        .from(alertTemplates)
+        .where(and(isNotNull(alertTemplates.orgId), isNotNull(alertTemplates.partnerId)));
+      expect(offenders).toEqual([]);
+    });
   });
 });
