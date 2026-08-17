@@ -236,6 +236,10 @@ import {
   initializeSoftwareUploadSessionCleanupWorker,
   shutdownSoftwareUploadSessionCleanupWorker,
 } from './jobs/softwareUploadSessionCleanup';
+import {
+  initializeSoftwareRemediationRequestCleanupWorker,
+  shutdownSoftwareRemediationRequestCleanupWorker,
+} from './jobs/softwareRemediationRequestCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -1426,6 +1430,7 @@ async function initializeWorkers(): Promise<void> {
     // hard cap, detects end-user disconnects, and purges ephemeral devices.
     ['quickSupportReaper', initializeQuickSupportReaper],
     ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
+    ['softwareRemediationRequestCleanup', initializeSoftwareRemediationRequestCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
@@ -1652,6 +1657,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownEnrollmentKeyCleanupWorker,
     shutdownQuickSupportReaper,
     shutdownSoftwareUploadSessionCleanupWorker,
+    shutdownSoftwareRemediationRequestCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,
