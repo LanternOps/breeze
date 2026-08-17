@@ -21,8 +21,14 @@ export type FleetPresence = 'present' | 'none' | 'loading' | 'unknown';
  * identically. See #3613 (and #3536 for the same fix on the Alerts page).
  */
 export function fleetPresence(devices: DashboardQueryState<DeviceStats>): FleetPresence {
-  // Data wins over the in-flight flags: a background poll keeps the last
-  // known count, and that count is still the best answer we have.
+  // A count belonging to a previously-selected org is worse than no count:
+  // switching from a populated org to an empty one would otherwise paint the
+  // old denominator over the new org's zeros and re-assert the all-clear this
+  // whole module exists to prevent, for as long as /devices/stats lags the
+  // card's own (already-resolved) query.
+  if (devices.staleScope) return 'loading';
+  // Otherwise data wins over the in-flight flags: a routine background poll
+  // keeps the last known count, and that count is still the best answer.
   if (devices.data) return devices.data.total > 0 ? 'present' : 'none';
   if (devices.isLoading) return 'loading';
   // Error with nothing cached, or a 403/404 permission-hide.

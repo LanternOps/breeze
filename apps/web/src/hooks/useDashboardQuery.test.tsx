@@ -1,129 +1,122 @@
-import { act, render, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderHook, waitFor, act } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useDashboardQuery, type DashboardQueryState } from './useDashboardQuery';
-import { fetchWithAuth } from '../stores/auth';
+let currentOrgId: string | null = 'org-a';
+const fetchWithAuth = vi.fn();
 
-// The global Current/All-orgs pill is modeled by currentOrgId: a concrete id
-// means "this org", and null means the explicit All-orgs scope (see orgStore).
-let mockOrgState: { currentOrgId: string | null };
-
-vi.mock('../stores/auth', () => ({
-  fetchWithAuth: vi.fn(),
-}));
-
+vi.mock('../stores/auth', () => ({ fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args) }));
 vi.mock('../stores/orgStore', () => ({
-  useOrgStore: Object.assign(
-    (selector?: (s: typeof mockOrgState) => unknown) =>
-      selector ? selector(mockOrgState) : mockOrgState,
-    { getState: () => mockOrgState },
-  ),
+  useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) => selector({ currentOrgId }),
 }));
 
-const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+import { useDashboardQuery } from './useDashboardQuery';
 
-const jsonResponse = (body: unknown, status = 200): Response =>
-  ({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  }) as unknown as Response;
-
-let lastState: DashboardQueryState<number> | null = null;
-
-function Probe({ token }: { token: number }) {
-  lastState = useDashboardQuery<number>('/devices/stats', token, (j: any) => j.data.total);
-  return null;
+function jsonResponse(body: unknown) {
+  return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
-beforeEach(() => {
-  mockOrgState = { currentOrgId: 'org-1' };
-  lastState = null;
-  fetchWithAuthMock.mockReset();
-  fetchWithAuthMock.mockResolvedValue(jsonResponse({ data: { total: 7 } }));
-});
+/** A response whose body resolves only when the returned `settle` is called. */
+function deferredResponse(body: unknown) {
+  let settle!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  const response = {
+    ok: true,
+    status: 200,
+    json: async () => {
+      await gate;
+      return body;
+    },
+  } as unknown as Response;
+  return { response, settle };
+}
 
-afterEach(() => {
-  vi.clearAllMocks();
-});
-
-describe('useDashboardQuery', () => {
-  it('fetches once and exposes the selected data', async () => {
-    render(<Probe token={0} />);
-
-    await waitFor(() => expect(lastState?.data).toBe(7));
-    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
-    expect(fetchWithAuthMock).toHaveBeenLastCalledWith('/devices/stats');
-    expect(lastState?.isLoading).toBe(false);
-    expect(lastState?.unavailable).toBe(false);
+describe('useDashboardQuery staleScope', () => {
+  beforeEach(() => {
+    currentOrgId = 'org-a';
+    fetchWithAuth.mockReset();
   });
 
-  it('refetches when the org scope flips Current -> All orgs', async () => {
-    const { rerender } = render(<Probe token={0} />);
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+  it('is false for a settled load and for a plain refresh-token poll', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ total: 5 }));
 
-    mockOrgState.currentOrgId = null;
-    rerender(<Probe token={0} />);
+    const { result, rerender } = renderHook(
+      ({ tick }: { tick: number }) => useDashboardQuery<{ total: number }>('/devices/stats', tick, (j: any) => j),
+      { initialProps: { tick: 0 } }
+    );
 
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.data).toEqual({ total: 5 }));
+    expect(result.current.staleScope).toBe(false);
+
+    rerender({ tick: 1 });
+    // A same-scope poll keeps the cached value trusted throughout.
+    expect(result.current.staleScope).toBe(false);
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.staleScope).toBe(false);
   });
 
-  it('refetches when the refresh token bumps, not on unrelated re-renders', async () => {
-    const { rerender } = render(<Probe token={0} />);
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+  it('flags the cached value while an org switch is in flight, and clears it on arrival', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonResponse({ total: 42 }));
 
-    rerender(<Probe token={0} />);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+    const { result, rerender } = renderHook(
+      ({ tick }: { tick: number }) => useDashboardQuery<{ total: number }>('/devices/stats', tick, (j: any) => j),
+      { initialProps: { tick: 0 } }
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ total: 42 }));
 
-    rerender(<Probe token={1} />);
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
-  });
+    // Switch to an org whose response hasn't landed yet. The old count is
+    // still in `data` — it must be marked as belonging to the old scope.
+    const { response, settle } = deferredResponse({ total: 0 });
+    fetchWithAuth.mockResolvedValueOnce(response);
+    currentOrgId = 'org-b';
+    rerender({ tick: 0 });
 
-  it('marks 403 responses unavailable instead of erroring', async () => {
-    fetchWithAuthMock.mockResolvedValue(jsonResponse({ error: 'forbidden' }, 403));
-    render(<Probe token={0} />);
-
-    await waitFor(() => expect(lastState?.unavailable).toBe(true));
-    expect(lastState?.error).toBeNull();
-    expect(lastState?.data).toBeNull();
-    expect(lastState?.isLoading).toBe(false);
-  });
-
-  it('discards a slow stale-scope response that resolves after a newer one', async () => {
-    // org-1's response is deliberately slow; org-2's is instant. If the
-    // sequence guard is removed, org-1's data (7) overwrites org-2's (99)
-    // after the scope change — the cross-org data flash this test pins.
-    let resolveSlow!: (r: Response) => void;
-    const slow = new Promise<Response>((r) => (resolveSlow = r));
-    fetchWithAuthMock.mockReturnValueOnce(slow as any);
-    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ data: { total: 99 } }));
-
-    const { rerender } = render(<Probe token={0} />);
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
-
-    mockOrgState.currentOrgId = 'org-2';
-    rerender(<Probe token={0} />);
-    await waitFor(() => expect(lastState?.data).toBe(99));
+    expect(result.current.data).toEqual({ total: 42 });
+    expect(result.current.staleScope).toBe(true);
 
     await act(async () => {
-      resolveSlow(jsonResponse({ data: { total: 7 } }));
-      await Promise.resolve();
+      settle();
     });
-
-    expect(lastState?.data).toBe(99);
+    await waitFor(() => expect(result.current.data).toEqual({ total: 0 }));
+    expect(result.current.staleScope).toBe(false);
   });
 
-  it('keeps stale data visible when a background poll fails', async () => {
-    const { rerender } = render(<Probe token={0} />);
-    await waitFor(() => expect(lastState?.data).toBe(7));
+  it('keeps the flag set when the post-switch refetch fails', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonResponse({ total: 42 }));
 
-    fetchWithAuthMock.mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
-    await act(async () => {
-      rerender(<Probe token={1} />);
-    });
+    const { result, rerender } = renderHook(
+      ({ tick }: { tick: number }) => useDashboardQuery<{ total: number }>('/devices/stats', tick, (j: any) => j),
+      { initialProps: { tick: 0 } }
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ total: 42 }));
 
-    await waitFor(() => expect(lastState?.error).not.toBeNull());
-    expect(lastState?.data).toBe(7);
+    fetchWithAuth.mockRejectedValueOnce(new Error('network down'));
+    currentOrgId = 'org-b';
+    rerender({ tick: 0 });
+
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+    // Stale data survives the failure (deliberate) but stays untrusted.
+    expect(result.current.data).toEqual({ total: 42 });
+    expect(result.current.staleScope).toBe(true);
+  });
+
+  it('clears the flag when the post-switch request is permission-hidden', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonResponse({ total: 42 }));
+
+    const { result, rerender } = renderHook(
+      ({ tick }: { tick: number }) => useDashboardQuery<{ total: number }>('/devices/stats', tick, (j: any) => j),
+      { initialProps: { tick: 0 } }
+    );
+    await waitFor(() => expect(result.current.data).toEqual({ total: 42 }));
+
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 403 } as unknown as Response);
+    currentOrgId = 'org-b';
+    rerender({ tick: 0 });
+
+    await waitFor(() => expect(result.current.unavailable).toBe(true));
+    // A 403 clears `data` outright, so there is no stale value left to flag.
+    expect(result.current.data).toBeNull();
+    expect(result.current.staleScope).toBe(false);
   });
 });

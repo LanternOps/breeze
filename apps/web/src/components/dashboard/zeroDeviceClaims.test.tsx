@@ -9,22 +9,23 @@ vi.mock('@/lib/i18n/format', async (importOriginal) => ({
 }));
 
 import AlertsFeed from './AlertsFeed';
+import FleetStatusCard from './FleetStatusCard';
 import VulnerabilitiesCard from './VulnerabilitiesCard';
 import { fleetPresence } from './fleetPresence';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
-import type { AlertRow, AlertsSummary, DeviceStats, VulnerabilityStats } from './types';
+import type { AlertRow, AlertsSummary, DeviceStats, OfflineDevice, VulnerabilityStats } from './types';
 
 function loaded<T>(data: T): DashboardQueryState<T> {
-  return { data, error: null, isLoading: false, isFetching: false, unavailable: false };
+  return { data, error: null, isLoading: false, isFetching: false, unavailable: false, staleScope: false };
 }
 function loading<T>(): DashboardQueryState<T> {
-  return { data: null, error: null, isLoading: true, isFetching: true, unavailable: false };
+  return { data: null, error: null, isLoading: true, isFetching: true, unavailable: false, staleScope: false };
 }
 function failed<T>(): DashboardQueryState<T> {
-  return { data: null, error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false };
+  return { data: null, error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false, staleScope: false };
 }
 function unavailable<T>(): DashboardQueryState<T> {
-  return { data: null, error: null, isLoading: false, isFetching: false, unavailable: true };
+  return { data: null, error: null, isLoading: false, isFetching: false, unavailable: true, staleScope: false };
 }
 
 function stats(total: number): DeviceStats {
@@ -58,13 +59,41 @@ describe('fleetPresence', () => {
 
   it('prefers a cached count over an in-flight background poll', () => {
     expect(
-      fleetPresence({ data: stats(5), error: null, isLoading: false, isFetching: true, unavailable: false })
+      fleetPresence({ data: stats(5), error: null, isLoading: false, isFetching: true, unavailable: false, staleScope: false })
     ).toBe('present');
     // A failed background poll keeps the last known count rather than
     // degrading to "unknown".
     expect(
-      fleetPresence({ data: stats(5), error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false })
+      fleetPresence({ data: stats(5), error: new Error('boom'), isLoading: false, isFetching: false, unavailable: false, staleScope: false })
     ).toBe('present');
+  });
+
+  it('suspends the count while it belongs to a previously-selected org scope', () => {
+    // Org switch: /devices/stats still holds the OLD org's non-zero count
+    // while the card's own query has already resolved for the new org.
+    // Reading 'present' here would re-assert the exact false all-clear #3613
+    // is about, so the stale count must not be trusted.
+    expect(
+      fleetPresence({
+        data: stats(42),
+        error: null,
+        isLoading: false,
+        isFetching: true,
+        unavailable: false,
+        staleScope: true,
+      })
+    ).toBe('loading');
+    // Even a failed refetch must not promote old-scope data back to trusted.
+    expect(
+      fleetPresence({
+        data: stats(42),
+        error: new Error('boom'),
+        isLoading: false,
+        isFetching: false,
+        unavailable: false,
+        staleScope: true,
+      })
+    ).toBe('loading');
   });
 });
 
@@ -177,5 +206,26 @@ describe('VulnerabilitiesCard zero-findings state (#3613)', () => {
     );
     expect(screen.getByText('dashboard.vuln.criticalOpen')).toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-vuln-coverage-unknown')).toBeNull();
+  });
+});
+
+describe('FleetStatusCard failure visibility', () => {
+  function renderFleet(devices: DashboardQueryState<DeviceStats>) {
+    return render(<FleetStatusCard devices={devices} offline={loaded<OfflineDevice[]>([])} />);
+  }
+
+  it('stays visible with an explicit failure note when the device query fails', () => {
+    const { container } = renderFleet(failed<DeviceStats>());
+    // Vanishing would read as "nothing to report" — the same false negative.
+    expect(container).not.toBeEmptyDOMElement();
+    expect(screen.getByTestId('dashboard-fleet-status')).toBeInTheDocument();
+    expect(screen.getByText('dashboard.stats.loadFailed')).toBeInTheDocument();
+  });
+
+  it('still hides entirely on a deliberate permission-hide or an empty fleet', () => {
+    const { container: hidden } = renderFleet(unavailable<DeviceStats>());
+    expect(hidden).toBeEmptyDOMElement();
+    const { container: empty } = renderFleet(loaded(stats(0)));
+    expect(empty).toBeEmptyDOMElement();
   });
 });
