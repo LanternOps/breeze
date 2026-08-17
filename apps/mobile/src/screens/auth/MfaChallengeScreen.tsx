@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -29,7 +29,7 @@ export function MfaChallengeScreen() {
   const [smsSent, setSmsSent] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
 
   const isSms = mfaChallenge?.mfaMethod === 'sms';
 
