@@ -159,9 +159,16 @@ func TestDownloadInfoRejectionReasonBoundsBodySize(t *testing.T) {
 	// agent just to produce a log line. The truncated read yields invalid
 	// JSON, so the reason is dropped.
 	huge := `{"reason":"` + strings.Repeat("a", maxDownloadInfoErrorBodyBytes*2) + `"}`
-	got, _ := downloadInfoRejectionReason(strings.NewReader(huge))
+	got, malformed := downloadInfoRejectionReason(strings.NewReader(huge))
 	if got != "" {
 		t.Fatalf("expected oversized body to yield no reason, got %q", got)
+	}
+	// A truncated body is inconclusive, NOT absent: a reason may have been
+	// present and simply cut off mid-string. Reporting it as "server gave no
+	// reason" would be the same silent collapse the malformed flag exists to
+	// prevent, reached through size rather than charset.
+	if !malformed {
+		t.Fatal("a truncated body must be reported as malformed, not as an absent reason")
 	}
 }
 

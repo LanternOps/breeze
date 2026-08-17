@@ -323,12 +323,19 @@ func downloadInfoRejectionReason(body io.Reader) (reason string, malformed bool)
 	if err != nil {
 		return "", false
 	}
+	// Reading exactly the cap means the body was cut off, so anything we
+	// failed to parse below is inconclusive rather than absent — a reason may
+	// well have been present and simply truncated mid-string. Folding that
+	// into "server gave no reason" would be the same collapse this function
+	// exists to avoid, reached through size instead of charset.
+	truncated := len(raw) == maxDownloadInfoErrorBodyBytes
+
 	var parsed downloadInfoError
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		// Body is not the JSON error envelope at all (an empty body, or an
-		// intermediary's HTML error page). Nothing was refused — there was
-		// nothing to refuse.
-		return "", false
+		// Otherwise the body is not the JSON error envelope at all (an empty
+		// body, or an intermediary's HTML error page). Nothing was refused —
+		// there was nothing to refuse.
+		return "", truncated
 	}
 	if parsed.Reason == "" {
 		return "", false
