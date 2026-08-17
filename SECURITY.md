@@ -2,9 +2,43 @@
 
 ## Supported Versions
 
+Security fixes ship in the latest release only. Breeze does not backport patches to older
+versions — if you self-host, **staying current is the patch strategy**.
+
 | Version | Supported          |
 |---------|--------------------|
 | latest  | :white_check_mark: |
+| older   | :x:                |
+
+## How we disclose (for self-hosters)
+
+If you self-host, this is the section that matters to you. Hosted (`eu.2breeze.app` /
+`us.2breeze.app`) customers are patched by us on deploy; **self-hosted installs stay vulnerable
+until you upgrade.**
+
+**Watch these two places:**
+
+1. **[GitHub Security Advisories](https://github.com/LanternOps/breeze/security/advisories)** — the
+   authoritative record. Every Critical and High vulnerability gets an advisory with affected and
+   patched version ranges, impact, and workarounds. Use *Watch → Custom → Security alerts* on this
+   repo to be notified.
+2. **Release notes** — each release separates security content into two sections:
+   - `### Security — action required` — **upgrade promptly**; states the affected version range and
+     what an attacker could actually do.
+   - `### Security — hardening` — routine defense-in-depth, no urgency.
+
+**Timing.** We publish advisories only *after* a fix has shipped and rolled out, so the details are
+never public while users are unpatched. After that we aim to publish within **72 hours** (Critical)
+or **7 days** (High) of rollout.
+
+**CVEs.** Critical and High advisories get a CVE. Note that because Breeze is distributed as
+container images and binaries rather than through a package ecosystem, automated scanners and
+Dependabot generally will **not** alert you — please watch the advisories directly rather than
+relying on tooling to tell you.
+
+**Running an old version?** Check the advisories page against your deployed version
+(`GET /health` reports it). Anything published with a patched version newer than yours applies to
+you.
 
 ## Reporting a Vulnerability
 
