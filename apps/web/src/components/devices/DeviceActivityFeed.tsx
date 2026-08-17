@@ -285,6 +285,15 @@ export default function DeviceActivityFeed({
                 }`
               : loading
                 ? ""
+                : // A failed load is NOT "no activity". Without this branch the
+                  // rail announced "No recent actions on this device." after a
+                  // fetch failure — a false negative, and worse than the bare
+                  // "Activity" it replaced, because it states something untrue
+                  // about the device. The expanded card carries the real
+                  // "Couldn't load / Retry" affordance but is lg:hidden while
+                  // collapsed, and DeviceDetails defaults collapsed=true.
+                  error
+                  ? `, ${t("deviceActivityFeed.couldnTLoadActivity")}`
                 : // A device with nothing to show auto-collapses to this rail, so
                   // the empty state in the expanded card is never reached on
                   // desktop. Without this the rail announced (and displayed) a
@@ -305,6 +314,10 @@ export default function DeviceActivityFeed({
           <Activity className={`h-4 w-4 ${activeAlerts > 0 ? 'text-warning' : 'text-muted-foreground'}`} />
           {loading ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
+          ) : error ? (
+            // Same reason as the aria-label above: a muted "0" reads as a
+            // confirmed-empty device rather than a load that never landed.
+            <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
           ) : (
             <span
               data-testid="activity-rail-count"

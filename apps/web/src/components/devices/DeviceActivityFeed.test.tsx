@@ -149,6 +149,25 @@ describe('DeviceActivityFeed', () => {
     expect(bar).toHaveAttribute('aria-label', 'Activity, No recent actions on this device.');
   });
 
+  it('collapsed: does NOT claim "no recent actions" when the load failed', async () => {
+    // A failed first load leaves loading=false, itemCount=0 — identical to a
+    // genuinely empty device unless `error` is checked. Announcing the empty
+    // state there tells the tech something untrue about the endpoint, and the
+    // expanded card carrying "Couldn't load / Retry" is lg:hidden while
+    // collapsed (DeviceDetails defaults collapsed=true), so the rail is the
+    // only thing they see.
+    fetchWithAuthMock.mockImplementation(() => Promise.reject(new Error('network')));
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() =>
+      expect(bar).toHaveAttribute('aria-label', "Activity, Couldn't load activity.")
+    );
+    expect(bar.getAttribute('aria-label')).not.toContain('No recent actions');
+    // and no misleading muted "0"
+    expect(within(bar).queryByTestId('activity-rail-count')).toBeNull();
+  });
+
   it('collapsed: announces the item count when there are events but no active alerts (#3452)', async () => {
     // The badge is aria-hidden and an aria-label suppresses descendant text,
     // so without the count in the label this everyday state announced a bare
