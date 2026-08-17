@@ -531,6 +531,41 @@ describe('quoteService deposits', () => {
     expect(inserted.content.html).not.toContain('script');
   });
 
+  it('addBlock hands back the tags it stripped instead of a silent 200 (#3520)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Hello</p>' } }]); // insert returning
+
+    const row = await svc.addBlock('q1', { blockType: 'rich_text', content: { html: '<p>Hello</p><blockquote>gone</blockquote>' } }, actor);
+
+    expect(row.id).toBe('blk1'); // the block still saves — warning, not rejection
+    expect(row.warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['blockquote'] },
+    ]);
+  });
+
+  it('addBlock returns an empty warnings array when nothing was stripped (#3520)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ max: -1 }]); // nextBlockSortOrder
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Hello</p>' } }]); // insert returning
+
+    const row = await svc.addBlock('q1', { blockType: 'rich_text', content: { html: '<p>Hello</p>' } }, actor);
+
+    expect(row.warnings).toEqual([]);
+  });
+
+  it('updateBlock hands back the tags it stripped (#3520)', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
+    queueResult([{ blockType: 'rich_text' }]); // existing block type check
+    queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Updated</p>' } }]); // update returning
+
+    const row = await svc.updateBlock('q1', 'blk1', { blockType: 'rich_text', content: { html: '<p>Updated</p><table><tr><td>x</td></tr></table>' } }, actor);
+
+    expect(row.warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['table', 'td', 'tr'] },
+    ]);
+  });
+
   it('addBlock leaves non-rich_text block content untouched', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft' }]); // loadDraft
     queueResult([{ max: -1 }]); // nextBlockSortOrder
@@ -741,7 +776,8 @@ describe('attachCustomerLineImages', () => {
 
 describe('structured block sanitization', () => {
   it('sanitizes every table cell and label on write', () => {
-    const out = svc.sanitizeBlockContentForWrite({ blockType: 'table', content: { columns: [{ label: '<p>Item</p>' }], rows: [{ cells: ['<script>x</script><strong>ok</strong>'] }] } } as never) as never as { columns: { label: string }[]; rows: { cells: string[] }[] };
+    const { content } = svc.sanitizeBlockContentForWrite({ blockType: 'table', content: { columns: [{ label: '<p>Item</p>' }], rows: [{ cells: ['<script>x</script><strong>ok</strong>'] }] } } as never);
+    const out = content as never as { columns: { label: string }[]; rows: { cells: string[] }[] };
     expect(out.columns[0]!.label).toBe('Item');
     expect(out.rows[0]!.cells[0]).toBe('<strong>ok</strong>');
   });
@@ -750,5 +786,71 @@ describe('structured block sanitization', () => {
       { blockType: 'table', content: { rows: 'garbage' } } as { blockType: string; content: unknown },
     ]);
     expect(rows[0]!.content).toEqual({ columns: [], rows: [] }); // canonical empty, never raw garbage
+  });
+});
+
+// Issue #3520: a lossy write used to answer a clean 200. sanitizeBlockContentForWrite
+// now reports what it removed so the route can hand the author a `warnings` array.
+describe('sanitizeBlockContentForWrite loss reporting (#3520)', () => {
+  it('reports the disallowed tags a rich_text write dropped', () => {
+    const { content, warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<p>Keep</p><blockquote>Quote</blockquote><table><tr><td>Cell</td></tr></table>' },
+    } as never);
+    expect((content as { html: string }).html).not.toContain('<table');
+    expect(warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['blockquote', 'table', 'td', 'tr'] },
+    ]);
+  });
+
+  it('reports nothing when the submitted html is already inside the subset', () => {
+    const { warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<p>Plain <strong>bold</strong> and a <a href="https://a.b">link</a></p>' },
+    } as never);
+    expect(warnings).toEqual([]);
+  });
+
+  it('does NOT warn about stripped attributes or a rejected href scheme — only removed tags', () => {
+    const { warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<p style="color:red" class="x">hi</p><a href="javascript:alert(1)">x</a>' },
+    } as never);
+    expect(warnings).toEqual([]);
+  });
+
+  it('collapses a table block\'s per-cell losses into one warning per field family', () => {
+    const { warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'table',
+      content: {
+        columns: [{ label: '<h3>A</h3>' }, { label: '<h3>B</h3>' }],
+        rows: [{ cells: ['<p>one</p>', '<ul><li>two</li></ul>'] }, { cells: ['<p>three</p>', 'four'] }],
+        caption: '<strong>Cap</strong>',
+      },
+    } as never);
+    expect(warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.columns[].label', removedTags: ['h3'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.rows[].cells[]', removedTags: ['li', 'p', 'ul'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.caption', removedTags: ['strong'] },
+    ]);
+  });
+
+  it('reports callout html and title losses on their own fields', () => {
+    const { warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'callout',
+      content: { variant: 'info', html: '<h1>Big</h1>', title: '<em>T</em>' },
+    } as never);
+    expect(warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['h1'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.title', removedTags: ['em'] },
+    ]);
+  });
+
+  it('reports nothing for a block type that carries no rich text', () => {
+    const { warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'heading',
+      content: { text: 'Intro', level: 2 },
+    } as never);
+    expect(warnings).toEqual([]);
   });
 });

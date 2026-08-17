@@ -11,7 +11,11 @@ import { AUTO_CONTRACT_VARIABLES } from '@breeze/shared';
 import { db } from '../db';
 import { contractTemplates, contractTemplateVersions } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import { sanitizeRichTextHtml } from './richTextSanitize';
+import {
+  sanitizeRichTextHtmlWithReport,
+  richTextStripWarning,
+  type RichTextStripWarning,
+} from './richTextSanitize';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -368,7 +372,7 @@ export async function createDraftVersion(
   auth: AuthContext,
   templateId: string,
   input: { bodyHtml: string }
-): Promise<VersionRow> {
+): Promise<VersionRow & { warnings: RichTextStripWarning[] }> {
   const template = await getTemplateOr404(templateId);
   assertTemplateWriteAccess(auth, template);
   if (template.status === 'archived') {
@@ -377,8 +381,13 @@ export async function createDraftVersion(
 
   const versionNumber = await nextVersionNumber(templateId);
   // Authored version bodies must pass through the shared rich-text sanitizer
-  // before persisting — same subset enforced on quote rich_text blocks.
-  const bodyHtml = sanitizeRichTextHtml(input.bodyHtml);
+  // before persisting — same subset enforced on quote rich_text blocks. The
+  // reporting variant additionally names anything the subset discarded, so the
+  // author is told rather than left to discover the loss later (issue #3520).
+  const report = sanitizeRichTextHtmlWithReport(input.bodyHtml);
+  const bodyHtml = report.html;
+  const warning = richTextStripWarning('bodyHtml', report);
+  const warnings = warning ? [warning] : [];
 
   const [row] = await db
     .insert(contractTemplateVersions)
@@ -395,7 +404,14 @@ export async function createDraftVersion(
     })
     .returning();
   if (!row) throw new ContractTemplateServiceError('Failed to create draft version', 500, 'VERSION_CREATE_FAILED');
-  return row;
+  if (warnings.length > 0) {
+    console.warn('[contractTemplateService] createDraftVersion removed unsupported markup', {
+      templateId,
+      versionId: row.id,
+      removedTags: report.removedTags,
+    });
+  }
+  return { ...row, warnings };
 }
 
 export async function createUploadedVersion(

@@ -14,7 +14,15 @@ import { buildBillToAddress, type BillToAddress } from './sellerSnapshot';
 import { computeQuoteTotals, validateQuoteDeposit, toQuoteDepositConfig, type QuoteLineForMath } from './quoteMath';
 import { QuoteServiceError, assertOrg, assertSite, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { allocateQuoteCounter, formatQuoteNumber } from './quoteNumbers';
-import { sanitizeRichTextHtml, sanitizeInlineRichText, sanitizePlainText } from './richTextSanitize';
+import {
+  sanitizeRichTextHtml,
+  sanitizeRichTextHtmlWithReport,
+  sanitizeInlineRichTextWithReport,
+  sanitizePlainTextWithReport,
+  richTextStripWarning,
+  type RichTextSanitizeReport,
+  type RichTextStripWarning,
+} from './richTextSanitize';
 import { quoteTableContentSchema, quoteCalloutContentSchema } from '@breeze/shared';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery,
@@ -79,22 +87,61 @@ export function attachCustomerLineImages<T extends { id: string; imageId: string
  * API — the internal editor (getQuote, below), the portal, and the public accept
  * link — must route through this so no unsanitized author HTML is ever served.
  */
+/**
+ * Merge per-field reports for a repeated field (every table cell, every column
+ * label) into ONE warning naming the field family — an author who pasted a
+ * table into a 6x8 grid wants "tables aren't supported in cells", not 48
+ * identical warnings (issue #3520).
+ */
+function mergeWarnings(field: string, reports: RichTextSanitizeReport[]): RichTextStripWarning[] {
+  const removedTags = [...new Set(reports.flatMap((r) => r.removedTags))].sort();
+  const warning = richTextStripWarning(field, { html: '', removedTags });
+  return warning ? [warning] : [];
+}
+
+/** A block's sanitization result: the value to persist/serve, and what the
+ * sanitizer removed on the way (empty array = nothing lost). */
+interface SanitizedContent<T> {
+  content: T;
+  warnings: RichTextStripWarning[];
+}
+
 /** Per-field sanitization shared by write (sanitizeBlockContentForWrite) and
  * read (sanitizeQuoteBlocksForRead) for the 'table' block: every cell/label is
- * inline-only HTML (richTextSanitize's inline profile), caption is plain text. */
-function sanitizeTableContent(c: QuoteTableContent): QuoteTableContent {
+ * inline-only HTML (richTextSanitize's inline profile), caption is plain text.
+ * Both paths go through this one function so the field map can't drift; only
+ * the WRITE path consumes `warnings` (issue #3520). */
+function sanitizeTableContent(c: QuoteTableContent): SanitizedContent<QuoteTableContent> {
+  const labels = c.columns.map((col) => sanitizeInlineRichTextWithReport(col.label));
+  const cells = c.rows.map((r) => r.cells.map(sanitizeInlineRichTextWithReport));
+  const caption = c.caption ? sanitizePlainTextWithReport(c.caption) : null;
   return {
-    ...c,
-    columns: c.columns.map((col) => ({ ...col, label: sanitizeInlineRichText(col.label) })),
-    rows: c.rows.map((r) => ({ cells: r.cells.map(sanitizeInlineRichText) })),
-    caption: c.caption ? sanitizePlainText(c.caption) : c.caption,
+    content: {
+      ...c,
+      columns: c.columns.map((col, i) => ({ ...col, label: labels[i]!.html })),
+      rows: cells.map((row) => ({ cells: row.map((cell) => cell.html) })),
+      caption: caption ? caption.html : c.caption,
+    },
+    warnings: [
+      ...mergeWarnings('content.columns[].label', labels),
+      ...mergeWarnings('content.rows[].cells[]', cells.flat()),
+      ...(caption ? mergeWarnings('content.caption', [caption]) : []),
+    ],
   };
 }
 
 /** Per-field sanitization shared by write and read for the 'callout' block:
  * html uses the same 11-tag block profile as rich_text, title is plain text. */
-function sanitizeCalloutContent(c: QuoteCalloutContent): QuoteCalloutContent {
-  return { ...c, html: sanitizeRichTextHtml(c.html), title: c.title ? sanitizePlainText(c.title) : c.title };
+function sanitizeCalloutContent(c: QuoteCalloutContent): SanitizedContent<QuoteCalloutContent> {
+  const html = sanitizeRichTextHtmlWithReport(c.html);
+  const title = c.title ? sanitizePlainTextWithReport(c.title) : null;
+  return {
+    content: { ...c, html: html.html, title: title ? title.html : c.title },
+    warnings: [
+      ...mergeWarnings('content.html', [html]),
+      ...(title ? mergeWarnings('content.title', [title]) : []),
+    ],
+  };
 }
 
 // Canonical empty content substituted on read when a stored block's JSONB
@@ -115,11 +162,11 @@ export function sanitizeQuoteBlocksForRead<T extends { blockType: string; conten
     }
     if (block.blockType === 'table') {
       const parsed = quoteTableContentSchema.safeParse(block.content);
-      return { ...block, content: parsed.success ? sanitizeTableContent(parsed.data) : EMPTY_TABLE_CONTENT };
+      return { ...block, content: parsed.success ? sanitizeTableContent(parsed.data).content : EMPTY_TABLE_CONTENT };
     }
     if (block.blockType === 'callout') {
       const parsed = quoteCalloutContentSchema.safeParse(block.content);
-      return { ...block, content: parsed.success ? sanitizeCalloutContent(parsed.data) : EMPTY_CALLOUT_CONTENT };
+      return { ...block, content: parsed.success ? sanitizeCalloutContent(parsed.data).content : EMPTY_CALLOUT_CONTENT };
     }
     return block;
   });
@@ -127,18 +174,36 @@ export function sanitizeQuoteBlocksForRead<T extends { blockType: string; conten
 
 /** Sanitize a block's content at WRITE time (addBlock/updateBlock) — the
  * primary defense; sanitizeQuoteBlocksForRead above is the secondary one.
- * Other block types pass through unchanged. Exported for direct unit testing. */
-export function sanitizeBlockContentForWrite(input: QuoteBlockInput): QuoteBlockInput['content'] {
+ * Other block types pass through unchanged. Exported for direct unit testing.
+ *
+ * Returns the removed tags alongside the content so addBlock/updateBlock can
+ * hand them to the caller instead of 200-ing over the loss (issue #3520). The
+ * READ path deliberately stays silent — a legacy row must render, not warn. */
+export function sanitizeBlockContentForWrite(input: QuoteBlockInput): SanitizedContent<QuoteBlockInput['content']> {
   if (input.blockType === 'rich_text') {
-    return { ...input.content, html: sanitizeRichTextHtml(input.content.html) };
+    const report = sanitizeRichTextHtmlWithReport(input.content.html);
+    return {
+      content: { ...input.content, html: report.html },
+      warnings: mergeWarnings('content.html', [report]),
+    };
   }
-  if (input.blockType === 'table') {
-    return sanitizeTableContent(input.content);
-  }
-  if (input.blockType === 'callout') {
-    return sanitizeCalloutContent(input.content);
-  }
-  return input.content;
+  if (input.blockType === 'table') return sanitizeTableContent(input.content);
+  if (input.blockType === 'callout') return sanitizeCalloutContent(input.content);
+  return { content: input.content, warnings: [] };
+}
+
+/**
+ * Record a lossy block write server-side. Logged at the WRITE boundary (with
+ * ids, never the raw HTML) rather than inside the sanitizer, where the read and
+ * PDF-render paths would emit the same line on every page view (issue #3520).
+ */
+function logStrippedMarkup(op: string, quoteId: string, blockId: string, warnings: RichTextStripWarning[]): void {
+  if (warnings.length === 0) return;
+  console.warn(`[quoteService] ${op} removed unsupported markup`, {
+    quoteId,
+    blockId,
+    warnings: warnings.map((w) => ({ field: w.field, removedTags: w.removedTags })),
+  });
 }
 
 function resolvePartner(actor: QuoteActor): string {
@@ -869,14 +934,16 @@ export async function addBlock(quoteId: string, input: QuoteBlockInput, actor: Q
     await assertContractBlockValid(input.content, q);
   }
   const sortOrder = await nextBlockSortOrder(quoteId);
+  const { content, warnings } = sanitizeBlockContentForWrite(input);
   const [row] = await db.insert(quoteBlocks).values({
     quoteId,
     orgId: q.orgId,
     blockType: input.blockType,
-    content: sanitizeBlockContentForWrite(input),
+    content,
     sortOrder,
   }).returning();
-  return row!;
+  logStrippedMarkup('addBlock', quoteId, row!.id, warnings);
+  return { ...row!, warnings };
 }
 
 /**
@@ -899,11 +966,13 @@ export async function updateBlock(quoteId: string, blockId: string, input: Quote
   if (input.blockType === 'contract') {
     await assertContractBlockValid(input.content, q);
   }
+  const { content, warnings } = sanitizeBlockContentForWrite(input);
   const [row] = await db.update(quoteBlocks)
-    .set({ content: sanitizeBlockContentForWrite(input) })
+    .set({ content })
     .where(and(eq(quoteBlocks.id, blockId), eq(quoteBlocks.quoteId, quoteId)))
     .returning();
-  return row!;
+  logStrippedMarkup('updateBlock', quoteId, blockId, warnings);
+  return { ...row!, warnings };
 }
 
 /**

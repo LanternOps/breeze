@@ -832,6 +832,9 @@
         "variantWarn": "Warning",
         "titlePlaceholder": "Title (optional)",
         "bodyAria": "Callout text"
+      },
+      "warnings": {
+        "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Rich text supports headings, bold, italic, underline, lists and links."
       }
     },
     "actions": {

@@ -832,6 +832,9 @@
       },
       "unsavedField": {
         "lines": "Satır öğeleri"
+      },
+      "warnings": {
+        "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Zengin metin başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
       }
     },
     "actions": {

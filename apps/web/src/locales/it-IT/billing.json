@@ -832,6 +832,9 @@
         "variantWarn": "Avviso",
         "titlePlaceholder": "Titolo (facoltativo)",
         "bodyAria": "Testo del riquadro"
+      },
+      "warnings": {
+        "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il testo formattato supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
       }
     },
     "actions": {

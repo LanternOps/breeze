@@ -832,6 +832,9 @@
         "variantWarn": "Advertencia",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto del recuadro"
+      },
+      "warnings": {
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. El texto enriquecido admite títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
     },
     "actions": {

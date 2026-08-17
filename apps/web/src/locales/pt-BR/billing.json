@@ -832,6 +832,9 @@
         "variantWarn": "Aviso",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto do destaque"
+      },
+      "warnings": {
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O texto formatado oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
     },
     "actions": {
