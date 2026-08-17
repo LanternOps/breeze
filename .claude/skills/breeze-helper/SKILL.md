@@ -71,6 +71,11 @@ All in the agent config directory (same as `agent.yaml`):
 ### HelperConfig Fields
 
 ```yaml
+show_tray_icon: true         # Draw the tray icon at all (#3202). Independent of
+                             # the three menu-item flags below: with this false
+                             # the helper still serves chat, remote-access
+                             # consent and PAM dialogs, it just has no tray.
+                             # Missing key => TRUE everywhere in the chain.
 show_open_portal: true       # Show "Open Breeze Portal" in tray menu
 show_device_info: true       # Show "Device Info" in tray menu
 show_request_support: true   # Show "Request Support" in tray menu

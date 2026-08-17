@@ -53,7 +53,8 @@ func (s *sessionState) configUnchanged(cfg *Config) bool {
 	if s.lastConfig == nil {
 		return false
 	}
-	return s.lastConfig.ShowOpenPortal == cfg.ShowOpenPortal &&
+	return s.lastConfig.ShowTrayIcon == cfg.ShowTrayIcon &&
+		s.lastConfig.ShowOpenPortal == cfg.ShowOpenPortal &&
 		s.lastConfig.ShowDeviceInfo == cfg.ShowDeviceInfo &&
 		s.lastConfig.ShowRequestSupport == cfg.ShowRequestSupport &&
 		s.lastConfig.PortalUrl == cfg.PortalUrl &&

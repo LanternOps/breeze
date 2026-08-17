@@ -8,6 +8,12 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 type HelperSettings = {
   enabled: boolean;
+  /**
+   * Whether the tray icon is drawn at all. Independent of the menu-item
+   * toggles below — with this off, Breeze Assist still serves chat,
+   * remote-access consent and PAM dialogs, it just has no tray presence.
+   */
+  showTrayIcon: boolean;
   showOpenPortal: boolean;
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
@@ -16,6 +22,7 @@ type HelperSettings = {
 };
 const defaults: HelperSettings = {
   enabled: false,
+  showTrayIcon: true,
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
@@ -160,6 +167,34 @@ export default function HelperTab({
             className={`space-y-4 ${settings.enabled ? "" : "pointer-events-none opacity-50"}`}
             aria-disabled={!settings.enabled}
           >
+            {/*
+              Tray icon visibility (#3202). Listed first because it gates
+              whether the menu below is reachable at all — the items stay
+              editable when it is off so a later re-show keeps the config.
+            */}
+            <label className="flex items-center gap-3 rounded-md border bg-background px-4 py-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.showTrayIcon}
+                disabled={!settings.enabled}
+                onChange={(e) => update("showTrayIcon", e.target.checked)}
+                data-testid="helper-show-tray-icon"
+                className="h-4 w-4 rounded border-border"
+              />
+              <div>
+                <p className="text-sm font-medium">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.systemTrayIcon",
+                  )}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.helperTab.showsTheBreezeAssistIconInThe",
+                  )}
+                </p>
+              </div>
+            </label>
+
             {/* Open Portal */}
             <label className="flex items-center gap-3 rounded-md border bg-background px-4 py-3 cursor-pointer">
               <input

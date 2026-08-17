@@ -705,6 +705,8 @@
         "trayMenuOptions": "Tepsi Menü Seçenekleri",
         "configureWhichItemsAppearInTheBreeze": "Breeze Assist sağ tıklama bağlam menüsünde hangi öğelerin görüneceğini yapılandırın. Çıkış her zaman mevcuttur.",
         "enableDeployBreezeAssistToDevicesAbove": "Bu seçenekleri uygulamak için yukarıdaki \"Breeze Assist'i cihazlara dağıt\" seçeneğini etkinleştirin.",
+        "systemTrayIcon": "Sistem tepsisi simgesi",
+        "showsTheBreezeAssistIconInThe": "Breeze Destek simgesini sistem tepsisinde gösterir. Assist’i görünmez şekilde çalıştırmak için bunu kapatın — sohbet, uzaktan erişim onayı ve PAM istemleri çalışmaya devam eder.",
         "openBreezePortal": "Breeze Portal'yi açın",
         "opensTheWebPortalInTheUser": "Kullanıcının tarayıcısında web portalını açar.",
         "deviceInfo": "Cihaz Bilgisi",
