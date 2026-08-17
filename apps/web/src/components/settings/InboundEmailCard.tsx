@@ -38,7 +38,13 @@ interface InboundConfig {
   autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
+  // Mirrors the API's IS_HOSTED. Absent (older API) is treated as hosted so we
+  // don't show a self-host-only variable name to a hosted partner.
+  isHosted?: boolean;
 }
+
+// The self-hosted setup section added in #3586.
+const INBOUND_DOCS_URL = 'https://docs.breezermm.com/deploy/environment/#inbound-email-to-ticket-mailgun';
 
 interface OrgOption {
   id: string;
@@ -278,7 +284,26 @@ export default function InboundEmailCard() {
             </div>
           ) : (
             <p className="mt-0.5 text-xs text-amber-600" data-testid="inbound-address-unconfigured">
-              {t('inboundEmail.domainNotConfigured')}
+              {cfg.isHosted === false ? (
+                <Trans
+                  i18nKey="inboundEmail.domainNotConfiguredSelfHosted"
+                  t={t}
+                  components={{
+                    var: <code className="rounded bg-muted px-1 py-0.5 font-mono" />,
+                    docs: (
+                      <a
+                        href={INBOUND_DOCS_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                        data-testid="inbound-address-unconfigured-docs"
+                      />
+                    ),
+                  }}
+                />
+              ) : (
+                t('inboundEmail.domainNotConfigured')
+              )}
             </p>
           )}
         </div>

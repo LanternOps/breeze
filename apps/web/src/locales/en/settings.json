@@ -596,6 +596,7 @@
     "address": "Inbound address",
     "localPart": "Inbound address local part",
     "domainNotConfigured": "The platform inbound domain isn't configured yet. Contact your administrator.",
+    "domainNotConfiguredSelfHosted": "No platform inbound domain is configured, so an inbound address can't be generated. Set <var>TICKETS_INBOUND_DOMAIN</var> on your Breeze server and restart the API — see <docs>Inbound email-to-ticket setup</docs>. Alternatively, connect a Microsoft 365 shared mailbox — that path needs no inbound domain.",
     "triageOrganization": "Default triage organization",
     "unknownSenders": "Unknown senders",
     "unknownDescription": "What to do with mail whose sender isn't a portal user, a mapped customer domain, or a reply to an existing ticket.",

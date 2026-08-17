@@ -4,6 +4,7 @@ import { eq, and, asc, desc, inArray, count, ne, sql } from 'drizzle-orm';
 import { ticketStatuses, ticketPrioritySettings, orgTicketSettings, partners, ticketEmailInbound, organizations, customerEmailDomains } from '../db/schema';
 import { ticketStatusEnum } from '../db/schema/portal';
 import { getConfig } from '../config/validate';
+import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -406,6 +407,14 @@ export async function getTicketConfig(partnerId: string) {
     slug,
     inboundLocalPart,
     domainConfigured,
+    // Lets the Inbound email card branch its "no domain configured" copy: on
+    // hosted the reader can only escalate to us, but on self-host the reader IS
+    // the operator and needs the variable name (issue #3599). Read at call time
+    // so a per-test IS_HOSTED flip is picked up. `IS_HOSTED` unset parses as
+    // false → self-hosted → the actionable message, which is the safe default:
+    // naming the variable to a hosted partner is noise, but withholding it from
+    // a self-hoster is the dead end this flag exists to remove.
+    isHosted: isHosted(),
   };
 
   return { statuses, priorities, inbound };

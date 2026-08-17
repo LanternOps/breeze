@@ -420,7 +420,7 @@ These power the **native inbound address** — the `partner@yourdomain` address 
 
 | Variable | Default | Description |
 |---|---|---|
-| `TICKETS_INBOUND_DOMAIN` | — | The domain inbound ticket addresses live on, e.g. `tickets.yourmsp.com`. Each partner's address is `<local part>@<this domain>`. **Until this is set, the Inbound email card reports "The platform inbound domain isn't configured yet"** and no address can be generated. |
+| `TICKETS_INBOUND_DOMAIN` | — | The domain inbound ticket addresses live on, e.g. `tickets.yourmsp.com`. Each partner's address is `<local part>@<this domain>`. **Until this is set, the Inbound email card reports that no platform inbound domain is configured** (naming this variable and linking back here on self-hosted instances) and no address can be generated. |
 | `MAILGUN_INBOUND_SIGNING_KEY` | — | Mailgun's **HTTP webhook signing key**, used to HMAC-verify deliveries. The inbound webhook is unauthenticated by design — this signature is its only security — so when the key is unset every delivery is rejected with `401`. |
 
 <Aside type="caution">

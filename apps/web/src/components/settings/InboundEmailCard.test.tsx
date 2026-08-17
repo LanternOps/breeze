@@ -36,6 +36,7 @@ interface CfgShape {
   autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
+  isHosted?: boolean;
 }
 
 const CFG: CfgShape = {
@@ -195,4 +196,30 @@ describe('InboundEmailCard', () => {
     render(<InboundEmailCard />);
     expect(await screen.findByTestId('inbound-address-unconfigured')).toBeTruthy();
   });
+
+  // #3599: "Contact your administrator" is a dead end on self-host, where the
+  // reader IS the administrator. Name the variable and link the setup docs.
+  it('names TICKETS_INBOUND_DOMAIN and links the docs when the instance is self-hosted', async () => {
+    routeFetch({ ...CFG, address: '', domainConfigured: false, isHosted: false });
+    render(<InboundEmailCard />);
+    const hint = await screen.findByTestId('inbound-address-unconfigured');
+    expect(hint.textContent).toContain('TICKETS_INBOUND_DOMAIN');
+    expect(hint.textContent).toContain('Microsoft 365');
+    const link = screen.getByTestId('inbound-address-unconfigured-docs') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe(
+      'https://docs.breezermm.com/deploy/environment/#inbound-email-to-ticket-mailgun',
+    );
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  it.each([true, undefined])(
+    'keeps the generic "contact your administrator" copy when isHosted is %s',
+    async (isHosted) => {
+      routeFetch({ ...CFG, address: '', domainConfigured: false, isHosted });
+      render(<InboundEmailCard />);
+      const hint = await screen.findByTestId('inbound-address-unconfigured');
+      expect(hint.textContent).not.toContain('TICKETS_INBOUND_DOMAIN');
+      expect(screen.queryByTestId('inbound-address-unconfigured-docs')).toBeNull();
+    },
+  );
 });
