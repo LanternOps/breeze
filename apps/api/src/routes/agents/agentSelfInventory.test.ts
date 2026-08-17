@@ -41,6 +41,21 @@ describe('resolveInventoryVersion (#3591)', () => {
     expect(resolveInventoryVersion('Breeze Agent', '0.100.0', '   ')).toBe('0.100.0');
   });
 
+  it('ignores the provisioning sentinel agent version', () => {
+    // devices.agent_version is NOT NULL and provisioning seeds '0.0.0' until
+    // the first heartbeat. The agent's software report is dispatched in a
+    // goroutine that is not ordered against that heartbeat, so a report can
+    // arrive while the sentinel is still stored. Copying it in would stamp the
+    // agent's row with a version that sorts below every real one — failing
+    // every min-version policy check, and worse than the bug being fixed.
+    expect(resolveInventoryVersion('Breeze Agent', '0.100.0', '0.0.0')).toBe('0.100.0');
+    expect(resolveInventoryVersion('Breeze Agent (Self-Hosted)', '0.101.0', '0.0.0')).toBe('0.101.0');
+    // ...and it must not leak in when there is nothing to fall back to either.
+    expect(resolveInventoryVersion('Breeze Agent', undefined, '0.0.0')).toBeNull();
+    // A real version that merely starts with a zero is untouched.
+    expect(resolveInventoryVersion('Breeze Agent', '0.100.0', '0.0.1')).toBe('0.0.1');
+  });
+
   it('normalizes empty/whitespace reported versions to null', () => {
     expect(resolveInventoryVersion('Google Chrome', '', '0.105.1')).toBeNull();
     expect(resolveInventoryVersion('Google Chrome', '  ', '0.105.1')).toBeNull();

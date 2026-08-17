@@ -39,12 +39,27 @@ export function isBreezeAgentProductName(name: string): boolean {
 }
 
 /**
+ * Placeholder `devices.agent_version` written at provisioning, before the
+ * device's first heartbeat reports a real one (see `routes/devices/provision.ts`
+ * — the column is NOT NULL, so provisioning must write *something*).
+ *
+ * It is deliberately chosen to order BELOW every real version so compliance
+ * checks fail rather than silently pass. That makes it the worst possible value
+ * to copy into the inventory row: a device is issued agent credentials at the
+ * same insert, and the agent fires its software report in a goroutine that is
+ * not ordered against the heartbeat, so a report can legitimately arrive while
+ * the sentinel is still in place. Treat it as "no live version yet".
+ */
+const PROVISIONING_SENTINEL_VERSION = '0.0.0';
+
+/**
  * Version to store for one reported software item.
  *
  * For the agent's own entry, prefers the live heartbeat-reported agent version
  * over the installer-registered one. Falls back to whatever the collector
- * reported when `agentVersion` is missing (a device that has not completed its
- * first heartbeat) so a normalization can never blank a version out.
+ * reported while the device has no real agent version yet (missing, blank, or
+ * the provisioning sentinel) so a normalization can only ever improve the
+ * stored version, never degrade or blank one.
  */
 export function resolveInventoryVersion(
   name: string,
@@ -55,5 +70,6 @@ export function resolveInventoryVersion(
   if (!isBreezeAgentProductName(name)) return reported;
 
   const live = agentVersion?.trim() || null;
-  return live ?? reported;
+  if (!live || live === PROVISIONING_SENTINEL_VERSION) return reported;
+  return live;
 }

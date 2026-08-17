@@ -485,8 +485,12 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
       expect(insertedRows(insertValues)[0]?.version).toBe('0.105.1');
     });
 
-    it('keeps the reported version when the device has no agent version yet', async () => {
-      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: null });
+    it('keeps the reported version while the device still holds the provisioning sentinel', async () => {
+      // devices.agent_version is NOT NULL; provisioning seeds '0.0.0' until the
+      // first heartbeat lands, and the agent's software report is not ordered
+      // against that heartbeat. Storing the sentinel would sort the agent below
+      // every real version and fail every min-version policy check.
+      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.0.0' });
       const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
 
       const res = await putSoftware(makeApp(), [{ name: 'Breeze Agent', version: '0.100.0' }]);
