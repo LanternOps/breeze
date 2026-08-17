@@ -1231,6 +1231,8 @@
     "previewTitle": "Status",
     "statusNew": "New",
     "statusConflict": "Name conflict",
+    "statusConflictPartnerWide": "Exists partner-wide",
+    "partnerWideConflictHint": "A shared partner-wide script already uses this name. It is read-only here — Skip it or Rename.",
     "modeLabel": "When a script with the same name already exists",
     "modeSkip": "Skip it",
     "modeRename": "Import with a new name",

@@ -25,6 +25,13 @@ type PreviewEntry = {
   index: number;
   name: string;
   status: 'new' | 'name-conflict' | 'invalid';
+  /**
+   * Only set on a 'name-conflict' (#3450). 'partner-wide' means the colliding
+   * script is one of the MSP's shared scripts — visible in this same library
+   * list but read-only for an organization-targeted import, so "New version"
+   * cannot apply to it. Optional: an older API omits it.
+   */
+  conflictKind?: 'target-scope' | 'partner-wide';
   error?: string;
   existingVersion?: number;
 };
@@ -466,12 +473,20 @@ export function ScriptBundleImportModal({
                             {entry.status === 'new'
                               ? t('bundle.statusNew')
                               : entry.status === 'name-conflict'
-                                ? t('bundle.statusConflict')
+                                ? entry.conflictKind === 'partner-wide'
+                                  ? t('bundle.statusConflictPartnerWide')
+                                  : t('bundle.statusConflict')
                                 : t('bundle.statusInvalid')}
                           </span>
                           {entry.status === 'invalid' && entry.error && (
                             <p className="mt-1 text-xs text-destructive">{entry.error}</p>
                           )}
+                          {entry.status === 'name-conflict' &&
+                            entry.conflictKind === 'partner-wide' && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {t('bundle.partnerWideConflictHint')}
+                              </p>
+                            )}
                         </td>
                       </tr>
                     ))}

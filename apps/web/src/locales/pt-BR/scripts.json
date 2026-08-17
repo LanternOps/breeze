@@ -1231,6 +1231,8 @@
     "previewTitle": "Situação",
     "statusNew": "Novo",
     "statusConflict": "Conflito de nome",
+    "statusConflictPartnerWide": "Existe no nível do parceiro",
+    "partnerWideConflictHint": "Um script compartilhado no nível do parceiro já usa esse nome. Ele é somente leitura aqui — ignore-o ou renomeie-o.",
     "modeLabel": "Quando já existe um script com o mesmo nome",
     "modeSkip": "Ignorar",
     "modeRename": "Importar com um novo nome",

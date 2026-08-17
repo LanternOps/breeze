@@ -1231,6 +1231,8 @@
     "previewTitle": "Zustand",
     "statusNew": "Neu",
     "statusConflict": "Namenskonflikt",
+    "statusConflictPartnerWide": "Partnerweit vorhanden",
+    "partnerWideConflictHint": "Ein partnerweit freigegebenes Skript verwendet diesen Namen bereits. Es ist hier schreibgeschützt — überspringen oder umbenennen.",
     "modeLabel": "Wenn ein Skript mit demselben Namen bereits existiert",
     "modeSkip": "Überspringen",
     "modeRename": "Mit neuem Namen importieren",
