@@ -299,6 +299,45 @@ function protectedLiteralContractErrors(
   return errors;
 }
 
+// Values that are *entirely* one slash-prefixed token are almost always a URL
+// path, an API endpoint, or a filesystem path that the code depends on
+// verbatim. Shipping one as a translatable string means a single translator
+// edit silently breaks the feature in that locale only, at runtime, with no
+// type or test error (issue #3426). Inline such a value as a literal in the
+// component instead.
+//
+// The exceptions are genuine display copy that happens to start with a slash:
+// the per-unit price suffixes and one separator glyph. They are exempted by
+// KEY rather than by value, because those values are themselves localized
+// (`/mo` → `/mois` → `/ay`) — a value allowlist could only ever hold for `en`.
+// Keeping the exemption list short and explicit means a new route path cannot
+// sneak in under a permissive regex.
+const pathLikeValueExemptKeys = new Set([
+  'billing.json:billingUi.units.perMonth',
+  'billing.json:billingUi.units.perYear',
+  'billing.json:quotes.editor.units.perMonth',
+  'billing.json:quotes.editor.units.perYear',
+  'settings.json:accessReviewPage.of',
+]);
+
+function routePathValueErrors(values: LeafValues, namespace: string): string[] {
+  const errors: string[] = [];
+  for (const [key, value] of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('/')) continue;
+    // Anything containing whitespace is prose that mentions a path, not a bare
+    // path value; the protected-literal contract above already pins those.
+    if (/\s/.test(trimmed)) continue;
+    if (pathLikeValueExemptKeys.has(`${namespace}:${key}`)) continue;
+    errors.push(
+      `${key}: value ${JSON.stringify(trimmed)} looks like a route or filesystem path; ` +
+        'inline it as a literal in the component instead of translating it',
+    );
+  }
+  return errors;
+}
+
 function readNamespaces(locale: string): Map<string, string[]> {
   const dir = join(localesDir, locale);
   return new Map(
@@ -335,6 +374,21 @@ describe('locale parity', () => {
       expect.arrayContaining(['en', 'pt-BR', 'es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR']),
     );
   });
+
+  for (const locale of locales) {
+    it(`${locale} carries no route or filesystem path as a translatable value`, () => {
+      const values = locale === 'en' ? referenceValues : readNamespaceValues(locale);
+      const errors: string[] = [];
+      for (const [namespace, leaves] of values) {
+        errors.push(
+          ...routePathValueErrors(leaves, namespace).map(
+            (error) => `${namespace}:${error}`,
+          ),
+        );
+      }
+      expect(errors, errors.join('\n')).toEqual([]);
+    });
+  }
 
   for (const locale of locales.filter((value) => value !== 'en')) {
     it(`${locale} matches en namespace files and keys exactly`, () => {
@@ -431,6 +485,57 @@ describe('locale parity guard helpers', () => {
     ).toEqual([
       'delete.confirm: rich-text tags differ (expected close:strong, open:strong; received close:b, open:b)',
     ]);
+  });
+
+  it('rejects bare route, endpoint, and filesystem path values', () => {
+    expect(
+      routePathValueErrors(
+        new Map([
+          ['page.route', '/configuration-policies'],
+          ['tab.endpoint', '/scripts?limit=200'],
+          ['field.example', '/etc/ssh/sshd_config'],
+        ]),
+        'policies.json',
+      ),
+    ).toEqual([
+      'page.route: value "/configuration-policies" looks like a route or filesystem path; inline it as a literal in the component instead of translating it',
+      'tab.endpoint: value "/scripts?limit=200" looks like a route or filesystem path; inline it as a literal in the component instead of translating it',
+      'field.example: value "/etc/ssh/sshd_config" looks like a route or filesystem path; inline it as a literal in the component instead of translating it',
+    ]);
+  });
+
+  it('exempts reviewed unit-suffix keys in every locale, not just English', () => {
+    for (const localized of ['/mo', '/mois', '/ay', '/Jahr']) {
+      expect(
+        routePathValueErrors(
+          new Map([['billingUi.units.perMonth', localized]]),
+          'billing.json',
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it('allows prose that mentions a path and non-path leaves', () => {
+    expect(
+      routePathValueErrors(
+        new Map<string, unknown>([
+          ['backup.desc', '/home and /etc with caches excluded.'],
+          ['branding.css', '/* Custom CSS */'],
+          ['actions.save', 'Save'],
+          ['count.total', 12],
+        ]),
+        'backup.json',
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not exempt an unreviewed key that borrows an exempt name', () => {
+    expect(
+      routePathValueErrors(
+        new Map([['billingUi.units.perMonth', '/mo']]),
+        'policies.json',
+      ),
+    ).toHaveLength(1);
   });
 
   it('extracts reviewed names and operational literals source-aligned', () => {
