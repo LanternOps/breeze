@@ -304,7 +304,7 @@
       "empty": "Aún no se han sincronizado suscripciones a Pax8 para esta organización. Sincronízalos en Integraciones → Pax8.",
       "subscriptionFallback": "Suscripción Pax8",
       "quantity": "cantidad {{quantity}}",
-      "priceEach": "{{currency}} {{price}}/ea",
+      "priceEach": "{{currency}} {{price}}/u.",
       "alreadyLinked": "ya vinculado",
       "relink": "Volver a vincular",
       "link": "Enlace",

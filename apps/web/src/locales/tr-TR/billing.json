@@ -304,7 +304,7 @@
       "empty": "Bu kuruluş için henüz hiçbir Pax8 aboneliği senkronize edilmedi. Bunları Entegrasyonlar → Pax8 altında senkronize edin.",
       "subscriptionFallback": "Pax8 aboneliği",
       "quantity": "adet {{quantity}}",
-      "priceEach": "{{currency}} {{price}}/ea",
+      "priceEach": "{{currency}} {{price}}/adet",
       "alreadyLinked": "zaten bağlı",
       "relink": "Yeniden bağlantı oluştur",
       "link": "Bağlantı",
