@@ -512,7 +512,9 @@
         "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
         "richTextContentAria": "Conteúdo de rich text",
         "tableEmpty": "Tabela vazia.",
-        "calloutEmpty": "Destaque vazio."
+        "calloutEmpty": "Destaque vazio.",
+        "edit": "Editar",
+        "saveEdit": "Salvar"
       },
       "blockTypes": {
         "heading": "Título",
@@ -749,7 +751,8 @@
         "zebra": "Linhas alternadas",
         "headerStyle": "Estilo do cabeçalho",
         "headerStylePlain": "Simples",
-        "headerStyleAccent": "Destaque"
+        "headerStyleAccent": "Destaque",
+        "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",

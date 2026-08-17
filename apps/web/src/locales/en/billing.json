@@ -512,7 +512,9 @@
         "imageSectionPdf": "Image section (rendered in the PDF).",
         "richTextContentAria": "Rich text content",
         "tableEmpty": "Empty table.",
-        "calloutEmpty": "Empty callout."
+        "calloutEmpty": "Empty callout.",
+        "edit": "Edit",
+        "saveEdit": "Save"
       },
       "blockTypes": {
         "heading": "Heading",
@@ -749,7 +751,8 @@
         "zebra": "Zebra stripes",
         "headerStyle": "Header style",
         "headerStylePlain": "Plain",
-        "headerStyleAccent": "Accent"
+        "headerStyleAccent": "Accent",
+        "reshapedWarning": "This table didn't fit the {{columns}}-column x {{rows}}-row limit, so it was reshaped to fit. Saving replaces the stored table with what you see here."
       },
       "terms": {
         "placeholder": "Payment terms, warranty clauses, etc.",

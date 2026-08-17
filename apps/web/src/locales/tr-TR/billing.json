@@ -512,7 +512,9 @@
         "imageSectionPdf": "Resim bölümü (PDF'de oluşturulmuştur).",
         "richTextContentAria": "Zengin metin içeriği",
         "tableEmpty": "Boş tablo.",
-        "calloutEmpty": "Boş çağrı kutusu."
+        "calloutEmpty": "Boş çağrı kutusu.",
+        "edit": "Düzenle",
+        "saveEdit": "Kaydet"
       },
       "blockTypes": {
         "heading": "Başlık",
@@ -757,7 +759,8 @@
         "zebra": "Zebra şeritleri",
         "headerStyle": "Başlık stili",
         "headerStylePlain": "Düz",
-        "headerStyleAccent": "Vurgulu"
+        "headerStyleAccent": "Vurgulu",
+        "reshapedWarning": "Bu tablo {{columns}} sütun x {{rows}} satır sınırına sığmadığı için yeniden düzenlendi. Kaydetmek, kayıtlı tabloyu burada gördüğünüzle değiştirir."
       },
       "terms": {
         "placeholder": "Ödeme koşulları, garanti hükümleri vb.",

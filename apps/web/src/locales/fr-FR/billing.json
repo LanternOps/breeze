@@ -512,7 +512,9 @@
         "imageSectionPdf": "Section image (rendue dans le PDF).",
         "richTextContentAria": "Contenu en texte enrichi",
         "tableEmpty": "Tableau vide.",
-        "calloutEmpty": "Encadré vide."
+        "calloutEmpty": "Encadré vide.",
+        "edit": "Modifier",
+        "saveEdit": "Enregistrer"
       },
       "blockTypes": {
         "heading": "Titre",
@@ -749,7 +751,8 @@
         "zebra": "Lignes zébrées",
         "headerStyle": "Style d'en-tête",
         "headerStylePlain": "Simple",
-        "headerStyleAccent": "Accentué"
+        "headerStyleAccent": "Accentué",
+        "reshapedWarning": "Ce tableau dépassait la limite de {{columns}} colonnes x {{rows}} lignes et a été ajusté. L'enregistrement remplace le tableau stocké par celui affiché ici."
       },
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
