@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import WhatsNewSplash from './WhatsNewSplash';
+import WhatsNewSplash, { REOPEN_EVENT } from './WhatsNewSplash';
 import { LAST_SEEN_KEY } from '../../lib/whatsNewState';
 
 // t returns key + interpolated version so assertions are stable without real i18n.
@@ -68,5 +68,16 @@ describe('WhatsNewSplash', () => {
       expect(container).toBeEmptyDOMElement();
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  // The sidebar link reopens via a window event and ignores the dismissal floor.
+  it('reopens on the sidebar event even when the floor suppresses the splash', async () => {
+    window.localStorage.setItem(LAST_SEEN_KEY, '99.0.0');
+    render(<WhatsNewSplash />);
+    await waitFor(() => {
+      expect(screen.queryByText('whatsNew.gotIt')).not.toBeInTheDocument();
+    });
+    fireEvent(window, new Event(REOPEN_EVENT));
+    expect(await screen.findByText(/whatsNew\.title:/)).toBeInTheDocument();
   });
 });

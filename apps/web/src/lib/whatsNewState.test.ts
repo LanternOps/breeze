@@ -56,6 +56,29 @@ describe('decideWhatsNew', () => {
     expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry?.version).toBe('0.105.0');
   });
 
+  // An unparseable floor makes every semverCompare null, which would otherwise
+  // suppress the splash forever with nothing left to rewrite the key.
+  it('treats an unparseable stored floor as absent', () => {
+    const s = fakeStorage({ [LAST_SEEN_KEY]: 'not-a-version' });
+    expect(decideWhatsNew(s, '0.105.0', ENTRIES).entry?.version).toBe('0.105.0');
+  });
+
+  it('rewrites the baseline over an unparseable floor when nothing applies', () => {
+    const s = fakeStorage({ [LAST_SEEN_KEY]: 'garbage' });
+    expect(decideWhatsNew(s, '0.103.0', ENTRIES)).toEqual({
+      entry: null,
+      baselineToSet: '0.103.0',
+    });
+  });
+
+  it('shows nothing when the entry list is empty', () => {
+    const s = fakeStorage();
+    expect(decideWhatsNew(s, '0.105.0', [])).toEqual({
+      entry: null,
+      baselineToSet: '0.105.0',
+    });
+  });
+
   it('does not re-show after the no-floor entry is acknowledged', () => {
     const s = fakeStorage();
     const first = decideWhatsNew(s, '0.105.0', ENTRIES);

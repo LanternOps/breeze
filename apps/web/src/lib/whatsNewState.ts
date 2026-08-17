@@ -31,8 +31,12 @@ export function decideWhatsNew(
 ): WhatsNewDecision {
   if (webVersion === 'dev') return { entry: null, baselineToSet: null };
 
-  // Treat an empty value as absent — a blank floor is not a version.
-  const floor = storage.getItem(LAST_SEEN_KEY) || null;
+  // Treat an empty or unparseable value as absent. A floor semverCompare cannot
+  // read makes every comparison null, which would suppress the splash forever
+  // with nothing left to rewrite the key — the same silent-disappearance shape
+  // as the bug above.
+  const stored = storage.getItem(LAST_SEEN_KEY);
+  const floor = stored && semverCompare(stored, stored) !== null ? stored : null;
 
   const applicable = entries.filter((e) => {
     const atMostWeb = semverCompare(e.version, webVersion);
