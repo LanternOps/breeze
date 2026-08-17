@@ -320,20 +320,31 @@ const pathLikeValueExemptKeys = new Set([
   'settings.json:accessReviewPage.of',
 ]);
 
+function isBarePathValue(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('/')) return false;
+  // Anything containing whitespace is prose that mentions a path, not a bare
+  // path value; the protected-literal contract above already pins those.
+  return !/\s/.test(trimmed);
+}
+
 function routePathValueErrors(values: LeafValues, namespace: string): string[] {
   const errors: string[] = [];
   for (const [key, value] of values) {
-    if (typeof value !== 'string') continue;
-    const trimmed = value.trim();
-    if (!trimmed.startsWith('/')) continue;
-    // Anything containing whitespace is prose that mentions a path, not a bare
-    // path value; the protected-literal contract above already pins those.
-    if (/\s/.test(trimmed)) continue;
     if (pathLikeValueExemptKeys.has(`${namespace}:${key}`)) continue;
-    errors.push(
-      `${key}: value ${JSON.stringify(trimmed)} looks like a route or filesystem path; ` +
-        'inline it as a literal in the component instead of translating it',
-    );
+    // `flattenValues` stops at arrays, so an array leaf must be scanned
+    // element-wise or a bare path hidden in a list slips through untouched.
+    const candidates: [string, unknown][] = Array.isArray(value)
+      ? value.map((entry, index) => [`${key}[${index}]`, entry])
+      : [[key, value]];
+    for (const [label, candidate] of candidates) {
+      if (!isBarePathValue(candidate)) continue;
+      errors.push(
+        `${label}: value ${JSON.stringify(candidate.trim())} looks like a route or filesystem path; ` +
+          'inline it as a literal in the component instead of translating it',
+      );
+    }
   }
   return errors;
 }
@@ -527,6 +538,19 @@ describe('locale parity guard helpers', () => {
         'backup.json',
       ),
     ).toEqual([]);
+  });
+
+  it('scans array leaves element-wise so a listed path cannot hide', () => {
+    expect(
+      routePathValueErrors(
+        new Map<string, unknown>([
+          ['tab.examples', ['Pick a page', '/configuration-policies']],
+        ]),
+        'policies.json',
+      ),
+    ).toEqual([
+      'tab.examples[1]: value "/configuration-policies" looks like a route or filesystem path; inline it as a literal in the component instead of translating it',
+    ]);
   });
 
   it('does not exempt an unreviewed key that borrows an exempt name', () => {
