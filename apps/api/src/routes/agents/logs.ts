@@ -62,13 +62,14 @@ logsRoutes.post(
     body = JSON.parse(decoded.toString('utf-8'));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Hono's bodyLimit middleware throws a BodyLimitError when the request
-    // body exceeds the configured maxSize (no Content-Length header) — surface
-    // it as 413 instead of the generic 400.
+    // Vestigial/defensive: kept so an oversize body can never be reported as a
+    // generic 400. Under the pinned hono, `bodyLimit()` returns `onError(c)`
+    // directly on BOTH the Content-Length and the streaming leg and never
+    // throws, so this branch is unreachable today and `BodyLimitError` is
+    // defined nowhere in the tree. It only fires if a future hono reinstates a
+    // throwing path — hence the report, which keeps the 413 visible (#3517)
+    // rather than silently regressing to the pre-#3517 behaviour.
     if (err instanceof Error && err.name === 'BodyLimitError') {
-      // Chunked upload with no Content-Length: Hono's gate streams and throws
-      // here instead of calling onError, so this leg needs its own report or
-      // the rejection is still invisible (#3517).
       reportBodyLimitRejection(c, 'agent-logs', LOG_BATCH_MAX_BODY_BYTES);
       return c.json({ error: LOG_BATCH_TOO_LARGE }, 413);
     }
