@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, eq, or, count, inArray, sql } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { db } from '../db';
-import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
+import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users, organizations } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   clearPermissionCache,
@@ -64,7 +64,14 @@ const createRoleSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().optional(),
   permissions: z.array(permissionSchema).default([]),
-  parentRoleId: z.string().guid().nullable().optional()
+  parentRoleId: z.string().guid().nullable().optional(),
+  // Optional target org for a partner-scope caller to mint an ORGANIZATION-scoped
+  // role directly (#3524). Without it, a partner admin can only create
+  // partner-scoped roles, so the SSO default-role picker — which lists only
+  // org-scoped, non-system roles — stays permanently empty. The orgId is
+  // validated against the caller's own org allowlist (see the handler) before it
+  // re-scopes the creation.
+  orgId: z.string().guid().optional()
 });
 
 const updateRoleSchema = z.object({
@@ -88,6 +95,108 @@ function getScopeContext(auth: { scope: string; partnerId: string | null; orgId:
   }
 
   throw new HTTPException(403, { message: 'Partner or organization context required' });
+}
+
+type RoleAuth = {
+  scope: string;
+  partnerId: string | null;
+  orgId: string | null;
+  canAccessOrg: (orgId: string) => boolean;
+};
+
+// #3524: a partner admin may act on a single org INSIDE THEIR TREE by naming it
+// — create passes it as `body.orgId`, every other endpoint via the `?orgId=`
+// the web client injects for the focused org. This returns that org id only when
+// it is a legitimate target, so partner admins can fully create/list/manage that
+// org's roles and thereby populate (and maintain) the SSO org-provider
+// default-role picker. Two gates: `canAccessOrg` (for a partner this resolves to
+// exactly their own orgs) and exclusion of the hidden `quick_support` org, which
+// is internal-only and must never hold user-facing roles or SSO providers. The
+// roles RLS policies (`breeze_has_org_access`) backstop every query at the DB.
+// Returns null (→ caller keeps its token scope) for a non-partner caller, a
+// missing/foreign org, or the quick_support org.
+async function resolvePartnerFocusedOrgId(
+  auth: RoleAuth,
+  targetOrgId: string | undefined | null
+): Promise<string | null> {
+  if (auth.scope !== 'partner' || !targetOrgId || !auth.canAccessOrg(targetOrgId)) {
+    return null;
+  }
+  const [org] = await db
+    .select({ type: organizations.type })
+    .from(organizations)
+    .where(eq(organizations.id, targetOrgId))
+    .limit(1);
+  if (!org || org.type === 'quick_support') {
+    return null;
+  }
+  return targetOrgId;
+}
+
+// Resolve the scope a request should ACT under: a partner's validated focused
+// org (→ organization scope) if present, else the caller's own token scope.
+// Used by the single-scope role endpoints so the whole org-role lifecycle
+// (read/edit/clone/delete/users/permissions) is consistent for a focused partner.
+async function resolveActingScope(auth: RoleAuth, targetOrgId: string | undefined | null): Promise<ScopeContext> {
+  const focusedOrgId = await resolvePartnerFocusedOrgId(auth, targetOrgId);
+  return focusedOrgId ? { scope: 'organization', orgId: focusedOrgId } : getScopeContext(auth);
+}
+
+// Resolve the scope for a request that targets ONE KNOWN ROLE, from that role's
+// own axis rather than from `?orgId=`.
+//
+// Why not just `resolveActingScope(auth, c.req.query('orgId'))`: `fetchWithAuth`
+// injects the focused org into EVERY request (apps/web/src/stores/auth.ts) and
+// `orgStore` auto-selects one on load, so a partner admin effectively always
+// sends an orgId. Deriving the scope from that param alone flipped the acting
+// scope to `organization` for every request, and the `role.scope !==
+// scopeContext.scope` guard below then 404'd every partner-scoped role — while
+// `GET /roles` happily kept listing them. The role itself is the only reliable
+// statement of which axis a request is operating on.
+//
+// Returns null when the caller may not act on this role at all; every caller
+// turns that into the same 404 the ownership checks already produce.
+async function resolveRoleActingScope(
+  auth: RoleAuth,
+  role: { scope: string; isSystem: boolean; partnerId: string | null; orgId: string | null },
+  focusedOrgId: string | undefined | null
+): Promise<ScopeContext | null> {
+  const tokenScope = getScopeContext(auth);
+
+  if (role.scope === 'partner') {
+    // Only a partner token can act on the partner axis, and only on its own
+    // partner's roles. A focused org must not drag us off this axis.
+    if (tokenScope.scope !== 'partner') return null;
+    if (!role.isSystem && role.partnerId !== tokenScope.partnerId) return null;
+    return tokenScope;
+  }
+
+  if (role.scope === 'organization') {
+    if (tokenScope.scope === 'organization') {
+      // An org caller cannot change organization context, so its TOKEN org is
+      // authoritative and a stale or hand-supplied `?orgId=` must never be able
+      // to deny it. A system org role (org_id null) resolves in the token org;
+      // a concrete one must belong to it.
+      if (role.isSystem) return tokenScope;
+      return role.orgId === tokenScope.orgId ? tokenScope : null;
+    }
+
+    // Partner token: the request must still NAME the org it is acting on, and
+    // for a concrete org role that name has to match the role's own org.
+    //
+    // Deriving the org from `role.org_id` alone would let a focused org be
+    // silently overridden by a role id: a partner focused on org A could send
+    // org B's role id and PATCH/DELETE/clone against B, which is the wrong
+    // customer even though the partner has umbrella access to both. Requiring
+    // the match keeps the request bound to the org it names, which is what the
+    // rest of this file's comments promise.
+    const resolved = await resolvePartnerFocusedOrgId(auth, focusedOrgId);
+    if (!resolved) return null;
+    if (!role.isSystem && role.orgId !== resolved) return null;
+    return { scope: 'organization', orgId: resolved };
+  }
+
+  return null;
 }
 
 function resolveAuditOrgId(auth: { orgId: string | null }, scopeContext: ScopeContext): string | null {
@@ -379,20 +488,31 @@ roleRoutes.get(
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
 
+    // #3524: when a PARTNER admin is focused on one org (the web client injects
+    // ?orgId=), also surface that org's org-scoped roles. Without this the role a
+    // partner just created for the org is invisible here, so the SSO org-provider
+    // default-role picker — which populates from GET /roles — stays empty and the
+    // feature is inert. `resolvePartnerFocusedOrgId` validates the org against the
+    // caller's tree and excludes the hidden quick_support org; the roles SELECT
+    // RLS policy (breeze_has_org_access) backstops the query at the DB.
+    const focusedOrgId = await resolvePartnerFocusedOrgId(auth, c.req.query('orgId'));
+
+    const roleColumns = {
+      id: roles.id,
+      name: roles.name,
+      description: roles.description,
+      scope: roles.scope,
+      isSystem: roles.isSystem,
+      parentRoleId: roles.parentRoleId,
+      createdAt: roles.createdAt,
+      updatedAt: roles.updatedAt
+    };
+
     let rolesData;
 
     if (scopeContext.scope === 'partner') {
-      rolesData = await db
-        .select({
-          id: roles.id,
-          name: roles.name,
-          description: roles.description,
-          scope: roles.scope,
-          isSystem: roles.isSystem,
-          parentRoleId: roles.parentRoleId,
-          createdAt: roles.createdAt,
-          updatedAt: roles.updatedAt
-        })
+      const partnerRoles = await db
+        .select(roleColumns)
         .from(roles)
         .where(
           and(
@@ -400,18 +520,24 @@ roleRoutes.get(
             or(eq(roles.isSystem, true), eq(roles.partnerId, scopeContext.partnerId))
           )
         );
+
+      if (focusedOrgId) {
+        const orgRoles = await db
+          .select(roleColumns)
+          .from(roles)
+          .where(
+            and(
+              eq(roles.scope, 'organization'),
+              or(eq(roles.isSystem, true), eq(roles.orgId, focusedOrgId))
+            )
+          );
+        rolesData = [...partnerRoles, ...orgRoles];
+      } else {
+        rolesData = partnerRoles;
+      }
     } else {
       rolesData = await db
-        .select({
-          id: roles.id,
-          name: roles.name,
-          description: roles.description,
-          scope: roles.scope,
-          isSystem: roles.isSystem,
-          parentRoleId: roles.parentRoleId,
-          createdAt: roles.createdAt,
-          updatedAt: roles.updatedAt
-        })
+        .select(roleColumns)
         .from(roles)
         .where(
           and(
@@ -421,45 +547,53 @@ roleRoutes.get(
         );
     }
 
-    // Get user counts for each role
-    const roleIds = rolesData.map((r) => r.id);
+    // Get user counts for each role. Partner-scoped roles count partner_users;
+    // org-scoped roles (the focused-org set, #3524) count organization_users for
+    // that org — merged so every role reports the right membership.
+    const partnerRoleIds = rolesData.filter((r) => r.scope === 'partner').map((r) => r.id);
+    const orgRoleIds = rolesData.filter((r) => r.scope === 'organization').map((r) => r.id);
 
-    let userCounts: { roleId: string; count: number }[] = [];
+    const userCounts: { roleId: string; count: number }[] = [];
 
-    if (roleIds.length > 0) {
-      if (scopeContext.scope === 'partner') {
+    if (scopeContext.scope === 'partner') {
+      if (partnerRoleIds.length > 0) {
         const counts = await db
-          .select({
-            roleId: partnerUsers.roleId,
-            count: count()
-          })
+          .select({ roleId: partnerUsers.roleId, count: count() })
           .from(partnerUsers)
           .where(
             and(
               eq(partnerUsers.partnerId, scopeContext.partnerId),
-              inArray(partnerUsers.roleId, roleIds)
+              inArray(partnerUsers.roleId, partnerRoleIds)
             )
           )
           .groupBy(partnerUsers.roleId);
-
-        userCounts = counts.map((c) => ({ roleId: c.roleId, count: Number(c.count) }));
-      } else {
+        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
+      }
+      if (focusedOrgId && orgRoleIds.length > 0) {
         const counts = await db
-          .select({
-            roleId: organizationUsers.roleId,
-            count: count()
-          })
+          .select({ roleId: organizationUsers.roleId, count: count() })
           .from(organizationUsers)
           .where(
             and(
-              eq(organizationUsers.orgId, scopeContext.orgId),
-              inArray(organizationUsers.roleId, roleIds)
+              eq(organizationUsers.orgId, focusedOrgId),
+              inArray(organizationUsers.roleId, orgRoleIds)
             )
           )
           .groupBy(organizationUsers.roleId);
-
-        userCounts = counts.map((c) => ({ roleId: c.roleId, count: Number(c.count) }));
+        userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
       }
+    } else if (orgRoleIds.length > 0) {
+      const counts = await db
+        .select({ roleId: organizationUsers.roleId, count: count() })
+        .from(organizationUsers)
+        .where(
+          and(
+            eq(organizationUsers.orgId, scopeContext.orgId),
+            inArray(organizationUsers.roleId, orgRoleIds)
+          )
+        )
+        .groupBy(organizationUsers.roleId);
+      userCounts.push(...counts.map((row) => ({ roleId: row.roleId, count: Number(row.count) })));
     }
 
     const userCountMap = new Map(userCounts.map((uc) => [uc.roleId, uc.count]));
@@ -485,8 +619,29 @@ roleRoutes.post(
   zValidator('json', createRoleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    let scopeContext = getScopeContext(auth);
     const body = c.req.valid('json');
+
+    // #3524: a partner admin may target a specific org so the SSO default-role
+    // picker (which offers only org-scoped, non-system roles) can be populated.
+    // Re-scope the ENTIRE creation to that org — every downstream step (parent
+    // validation, RLS insert, audit) then treats it exactly like a native
+    // org-scope creation. `resolvePartnerFocusedOrgId` gates the org against the
+    // caller's own tree and excludes the hidden quick_support org; the `roles`
+    // INSERT RLS policy (`breeze_has_org_access`) backstops it at the DB. A
+    // provided-but-invalid org (foreign or quick_support) is a hard 403 rather
+    // than a silent fall-through to a partner-scoped role.
+    // An org-scope caller naming its OWN org is a no-op, not a partner focus:
+    // `RolesPage` sends `orgId` for every org-token user, so treating that as a
+    // focus request 403'd org admins out of creating any role at all.
+    if (body.orgId !== undefined && !(auth.scope === 'organization' && auth.orgId === body.orgId)) {
+      const focusedOrgId = await resolvePartnerFocusedOrgId(auth, body.orgId);
+      if (!focusedOrgId) {
+        return c.json({ error: 'You do not have access to the specified organization' }, 403);
+      }
+      scopeContext = { scope: 'organization', orgId: focusedOrgId };
+    }
+
     const callerPermissions = await getCallerPermissions(c, auth);
     const permissionError = validateAssignablePermissions(body.permissions, callerPermissions);
     if (permissionError) {
@@ -606,7 +761,7 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
 
     // Get role
@@ -631,17 +786,10 @@ roleRoutes.get(
       return c.json({ error: 'Role not found' }, 404);
     }
 
-    // Verify access to this role
-    if (!role.isSystem) {
-      if (scopeContext.scope === 'partner' && role.partnerId !== scopeContext.partnerId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-      if (scopeContext.scope === 'organization' && role.orgId !== scopeContext.orgId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-    }
-
-    if (role.scope !== scopeContext.scope) {
+    // Verify access to this role. The acting scope is derived from the role's
+    // own axis, NOT from `?orgId=` — see resolveRoleActingScope.
+    const scopeContext = await resolveRoleActingScope(auth, role, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 
@@ -716,7 +864,7 @@ roleRoutes.patch(
   zValidator('json', updateRoleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
     const body = c.req.valid('json');
     const callerPermissions = await getCallerPermissions(c, auth);
@@ -749,11 +897,12 @@ roleRoutes.patch(
       return c.json({ error: 'Cannot modify system roles' }, 403);
     }
 
-    // Verify ownership
-    if (scopeContext.scope === 'partner' && role.partnerId !== scopeContext.partnerId) {
-      return c.json({ error: 'Role not found' }, 404);
-    }
-    if (scopeContext.scope === 'organization' && role.orgId !== scopeContext.orgId) {
+    // Verify ownership. The acting scope is derived from the role's own axis,
+    // NOT from `?orgId=` — see resolveRoleActingScope. It also refuses any row
+    // whose scope disagrees with that axis: `roles` has no scope-axis CHECK
+    // constraint, so we never trust the owning-id columns alone.
+    const scopeContext = await resolveRoleActingScope(auth, role, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 
@@ -895,7 +1044,7 @@ roleRoutes.delete(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
 
     // Get role
@@ -920,11 +1069,12 @@ roleRoutes.delete(
       return c.json({ error: 'Cannot delete system roles' }, 403);
     }
 
-    // Verify ownership
-    if (scopeContext.scope === 'partner' && role.partnerId !== scopeContext.partnerId) {
-      return c.json({ error: 'Role not found' }, 404);
-    }
-    if (scopeContext.scope === 'organization' && role.orgId !== scopeContext.orgId) {
+    // Verify ownership. The acting scope is derived from the role's own axis,
+    // NOT from `?orgId=` — see resolveRoleActingScope. It also refuses any row
+    // whose scope disagrees with that axis: `roles` has no scope-axis CHECK
+    // constraint, so we never trust the owning-id columns alone.
+    const scopeContext = await resolveRoleActingScope(auth, role, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 
@@ -996,7 +1146,7 @@ roleRoutes.post(
   zValidator('json', z.object({ name: z.string().min(1).max(100) })),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
     const { name } = c.req.valid('json');
     const callerPermissions = await getCallerPermissions(c, auth);
@@ -1020,17 +1170,11 @@ roleRoutes.post(
       return c.json({ error: 'Role not found' }, 404);
     }
 
-    // Verify access to source role
-    if (!sourceRole.isSystem) {
-      if (scopeContext.scope === 'partner' && sourceRole.partnerId !== scopeContext.partnerId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-      if (scopeContext.scope === 'organization' && sourceRole.orgId !== scopeContext.orgId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-    }
-
-    if (sourceRole.scope !== scopeContext.scope) {
+    // Verify access to source role. The acting scope is derived from the source
+    // role's own axis, NOT from `?orgId=` — see resolveRoleActingScope. The
+    // clone is then created on that same axis.
+    const scopeContext = await resolveRoleActingScope(auth, sourceRole, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 
@@ -1137,7 +1281,7 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
 
     // Verify role exists and is accessible
@@ -1157,17 +1301,10 @@ roleRoutes.get(
       return c.json({ error: 'Role not found' }, 404);
     }
 
-    // Verify access to this role
-    if (!role.isSystem) {
-      if (scopeContext.scope === 'partner' && role.partnerId !== scopeContext.partnerId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-      if (scopeContext.scope === 'organization' && role.orgId !== scopeContext.orgId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-    }
-
-    if (role.scope !== scopeContext.scope) {
+    // Verify access to this role. The acting scope is derived from the role's
+    // own axis, NOT from `?orgId=` — see resolveRoleActingScope.
+    const scopeContext = await resolveRoleActingScope(auth, role, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 
@@ -1220,7 +1357,7 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
 
     // Get role
@@ -1242,17 +1379,10 @@ roleRoutes.get(
       return c.json({ error: 'Role not found' }, 404);
     }
 
-    // Verify access to this role
-    if (!role.isSystem) {
-      if (scopeContext.scope === 'partner' && role.partnerId !== scopeContext.partnerId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-      if (scopeContext.scope === 'organization' && role.orgId !== scopeContext.orgId) {
-        return c.json({ error: 'Role not found' }, 404);
-      }
-    }
-
-    if (role.scope !== scopeContext.scope) {
+    // Verify access to this role. The acting scope is derived from the role's
+    // own axis, NOT from `?orgId=` — see resolveRoleActingScope.
+    const scopeContext = await resolveRoleActingScope(auth, role, focusedOrgId);
+    if (!scopeContext) {
       return c.json({ error: 'Role not found' }, 404);
     }
 

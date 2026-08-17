@@ -5,7 +5,7 @@ import SsoProviderList, { type SsoProvider } from './SsoProviderList';
 import SsoProviderForm, { type SsoProviderFormValues, type ProviderPreset, type Role } from './SsoProviderForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
-import { getOrgScope } from '@/hooks/useOrgScope';
+import { getOrgScope, useOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 
@@ -141,11 +141,18 @@ export default function SsoProvidersPage() {
     return null;
   }, []);
 
+  // #3524 Finding 1: fetchProviders and fetchRoles both read the CURRENT org
+  // scope (via getOrgScope / the ?orgId injected by fetchWithAuth). On a cold
+  // load the org store is still unresolved, so the first fetch misses the focused
+  // org and the org default-role picker comes up empty. Re-run when the resolved
+  // org scope changes (loading → org, or a switch) so the org's providers and
+  // org-scoped roles load without a manual reload.
+  const orgScope = useOrgScope();
   useEffect(() => {
     fetchProviders();
     fetchPresets();
     fetchRoles();
-  }, [fetchProviders, fetchPresets, fetchRoles]);
+  }, [fetchProviders, fetchPresets, fetchRoles, orgScope.scope, orgScope.orgId]);
 
   const handleAdd = () => {
     setSelectedProvider(null);
