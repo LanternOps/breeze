@@ -70,7 +70,18 @@ describe('RunProgressPanel polling', () => {
         .mockResolvedValueOnce(run('queued'))
         .mockResolvedValueOnce(run('running'))
         .mockResolvedValueOnce(
-          run('partial', { succeededCount: 1, failedCount: 1, completedAt: '2026-08-07T10:05:00.000Z' })
+          run('partial', {
+            succeededCount: 1,
+            failedCount: 1,
+            completedAt: '2026-08-07T10:05:00.000Z',
+            // The summary now derives from target rows (not the roll-up
+            // columns) whenever the snapshot holds every target (#3452), so
+            // the target statuses must agree with succeededCount/failedCount.
+            targets: [
+              target({ status: 'succeeded' }),
+              target({ deviceId: DEVICE_B, hostname: 'WS-ACME-02', status: 'failed' }),
+            ],
+          })
         );
 
       render(<RunProgressPanel runId={RUN_ID} onClose={vi.fn()} />);
@@ -171,6 +182,56 @@ describe('RunProgressPanel rendering', () => {
     await waitFor(() => expect(screen.getByTestId(`run-progress-target-${DEVICE_A}`)).toBeTruthy());
     const text = screen.getByTestId(`run-progress-summary-${DEVICE_A}`).textContent ?? '';
     expect(text.length).toBeLessThan(400);
+  });
+
+  it('derives the summary from target rows when the roll-up has not caught up yet (#3452)', async () => {
+    // Between dispatch and the first `pollRunProgress` tick, the server-side
+    // roll-up columns can still read 0/0/0 while the target rows already show
+    // their real terminal status — the summary must count the rows, not trust
+    // the stale roll-up.
+    getRunMock.mockResolvedValue(
+      run('failed', {
+        targetCount: 4,
+        succeededCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        targets: [
+          target({ deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddd01', hostname: 'WS-01', status: 'skipped', skipReason: 'decommissioned' }),
+          target({ deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddd02', hostname: 'WS-02', status: 'skipped', skipReason: 'decommissioned' }),
+          target({ deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddd03', hostname: 'WS-03', status: 'skipped', skipReason: 'decommissioned' }),
+          target({ deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddd04', hostname: 'WS-04', status: 'skipped', skipReason: 'decommissioned' }),
+        ],
+      })
+    );
+
+    render(<RunProgressPanel runId={RUN_ID} onClose={vi.fn()} />);
+
+    const summary = await screen.findByTestId('run-progress-summary');
+    // The bug reported "0 succeeded, 0 failed, 0 skipped of 4 targeted"
+    // despite all 4 rows already showing Skipped.
+    expect(summary.textContent).toBe('0 succeeded, 0 failed, 4 skipped of 4 targeted');
+  });
+
+  it('falls back to the server roll-up when the targets array is a site-filtered subset', async () => {
+    // A site-restricted caller gets `targets` filtered to their allowed sites
+    // while targetCount and the roll-up counters still cover the whole run —
+    // counting the (partial) targets array there would under-report.
+    getRunMock.mockResolvedValue(
+      run('partial', {
+        targetCount: 5,
+        succeededCount: 3,
+        failedCount: 1,
+        skippedCount: 1,
+        targets: [target({ status: 'succeeded' })],
+      })
+    );
+
+    render(<RunProgressPanel runId={RUN_ID} onClose={vi.fn()} />);
+
+    const summary = await screen.findByTestId('run-progress-summary');
+    // Server roll-up verbatim (3/1/1 of 5) rather than counting the single
+    // (site-filtered) target row present in this snapshot.
+    expect(summary.textContent).toBe('3 succeeded, 1 failed, 1 skipped of 5 targeted');
   });
 
   it('surfaces a load failure instead of an empty run', async () => {

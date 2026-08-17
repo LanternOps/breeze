@@ -225,6 +225,8 @@
     "couldnTLoadActivity": "Couldn't load activity.",
     "retry": "Retry",
     "noRecentActionsOnThisDevice": "No recent actions on this device.",
+    "recentActions_one": "{{count}} recent action",
+    "recentActions_other": "{{count}} recent actions",
     "viewAllActivity": "View all activity →",
     "automated": "Automated",
     "failed": "· Failed",

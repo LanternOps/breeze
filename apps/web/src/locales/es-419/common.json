@@ -706,7 +706,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} dispositivo(s) usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "message_one": "{{count}} dispositivo usa la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "message_other": "{{count}} dispositivos usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
     "cta": "Cómo migrar"
   },
   "longTail": {

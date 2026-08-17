@@ -225,6 +225,8 @@
     "couldnTLoadActivity": "No se pudo cargar la actividad.",
     "retry": "Reintentar",
     "noRecentActionsOnThisDevice": "No hay acciones recientes en este dispositivo.",
+    "recentActions_one": "{{count}} acción reciente",
+    "recentActions_other": "{{count}} acciones recientes",
     "viewAllActivity": "Ver toda la actividad →",
     "automated": "Automatizado",
     "failed": "· Fallido",

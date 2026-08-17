@@ -225,6 +225,8 @@
     "couldnTLoadActivity": "Etkinlik yüklenemedi.",
     "retry": "Tekrar dene",
     "noRecentActionsOnThisDevice": "Bu cihazda yakın zamanda yapılan bir işlem yok.",
+    "recentActions_one": "{{count}} yakın zamanlı işlem",
+    "recentActions_other": "{{count}} yakın zamanlı işlem",
     "viewAllActivity": "Tüm etkinlikleri görüntüle →",
     "automated": "Otomatik",
     "failed": "· Başarısız",
