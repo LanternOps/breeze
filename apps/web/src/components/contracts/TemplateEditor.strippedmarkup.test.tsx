@@ -86,20 +86,20 @@ describe('TemplateEditor — stripped-markup warning toast (#3520)', () => {
 
   it('saving a draft whose response carries warnings fires the warning toast naming the removed tags, not the success toast', async () => {
     api.createTemplateVersion.mockResolvedValue(
-      okRes({ ...draftVersion, id: 'ver-2', versionNumber: 2 }, removedTagsWarning(['blockquote', 'table'])),
+      okRes({ ...draftVersion, id: 'ver-2', versionNumber: 2 }, removedTagsWarning(['blockquote', 'pre'])),
     );
 
     render(<TemplateEditor templateId="tpl-1" />);
     await screen.findByTestId('contract-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
-    fireEvent.change(editor, { target: { value: '<table><tr><td>x</td></tr></table>' } });
+    fireEvent.change(editor, { target: { value: '<blockquote>q</blockquote><pre>code</pre>' } });
     fireEvent.click(screen.getByTestId('template-save-draft-btn'));
 
     await waitFor(() => expect(api.createTemplateVersion).toHaveBeenCalled());
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'warning',
-      message: expect.stringContaining('table'),
+      message: expect.stringContaining('pre'),
     })));
     const warningCall = showToast.mock.calls.find((c) => (c[0] as { type: string }).type === 'warning');
     expect(warningCall?.[0]).toEqual(expect.objectContaining({ message: expect.stringContaining('blockquote') }));

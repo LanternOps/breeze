@@ -559,10 +559,10 @@ describe('quoteService deposits', () => {
     queueResult([{ blockType: 'rich_text' }]); // existing block type check
     queueResult([{ id: 'blk1', blockType: 'rich_text', content: { html: '<p>Updated</p>' } }]); // update returning
 
-    const row = await svc.updateBlock('q1', 'blk1', { blockType: 'rich_text', content: { html: '<p>Updated</p><table><tr><td>x</td></tr></table>' } }, actor);
+    const row = await svc.updateBlock('q1', 'blk1', { blockType: 'rich_text', content: { html: '<p>Updated</p><pre>x</pre>' } }, actor);
 
     expect(row.warnings).toEqual([
-      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['table', 'td', 'tr'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['pre'] },
     ]);
   });
 
@@ -795,11 +795,35 @@ describe('sanitizeBlockContentForWrite loss reporting (#3520)', () => {
   it('reports the disallowed tags a rich_text write dropped', () => {
     const { content, warnings } = svc.sanitizeBlockContentForWrite({
       blockType: 'rich_text',
-      content: { html: '<p>Keep</p><blockquote>Quote</blockquote><table><tr><td>Cell</td></tr></table>' },
+      content: { html: '<p>Keep</p><blockquote>Quote</blockquote><pre>Cell</pre>' },
     } as never);
-    expect((content as { html: string }).html).not.toContain('<table');
+    expect((content as { html: string }).html).not.toContain('<pre');
     expect(warnings).toEqual([
-      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['blockquote', 'table', 'td', 'tr'] },
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['blockquote', 'pre'] },
+    ]);
+  });
+
+  // Issue #3484: the write path must actually STORE the table, not just stop
+  // warning about it — this is the only coverage that a quote block write
+  // preserves table structure end to end.
+  it('stores a rich_text table intact and warns about nothing', () => {
+    const { content, warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<table><thead><tr><th>Item</th></tr></thead><tbody><tr><td>Setup</td></tr></tbody></table>' },
+    } as never);
+    expect((content as { html: string }).html)
+      .toBe('<table><thead><tr><th>Item</th></tr></thead><tbody><tr><td>Setup</td></tr></tbody></table>');
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns when a table CELL had block content flattened, and still stores the table', () => {
+    const { content, warnings } = svc.sanitizeBlockContentForWrite({
+      blockType: 'rich_text',
+      content: { html: '<table><tr><td><p>a</p><p>b</p></td></tr></table>' },
+    } as never);
+    expect((content as { html: string }).html).toBe('<table><tr><td>a<br />b</td></tr></table>');
+    expect(warnings).toEqual([
+      { code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['p'] },
     ]);
   });
 

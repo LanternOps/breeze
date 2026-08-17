@@ -82,7 +82,13 @@
     "orderedList": "Lista numerada",
     "link": "Link",
     "linkPrompt": "Insira uma URL (http:// ou https://)",
-    "linkInvalid": "Somente links http:// e https:// são permitidos"
+    "linkInvalid": "Somente links http:// e https:// são permitidos",
+    "insertTable": "Tabela",
+    "addRow": "Adicionar linha",
+    "deleteRow": "Excluir linha",
+    "addColumn": "Adicionar coluna",
+    "deleteColumn": "Excluir coluna",
+    "deleteTable": "Excluir tabela"
   },
   "actions": {
     "save": "Salvar",

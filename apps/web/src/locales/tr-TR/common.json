@@ -82,7 +82,13 @@
     "orderedList": "Numaralı liste",
     "link": "Bağlantı",
     "linkPrompt": "Bir URL girin (http:// veya https://)",
-    "linkInvalid": "Yalnızca http:// ve https:// bağlantılarına izin verilir"
+    "linkInvalid": "Yalnızca http:// ve https:// bağlantılarına izin verilir",
+    "insertTable": "Tablo",
+    "addRow": "Satır ekle",
+    "deleteRow": "Satırı sil",
+    "addColumn": "Sütun ekle",
+    "deleteColumn": "Sütunu sil",
+    "deleteTable": "Tabloyu sil"
   },
   "actions": {
     "save": "Kaydet",

@@ -96,16 +96,16 @@ describe('QuoteEditor — stripped-markup warning toast (#3520)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('adding a rich_text block whose response carries warnings fires a warning toast naming the removed tags', async () => {
-    addBlockMock.mockResolvedValue(okRes({ id: 'blk-rt' }, removedTagsWarning(['blockquote', 'table'])));
+    addBlockMock.mockResolvedValue(okRes({ id: 'blk-rt' }, removedTagsWarning(['blockquote', 'pre'])));
     await openRichTextForm();
 
-    fireEvent.change(screen.getByTestId('quote-block-rich-text-editor'), { target: { value: '<table><tr><td>x</td></tr></table>' } });
+    fireEvent.change(screen.getByTestId('quote-block-rich-text-editor'), { target: { value: '<blockquote>q</blockquote><pre>code</pre>' } });
     fireEvent.click(screen.getByTestId('quote-add-block-submit'));
 
     await waitFor(() => expect(addBlockMock).toHaveBeenCalled());
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'warning',
-      message: expect.stringContaining('table'),
+      message: expect.stringContaining('pre'),
     })));
     const warningCall = showToast.mock.calls.find((c) => (c[0] as { type: string }).type === 'warning');
     expect(warningCall?.[0]).toEqual(expect.objectContaining({ message: expect.stringContaining('blockquote') }));
