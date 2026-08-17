@@ -56,6 +56,16 @@ export const maintenanceWindows = pgTable('maintenance_windows', {
   allowedAlertSeverities: alertSeverityEnum('allowed_alert_severities').array(),
   allowedActions: jsonb('allowed_actions'),
   status: maintenanceWindowStatusEnum('status').notNull().default('scheduled'),
+  // DEPRECATED — inert (#3256). Nothing has ever read these four columns: no
+  // worker, scheduler, or agent command consumes them, so a window that claimed
+  // to "notify before 30 minutes" notified nobody. As of #3256 the API no longer
+  // accepts or writes them; the columns are RETAINED on purpose rather than
+  // dropped, because `maintenance_windows` is hand-enumerated column-by-column in
+  // CORE_TENANT_EXPORT_POLICY (services/tenantExportPolicyRegistry.ts) and
+  // dropping them would shift existing partner canonical-export watermarks — the
+  // same reasoning that kept the config-policy twins in #3197.
+  // Do not read these for new behavior. A real notification consumer (#3207)
+  // should introduce its own validated fields rather than resurrect these.
   notifyBefore: integer('notify_before'),
   notifyOnStart: boolean('notify_on_start').notNull().default(false),
   notifyOnEnd: boolean('notify_on_end').notNull().default(false),
