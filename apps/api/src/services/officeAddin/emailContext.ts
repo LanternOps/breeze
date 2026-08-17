@@ -236,8 +236,21 @@ export async function buildEmailContext(
     isInboundPathConfigured(tech.partnerId),
   ]);
 
+  // Explicit projection to the wire type: the matcher row now carries
+  // submittedBy/submitterEmail (sender-binding inputs, #3643) which must not
+  // serialize to the add-in client, and its partnerId is nullable while the
+  // partner-scoped query guarantees it here.
   const threadMatchedTicket =
-    matchedTicket && tech.canAccessOrg(matchedTicket.orgId) ? matchedTicket : null;
+    matchedTicket && tech.canAccessOrg(matchedTicket.orgId)
+      ? {
+          id: matchedTicket.id,
+          partnerId: matchedTicket.partnerId ?? tech.partnerId,
+          orgId: matchedTicket.orgId,
+          status: matchedTicket.status,
+          emailThreadKey: matchedTicket.emailThreadKey,
+          internalNumber: matchedTicket.internalNumber,
+        }
+      : null;
 
   // org = single address-match org, else domain org, else null (ambiguity
   // across orgs -> org null; the candidates list above is never auto-picked).
