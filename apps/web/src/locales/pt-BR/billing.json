@@ -885,10 +885,11 @@
         "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",
+        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
         "noEmailService": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — o e-mail não está configurado neste servidor.",
         "pdfRenderFailed": "Proposta marcada como Enviada, mas o PDF não pôde ser gerado, portanto nenhum e-mail foi entregue. Verifique os arquivos de contrato anexados e envie novamente.",
-        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço ou compartilhe o link de aceitação manualmente."
+        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço e envie novamente.",
+        "shareLinkHint": "Use \"{{action}}\" nesta proposta para copiar o link e enviá-lo você mesmo."
       },
       "sendError": "Não foi possível enviar a proposta.",
       "sendProposal": "Enviar proposta",

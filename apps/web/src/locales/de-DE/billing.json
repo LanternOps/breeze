@@ -885,10 +885,11 @@
         "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu oder teilen Sie den Annahme-Link manuell.",
+        "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu und senden Sie dann erneut.",
         "noEmailService": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — E-Mail ist auf diesem Server nicht konfiguriert.",
         "pdfRenderFailed": "Vorschlag als Gesendet markiert, aber das PDF konnte nicht erstellt werden, daher wurde keine E-Mail zugestellt. Prüfen Sie die angehängten Vertragsdateien und senden Sie erneut.",
-        "sendFailed": "Vorschlag als Gesendet markiert, aber die E-Mail konnte nicht zugestellt werden. Prüfen Sie die Adresse oder teilen Sie den Annahme-Link manuell."
+        "sendFailed": "Vorschlag als Gesendet markiert, aber die E-Mail konnte nicht zugestellt werden. Prüfen Sie die Adresse und senden Sie dann erneut.",
+        "shareLinkHint": "Verwenden Sie „{{action}}“ bei diesem Vorschlag, um den Link zu kopieren und selbst zu versenden."
       },
       "sendError": "Der Vorschlag konnte nicht gesendet werden.",
       "sendProposal": "Vorschlag senden",

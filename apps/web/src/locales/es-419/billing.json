@@ -885,10 +885,11 @@
         "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
+        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
         "noEmailService": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — el correo no está configurado en este servidor.",
         "pdfRenderFailed": "La propuesta se marcó como Enviada, pero no se pudo generar el PDF, por lo que no se entregó ningún correo. Revise los archivos de contrato adjuntos y vuelva a enviarla.",
-        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección o comparta el enlace de aceptación manualmente."
+        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección y vuelva a enviar.",
+        "shareLinkHint": "Use «{{action}}» en esta propuesta para copiar el enlace y enviarlo usted mismo."
       },
       "sendError": "No se pudo enviar la propuesta.",
       "sendProposal": "Enviar propuesta",
