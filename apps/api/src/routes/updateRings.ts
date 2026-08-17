@@ -15,6 +15,10 @@ import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../services/partnerWideAccess';
 import { ringAutoApproveSchema, mergeRingAutoApproveWrite } from '@breeze/shared/validators';
 
 // Typed default for a ring's autoApprove JSONB (#1317). A freshly created or
@@ -37,6 +41,21 @@ updateRingRoutes.use('*', authMiddleware);
 // default 50, capped at MAX_PAGE_LIMIT (200). Previously a local copy here
 // capped at 100 and the web's ring path sent no `limit`, so selecting a ring
 // silently collapsed the visible patch list from the all-rings 200 down to 50.
+
+/**
+ * Update rings are partner-owned by construction — a ring drives patch
+ * deferral/approval for every org under the partner. Writing one is therefore
+ * partner-wide administration and needs the capability, not merely partner
+ * scope (epic #2135; security review 2026-08-16 §1.1 #3). Returns a 403 body
+ * for the caller to return, or null when the write may proceed.
+ */
+function partnerWideRingWriteDenial(
+  c: any,
+  auth: { scope: 'system' | 'partner' | 'organization'; partnerOrgAccess?: 'all' | 'selected' | 'none' | null },
+): { response: Response } | null {
+  if (canManagePartnerWidePolicies(auth)) return null;
+  return { response: c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403) };
+}
 
 function resolvePartnerId(
   auth: { scope: 'system' | 'partner' | 'organization'; partnerId: string | null },
@@ -217,6 +236,9 @@ updateRingRoutes.post(
     if ('error' in partnerResult) return c.json({ error: partnerResult.error }, partnerResult.status);
     const { partnerId } = partnerResult;
 
+    const createDenial = partnerWideRingWriteDenial(c, auth);
+    if (createDenial) return createDenial.response;
+
     const [ring] = await db
       .insert(patchPolicies)
       .values({
@@ -341,6 +363,9 @@ updateRingRoutes.patch(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    const patchDenial = partnerWideRingWriteDenial(c, auth);
+    if (patchDenial) return patchDenial.response;
+
     const updateFields: Record<string, unknown> = { updatedAt: new Date() };
     if (data.name !== undefined) updateFields.name = data.name;
     if (data.description !== undefined) updateFields.description = data.description;
@@ -398,6 +423,9 @@ updateRingRoutes.delete(
     if (auth.scope !== 'system' && auth.partnerId !== existing.partnerId) {
       return c.json({ error: 'Access denied' }, 403);
     }
+
+    const deleteDenial = partnerWideRingWriteDenial(c, auth);
+    if (deleteDenial) return deleteDenial.response;
 
     await db
       .update(patchPolicies)

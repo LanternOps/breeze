@@ -39,6 +39,25 @@ vi.mock('../db/schema', () => ({
   organizations: {}
 }));
 
+// The §1.4 rotation delegation ceiling resolves the key's delegating creator
+// through this service. Default it to "creator is an ordinary org user with no
+// site restriction" so the happy-path rotate test still exercises the handler;
+// the ceiling's own denials are covered in apiKeys.rotateCeiling.test.ts.
+vi.mock('../services/apiKeyAuthorization', () => ({
+  authorizeHumanApiKeyCreator: vi.fn(async () => ({
+    ok: true,
+    permissions: {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      roleId: 'role-1',
+      scope: 'organization'
+    },
+    allowedSiteIds: undefined,
+    clampedScopes: []
+  }))
+}));
+
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {

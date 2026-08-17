@@ -8,8 +8,16 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthC
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { PERMISSIONS, type UserPermissions } from '../services/permissions';
-import { validateApiKeyScopeDelegation } from '../services/apiKeyScopes';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
+import {
+  requiredPermissionsForApiKeyScopes,
+  validateApiKeyScopeDelegation,
+} from '../services/apiKeyScopes';
+import { authorizeHumanApiKeyCreator } from '../services/apiKeyAuthorization';
+import {
+  DELEGATION_CEILING_DENIED_MESSAGE,
+  checkDelegationCeiling,
+} from '../services/delegationCeiling';
 
 export const apiKeyRoutes = new Hono();
 
@@ -77,6 +85,98 @@ function writeApiKeyAudit(
     userAgent: c.req.header('user-agent'),
     result: 'success'
   });
+}
+
+/**
+ * Delegation ceiling for ROTATION (security review 2026-08-16 §1.4).
+ *
+ * Rotation regenerates the secret but changes nothing about what the key can
+ * do: its `scopes`, and the `created_by` user whose live permissions the key
+ * actually delegates from (see `buildAuthFromApiKey` / SR2-15), survive
+ * untouched. Handing the new plaintext to the rotator therefore hands them the
+ * key's whole authority. `ensureOrgAccess` only proves they may act in the
+ * key's ORG — that is not the same as being allowed to wield the key.
+ *
+ * So before returning plaintext, assert the rotator's own authority is a
+ * superset of the key's on all three axes (scope / permission / site). Creation
+ * already does the permission axis via `validateRequestedScopes`; rotation had
+ * no equivalent at all.
+ *
+ * Fails CLOSED: if the key's delegating creator can no longer be authorized
+ * (off-boarded, role reduced, DB error), the key's true authority is unknown
+ * and rotation is denied. Such a key is already dead on the request path — it
+ * should be revoked, not rotated.
+ */
+async function enforceRotationDelegationCeiling(
+  c: any,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'allowedSiteIds'>,
+  existingKey: {
+    orgId: string;
+    scopes: string[] | null;
+    createdBy: string;
+    principalType?: string | null;
+    principalId?: string | null;
+  },
+): Promise<{ response: Response } | null> {
+  const callerPermissions = c.get('permissions') as UserPermissions | undefined;
+  if (!callerPermissions) {
+    return { response: c.json({ error: DELEGATION_CEILING_DENIED_MESSAGE }, 403) };
+  }
+
+  const keyScopes = existingKey.scopes ?? [];
+  const isServicePrincipalKey =
+    existingKey.principalType === 'service' && !!existingKey.principalId;
+
+  // Service-principal keys delegate from the principal row, not a human, and
+  // are never site-restricted (authorizeServicePrincipalKey). Human keys
+  // delegate from their creator's LIVE permissions — resolve those so the
+  // credential's real scope/site reach is compared, not a mint-time guess.
+  let credentialScope: 'system' | 'partner' | 'organization' = 'organization';
+  let credentialSiteIds: string[] | undefined;
+
+  if (!isServicePrincipalKey) {
+    const creator = await authorizeHumanApiKeyCreator({
+      createdBy: existingKey.createdBy,
+      orgId: existingKey.orgId,
+      partnerId: auth.partnerId ?? null,
+      scopes: keyScopes,
+    });
+    if (!creator.ok) {
+      return {
+        response: c.json(
+          {
+            error: 'This key\'s owner can no longer be authorized; revoke it instead of rotating it',
+            details: { reason: creator.reason },
+          },
+          403,
+        ),
+      };
+    }
+    credentialScope = creator.permissions?.scope ?? 'organization';
+    credentialSiteIds = creator.allowedSiteIds;
+  }
+
+  const ceiling = checkDelegationCeiling({
+    caller: { scope: auth.scope, allowedSiteIds: auth.allowedSiteIds },
+    credential: {
+      scope: credentialScope,
+      permissions: requiredPermissionsForApiKeyScopes(keyScopes),
+      allowedSiteIds: credentialSiteIds,
+    },
+    holdsPermission: (permission) =>
+      hasPermission(callerPermissions, permission.resource, permission.action),
+  });
+
+  if (!ceiling.ok) {
+    return {
+      response: c.json(
+        { error: ceiling.error, details: { violation: ceiling.violation, ...(ceiling.details ?? {}) } },
+        403,
+      ),
+    };
+  }
+
+  return null;
 }
 
 function validateRequestedScopes(c: any, scopes: string[]) {
@@ -547,6 +647,11 @@ apiKeyRoutes.post(
     if (existingKey.status !== 'active') {
       return c.json({ error: `Cannot rotate ${existingKey.status} API key` }, 400);
     }
+
+    // §1.4 delegation ceiling: org access is not key access. Runs BEFORE any
+    // secret is generated or written.
+    const ceilingDenial = await enforceRotationDelegationCeiling(c, auth, existingKey);
+    if (ceilingDenial) return ceilingDenial.response;
 
     // Generate new key
     const { fullKey, keyPrefix, keyHash } = generateApiKey();
