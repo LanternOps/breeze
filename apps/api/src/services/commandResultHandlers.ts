@@ -353,19 +353,21 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         scriptStatus = 'failed';
       }
 
+      const executionValues = {
+        status: scriptStatus,
+        completedAt: new Date(),
+        exitCode: result.exitCode ?? null,
+        // #2434: script output/errors surface to scripts:read users in the
+        // web UI — redact secrets before persistence (idempotent when the
+        // ingest chokepoint already redacted error/stderr).
+        stdout: stdout != null ? redactSecretsFromOutput(stdout) : null,
+        stderr: redactOptionalSecretText(result.stderr) ?? null,
+        errorMessage: redactOptionalSecretText(result.error) ?? null,
+      };
+
       const updatedExecutions = await db
         .update(scriptExecutions)
-        .set({
-          status: scriptStatus,
-          completedAt: new Date(),
-          exitCode: result.exitCode ?? null,
-          // #2434: script output/errors surface to scripts:read users in the
-          // web UI — redact secrets before persistence (idempotent when the
-          // ingest chokepoint already redacted error/stderr).
-          stdout: stdout != null ? redactSecretsFromOutput(stdout) : null,
-          stderr: redactOptionalSecretText(result.stderr) ?? null,
-          errorMessage: redactOptionalSecretText(result.error) ?? null,
-        })
+        .set(executionValues)
         .where(and(
           eq(scriptExecutions.id, executionId),
           eq(scriptExecutions.deviceId, resolvedDeviceId),
@@ -376,7 +378,47 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
           scriptId: scriptExecutions.scriptId,
         });
 
-      // Update batch counters if this is part of a batch
+      // #3607 — second chance for an execution already stamped `timeout`.
+      //
+      // Widening the device_commands acceptance predicate lets a result that
+      // arrives after the 60s `waitForCommandResult` deadline reach this
+      // handler, but the execution row can meanwhile have been stamped by
+      // `jobs/staleCommandReaper.ts` (or by an earlier `result.status ===
+      // 'timeout'` frame). The guard above would then drop the real stdout at
+      // the last step, which is the same defect one table over. A server-side
+      // timeout is provisional here too: the agent's actual output wins.
+      //
+      // Deliberately does NOT touch the batch counters. Every writer of a
+      // `timeout` execution status already incremented one of them for this
+      // device, so the batch's slot is spent — bumping again would push
+      // devicesCompleted + devicesFailed past devicesTargeted and corrupt the
+      // batch's completion accounting. The cost is that a recovered success
+      // stays attributed to devicesFailed in the batch summary, which is the
+      // approximation the reaper already made; the per-execution row (the one
+      // the UI and the AI read) is now correct.
+      if (updatedExecutions.length === 0) {
+        const recovered = await db
+          .update(scriptExecutions)
+          .set(executionValues)
+          .where(and(
+            eq(scriptExecutions.id, executionId),
+            eq(scriptExecutions.deviceId, resolvedDeviceId),
+            eq(scriptExecutions.status, 'timeout')
+          ))
+          .returning({
+            id: scriptExecutions.id,
+            scriptId: scriptExecutions.scriptId,
+          });
+        if (recovered.length > 0) {
+          console.warn(
+            `[AgentWs] Recovered late script result onto timed-out execution ${executionId} (command ${command.id})`
+          );
+        }
+      }
+
+      // Update batch counters if this is part of a batch. `updatedExecutions`
+      // is intentionally the FIRST update's rows only — the #3607 recovery
+      // above is excluded from counting for the reason documented there.
       const batchId = payload?.batchId as string | undefined;
       if (batchId && updatedExecutions[0]) {
         const counterField = scriptStatus === 'completed' ? 'devicesCompleted' : 'devicesFailed';

@@ -71,6 +71,7 @@ import {
 import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { commandAcceptsAgentResultCondition } from '../services/commandResultAcceptance';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = ['terminal_output_base64', 'backup_run_async'] as const;
@@ -84,7 +85,6 @@ declare module 'hono' {
 const VALID_MONITOR_STATUSES = new Set(['online', 'offline', 'degraded']);
 const PROVIDER_BACKED_BACKUP_COMMAND_TYPES = new Set(['hyperv_backup', 'mssql_backup']);
 const MAX_DESKTOP_SESSION_ID_BYTES = 128;
-const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
 type TunnelSessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
 
 function normalizeMonitorStatus(raw: string | undefined): 'online' | 'offline' | 'degraded' {
@@ -1604,7 +1604,7 @@ async function processCommandResult(
               eq(deviceCommands.id, result.commandId),
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
-              inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+              commandAcceptsAgentResultCondition()
             )
           )
           .limit(1)
@@ -1632,7 +1632,7 @@ async function processCommandResult(
                 eq(deviceCommands.id, result.commandId),
                 eq(devices.agentId, agentId),
                 eq(deviceCommands.targetRole, 'agent'),
-                inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+                commandAcceptsAgentResultCondition()
               )
             )
             .limit(1)
@@ -1739,7 +1739,11 @@ async function processCommandResult(
                   eq(deviceCommands.id, result.commandId),
                   eq(deviceCommands.deviceId, resolvedDeviceId!),
                   eq(deviceCommands.targetRole, 'agent'),
-                  inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+                  // #3607: re-evaluated here, not just at the lookup. A row
+                  // terminalized by a server-side timeout is still acceptable,
+                  // but the first late result rewrites `result.status` away
+                  // from 'timeout', so a duplicate frame still finds 0 rows.
+                  commandAcceptsAgentResultCondition()
                 )
               )
               .returning({ id: deviceCommands.id }),

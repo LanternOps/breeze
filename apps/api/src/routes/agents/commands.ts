@@ -40,8 +40,12 @@ import {
   SW_INSTALL_COMMAND_ID_REGEX,
 } from '../../services/softwareDeploymentResult';
 
+import {
+  commandAcceptsAgentResult,
+  commandAcceptsAgentResultCondition,
+} from '../../services/commandResultAcceptance';
+
 export const commandsRoutes = new Hono();
-const ACCEPTED_COMMAND_RESULT_STATUSES = ['pending', 'sent'] as const;
 
 /**
  * #3097 — registry-backed command types this route dispatches to the shared
@@ -275,10 +279,11 @@ commandsRoutes.post(
       return c.json({ error: 'Command role mismatch' }, 403);
     }
 
-    if (
-      command.status &&
-      !ACCEPTED_COMMAND_RESULT_STATUSES.includes(command.status as typeof ACCEPTED_COMMAND_RESULT_STATUSES[number])
-    ) {
+    // #3607: a row terminalized by a SERVER-SIDE timeout (`result.status ===
+    // 'timeout'`, written by the wait deadline in commandQueue or by the stale
+    // reaper) is still allowed through — the agent's real output is the whole
+    // point. Any other terminal state short-circuits exactly as before.
+    if (!commandAcceptsAgentResult(command.status, command.result)) {
       return c.json({ success: true });
     }
 
@@ -344,7 +349,7 @@ commandsRoutes.post(
               eq(deviceCommands.id, commandId),
               eq(deviceCommands.deviceId, deviceId),
               eq(deviceCommands.targetRole, agent.role),
-              inArray(deviceCommands.status, ACCEPTED_COMMAND_RESULT_STATUSES)
+              commandAcceptsAgentResultCondition()
             )) as any;
 
           updated = typeof query.returning === 'function'
