@@ -10,29 +10,63 @@
  * Kept as a pure function (no Hono/server imports) so it can be unit-tested
  * without booting the API.
  */
-export function bodyLimitForPath(path: string): { maxSize: number; error: string } {
+/**
+ * Stable, closed-set identity for the carve-out branch that matched.
+ *
+ * #3517: the global gate's 413s were invisible server-side, and the obvious fix
+ * (log the path) is exactly what `middleware/requestPathLogger.ts` forbids — the
+ * gate runs at `app.use('*')` BEFORE routing, so no bounded matched-route label
+ * exists yet. The rule label is bounded by construction, needs no redaction, and
+ * is the dimension operators actually want to group on ("which limit is firing,
+ * and how often"). Keep it a union type: adding a carve-out below without a
+ * label here is a type error, which is the point.
+ */
+export type BodyLimitRule =
+  | 'default'
+  | 'dev-push'
+  | 'file-upload'
+  | 'software-chunk'
+  | 'software-package'
+  | 'agent-command-result'
+  | 'script-bundle'
+  | 'image-upload'
+  | 'avatar'
+  | 'contract-template'
+  | 'agent-ingest';
+
+export interface BodyLimitPolicy {
+  rule: BodyLimitRule;
+  maxSize: number;
+  error: string;
+}
+
+export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // Dev-push uploads agent binaries (~20MB); skip the default 1MB limit.
   if (path.startsWith('/api/v1/dev/push')) {
-    return { maxSize: 150 * 1024 * 1024, error: 'Binary too large (max 150MB)' };
+    return { rule: 'dev-push', maxSize: 150 * 1024 * 1024, error: 'Binary too large (max 150MB)' };
   }
   // File browser uploads send base64-encoded content in JSON body (~33%
   // overhead). The agent caps file_write at 4MB decoded (~5.6MB base64, see
   // fileUploadBodySchema); 8MB covers that plus JSON envelope/escaping.
   if (path.match(/^\/api\/v1\/system-tools\/devices\/[^/]+\/files\/upload$/)) {
-    return { maxSize: 8 * 1024 * 1024, error: 'File too large (max 4MB)' };
+    return { rule: 'file-upload', maxSize: 8 * 1024 * 1024, error: 'File too large (max 4MB)' };
   }
   // Chunked software package uploads (#2951): each chunk is a raw
   // application/octet-stream body of at most 8MB (client UPLOAD_CHUNK_SIZE,
   // server-validated chunk_size cap). 9MB headroom lets the route's own
   // per-chunk limit answer with its specific message instead of this one.
   if (path.match(/^\/api\/v1\/software\/catalog\/[^/]+\/versions\/uploads\/[^/]+\/chunks$/)) {
-    return { maxSize: 9 * 1024 * 1024, error: 'Chunk too large (max 8MB)' };
+    return { rule: 'software-chunk', maxSize: 9 * 1024 * 1024, error: 'Chunk too large (max 8MB)' };
   }
   // Software package (installer) uploads are multipart and capped at 500MB by the
   // route's own MAX_UPLOAD_SIZE check; give the body limit headroom over that so the
   // route returns its specific "File too large" message instead of this generic one.
   if (path.match(/^\/api\/v1\/software\/catalog\/[^/]+\/versions\/upload$/)) {
-    return { maxSize: 512 * 1024 * 1024, error: 'Package too large (max 500MB)' };
+    return {
+      rule: 'software-package',
+      maxSize: 512 * 1024 * 1024,
+      error: 'Package too large (max 500MB)',
+    };
   }
   // Agent command results submitted via the heartbeat/REST fallback leg (used
   // when the WS path is unavailable). commandResultSchema already caps stdout
@@ -42,14 +76,18 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   // caller sees a misleading generic timeout (#2401). 12MB covers both capped
   // fields plus JSON escaping/envelope. Agent-authenticated route.
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/commands\/[^/]+\/result$/)) {
-    return { maxSize: 12 * 1024 * 1024, error: 'Command result too large (max 12MB)' };
+    return {
+      rule: 'agent-command-result',
+      maxSize: 12 * 1024 * 1024,
+      error: 'Command result too large (max 12MB)',
+    };
   }
   // Script bundle import/preview (#3245): a bundle carries whole script
   // libraries (up to 200 scripts x 256KB content, both capped by the bundle
   // schema). 20MB is the effective total-bundle cap; the schema's per-field
   // caps answer with specific messages below it.
   if (path === '/api/v1/scripts/bundle/import' || path === '/api/v1/scripts/bundle/preview') {
-    return { maxSize: 20 * 1024 * 1024, error: 'Bundle too large (max 20MB)' };
+    return { rule: 'script-bundle', maxSize: 20 * 1024 * 1024, error: 'Bundle too large (max 20MB)' };
   }
   // Multipart image/document uploads that the UI advertises at 5 MB (10 MB for
   // contract templates). Each of these routes already registers its OWN
@@ -66,13 +104,25 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
     path.match(/^\/api\/v1\/quotes\/[^/]+\/images$/) ||
     path.match(/^\/api\/v1\/catalog\/[^/]+\/image$/)
   ) {
-    return { maxSize: 5 * 1024 * 1024 + 64 * 1024, error: 'Image too large (max 5 MB)' };
+    return {
+      rule: 'image-upload',
+      maxSize: 5 * 1024 * 1024 + 64 * 1024,
+      error: 'Image too large (max 5 MB)',
+    };
   }
   if (path === '/api/v1/users/me/avatar') {
-    return { maxSize: 5 * 1024 * 1024 + 64 * 1024, error: 'Avatar file too large (max 5 MB)' };
+    return {
+      rule: 'avatar',
+      maxSize: 5 * 1024 * 1024 + 64 * 1024,
+      error: 'Avatar file too large (max 5 MB)',
+    };
   }
   if (path.match(/^\/api\/v1\/contracts\/contract-templates\/[^/]+\/versions\/upload$/)) {
-    return { maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File exceeds the 10MB upload limit' };
+    return {
+      rule: 'contract-template',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'File exceeds the 10MB upload limit',
+    };
   }
   // Agent inventory/heartbeat ingest (#3516). Every one of these routes already
   // registers its OWN `bodyLimit({ maxSize: 5MB })` — hardware/software/disks/
@@ -92,7 +142,7 @@ export function bodyLimitForPath(path: string): { maxSize: number; error: string
   // `/monitoring-results` (deliberately 1MB in heartbeat.ts) or the already
   // carved-out `/commands/:id/result` above.
   if (path.match(/^\/api\/v1\/agents\/[^/]+\/(hardware|software|disks|network|connections|heartbeat)$/)) {
-    return { maxSize: 5 * 1024 * 1024, error: 'Request body too large' };
+    return { rule: 'agent-ingest', maxSize: 5 * 1024 * 1024, error: 'Request body too large' };
   }
-  return { maxSize: 1024 * 1024, error: 'Request body too large' };
+  return { rule: 'default', maxSize: 1024 * 1024, error: 'Request body too large' };
 }

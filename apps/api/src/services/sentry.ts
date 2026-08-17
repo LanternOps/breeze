@@ -82,6 +82,16 @@ const ALLOWED_TAG_NAMES = new Set([
   // (DB_POOL_HEALTH_VERDICTS plus the `check-failed` self-report); carries no
   // tenant, device, or host identifier.
   'db_pool_health_verdict',
+  // #3517: the global body-limit gate's 413s carry the carve-out RULE that
+  // matched and its configured byte ceiling. `body_limit_rule` is the closed
+  // `BodyLimitRule` union (middleware/bodyLimit.ts) and `body_limit_max_size` is
+  // a hardcoded constant from that same table — neither is caller-controlled,
+  // and neither contains a raw request path, tenant, device or host identifier.
+  // Without them the event arrives contentless: `scrubEvent` deletes `message`,
+  // `logentry` and `extra`, so the rule label is the only thing that makes the
+  // cluster groupable and actionable.
+  'body_limit_rule',
+  'body_limit_max_size',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

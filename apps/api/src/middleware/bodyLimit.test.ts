@@ -9,10 +9,12 @@ const KB = 1024;
 describe('bodyLimitForPath', () => {
   it('applies the tight 1MB default to ordinary routes', () => {
     expect(bodyLimitForPath('/api/v1/devices')).toEqual({
+      rule: 'default',
       maxSize: 1 * MB,
       error: 'Request body too large',
     });
     expect(bodyLimitForPath('/api/v1/software/catalog')).toEqual({
+      rule: 'default',
       maxSize: 1 * MB,
       error: 'Request body too large',
     });
@@ -20,10 +22,12 @@ describe('bodyLimitForPath', () => {
 
   it('carves out dev-push binary uploads at 150MB', () => {
     expect(bodyLimitForPath('/api/v1/dev/push')).toEqual({
+      rule: 'dev-push',
       maxSize: 150 * MB,
       error: 'Binary too large (max 150MB)',
     });
     expect(bodyLimitForPath('/api/v1/dev/push/anything')).toEqual({
+      rule: 'dev-push',
       maxSize: 150 * MB,
       error: 'Binary too large (max 150MB)',
     });
@@ -37,6 +41,7 @@ describe('bodyLimitForPath', () => {
     expect(
       bodyLimitForPath('/api/v1/agents/agent-1/commands/11111111-1111-4111-8111-111111111111/result'),
     ).toEqual({
+      rule: 'agent-command-result',
       maxSize: 12 * MB,
       error: 'Command result too large (max 12MB)',
     });
@@ -51,6 +56,7 @@ describe('bodyLimitForPath', () => {
   // the agent's WS read limit is derived from the same cap (issue #2399).
   it('carves out file-browser uploads at 8MB', () => {
     expect(bodyLimitForPath('/api/v1/system-tools/devices/dev-1/files/upload')).toEqual({
+      rule: 'file-upload',
       maxSize: 8 * MB,
       error: 'File too large (max 4MB)',
     });
@@ -106,10 +112,12 @@ describe('bodyLimitForPath', () => {
   // effective total-bundle cap.
   it('carves out script bundle import/preview at 20MB', () => {
     expect(bodyLimitForPath('/api/v1/scripts/bundle/import')).toEqual({
+      rule: 'script-bundle',
       maxSize: 20 * MB,
       error: 'Bundle too large (max 20MB)',
     });
     expect(bodyLimitForPath('/api/v1/scripts/bundle/preview')).toEqual({
+      rule: 'script-bundle',
       maxSize: 20 * MB,
       error: 'Bundle too large (max 20MB)',
     });
@@ -127,6 +135,7 @@ describe('bodyLimitForPath', () => {
         '/api/v1/software/catalog/11111111-1111-4111-8111-111111111111/versions/uploads/22222222-2222-4222-8222-222222222222/chunks',
       ),
     ).toEqual({
+      rule: 'software-chunk',
       maxSize: 9 * MB,
       error: 'Chunk too large (max 8MB)',
     });
@@ -144,6 +153,7 @@ describe('bodyLimitForPath', () => {
   // the generic "Request body too large".
   it('carves out quote image uploads at the route 5MB cap (#3482)', () => {
     expect(bodyLimitForPath('/api/v1/quotes/11111111-1111-4111-8111-111111111111/images')).toEqual({
+      rule: 'image-upload',
       maxSize: 5 * MB + 64 * KB,
       error: 'Image too large (max 5 MB)',
     });
@@ -157,12 +167,14 @@ describe('bodyLimitForPath', () => {
   // Same shadowing bug, same 5MB advertised cap, found alongside #3482.
   it('carves out catalog item image and user avatar uploads at 5MB', () => {
     expect(bodyLimitForPath('/api/v1/catalog/item-1/image')).toEqual({
+      rule: 'image-upload',
       maxSize: 5 * MB + 64 * KB,
       error: 'Image too large (max 5 MB)',
     });
     // Avatar keeps its own wording: at equal thresholds this gate answers
     // before the route's middleware, so the message here is what callers see.
     expect(bodyLimitForPath('/api/v1/users/me/avatar')).toEqual({
+      rule: 'avatar',
       maxSize: 5 * MB + 64 * KB,
       error: 'Avatar file too large (max 5 MB)',
     });
@@ -174,10 +186,40 @@ describe('bodyLimitForPath', () => {
     expect(
       bodyLimitForPath('/api/v1/contracts/contract-templates/tpl-1/versions/upload'),
     ).toEqual({
+      rule: 'contract-template',
       maxSize: 10 * MB + 64 * KB,
       error: 'File exceeds the 10MB upload limit',
     });
     expect(bodyLimitForPath('/api/v1/contracts/contract-templates/tpl-1/versions').maxSize).toBe(1 * MB);
+  });
+
+  // #3517: the rule label is what body-limit telemetry groups on, so it has to
+  // stay a closed set AND actually discriminate. A carve-out that reuses another
+  // branch's label (or forgets to change 'default') would silently file its 413s
+  // under the wrong bucket — exactly the blindness this telemetry exists to fix.
+  it('gives every carve-out branch a distinct, non-default rule label (#3517)', () => {
+    const sampled: Record<string, string> = {
+      'dev-push': '/api/v1/dev/push',
+      'file-upload': '/api/v1/system-tools/devices/dev-1/files/upload',
+      'software-chunk':
+        '/api/v1/software/catalog/cat-1/versions/uploads/up-1/chunks',
+      'software-package': '/api/v1/software/catalog/cat-1/versions/upload',
+      'agent-command-result': '/api/v1/agents/agent-1/commands/cmd-1/result',
+      'script-bundle': '/api/v1/scripts/bundle/import',
+      'image-upload': '/api/v1/catalog/item-1/image',
+      avatar: '/api/v1/users/me/avatar',
+      'contract-template': '/api/v1/contracts/contract-templates/tpl-1/versions/upload',
+      'agent-ingest': '/api/v1/agents/agent-1/software',
+    };
+    for (const [rule, path] of Object.entries(sampled)) {
+      expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
+    }
+    expect(bodyLimitForPath('/api/v1/devices').rule).toBe('default');
+    // Labels are Sentry tag values: bounded, and free of the characters
+    // `sentry.ts` rejects (`/?#`, CR/LF) so they can never smuggle a path.
+    for (const rule of [...Object.keys(sampled), 'default']) {
+      expect(rule).toMatch(/^[a-z][a-z0-9-]{0,31}$/);
+    }
   });
 });
 
@@ -279,7 +321,13 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
 // surfaces live under src/ generally (routes/, but also modules/, extensions/),
 // so the scan roots at src/ rather than src/routes to catch registrations
 // mounted from outside the routes tree.
-const SCAN_EXEMPT = new Set(['index.ts', 'middleware/bodyLimit.ts']);
+// index.ts mounts the global gate; bodyLimitGate.ts IS the gate (it owns the
+// only `bodyLimit(` call that is not route-level); bodyLimit.ts is this module.
+const SCAN_EXEMPT = new Set([
+  'index.ts',
+  'middleware/bodyLimit.ts',
+  'middleware/bodyLimitGate.ts',
+]);
 
 function filesRegisteringBodyLimit(dir: string, root: string): string[] {
   const found: string[] = [];
