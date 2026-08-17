@@ -1231,6 +1231,8 @@
     "previewTitle": "Durum",
     "statusNew": "Yeni",
     "statusConflict": "Ad çakışması",
+    "statusConflictPartnerWide": "İş ortağı genelinde mevcut",
+    "partnerWideConflictHint": "İş ortağı genelinde paylaşılan bir komut dosyası bu adı zaten kullanıyor. Burada salt okunurdur — atlayın veya yeniden adlandırın.",
     "modeLabel": "Aynı adda bir komut dosyası zaten mevcut olduğunda",
     "modeSkip": "Atla",
     "modeRename": "Yeni bir adla içe aktarın",
