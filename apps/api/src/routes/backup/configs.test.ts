@@ -136,8 +136,11 @@ describe('backup config routes', () => {
 
   afterEach(() => {
     __setLookupForTests(null);
+    delete process.env.IS_HOSTED;
   });
 
+  // IS_HOSTED is unset here, which is the fail-closed default: RFC1918 is
+  // blocked. The self-host opt-out is exercised separately below.
   it.each([
     ['cloud metadata', '169.254.169.254'],
     ['loopback', '127.0.0.1'],
@@ -191,6 +194,92 @@ describe('backup config routes', () => {
 
     expect(res.status).toBe(200);
     expect(s3SendMock).toHaveBeenCalledTimes(2);
+  });
+
+  // A self-hosted install commonly backs up to MinIO or a NAS on its own LAN.
+  // Without the opt-out the probe would refuse every such endpoint — a hard
+  // breaking change for self-hosters — while hosted must stay strict.
+  it('probes an RFC1918 S3 endpoint when self-host is affirmatively declared', async () => {
+    process.env.IS_HOSTED = 'false';
+    __setLookupForTests(async () => [{ address: '10.0.0.5', family: 4 }]);
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 'http://minio.lan:9000',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+    s3SendMock.mockResolvedValue({});
+    checkBackupProviderCapabilitiesMock.mockResolvedValue({
+      objectLock: { supported: true, error: null },
+    });
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(s3SendMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects the same RFC1918 S3 endpoint on hosted', async () => {
+    process.env.IS_HOSTED = 'true';
+    __setLookupForTests(async () => [{ address: '10.0.0.5', family: 4 }]);
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 'http://minio.lan:9000',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('S3 endpoint is not reachable');
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
+  // The assertion that proves the self-host opt-out is not a blanket bypass.
+  it.each([
+    ['self-host', 'false', 'cloud metadata', '169.254.169.254'],
+    ['self-host', 'false', 'link-local', '169.254.10.1'],
+    ['hosted', 'true', 'cloud metadata', '169.254.169.254'],
+    ['hosted', 'true', 'link-local', '169.254.10.1'],
+  ])('still rejects %s %s (%s)', async (_mode, isHosted, _label, address) => {
+    process.env.IS_HOSTED = isHosted;
+    __setLookupForTests(async () => [{ address, family: 4 }]);
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'key',
+        secretKey: 'secret',
+        endpoint: 'http://metadata.example.test',
+      },
+    })]));
+    updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
+
+    const res = await app.request(`/backup/configs/${CONFIG_ID}/test`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('S3 endpoint is not reachable');
+    expect(s3SendMock).not.toHaveBeenCalled();
   });
 
   it('redacts storage credentials from config list responses', async () => {

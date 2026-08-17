@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from '../../services/guardedS3Client';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
+import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db } from '../../db';
 import { backupConfigs } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -181,9 +182,16 @@ async function probeS3Config(details: Record<string, unknown>): Promise<void> {
   // instead of an opaque socket error. This is UX, not the enforcement —
   // createGuardedS3Client below pins every connection at connect time, which is
   // what actually closes the DNS-rebinding window.
+  //
+  // The policy must match the one createGuardedS3Client applies, or a
+  // self-hosted install pointed at LAN MinIO would fail here with an SSRF
+  // message on a connection the client would happily have made. Metadata,
+  // link-local, loopback and CGNAT stay blocked in BOTH modes.
   if (normalizedEndpoint) {
     try {
-      await assertSafeUrl(normalizedEndpoint);
+      await assertSafeUrl(normalizedEndpoint, {
+        allowPrivateNetwork: selfHostAllowsPrivateNetwork(),
+      });
     } catch (error) {
       if (error instanceof SsrfBlockedError) {
         throw new Error(`S3 endpoint is not reachable: ${error.message}`);
