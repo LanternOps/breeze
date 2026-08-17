@@ -76,7 +76,13 @@ softwareRoutes.get(
           .select({
             title: patches.title,
             packageId: patches.packageId,
-            version: patches.version,
+            // THIS device's agent-observed version, falling back to the global
+            // catalog. #3645 moved agent scan writes off the shared `patches`
+            // row (any tenant's agent could shift it), so `patches.version` now
+            // goes stale between vendor catalog refreshes. Same COALESCE the
+            // approval evaluator uses (patchApprovalEvaluator.ts) so the Update
+            // button and the enforcement path agree on one version.
+            version: sql<string | null>`COALESCE(${devicePatches.availableVersion}, ${patches.version})`,
             source: patches.source,
           })
           .from(devicePatches)
