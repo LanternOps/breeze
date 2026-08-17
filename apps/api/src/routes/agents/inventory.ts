@@ -21,6 +21,7 @@ import {
   updateNetworkSchema,
 } from './schemas';
 import { sanitizeDate } from './helpers';
+import { resolveInventoryVersion } from './agentSelfInventory';
 import { retryOnTransientLockError } from '../../utils/pgErrors';
 import { upsertAgentWarranty } from '../../services/warrantySync';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -170,7 +171,10 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
         deviceId: device.id,
         orgId: device.orgId,
         name: item.name,
-        version: item.version || null,
+        // The agent's own entry comes from the MSI's Uninstall registry key,
+        // which self-updates never rewrite — take the live heartbeat version
+        // instead so the agent stops reading as outdated software (#3591).
+        version: resolveInventoryVersion(item.name, item.version, device.agentVersion),
         vendor: item.vendor || null,
         installDate: sanitizeDate(item.installDate),
         installLocation: item.installLocation || null,

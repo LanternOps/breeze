@@ -33,7 +33,7 @@ import * as schema from '../../db/schema';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { inventoryRoutes } from './inventory';
 
-function mockDeviceLookup(device: { id: string; orgId: string } | null) {
+function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null } | null) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
@@ -445,5 +445,54 @@ describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
 
     expect(res.status).toBe(404);
     expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  // The agent's own inventory entry is sourced from the MSI's Uninstall
+  // registry key, which a binary self-update never rewrites. Stored verbatim it
+  // freezes at the originally-installed version while devices.agent_version
+  // moves on, and Software Policy evaluation then flags every current device as
+  // running outdated software (#3591).
+  describe('Breeze Agent self-version normalization (#3591)', () => {
+    function insertedRows(insertValues: ReturnType<typeof vi.fn>) {
+      return insertValues.mock.calls[0]?.[0] as Array<{ name: string; version: string | null }>;
+    }
+
+    it('stores the live agent version for the agent entry, not the frozen MSI version', async () => {
+      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
+
+      const res = await putSoftware(makeApp(), [
+        { name: 'Breeze Agent', version: '0.100.0', vendor: 'LanternOps' },
+        { name: 'Google Chrome', version: '127.0', vendor: 'Google LLC' },
+      ]);
+
+      expect(res.status).toBe(200);
+      const rows = insertedRows(insertValues);
+      expect(rows.find((r) => r.name === 'Breeze Agent')?.version).toBe('0.105.1');
+      // Everything else is stored exactly as reported.
+      expect(rows.find((r) => r.name === 'Google Chrome')?.version).toBe('127.0');
+    });
+
+    it('normalizes the self-hosted edition entry too', async () => {
+      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
+
+      const res = await putSoftware(makeApp(), [
+        { name: 'Breeze Agent (Self-Hosted)', version: '0.101.0' },
+      ]);
+
+      expect(res.status).toBe(200);
+      expect(insertedRows(insertValues)[0]?.version).toBe('0.105.1');
+    });
+
+    it('keeps the reported version when the device has no agent version yet', async () => {
+      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: null });
+      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
+
+      const res = await putSoftware(makeApp(), [{ name: 'Breeze Agent', version: '0.100.0' }]);
+
+      expect(res.status).toBe(200);
+      expect(insertedRows(insertValues)[0]?.version).toBe('0.100.0');
+    });
   });
 });
