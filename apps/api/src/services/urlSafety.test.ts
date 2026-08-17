@@ -160,7 +160,10 @@ describe('createGuardedLookup', () => {
           reject(err);
           return;
         }
-        resolve(addresses);
+        // Node's LookupFunction is overloaded: with `{ all: true }` the second
+        // callback arg is LookupAddress[], but the union type still admits the
+        // (address: string, family: number) form.
+        resolve(addresses as LookupAddress[]);
       });
     });
 
