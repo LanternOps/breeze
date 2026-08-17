@@ -1,7 +1,7 @@
 import { FileCode, User, Settings, Monitor, AlertCircle, Activity } from 'lucide-react';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { formatTimeAgo } from '@/lib/formatTime';
-import { formatAuditAction } from '@/lib/auditFormat';
+import { useAuditActionFormatter } from '@/lib/auditFormat';
 import { useTranslation } from 'react-i18next';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AuditLogEntry } from './types';
@@ -30,6 +30,7 @@ export default function RecentActivity({
   onRetry: () => void;
 }) {
   const { t } = useTranslation('common');
+  const formatAuditAction = useAuditActionFormatter();
 
   // Hidden without audit-read access — the genuine-empty copy ("activity
   // will appear here") would be misleading on a 403.

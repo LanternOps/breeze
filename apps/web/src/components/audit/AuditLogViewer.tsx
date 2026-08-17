@@ -18,7 +18,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
 import { navigateTo } from '@/lib/navigation';
-import { formatAuditAction, formatAuditDetails } from '@/lib/auditFormat';
+import { formatAuditDetails, useAuditActionFormatter } from '@/lib/auditFormat';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -123,6 +123,7 @@ interface AuditLogViewerProps {
 
 export default function AuditLogViewer({ timezone }: AuditLogViewerProps) {
   const { t } = useTranslation('admin');
+  const formatAuditAction = useAuditActionFormatter();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const columnLabels: Record<SortKey, string> = {
     timestamp: t('audit.auditLogViewer.columns.timestamp'),

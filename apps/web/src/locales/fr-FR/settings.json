@@ -1012,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Accès à distance",
     "description": "Gérez les restrictions de tunnel, les listes de destinations autorisées et les sessions actives par site.",
-    "ipRestrictions": {
-      "title": "Restrictions d’IP source",
-      "description": "Restreignez quelles IP peuvent créer des tunnels. Laissez le vide pour permettre à tout utilisateur authentifié.",
-      "empty": "(Aucune restriction — tout utilisateur authentifié peut créer des tunnels)",
-      "placeholder": "par exemple 10.0.0.0/8"
-    },
     "sites": {
       "title": "Sites",
       "empty": "(Aucun site dans cette organisation)",

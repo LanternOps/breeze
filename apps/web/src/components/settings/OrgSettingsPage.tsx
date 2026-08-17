@@ -557,11 +557,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           />
         );
       case 'remote-access':
+        // No onDirty: every control on this tab persists immediately through
+        // its own request, so the tab never holds unsaved draft state.
         return effectiveOrgId ? (
-          <OrgRemoteAccessSettings
-            orgId={effectiveOrgId}
-            onDirty={handleDirty}
-          />
+          <OrgRemoteAccessSettings orgId={effectiveOrgId} />
         ) : null;
       case 'ticketing':
         return effectiveOrgId ? (

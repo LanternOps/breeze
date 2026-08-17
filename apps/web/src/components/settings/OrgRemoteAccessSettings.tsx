@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   ChevronDown, ChevronRight, Edit, Globe, Loader2,
-  Monitor, Network, Plus, Shield, Trash2, X,
+  Monitor, Network, Plus, Trash2, X,
 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber } from '@/lib/i18n/format';
@@ -22,7 +22,6 @@ type SitePolicy = { policyId?: string; policyName?: string; summary?: string };
 type Props = {
   orgId: string;
   sites?: Array<{ id: string; name: string }>;
-  onDirty: () => void;
 };
 
 const BADGE: Record<string, string> = {
@@ -42,12 +41,9 @@ function fmtBytes(b: number, units: { bytes: string; kilobytes: string; megabyte
   return `${formatNumber(b / 1048576, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${units.megabytes}`;
 }
 
-export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDirty }: Props) {
+export default function OrgRemoteAccessSettings({ orgId, sites: propSites }: Props) {
   const { t } = useTranslation('settings');
   const [fetchedSites, setFetchedSites] = useState<Array<{ id: string; name: string }>>([]);
-  const [ipRestrictions, setIpRestrictions] = useState<string[]>([]);
-  const [newCidr, setNewCidr] = useState('');
-
   const sites = propSites ?? fetchedSites;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [allowlists, setAllowlists] = useState<Record<string, AllowlistRule[]>>({});
@@ -121,7 +117,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
         body: JSON.stringify({ direction: 'destination', siteId, pattern: rulePattern.trim(), description: ruleDesc.trim(), source: 'manual' }),
       });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.addRule'));
-      setAddFor(null); setRulePattern(''); setRuleDesc(''); onDirty();
+      setAddFor(null); setRulePattern(''); setRuleDesc('');
       await fetchAllowlist(siteId);
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.addRule')); }
   };
@@ -130,7 +126,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
     try {
       const res = await fetchWithAuth(`/tunnels/allowlist/${rule.id}`, { method: 'PUT', body: JSON.stringify(patch) });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.updateRule'));
-      onDirty(); await fetchAllowlist(rule.siteId); setEditId(null);
+      await fetchAllowlist(rule.siteId); setEditId(null);
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.updateRule')); }
   };
 
@@ -138,7 +134,7 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
     try {
       const res = await fetchWithAuth(`/tunnels/allowlist/${rule.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(t('orgRemoteAccessSettings.errors.deleteRule'));
-      onDirty(); await fetchAllowlist(rule.siteId);
+      await fetchAllowlist(rule.siteId);
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.deleteRule')); }
   };
 
@@ -149,13 +145,6 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
       await fetchTunnels();
     } catch (err) { setError(err instanceof Error ? err.message : t('orgRemoteAccessSettings.errors.closeTunnel')); }
   };
-
-  const addIp = () => {
-    const t = newCidr.trim();
-    if (!t || ipRestrictions.includes(t)) return;
-    setIpRestrictions(p => [...p, t]); setNewCidr(''); onDirty();
-  };
-  const removeIp = (c: string) => { setIpRestrictions(p => p.filter(x => x !== c)); onDirty(); };
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
@@ -172,39 +161,6 @@ export default function OrgRemoteAccessSettings({ orgId, sites: propSites, onDir
           <button type="button" onClick={() => setError(undefined)} className="ml-2 underline">{t('common:shared.toast.dismiss')}</button>
         </div>
       )}
-
-      {/* Source IP Restrictions */}
-      <div className="space-y-3 rounded-lg border bg-muted/40 p-4">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <Shield className="h-4 w-4" /> {t('orgRemoteAccessSettings.ipRestrictions.title')}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t('orgRemoteAccessSettings.ipRestrictions.description')}
-        </p>
-        {ipRestrictions.length === 0 ? (
-          <p className="text-xs italic text-muted-foreground">{t('orgRemoteAccessSettings.ipRestrictions.empty')}</p>
-        ) : (
-          <ul className="space-y-1">
-            {ipRestrictions.map(c => (
-              <li key={c} className="flex items-center justify-between rounded-md border bg-background px-3 py-1.5 text-sm">
-                <code className="font-mono text-xs">{c}</code>
-                <button type="button" onClick={() => removeIp(c)} className="text-muted-foreground hover:text-destructive">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="flex gap-2">
-          <input type="text" value={newCidr} onChange={e => setNewCidr(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addIp()} placeholder={t('orgRemoteAccessSettings.ipRestrictions.placeholder')}
-            className="h-9 flex-1 rounded-md border bg-background px-3 text-sm" />
-          <button type="button" onClick={addIp}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90">
-            <Plus className="h-3.5 w-3.5" /> {t('common:actions.add')}
-          </button>
-        </div>
-      </div>
 
       {/* Per-site accordion */}
       <div className="space-y-2">

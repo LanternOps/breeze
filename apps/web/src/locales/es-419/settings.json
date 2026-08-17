@@ -1012,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Acceso remoto",
     "description": "Administre restricciones de túneles, listas de destinos permitidos y sesiones activas por sitio.",
-    "ipRestrictions": {
-      "title": "Fuente IP Restricciones",
-      "description": "Restrinja qué IP pueden crear túneles. Déjelo vacío para permitir cualquier usuario autenticado.",
-      "empty": "(Sin restricciones: cualquier usuario autenticado puede crear túneles)",
-      "placeholder": "p.ej. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Sitios",
       "empty": "(No hay sitios en esta organización)",
