@@ -70,6 +70,13 @@ func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, err
 		}
 
 		item := readSoftwareFromKey(subkey)
+		// Both reads must happen BEFORE the handle is closed. isSystemComponent
+		// used to be called on the already-closed `subkey`, where every registry
+		// read fails and the function therefore always answered false — so the
+		// SystemComponent=1 / "Update for …" filter below has never actually
+		// filtered anything, and Windows Update and system-component entries have
+		// been reported as ordinary installed software all along (#3592).
+		systemComponent := isSystemComponent(subkey, item.Name)
 		subkey.Close()
 
 		// Skip items without a display name or system components
@@ -78,7 +85,7 @@ func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, err
 		}
 
 		// Skip Windows updates and system components
-		if isSystemComponent(subkey) {
+		if systemComponent {
 			continue
 		}
 
@@ -160,7 +167,11 @@ func parseInstallDate(dateStr string) string {
 	return ""
 }
 
-func isSystemComponent(key registry.Key) bool {
+// isSystemComponent reports whether an Uninstall subkey describes a system
+// component or a Windows Update rather than user-facing installed software.
+// `key` must still be open; `displayName` is passed in because the caller has
+// already read it.
+func isSystemComponent(key registry.Key, displayName string) bool {
 	// Check SystemComponent flag
 	val, _, err := key.GetIntegerValue("SystemComponent")
 	if err == nil && val == 1 {
@@ -168,7 +179,7 @@ func isSystemComponent(key registry.Key) bool {
 	}
 
 	// Check for Windows Update entries
-	name, _ := readStringValue(key, "DisplayName")
+	name := displayName
 	if strings.HasPrefix(name, "Update for") ||
 		strings.HasPrefix(name, "Security Update for") ||
 		strings.HasPrefix(name, "Hotfix for") {

@@ -329,8 +329,21 @@ func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(software, time.Since(start).Milliseconds())
 }
 
-func handleSoftwareUninstall(_ *Heartbeat, cmd Command) tools.CommandResult {
-	return tools.UninstallSoftware(cmd.Payload)
+// handleSoftwareUninstall removes software and, on success, immediately
+// re-reports software inventory.
+//
+// Without the re-report the dashboard keeps showing the uninstalled program for
+// up to 15 minutes (the sendInventory cadence), which is indistinguishable from
+// the genuine "uninstall silently did nothing" bug also fixed in #3592. The
+// re-report is safe to fire straight away because tools.UninstallSoftware now
+// verifies the software is actually gone from the collector before returning
+// success, so this cannot race an uninstaller that is still running.
+func handleSoftwareUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
+	result := tools.UninstallSoftware(cmd.Payload)
+	if result.Status == "completed" && h != nil {
+		go h.sendSoftwareInventory()
+	}
+	return result
 }
 
 func handleSoftwareUpdate(_ *Heartbeat, cmd Command) tools.CommandResult {
