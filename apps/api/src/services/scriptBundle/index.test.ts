@@ -485,6 +485,32 @@ describe('importBundle', () => {
     expect(h.state.updates).toHaveLength(0);
   });
 
+  it('isolates the partner-wide new-version refusal to its own entry — the rest of the bundle still imports', async () => {
+    const bundle = validBundle([baseEntry, { ...baseEntry, name: 'Unrelated script' }]);
+    h.state.selectQueue.push(
+      [], // entry 1: no org-owned match
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: 'DIFFERENT content' }],
+      [], // entry 2: no org-owned match
+      [] // entry 2: no partner-wide match either → imports normally
+    );
+    const result = await importBundle(makeAuth(), bundle, {
+      mode: 'new-version',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.index).toBe(0);
+      // The refusal must `continue`, not abort the loop.
+      expect(result.imported).toBe(1);
+      expect(result.scripts).toHaveLength(1);
+      expect(result.scripts[0]).toMatchObject({ index: 1, name: 'Unrelated script', action: 'imported' });
+    }
+    const scriptInserts = h.state.inserts.filter((i) => i.table === scripts);
+    expect(scriptInserts).toHaveLength(1);
+    expect((scriptInserts[0]!.values as Record<string, unknown>).name).toBe('Unrelated script');
+  });
+
   it('new-version mode treats an identical-content partner-wide match as a no-op skip', async () => {
     h.state.selectQueue.push(
       [],
