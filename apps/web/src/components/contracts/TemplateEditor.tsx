@@ -4,6 +4,7 @@ import { ArrowLeft, Upload } from 'lucide-react';
 import '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
+import { strippedTagsFrom } from '../../lib/richTextWarnings';
 import { showToast } from '../shared/Toast';
 import { StatusPill } from '../billing/shared/StatusPill';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -132,8 +133,18 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
       await runAction({
         request: () => createTemplateVersion(templateId, { bodyHtml: body }),
         errorFallback: t('contracts.templateEditor.saveError'),
-        successMessage: t('contracts.templateEditor.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
+        // The version saves either way, but a plain "Saved" over content the
+        // rich-text subset had to discard is exactly the silent loss #3520 is
+        // about — and this body becomes an executed legal document. Warn
+        // INSTEAD of the success toast so the removal can't be read as clean.
+        parseSuccess: (d) => {
+          const tags = strippedTagsFrom(d);
+          showToast(tags.length > 0
+            ? { type: 'warning', message: t('contracts.templateEditor.warnings.markupRemoved', { tags: tags.join(', ') }) }
+            : { type: 'success', message: t('contracts.templateEditor.saveSuccess') });
+          return d;
+        },
       });
       // Force-reseed from the server-normalized body just saved so `dirty` clears
       // even when the sanitizer canonicalized the body (entities/whitespace/attrs)

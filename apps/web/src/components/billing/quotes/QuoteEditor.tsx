@@ -4,6 +4,7 @@ import { Eye, EyeOff, GripVertical, MoreHorizontal } from 'lucide-react';
 import '../../../lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
+import { strippedTagsFrom } from '../../../lib/richTextWarnings';
 import { formatTime } from '../../../lib/dateTimeFormat';
 import { usePermissions } from '../../../lib/permissions';
 import {
@@ -150,6 +151,18 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
   const canWrite = can('quotes', 'write');
+  // Block writes answer with a `warnings` array when the rich-text subset had to
+  // discard markup (a pasted <table>, <blockquote>, <h1>, …). Without this the
+  // save reads as a clean success and the author only finds the loss later —
+  // issue #3520. Warning-level, non-blocking: the block itself DID save.
+  const notifyStrippedMarkup = useCallback((body: unknown) => {
+    const tags = strippedTagsFrom(body);
+    if (tags.length === 0) return;
+    showToast({
+      type: 'warning',
+      message: t('quotes.editor.warnings.markupRemoved', { tags: tags.join(', ') }),
+    });
+  }, [t]);
   // This editor is the page with the sticky bottom-anchored right rail (Live
   // totals + Terms), so it — not the shared container — owns the toast lift.
   useToastRailOffset();
@@ -1217,7 +1230,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           errorFallback: t('quotes.editor.errors.imageAddedSectionFailed'),
           // No success toast — the image block visibly appears.
           onUnauthorized: UNAUTHORIZED,
-          parseSuccess: (d) => (d as { data: { id?: string } }).data,
+          parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
         await positionNewBlock(createdImg);
         setImageFile(null); setImageCaption(''); setImageUrl('');
@@ -1258,7 +1271,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
             errorFallback: t('quotes.editor.errors.addContractSection'),
             // No success toast — the contract block visibly appears.
             onUnauthorized: UNAUTHORIZED,
-            parseSuccess: (d) => (d as { data: { id?: string } }).data,
+            parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
           });
         } catch (err) {
           // The attach route itself only rejects with INVALID_CONTRACT_TEMPLATE —
@@ -1291,7 +1304,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           errorFallback: t('quotes.editor.errors.addSection'),
           // No success toast — the new table visibly appears in the block list.
           onUnauthorized: UNAUTHORIZED,
-          parseSuccess: (d) => (d as { data: { id?: string } }).data,
+          parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
         await positionNewBlock(created);
         resetTableForm();
@@ -1312,7 +1325,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           errorFallback: t('quotes.editor.errors.addSection'),
           // No success toast — the new callout visibly appears in the block list.
           onUnauthorized: UNAUTHORIZED,
-          parseSuccess: (d) => (d as { data: { id?: string } }).data,
+          parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
         await positionNewBlock(created);
         resetCalloutForm();
@@ -1341,7 +1354,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         errorFallback: t('quotes.editor.errors.addSection'),
         // No success toast — the new section visibly appears in the block list.
         onUnauthorized: UNAUTHORIZED,
-        parseSuccess: (d) => (d as { data: { id?: string } }).data,
+        parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
       });
       await positionNewBlock(created);
       setHeadingText(''); setRichText(''); setTableLabel('');
@@ -1819,10 +1832,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         request: () => updateBlock(quote.id, block.id, { blockType: block.blockType, content } as QuoteBlockInput),
         errorFallback: t('quotes.editor.errors.updateSection'),
         onUnauthorized: UNAUTHORIZED,
+        parseSuccess: (d) => { notifyStrippedMarkup(d); return d; },
       });
       refresh();
     }, t('quotes.editor.errors.updateBlock')),
-  [quote.id, refresh, runScoped, t]);
+  [notifyStrippedMarkup, quote.id, refresh, runScoped, t]);
 
   // Reorder a block one slot up/down. The optimistic order updates instantly on
   // every click (clicks accumulate — none are dropped while a PATCH is pending),

@@ -140,8 +140,10 @@ contractTemplateRoutes.post(
   async (c) => {
     try {
       const { id } = c.req.valid('param');
-      const version = await createDraftVersion(authFrom(c), id, c.req.valid('json'));
-      return c.json({ data: serializeVersion(version) });
+      // `warnings` names any markup the rich-text subset discarded from the
+      // submitted body — always present, usually empty (issue #3520).
+      const { warnings, ...version } = await createDraftVersion(authFrom(c), id, c.req.valid('json'));
+      return c.json({ data: serializeVersion(version), warnings });
     } catch (err) {
       return handleTemplateError(c, err);
     }

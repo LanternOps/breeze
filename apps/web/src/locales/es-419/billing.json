@@ -436,7 +436,10 @@
       "uploadError": "No se pudo subir el PDF",
       "uploadSuccess": "Versión PDF subida",
       "publishError": "No se pudo publicar la versión",
-      "publishSuccess": "Versión publicada"
+      "publishSuccess": "Versión publicada",
+      "warnings": {
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de contrato admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
+      }
     }
   },
   "quotes": {
@@ -832,6 +835,9 @@
         "variantWarn": "Advertencia",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto del recuadro"
+      },
+      "warnings": {
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. El texto enriquecido admite títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
     },
     "actions": {

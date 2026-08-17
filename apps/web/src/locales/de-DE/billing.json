@@ -436,7 +436,10 @@
       "uploadError": "PDF konnte nicht hochgeladen werden",
       "uploadSuccess": "PDF-Version hochgeladen",
       "publishError": "Version konnte nicht veröffentlicht werden",
-      "publishSuccess": "Version veröffentlicht"
+      "publishSuccess": "Version veröffentlicht",
+      "warnings": {
+        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vertragstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      }
     }
   },
   "quotes": {
@@ -832,6 +835,9 @@
         "variantWarn": "Warnung",
         "titlePlaceholder": "Titel (optional)",
         "bodyAria": "Hinweistext"
+      },
+      "warnings": {
+        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Rich-Text unterstützt Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
       }
     },
     "actions": {

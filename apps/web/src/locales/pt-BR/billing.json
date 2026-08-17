@@ -436,7 +436,10 @@
       "uploadError": "Falha ao enviar o PDF",
       "uploadSuccess": "Versão PDF enviada",
       "publishError": "Falha ao publicar a versão",
-      "publishSuccess": "Versão publicada"
+      "publishSuccess": "Versão publicada",
+      "warnings": {
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos contratos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+      }
     }
   },
   "quotes": {
@@ -832,6 +835,9 @@
         "variantWarn": "Aviso",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto do destaque"
+      },
+      "warnings": {
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O texto formatado oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
     },
     "actions": {
