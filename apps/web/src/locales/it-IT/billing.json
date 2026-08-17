@@ -888,7 +888,8 @@
         "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione oppure condividi manualmente il link di accettazione.",
         "noEmailService": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: l'email non è configurata su questo server.",
         "pdfRenderFailed": "Proposta contrassegnata come Inviata, ma non è stato possibile generare il PDF, quindi nessuna email è stata consegnata. Controlla i file di contratto allegati, poi invia di nuovo.",
-        "sendFailed": "Proposta contrassegnata come Inviata, ma l'email non è stata consegnata. Controlla l'indirizzo e prova a condividere manualmente il link di accettazione."
+        "sendFailed": "Proposta contrassegnata come Inviata, ma l'email non è stata consegnata. Controlla l'indirizzo e prova a condividere manualmente il link di accettazione.",
+        "shareLinkHint": "Usa «{{action}}» su questa proposta per copiare il link e inviarlo tu stesso."
       },
       "sendError": "Impossibile inviare la proposta.",
       "sendProposal": "Invia proposta",

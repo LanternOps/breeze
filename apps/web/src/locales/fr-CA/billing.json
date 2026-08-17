@@ -888,7 +888,8 @@
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — {{orgName}} n'a pas d'adresse courriel de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
         "noEmailService": "Proposition marquée comme Envoyée, mais aucun courriel n'a été remis — le service de courriel n'est pas configuré sur ce serveur.",
         "pdfRenderFailed": "Proposition marquée comme Envoyée, mais le PDF n'a pas pu être généré, aucun courriel n'a donc été remis. Vérifiez les fichiers de contrat joints, puis renvoyez-la.",
-        "sendFailed": "Proposition marquée comme Envoyée, mais le courriel n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement."
+        "sendFailed": "Proposition marquée comme Envoyée, mais le courriel n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement.",
+        "shareLinkHint": "Utilisez « {{action}} » sur cette proposition pour copier le lien et l’envoyer vous-même."
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",

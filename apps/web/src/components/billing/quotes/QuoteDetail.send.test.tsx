@@ -604,6 +604,75 @@ describe('QuoteDetail — persisted send-outcome banners', () => {
     expect(screen.queryByTestId('quote-schedule-send-failed-banner')).not.toBeInTheDocument();
   });
 
+  // #3431: the failure copy told the sender to "share the accept link
+  // manually" while naming nothing they could act on. The Copy share link
+  // control now exists, so the banner names it — but ONLY when it is actually
+  // on screen, otherwise the advice is unfollowable in a new way.
+  it('the not-delivered banner names the Copy share link control', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          sendEmailReason: 'send_failed',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).toHaveTextContent('could not be delivered');
+    expect(banner).toHaveTextContent('Copy share link');
+    // The named control is genuinely rendered — the hint is not a dead pointer.
+    expect(screen.getByTestId('quote-copy-share-link')).toBeInTheDocument();
+  });
+
+  it('omits the Copy share link hint when the control is not offered (no quotes:send)', async () => {
+    state.permissions = [{ resource: 'quotes', action: 'read' }];
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          sendEmailReason: 'send_failed',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).toHaveTextContent('could not be delivered');
+    expect(banner).not.toHaveTextContent('Copy share link');
+    expect(screen.queryByTestId('quote-copy-share-link')).not.toBeInTheDocument();
+  });
+
+  it('omits the Copy share link hint on an EXPIRED sent quote (link cannot be resolved)', async () => {
+    render(<QuoteDetail
+      detail={{
+        ...filledDraft,
+        quote: {
+          ...filledDraft.quote,
+          status: 'sent',
+          sentAt: '2026-06-01T00:01:00Z',
+          expiryDate: '2026-06-02',
+          sendEmailReason: 'send_failed',
+        },
+      }}
+      onChanged={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+
+    const banner = screen.getByTestId('quote-email-not-delivered-banner');
+    expect(banner).not.toHaveTextContent('Copy share link');
+    expect(screen.queryByTestId('quote-copy-share-link')).not.toBeInTheDocument();
+  });
+
   it('a VIEWED quote retires the banner even with a failure marker still set', async () => {
     render(<QuoteDetail
       detail={{

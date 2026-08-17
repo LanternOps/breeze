@@ -888,7 +888,8 @@
         "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin veya kabul bağlantısını manuel olarak paylaşın.",
         "noEmailService": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — e-posta bu sunucuda yapılandırılmadı.",
         "pdfRenderFailed": "Teklif Gönderildi olarak işaretlendi, ancak PDF oluşturulamadığı için e-posta teslim edilmedi. Ekteki sözleşme dosyalarını kontrol edin ve yeniden gönderin.",
-        "sendFailed": "Teklif Gönderildi olarak işaretlendi, ancak e-posta teslim edilemedi. Adresi kontrol edin ve kabul bağlantısını manuel olarak paylaşmayı deneyin."
+        "sendFailed": "Teklif Gönderildi olarak işaretlendi, ancak e-posta teslim edilemedi. Adresi kontrol edin ve kabul bağlantısını manuel olarak paylaşmayı deneyin.",
+        "shareLinkHint": "Bağlantıyı kopyalayıp kendiniz göndermek için bu teklifte \"{{action}}\" seçeneğini kullanın."
       },
       "sendError": "Teklif gönderilemedi.",
       "sendProposal": "Teklifi gönder",
