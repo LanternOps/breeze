@@ -42,7 +42,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1096.0",
     "@breeze/ext-workspace": "workspace:*",    "@breeze/extension-sdk": "workspace:*",
     "@breeze/shared": "workspace:*",
-    "@elastic/elasticsearch": "^9.3.2",
+    "@elastic/elasticsearch": "^9.5.0",
     "@fastify/busboy": "^3.2.0",
     "@googleapis/admin": "^31.0.0",
     "@googleapis/calendar": "^15.0.0",
