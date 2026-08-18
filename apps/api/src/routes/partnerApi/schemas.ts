@@ -530,6 +530,26 @@ export const enrollmentKeyCreateResponseSchema = z.object({
   data: partnerEnrollmentKeyCreateRecordSchema,
   /** Returned exactly once, at creation. 64-char hex, as on the human route. */
   key: z.string().regex(/^[0-9a-f]{64}$/u),
+  /**
+   * Per-key enrollment secret, returned exactly once alongside `key`. Agents
+   * present it as the enrollment secret; it is stored as an unpeppered SHA-256
+   * in `enrollment_keys.key_secret_hash` because that is what the agent
+   * enrollment path compares against.
+   */
+  enrollmentSecret: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
+
+/**
+ * Replay of a completed idempotent create. Deliberately a separate schema with
+ * no `key` or `enrollmentSecret`: one-time credentials are returned by the
+ * single committing request and can never be re-read, so a retry gets metadata
+ * only. Keeping this strict and separate means a future edit cannot widen the
+ * replay path into a credential-disclosure path.
+ */
+export const enrollmentKeyReplayResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: partnerEnrollmentKeyCreateRecordSchema,
+  idempotencyReplay: z.literal(true),
 }).strict();
 
 export type PartnerExportEnvelope<T extends PartnerExportRecordBase> = {

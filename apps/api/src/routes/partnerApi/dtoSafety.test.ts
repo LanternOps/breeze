@@ -9,6 +9,10 @@ import {
   customFieldValueExportEnvelopeSchema,
   scriptExportEnvelopeSchema,
 } from './schemas';
+import {
+  enrollmentKeyCreateResponseSchema as partnerEnrollmentKeyCreateResponseSchema,
+  enrollmentKeyReplayResponseSchema as partnerEnrollmentKeyReplayResponseSchema,
+} from './schemas';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -69,5 +73,81 @@ describe('desired-configuration DTO safety contract', () => {
     if (inspected.safe) throw new Error('expected blocked inspection');
     expect(inspected.fieldPaths).toHaveLength(20);
     expect(JSON.stringify(inspected)).not.toContain('unsafe-');
+  });
+});
+
+describe('partner enrollment-key DTO safety contract', () => {
+  const metadata = {
+    schemaVersion: '1' as const,
+    data: {
+      id: ID,
+      orgId: ORG_ID,
+      siteId: null,
+      name: 'M2M enrollment',
+      usageCount: 0,
+      maxUsage: 1,
+      expiresAt: '2026-08-09T12:30:00.000Z',
+      createdAt: '2026-08-09T12:00:00.000Z',
+    },
+  };
+
+  it('accepts the reviewed one-time and replay response shapes', () => {
+    expect(partnerEnrollmentKeyCreateResponseSchema.parse({
+      ...metadata,
+      key: 'a'.repeat(64),
+      enrollmentSecret: 'b'.repeat(64),
+    })).toBeTruthy();
+    expect(partnerEnrollmentKeyReplayResponseSchema.parse({
+      ...metadata,
+      idempotencyReplay: true,
+    })).toBeTruthy();
+  });
+
+  it.each(['keySecretHash', 'shortCode', 'futureSensitiveColumn'])(
+    'strictly rejects an unreviewed column %s inside the record',
+    (field) => {
+      expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+        ...metadata,
+        data: { ...metadata.data, [field]: 'must-not-leak' },
+        key: 'a'.repeat(64),
+        enrollmentSecret: 'b'.repeat(64),
+      }).success).toBe(false);
+    },
+  );
+
+  it.each(['keySecretHash', 'shortCode', 'futureSensitiveColumn'])(
+    'strictly rejects an unreviewed envelope key %s',
+    (field) => {
+      expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+        ...metadata,
+        key: 'a'.repeat(64),
+        enrollmentSecret: 'b'.repeat(64),
+        [field]: 'must-not-leak',
+      }).success).toBe(false);
+    },
+  );
+
+  it('never permits one-time credentials in a replay response', () => {
+    expect(partnerEnrollmentKeyReplayResponseSchema.safeParse({
+      ...metadata,
+      idempotencyReplay: true,
+      key: 'a'.repeat(64),
+    }).success).toBe(false);
+    expect(partnerEnrollmentKeyReplayResponseSchema.safeParse({
+      ...metadata,
+      idempotencyReplay: true,
+      enrollmentSecret: 'b'.repeat(64),
+    }).success).toBe(false);
+  });
+
+  it('requires both one-time credentials on the create response', () => {
+    expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+      ...metadata,
+      key: 'a'.repeat(64),
+    }).success).toBe(false);
+    expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+      ...metadata,
+      enrollmentSecret: 'b'.repeat(64),
+    }).success).toBe(false);
   });
 });

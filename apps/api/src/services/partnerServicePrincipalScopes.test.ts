@@ -65,6 +65,13 @@ describe('partner partner-service-principal scopes', () => {
       'backup-configuration:read',
       'custom-fields:read',
     ]);
+    // SECURITY: enrollment-keys:write mints device-join credentials. Asserted
+    // explicitly in addition to the list above so that a future edit to the
+    // enumeration cannot quietly hand credential minting to every
+    // default-scoped principal.
+    expect(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES).not.toContain(
+      'enrollment-keys:write',
+    );
     expect(Object.isFrozen(DEFAULT_WEAVESTREAM_PARTNER_SERVICE_PRINCIPAL_SCOPES)).toBe(true);
   });
 

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { createHash } from 'node:crypto';
+// Deliberately NOT mocked: asserting against the real peppered/unpeppered
+// hashers is what makes a swap between them a test failure.
+import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -21,11 +25,24 @@ const mocks = vi.hoisted(() => ({
   systemContextOpens: 0,
   // Populated in beforeEach — vi.hoisted runs before module-level constants.
   accessibleOrgIds: [] as string[],
+  principalExpiresAt: null as Date | null,
+  sourceCidrs: [] as string[],
+  rateLimiter: vi.fn(),
+  update: vi.fn(),
+  transaction: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
-  db: { select: mocks.select, insert: mocks.insert, execute: mocks.execute },
+  db: {
+    select: mocks.select,
+    insert: mocks.insert,
+    update: mocks.update,
+    execute: mocks.execute,
+    transaction: mocks.transaction,
+  },
   hasDbAccessContext: () => true,
+  getCurrentDbAccessContext: vi.fn(() => undefined),
+  runOutsideDbContext: (fn: () => unknown) => fn(),
   withDbAccessContext: async (ctx: unknown, fn: () => unknown) => {
     mocks.partnerContexts.push(ctx);
     return fn();
@@ -35,6 +52,8 @@ vi.mock('../../db', () => ({
     return fn();
   },
 }));
+vi.mock('../../services/redis', () => ({ getRedis: () => ({}) }));
+vi.mock('../../services/rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
 vi.mock('../../config/env', () => ({
   PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
 }));
@@ -56,6 +75,10 @@ vi.mock('../../middleware/partnerApiAuth', () => ({
       rateLimit: 1000,
       accessibleOrgIds: mocks.accessibleOrgIds,
       scopes: (c.req.header('X-Test-Scopes') ?? '').split(',').filter(Boolean),
+      // enrollment-keys:write requires both of these; individual tests clear
+      // them to assert the 403.
+      principalExpiresAt: mocks.principalExpiresAt,
+      sourceCidrs: mocks.sourceCidrs,
     });
     return next();
   },
@@ -157,6 +180,14 @@ beforeEach(() => {
   mocks.systemContextOpens = 0;
   mocks.accessibleOrgIds = [ORG_ID];
   mocks.assertTtlWithinCap.mockResolvedValue(null);
+  // A minting-capable principal by construction: both controls present.
+  mocks.principalExpiresAt = new Date(Date.now() + 86_400_000);
+  mocks.sourceCidrs = ['203.0.113.0/24'];
+  mocks.rateLimiter.mockResolvedValue({
+    allowed: true,
+    remaining: 9,
+    resetAt: new Date(Date.now() + 3_600_000),
+  });
   primeDb();
 });
 
@@ -400,5 +431,206 @@ describe('POST /enrollment-keys', () => {
       actorId: KEY_ID,
       details: expect.objectContaining({ partnerServicePrincipalId: PRINCIPAL_ID }),
     }));
+  });
+
+  describe('credential-minting controls', () => {
+    it.each([
+      ['no principal expiry', { principalExpiresAt: null, sourceCidrs: ['203.0.113.0/24'] }],
+      ['no source CIDRs', { principalExpiresAt: new Date(Date.now() + 86_400_000), sourceCidrs: [] }],
+      ['neither control', { principalExpiresAt: null, sourceCidrs: [] }],
+    ])('refuses to mint with %s', async (_label, overrides) => {
+      mocks.principalExpiresAt = overrides.principalExpiresAt;
+      mocks.sourceCidrs = overrides.sourceCidrs;
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('partner_provisioning_principal_restrictions_required');
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('fails closed on the dedicated mint rate limit', async () => {
+      mocks.rateLimiter.mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 120_000),
+      });
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(429);
+      expect((await res.json()).code).toBe('partner_provisioning_rate_limited');
+      expect(res.headers.get('Retry-After')).toBeTruthy();
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('uses a mint bucket keyed to the service principal, not the generic budget', async () => {
+      primeSuccess();
+      await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(
+        expect.anything(),
+        `rl:partner-enrollment-key-mint:${PRINCIPAL_ID}`,
+        expect.any(Number),
+        3600,
+      );
+    });
+
+    // The two columns use different hashers and are NOT interchangeable:
+    // `key` is peppered, `key_secret_hash` is plain SHA-256 because
+    // routes/agents/enrollment.ts verifies it with hashEnrollmentSecret().
+    // Asserting the concrete unpeppered digest is what makes a regression to
+    // hashEnrollmentKey() here fail instead of silently 403-ing every agent.
+    it('stores the enrollment secret unpeppered and the key peppered', async () => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.key).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.enrollmentSecret).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.enrollmentSecret).not.toBe(body.key);
+
+      const inserted = insertedValues[0] as Record<string, unknown>;
+      const plainSecretDigest = createHash('sha256').update(body.enrollmentSecret).digest('hex');
+      expect(inserted.keySecretHash).toBe(plainSecretDigest);
+      // The peppered hasher must NOT have been used for the secret column.
+      expect(inserted.keySecretHash).not.toBe(hashEnrollmentKey(body.enrollmentSecret));
+      // ...and the key column must be peppered, i.e. not a bare digest.
+      expect(inserted.key).toBe(hashEnrollmentKey(body.key));
+      expect(inserted.key).not.toBe(createHash('sha256').update(body.key).digest('hex'));
+      // Neither raw credential is ever persisted.
+      expect(inserted.key).not.toBe(body.key);
+      expect(inserted.keySecretHash).not.toBe(body.enrollmentSecret);
+    });
+
+    it('never returns a hash or createdBy in the response body', async () => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      const body = await res.json();
+      expect(body.data).not.toHaveProperty('keySecretHash');
+      expect(body.data).not.toHaveProperty('createdBy');
+      expect(JSON.stringify(body)).not.toContain('hash');
+      expect((insertedValues[0] as Record<string, unknown>).createdBy).toBeNull();
+    });
+  });
+
+  describe('durable idempotency', () => {
+    function postIdem(body: unknown, idempotencyKey: string) {
+      return app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: {
+          'X-API-Key': 'test-key',
+          'X-Test-Scopes': 'enrollment-keys:write',
+          'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it.each([
+      ['empty', ''],
+      ['too long', 'a'.repeat(129)],
+      ['non-ASCII', 'idem-é'],
+    ])('rejects a %s idempotency key before any I/O', async (_label, key) => {
+      primeSuccess();
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, key);
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('partner_provisioning_invalid_idempotency_key');
+      expect(mocks.rateLimiter).not.toHaveBeenCalled();
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('replays a completed claim as metadata only, minting nothing', async () => {
+      // Claim lookup hits, then the stored key is re-read.
+      selectResults = [
+        [{
+          id: 'claim-1',
+          partnerServicePrincipalId: PRINCIPAL_ID,
+          idempotencyKey: 'idem-1',
+          requestFingerprint: createHash('sha256')
+            .update(JSON.stringify({ orgId: ORG_ID, name: 'k' }))
+            .digest('hex'),
+          enrollmentKeyId: KEY_ROW_ID,
+        }],
+        [keyRow],
+      ];
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-1');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.idempotencyReplay).toBe(true);
+      expect(body.data.id).toBe(KEY_ROW_ID);
+      // One-time credentials are unrecoverable by design.
+      expect(body).not.toHaveProperty('key');
+      expect(body).not.toHaveProperty('enrollmentSecret');
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('returns 409 when the same key is reused with a different body', async () => {
+      selectResults = [[{
+        id: 'claim-1',
+        partnerServicePrincipalId: PRINCIPAL_ID,
+        idempotencyKey: 'idem-1',
+        requestFingerprint: 'a-fingerprint-from-a-different-body',
+        enrollmentKeyId: KEY_ROW_ID,
+      }]];
+      const res = await postIdem({ orgId: ORG_ID, name: 'different' }, 'idem-1');
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('partner_provisioning_idempotency_key_reused');
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('returns 409 rather than minting twice when concurrent requests race', async () => {
+      selectResults = [[]];
+      // The claim insert loses the unique-index race and returns no row.
+      mocks.transaction.mockImplementation(async (fn: any) => fn({
+        insert: vi.fn(() => ({
+          values: vi.fn(() => ({
+            onConflictDoNothing: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })),
+          })),
+        })),
+        update: mocks.update,
+        select: mocks.select,
+      }));
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-race');
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('partner_provisioning_idempotency_in_flight');
+    });
+
+    it('commits the claim, the key, and the link in one transaction', async () => {
+      selectResults = [[]];
+      const txInserts: unknown[] = [];
+      let linked = false;
+      mocks.transaction.mockImplementation(async (fn: any) => fn({
+        insert: vi.fn(() => ({
+          values: vi.fn((values: unknown) => {
+            txInserts.push(values);
+            return {
+              onConflictDoNothing: vi.fn(() => ({
+                returning: vi.fn().mockResolvedValue([{ id: 'claim-1' }]),
+              })),
+              returning: vi.fn().mockResolvedValue([keyRow]),
+            };
+          }),
+        })),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn(() => ({
+              returning: vi.fn(() => {
+                linked = true;
+                return Promise.resolve([{ id: 'claim-1' }]);
+              }),
+            })),
+          })),
+        })),
+        select: mocks.select,
+      }));
+
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-new');
+      expect(res.status).toBe(201);
+      expect(mocks.transaction).toHaveBeenCalledOnce();
+      // Claim first, then the enrollment key, then the link — all inside the tx.
+      expect(txInserts).toHaveLength(2);
+      expect(txInserts[0]).toMatchObject({ idempotencyKey: 'idem-new', orgId: ORG_ID });
+      expect(txInserts[1]).toMatchObject({ orgId: ORG_ID, name: 'k' });
+      expect(linked).toBe(true);
+    });
   });
 });
