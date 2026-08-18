@@ -39,6 +39,23 @@ export function SystemsIcon({ color, size }: Props) {
   );
 }
 
+// Ticket stub: a rounded rectangle with a perforation notch on each side.
+// Distinct from the Systems trace and the Home bubble at tab-bar size.
+export function TicketsIcon({ color, size }: Props) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        d="M3 7 a1 1 0 0 1 1 -1 h16 a1 1 0 0 1 1 1 v3 a2 2 0 0 0 0 4 v3 a1 1 0 0 1 -1 1 h-16 a1 1 0 0 1 -1 -1 v-3 a2 2 0 0 0 0 -4 z"
+        stroke={color}
+        strokeWidth={1.75}
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <Path d="M14 8 L14 16" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeDasharray="2 2.5" />
+    </Svg>
+  );
+}
+
 // Reserved for future use (e.g. when Settings becomes a tab again, or for
 // an Alerts-only view). Not currently mounted but kept here so the icon
 // vocabulary lives in one file.
