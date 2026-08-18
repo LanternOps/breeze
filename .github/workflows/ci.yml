@@ -53,6 +53,15 @@ jobs:
           bash scripts/check-guided-setup-default-project.sh
           bash scripts/check-guided-setup-db-urls.sh
           bash scripts/check-guided-setup-env-roundtrip.sh
+          bash scripts/check-guided-setup-placeholders.sh
+
+      # The quickstart tells self-hosters to `cp .env.example .env` and bring the
+      # stack up, so a BREEZE_VERSION whose images were never published breaks
+      # every new install. The pin sat at 0.81.0 for ~25 releases (portal images
+      # start at 0.82.0) precisely because nothing checked it. Degrades to a
+      # warning if GHCR is unreachable, so a registry outage cannot redden CI.
+      - name: Guard .env.example version pin is published
+        run: bash scripts/security/check-env-example-version-pin.sh
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
