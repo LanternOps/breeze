@@ -62,6 +62,20 @@ The customer portal is served under the `/portal` path on your main domain (for 
    cp .env.example .env
    ```
 
+   <Aside type="note">
+     `git clone` fails with `destination path 'breeze' already exists and is not
+     an empty directory` if you previously ran the
+     [Quickstart](/getting-started/quickstart/) here, which creates its own
+     `breeze/` directory. Stop and remove the old stack first — renaming the
+     directory is **not** enough, because both installs share the container names
+     and the `COMPOSE_PROJECT_NAME=breeze` Docker volumes:
+
+     ```bash
+     cd breeze && docker compose down     # add -v to also discard the test database
+     cd .. && rm -rf breeze               # or move it somewhere outside your working dir
+     ```
+   </Aside>
+
 3. **Set your domain and secrets**
 
    Edit `.env` and set these required values:
@@ -71,21 +85,40 @@ The customer portal is served under the `/portal` path on your main domain (for 
    ACME_EMAIL=admin@yourdomain.com
    ```
 
-   Generate all secrets at once:
+   Generate all secrets at once. These commands rewrite the placeholder values
+   `.env.example` ships **in place** — do not append a second copy of a key to
+   the end of the file:
 
    ```bash
    for key in JWT_SECRET APP_ENCRYPTION_KEY MFA_ENCRYPTION_KEY \
      ENROLLMENT_KEY_PEPPER MFA_RECOVERY_CODE_PEPPER \
-     METRICS_SCRAPE_TOKEN SESSION_SECRET TURN_SECRET; do
-     echo "${key}=$(openssl rand -hex 32)"
+     METRICS_SCRAPE_TOKEN SESSION_SECRET AGENT_ENROLLMENT_SECRET; do
+     sed -i "s|^${key}=.*|${key}=$(openssl rand -hex 32)|" .env
    done
 
-   echo "AGENT_ENROLLMENT_SECRET=$(openssl rand -hex 32)"
-   echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')"
-   echo "REDIS_PASSWORD=$(openssl rand -hex 32)"
+   # Canonical base64 decoding to >= 32 bytes; must not reuse JWT_SECRET.
+   # The API refuses to boot in production without this one.
+   sed -i "s|^PARTNER_API_CURSOR_SIGNING_KEY=.*|PARTNER_API_CURSOR_SIGNING_KEY=$(openssl rand -base64 32)|" .env
+
+   POSTGRES_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
+   REDIS_PASSWORD="$(openssl rand -hex 32)"
+   sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" .env
+   sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=${REDIS_PASSWORD}|" .env
+   sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379|" .env
    ```
 
-   Paste the output into `.env`.
+   On macOS, use `sed -i ''` instead of `sed -i`.
+
+   Confirm no required secret was left at its placeholder:
+
+   ```bash
+   grep -nE 'replace-with|generate-a-random|change-in-production|your-super-secret|changeme' .env \
+     | grep -v '^[0-9]*:GRAFANA_ADMIN_PASSWORD='
+   ```
+
+   That should print nothing. `GRAFANA_ADMIN_PASSWORD` is filtered out because it
+   belongs to the optional monitoring stack and is generated in that section
+   below; `TURN_SECRET` is only needed if you enable the TURN profile in step 4.
 
    Then set these required deployment-mode flags. Without them the API refuses to boot in production:
 
@@ -113,6 +146,12 @@ The customer portal is served under the `/portal` path on your main domain (for 
    TURN_REALM=breeze.local
    ```
 
+   Generate the shared secret coturn uses to mint credentials:
+
+   ```bash
+   sed -i "s|^TURN_SECRET=.*|TURN_SECRET=$(openssl rand -hex 32)|" .env
+   ```
+
    Coturn is behind a Docker Compose profile and does not start by default. To enable it:
 
    ```bash
@@ -120,6 +159,13 @@ The customer portal is served under the `/portal` path on your main domain (for 
    ```
 
    Or add `COMPOSE_PROFILES=turn` to your `.env` file for persistent activation.
+
+   <Aside type="note">
+     Skipping remote desktop? Leave `TURN_HOST` and `TURN_SECRET` blank — the rest
+     of the stack starts without them. If you *do* enable the profile, coturn
+     refuses to start on an empty `TURN_SECRET` rather than running as an open
+     relay, since an empty shared secret makes TURN credentials forgeable.
+   </Aside>
 
 
    <Aside type="tip">

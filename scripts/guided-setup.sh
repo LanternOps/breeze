@@ -2602,6 +2602,19 @@ set_env_value() {
   fi
 }
 
+# Recognises the placeholder values shipped in .env.example so prompt_secret()
+# treats them as "unset" and generates a real secret instead of keeping them.
+#
+# This is a substring allowlist of the exact wordings used in .env.example, which
+# makes it silently brittle: a secret added there with a NEW wording is not
+# matched, so `--yes` / auto mode copies the placeholder straight through and the
+# API refuses to boot. That is exactly how PARTNER_API_CURSOR_SIGNING_KEY shipped
+# broken — it was the only value in the file using `replace-with-...` while every
+# other secret used `generate-a-random-...` or `...-change-in-production`.
+#
+# envExamplePlaceholders.test.ts (required test-api job) asserts every secret
+# placeholder in .env.example is matched here, so the next new wording fails CI
+# instead of a self-hoster's install.
 looks_like_placeholder() {
   local value
   value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
@@ -2611,6 +2624,7 @@ looks_like_placeholder() {
   [[ "${value}" == *change_me* ]] && return 0
   [[ "${value}" == *change-in-production* ]] && return 0
   [[ "${value}" == *generate-a-random* ]] && return 0
+  [[ "${value}" == *replace-with* ]] && return 0
   [[ "${value}" == *your-super-secret* ]] && return 0
   [[ "${value}" == *your-enrollment-secret* ]] && return 0
   [[ "${value}" == *yourdomain.com* ]] && return 0
@@ -3351,6 +3365,71 @@ fetch_latest_github_release_version() {
   return 1
 }
 
+# Returns 0 if every Breeze image for this version is pullable from GHCR, 1 if
+# any is definitely absent, and 2 if the registry could not be reached (unknown).
+#
+# A git tag is NOT proof that images exist: release.yml creates the GitHub
+# Release and tag first and only then builds images (`needs: [create-release]`),
+# so a build or signing failure leaves a version that resolves everywhere except
+# the registry. v0.105.2 and v0.106.0 are both in that state today. Selecting one
+# produces a setup that completes happily and then dies on `docker compose up`
+# with `not found` — which is precisely the failure .env.example's stale 0.81.0
+# pin caused for every self-hoster, so it is worth catching here too.
+breeze_version_images_published() {
+  local version="$1"
+  local registry="ghcr.io"
+  local namespace="lanternops/breeze"
+  local repo token http_status reachable=0 missing=0
+
+  for repo in api web portal binaries; do
+    token=""
+    token="$(curl -fsSL --connect-timeout 5 --max-time 15 \
+      "https://${registry}/token?scope=repository:${namespace}/${repo}:pull&service=${registry}" 2>/dev/null \
+      | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')" || true
+    if [[ -z "${token}" ]]; then
+      continue
+    fi
+
+    http_status="$(curl -fsS -o /dev/null -w '%{http_code}' \
+      --connect-timeout 5 --max-time 15 \
+      -H "Authorization: Bearer ${token}" \
+      -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
+      "https://${registry}/v2/${namespace}/${repo}/manifests/${version}" 2>/dev/null)" || true
+    [[ -n "${http_status}" ]] || continue
+
+    reachable=1
+    [[ "${http_status}" == "200" ]] || missing=1
+  done
+
+  ((reachable == 1)) || return 2
+  ((missing == 0)) || return 1
+  return 0
+}
+
+# Warns (and in unattended mode, aborts) when the chosen version has no images.
+# Never blocks on an unreachable registry, and never blocks a deployment using
+# custom BREEZE_*_IMAGE_REF overrides — it only reports what GHCR actually has.
+confirm_breeze_version_available() {
+  local version="$1" rc=0
+
+  breeze_version_images_published "${version}" || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    2) return 0 ;;
+  esac
+
+  warn "Breeze ${version} is tagged but its container images are not published to GHCR."
+  warn "Continuing will fail at 'docker compose up' with: not found."
+  warn "Pick the newest version listed at https://github.com/lanternops/breeze/releases"
+  warn "that has images, unless you build your own and set BREEZE_*_IMAGE_REF."
+
+  if [[ "${YES_MODE}" == "true" ]]; then
+    fail "BREEZE_VERSION=${version} has no published images; re-run without --yes to choose another."
+  fi
+
+  ask_yes_no "Use ${version} anyway?" "no"
+}
+
 select_breeze_version() {
   local current latest default_value answer
 
@@ -3385,6 +3464,7 @@ select_breeze_version() {
   if [[ "${YES_MODE}" == "true" ]]; then
     if [[ -n "${default_value}" ]]; then
       answer="${default_value#v}"
+      confirm_breeze_version_available "${answer}"
       SELECTED_BREEZE_VERSION="${answer}"
       log "Selected Breeze version: ${answer}"
       return
@@ -3406,6 +3486,9 @@ select_breeze_version() {
 
     if [[ -n "${answer}" ]]; then
       answer="${answer#v}"
+      if ! confirm_breeze_version_available "${answer}"; then
+        continue
+      fi
       SELECTED_BREEZE_VERSION="${answer}"
       log "Selected Breeze version: ${answer}"
       return

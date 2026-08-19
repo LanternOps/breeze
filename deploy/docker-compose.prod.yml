@@ -455,6 +455,16 @@ services:
       - breeze
 
   # TURN relay for WebRTC remote desktop. Opt-in via: docker compose --profile turn up -d
+  # SR-009: coturn must fail closed when TURN_SECRET is unset or empty — an empty
+  # REST shared secret makes TURN credentials trivially forgeable (open relay).
+  #
+  # That check MUST NOT be `--static-auth-secret=${TURN_SECRET:?...}`. Compose
+  # interpolates the whole file BEFORE it filters by profile, so a `:?` inside a
+  # profiled service aborts `docker compose up` for every deployment, including
+  # the ones that never enable TURN. The secret is therefore delivered as a
+  # file-backed Compose secret and validated at container start — which also
+  # keeps it out of argv, where any process in the container could read it from
+  # /proc/<pid>/cmdline. Only the secret moved; every other flag is unchanged.
   coturn:
     image: ${COTURN_IMAGE_REF:?Set COTURN_IMAGE_REF to a digest-pinned coturn image}
     container_name: breeze-coturn
@@ -462,40 +472,54 @@ services:
     profiles:
       - turn
     network_mode: host
-    command: >
-      turnserver
-      --listening-port=3478
-      --tls-listening-port=5349
-      --fingerprint
-      --use-auth-secret
-      --relay-threads=4
-      --user-quota=4
-      --total-quota=1000
-      --max-bps=${TURN_MAX_BPS:-5000000}
-      --no-multicast-peers
-      --denied-peer-ip=0.0.0.0-0.255.255.255
-      --denied-peer-ip=10.0.0.0-10.255.255.255
-      --denied-peer-ip=100.64.0.0-100.127.255.255
-      --denied-peer-ip=127.0.0.0-127.255.255.255
-      --denied-peer-ip=169.254.0.0-169.254.255.255
-      --denied-peer-ip=172.16.0.0-172.31.255.255
-      --denied-peer-ip=192.0.0.0-192.0.0.255
-      --denied-peer-ip=192.168.0.0-192.168.255.255
-      --denied-peer-ip=198.18.0.0-198.19.255.255
-      --denied-peer-ip=224.0.0.0-239.255.255.255
-      --denied-peer-ip=240.0.0.0-255.255.255.255
-      --denied-peer-ip=::1
-      --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      --denied-peer-ip=ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      --log-file=stdout
-      --verbose
-      --min-port=49152
-      --max-port=65535
-      --no-cli
-      --static-auth-secret=${TURN_SECRET:?TURN_SECRET must be set (openssl rand -hex 32) when the turn profile is enabled}
-      --realm=${TURN_REALM:-breeze.local}
-      --external-ip=${TURN_HOST:-}
+    secrets:
+      - turn_secret
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=1m
+    entrypoint: ['/bin/sh', '-ec']
+    command:
+      - |
+        if [ ! -s /run/secrets/turn_secret ]; then
+          echo 'coturn: refusing to start — TURN_SECRET is unset or empty.' >&2
+          echo 'An empty REST shared secret makes TURN credentials forgeable (open relay).' >&2
+          echo 'Generate one with: openssl rand -hex 32, set TURN_SECRET in .env, and retry.' >&2
+          exit 1
+        fi
+        umask 077
+        printf 'static-auth-secret=%s\n' "$$(cat /run/secrets/turn_secret)" > /tmp/turn-secret.conf
+        exec turnserver -c /tmp/turn-secret.conf "$$@"
+      - turnserver
+      - --listening-port=3478
+      - --tls-listening-port=5349
+      - --fingerprint
+      - --use-auth-secret
+      - --relay-threads=4
+      - --user-quota=4
+      - --total-quota=1000
+      - --max-bps=${TURN_MAX_BPS:-5000000}
+      - --no-multicast-peers
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=224.0.0.0-239.255.255.255
+      - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=ff00::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --log-file=stdout
+      - --verbose
+      - --min-port=49152
+      - --max-port=65535
+      - --no-cli
+      - --realm=${TURN_REALM:-breeze.local}
+      - --external-ip=${TURN_HOST:-}
 
 networks:
   breeze:
@@ -514,6 +538,11 @@ volumes:
 secrets:
   redis_password:
     environment: REDIS_PASSWORD
+  # `environment:` (not `:?`) so an unset TURN_SECRET does not abort interpolation
+  # for deployments that never enable the `turn` profile. coturn itself refuses to
+  # start on an empty secret — see the SR-009 note on that service.
+  turn_secret:
+    environment: TURN_SECRET
   # Standalone Compose bind-mounts file-backed secrets and ignores uid/gid/mode
   # target attributes. /dev/null keeps dark deployments optional; when enabled,
   # the source JWK must already have numeric owner 1001:1001 and mode 0400.
