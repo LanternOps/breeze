@@ -4,27 +4,38 @@
 #
 # The bundled root docker-compose.yml treats the two DB URLs asymmetrically:
 #   - DATABASE_URL      is rebuilt as ...@postgres:5432 INSIDE the api container
-#                       (from POSTGRES_USER/PASSWORD/DB); the .env value is only
-#                       for host-side tooling and may point at localhost.
-#   - DATABASE_URL_APP  is passed straight through (`${DATABASE_URL_APP:-}`), so
-#                       whatever the .env holds lands verbatim in the
-#                       container's unprivileged request pool.
+#                       (from POSTGRES_USER/PASSWORD/DB), so the .env value never
+#                       reaches the API and may point at localhost. (It is inert
+#                       under the bundled compose rather than "correct" — that
+#                       file publishes no Postgres port, so host-side tooling
+#                       cannot reach localhost:5432 either.)
+#   - DATABASE_URL_APP  is passed through verbatim (`${DATABASE_URL_APP:-}`), so
+#                       whatever the .env holds lands in the api container's
+#                       unprivileged request pool.
 #
-# Therefore both install paths MUST leave DATABASE_URL_APP empty (the API then
-# derives breeze_app@postgres from the container DATABASE_URL). A localhost
-# value makes the request pool dial 127.0.0.1 inside the container: migrations
-# and ensure-app-role still succeed (they use DATABASE_URL), then startup
-# crashes at the initial seed with ECONNREFUSED ::1/127.0.0.1:5432.
+# Both install paths must therefore leave DATABASE_URL_APP empty; the API then
+# derives breeze_app@postgres from the container's own DATABASE_URL. A loopback
+# value makes the request pool dial the api container's own loopback: migrations
+# and ensure-app-role still succeed (they use DATABASE_URL), then startup dies at
+# the initial seed with ECONNREFUSED ::1/127.0.0.1:5432.
 #
 # Two files reach a self-hoster's .env, and BOTH have shipped this bug:
-#   1. scripts/guided-setup.sh  — writes the value via set_env_value.
+#   1. scripts/guided-setup.sh  — writes the value into the generated .env.
 #   2. .env.example             — the `cp .env.example .env` quickstart. Shipped
 #                                 an uncommented localhost DATABASE_URL_APP,
-#                                 which broke every from-scratch quickstart
-#                                 install until it was commented out.
+#                                 which broke that quickstart path.
 # deploy/.env.example feeds deploy/docker-compose.prod.yml, where an explicit
 # DATABASE_URL_APP is legitimate (managed Postgres) — it is checked only for
-# loopback hosts, not for being set.
+# loopback hosts, not for being set. Only LIVE assignments are inspected there,
+# so a commented-out loopback example in that file is deliberately not covered.
+#
+# DESIGN NOTE — this guard asserts the ABSENCE of other writers, not merely the
+# presence of the blessed line. An earlier revision only confirmed that
+# `set_env_value "DATABASE_URL_APP" ""` appeared somewhere in guided-setup.sh,
+# which meant a commented-out decoy satisfied it while a live `printf >>
+# "$ENV_FILE"` or an unquoted-key call wrote a localhost URL past a green CI.
+# Every mention of the key must now be either a comment or the exact blessed
+# call, so a new writer is a hard failure rather than an unmodelled case.
 
 set -euo pipefail
 
@@ -39,50 +50,119 @@ fail() {
   exit 1
 }
 
-# ── 1. guided-setup.sh: exactly one, empty, set_env_value assignment ─────────
+# Every file below is tracked in git and must exist. Treating an absent or
+# unreadable file as "nothing to check" is how a guard silently stops guarding,
+# so each one is a hard failure.
+require_readable() {
+  local path="$1"
+  [[ -e "${path}" ]] || fail "${path#"${REPO_ROOT}/"} not found. It is tracked in git; a rename or deletion must update this guard."
+  [[ -f "${path}" ]] || fail "${path#"${REPO_ROOT}/"} is not a regular file."
+  [[ -r "${path}" ]] || fail "${path#"${REPO_ROOT}/"} is not readable."
+}
 
-[[ -f "${SETUP_FILE}" ]] || fail "guided-setup.sh not found at ${SETUP_FILE}"
-
-# Collect every literal value the installer assigns to DATABASE_URL_APP via
-# set_env_value. Match: set_env_value "DATABASE_URL_APP" "<value>"
-assignment_count=0
-while IFS= read -r value; do
-  assignment_count=$((assignment_count + 1))
-  if [[ -n "${value}" ]]; then
-    fail "guided-setup.sh: DATABASE_URL_APP is assigned a non-empty value (\"${value}\"). The bundled Compose passes DATABASE_URL_APP straight into the api container, so it MUST be empty and derived from the container's @postgres DATABASE_URL."
+# grep exits 0 (match), 1 (no match), or >1 (I/O error). The bare `if var=$(grep
+# ...)` idiom collapses 1 and 2 into "clean", so an unreadable file would read as
+# a pass. Always distinguish them.
+grep_lines() {
+  local pattern="$1" path="$2" out rc
+  out="$(grep -nE "${pattern}" "${path}")" && rc=0 || rc=$?
+  if [[ "${rc}" -gt 1 ]]; then
+    fail "grep failed (exit ${rc}) while scanning ${path#"${REPO_ROOT}/"}; refusing to report a pass."
   fi
-done < <(
-  grep -oE 'set_env_value[[:space:]]+"DATABASE_URL_APP"[[:space:]]+"[^"]*"' "${SETUP_FILE}" \
-    | sed -E 's/.*"DATABASE_URL_APP"[[:space:]]+"([^"]*)".*/\1/'
-)
+  # Always terminate with a newline: `while read` drops a final unterminated
+  # line, which would silently skip the last match. An empty `out` yields one
+  # blank entry, which every loop below skips.
+  printf '%s\n' "${out}"
+}
 
-if [[ "${assignment_count}" -eq 0 ]]; then
-  fail "guided-setup.sh: no set_env_value \"DATABASE_URL_APP\" ... assignment found; expected exactly one empty assignment."
-fi
+# Strip surrounding single/double quotes and whitespace so `KEY=""` and `KEY=''`
+# are recognised as the empty value they are, rather than reported as non-empty.
+unquote() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  if [[ ${#v} -ge 2 ]]; then
+    case "${v}" in
+      \"*\") v="${v:1:${#v}-2}" ;;
+      \'*\') v="${v:1:${#v}-2}" ;;
+    esac
+  fi
+  printf '%s' "${v}"
+}
 
-# Belt-and-suspenders: no DATABASE_URL_APP assignment anywhere should reference a
-# loopback host.
-if grep -nE 'set_env_value[[:space:]]+"DATABASE_URL_APP".*(localhost|127\.0\.0\.1|::1)' "${SETUP_FILE}"; then
-  fail "guided-setup.sh: DATABASE_URL_APP assignment references a loopback host; it would dial the api container's own loopback and fail with ECONNREFUSED."
+# Matches a live (non-comment) assignment, with or without a `export ` prefix.
+ENV_ASSIGN_RE='^[[:space:]]*(export[[:space:]]+)?DATABASE_URL_APP[[:space:]]*='
+# Loopback in any form the api container could be pointed at: localhost, the
+# whole 127/8 range (not just 127.0.0.1), the unspecified address, and IPv6 ::1
+# with or without brackets.
+LOOPBACK_RE='(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0\.0|\[?::1\]?)'
+
+checks_run=()
+
+# ── 1. guided-setup.sh: the ONLY mention may be one empty set_env_value ──────
+
+require_readable "${SETUP_FILE}"
+
+blessed_re='^[[:space:]]*set_env_value[[:space:]]+"DATABASE_URL_APP"[[:space:]]+""[[:space:]]*$'
+blessed_count=0
+
+while IFS= read -r entry; do
+  [[ -n "${entry}" ]] || continue
+  line_no="${entry%%:*}"
+  text="${entry#*:}"
+
+  # A comment can only mislead a human, not write a .env.
+  [[ "${text}" =~ ^[[:space:]]*# ]] && continue
+
+  if [[ "${text}" =~ ${blessed_re} ]]; then
+    blessed_count=$((blessed_count + 1))
+    continue
+  fi
+
+  fail "guided-setup.sh:${line_no} mentions DATABASE_URL_APP outside the one blessed assignment: ${text}
+The bundled Compose passes DATABASE_URL_APP straight into the api container, so the installer must write it EMPTY and let the API derive breeze_app@postgres. Expected exactly: set_env_value \"DATABASE_URL_APP\" \"\""
+done < <(grep_lines 'DATABASE_URL_APP' "${SETUP_FILE}")
+
+if [[ "${blessed_count}" -ne 1 ]]; then
+  fail "guided-setup.sh has ${blessed_count} empty DATABASE_URL_APP assignment(s); expected exactly 1 (set_env_value \"DATABASE_URL_APP\" \"\")."
 fi
+checks_run+=("guided-setup.sh: 1 empty assignment, no other writer")
 
 # ── 2. .env.example: DATABASE_URL_APP must be commented out or empty ─────────
 #
 # `cp .env.example .env && docker compose up -d` is the documented quickstart,
-# so any uncommented value here lands directly in the api container.
+# so any live value here lands directly in the api container.
 
-[[ -f "${ENV_EXAMPLE}" ]] || fail ".env.example not found at ${ENV_EXAMPLE}"
+require_readable "${ENV_EXAMPLE}"
 
-if active_line="$(grep -nE '^[[:space:]]*DATABASE_URL_APP[[:space:]]*=[[:space:]]*[^[:space:]]' "${ENV_EXAMPLE}")"; then
-  fail ".env.example sets DATABASE_URL_APP to a non-empty value (${active_line}). The bundled Compose passes it straight into the api container, so the quickstart copy MUST leave it commented out or empty and let the API derive breeze_app@postgres."
-fi
+while IFS= read -r entry; do
+  [[ -n "${entry}" ]] || continue
+  line_no="${entry%%:*}"
+  text="${entry#*:}"
+  value="$(unquote "${text#*=}")"
+  if [[ -n "${value}" ]]; then
+    fail ".env.example:${line_no} sets DATABASE_URL_APP to a non-empty value (${text}).
+The bundled Compose passes it straight into the api container, so the quickstart copy must leave it commented out or empty and let the API derive breeze_app@postgres."
+  fi
+done < <(grep_lines "${ENV_ASSIGN_RE}" "${ENV_EXAMPLE}")
+checks_run+=(".env.example: no live non-empty assignment")
 
 # ── 3. deploy/.env.example: explicit value allowed, loopback is not ──────────
 
-if [[ -f "${DEPLOY_ENV_EXAMPLE}" ]]; then
-  if loopback_line="$(grep -nE '^[[:space:]]*DATABASE_URL_APP[[:space:]]*=.*(localhost|127\.0\.0\.1|\[?::1\]?)' "${DEPLOY_ENV_EXAMPLE}")"; then
-    fail "deploy/.env.example sets DATABASE_URL_APP to a loopback host (${loopback_line}); the api container would dial its own loopback and fail with ECONNREFUSED."
-  fi
-fi
+require_readable "${DEPLOY_ENV_EXAMPLE}"
 
-printf 'self-host DB URL guard passed (guided-setup: %d empty DATABASE_URL_APP assignment(s); .env.example: not set)\n' "${assignment_count}"
+while IFS= read -r entry; do
+  [[ -n "${entry}" ]] || continue
+  line_no="${entry%%:*}"
+  text="${entry#*:}"
+  value="$(unquote "${text#*=}")"
+  if [[ "${value}" =~ ${LOOPBACK_RE} ]]; then
+    fail "deploy/.env.example:${line_no} points DATABASE_URL_APP at a loopback host (${text}); the api container would dial its own loopback and fail with ECONNREFUSED."
+  fi
+done < <(grep_lines "${ENV_ASSIGN_RE}" "${DEPLOY_ENV_EXAMPLE}")
+checks_run+=("deploy/.env.example: no loopback assignment")
+
+printf 'self-host DB URL guard passed:\n'
+for c in "${checks_run[@]}"; do
+  printf '  - %s\n' "${c}"
+done
