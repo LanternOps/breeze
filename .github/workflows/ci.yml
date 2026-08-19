@@ -1547,24 +1547,53 @@ jobs:
           # reds `main` and fires main-red-alert with zero code signal (#1605).
           # Switch to the canonical mirror and retry update+install with
           # backoff so a slow mirror doesn't masquerade as a build failure.
+          #
+          # The retry loop above only helps when apt EXITS non-zero. Observed
+          # failures instead STALL: apt stops emitting output right after the
+          # InRelease fetches and never returns, so no attempt ever completes
+          # and the job burns its full 35-minute budget without logging a single
+          # retry warning (#3730). Give each phase its own deadline so a stall
+          # fails fast and the retry logic can actually run.
+          #
+          # `timeout` is invoked under sudo (not `timeout sudo ...`) so it
+          # signals apt-get itself as root; wrapping sudo would kill the wrapper
+          # and leave a root apt-get orphaned holding the dpkg lock.
+          #
+          # Deadlines are sized so the WORST case still fails cleanly inside the
+          # job's 35-minute budget. Counting the --kill-after grace on every
+          # bound (each deadline can run to deadline + 30s), three attempts plus
+          # two recovery runs plus the sleeps come to under 27m, so the step
+          # reports its own error rather than being killed mid-attempt with no
+          # diagnostic. Normal runs finish in well under a minute, so these are
+          # roughly 10x headroom rather than tight.
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           install_deps() {
-            sudo apt-get update && \
-            sudo apt-get install -y --no-install-recommends \
+            sudo timeout --kill-after=30s 2m apt-get update && \
+            sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends \
               libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
           }
-          for attempt in 1 2 3; do
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
               exit 0
             fi
-            echo "::warning::apt install failed (attempt ${attempt}/3); retrying in $((attempt * 15))s"
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              break
+            fi
+            echo "::warning::apt install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 15))s"
+            # A killed apt can leave the dpkg lock held or a package
+            # half-configured; clear that or the retry just fails on the lock.
+            # Bounded too: dpkg runs maintainer scripts and can block on its
+            # own, and an unbounded recovery would reintroduce the very stall
+            # this step exists to prevent.
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
             sleep $((attempt * 15))
           done
-          echo "::error::Failed to install Tauri system dependencies after 3 attempts."
+          echo "::error::Failed to install Tauri system dependencies after ${attempts} attempts."
           exit 1
 
       - name: Setup Rust
