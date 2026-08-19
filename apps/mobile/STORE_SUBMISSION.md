@@ -143,11 +143,36 @@ Verify with:
 curl -sS -D- https://us.2breeze.app/.well-known/apple-app-site-association
 ```
 
-Three constraints worth recording:
+Four constraints worth recording:
 
-- The domain list is **static at build time** and can only name hosts we
-  control, so **self-hosted Breeze servers can never be covered** by it. Their
-  users get generic autofill, which is the same as today.
+- The domain list is **static at build time**, because Apple binds Associated
+  Domains into the signed entitlement. **The published App Store build therefore
+  cannot cover a self-hosted server** — that is a platform constraint, not
+  something a runtime setting can fix, and self-hosters should not chase it.
+  Those users get generic autofill.
+- A self-hoster **building the app themselves** can cover their own domain.
+  `app.config.js` merges `BREEZE_ASSOCIATED_DOMAINS` into the list from
+  `app.json`:
+
+  ```bash
+  BREEZE_ASSOCIATED_DOMAINS=breeze.example.com npx expo prebuild --platform ios
+  ```
+
+  Several entries may be separated by commas or whitespace, and a pasted URL is
+  accepted (`https://breeze.example.com/login` resolves to the host). The two
+  hosted regions above are always kept, so this can only add to the list and
+  cannot break autofill for hosted users. The self-hosted server still has to
+  serve the AASA file described above, with its own team ID and bundle
+  identifier if the build is signed under a different Apple account.
+
+  Only `webcredentials:` is emitted, and an entry that is not a usable hostname
+  **fails the build** rather than being skipped — wildcards, IP addresses,
+  `localhost`, and a bare host carrying a port or `?mode=developer` are all
+  rejected by name. An internationalised domain is punycoded automatically,
+  whether written bare or as a URL. Failing loudly is deliberate: a silently
+  dropped entry would ship an entitlement missing the domain, and the only
+  symptom would be autofill quietly not working. Edit `app.json` directly for
+  anything beyond a plain password-manager association.
 - `breezermm.com` was deliberately dropped: it is the marketing site behind
   Cloudflare, nobody signs into the app there, and claiming a domain that serves
   no AASA file just leaves an unanswered claim.
