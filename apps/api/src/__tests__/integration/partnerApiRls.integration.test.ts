@@ -163,10 +163,10 @@ describe('partner reconstruction export RLS traversal', () => {
       body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, name: 'Actual route RLS proof' }),
     });
     expect(response.status, await response.clone().text()).toBe(201);
-    const body = await response.json() as { id: string; key: string; enrollmentSecret: string };
+    const body = await response.json() as { data: { id: string }; key: string; enrollmentSecret: string };
     expect(body.key).toMatch(/^[a-f0-9]{64}$/);
     expect(body.enrollmentSecret).toMatch(/^[a-f0-9]{64}$/);
-    const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.id)).limit(1);
+    const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.data.id)).limit(1);
     expect(stored).toMatchObject({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, createdBy: null });
     expect(stored?.key).not.toBe(body.key);
     expect(stored?.keySecretHash).not.toBe(body.enrollmentSecret);
@@ -178,7 +178,10 @@ describe('partner reconstruction export RLS traversal', () => {
       body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, name: 'Actual route RLS proof' }),
     });
     expect(replay.status, await replay.clone().text()).toBe(200);
-    expect(await replay.json()).toMatchObject({ id: body.id, idempotencyReplay: true });
+    expect(await replay.json()).toMatchObject({
+      data: { id: body.data.id },
+      idempotencyReplay: true,
+    });
   });
   runDb('cursor-walks every resource through actual auth without crossing partners', async () => {
     await ensureAppRole();
