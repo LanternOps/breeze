@@ -280,6 +280,35 @@ export function SystemsScreen() {
           loading={loading}
         />
 
+        <Pressable
+          onPress={() =>
+            navigation.navigate('SystemsDevices', {
+              orgId: filterOrgId,
+              orgName: filterOrgName,
+            })
+          }
+          accessibilityRole="button"
+          accessibilityLabel="View all devices"
+          style={{
+            marginHorizontal: spacing[6],
+            marginTop: spacing[3],
+            paddingVertical: spacing[3],
+            paddingHorizontal: spacing[4],
+            borderRadius: 10,
+            borderWidth: 1,
+            borderColor: theme.border,
+            backgroundColor: theme.bg1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Text style={{ ...type.bodyMd, color: theme.textHi }}>
+            {filterOrgName ? `${filterOrgName} devices` : 'All devices'}
+          </Text>
+          <Text style={{ ...type.meta, color: theme.textLo }}>View</Text>
+        </Pressable>
+
         {filterOrgId && filterOrgName ? (
           <FilterChip label={filterOrgName} onClear={() => setFilterOrgId(null)} />
         ) : null}

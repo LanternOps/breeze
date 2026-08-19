@@ -121,6 +121,8 @@ interface ListResponse<T> {
     page: number;
     limit: number;
     total: number;
+    /** Keyset cursor for the next page; null on the last page. */
+    nextCursor?: string | null;
   };
 }
 
@@ -197,7 +199,8 @@ async function getToken(): Promise<string | null> {
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
   const token = await getToken();
   const method = (options.method ?? 'GET').toUpperCase();
@@ -238,11 +241,11 @@ async function requestWithPrefix<T>(
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetchWithTimeout(url, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  const response = await fetchWithTimeout(
+    url,
+    { ...options, headers, credentials: 'include' },
+    timeoutMs
+  );
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
@@ -273,9 +276,10 @@ async function requestWithPrefix<T>(
 
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
-  return requestWithPrefix<T>(endpoint, API_PREFIX, options);
+  return requestWithPrefix<T>(endpoint, API_PREFIX, options, timeoutMs);
 }
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
@@ -422,10 +426,24 @@ export async function getAlert(id: string): Promise<Alert> {
   return mapAlert(response);
 }
 
+/**
+ * Acknowledge an alert.
+ *
+ * Given a longer timeout than the 15s default because this write is slow on
+ * real deployments: the API awaits its local event handlers inside the request
+ * path (see upstream #1105 — the server itself logs "held a pooled connection
+ * ... for 15439ms"). Measured acknowledges of 13.4s and 15.2s returned 200
+ * while the client had already aborted at 15s and told the user it failed,
+ * which invites a retry of an action that already succeeded.
+ */
+export const ACKNOWLEDGE_TIMEOUT_MS = 45000;
+
 export async function acknowledgeAlert(id: string): Promise<Alert> {
-  const response = await request<MobileAlertRecord>(`/alerts/${id}/acknowledge`, {
-    method: 'POST',
-  });
+  const response = await request<MobileAlertRecord>(
+    `/alerts/${id}/acknowledge`,
+    { method: 'POST' },
+    ACKNOWLEDGE_TIMEOUT_MS
+  );
   return mapAlert(response);
 }
 
@@ -453,9 +471,47 @@ export async function getAlertStats(): Promise<{
 }
 
 // Devices API
-export async function getDevices(): Promise<Device[]> {
-  const response = await request<ListResponse<MobileDeviceRecord>>('/devices');
-  return response.data.map(mapDevice);
+/** Server cap on `limit` (patches/helpers.ts MAX_PAGE_LIMIT). */
+const DEVICE_PAGE_LIMIT = 200;
+/**
+ * Safety stop for the cursor walk. 20 pages x 200 = 4,000 devices, well beyond
+ * any fleet that belongs on a phone screen, and it bounds the loop if the
+ * server ever returns a non-advancing cursor.
+ */
+const MAX_DEVICE_PAGES = 20;
+
+/**
+ * Fetch devices, following the cursor to the end of the fleet.
+ *
+ * A single request returns `limit` rows (default 50, capped at 200), so asking
+ * once silently truncates: a 210-device tenant showed 50 and any client-side
+ * org filter then searched only that first page — an org whose machines sat
+ * further down rendered as empty. `orgId` is pushed to the server so a scoped
+ * view pages through that org rather than through the whole fleet.
+ */
+export async function getDevices(orgId?: string | null): Promise<Device[]> {
+  const out: MobileDeviceRecord[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < MAX_DEVICE_PAGES; page += 1) {
+    const params = new URLSearchParams({ limit: String(DEVICE_PAGE_LIMIT) });
+    if (orgId) params.set('orgId', orgId);
+    if (cursor) params.set('cursor', cursor);
+
+    const response = await request<ListResponse<MobileDeviceRecord>>(
+      `/devices?${params.toString()}`
+    );
+    const rows = Array.isArray(response.data) ? response.data : [];
+    out.push(...rows);
+
+    const next = response.pagination?.nextCursor ?? null;
+    // Stop on a null cursor, a short page, or a cursor that did not advance —
+    // the last of these would otherwise spin until the page cap.
+    if (!next || next === cursor || rows.length === 0) break;
+    cursor = next;
+  }
+
+  return out.map(mapDevice);
 }
 
 export async function getDevice(id: string): Promise<Device> {
