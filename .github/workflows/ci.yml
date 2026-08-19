@@ -1564,7 +1564,7 @@ jobs:
           toolchain: stable
 
       - name: Rust cache
-        uses: swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
@@ -1627,7 +1627,7 @@ jobs:
 
       - name: Rust cache
         if: steps.changes.outputs.cargo == 'true'
-        uses: swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
+        uses: swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: |
             apps/helper/src-tauri -> target
