@@ -10,6 +10,7 @@ import type { Alert, Device } from '../../services/api';
 import type { SystemsStackParamList, MainTabParamList } from '../../navigation/MainNavigator';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
+import { acknowledgeAlerts } from '../../services/api';
 import { loadHistory, setError as setChatError } from '../../store/aiChatSlice';
 import { getAiSessionMessages } from '../../services/aiChat';
 import { historyToMessages } from '../chat/historyAdapter';
@@ -21,6 +22,15 @@ import { track } from '../../lib/analytics';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { AlertActionSheet } from './components/AlertActionSheet';
+import {
+  beginAck,
+  bulkActionLabel,
+  emptyPendingAcks,
+  endAck,
+  reconcileSelection,
+  toggleSelection,
+  visibleAlerts,
+} from './pendingAcks';
 import { FilterChip } from './components/FilterChip';
 import { Hero } from './components/Hero';
 import { IssueRow } from './components/IssueRow';
@@ -98,6 +108,9 @@ export function SystemsScreen() {
   const dispatch = useAppDispatch();
 
   const [sheetAlert, setSheetAlert] = useState<Alert | null>(null);
+  const [pendingAcks, setPendingAcks] = useState(emptyPendingAcks);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [toast, setToast] = useState<
     { kind: 'success' | 'error'; text: string } | null
@@ -156,6 +169,68 @@ export function SystemsScreen() {
   const onCloseSheet = useCallback(() => {
     setSheetAlert(null);
   }, []);
+
+  // Rows mid-acknowledge are hidden immediately; the request runs behind them.
+  const visibleIssues = visibleAlerts(activeIssues, pendingAcks);
+
+  /**
+   * Acknowledge one or many, optimistically.
+   *
+   * The rows disappear immediately and the request runs behind them: a single
+   * acknowledge has been measured at 13-15s on a real deployment, and a bulk
+   * call scales with the batch, so blocking the UI on it makes triage unusable.
+   * A failure puts the rows back and says so.
+   */
+  const acknowledgeIds = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return;
+      setPendingAcks((p) => beginAck(p, ids));
+      // Restore only what actually failed, so a partial outcome is honest.
+      let toRestore = ids;
+      try {
+        const { acknowledged, failed } = await acknowledgeAlerts(ids);
+        toRestore = failed;
+        if (failed.length === 0) {
+          setToast({
+            kind: 'success',
+            text: ids.length > 1 ? `Acknowledged ${ids.length} alerts` : 'Acknowledged.',
+          });
+        } else if (acknowledged.length === 0) {
+          setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        } else {
+          // Never claim the full count when some were refused.
+          setToast({
+            kind: 'error',
+            text: `Acknowledged ${acknowledged.length}, ${failed.length} failed.`,
+          });
+        }
+        // Successful ids stay hidden until the refetch supplies the new truth,
+        // so the list cannot flash the old rows back.
+        setPendingAcks((p) => endAck(p, failed));
+        await refresh();
+        setPendingAcks((p) => endAck(p, acknowledged));
+        return;
+      } catch (err) {
+        reportInternalError(err, 'bulk-acknowledge');
+        setToast({ kind: 'error', text: 'Could not acknowledge. Restored.' });
+        setPendingAcks((p) => endAck(p, toRestore));
+      }
+    },
+    [refresh]
+  );
+
+  const exitSelection = useCallback(() => {
+    setSelecting(false);
+    setSelected(new Set());
+  }, []);
+
+  const onAcknowledgeSelected = useCallback(async () => {
+    // Drop ids whose rows are gone — another operator may have acknowledged
+    // one, and submitting it would be silently skipped server-side.
+    const ids = [...reconcileSelection(selected, visibleIssues)];
+    exitSelection();
+    await acknowledgeIds(ids);
+  }, [selected, visibleIssues, exitSelection, acknowledgeIds]);
 
   const onAcknowledgeFromSheet = useCallback(async () => {
     if (!sheetAlert) return;
@@ -223,7 +298,7 @@ export function SystemsScreen() {
 
   const showOrgs = !filterOrgId && orgRollups.length > 0;
   const showRecent = recent.length > 0;
-  const showActiveIssues = activeIssues.length > 0;
+  const showActiveIssues = visibleIssues.length > 0;
   const showActiveSkeleton = loading && activeIssues.length === 0;
   // Every section can hide independently, and the org filter suppresses the
   // Organizations list outright — so a filtered org with nothing outstanding
@@ -353,13 +428,26 @@ export function SystemsScreen() {
         {showActiveIssues ? (
           <>
             <SectionHeader label="ACTIVE ISSUES" />
-            {activeIssues.map((alert, idx) => (
+            {visibleIssues.map((alert, idx) => (
               <IssueRow
                 key={alert.id}
                 alert={alert}
-                onPress={() => onPressIssue(alert)}
-                onLongPress={() => onLongPressAlert(alert)}
-                showDivider={idx < activeIssues.length - 1}
+                onPress={() =>
+                  selecting
+                    ? setSelected((prev) => toggleSelection(prev, alert.id))
+                    : onPressIssue(alert)
+                }
+                onLongPress={() => {
+                  if (selecting) return;
+                  // Long-press is the way in, and it ticks the row you pressed
+                  // so the gesture is never a wasted step.
+                  setSelecting(true);
+                  setSelected(new Set([alert.id]));
+                }}
+                onSwipeAcknowledge={() => void acknowledgeIds([alert.id])}
+                selectable={selecting}
+                selected={selected.has(alert.id)}
+                showDivider={idx < visibleIssues.length - 1}
                 dividerColor={theme.border}
               />
             ))}
@@ -420,6 +508,52 @@ export function SystemsScreen() {
           </View>
         ) : null}
       </ScrollView>
+
+      {selecting ? (
+        <View
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            paddingHorizontal: spacing[4],
+            paddingTop: spacing[3],
+            paddingBottom: spacing[6],
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+            backgroundColor: theme.bg1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: spacing[3],
+          }}
+        >
+          <Pressable
+            onPress={exitSelection}
+            accessibilityRole="button"
+            style={{ paddingVertical: spacing[2], paddingHorizontal: spacing[3] }}
+          >
+            <Text style={{ ...type.meta, color: theme.textMd }}>Cancel</Text>
+          </Pressable>
+          <View style={{ flex: 1 }} />
+          <Pressable
+            onPress={() => void onAcknowledgeSelected()}
+            disabled={selected.size === 0}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: selected.size === 0 }}
+            style={{
+              paddingVertical: spacing[3],
+              paddingHorizontal: spacing[4],
+              borderRadius: 10,
+              backgroundColor: palette.approve.base,
+              opacity: selected.size === 0 ? 0.5 : 1,
+            }}
+          >
+            <Text style={{ ...type.bodyMd, color: palette.approve.onBase }}>
+              {bulkActionLabel(selected.size)}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <AlertActionSheet
         visible={!!sheetAlert}
