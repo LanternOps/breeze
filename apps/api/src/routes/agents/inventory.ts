@@ -366,6 +366,22 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
     : null;
 
   await db.transaction(async (tx) => {
+    // Lock ordering: take the devices-row lock BEFORE touching device_network.
+    // Every other writer that spans both tables (re-enrollment, site move,
+    // moveOrg) locks devices first, then child tables — updating devices last
+    // here inverted that order and deadlocked against a concurrent re-enroll
+    // (Postgres 40P01, Sentry BREEZE-1S).
+    //
+    // Leave devices.activeVpns untouched when the agent didn't report VPN
+    // state, so an old agent (or a transient collection failure) never
+    // overwrites last-known-good.
+    if (vpnProvided) {
+      await tx
+        .update(devices)
+        .set({ activeVpns, updatedAt: now })
+        .where(eq(devices.id, device.id));
+    }
+
     await tx
       .delete(deviceNetwork)
       .where(eq(deviceNetwork.deviceId, device.id));
@@ -383,16 +399,6 @@ inventoryRoutes.put('/:id/network', bodyLimit({ maxSize: 5 * 1024 * 1024, onErro
           updatedAt: now
         }))
       );
-    }
-
-    // Leave devices.activeVpns untouched when the agent didn't report VPN
-    // state, so an old agent (or a transient collection failure) never
-    // overwrites last-known-good.
-    if (vpnProvided) {
-      await tx
-        .update(devices)
-        .set({ activeVpns, updatedAt: now })
-        .where(eq(devices.id, device.id));
     }
   });
 
