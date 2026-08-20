@@ -19,15 +19,14 @@ see the top of [`CONTRIBUTING.md`](https://github.com/LanternOps/breeze/blob/mai
 
 ## The one idea to internalize
 
-Breeze doesn't have a public roadmap. Work is captured as **plan documents** in
-[`docs/superpowers/plans/`](https://github.com/LanternOps/breeze/tree/main/docs/superpowers/plans).
-A plan spells out the goal, the architecture, the tech stack, and a checklist of
-tasks — it's a ready-to-implement work order, written for an agent to execute.
+Work on Breeze is captured as **plan documents**. A plan spells out the goal,
+the architecture, the tech stack, and a checklist of tasks — it's a
+ready-to-implement work order, written for an agent to execute.
 
 That means a plan is two things at once:
 
-- **The roadmap** — it's what there is to build.
-- **The approval** — if a plan exists and is in the open lane, the *what* and the
+- **The work definition** — it's what there is to build.
+- **The approval** — if a plan exists and has been approved, the *what* and the
   *how* are already agreed. You don't need a separate sign-off to start.
 
 <Aside type="caution" title="Don't write feature code without an approved plan">
@@ -39,30 +38,39 @@ anyone spends effort, so nothing gets built the wrong way.
 
 ## 1. Find something to build
 
-Open plans live in one folder:
+<Aside type="note" title="Work tracking is moving to GitHub">
+This guide used to point at a folder of open plan documents in the repo. That
+folder has been reorganized and no longer reflects what's actually up for
+grabs, so don't mine `docs/superpowers/plans/` for work — it's an archive of
+completed, shipped plans kept for history. A GitHub-native replacement
+(issues, milestones, and a public roadmap) is in the works and this section
+will be updated when it lands.
+</Aside>
+
+Until then, find work on the issue tracker:
 
 <CardGrid>
   <LinkCard
-    title="The open lane"
-    description="docs/superpowers/plans/open/ — plans that are up for grabs right now."
-    href="https://github.com/LanternOps/breeze/tree/main/docs/superpowers/plans/open"
+    title="Help wanted"
+    description="Open issues tagged for outside contributors."
+    href="https://github.com/LanternOps/breeze/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22"
+  />
+  <LinkCard
+    title="Good first issues"
+    description="Smaller, well-scoped starters."
+    href="https://github.com/LanternOps/breeze/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22"
   />
 </CardGrid>
 
-Everything in the `plans/` root (400+ files) is **completed, shipped work** kept
-for history — ignore it when looking for something to do. Only `open/` is live.
-
 <Steps>
 
-1. Browse `docs/superpowers/plans/open/`. Each file is a complete work order:
-   goal, architecture, tech stack, a linked design spec, and `- [ ]` task
-   checkboxes.
+1. Browse the open issues above, or any open issue that interests you.
 
-2. Pick one that fits your appetite. The plan's own header tells you the blast
-   radius — some are small UI/CRUD jobs, some touch deeper systems.
+2. Pick one that fits your appetite — some are small UI/CRUD jobs, some touch
+   deeper systems.
 
-3. Give Todd a heads-up that you're taking it (so two people don't grab the same
-   plan). Then start.
+3. Comment on the issue that you're taking it (so two people don't grab the
+   same one). Then start with a plan, as below.
 
 </Steps>
 
@@ -76,8 +84,8 @@ Want to scratch your own itch? Great — but the plan comes first.
    pin down intent and requirements, then **`writing-plans`** to produce the plan
    document.
 
-2. Drop the finished plan in `docs/superpowers/plans/open/` and share it with
-   Todd.
+2. Share the finished plan with Todd — attach it to the GitHub issue you're
+   working from (open one if there isn't one yet).
 
 3. Wait for approval on the *plan*. Once it's a 👍, it's an open work order like
    any other — go build it.
@@ -151,14 +159,14 @@ venue and not work-in-progress.
 2. Keep it to **one concern**. Don't mix a feature, a refactor, and a docs sweep
    in one PR — small, single-purpose PRs review fast.
 
-3. Reference the plan you implemented in the PR description.
+3. Reference the plan and the issue you implemented in the PR description
+   (`Closes #NNN` if the PR completes the issue).
 
-4. Open it against `main`. Once it merges, the plan moves out of `open/` into the
-   `plans/` archive — the open lane always reflects only what's still available.
+4. Open it against `main`.
 
 </Steps>
 
 <Aside type="note">
 Squash-merge is the norm on this repo; merge commits are disabled. Todd handles
-the merge and the plan-archival housekeeping.
+the merge.
 </Aside>
