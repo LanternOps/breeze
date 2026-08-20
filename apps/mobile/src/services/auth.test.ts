@@ -23,6 +23,16 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('clearAuthData', () => {
+  it('removes the app-lock record, so no stale unlock outlives the session', async () => {
+    // The record is a standing assertion that THIS device is currently
+    // unlocked. If the token delete below fails, the surviving token restores
+    // on the next launch and a leftover `locked: false` waves it past the gate.
+    await clearAuthData();
+
+    const keys = secureStore.deleteItemAsync.mock.calls.map((c) => c[0]);
+    expect(keys).toContain('breeze.applock.state.v1');
+  });
+
   it('removes the auth token, the stored user, and the persistent approvals cache', async () => {
     await clearAuthData();
 

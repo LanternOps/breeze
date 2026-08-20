@@ -9,6 +9,7 @@ import {
   type User,
 } from '../services/api';
 import { storeToken, storeUser, clearAuthData } from '../services/auth';
+import { markAppLockUnlocked } from '../services/appLockStore';
 
 export type PushRegistrationStatus = 'idle' | 'ok' | 'failed' | 'unsupported';
 
@@ -69,6 +70,17 @@ export const loginAsync = createAsyncThunk(
 
       await storeToken(result.token);
       await storeUser(result.user);
+      // Last, and awaited: `storeUser` throws, and a login the user was told
+      // failed must not leave an "unlocked" stamp behind. Awaited because the
+      // token only reaches Redux on `fulfilled`, and the token reaching Redux
+      // is what triggers the cold-launch check that reads this record.
+      //
+      // Never allowed to fail the login, whose credentials are already in the
+      // keychain by now — rejecting here would strand the user on the login
+      // screen with a session that restores on the next launch anyway. A missed
+      // stamp costs one spurious Face ID prompt, and appLockStore has already
+      // reported it to Sentry.
+      await markAppLockUnlocked().catch(() => {});
 
       return { token: result.token, user: result.user, registerGrant: result.registerGrant };
     } catch (error: unknown) {
@@ -85,6 +97,7 @@ export const verifyMfaAsync = createAsyncThunk(
       const response = await apiVerifyMfa(code, tempToken);
       await storeToken(response.token);
       await storeUser(response.user);
+      await markAppLockUnlocked().catch(() => {});
       return response;
     } catch (error: unknown) {
       const apiError = error as { message?: string };
