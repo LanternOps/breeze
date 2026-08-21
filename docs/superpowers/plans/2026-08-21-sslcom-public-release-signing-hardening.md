@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: `inspectWorkflowText(file: string, text: string): Violation[]`, the current release workflow artifact names, and the existing downstream `sign-windows-tauri` dependency.
-- Produces: `publicReleaseSigningViolations(file: string, lines: ActiveLine[], text: string): Violation[]`; jobs `resolve-windows-signing-provider`, `sign-windows-tauri-azure`, `sign-windows-tauri-sslcom`, and `sign-windows-tauri`; resolver output `provider: "azure" | "sslcom"`.
+- Produces: `publicReleaseSigningViolations(file: string, lines: ActiveLine[]): Violation[]` (job slicing reuses the existing `workflowJobs(lines)` helper — do not add a second slicer); jobs `resolve-windows-signing-provider`, `sign-windows-tauri-azure`, `sign-windows-tauri-sslcom`, and `sign-windows-tauri`; resolver output `provider: "azure" | "sslcom"`.
 
 - [ ] **Step 1: Add failing synthetic workflow tests for the trust-boundary invariants**
 
@@ -46,6 +46,8 @@ function publicSigningFixture() {
 jobs:
   resolve-windows-signing-provider:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       provider: \${{ steps.provider.outputs.provider }}
     steps:
@@ -64,7 +66,10 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - run: echo azure
+      - shell: pwsh
+        run: |
+          if (-not $sig.SignerCertificate) { throw }
+          if (-not $sig.TimeStamperCertificate) { throw }
   sign-windows-tauri-sslcom:
     needs: [resolve-windows-signing-provider]
     if: needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
@@ -77,24 +82,48 @@ jobs:
           password: \${{ secrets.SSLCOM_PASSWORD }}
           credential_id: \${{ secrets.SSLCOM_CREDENTIAL_ID }}
           totp_secret: \${{ secrets.SSLCOM_TOTP_SECRET }}
-      - env:
+      - shell: pwsh
+        env:
           SSLCOM_CERT_SHA256: \${{ secrets.SSLCOM_CERT_SHA256 }}
         run: |
-          GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
-          TimeStamperCertificate
+          $expected = $env:SSLCOM_CERT_SHA256
+          $actual = $sig.SignerCertificate.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+          if (-not $sig.TimeStamperCertificate) { throw }
           O=LANTERNOPS LLC
   sign-windows-tauri:
-    if: always()
     needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    if: \${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
+    permissions:
+      contents: read
     steps:
-      - run: echo convergence
+      - env:
+          PROVIDER: \${{ needs.resolve-windows-signing-provider.outputs.provider }}
+          AZURE_RESULT: \${{ needs.sign-windows-tauri-azure.result }}
+          SSLCOM_RESULT: \${{ needs.sign-windows-tauri-sslcom.result }}
+        run: echo convergence
 `;
 }
 ```
 
-Add assertions for these mutations and exact rules:
+The fixture must mirror the real step layout so the Step 3 patterns can match both: the `env:` mapping precedes the `run:` block, `$env:SSLCOM_CERT_SHA256` is read inside the script, and the gate consumes both signer results through `needs.*.result` env vars.
+
+Add a passing-fixture baseline plus one assertion per mutation, using the exact rule IDs:
 
 ```js
+const PUBLIC_SIGNING_RULES = [
+  'windows-signing-provider-must-fail-closed',
+  'windows-signing-provider-least-privilege',
+  'sslcom-signing-must-pin-certificate',
+  'windows-signing-must-require-timestamp',
+  'sslcom-signing-must-not-touch-agent',
+  'windows-signing-provider-must-converge',
+];
+
+test('passing public signing fixture raises no public-signing violations', () => {
+  const rules = new Set(inspectWorkflowText('release.yml', publicSigningFixture()).map(({ rule }) => rule));
+  for (const rule of PUBLIC_SIGNING_RULES) assert.equal(rules.has(rule), false, rule);
+});
+
 test('public signing resolver rejects unknown providers', () => {
   const text = publicSigningFixture().replace('*) exit 1 ;;', '*) echo "provider=azure" >> "$GITHUB_OUTPUT" ;;');
   assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-fail-closed'), true);
@@ -106,17 +135,26 @@ test('SSL.com signer cannot receive OIDC', () => {
 });
 
 test('SSL.com signer requires a pinned certificate and timestamp', () => {
-  const text = publicSigningFixture().replace('SSLCOM_CERT_SHA256', 'REMOVED_CERT_PIN').replace('TimeStamperCertificate', 'REMOVED_TIMESTAMP');
+  const text = publicSigningFixture()
+    .replaceAll('SSLCOM_CERT_SHA256', 'REMOVED_CERT_PIN')
+    .replaceAll('TimeStamperCertificate', 'REMOVED_TIMESTAMP');
   const rules = new Set(inspectWorkflowText('release.yml', text).map(({ rule }) => rule));
   assert.equal(rules.has('sslcom-signing-must-pin-certificate'), true);
-  assert.equal(rules.has('sslcom-signing-must-require-timestamp'), true);
+  assert.equal(rules.has('windows-signing-must-require-timestamp'), true);
 });
 
 test('SSL.com signer cannot mention public Agent-family artifacts', () => {
   const text = publicSigningFixture().replace('O=LANTERNOPS LLC', 'O=LANTERNOPS LLC\n          breeze-agent.msi');
   assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'sslcom-signing-must-not-touch-agent'), true);
 });
+
+test('convergence gate must consume both signer results', () => {
+  const text = publicSigningFixture().replace(/ +AZURE_RESULT:[^\n]*\n/u, '');
+  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-converge'), true);
+});
 ```
+
+Use `replaceAll` for the pin/timestamp mutations — both strings appear more than once in the fixture, and a single `replace` leaves a surviving reference that lets the checker pass vacuously.
 
 - [ ] **Step 2: Run the new tests and confirm the checker does not yet enforce them**
 
@@ -126,9 +164,11 @@ Expected: FAIL because one or more new mutation tests report no matching violati
 
 - [ ] **Step 3: Add focused job-section parsing and release-signing violations**
 
-In `.github/scripts/check-workflow-security.mjs`, add constants for the five rule IDs above and a helper that slices a direct child of `jobs:` from its key line through the line before the next sibling job. The release-specific checker must return immediately unless `file === 'release.yml'` and the four signing job IDs are present, so unrelated workflows and unit fixtures remain unaffected.
+In `.github/scripts/check-workflow-security.mjs`, add constants for the six rule IDs above and three small helpers that do not exist yet: `escapeRegExp(value)`, `requirePattern(section, pattern, rule, violations, file)`, and `forbidPattern(section, pattern, rule, violations, file)`. Job sections come from the existing `workflowJobs(lines)` helper (`{ name, lines }` per direct child of `jobs:`) — do not write a second slicer. A pattern check runs against the section's joined `content` (`section.lines.map((line) => line.content).join('\n')`); `requirePattern` reports a violation when the section is missing entirely **or** the pattern does not match, anchored at `section.lines[0].line` (line 1 when the section is missing); `forbidPattern` reports only when a present section matches.
 
-Implement the checks with exact string/section assertions:
+The release-specific checker must return immediately unless `file === 'release.yml'`, and stay silent when none of the four signing job IDs are present, so unrelated workflows and existing unit fixtures remain unaffected.
+
+Implement the checks with order-independent assertions (a single ordered regex across the section breaks on the real step layout, where `env:` mappings precede `run:` blocks):
 
 ```js
 const PUBLIC_AGENT_WINDOWS_ASSETS = [
@@ -147,9 +187,9 @@ const SSLCOM_SECRETS = [
   'SSLCOM_CERT_SHA256',
 ];
 
-function publicReleaseSigningViolations(file, lines, text) {
+function publicReleaseSigningViolations(file, lines) {
   if (file !== 'release.yml') return [];
-  const jobs = directJobSections(lines, text);
+  const jobs = new Map(workflowJobs(lines).map((job) => [job.name, job]));
   const resolver = jobs.get('resolve-windows-signing-provider');
   const azure = jobs.get('sign-windows-tauri-azure');
   const sslcom = jobs.get('sign-windows-tauri-sslcom');
@@ -157,34 +197,49 @@ function publicReleaseSigningViolations(file, lines, text) {
   if (!resolver && !azure && !sslcom && !gate) return [];
 
   const violations = [];
-  // Require an explicit empty-to-azure normalization and an explicit failing default.
-  requirePattern(resolver, /RAW_PROVIDER[\s\S]*:-azure[\s\S]*azure\|sslcom[\s\S]*\*\)[\s\S]*(?:exit 1|throw)/u,
+  // Resolver: explicit empty-to-azure normalization plus a failing default arm.
+  requirePattern(resolver, /RAW_PROVIDER[\s\S]*:-azure[\s\S]*azure\|sslcom[\s\S]*\*\)[\s\S]*exit 1/u,
     'windows-signing-provider-must-fail-closed', violations, file);
+  // OIDC lives in the Azure job and nowhere else.
   requirePattern(azure, /id-token:\s*write/u,
     'windows-signing-provider-least-privilege', violations, file);
-  forbidPattern(sslcom, /id-token:\s*write/u,
-    'windows-signing-provider-least-privilege', violations, file);
+  for (const section of [resolver, sslcom, gate]) {
+    forbidPattern(section, /id-token:/u,
+      'windows-signing-provider-least-privilege', violations, file);
+  }
   requirePattern(sslcom, new RegExp(escapeRegExp(SSLCOM_ACTION), 'u'),
     'sslcom-signing-must-pin-certificate', violations, file);
   for (const secret of SSLCOM_SECRETS) {
-    requirePattern(sslcom, new RegExp(`secrets\\.${secret}`, 'u'),
+    requirePattern(sslcom, new RegExp(`secrets\\.${secret}\\b`, 'u'),
       'sslcom-signing-must-pin-certificate', violations, file);
   }
-  requirePattern(sslcom, /GetCertHashString[\s\S]*SHA256[\s\S]*SSLCOM_CERT_SHA256/u,
+  // The section must read the pin from the environment AND hash the signer
+  // certificate with SHA-256; asserted separately, not as one ordered regex.
+  requirePattern(sslcom, /\$env:SSLCOM_CERT_SHA256/u,
     'sslcom-signing-must-pin-certificate', violations, file);
-  requirePattern(sslcom, /TimeStamperCertificate/u,
-    'sslcom-signing-must-require-timestamp', violations, file);
+  requirePattern(sslcom, /GetCertHashString\(\s*\[System\.Security\.Cryptography\.HashAlgorithmName\]::SHA256/u,
+    'sslcom-signing-must-pin-certificate', violations, file);
+  // Both providers must prove an RFC 3161 timestamp (design: Verification).
+  for (const section of [azure, sslcom]) {
+    requirePattern(section, /TimeStamperCertificate/u,
+      'windows-signing-must-require-timestamp', violations, file);
+  }
   for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
     forbidPattern(sslcom, new RegExp(escapeRegExp(asset), 'u'),
       'sslcom-signing-must-not-touch-agent', violations, file);
   }
-  requirePattern(gate, /always\(\)[\s\S]*sign-windows-tauri-azure[\s\S]*sign-windows-tauri-sslcom/u,
+  // Gate: runs on !cancelled() and consumes both signer results.
+  requirePattern(gate, /!cancelled\(\)/u,
+    'windows-signing-provider-must-converge', violations, file);
+  requirePattern(gate, /needs\.sign-windows-tauri-azure\.result/u,
+    'windows-signing-provider-must-converge', violations, file);
+  requirePattern(gate, /needs\.sign-windows-tauri-sslcom\.result/u,
     'windows-signing-provider-must-converge', violations, file);
   return violations;
 }
 ```
 
-Call `publicReleaseSigningViolations(file, lines, text)` from `inspectWorkflowText` after the existing developer-signing checks. Keep violations sorted through `compareViolations` and report the signing job's first line for a missing/forbidden condition.
+Call `publicReleaseSigningViolations(file, lines)` from `inspectWorkflowText` after the existing developer-signing checks; the existing final sort through `compareViolations` covers the new entries.
 
 - [ ] **Step 4: Run the synthetic tests and confirm the checker passes them**
 
@@ -196,7 +251,7 @@ Expected: PASS for the new passing fixture and every single-mutation rejection.
 
 Run: `node .github/scripts/check-workflow-security.mjs`
 
-Expected: FAIL on `release.yml` for the mixed-provider job, permissive fallback, absent SSL.com thumbprint, and missing convergence topology.
+Expected: FAIL on `release.yml` — the pre-split workflow still carries the mixed `sign-windows-tauri` job, so the checker (keyed on that job ID) reports the missing resolver/azure/sslcom sections and a gate without the convergence topology. This red state is intentional and must not be committed on its own; the Step 6 workflow rewrite lands in the same commit (Step 10), so CI never sees it.
 
 - [ ] **Step 6: Replace the mixed signer with resolver and provider-isolated jobs**
 
@@ -252,13 +307,20 @@ In `.github/workflows/release.yml`, replace the existing `sign-windows-tauri` bo
   sign-windows-tauri:
     name: Windows Tauri signing convergence gate
     needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
-    if: ${{ always() && needs.resolve-windows-signing-provider.result == 'success' }}
+    if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
 ```
 
-Copy the current artifact downloads, Azure validation/login/signing steps, Azure verification, and canonical uploads into the Azure job without changing action pins, paths, profile selection, or artifact names. Copy the two SSL.com action steps and canonical uploads into the SSL.com job, set `malware_block: true`, `override: true`, and `clean_logs: true`, and add `SSLCOM_CERT_SHA256` to its validation environment.
+Gate condition semantics — this is `!cancelled() && result != 'skipped'`, deliberately not `always() && result == 'success'`:
+
+- Signing disabled (`ENABLE_WINDOWS_SIGNING != 'true'` or non-tag run): resolver skips, gate skips, and the downstream `success || skipped` conditions plus `release-integrity-gate` behave exactly as today.
+- Resolver **failed** (invalid provider value): the gate must *run and fail* (the empty provider output hits Step 8's default arm), not skip — a skipped gate reads as "signing disabled" to `create-release`'s `success || skipped` check. `release-integrity-gate`'s `require_success` would still block a tag release, but the gate failing at the cause is the primary defense, not a downstream side effect.
+
+Copy the current artifact downloads, the Azure validation/login/signing steps, and the canonical uploads into the Azure job without changing action pins, paths, profile selection, or artifact names. Copy the two SSL.com action steps (`command: sign`, per-file `file_path`, `override: true`) and the canonical uploads into the SSL.com job; per the approved design, flip `malware_block: false` to `malware_block: true` and add `clean_logs: true` — this deliberately changes the value shipped by #3762, and the step comment explaining the eSigner options must be updated to match. Extend the SSL.com validation step's required-secret list and `env:` block with `SSLCOM_CERT_SHA256`.
+
+In **both** signer jobs, extend the copied "Verify signatures" step so each MSI must also present a non-null `$sig.SignerCertificate` and `$sig.TimeStamperCertificate` (the RFC 3161 timestamp proof) in addition to the existing `Status` check — the current step checks `Status` only, and the design's Verification section requires signer + timestamp for both providers.
 
 - [ ] **Step 7: Add authoritative SSL.com certificate-pin verification**
 
@@ -287,30 +349,40 @@ Pass `SSLCOM_CERT_SHA256: ${{ secrets.SSLCOM_CERT_SHA256 }}` only to the SSL.com
 
 The gate's only step must compare the selected provider with both job results:
 
-```bash
-set -euo pipefail
-case "$PROVIDER" in
-  azure)
-    [ "$AZURE_RESULT" = success ] && [ "$SSLCOM_RESULT" = skipped ] ;;
-  sslcom)
-    [ "$AZURE_RESULT" = skipped ] && [ "$SSLCOM_RESULT" = success ] ;;
-  *) exit 1 ;;
-esac
+```yaml
+      - name: Assert single-provider convergence
+        shell: bash
+        env:
+          PROVIDER: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
+          AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
+          SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
+        run: |
+          set -euo pipefail
+          case "$PROVIDER" in
+            azure)
+              [ "$AZURE_RESULT" = success ] && [ "$SSLCOM_RESULT" = skipped ] ;;
+            sslcom)
+              [ "$AZURE_RESULT" = skipped ] && [ "$SSLCOM_RESULT" = success ] ;;
+            *)
+              echo "::error::provider resolution failed or produced an unexpected value"
+              exit 1 ;;
+          esac
+          echo "Provider '$PROVIDER' converged (azure=$AZURE_RESULT, sslcom=$SSLCOM_RESULT)."
 ```
 
-Set `PROVIDER`, `AZURE_RESULT`, and `SSLCOM_RESULT` from `needs.*`. Emit a generic error containing provider and job-result names only; never include secrets. Preserve all existing downstream `needs: [sign-windows-tauri]` references.
+The default `*)` arm is what turns a failed resolver into a failed gate (its output is empty when it never ran) — see the Step 6 gate-condition rationale. Errors may name the provider and job results only; never a secret. Preserve all existing downstream `needs: [sign-windows-tauri]` references.
 
 - [ ] **Step 9: Run targeted and repository workflow checks**
 
 Run:
 
 ```bash
-node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs
-node .github/scripts/check-workflow-security.mjs
-actionlint -color .github/workflows/release.yml
 corepack pnpm test:workflow-security
+actionlint -color .github/workflows/release.yml
 bash scripts/security/check-supply-chain-hardening.sh
 ```
+
+(`test:workflow-security` already runs `node --test` over both test files and then the checker binary — don't duplicate those invocations.)
 
 Expected: every command exits 0; the workflow checker reports no violations; `actionlint` reports no expression, job dependency, or YAML errors.
 
@@ -396,11 +468,11 @@ corepack pnpm test:workflow-security
 bash scripts/security/check-supply-chain-hardening.sh
 actionlint -color .github/workflows/release.yml
 corepack pnpm --filter @breeze/docs build
-git diff --check HEAD~2..HEAD
+git diff --check origin/main...HEAD
 git status --short
 ```
 
-Expected: all checks exit 0; `git diff --check` has no output; status is clean.
+Expected: all checks exit 0; `git diff --check` has no output; status is clean. (Diff against the merge base, not `HEAD~2` — the branch already carries the design/plan doc commits and may gain a review-fix commit.)
 
 - [ ] **Step 2: Perform the permitted review gate**
 
