@@ -110,7 +110,7 @@ import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './routes/vulnerabi
 import { systemRoutes } from './routes/system';
 import { systemToolsRoutes } from './routes/systemTools';
 import { notificationRoutes } from './routes/notifications';
-import { metricsRoutes } from './routes/metrics';
+import { metricsRoutes, metricsMiddleware } from './routes/metrics';
 import { groupRoutes } from './routes/groups';
 import { integrationRoutes } from './routes/integrations';
 import { partnerRoutes } from './routes/partner';
@@ -482,6 +482,13 @@ const resolveCorsOrigin = createCorsOriginResolver({
 });
 
 // Global middleware
+// FIRST, deliberately: `http_requests_total` / `http_request_duration_seconds`
+// are the SOC 2 A1.1 capacity signals, and they should measure the whole
+// server-side cost of a request — rate limiting and body-limit rejections
+// included — not just the time spent inside a route handler. Registering it here
+// is also what fixes the underlying gap: the middleware existed and was tested,
+// but was never mounted, so neither series appeared in a production scrape.
+app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
 app.use(
   '*',
