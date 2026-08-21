@@ -97,8 +97,8 @@ describe('quoteService deposits', () => {
   it('updateQuote reassigns a draft to another company: children re-tenanted, site/bill-to reset, tax re-resolved', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     // loadDraft
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: 's1', billToName: 'Old Co', taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
-    queueResult([{ id: 'org2' }]); // target org same-partner membership check
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: 's1', billToName: 'Old Co', taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // target org same-partner membership check (currency matches the draft stamp)
     // resolveQuoteTaxRate for the NEW org: 5% org rate, no partner default
     queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
     queueResult([{ defaultTaxRate: null }]);
@@ -130,8 +130,8 @@ describe('quoteService deposits', () => {
   it('updateQuote org change with an explicit taxRate in the same patch skips re-resolution and keeps the explicit rate', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     // loadDraft
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
-    queueResult([{ id: 'org2' }]); // membership check — NO resolveQuoteTaxRate selects follow
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp) — NO resolveQuoteTaxRate selects follow
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
@@ -153,8 +153,8 @@ describe('quoteService deposits', () => {
 
   it('updateQuote org change preserves a billToName supplied in the same patch', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: 'Old Co', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
-    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: 'Old Co', taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
@@ -181,6 +181,18 @@ describe('quoteService deposits', () => {
     await expect(svc.updateQuote('q1', { orgId: 'org2' }, actor)).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
   });
 
+  it('updateQuote rejects reassignment to an org billed in another currency (CURRENCY_MISMATCH, nothing written)', async () => {
+    const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'EUR', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft — an EUR draft
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check — target org bills USD
+
+    await expect(svc.updateQuote('q1', { orgId: 'org2' }, orgActor))
+      .rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
+    // The header update never fired — the guard rejects before any write.
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls).toEqual([]);
+  });
+
   it('updateQuote rejects reassignment to an org of another partner', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', taxRate: null, depositType: 'none', depositPercent: null }]);
@@ -191,8 +203,8 @@ describe('quoteService deposits', () => {
 
   it('updateQuote rejects reassignment that would carry an org-owned contract block to the new org (422)', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
-    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
@@ -209,8 +221,8 @@ describe('quoteService deposits', () => {
 
   it('updateQuote allows reassignment carrying a PARTNER-WIDE contract block (org_id NULL passes)', async () => {
     const orgActor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1', 'org2'] };
-    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
-    queueResult([{ id: 'org2' }]); // membership check
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: null, depositType: 'none', depositPercent: null }]); // loadDraft
+    queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp)
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch

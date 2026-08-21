@@ -289,7 +289,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description:
               'Create-quote payload (create_draft). Required: orgId (UUID). Optional: siteId (UUID), ' +
-              'title, currencyCode (3-letter; defaults to the partner\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
+              'title, currencyCode (3-letter; defaults to the organization\'s currency), expiryDate (YYYY-MM-DD), introNotes, terms, ' +
               'termsAndConditions.',
           },
           patch: {

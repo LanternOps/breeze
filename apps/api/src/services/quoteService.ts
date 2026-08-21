@@ -316,18 +316,20 @@ export async function createQuote(input: CreateQuoteInput, actor: QuoteActor) {
   assertOrg(actor, input.orgId);
   assertSite(actor, input.siteId ?? null);
   const taxRate = await resolveQuoteTaxRate(input.orgId, partnerId);
-  // A new quote inherits the partner's configured currency unless the caller
-  // names one explicitly. The web and MCP create forms used to hardcode 'USD',
-  // so a non-USD partner's quotes (and their PDFs) were always minted in USD
-  // (#3200). The notNull DB default 'USD' remains the final backstop.
+  // A new quote is stamped with its ORGANIZATION's currency unless the caller
+  // names one explicitly (spec §5 — the org, not the partner, owns document
+  // currency; the partner inheritance shipped for #3200 predates per-org
+  // currency, B3). No DB-default backstop: a missed stamp must fail loudly
+  // (23502 once wave 2 drops the column default), never mint a silent USD quote.
   let currencyCode = input.currencyCode;
   if (!currencyCode) {
-    const [partner] = await db
-      .select({ currencyCode: partners.currencyCode })
-      .from(partners)
-      .where(eq(partners.id, partnerId))
+    const [org] = await db
+      .select({ currencyCode: organizations.currencyCode })
+      .from(organizations)
+      .where(eq(organizations.id, input.orgId))
       .limit(1);
-    currencyCode = partner?.currencyCode ?? 'USD';
+    if (!org) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    currencyCode = org.currencyCode;
   }
   // Number at creation (not at send): techs reference the number while drafting
   // and in the list. A deleted draft leaves a counter gap, which the numbering
@@ -401,10 +403,20 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
     assertSite(actor, null);
     // Same-partner guard. RLS hides other partners' orgs from this context, so a
     // cross-partner id resolves to "not found" rather than leaking existence.
-    const [target] = await db.select({ id: organizations.id }).from(organizations)
+    const [target] = await db.select({ id: organizations.id, currencyCode: organizations.currencyCode })
+      .from(organizations)
       .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, source.partnerId)))
       .limit(1);
     if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    // A clone carries its source's currency stamp verbatim, so a target org
+    // billed in a different currency is a hard 400 — never a silent restamp and
+    // never a conversion (spec §5; mirrors the §7 ticket-move guard).
+    if (target.currencyCode !== source.currencyCode) {
+      throw new QuoteServiceError(
+        `target organization uses ${target.currencyCode}; this quote is in ${source.currencyCode} — clone within the same currency or recreate the quote`,
+        400, 'CURRENCY_MISMATCH',
+      );
+    }
     // Re-validate carried contract blocks against the NEW org: an org-owned
     // template from the source org is invalid for the target org (422), which
     // also prevents cloning a block that would later mint a cross-org
@@ -757,10 +769,20 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     assertSite(actor, null);
     // Same-partner guard; RLS hides other partners' orgs so a cross-partner id
     // resolves to "not found" rather than leaking existence.
-    const [target] = await db.select({ id: organizations.id }).from(organizations)
+    const [target] = await db.select({ id: organizations.id, currencyCode: organizations.currencyCode })
+      .from(organizations)
       .where(and(eq(organizations.id, targetOrgId), eq(organizations.partnerId, q.partnerId)))
       .limit(1);
     if (!target) throw new QuoteServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    // The draft keeps its currency stamp across an org move, so a target org
+    // billed in a different currency is a hard 400 — never a silent restamp and
+    // never a conversion (spec §5; mirrors the §7 ticket-move guard).
+    if (target.currencyCode !== q.currencyCode) {
+      throw new QuoteServiceError(
+        `target organization uses ${target.currencyCode}; this quote is in ${q.currencyCode} — reassign within the same currency or recreate the quote`,
+        400, 'CURRENCY_MISMATCH',
+      );
+    }
     if (input.taxRate === undefined) orgTaxRate = await resolveQuoteTaxRate(targetOrgId, q.partnerId);
   }
   const set: Record<string, unknown> = { updatedAt: new Date() };
