@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import {
@@ -26,6 +27,8 @@ export interface DeviceDeletionTx {
  * orphaned-row bugs in this repo before.
  *
  * Order matters and is not alphabetical:
+ *   0. lock the devices row (SELECT ... FOR UPDATE) so this transaction takes
+ *      the parent lock first, matching every other writer — see below
  *   1. transitive children (rows referencing alerts/ai_sessions, which
  *      themselves reference the device) — they have no device_id of their own
  *   2. linked_device_id and device_id detach targets set to NULL (business
@@ -40,6 +43,47 @@ export async function deleteDeviceCascade(
   tx: DeviceDeletionTx,
   deviceId: string,
 ): Promise<void> {
+  // Take the PARENT lock first, before any child table is touched.
+  //
+  // FK constraints force children-before-parent for the DELETEs themselves, so
+  // the delete order cannot be inverted to match the rest of the codebase. That
+  // leaves this transaction acquiring child locks first while every other
+  // writer spanning both levels — re-enrollment, site move, moveOrg, and
+  // PUT /agents/:id/network since #3739 — takes the devices row first. A
+  // permanent delete racing any of them on the same device is a textbook AB-BA
+  // deadlock (Postgres 40P01, the class of failure #3739 fixed as BREEZE-1S).
+  //
+  // A SELECT ... FOR UPDATE restores devices-first ordering without violating
+  // the FK delete order, and gives the cascade a serialization point against
+  // concurrent agent writes. It must stay the FIRST statement here: this
+  // function is the single choke point both the route and the Quick Support
+  // reaper go through, so the lock cannot be forgotten by a new caller.
+  //
+  // IMPORTANT — the guarantee is conditional, and issuing this statement is NOT
+  // the same as holding the lock. FOR UPDATE locks only rows the statement can
+  // SEE, so it locks nothing when the device row is already gone (a re-run, or
+  // two reapers racing) or when RLS filters it out — this cascade runs inside
+  // the caller's tenant-scoped context, and at least one table it touches is
+  // deliberately invisible under that policy (see the abuse_endpoint_fingerprints
+  // note below). In that case the child cleanup below proceeds under the OLD
+  // child-first ordering, which is the exact race this lock exists to close.
+  //
+  // Deleting an absent device is legitimately idempotent, so a zero-row result
+  // must NOT abort — two reapers racing would then error instead of one simply
+  // finding nothing. Report it instead, so an unserialized cascade is visible
+  // rather than silently assumed safe.
+  const locked = (await tx.execute(
+    sql`SELECT id FROM devices WHERE id = ${deviceId} FOR UPDATE`
+  )) as { rowCount?: number | null; rows?: unknown[] } | undefined;
+  const lockedRows = locked?.rowCount ?? locked?.rows?.length ?? 0;
+  if (lockedRows === 0) {
+    Sentry.captureMessage('device cascade ran without holding the devices row lock', {
+      level: 'warning',
+      tags: { area: 'device-deletion' },
+      extra: { deviceId, reason: 'device row absent or filtered by RLS' },
+    });
+  }
+
   const deviceAlertIds = sql`(SELECT id FROM alerts WHERE device_id = ${deviceId})`;
   const deviceAiSessionIds = sql`(SELECT id FROM ai_sessions WHERE device_id = ${deviceId})`;
 
