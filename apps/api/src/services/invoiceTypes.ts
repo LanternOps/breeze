@@ -27,8 +27,10 @@ export interface InvoiceActor {
 export type InvoiceServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
   | 'ORG_DENIED'
+  | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
   | 'INVOICE_NOT_FOUND'
+  | 'CURRENCY_MISMATCH'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'
   | 'NO_VISIBLE_LINES'

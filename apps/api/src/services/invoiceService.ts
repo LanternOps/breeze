@@ -2,7 +2,7 @@ import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, timeEntries, ticketParts, tickets
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -208,6 +208,23 @@ export async function addContractLine(
   actor: InvoiceActor
 ) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
+
+  // B2 guard (spec §5): a contract-sourced line may only land on an invoice in
+  // the SAME currency as its contract — no conversion, no silent restamp. This
+  // is the first source-vs-header validation; time entries/parts gain currency
+  // in wave 4 and plug into the same check.
+  if (input.sourceId) {
+    const [src] = await db.select({ currencyCode: contracts.currencyCode })
+      .from(contractLines)
+      .innerJoin(contracts, eq(contracts.id, contractLines.contractId))
+      .where(eq(contractLines.id, input.sourceId)).limit(1);
+    if (src && src.currencyCode !== inv.currencyCode) {
+      throw new InvoiceServiceError(
+        `Contract is in ${src.currencyCode}; this invoice is in ${inv.currencyCode} — contract lines cannot cross currencies`,
+        400, 'CURRENCY_MISMATCH'
+      );
+    }
+  }
 
   // Quantity is always engine-supplied (e.g. device count) — normalize but do not override.
   const quantity = String(input.quantity);

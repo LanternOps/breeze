@@ -619,7 +619,8 @@ describe('addContractLine', () => {
     (resolvePrice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       unitPrice: '99.00', taxable: true, costBasis: '45.00', taxCategory: null, source: 'item'
     });
-    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]); // B2 guard: contract currency lookup via sourceId — matches
     queueInsertAndRecompute({ id: 'l2', sourceType: 'contract', sourceId: 'cl-1', catalogItemId: 'cat-1',
       description: 'Managed endpoint', quantity: '3', unitPrice: '99.00',
       lineTotal: '297.00', taxable: true, customerVisible: true });
@@ -641,6 +642,18 @@ describe('addContractLine', () => {
     // Line uses the resolved price, not the caller-supplied 999.00
     expect(line.unitPrice).toBe('99.00');
     expect(line.lineTotal).toBe('297.00');
+  });
+
+  it('throws CURRENCY_MISMATCH (400) when the source contract currency differs from the invoice header', async () => {
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'GBP' }]);
+    queueResult([{ currencyCode: 'EUR' }]); // B2 guard: contract is EUR, invoice is GBP
+    await expect(
+      svc.addContractLine('i1', {
+        description: 'Managed services (flat)', quantity: '1', unitPrice: '500.00',
+        taxable: false, catalogItemId: null, sourceId: 'cl-1'
+      }, actor)
+    ).rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
   });
 
   it('non-catalog path: throws INVALID_AMOUNT (400) when unitPrice is negative', async () => {

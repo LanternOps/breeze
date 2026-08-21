@@ -360,8 +360,11 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
   //    (the engine has no terms param on create).
   const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
+  // B2: the invoice copies the CONTRACT's stamped currency (spec §5 snapshots
+  // rule) — never the org's current setting, which may have changed since the
+  // contract was created.
   const inv = await createManualInvoice(
-    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined },
+    { orgId: c.orgId, notes: noteParts.length ? noteParts.join('\n\n') : undefined, currencyCode: c.currencyCode },
     actor
   );
 
