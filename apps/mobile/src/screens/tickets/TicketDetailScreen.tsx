@@ -171,8 +171,16 @@ export function TicketDetailScreen() {
           applyStatusChange({
             id: ticketId,
             status: applied,
-            // The endpoint returns the custom label too; omitting it here would
-            // blank the queue row's label until the next list fetch.
+            // These are always null here, and that is not an oversight to
+            // tidy away: POST /tickets/:id/status returns the raw `tickets`
+            // row (`changeTicketStatus` in services/ticketService.ts ends in a
+            // bare `.returning()`), while statusName/statusColor exist only via
+            // the join in the list and detail GET routes. Writing them keeps
+            // the optimistic row shape consistent; the CORRECT labels come from
+            // the `load()` below.
+            //
+            // So that refetch is load-bearing, not a wasted round trip.
+            // Removing it reintroduces blank status labels.
             statusName: updated?.statusName ?? null,
             statusColor: updated?.statusColor ?? null,
           })

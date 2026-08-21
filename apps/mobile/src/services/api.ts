@@ -498,12 +498,23 @@ export async function getAlertStats(): Promise<{
 }
 
 // Devices API
-/** Server cap on `limit` (patches/helpers.ts MAX_PAGE_LIMIT). */
-const DEVICE_PAGE_LIMIT = 200;
 /**
- * Safety stop for the cursor walk. 20 pages x 200 = 4,000 devices, well beyond
- * any fleet that belongs on a phone screen, and it bounds the loop if the
- * server ever returns a non-advancing cursor.
+ * Server cap on `limit` for THIS route. `/mobile/devices` runs its query
+ * through `getPagination`, which does `Math.min(100, ...)` — it CLAMPS rather
+ * than rejecting, so asking for more is silently downgraded with nothing in the
+ * response to say so.
+ *
+ * This previously read 200, citing `patches/helpers.ts MAX_PAGE_LIMIT`. That is
+ * a different route's constant (the patches endpoints do cap at 200); the
+ * mobile route never has. The effect was a walk that read as 4,000 devices and
+ * delivered 2,000.
+ */
+const DEVICE_PAGE_LIMIT = 100;
+/**
+ * Safety stop for the cursor walk: 20 x 100 = 2,000 devices. Deliberate, not a
+ * by-product of the page size — it bounds the loop if the server ever returns a
+ * non-advancing cursor, and 2,000 is far beyond any fleet that belongs on a
+ * phone screen. Hitting it is reported rather than silently truncating.
  */
 const MAX_DEVICE_PAGES = 20;
 
@@ -534,8 +545,24 @@ export async function getDevices(orgId?: string | null): Promise<Device[]> {
     const next = response.pagination?.nextCursor ?? null;
     // Stop on a null cursor, a short page, or a cursor that did not advance —
     // the last of these would otherwise spin until the page cap.
-    if (!next || next === cursor || rows.length === 0) break;
+    if (!next || next === cursor || rows.length === 0) {
+      cursor = null;
+      break;
+    }
     cursor = next;
+  }
+
+  // Exhausting the page budget with a live cursor means the fleet is larger
+  // than the walk returns. Silently handing back a short list is the failure
+  // this cap would otherwise introduce: the caller cannot tell 2,000 devices
+  // from "the first 2,000 of more", and any client-side filter then searches a
+  // subset while looking authoritative.
+  if (cursor) {
+    Sentry.captureMessage('device walk hit its page cap; fleet is truncated', {
+      level: 'warning',
+      tags: { area: 'device-walk' },
+      extra: { returned: out.length, pageLimit: DEVICE_PAGE_LIMIT, maxPages: MAX_DEVICE_PAGES },
+    });
   }
 
   return out.map(mapDevice);

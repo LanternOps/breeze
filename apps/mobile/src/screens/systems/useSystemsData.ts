@@ -58,7 +58,9 @@ function alertOrgId(a: Alert): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
-// Fetches summary, alerts, devices, and orgs in parallel. Owns the local
+// Fetches summary, alerts, activeAlerts, devices and orgs in parallel — five,
+// matching `const total = 5` in mergeSystemsResults. Miscounting here is not
+// cosmetic: that total is the threshold for "everything failed". Owns the local
 // org-filter state so the screen reads filtered slices straight from the
 // hook. Failures keep last-known data; only the in-section error banner
 // flips.
