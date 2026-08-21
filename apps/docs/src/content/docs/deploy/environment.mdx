@@ -27,10 +27,38 @@ All configuration is done through environment variables, defined in your `.env.p
 | `POSTGRES_DB` | `breeze` | | Database name |
 | `POSTGRES_PORT` | `5432` | | PostgreSQL port |
 | `DATABASE_URL` | — | Auto | Full connection string (constructed from above in Docker) |
-| `DATABASE_URL_APP` | — | One of these three (prod) | Explicit connection string for the **unprivileged request role** (`breeze_app`). Preferred, and **required** for multi-host / high-availability `DATABASE_URL` values, which cannot be derived automatically. |
+| `DATABASE_URL_APP` | — | One of these three (prod) | Explicit connection string for the **unprivileged request role** (`breeze_app`). Preferred for direct (non-Compose) deployments and for `deploy/docker-compose.prod.yml` (managed Postgres), and **required** for multi-host / high-availability `DATABASE_URL` values, which cannot be derived automatically. **Leave it empty on the bundled root `docker-compose.yml`** — see the callout below. |
 | `BREEZE_APP_DB_PASSWORD` | — | One of these three (prod) | Password for the `breeze_app` role, used to derive its connection string from `DATABASE_URL`. |
 
 In production, Breeze runs request handlers as an unprivileged, row-level-security-enforced database role (`breeze_app`) rather than as the database owner. **The API refuses to start** unless it can configure that role — set one of `DATABASE_URL_APP`, `BREEZE_APP_DB_PASSWORD`, or `POSTGRES_PASSWORD`. This check runs whenever `NODE_ENV=production`, **including when `AUTO_MIGRATE=false`**. The API also **refuses to start if it detects it is running as a `SUPERUSER` or `BYPASSRLS` role** — if you were previously running as the `postgres` superuser, switch to a `NOSUPERUSER`/`NOBYPASSRLS` role. After doing so you may notice rows that were previously visible to a tenant "disappear"; that is row-level security working correctly, not data loss. See the [request-database-role runbook](https://github.com/LanternOps/breeze/blob/main/docs/runbooks/request-database-role.md).
+
+:::caution[Bundled Docker Compose: leave `DATABASE_URL_APP` empty]
+The bundled root `docker-compose.yml` rebuilds `DATABASE_URL` as
+`...@postgres:5432` *inside* the api container, but passes `DATABASE_URL_APP`
+through verbatim. A `localhost` value — such as the one older `.env.example`
+files shipped — therefore makes the request pool dial the **api container's own
+loopback**.
+
+On a **fresh** install, migrations and role setup still succeed (they use
+`DATABASE_URL`) and startup fails at the initial seed. The last two lines are
+illustrative Node/driver output rather than fixed Breeze strings:
+
+```
+[auto-migrate] No users found, running initial seed...
+[CRITICAL] API startup failed: AggregateError [ECONNREFUSED]
+  connect ECONNREFUSED 127.0.0.1:5432
+```
+
+On an **already-seeded** database the same misconfiguration surfaces later and
+looks completely different — `[database] Could not query the effective request
+database role.` — so an upgrading operator will not find the seed message above.
+
+Set it empty (or leave the line commented) and Breeze derives
+`breeze_app@postgres` from the container's own `DATABASE_URL`, provided
+`POSTGRES_PASSWORD` or `BREEZE_APP_DB_PASSWORD` is set — the bundled compose
+requires `POSTGRES_PASSWORD` anyway. Only set `DATABASE_URL_APP` explicitly when
+pointing at a database the api container can actually reach.
+:::
 
 ## Redis
 
