@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { BULK_ID_LIMIT } from '../constants';
+import { currencyCodeSchema } from './currency';
 
 const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
@@ -31,7 +32,7 @@ export const createContractSchema = z.object({
   // `endDate || null` and `notes.trim() || null`, matching updateContractSchema.
   endDate: isoDate.nullable().optional(),
   autoIssue: z.boolean().optional(),
-  currencyCode: z.string().length(3).optional(),
+  currencyCode: currencyCodeSchema.optional(),
   notes: z.string().max(5000).nullable().optional(),
   terms: z.string().max(5000).nullable().optional(),
   autoRenew: z.boolean().optional(),
