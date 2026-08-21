@@ -55,7 +55,7 @@ function defaultFetch(overrides: Record<string, unknown> = {}) {
     if (input.startsWith('/orgs/organizations/')) return json({ billingContact: { email: 'ap@acme.test' } });
     if (input === '/orgs/partners/me') return json({ emailSignature: '— Todd' });
     if (input.endsWith('/resend')) return json({ data: { emailed: true, recipients: ['ap@acme.test'] }, ...overrides });
-    if (input.endsWith('/pay-link')) return json({ data: { url: 'https://checkout.stripe.test/c/abc' } });
+    if (input.endsWith('/public-link')) return json({ data: { url: 'https://portal.test/portal/invoice/tok-abc' } });
     return json({ data: {} });
   });
 }
@@ -251,12 +251,14 @@ describe('InvoiceActions — re-send', () => {
   });
 });
 
-describe('InvoiceActions — copy payment link', () => {
-  it('copies the Stripe checkout URL to the clipboard', async () => {
+describe('InvoiceActions — copy invoice link', () => {
+  it('copies the durable public view-and-pay URL to the clipboard', async () => {
     render(<InvoiceActions detail={detail({}, { stripeConnected: true })} variant="header" />);
     fireEvent.click(screen.getByTestId('invoice-pay-link'));
-    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith('https://checkout.stripe.test/c/abc'));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenCalledWith('https://portal.test/portal/invoice/tok-abc'));
     expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Payment link copied to clipboard' });
+    // GET mint-or-reproduce — never the one-shot Stripe checkout POST.
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/pay-link'))).toBe(false);
   });
 
   // A blocked clipboard must still surface the URL — a silent no-op reads as a
@@ -266,14 +268,14 @@ describe('InvoiceActions — copy payment link', () => {
     render(<InvoiceActions detail={detail({}, { stripeConnected: true })} variant="header" />);
     fireEvent.click(screen.getByTestId('invoice-pay-link'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'warning', message: expect.stringContaining('https://checkout.stripe.test/c/abc'),
+      type: 'warning', message: expect.stringContaining('https://portal.test/portal/invoice/tok-abc'),
     })));
   });
 
   // A 200 with no link is a server surprise, not something to paste.
   it('errors rather than copying "undefined" when no url comes back', async () => {
     fetchMock.mockImplementation(async (input: string) => {
-      if (input.endsWith('/pay-link')) return json({ data: {} });
+      if (input.endsWith('/public-link')) return json({ data: {} });
       return json({ data: {} });
     });
     render(<InvoiceActions detail={detail({}, { stripeConnected: true })} variant="header" />);
@@ -282,19 +284,26 @@ describe('InvoiceActions — copy payment link', () => {
     expect(clipboard.writeText).not.toHaveBeenCalled();
   });
 
-  it('is hidden when Stripe is not connected', () => {
+  // The public page degrades to view+PDF without Stripe, so the link stays
+  // copyable — unlike the old one-shot Stripe checkout copy.
+  it('is visible without Stripe connected', () => {
     render(<InvoiceActions detail={detail({}, { stripeConnected: false })} variant="header" />);
-    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-pay-link')).toBeInTheDocument();
   });
 
-  // Nothing to pay → no payment link, even with Stripe connected.
-  it('is hidden once the invoice is fully paid', () => {
+  // "Send me my receipt" — a paid invoice's link stays copyable (paid state page).
+  it('stays visible once the invoice is fully paid', () => {
     render(<InvoiceActions detail={detail({ status: 'paid', amountPaid: '100.00', balance: '0.00' }, { stripeConnected: true })} variant="header" />);
-    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-pay-link')).toBeInTheDocument();
   });
 
   it('is hidden on a draft', () => {
     render(<InvoiceActions detail={detail({ status: 'draft', invoiceNumber: null, sentAt: null }, { stripeConnected: true })} variant="header" />);
+    expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
+  });
+
+  it('is hidden on a void invoice', () => {
+    render(<InvoiceActions detail={detail({ status: 'void' }, { stripeConnected: true })} variant="header" />);
     expect(screen.queryByTestId('invoice-pay-link')).not.toBeInTheDocument();
   });
 });

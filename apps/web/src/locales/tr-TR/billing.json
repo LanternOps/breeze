@@ -1408,9 +1408,11 @@
       "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
       "tooManyRecipients": "En fazla {{max}} adres.",
       "recipientRequired": "En az bir alıcı ekleyin.",
-      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın."
+      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın.",
+      "payLinkNote": "E-posta, müşterinizin bu faturayı görüntüleyebileceği, indirebileceği ve ödeyebileceği güvenli bir bağlantı içerir — oturum açma gerekmez."
     },
-    "copyPaymentLink": "Ödeme bağlantısını kopyala",
+    "copyInvoiceLink": "Fatura bağlantısını kopyala",
+    "copyInvoiceLinkTitle": "Müşterinin görüntüleme ve ödeme bağlantısını kopyalar — oturum açma gerekmez",
     "copyingPaymentLink": "Kopyalanıyor…",
     "deleteConfirm": {
       "message": "Bu, taslak faturayı kalıcı olarak siler. Bu geri alınamaz.",
@@ -1553,7 +1555,15 @@
     },
     "empty": "Bu faturada henüz satır yok.",
     "addContentInEditor": "Editör'e satır ekleme",
-    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın"
+    "linesScrollAria": "Fatura satırları — daha fazla sütun için yana doğru kaydırın",
+    "resetLink": {
+      "button": "Müşteri bağlantısını sıfırla",
+      "title": "Müşteri bağlantısı sıfırlansın mı?",
+      "description": "Mevcut bağlantıya sahip olan herkes erişimi kaybeder — daha önce gönderilen e-postalardaki bağlantı dahil. Bir sonraki gönderim veya kopyalama yeni bir bağlantı oluşturur.",
+      "confirm": "Bağlantıyı sıfırla",
+      "success": "Bağlantı sıfırlandı — önceki bağlantılar artık çalışmıyor",
+      "error": "Bağlantı sıfırlanamadı"
+    }
   },
   "invoiceDocument": {
     "billTo": "Fatura Alıcısı",

@@ -541,6 +541,45 @@ export interface PublicQuoteDetail {
   presentation?: QuotePresentation;
 }
 
+/** The public (token-gated) invoice payload — /invoices/public/:token. A VOID
+ *  invoice deliberately carries only identity fields (no amounts), so most
+ *  money fields are optional here. */
+export interface PublicInvoiceDetail {
+  invoice: {
+    id: string;
+    invoiceNumber: string | null;
+    status: InvoiceStatus;
+    /** Present only on the void payload: an updated invoice exists. */
+    replaced?: boolean;
+    currencyCode?: string;
+    issueDate?: string | null;
+    dueDate?: string | null;
+    subtotal?: string;
+    taxRate?: string | null;
+    taxTotal?: string;
+    total?: string;
+    amountPaid?: string;
+    balance?: string;
+    depositDue?: string | null;
+    billToName?: string | null;
+    notes?: string | null;
+    sellerSnapshot?: SellerSnapshot | null;
+    termsAndConditions?: string | null;
+    paidAt?: string | null;
+  };
+  lines: InvoiceLine[];
+  chargeNow: { amount: string; isDeposit: boolean } | null;
+  payable: boolean;
+  branding: {
+    partnerName: string;
+    contactEmail: string | null;
+    logoUrl: string | null;
+    primaryColor: string | null;
+    theme: string;
+    pageSize: string;
+  };
+}
+
 export interface Profile {
   id: string;
   orgId: string;
@@ -886,6 +925,42 @@ export const portalApi = {
     return apiPost<{ data: { status: string } }>(
       `/quotes/public/${encodeURIComponent(token)}/decline`,
       { reason },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  // Public, token-gated invoice access — the durable no-login view-and-pay link.
+  // These hit /invoices/public/* (NOT /portal/*): no auth cookie, and a 401 must
+  // never bounce an anonymous customer to the portal login.
+  getPublicInvoice: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicInvoiceDetail }>> => {
+    return apiGet<{ data: PublicInvoiceDetail }>(
+      `/invoices/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  payPublicInvoice: async (
+    token: string
+  ): Promise<ApiResponse<{ data: { url: string } }>> => {
+    return apiPost<{ data: { url: string } }>(
+      `/invoices/public/${encodeURIComponent(token)}/pay`,
+      {},
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
+  // session id for settlement + the canonical public page url (the return urls
+  // deliberately carry no bearer token — see the API route).
+  settlePublicReturn: async (
+    sessionId: string
+  ): Promise<ApiResponse<{ data: { settled: boolean; publicUrl: string | null } }>> => {
+    return apiPost<{ data: { settled: boolean; publicUrl: string | null } }>(
+      '/invoices/public/settle-return',
+      { sessionId },
       { redirectOnUnauthorized: false }
     );
   }

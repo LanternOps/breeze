@@ -48,6 +48,9 @@ export interface InvoiceEmailParams {
   pdfAttached?: boolean;
   /** Partner's configured plain-text signature, rendered muted under the CTA. */
   signature?: string;
+  /** True when the linked page can take payment (payable status + partner has
+   *  Stripe connected) — flips the CTA to "View & pay invoice". */
+  payEnabled?: boolean;
 }
 
 export interface PasswordResetEmailParams {
@@ -896,8 +899,8 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
       ${messageBlock}
       ${dueLine}
       ${paidLine}
-      ${renderButton('View invoice', params.portalUrl)}
-      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
+      ${renderButton(params.payEnabled ? 'View & pay invoice' : 'View invoice', params.portalUrl)}
+      <p style="${MUTED_PARA}">You can view this invoice and download a copy any time using this link — no sign-in needed.</p>
       ${signatureBlock}
   `;
   const html = renderLayout({
@@ -917,7 +920,7 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
     note || null,
     params.dueDate ? `Amount due now: ${dueNow} by ${params.dueDate}.` : `Amount due now: ${dueNow}.`,
     params.amountPaid ? `Paid to date: ${params.amountPaid} of ${params.total}.` : null,
-    `View invoice: ${params.portalUrl}`,
+    `${params.payEnabled ? 'View & pay invoice' : 'View invoice'}: ${params.portalUrl}`,
     signature || null,
     support ? `Questions about this invoice? Contact ${support}.` : null,
   ]

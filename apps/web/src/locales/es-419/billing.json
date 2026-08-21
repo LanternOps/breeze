@@ -1408,9 +1408,11 @@
       "invalidEmail": "Dirección de correo no válida: {{addresses}}",
       "tooManyRecipients": "Hasta {{max}} direcciones.",
       "recipientRequired": "Agregue al menos un destinatario.",
-      "noBillingContactHint": "Esta empresa aún no tiene contacto de facturación: <orgLink>agregue uno</orgLink> o escriba una dirección arriba."
+      "noBillingContactHint": "Esta empresa aún no tiene contacto de facturación: <orgLink>agregue uno</orgLink> o escriba una dirección arriba.",
+      "payLinkNote": "El correo incluye un enlace seguro para que tu cliente vea, descargue y pague esta factura — sin iniciar sesión."
     },
-    "copyPaymentLink": "Copiar enlace de pago",
+    "copyInvoiceLink": "Copiar enlace de la factura",
+    "copyInvoiceLinkTitle": "Copia el enlace del cliente para ver y pagar — sin iniciar sesión",
     "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esto elimina permanentemente el borrador de la factura. Esto no se puede deshacer.",
@@ -1553,7 +1555,15 @@
     },
     "empty": "Esta factura aún no tiene líneas.",
     "addContentInEditor": "Agregar líneas en el Editor",
-    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas"
+    "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas",
+    "resetLink": {
+      "button": "Restablecer enlace del cliente",
+      "title": "¿Restablecer el enlace del cliente?",
+      "description": "Quien tenga el enlace actual perderá el acceso, incluido el enlace de los correos ya enviados. El próximo envío o copia creará un enlace nuevo.",
+      "confirm": "Restablecer enlace",
+      "success": "Enlace restablecido: los enlaces anteriores ya no funcionan",
+      "error": "No se pudo restablecer el enlace"
+    }
   },
   "invoiceDocument": {
     "billTo": "Cobrar a",

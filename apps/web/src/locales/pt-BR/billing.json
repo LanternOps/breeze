@@ -1408,9 +1408,11 @@
       "invalidEmail": "Endereço de e-mail inválido: {{addresses}}",
       "tooManyRecipients": "Até {{max}} endereços.",
       "recipientRequired": "Adicione pelo menos um destinatário.",
-      "noBillingContactHint": "Esta empresa ainda não tem contato de faturamento — <orgLink>adicione um</orgLink> ou digite um endereço acima."
+      "noBillingContactHint": "Esta empresa ainda não tem contato de faturamento — <orgLink>adicione um</orgLink> ou digite um endereço acima.",
+      "payLinkNote": "O e-mail inclui um link seguro para o cliente ver, baixar e pagar esta fatura — sem login."
     },
-    "copyPaymentLink": "Copiar link de pagamento",
+    "copyInvoiceLink": "Copiar link da fatura",
+    "copyInvoiceLinkTitle": "Copia o link do cliente para ver e pagar — sem login",
     "copyingPaymentLink": "Copiando…",
     "deleteConfirm": {
       "message": "Esta ação exclui permanentemente a fatura em rascunho. Não é possível desfazê-la.",
@@ -1553,7 +1555,15 @@
     },
     "empty": "Esta fatura ainda não tem linhas.",
     "addContentInEditor": "Adicionar linhas no Editor",
-    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas"
+    "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
+    "resetLink": {
+      "button": "Redefinir link do cliente",
+      "title": "Redefinir o link do cliente?",
+      "description": "Quem tiver o link atual perderá o acesso, inclusive o link dos e-mails já enviados. O próximo envio ou cópia criará um novo link.",
+      "confirm": "Redefinir link",
+      "success": "Link redefinido — os links anteriores não funcionam mais",
+      "error": "Não foi possível redefinir o link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Faturar para",

@@ -276,17 +276,18 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     }
   }, [resending, invoice.id, neverEmailed, partiallyPaid, refresh, t]);
 
-  // Copy the customer-facing Stripe Checkout link without emailing anything —
-  // for pasting into a chat/SMS/reply by hand. Mirrors the quote's
-  // "Copy share link"; the POST mints a fresh Checkout session each time.
-  const copyPaymentLink = useCallback(async () => {
+  // Copy the customer-facing DURABLE view-and-pay link without emailing
+  // anything — for pasting into a chat/SMS/reply by hand. Mirrors the quote's
+  // "Copy share link". The GET mints-or-reproduces, so repeated copies (and the
+  // emailed CTA) all hand out the SAME url — unlike the old one-shot Stripe
+  // checkout copy, which expired in ~24h and showed no invoice.
+  const copyInvoiceLink = useCallback(async () => {
     if (copyingLink) return;
     setCopyingLink(true);
     try {
       const result = await runAction<{ data?: { url?: string } }>({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/pay-link`, { method: 'POST' }),
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/public-link`),
         errorFallback: t('invoiceDetail.payments.linkError'),
-        friendly: (code) => (code === 'STRIPE_NOT_CONNECTED' ? t('invoiceDetail.payments.connectStripe') : undefined),
         onUnauthorized: UNAUTHORIZED,
       });
       const url = result?.data?.url;
@@ -357,16 +358,17 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
   // The payment link is only meaningful while money is still owed, and only
   // exists when the partner's Stripe is connected. Mirrors the gate the
   // payments card uses for the record-payment form.
-  const canCopyPaymentLink =
+  // The durable public view-and-pay link (2026-08-21 spec §9). Unlike the old
+  // one-shot Stripe checkout copy this needs no Stripe connection (the page
+  // itself degrades to view+PDF) and stays useful on a PAID invoice ("here's
+  // your receipt"); only drafts (no link exists) and void are excluded.
+  const canCopyInvoiceLink =
     can('invoices', 'send') &&
-    detail.stripeConnected === true &&
     !isDraft &&
-    invoice.status !== 'void' &&
-    invoice.status !== 'paid' &&
-    Number(invoice.balance) > 0;
+    invoice.status !== 'void';
 
   // Nothing to show (e.g. a viewer on an issued invoice) — render no empty container.
-  if (!canIssue && !canDownload && !canDelete && !canResend && !canCopyPaymentLink) return null;
+  if (!canIssue && !canDownload && !canDelete && !canResend && !canCopyInvoiceLink) return null;
 
   const issueDisabled = issuing || !hasVisibleLines;
   // Why the money-buttons are held, if they are. 'saving' resolves on its own
@@ -467,15 +469,16 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
             {resendLabel}
           </button>
         )}
-        {canCopyPaymentLink && (
+        {canCopyInvoiceLink && (
           <button
             type="button"
-            onClick={() => void copyPaymentLink()}
+            onClick={() => void copyInvoiceLink()}
             disabled={copyingLink}
             data-testid="invoice-pay-link"
+            title={t('invoiceActions.copyInvoiceLinkTitle')}
             className={`${btnBase} border hover:bg-muted disabled:opacity-50`}
           >
-            {copyingLink ? t('invoiceActions.copyingPaymentLink') : t('invoiceActions.copyPaymentLink')}
+            {copyingLink ? t('invoiceActions.copyingPaymentLink') : t('invoiceActions.copyInvoiceLink')}
           </button>
         )}
         {/* PDF download is gated on the dedicated invoices:export permission. */}

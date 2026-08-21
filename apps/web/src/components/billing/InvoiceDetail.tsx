@@ -74,6 +74,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // Reverse-a-payment confirm: reversing is a financial mutation, so it goes
   // through a confirm step that names the specific payment.
   const [reversePayment, setReversePayment] = useState<InvoicePayment | null>(null);
+  // Reset-link confirm dialog (revokes every issued public invoice link)
+  const [resetLinkOpen, setResetLinkOpen] = useState(false);
   // Void dialog
   const [voidOpen, setVoidOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
@@ -222,6 +224,26 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       setBusy(false);
     }
   }, [busy, invoice.id, refresh, t]);
+
+  // Revoke every issued public view-and-pay link; the next send/copy dispenses
+  // a fresh url. Rare action — for a link forwarded to the wrong hands.
+  const submitResetLink = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/reset-link`, { method: 'POST' }),
+        errorFallback: t('invoiceDetail.resetLink.error'),
+        successMessage: t('invoiceDetail.resetLink.success'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setResetLinkOpen(false);
+    } catch (err) {
+      handleActionError(err, t('invoiceDetail.resetLink.error'));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, invoice.id, t]);
 
   const submitVoid = useCallback(async () => {
     if (busy || !voidReason.trim()) return;
@@ -468,6 +490,15 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               the header. */}
           <div className="space-y-2">
             {!actionsInHeader && <InvoiceActions detail={detail} onChanged={onChanged} variant="rail" />}
+            {invoice.status !== 'draft' && invoice.status !== 'void' && can('invoices', 'send') && (
+              <button
+                type="button" onClick={() => setResetLinkOpen(true)}
+                data-testid="invoice-reset-link-open"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                {t('invoiceDetail.resetLink.button')}
+              </button>
+            )}
             {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
@@ -619,6 +650,26 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         confirmLabel={t('invoiceDetail.payments.record')}
         confirmTestId="invoice-payment-confirm"
       />
+
+      {/* Reset-link confirm dialog */}
+      <Dialog open={resetLinkOpen} onClose={() => setResetLinkOpen(false)} title={t('invoiceDetail.resetLink.title')} labelledBy="invoice-reset-link-title" maxWidth="md" className="p-6">
+        <div className="space-y-4" data-testid="invoice-reset-link-dialog">
+          <div>
+            <h2 id="invoice-reset-link-title" className="text-lg font-semibold">{t('invoiceDetail.resetLink.title')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t('invoiceDetail.resetLink.description')}</p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setResetLinkOpen(false)} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted">{t('common:actions.cancel')}</button>
+            <button
+              type="button" onClick={() => void submitResetLink()} disabled={busy}
+              data-testid="invoice-reset-link-submit"
+              className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            >
+              {t('invoiceDetail.resetLink.confirm')}
+            </button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* Void dialog */}
       <Dialog open={voidOpen} onClose={() => setVoidOpen(false)} title={t('invoiceDetail.void.title')} labelledBy="invoice-void-title" maxWidth="md" className="p-6">

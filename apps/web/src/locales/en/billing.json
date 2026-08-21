@@ -1408,9 +1408,11 @@
       "invalidEmail": "Not a valid email address: {{addresses}}",
       "tooManyRecipients": "Up to {{max}} addresses.",
       "recipientRequired": "Add at least one recipient.",
-      "noBillingContactHint": "This company has no billing contact yet — <orgLink>add one</orgLink> or type an address above."
+      "noBillingContactHint": "This company has no billing contact yet — <orgLink>add one</orgLink> or type an address above.",
+      "payLinkNote": "The email includes a secure link your customer can use to view, download, and pay this invoice — no sign-in needed."
     },
-    "copyPaymentLink": "Copy payment link",
+    "copyInvoiceLink": "Copy invoice link",
+    "copyInvoiceLinkTitle": "Copies the customer's view & pay link — no sign-in needed",
     "copyingPaymentLink": "Copying…",
     "deleteConfirm": {
       "message": "This permanently deletes the draft invoice. This cannot be undone.",
@@ -1553,7 +1555,15 @@
     },
     "empty": "This invoice has no lines yet.",
     "addContentInEditor": "Add lines in the Editor",
-    "linesScrollAria": "Invoice lines — scroll sideways for more columns"
+    "linesScrollAria": "Invoice lines — scroll sideways for more columns",
+    "resetLink": {
+      "button": "Reset customer link",
+      "title": "Reset the customer link?",
+      "description": "Anyone with the current link will lose access — including the link in previously sent emails. The next send or copy creates a new link.",
+      "confirm": "Reset link",
+      "success": "Link reset — previous links no longer work",
+      "error": "Could not reset the link"
+    }
   },
   "invoiceDocument": {
     "billTo": "Bill to",
