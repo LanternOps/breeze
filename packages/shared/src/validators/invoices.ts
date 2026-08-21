@@ -97,6 +97,9 @@ export const partnerBillingSettingsSchema = z.object({
   defaultMarkupPercent: z.number().min(0).max(9999.99).multipleOf(0.01).nullable().optional(),
   // When true, hardware catalog items default to taxable when added/imported.
   autoTaxHardware: z.boolean().optional(),
+  // Auto-email the issued invoice (with its public pay link) when a quote is
+  // accepted. Default ON — see partners.auto_email_invoice_on_quote_accept.
+  autoEmailInvoiceOnQuoteAccept: z.boolean().optional(),
   // AI copy style for enrich/polish output; null reverts to the built-in house format.
   catalogAiStyle: z.string().max(2000).nullable().optional(),
   invoiceFooter: z.string().max(5000).nullable().optional(),

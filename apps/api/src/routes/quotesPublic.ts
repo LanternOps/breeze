@@ -9,15 +9,13 @@ import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
-import { acceptQuote, emitAcceptInvoiceIssued } from '../services/quoteAcceptService';
+import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../services/quoteAcceptService';
 import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
 import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
-import { InvoiceServiceError } from '../services/invoiceTypes';
 import { isQuoteExpired } from '../services/quoteExpiry';
-import { createQuotePayLink } from '../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
@@ -167,30 +165,18 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // Post-commit: emit invoice.issued + enqueue the PDF render (matches issueInvoice).
     // Fire-and-forget; a public accepter has no user id.
     await emitAcceptInvoiceIssued(res, null);
-    // Phase 3 accept→pay: mint a Stripe checkout link for the just-issued invoice and
-    // return it (the accept token is now revoked, so the URL must come back in THIS
-    // response). Runs in its own context AFTER the accept committed — it must never
-    // fail (or roll back) the accept. Distinguish EXPECTED no-pay outcomes (a $0 quote
-    // → NOTHING_TO_PAY/NOT_PAYABLE, or the partner hasn't connected Stripe) — surfaced
-    // quietly as payUrl:null — from an UNEXPECTED failure (Stripe outage, DB), which we
-    // flag as payDeferred + capture so a silently-lost payment CTA is observable rather
-    // than looking identical to "nothing to pay".
-    let payUrl: string | null = null;
-    let payDeferred = false;
-    try {
-      const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-        createQuotePayLink(claims.quoteId, { userId: null, partnerId: null, accessibleOrgIds: [claims.orgId] })));
-      payUrl = link.url;
-    } catch (err) {
-      const benign = err instanceof InvoiceServiceError
-        && (err.code === 'NOT_PAYABLE' || err.code === 'NOTHING_TO_PAY' || err.code === 'STRIPE_NOT_CONNECTED');
-      if (!benign) {
-        payDeferred = true;
-        console.error('[quotesPublic] pay-link mint failed after accept', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-      }
-    }
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, payUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
+    // Retired the one-shot Stripe payUrl (2026-08-21 spec §8): the response now
+    // carries the invoice's DURABLE public url — the confirmation page
+    // location.replace()s onto it, and it offers payment (and keeps working
+    // after the tab closes). payDeferred survives only for the mint-failure
+    // edge on an ISSUED invoice (a $0 recurring-only quote issues nothing and
+    // legitimately gets invoiceUrl:null without the flag).
+    const invoiceUrl = await resolveAcceptInvoiceUrl(res);
+    const payDeferred = res.invoiceIssued && invoiceUrl == null;
+    // Auto-email the issued invoice (public link CTA) so closing the tab is
+    // harmless — partner-gated inside, best-effort, post-commit.
+    await autoEmailAcceptedInvoice(res);
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
       if (err.code === 'RESPONSE_CONSUMED') {

@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Default: the item name is a short, generic customer-friendly name (\"Wireless Access Point\"); the description starts with the full product name, then bullet-point specs precise enough to verify an order against. Describe your own style here to override it.",
       "autoTaxHardware": "Auto-tax hardware items",
       "autoTaxHardwareHelp": "Newly imported hardware defaults to taxable.",
+      "autoEmailInvoice": "Email the invoice automatically when a quote is accepted",
+      "autoEmailInvoiceHelp": "When a customer accepts a proposal, the issued invoice is emailed right away with a secure view & pay link — no sign-in needed.",
       "currencyCode": "Currency code",
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",

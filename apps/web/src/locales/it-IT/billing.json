@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Predefinito: il nome dell'elemento è un nome breve, generico e comprensibile per il cliente (\"Access point wireless\"); la descrizione inizia con il nome completo del prodotto, poi elenca specifiche puntuali sufficienti per verificare un ordine. Descrivi qui il tuo stile per sovrascriverlo.",
       "autoTaxHardware": "Applica automaticamente l'imposta agli elementi hardware",
       "autoTaxHardwareHelp": "I nuovi hardware importati sono imponibili per impostazione predefinita.",
+      "autoEmailInvoice": "Invia automaticamente la fattura via email all'accettazione di un preventivo",
+      "autoEmailInvoiceHelp": "Quando un cliente accetta una proposta, la fattura emessa viene inviata subito via email con un link sicuro per visualizzare e pagare — senza accesso.",
       "currencyCode": "Codice valuta",
       "defaultMarkup": "Ricarico predefinito (%)",
       "defaultTaxRate": "Aliquota fiscale predefinita (%)",

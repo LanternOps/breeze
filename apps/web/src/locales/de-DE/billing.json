@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Standard: Der Artikelname ist ein kurzer, allgemeiner, kundenfreundlicher Name („Wireless Access Point“); Die Beschreibung beginnt mit dem vollständigen Produktnamen, gefolgt von stichpunktartigen Spezifikationen, die präzise genug sind, um eine Bestellung anhand dieser zu überprüfen. Beschreiben Sie hier Ihren eigenen Stil, um ihn zu überschreiben.",
       "autoTaxHardware": "Hardware-Artikel automatisch besteuern",
       "autoTaxHardwareHelp": "Neu importierte Hardware ist standardmäßig steuerpflichtig.",
+      "autoEmailInvoice": "Rechnung bei Angebotsannahme automatisch per E-Mail senden",
+      "autoEmailInvoiceHelp": "Wenn ein Kunde ein Angebot annimmt, wird die erstellte Rechnung sofort mit einem sicheren Ansichts- und Zahlungslink per E-Mail versendet — ohne Anmeldung.",
       "currencyCode": "Währungscode",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",

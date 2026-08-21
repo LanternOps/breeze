@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Predeterminado: el nombre del elemento es un nombre breve, genérico y fácil de entender para el cliente (\"Punto de acceso inalámbrico\"); la descripción comienza con el nombre completo del producto y luego incluye viñetas con especificaciones lo suficientemente precisas como para verificar un pedido. Describa su propio estilo aquí para anularlo.",
       "autoTaxHardware": "Artículos de hardware con impuestos automáticos",
       "autoTaxHardwareHelp": "El hardware recién importado está sujeto a impuestos de forma predeterminada.",
+      "autoEmailInvoice": "Enviar la factura por correo automáticamente al aceptar una cotización",
+      "autoEmailInvoiceHelp": "Cuando un cliente acepta una propuesta, la factura emitida se envía de inmediato por correo con un enlace seguro para ver y pagar — sin iniciar sesión.",
       "currencyCode": "Código de moneda",
       "defaultMarkup": "Margen predeterminado (%)",
       "defaultTaxRate": "Tasa impositiva predeterminada (%)",

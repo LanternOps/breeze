@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Par défaut : le nom de l'article est un nom court, générique et compréhensible par le client (\"Point d'accès sans fil\") ; la description commence par le nom complet du produit, puis des spécifications en puces assez précises pour vérifier une commande. Décrivez ici votre propre style pour le remplacer.",
       "autoTaxHardware": "Taxer automatiquement le matériel",
       "autoTaxHardwareHelp": "Le nouveau matériel importé est taxable par défaut.",
+      "autoEmailInvoice": "Envoyer automatiquement la facture par courriel à l'acceptation d'une soumission",
+      "autoEmailInvoiceHelp": "Lorsqu'un client accepte une proposition, la facture émise est envoyée immédiatement par courriel avec un lien sécurisé pour consulter et payer — sans connexion.",
       "currencyCode": "Code devise",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",

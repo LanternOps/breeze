@@ -1752,6 +1752,8 @@
       "aiStylePlaceholder": "Varsayılan: öğe adı kısa, genel, müşteri dostu bir addır (\"Kablosuz Erişim Noktası\"); Açıklama tam ürün adıyla başlar, ardından siparişi doğrulamaya yetecek kadar kesin olan maddeler halinde spesifikasyonlar belirtilir. Geçersiz kılmak için kendi stilinizi burada tanımlayın.",
       "autoTaxHardware": "Donanım öğelerini otomatik olarak vergilendirin",
       "autoTaxHardwareHelp": "Yeni içe aktarılan donanım varsayılan olarak vergiye tabidir.",
+      "autoEmailInvoice": "Teklif kabul edildiğinde faturayı otomatik olarak e-postayla gönder",
+      "autoEmailInvoiceHelp": "Bir müşteri teklifi kabul ettiğinde, düzenlenen fatura güvenli bir görüntüleme ve ödeme bağlantısıyla hemen e-postayla gönderilir — oturum açma gerekmez.",
       "currencyCode": "Para birimi kodu",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
