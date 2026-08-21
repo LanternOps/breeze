@@ -225,6 +225,21 @@ export function SystemsScreen() {
   const showRecent = recent.length > 0;
   const showActiveIssues = activeIssues.length > 0;
   const showActiveSkeleton = loading && activeIssues.length === 0;
+  // Every section can hide independently, and the org filter suppresses the
+  // Organizations list outright — so a filtered org with nothing outstanding
+  // rendered a completely blank page under the chip, indistinguishable from a
+  // failed load. Say what is actually true instead.
+  // Gated on error and refreshing too: with all fetches failed the hook sets
+  // loading=false with empty slices, and an ungated banner would assert
+  // "everything is clear" directly beneath the failure notice.
+  const showNothingState =
+    !loading
+    && !refreshing
+    && !error
+    && !showOrgs
+    && !showRecent
+    && !showActiveIssues
+    && !showActiveSkeleton;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0 }}>
@@ -351,6 +366,29 @@ export function SystemsScreen() {
               />
             ))}
           </>
+        ) : null}
+
+        {showNothingState ? (
+          <View style={{ paddingHorizontal: spacing[6], paddingTop: spacing[8] }}>
+            <Text
+              style={{ ...type.bodyMd, color: theme.textHi, textAlign: 'center' }}
+              accessibilityRole="text"
+            >
+              {filterOrgName ? `${filterOrgName} is all clear` : 'Everything is clear'}
+            </Text>
+            <Text
+              style={{
+                ...type.meta,
+                color: theme.textLo,
+                textAlign: 'center',
+                marginTop: spacing[2],
+              }}
+            >
+              {filterOrgName
+                ? 'No active issues for this organization. Clear the filter to see the rest of the fleet.'
+                : 'No active issues across your fleet.'}
+            </Text>
+          </View>
         ) : null}
       </ScrollView>
 

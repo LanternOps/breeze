@@ -426,8 +426,21 @@ export async function changePassword(currentPassword: string, newPassword: strin
 }
 
 // Alerts API
-export async function getAlerts(): Promise<Alert[]> {
-  const response = await request<ListResponse<MobileAlertRecord>>('/alerts/inbox');
+/**
+ * Fetch the alert inbox.
+ *
+ * Defaults to `status=active` because the inbox is a RECENCY window, not a
+ * priority one: it returns the newest non-dismissed alerts and the client asks
+ * for one page. On a real fleet the page fills with resolved low-severity
+ * noise and never reaches anything actionable — measured on a 7,023-alert
+ * tenant, all 50 rows came back `low` and 48 of them resolved, so the Systems
+ * screen rendered zero issues while 18 unacknowledged high/medium alerts sat
+ * just outside the window. Asking for active-only makes the same page carry
+ * what the screen actually renders.
+ */
+export async function getAlerts(status: 'active' | 'all' = 'active'): Promise<Alert[]> {
+  const path = status === 'active' ? '/alerts/inbox?status=active' : '/alerts/inbox';
+  const response = await request<ListResponse<MobileAlertRecord>>(path);
   return response.data.map(mapAlert);
 }
 
