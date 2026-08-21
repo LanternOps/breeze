@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { portalApi, buildPortalApiUrl, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { SignaturePanel } from './SignaturePanel';
@@ -27,7 +28,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
   if (error || !initial) {
     return (
-      <div data-testid="public-quote-error" className="mx-auto max-w-lg p-8 text-center text-destructive">
+      <div data-testid="public-quote-error" role="alert" className="mx-auto max-w-lg p-8 text-center text-destructive">
         <p className="text-sm">{error ?? 'This proposal link is invalid or has expired.'}</p>
       </div>
     );
@@ -53,13 +54,27 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
 
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
+  // Label the post-accept CTA with what Stripe will actually charge. The link is
+  // minted against the invoice this acceptance just created, so amountPaid is 0
+  // and the deposit-first rule reduces to "deposit if one is set, else the
+  // due-on-acceptance total" — computed through the shared helper so the label
+  // can't drift from the server's charge.
+  const payCharge = computeChargeNow({
+    depositDue: depositDue != null ? String(depositDue) : null,
+    amountPaid: '0.00',
+    balance: String(dueOnAcceptance),
+  });
+  const payLabel = payCharge.isDeposit
+    ? `Pay deposit ${money(payCharge.amount, currency)}`
+    : `Pay ${money(payCharge.amount, currency)}`;
+
   const statusBadge =
     status === 'accepted' || status === 'converted'
-      ? { label: 'Accepted', cls: 'bg-success/10 text-success' }
+      ? { label: 'Accepted', cls: 'bg-success/10 text-success-on-tint' }
       : status === 'declined'
-        ? { label: 'Declined', cls: 'bg-destructive/10 text-destructive' }
+        ? { label: 'Declined', cls: 'bg-destructive/10 text-destructive-on-tint' }
         : status === 'expired'
-          ? { label: 'Expired', cls: 'bg-destructive/10 text-destructive' }
+          ? { label: 'Expired', cls: 'bg-destructive/10 text-destructive-on-tint' }
           : null;
 
   const headerDates = [
@@ -87,14 +102,17 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
     setPayUrl(res.data?.data?.payUrl ?? null);
     setMsg(
       res.data?.data?.payDeferred
-        ? 'Thank you — your acceptance has been recorded. We’ll email you a payment link shortly.'
-        : 'Thank you — your acceptance has been recorded.'
+        ? 'Thank you. Your acceptance has been recorded and we’ll email you a payment link shortly.'
+        : 'Thank you. Your acceptance has been recorded.'
     );
   };
 
-  const decline = async () => {
+  // The reason comes from SignaturePanel's inline confirm block, which is the only
+  // path that reaches here. It used to come from window.prompt(), whose null on
+  // Cancel/Escape was coerced to undefined and fell straight through to the API —
+  // so backing out of the prompt declined the proposal anyway.
+  const decline = async (reason?: string) => {
     if (busy) return;
-    const reason = window.prompt('Optionally, tell us why:') ?? undefined;
     setBusy(true);
     setMsg(null);
     setMsgError(false);
@@ -235,7 +253,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       </DocumentPaper>
 
       {status === 'converted' && (
-        <div data-testid="public-quote-accepted" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success">
+        <div data-testid="public-quote-accepted" role="status" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
           <p>{msg ?? 'This proposal has already been accepted.'}</p>
           {payUrl && (
             <a
@@ -243,19 +261,20 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
               data-testid="public-quote-pay"
               className="inline-flex rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
             >
-              Pay now
+              {payLabel}
             </a>
           )}
         </div>
       )}
       {status === 'declined' && msg && (
-        <div className="rounded-md bg-muted p-3 text-sm">{msg}</div>
+        <div role="status" className="rounded-md bg-muted p-3 text-sm">{msg}</div>
       )}
       {open && msg && (
         <div
+          role={msgError ? 'alert' : 'status'}
           className={cn(
             'rounded-md p-3 text-sm',
-            msgError ? 'bg-destructive/10 text-destructive' : 'bg-muted'
+            msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
           )}
         >
           {msg}
@@ -265,7 +284,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       {open && (
         <SignaturePanel
           onAccept={(signerName) => void accept(signerName)}
-          onDecline={() => void decline()}
+          onDecline={(reason) => void decline(reason)}
           busy={busy}
           testIdPrefix="public-quote"
         />

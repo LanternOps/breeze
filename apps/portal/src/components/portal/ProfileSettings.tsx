@@ -107,7 +107,7 @@ export function ProfileSettings() {
         <div className="border-b p-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <User className="h-5 w-5 text-primary" />
+              <User className="h-5 w-5 text-primary-on-tint" />
             </div>
             <div>
               <h2 className="text-lg font-semibold">Profile Information</h2>
@@ -118,16 +118,30 @@ export function ProfileSettings() {
           </div>
         </div>
 
-        <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="p-6">
+        {/* method="post" is a pre-hydration safety net: if the island fails to
+            hydrate, a native submit must never be a GET that puts field values
+            in the URL / browser history / access logs (#2868). Once hydrated,
+            react-hook-form's handleSubmit preventDefaults and fetch() takes over. */}
+        <form
+          method="post"
+          onSubmit={profileForm.handleSubmit(onProfileSubmit)}
+          className="p-6"
+        >
           {profileError && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+            >
               <AlertCircle className="h-4 w-4" />
               {profileError}
             </div>
           )}
 
           {profileSuccess && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success">
+            <div
+              role="status"
+              className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success-on-tint"
+            >
               <CheckCircle className="h-4 w-4" />
               Profile updated successfully
             </div>
@@ -144,6 +158,11 @@ export function ProfileSettings() {
               <input
                 id="name"
                 type="text"
+                autoComplete="name"
+                aria-invalid={!!profileForm.formState.errors.name}
+                aria-describedby={
+                  profileForm.formState.errors.name ? 'name-error' : undefined
+                }
                 {...profileForm.register('name')}
                 className={cn(
                   'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
@@ -152,7 +171,7 @@ export function ProfileSettings() {
                 )}
               />
               {profileForm.formState.errors.name && (
-                <p className="mt-1 text-sm text-destructive">
+                <p id="name-error" role="alert" className="mt-1 text-sm text-destructive">
                   {profileForm.formState.errors.name.message}
                 </p>
               )}
@@ -168,6 +187,11 @@ export function ProfileSettings() {
               <input
                 id="email"
                 type="email"
+                autoComplete="email"
+                aria-invalid={!!profileForm.formState.errors.email}
+                aria-describedby={
+                  profileForm.formState.errors.email ? 'email-error' : undefined
+                }
                 {...profileForm.register('email')}
                 className={cn(
                   'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
@@ -176,7 +200,7 @@ export function ProfileSettings() {
                 )}
               />
               {profileForm.formState.errors.email && (
-                <p className="mt-1 text-sm text-destructive">
+                <p id="email-error" role="alert" className="mt-1 text-sm text-destructive">
                   {profileForm.formState.errors.email.message}
                 </p>
               )}
@@ -205,7 +229,7 @@ export function ProfileSettings() {
         <div className="border-b p-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <Lock className="h-5 w-5 text-primary" />
+              <Lock className="h-5 w-5 text-primary-on-tint" />
             </div>
             <div>
               <h2 className="text-lg font-semibold">Change Password</h2>
@@ -216,16 +240,30 @@ export function ProfileSettings() {
           </div>
         </div>
 
-        <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="p-6">
+        {/* method="post" matters most here: without it an unhydrated island
+            submits natively as a GET, putting the current AND new password in
+            the URL, browser history, the Referer header and server access logs
+            (#2868). Same guard as AcceptInviteForm. */}
+        <form
+          method="post"
+          onSubmit={passwordForm.handleSubmit(onPasswordSubmit)}
+          className="p-6"
+        >
           {passwordError && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+            >
               <AlertCircle className="h-4 w-4" />
               {passwordError}
             </div>
           )}
 
           {passwordSuccess && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success">
+            <div
+              role="status"
+              className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success-on-tint"
+            >
               <CheckCircle className="h-4 w-4" />
               Password changed successfully
             </div>
@@ -242,6 +280,13 @@ export function ProfileSettings() {
               <input
                 id="currentPassword"
                 type="password"
+                autoComplete="current-password"
+                aria-invalid={!!passwordForm.formState.errors.currentPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.currentPassword
+                    ? 'currentPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('currentPassword')}
                 className={cn(
                   'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
@@ -251,7 +296,11 @@ export function ProfileSettings() {
                 )}
               />
               {passwordForm.formState.errors.currentPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="currentPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive"
+                >
                   {passwordForm.formState.errors.currentPassword.message}
                 </p>
               )}
@@ -267,6 +316,13 @@ export function ProfileSettings() {
               <input
                 id="newPassword"
                 type="password"
+                autoComplete="new-password"
+                aria-invalid={!!passwordForm.formState.errors.newPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.newPassword
+                    ? 'newPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('newPassword')}
                 className={cn(
                   'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
@@ -275,7 +331,11 @@ export function ProfileSettings() {
                 )}
               />
               {passwordForm.formState.errors.newPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="newPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive"
+                >
                   {passwordForm.formState.errors.newPassword.message}
                 </p>
               )}
@@ -291,6 +351,13 @@ export function ProfileSettings() {
               <input
                 id="confirmPassword"
                 type="password"
+                autoComplete="new-password"
+                aria-invalid={!!passwordForm.formState.errors.confirmPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.confirmPassword
+                    ? 'confirmPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('confirmPassword')}
                 className={cn(
                   'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
@@ -300,7 +367,11 @@ export function ProfileSettings() {
                 )}
               />
               {passwordForm.formState.errors.confirmPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="confirmPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive"
+                >
                   {passwordForm.formState.errors.confirmPassword.message}
                 </p>
               )}

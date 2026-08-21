@@ -4,7 +4,7 @@
 // accent comes from the partner's brand color (portal branding.primaryColor)
 // with the app primary as the fallback. Mirrors the dashboard's QuoteDocument so
 // staff preview and customer view match.
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { sellerLines } from '@/lib/sellerLines';
 
 export interface DocSeller {
@@ -15,22 +15,27 @@ export interface DocSeller {
   website: string | null;
 }
 
-function accentVars(primaryColor?: string | null): CSSProperties {
-  return { ['--doc-accent']: primaryColor || 'hsl(var(--primary))' } as CSSProperties;
-}
-
-/** The bordered document card with a partner-accent top rule. */
+/** The bordered document card with a partner-accent top rule.
+ *
+ *  `primaryColor` is accepted but no longer applied here. The accent is a
+ *  runtime per-partner value, and the portal's production CSP sets
+ *  `style-src-attr 'none'` (lib/csp.ts), so carrying it on a `style` attribute
+ *  meant the accent rule, the eyebrow and the hero figures all rendered
+ *  unstyled in production while looking perfect in dev, where the CSP header is
+ *  dropped. `--doc-accent` now arrives from a nonced <style> element emitted by
+ *  the layout (lib/docAccent.ts) and is consumed through the `.doc-accent-*`
+ *  classes, which are ordinary stylesheet rules. The prop stays so callers keep
+ *  compiling and so the value still documents intent at the call site. */
 export function DocumentPaper({
-  primaryColor, children, testId, docTheme,
+  children, testId, docTheme,
 }: { primaryColor?: string | null; children: ReactNode; testId?: string; docTheme?: string | null }) {
   return (
     <div
       data-testid={testId}
       data-doc-theme={docTheme ?? 'classic'}
-      style={accentVars(primaryColor)}
       className="overflow-hidden rounded-xl border bg-card shadow-xs"
     >
-      <div className="h-1.5 w-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
+      <div className="doc-accent-bg h-1.5 w-full" aria-hidden />
       <div className="space-y-10 px-4 py-7 sm:px-10 sm:py-9">{children}</div>
     </div>
   );
@@ -59,7 +64,7 @@ export function DocumentHeader({
       <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-3">
           {logoUrl ? (
-            <img src={logoUrl} alt={partnerName ?? ''} className="h-11 w-auto max-w-[220px] object-contain" />
+            <img src={logoUrl} alt={partnerName || 'Company logo'} className="h-11 w-auto max-w-[220px] object-contain" />
           ) : partnerName ? (
             <p className="text-xl font-semibold tracking-tight text-foreground">{partnerName}</p>
           ) : null}
@@ -75,8 +80,10 @@ export function DocumentHeader({
         </div>
 
         <div className="space-y-2 sm:text-right">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--doc-accent)' }}>{eyebrow}</p>
-          <p className="text-2xl font-semibold tracking-tight text-foreground">{title}</p>
+          <p className="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">{eyebrow}</p>
+          {/* The document number is the page's primary heading. It was a <p>,
+              which left every proposal and invoice with no <h1> of its own. */}
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
           {statusLabel && (
             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusClass ?? 'bg-muted text-muted-foreground'}`}>
               {statusLabel}

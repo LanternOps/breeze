@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { invoices, invoiceStripePayments } from '../../db/schema';
+import { invoices, invoiceStripePayments, partners } from '../../db/schema';
+import { portalBranding } from '../../db/schema/portal';
 import { listSchema, ticketParamSchema } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -103,7 +104,31 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal] markViewed failed', { invoiceId: id, orgId: auth.user.orgId, err });
   }
 
-  return c.json({ invoice: result.invoice, lines: result.lines.map(toCustomerInvoiceLine) });
+  // Branding parity with GET /portal/quotes/:id. Without it the customer got a
+  // brand-accented proposal and a generic unbranded invoice from the same
+  // company in the same session, because InvoiceDetailView had nothing to pass
+  // to DocumentPaper/DocumentHeader.
+  //
+  // `partners` is a partner-axis RLS table invisible to this org scope (#1375
+  // class — 0 rows, no error), so the name reads under SYSTEM scope exactly as
+  // portal/quotes.ts does; portal_branding is org-scoped and reads fine here.
+  const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({ name: partners.name }).from(partners).where(eq(partners.id, result.invoice.partnerId)).limit(1)));
+  const [brand] = await db
+    .select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, auth.user.orgId))
+    .limit(1);
+
+  return c.json({
+    invoice: result.invoice,
+    lines: result.lines.map(toCustomerInvoiceLine),
+    branding: {
+      partnerName: partner?.name ?? null,
+      logoUrl: brand?.logoUrl ?? null,
+      primaryColor: brand?.primaryColor ?? null,
+    },
+  });
 });
 
 // GET /portal/invoices/:id/pdf — stream the stored PDF (render on demand if absent).

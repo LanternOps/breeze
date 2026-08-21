@@ -6,6 +6,9 @@ import { z } from 'zod';
 import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { buildPortalApiUrl } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { usePortalAuth } from '@/lib/auth';
+import { navigateTo } from '@/lib/navigation';
+import { safeNextPath } from '@/lib/nextPath';
 
 const acceptInviteSchema = z
   .object({
@@ -36,6 +39,12 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   // button stays disabled so the browser can never perform a native form
   // submit that would serialize the password fields into the URL (#2868).
   const [hydrated, setHydrated] = useState(false);
+
+  const { login } = usePortalAuth();
+  const nextParam =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('next')
+      : null;
 
   useEffect(() => {
     setHydrated(true);
@@ -68,6 +77,21 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
         return;
       }
 
+      // The API has ALREADY signed this customer in: /portal/auth/accept-invite
+      // calls setPortalSessionCookies and returns the user + tokens, and this
+      // fetch uses credentials:'include', so the session cookie is in the
+      // browser by now. The old success screen threw that away and sent them to
+      // /login to retype the password they created seconds earlier, at the
+      // single highest-drop-off moment in the product. Hydrate the store and
+      // take them where they were going.
+      if (result.user && result.tokens) {
+        login(result.user, result.tokens);
+        await navigateTo(safeNextPath(nextParam) ?? '/quotes', { replace: true });
+        return;
+      }
+
+      // No user payload (an older API build): fall back to the manual sign-in
+      // screen rather than stranding them on a spinner.
       setSuccess(true);
     } catch (err) {
       console.error('[AcceptInviteForm] Request failed:', err);
@@ -82,7 +106,7 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
       <div className="space-y-6">
         <div className="flex flex-col items-center gap-4 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <AlertCircle className="h-6 w-6 text-destructive" />
+            <AlertCircle className="h-6 w-6 text-destructive-on-tint" />
           </div>
           <div>
             <h3 className="text-lg font-medium">Invalid invite link</h3>
@@ -100,13 +124,12 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
       <div className="space-y-6">
         <div className="flex flex-col items-center gap-4 text-center">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
-            <CheckCircle className="h-6 w-6 text-success" />
+            <CheckCircle className="h-6 w-6 text-success-on-tint" />
           </div>
           <div>
             <h3 className="text-lg font-medium">Account activated</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Your password has been set and your account is now active. You can
-              now sign in.
+              Your password is set and your account is active.
             </p>
           </div>
         </div>

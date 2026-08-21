@@ -2,6 +2,9 @@
 import { hasPortalSessionCookie } from '../lib/session';
 import { withBase } from '../lib/basePath';
 
-const target = hasPortalSessionCookie(Astro.request) ? '/devices' : '/login';
+// A customer comes here to approve a proposal or pay a bill; /devices is a
+// read-only technician inventory and used to be the landing page. Keep in step
+// with DEFAULT_LANDING in src/middleware.ts.
+const target = hasPortalSessionCookie(Astro.request) ? '/quotes' : '/login';
 return Astro.redirect(withBase(target), 302);
 ---

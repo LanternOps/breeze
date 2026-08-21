@@ -13,6 +13,6 @@ if (response.statusCode === 401) {
 }
 ---
 
-<PortalLayout title="Invoice">
+<PortalLayout title="Invoice" docAccent={response.data?.branding?.primaryColor}>
   <InvoiceDetailView detail={response.data ?? null} error={response.error} client:load />
 </PortalLayout>

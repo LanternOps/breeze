@@ -1,10 +1,26 @@
 import { defineMiddleware } from 'astro:middleware';
+import { randomBytes } from 'node:crypto';
 import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
 
-const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile'];
+// Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
+// rendered server-side for an unauthenticated visitor and only failed at the API
+// call — the 401 branch inside each page. Guarding them in the middleware keeps
+// the deep-link redirect (below) consistent across every protected route.
+const protectedPrefixes = ['/devices', '/tickets', '/assets', '/profile', '/quotes', '/invoices'];
 const authOnlyPaths = new Set(['/login', '/forgot-password']);
+
+/** Where a signed-in customer belongs. They come to read a proposal or pay a
+ *  bill; `/devices` is a technician's inventory and was the old landing page. */
+const DEFAULT_LANDING = '/quotes';
+
+/** Build `/login?next=<path>` so an emailed deep link survives the auth wall. */
+function loginWithNext(pathname: string, search: string): string {
+  const target = `${pathname}${search}`;
+  if (pathname === '/' || pathname === DEFAULT_LANDING) return withBase('/login');
+  return withBase(`/login?next=${encodeURIComponent(target)}`);
+}
 
 function isProtectedPath(pathname: string): boolean {
   return protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
@@ -41,16 +57,21 @@ export const onRequest = defineMiddleware(async (context, next) => {
   const pathname = stripBase(rawPathname);
   const hasSession = hasPortalSessionCookie(context.request);
 
+  // Per-request nonce for the single runtime-themed `<style>` element the
+  // proposal/invoice documents emit (partner accent colour). Generated before
+  // `next()` so pages can read it off locals while rendering.
+  context.locals.cspNonce = randomBytes(16).toString('base64');
+
   if (pathname === '/') {
-    return context.redirect(withBase(hasSession ? '/devices' : '/login'), 302);
+    return context.redirect(withBase(hasSession ? DEFAULT_LANDING : '/login'), 302);
   }
 
   if (isProtectedPath(pathname) && !hasSession) {
-    return context.redirect(withBase('/login'), 302);
+    return context.redirect(loginWithNext(pathname, context.url.search), 302);
   }
 
   if (hasSession && authOnlyPaths.has(pathname)) {
-    return context.redirect(withBase('/devices'), 302);
+    return context.redirect(withBase(DEFAULT_LANDING), 302);
   }
 
   const response = await next();
@@ -68,7 +89,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
     existingCsp: headers.get('Content-Security-Policy'),
     isDev,
     strictDev: readFlag('CSP_STRICT_DEV'),
-    fallback: buildFallbackCspDirectives({ isDev })
+    fallback: buildFallbackCspDirectives({ isDev }),
+    styleNonce: context.locals.cspNonce
   });
   if (decision.action === 'delete') {
     headers.delete('Content-Security-Policy');

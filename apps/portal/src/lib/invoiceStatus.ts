@@ -14,12 +14,19 @@ export const STATUS_LABELS: Record<InvoiceStatus, string> = {
 
 // Keyed by the SSOT InvoiceStatus (not a switch/default) so adding a status is a
 // compile error here rather than silently falling through to the muted style.
+//
+// Amber is reserved for states the customer should actually act on (overdue,
+// partially paid). 'sent' is informational: a freshly issued invoice that isn't
+// due for another 30 days must not read as a warning to the person who owes it.
+//
+// Foregrounds use the `-on-tint` tokens because the base status tokens are tuned
+// as backgrounds and fail WCAG AA when placed on their own /10 tint.
 const STATUS_COLORS: Record<InvoiceStatus, string> = {
   draft: 'bg-muted text-muted-foreground',
-  sent: 'bg-warning/10 text-warning',
-  partially_paid: 'bg-warning/10 text-warning',
-  overdue: 'bg-destructive/10 text-destructive',
-  paid: 'bg-success/10 text-success',
+  sent: 'bg-primary/10 text-primary-on-tint',
+  partially_paid: 'bg-warning/10 text-warning-on-tint',
+  overdue: 'bg-destructive/10 text-destructive-on-tint',
+  paid: 'bg-success/10 text-success-on-tint',
   void: 'bg-muted text-muted-foreground',
 };
 

@@ -99,3 +99,43 @@ describe('buildFallbackCspDirectives', () => {
     expect(csp).toContain('wss://api.example.com');
   });
 });
+
+describe('resolvePortalCspHeader — runtime style nonce', () => {
+  const base = { existingCsp: "default-src 'self'; style-src 'self'", isDev: false, strictDev: false, fallback: 'x' };
+
+  it('keeps banning inline style ATTRIBUTES even when a nonce is present', () => {
+    // The nonce exists for one <style> ELEMENT (the partner brand accent). It
+    // must never be read as licence to reopen style attributes, which is what
+    // silently broke the accent in production in the first place.
+    const decision = resolvePortalCspHeader({ ...base, styleNonce: 'abc123' });
+    expect(decision).toMatchObject({ action: 'set' });
+    const value = (decision as { value: string }).value;
+    expect(value).toContain("style-src-attr 'none'");
+    expect(value).not.toContain("'unsafe-inline'");
+  });
+
+  it('allows the nonced style element', () => {
+    const decision = resolvePortalCspHeader({ ...base, styleNonce: 'abc123' });
+    expect((decision as { value: string }).value).toContain("style-src-elem 'self' 'nonce-abc123'");
+  });
+
+  it('adds no style-src-elem when no nonce was generated', () => {
+    const decision = resolvePortalCspHeader(base);
+    expect((decision as { value: string }).value).not.toContain('style-src-elem');
+  });
+
+  it('does not clobber a style-src-elem the upstream policy already set', () => {
+    const decision = resolvePortalCspHeader({
+      ...base,
+      existingCsp: "default-src 'self'; style-src-elem 'self' 'sha256-abc'",
+      styleNonce: 'abc123',
+    });
+    const value = (decision as { value: string }).value;
+    expect(value.match(/style-src-elem/g)).toHaveLength(1);
+    expect(value).toContain("'sha256-abc'");
+  });
+
+  it('still drops the header entirely in plain dev', () => {
+    expect(resolvePortalCspHeader({ ...base, isDev: true, styleNonce: 'abc123' })).toEqual({ action: 'delete' });
+  });
+});

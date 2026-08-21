@@ -7,6 +7,7 @@ import { Loader2, AlertCircle } from 'lucide-react';
 import { portalLogin, usePortalAuth } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
+import { safeNextPath } from '@/lib/nextPath';
 
 const loginSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -36,7 +37,12 @@ export function LoginForm() {
 
     if (result.success && result.user && result.tokens) {
       login(result.user, result.tokens);
-      await navigateTo('/devices', { replace: true });
+      // Return the customer to whatever they originally clicked. Emailed
+      // invoice/proposal links are the main way into this portal, and the
+      // login wall used to discard them and land everyone on /devices — a
+      // technician's inventory, which is not why a customer is here.
+      const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
+      await navigateTo(next ?? '/quotes', { replace: true });
     } else {
       setError(result.error || 'Login failed');
     }
@@ -45,9 +51,15 @@ export function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    // method="post" is a pre-hydration safety net: if the island fails to
+    // hydrate, a native submit must never be a GET that puts the password in
+    // the URL / browser history / access logs (#2868). Once hydrated,
+    // react-hook-form's handleSubmit preventDefaults and fetch() takes over.
+    // AcceptInviteForm has carried this guard for a while; the other password
+    // forms never got it.
+    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6">
       {error && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
           {error}
         </div>
@@ -107,7 +119,7 @@ export function LoginForm() {
             id="remember-me"
             name="remember-me"
             type="checkbox"
-            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            className="h-4 w-4 rounded border-input text-primary focus:ring-primary"
           />
           <label
             htmlFor="remember-me"

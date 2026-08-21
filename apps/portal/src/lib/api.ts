@@ -401,6 +401,10 @@ export interface InvoiceDetail {
     termsAndConditions?: string | null;
   };
   lines: InvoiceLine[];
+  /** Partner branding for the document shell, matching QuoteDetail. Optional:
+   *  older API responses and fixtures predate it, in which case the view falls
+   *  back to GET /portal/branding. */
+  branding?: QuoteBranding;
 }
 
 export type QuoteStatus =
@@ -518,6 +522,11 @@ export interface QuoteBranding {
   partnerName: string;
   logoUrl: string | null;
   primaryColor: string | null;
+  /** The MSP's published support contact, so the PUBLIC proposal page can offer
+   *  a prospect a way to reach the company asking them to sign. Optional: older
+   *  API responses and fixtures predate these fields. */
+  supportEmail?: string | null;
+  supportPhone?: string | null;
 }
 
 export interface QuoteDetail {

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { cn } from '@/lib/utils';
 
 const SIGNATURE_FONT = '"Snell Roundhand", "Brush Script MT", "Segoe Script", "Apple Chancery", cursive';
 
@@ -11,7 +12,8 @@ function today(): string {
 interface SignaturePanelProps {
   /** Called with the typed signer name once name + agreement are provided. */
   onAccept: (signerName: string) => void | Promise<void>;
-  onDecline: () => void;
+  /** Called ONLY after the customer confirms the inline decline block. */
+  onDecline: (reason?: string) => void;
   busy: boolean;
   /** Prefixes the data-testids so existing public/authed selectors keep working. */
   testIdPrefix: string;
@@ -24,20 +26,35 @@ interface SignaturePanelProps {
  * name flows to the accept endpoint (name + IP + timestamp are recorded server
  * side in quote_acceptances). Shared by the public link and the authed portal so
  * both sign identically.
+ *
+ * Declining is a second, confirmed step. It used to fire straight from the
+ * Decline button via window.prompt(), which returns null on Cancel/Escape — so
+ * backing out of the prompt still declined the proposal irreversibly. The
+ * confirm block below is the only path to onDecline().
  */
 export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: SignaturePanelProps) {
   const [name, setName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
+  const [declining, setDeclining] = useState(false);
+  const [declineReason, setDeclineReason] = useState('');
   const date = useMemo(() => today(), []);
 
   const trimmed = name.trim();
   const canSign = trimmed.length > 0 && agreed && !busy;
+  const hintId = `${testIdPrefix}-sign-hint`;
+  const showHint = touched && !canSign && !busy;
 
   const submit = () => {
     setTouched(true);
     if (!canSign) return;
     void onAccept(trimmed);
+  };
+
+  const confirmDecline = () => {
+    if (busy) return;
+    const reason = declineReason.trim();
+    onDecline(reason.length > 0 ? reason : undefined);
   };
 
   return (
@@ -70,7 +87,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
             style={{ fontFamily: SIGNATURE_FONT }}
             className="text-3xl leading-none text-foreground"
           >
-            {trimmed || ' '}
+            {trimmed || ' '}
           </span>
         </div>
         <div className="mt-2 flex items-center justify-between text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -96,32 +113,99 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
         </span>
       </label>
 
-      {touched && !canSign && !busy && (
-        <p className="mt-2 text-xs text-destructive" data-testid={`${testIdPrefix}-sign-hint`}>
+      {showHint && (
+        <p
+          id={hintId}
+          role="alert"
+          className="mt-2 text-xs text-destructive"
+          data-testid={`${testIdPrefix}-sign-hint`}
+        >
           {trimmed.length === 0 ? 'Please type your full name to sign.' : 'Please confirm you agree to the terms.'}
         </p>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-3">
-        <button
-          type="button"
-          data-testid={`${testIdPrefix}-accept`}
-          onClick={submit}
-          disabled={!canSign}
-          className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
+      {declining ? (
+        <div
+          className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 p-4"
+          data-testid={`${testIdPrefix}-decline-panel`}
         >
-          {busy ? 'Working…' : 'Accept & sign'}
-        </button>
-        <button
-          type="button"
-          data-testid={`${testIdPrefix}-decline`}
-          onClick={() => onDecline()}
-          disabled={busy}
-          className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
-        >
-          Decline
-        </button>
-      </div>
+          <h4 className="text-sm font-semibold text-destructive-on-tint">Decline this proposal?</h4>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            This tells the sender you are not going ahead. You cannot accept the proposal afterwards.
+          </p>
+
+          <div className="mt-3 space-y-1.5">
+            <label htmlFor={`${testIdPrefix}-decline-reason`} className="text-xs font-medium text-foreground">
+              Let them know why (optional)
+            </label>
+            <textarea
+              id={`${testIdPrefix}-decline-reason`}
+              data-testid={`${testIdPrefix}-decline-reason`}
+              value={declineReason}
+              onChange={(e) => setDeclineReason(e.target.value)}
+              disabled={busy}
+              rows={3}
+              className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-hidden transition focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+            />
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              data-testid={`${testIdPrefix}-decline-confirm`}
+              onClick={confirmDecline}
+              disabled={busy}
+              className="inline-flex items-center justify-center rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {busy ? 'Working…' : 'Yes, decline'}
+            </button>
+            <button
+              type="button"
+              data-testid={`${testIdPrefix}-decline-cancel`}
+              onClick={() => setDeclining(false)}
+              disabled={busy}
+              // Focus lands on the safe option, so Enter/Space on arrival backs
+              // out rather than declining.
+              autoFocus
+              className="inline-flex items-center justify-center rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+            >
+              Keep reviewing
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            type="button"
+            data-testid={`${testIdPrefix}-accept`}
+            onClick={submit}
+            // Deliberately NOT `disabled={!canSign}`: a disabled button takes no
+            // focus and no click, so submit()'s setTouched(true) could never run
+            // from here and the hint above only ever appeared via the name
+            // field's onBlur. A keyboard user tabbed past Accept to Decline
+            // without ever learning what was missing. Stay reachable, refuse in
+            // submit(), and point at the hint.
+            aria-disabled={!canSign}
+            aria-describedby={showHint ? hintId : undefined}
+            disabled={busy}
+            className={cn(
+              'inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90',
+              !canSign && 'opacity-50'
+            )}
+          >
+            {busy ? 'Working…' : 'Accept & sign'}
+          </button>
+          <button
+            type="button"
+            data-testid={`${testIdPrefix}-decline`}
+            onClick={() => setDeclining(true)}
+            disabled={busy}
+            className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:opacity-50"
+          >
+            Decline
+          </button>
+        </div>
+      )}
     </div>
   );
 }

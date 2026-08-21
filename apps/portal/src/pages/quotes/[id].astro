@@ -13,6 +13,6 @@ if (response.statusCode === 401) {
 }
 ---
 
-<PortalLayout title="Proposal">
+<PortalLayout title="Proposal" docAccent={response.data?.data?.branding?.primaryColor}>
   <QuoteDetailView detail={response.data?.data ?? null} error={response.error} client:load />
 </PortalLayout>

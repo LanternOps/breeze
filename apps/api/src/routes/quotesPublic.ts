@@ -61,7 +61,11 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
       const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
       const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+      // supportEmail/supportPhone travel with the branding so the public
+      // proposal page can tell a prospect how to reach the company asking them
+      // to sign. Both are the MSP's own published contact details, already
+      // surfaced to signed-in customers by /portal/branding.
+      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
       // authenticated counterpart at portal/quotes.ts:48.
       try { await markQuoteViewed(quote.id, quote.orgId); } catch (err) { console.error('[quotesPublic] quote markViewed failed', { id: quote.id, err }); }
@@ -81,6 +85,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
       return { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
         partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+        supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
         theme, pageSize,
       }, presentation: toPublicQuotePresentation(theme, pageSize) };
     }));

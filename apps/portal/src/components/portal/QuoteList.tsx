@@ -8,6 +8,14 @@ interface QuoteListProps {
   error?: string | null;
 }
 
+// Below `sm` the row reflows from a table row into a stacked card — proposals are
+// usually opened on a phone from an email, where the old `overflow-hidden` wrapper
+// clipped the rightmost columns with no scrollbar. At `sm` and up the real table
+// semantics come back. One DOM tree either way, so data-testids stay unique.
+const ROW = 'flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 hover:bg-muted/50 sm:table-row sm:p-0';
+const CELL = 'block sm:table-cell sm:px-4 sm:py-3';
+const TH = 'px-4 py-3 text-sm font-medium text-muted-foreground';
+
 // 'converted' is shown to the customer as 'Accepted' — the conversion to an
 // invoice is an internal detail; from the prospect's point of view they accepted.
 const STATUS_LABELS: Record<string, string> = {
@@ -19,17 +27,23 @@ const STATUS_LABELS: Record<string, string> = {
   converted: 'Accepted',
 };
 
+// Foregrounds use the `-on-tint` tokens: the base status tokens are tuned as
+// backgrounds and fail WCAG AA when set on their own /10 tint.
 function statusColor(status: string): string {
   switch (status) {
     case 'accepted':
     case 'converted':
-      return 'bg-success/10 text-success';
+      return 'bg-success/10 text-success-on-tint';
     case 'declined':
     case 'expired':
-      return 'bg-destructive/10 text-destructive';
+      return 'bg-destructive/10 text-destructive-on-tint';
+    // Informational, not a warning. A proposal that has merely been sent or
+    // opened needs nothing from the customer yet; amber read as "something is
+    // wrong" on the recipient's own list. Same inversion fixed in
+    // lib/invoiceStatus.ts for a freshly issued invoice.
     case 'viewed':
     case 'sent':
-      return 'bg-warning/10 text-warning';
+      return 'bg-primary/10 text-primary-on-tint';
     default:
       return 'bg-muted text-muted-foreground';
   }
@@ -55,7 +69,7 @@ function shortDate(value: string | null): string {
 export function QuoteList({ quotes, error }: QuoteListProps) {
   if (error) {
     return (
-      <div className="rounded-md bg-destructive/10 p-4 text-center text-destructive">
+      <div role="alert" className="rounded-md bg-destructive/10 p-4 text-center text-destructive-on-tint">
         <AlertCircle className="mx-auto h-8 w-8" />
         <p className="mt-2">{error}</p>
       </div>
@@ -81,36 +95,50 @@ export function QuoteList({ quotes, error }: QuoteListProps) {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border">
-          <table className="w-full">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Number</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Issued</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Valid until</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">Total</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {quotes.map((q) => (
-                <tr key={q.id} data-testid={`quote-row-${q.id}`} className="hover:bg-muted/50">
-                  <td className="px-4 py-3">
-                    <a className="font-medium hover:underline" href={withBase(`/quotes/${q.id}`)}>
-                      {q.quoteNumber ?? q.id.slice(0, 8)}
-                    </a>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{shortDate(q.issueDate)}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{shortDate(q.expiryDate)}</td>
-                  <td className="px-4 py-3 text-right text-sm">{money(q.total, q.currencyCode)}</td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(q.status))}>
-                      {STATUS_LABELS[q.status] ?? q.status}
-                    </span>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="block w-full sm:table sm:min-w-[38rem]">
+              <thead className="hidden bg-muted/50 sm:table-header-group">
+                <tr>
+                  <th scope="col" className={cn(TH, 'text-left')}>Number</th>
+                  <th scope="col" className={cn(TH, 'text-left')}>Issued</th>
+                  <th scope="col" className={cn(TH, 'text-left')}>Valid until</th>
+                  <th scope="col" className={cn(TH, 'text-right')}>Total</th>
+                  <th scope="col" className={cn(TH, 'text-left')}>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="block divide-y sm:table-row-group">
+                {quotes.map((q) => (
+                  <tr key={q.id} data-testid={`quote-row-${q.id}`} className={ROW}>
+                    {/* order-* reorders the card: number and status share the first
+                        line, the total is the largest element, dates trail muted. */}
+                    <td className={cn(CELL, 'order-1 grow')}>
+                      <a className="font-medium hover:underline" href={withBase(`/quotes/${q.id}`)}>
+                        {q.quoteNumber ?? q.id.slice(0, 8)}
+                      </a>
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Issued </span>
+                      {shortDate(q.issueDate)}
+                    </td>
+                    <td className={cn(CELL, 'order-5 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Valid until </span>
+                      {shortDate(q.expiryDate)}
+                    </td>
+                    <td className={cn(CELL, 'order-3 basis-full sm:basis-auto sm:text-right sm:text-sm')}>
+                      <span className="text-xl font-semibold sm:text-sm sm:font-normal">
+                        {money(q.total, q.currencyCode)}
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-2 shrink-0')}>
+                      <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(q.status))}>
+                        {STATUS_LABELS[q.status] ?? q.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

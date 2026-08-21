@@ -10,6 +10,14 @@ interface TicketListProps {
   error?: string | null;
 }
 
+// Below `sm` the row reflows from a table row into a stacked card; the old
+// `overflow-hidden` wrapper clipped the rightmost columns on a phone with no
+// scrollbar to reach them. At `sm` and up the real table semantics come back.
+// One DOM tree either way, so data-testids and header scopes stay unique.
+const ROW = 'flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 hover:bg-muted/50 sm:table-row sm:p-0';
+const CELL = 'block sm:table-cell sm:px-4 sm:py-3';
+const TH = 'px-4 py-3 text-left text-sm font-medium text-muted-foreground';
+
 export function TicketList({ tickets, error }: TicketListProps) {
   const getPriorityColor = (priority: TicketPriority) => {
     switch (priority) {
@@ -24,14 +32,16 @@ export function TicketList({ tickets, error }: TicketListProps) {
     }
   };
 
+  // `-on-tint` foregrounds: the base status tokens are tuned as backgrounds and
+  // fail WCAG AA when set as text on their own /10 tint.
   const getStatusColor = (status: TicketStatus) => {
     switch (status) {
       case 'open':
-        return 'bg-primary/10 text-primary';
+        return 'bg-primary/10 text-primary-on-tint';
       case 'in_progress':
-        return 'bg-warning/10 text-warning';
+        return 'bg-warning/10 text-warning-on-tint';
       case 'resolved':
-        return 'bg-success/10 text-success';
+        return 'bg-success/10 text-success-on-tint';
       case 'closed':
         return 'bg-muted text-muted-foreground';
     }
@@ -52,7 +62,7 @@ export function TicketList({ tickets, error }: TicketListProps) {
 
   if (error) {
     return (
-      <div className="rounded-md bg-destructive/10 p-4 text-center text-destructive">
+      <div role="alert" className="rounded-md bg-destructive/10 p-4 text-center text-destructive-on-tint">
         <AlertCircle className="mx-auto h-8 w-8" />
         <p className="mt-2">{error}</p>
       </div>
@@ -95,66 +105,71 @@ export function TicketList({ tickets, error }: TicketListProps) {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border">
-          <table className="w-full">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                  Title
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                  Status
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                  Priority
-                </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
-                  Updated
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {tickets.map((ticket) => (
-                <tr
-                  key={ticket.id}
-                  className="hover:bg-muted/50"
-                >
-                  <td className="px-4 py-3">
-                    <div>
-                      <a className="font-medium hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
-                        {ticket.subject}
-                      </a>
-                      <p className="text-sm text-muted-foreground">
-                        #{ticket.ticketNumber}
-                      </p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex rounded-full px-2 py-1 text-xs font-medium',
-                        getStatusColor(ticket.status)
-                      )}
-                    >
-                      {getStatusLabel(ticket.status)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex rounded-full px-2 py-1 text-xs font-medium capitalize',
-                        getPriorityColor(ticket.priority)
-                      )}
-                    >
-                      {ticket.priority}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatRelativeTime(ticket.updatedAt)}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="block w-full sm:table sm:min-w-[36rem]">
+              <thead className="hidden bg-muted/50 sm:table-header-group">
+                <tr>
+                  <th scope="col" className={TH}>
+                    Title
+                  </th>
+                  <th scope="col" className={TH}>
+                    Status
+                  </th>
+                  <th scope="col" className={TH}>
+                    Priority
+                  </th>
+                  <th scope="col" className={TH}>
+                    Updated
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="block divide-y sm:table-row-group">
+                {tickets.map((ticket) => (
+                  <tr
+                    key={ticket.id}
+                    className={ROW}
+                  >
+                    {/* order-* reorders the card: subject and status share the
+                        first line, priority and the update time trail below. */}
+                    <td className={cn(CELL, 'order-1 grow')}>
+                      <div>
+                        <a className="font-medium hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
+                          {ticket.subject}
+                        </a>
+                        <p className="text-sm text-muted-foreground">
+                          #{ticket.ticketNumber}
+                        </p>
+                      </div>
+                    </td>
+                    <td className={cn(CELL, 'order-2 shrink-0')}>
+                      <span
+                        className={cn(
+                          'inline-flex rounded-full px-2 py-1 text-xs font-medium',
+                          getStatusColor(ticket.status)
+                        )}
+                      >
+                        {getStatusLabel(ticket.status)}
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-3')}>
+                      <span
+                        className={cn(
+                          'inline-flex rounded-full px-2 py-1 text-xs font-medium capitalize',
+                          getPriorityColor(ticket.priority)
+                        )}
+                      >
+                        {ticket.priority}
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Updated </span>
+                      {formatRelativeTime(ticket.updatedAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

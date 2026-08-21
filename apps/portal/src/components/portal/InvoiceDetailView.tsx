@@ -1,7 +1,7 @@
 import { withBase } from '@/lib/basePath';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
-import { type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
@@ -13,6 +13,14 @@ const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially
 interface InvoiceDetailViewProps {
   detail: InvoiceDetail | null;
   error?: string | null;
+}
+
+/** The three fields the document shell actually needs, normalised from either
+ *  branding source below. */
+interface DocBranding {
+  partnerName: string | null;
+  logoUrl: string | null;
+  primaryColor: string | null;
 }
 
 function money(value: string | number, currencyCode: string): string {
@@ -43,12 +51,44 @@ function shortDate(value: string | null): string {
 }
 
 export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
+  // Partner branding for the document shell. Invoices used to render unbranded
+  // while proposals rendered branded, because only the quote payloads carried
+  // `branding`; GET /portal/invoices/:id now returns the same shape, so the
+  // common path needs no client fetch at all.
+  //
+  // The fetch below is the fallback for an API that predates that field. It
+  // reads GET /portal/branding, which resolves by verified custom domain and so
+  // 404s on the shared hosted domain — fine as a fallback, not as the source.
+  const payloadBranding = detail?.branding;
+  const [fetchedBranding, setFetchedBranding] = useState<BrandingConfig | null>(null);
+  const branding: DocBranding | null = payloadBranding
+    ? {
+        partnerName: payloadBranding.partnerName ?? null,
+        logoUrl: payloadBranding.logoUrl,
+        primaryColor: payloadBranding.primaryColor,
+      }
+    : fetchedBranding
+      ? {
+          partnerName: fetchedBranding.name ?? null,
+          logoUrl: fetchedBranding.logoUrl ?? null,
+          primaryColor: fetchedBranding.primaryColor ?? null,
+        }
+      : null;
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
   const [settleState, setSettleState] = useState<'idle' | 'settling' | 'pending'>('idle');
+
+  useEffect(() => {
+    if (payloadBranding) return;
+    let cancelled = false;
+    void portalApi.getBranding().then((res) => {
+      if (!cancelled) setFetchedBranding(res.data ?? null);
+    });
+    return () => { cancelled = true; };
+  }, [payloadBranding]);
 
   // Instant settle on return from Stripe Checkout. success_url lands the customer back
   // here as ?paid=1&session_id=cs_… — POST that session to the settle route so the
@@ -224,8 +264,10 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{downloadError}</div>
       )}
 
-      <DocumentPaper testId="invoice-document">
+      <DocumentPaper testId="invoice-document" primaryColor={branding?.primaryColor}>
         <DocumentHeader
+          logoUrl={branding?.logoUrl}
+          partnerName={branding?.partnerName}
           seller={seller}
           eyebrow="Invoice"
           title={invoice.invoiceNumber ?? 'Invoice'}

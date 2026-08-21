@@ -234,7 +234,12 @@ export function NewTicketForm() {
               <p className="mt-1 text-sm text-muted-foreground">{selectedForm.description}</p>
             )}
 
+            {/* method="post" is a pre-hydration safety net: if the island fails to
+                hydrate, a native submit must never be a GET that puts what the
+                customer typed in the URL / browser history / access logs (#2868).
+                Once hydrated, onSubmit preventDefaults and fetch() takes over. */}
             <form
+              method="post"
               onSubmit={(e) => {
                 e.preventDefault();
                 void submitForm();
@@ -242,13 +247,20 @@ export function NewTicketForm() {
               className="mt-6 space-y-6"
             >
               {error && (
-                <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <div
+                  role="alert"
+                  className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+                >
                   <AlertCircle className="h-4 w-4" />
                   {error}
                 </div>
               )}
               {formErrors.__form && (
-                <p className="text-sm text-destructive" data-testid="portal-ticket-form-error">
+                <p
+                  role="alert"
+                  className="text-sm text-destructive"
+                  data-testid="portal-ticket-form-error"
+                >
                   {formErrors.__form}
                 </p>
               )}
@@ -284,13 +296,21 @@ export function NewTicketForm() {
                   value={formPriority}
                   onChange={(e) => setFormPriority(e.target.value as TicketPriority)}
                   data-testid="portal-ticket-form-priority"
+                  aria-describedby="form-priority-help"
                   className={inputCls}
                 >
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                  {/* Labels describe the customer's situation, not an abstract
+                      severity an office manager cannot calibrate. Values stay
+                      low/normal/high/urgent — the API contract depends on them. */}
+                  <option value="low">Low: I can still work</option>
+                  <option value="normal">Normal: it slows me down</option>
+                  <option value="high">High: someone cannot work</option>
+                  <option value="urgent">Urgent: the whole office is down</option>
                 </select>
+                <p id="form-priority-help" className="mt-1 text-xs text-muted-foreground">
+                  This sets how quickly we respond. If your situation changes, say so
+                  in the ticket and we will update it.
+                </p>
               </div>
 
               <div className="flex justify-end gap-3">
@@ -340,9 +360,17 @@ export function NewTicketForm() {
               Describe your issue and we'll get back to you as soon as possible.
             </p>
 
-            <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-6">
+            {/* method="post" is a pre-hydration safety net: if the island fails to
+                hydrate, a native submit must never be a GET that puts what the
+                customer typed in the URL / browser history / access logs (#2868).
+                Once hydrated, react-hook-form's handleSubmit preventDefaults and
+                fetch() takes over. */}
+            <form method="post" onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-6">
               {error && (
-                <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <div
+                  role="alert"
+                  className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+                >
                   <AlertCircle className="h-4 w-4" />
                   {error}
                 </div>
@@ -356,11 +384,15 @@ export function NewTicketForm() {
                   id="subject"
                   type="text"
                   placeholder="Brief summary of your issue"
+                  aria-invalid={!!errors.subject}
+                  aria-describedby={errors.subject ? 'subject-error' : undefined}
                   {...register('subject')}
                   className={cn(inputCls, errors.subject && 'border-destructive')}
                 />
                 {errors.subject && (
-                  <p className="mt-1 text-sm text-destructive">{errors.subject.message}</p>
+                  <p id="subject-error" role="alert" className="mt-1 text-sm text-destructive">
+                    {errors.subject.message}
+                  </p>
                 )}
               </div>
 
@@ -368,14 +400,23 @@ export function NewTicketForm() {
                 <label htmlFor="priority" className="block text-sm font-medium text-foreground">
                   Priority
                 </label>
-                <select id="priority" {...register('priority')} className={inputCls}>
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                <select
+                  id="priority"
+                  aria-describedby="priority-help"
+                  {...register('priority')}
+                  className={inputCls}
+                >
+                  {/* Labels describe the customer's situation, not an abstract
+                      severity an office manager cannot calibrate. Values stay
+                      low/normal/high/urgent — the API contract depends on them. */}
+                  <option value="low">Low: I can still work</option>
+                  <option value="normal">Normal: it slows me down</option>
+                  <option value="high">High: someone cannot work</option>
+                  <option value="urgent">Urgent: the whole office is down</option>
                 </select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Select the urgency level of your issue
+                <p id="priority-help" className="mt-1 text-xs text-muted-foreground">
+                  This sets how quickly we respond. If your situation changes, say so
+                  in the ticket and we will update it.
                 </p>
               </div>
 
@@ -387,11 +428,15 @@ export function NewTicketForm() {
                   id="description"
                   rows={6}
                   placeholder="Please provide detailed information about your issue..."
+                  aria-invalid={!!errors.description}
+                  aria-describedby={errors.description ? 'description-error' : undefined}
                   {...register('description')}
                   className={cn(inputCls, errors.description && 'border-destructive')}
                 />
                 {errors.description && (
-                  <p className="mt-1 text-sm text-destructive">{errors.description.message}</p>
+                  <p id="description-error" role="alert" className="mt-1 text-sm text-destructive">
+                    {errors.description.message}
+                  </p>
                 )}
               </div>
 

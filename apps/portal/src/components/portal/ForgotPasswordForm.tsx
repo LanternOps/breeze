@@ -69,7 +69,9 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+    // Pre-hydration safety net, same rationale as AcceptInviteForm (#2868): a
+    // native submit must never be a GET carrying credentials in the URL.
+    <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6">
       <div className="text-center">
         <p className="text-sm text-muted-foreground">
           Enter your email address and we'll send you a link to reset your
@@ -78,7 +80,7 @@ export function ForgotPasswordForm() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
           {error}
         </div>

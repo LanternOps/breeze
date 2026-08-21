@@ -1,9 +1,26 @@
 import { withBase } from '@/lib/basePath';
 import React from 'react';
 import { ArrowLeft, AlertCircle, Clock, Tag } from 'lucide-react';
-import { type TicketDetails as TicketDetailsType, type TicketPriority, type TicketStatus } from '@/lib/api';
-import { formatDateTime } from '@/lib/utils';
+import { type TicketComment, type TicketDetails as TicketDetailsType, type TicketPriority, type TicketStatus } from '@/lib/api';
+import { formatDate, formatDateTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+
+/** Activity copy derived from the ticket's own status. This component only ever
+ *  sees the ticket record plus its public replies, so it must never assert that
+ *  nothing has happened: the old hardcoded "No activity yet" told a customer with
+ *  a resolved, long-since-answered ticket that their MSP had ignored them. */
+function activityStatusText(status: TicketStatus, updatedAt: string): string {
+  switch (status) {
+    case 'open':
+      return 'We have your request. Our support team will follow up here.';
+    case 'in_progress':
+      return 'A technician is working on this now. Updates appear here.';
+    case 'resolved':
+      return `This ticket is resolved. Last updated ${formatDate(updatedAt)}.`;
+    case 'closed':
+      return `This ticket is closed. Last updated ${formatDate(updatedAt)}.`;
+  }
+}
 
 interface TicketDetailsProps {
   ticket: TicketDetailsType | null;
@@ -69,6 +86,13 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
     );
   }
 
+  // The API returns public replies newest-first; this reads as a conversation
+  // under the description, so show them oldest-first. `comments` is defensively
+  // defaulted for any payload that predates the field.
+  const replies: TicketComment[] = [...(ticket.comments ?? [])].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+
   return (
     <div className="mx-auto max-w-3xl">
       <div className="mb-6">
@@ -131,14 +155,27 @@ export function TicketDetails({ ticket, error }: TicketDetailsProps) {
           </div>
         </div>
 
-        {/* Future: Add comments/replies section here */}
         <div className="border-t p-6">
           <h2 className="text-sm font-medium text-muted-foreground">
             Activity
           </h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            No activity yet. Our support team will respond to your ticket soon.
+          <p className="mt-2 text-sm text-muted-foreground" data-testid="ticket-activity-status">
+            {activityStatusText(ticket.status, ticket.updatedAt)}
           </p>
+
+          {replies.length > 0 && (
+            <ol className="mt-4 space-y-4">
+              {replies.map((c) => (
+                <li key={c.id} className="rounded-md border bg-muted/30 p-4" data-testid="ticket-comment">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="text-sm font-medium">{c.authorName || 'Support'}</span>
+                    <span className="text-xs text-muted-foreground">{formatDateTime(c.createdAt)}</span>
+                  </div>
+                  <div className="mt-2 whitespace-pre-wrap text-sm">{c.content}</div>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       </div>
     </div>

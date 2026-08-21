@@ -2,7 +2,7 @@ import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
 import { type QuoteDetail, buildPortalApiUrl, portalApi } from '@/lib/api';
-import { cn } from '@/lib/utils';
+import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { QuoteBlocks, money } from './quoteBlocks';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { SignaturePanel } from './SignaturePanel';
@@ -25,13 +25,13 @@ function statusColor(status: string): string {
   switch (status) {
     case 'accepted':
     case 'converted':
-      return 'bg-success/10 text-success';
+      return 'bg-success/10 text-success-on-tint';
     case 'declined':
     case 'expired':
-      return 'bg-destructive/10 text-destructive';
+      return 'bg-destructive/10 text-destructive-on-tint';
     case 'viewed':
     case 'sent':
-      return 'bg-warning/10 text-warning';
+      return 'bg-warning/10 text-warning-on-tint';
     default:
       return 'bg-muted text-muted-foreground';
   }
@@ -49,6 +49,14 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
   const [status, setStatus] = useState(detail?.quote.status ?? '');
+  // Invoice created by THIS acceptance (the accept response's invoiceId). Null on a
+  // quote that was already converted when the page loaded — the quote payload carries
+  // no invoice id, so those customers get the invoice list instead of a deep link.
+  const [acceptedInvoiceId, setAcceptedInvoiceId] = useState<string | null>(null);
+  // The pay route 409s when this proposal can't be paid online (no Stripe connection,
+  // nothing left to charge). That's terminal, so drop the CTA instead of leaving a
+  // button whose only outcome is the same error again.
+  const [payUnavailable, setPayUnavailable] = useState(false);
 
   if (error || !detail) {
     return (
@@ -89,12 +97,16 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
       return;
     }
     setStatus('converted');
-    setMsg('Accepted — an invoice has been created.');
+    setAcceptedInvoiceId(res.data?.data?.invoiceId ?? null);
+    setMsg('Accepted. Your invoice is ready.');
   };
 
-  const decline = async () => {
+  // The reason comes from SignaturePanel's inline confirm block, which is the only
+  // path that reaches here. It used to come from window.prompt(), whose null on
+  // Cancel/Escape was coerced to undefined and fell straight through to the API —
+  // so backing out of the prompt declined the proposal anyway.
+  const decline = async (reason?: string) => {
     if (busy) return;
-    const reason = window.prompt('Optionally, tell us why you are declining:') ?? undefined;
     setBusy(true);
     setMsg(null);
     setMsgError(false);
@@ -116,12 +128,16 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
     setMsgError(false);
     const res = await portalApi.payQuote(quote.id);
     setBusy(false);
-    if (res.error || !res.data?.data?.url) {
-      setMsg(res.error ?? 'Online payment is not available for this proposal.');
-      setMsgError(true);
+    const url = res.data?.data?.url;
+    if (url) {
+      window.location.href = url;
       return;
     }
-    window.location.href = res.data.data.url;
+    // 409 (and a 200 that somehow carries no link) means payment is off the table for
+    // this proposal; anything else may be transient, so keep the button for a retry.
+    if (res.statusCode === 409 || !res.error) setPayUnavailable(true);
+    setMsg(res.error ?? 'Online payment is not available for this proposal.');
+    setMsgError(true);
   };
 
   const hasRecurring =
@@ -138,6 +154,24 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   const remainderCents = depositDue != null
     ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
     : 0;
+
+  // Post-accept CTA. The label states what Stripe will charge: the invoice was just
+  // created by this acceptance, so amountPaid is 0 and the shared deposit-first rule
+  // reduces to "deposit if one is set, else the due-on-acceptance total".
+  const payCharge = computeChargeNow({
+    depositDue: depositDue != null ? String(depositDue) : null,
+    amountPaid: '0.00',
+    balance: String(dueOnAcceptance),
+  });
+  const payLabel = payCharge.isDeposit
+    ? `Pay deposit ${money(payCharge.amount, currency)}`
+    : `Pay ${money(payCharge.amount, currency)}`;
+  // Offer the button only for an invoice this session created — then the amount above
+  // is known-good. A quote that was already converted when the page loaded carries no
+  // invoice figures (or payment state), so that customer gets the invoice link only,
+  // where InvoiceDetailView pays against a live balance.
+  const canPay = acceptedInvoiceId !== null && !payUnavailable && Number(payCharge.amount) > 0;
+  const invoiceHref = withBase(acceptedInvoiceId ? `/invoices/${acceptedInvoiceId}` : '/invoices');
 
   return (
     <div className="space-y-5" data-testid="quote-detail">
@@ -281,37 +315,56 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
         )}
       </DocumentPaper>
 
-      {msg && (
-        <div
-          data-testid={status === 'converted' ? 'quote-accept-success' : 'quote-msg'}
-          className={cn(
-            'rounded-md p-3 text-sm',
-            msgError ? 'bg-destructive/10 text-destructive' : 'bg-muted'
-          )}
-        >
+      {/* Failures render on their own, outside the accepted panel, so a failed pay
+          attempt is never dressed up in success styling. */}
+      {msg && msgError && (
+        <div data-testid="quote-msg" role="alert" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           {msg}
+        </div>
+      )}
+      {msg && !msgError && status !== 'converted' && (
+        <div data-testid="quote-msg" role="status" className="rounded-md bg-muted p-3 text-sm">
+          {msg}
+        </div>
+      )}
+
+      {status === 'converted' && (
+        <div
+          data-testid="quote-accept-success"
+          role="status"
+          className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success-on-tint"
+        >
+          <p>{!msgError && msg ? msg : 'This proposal has been accepted.'}</p>
+          <div className="flex flex-wrap items-center gap-3">
+            {canPay && (
+              <button
+                type="button"
+                data-testid="quote-pay"
+                disabled={busy}
+                onClick={() => void pay()}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {busy ? 'Working…' : payLabel}
+              </button>
+            )}
+            <a
+              href={invoiceHref}
+              data-testid="quote-accepted-invoice"
+              className="text-sm font-medium underline underline-offset-2"
+            >
+              {acceptedInvoiceId ? 'View invoice' : 'View your invoices'}
+            </a>
+          </div>
         </div>
       )}
 
       {open && (
         <SignaturePanel
           onAccept={(signerName) => void accept(signerName)}
-          onDecline={() => void decline()}
+          onDecline={(reason) => void decline(reason)}
           busy={busy}
           testIdPrefix="quote"
         />
-      )}
-
-      {status === 'converted' && (
-        <button
-          type="button"
-          data-testid="quote-pay"
-          disabled={busy}
-          onClick={() => void pay()}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {busy ? 'Working…' : 'Pay now'}
-        </button>
       )}
     </div>
   );
