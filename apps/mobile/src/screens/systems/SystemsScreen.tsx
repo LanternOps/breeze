@@ -188,7 +188,12 @@ export function SystemsScreen() {
       // Restore only what actually failed, so a partial outcome is honest.
       let toRestore = ids;
       try {
-        const { acknowledged, failed } = await acknowledgeAlerts(ids);
+        const { acknowledged, failed, errors } = await acknowledgeAlerts(ids);
+        // Per-id failures never throw, so they would otherwise bypass the
+        // catch below and be reported nowhere. Without this, a systematic
+        // failure (every id aborting at the same deadline) is invisible in
+        // telemetry and looks like ordinary partial failure on screen.
+        for (const err of errors) reportInternalError(err, 'acknowledge-alert');
         toRestore = failed;
         if (failed.length === 0) {
           setToast({
@@ -207,8 +212,14 @@ export function SystemsScreen() {
         // Successful ids stay hidden until the refetch supplies the new truth,
         // so the list cannot flash the old rows back.
         setPendingAcks((p) => endAck(p, failed));
-        await refresh();
-        setPendingAcks((p) => endAck(p, acknowledged));
+        // Only un-hide once a refetch has actually landed. `refresh()` resolves
+        // either way — it swallows its own failures and reports them — so
+        // awaiting it is not evidence the data moved. Un-hiding on a failed or
+        // coalesced refetch republishes the pre-ack rows as current, and the
+        // user has already been told the acknowledge succeeded.
+        if (await refresh()) {
+          setPendingAcks((p) => endAck(p, acknowledged));
+        }
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');
@@ -225,8 +236,11 @@ export function SystemsScreen() {
   }, []);
 
   const onAcknowledgeSelected = useCallback(async () => {
-    // Drop ids whose rows are gone — another operator may have acknowledged
-    // one, and submitting it would be silently skipped server-side.
+    // Drop ids whose rows are gone — another operator may have acknowledged one
+    // in the meantime. The per-alert mobile route REJECTS a stale id with HTTP
+    // 400 (`mobile.ts:905`), so submitting it would surface a failure toast for
+    // something the user did not do wrong. (The `/alerts/bulk` route does skip
+    // silently, but this PR does not use it.)
     const ids = [...reconcileSelection(selected, visibleIssues)];
     exitSelection();
     await acknowledgeIds(ids);

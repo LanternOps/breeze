@@ -56,8 +56,9 @@ export function IssueRow({
 }: Props) {
   // Collapse a same-tick double open into one dispatch. The optimistic path
   // removes the row, so the unmount usually ends the gesture — but that is a
-  // race, not a guarantee, and two opens in one tick would double-decrement the
-  // pendingAcks refcount.
+  // race, not a guarantee. The refcounting is symmetric so a double open nets
+  // to zero rather than corrupting it; the real cost is a second, redundant
+  // acknowledge request for an alert already being acknowledged.
   //
   // Deliberately time-boxed rather than a permanent per-row latch: a failed
   // acknowledge RESTORES the row, which is the whole point of the rollback

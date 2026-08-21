@@ -469,6 +469,8 @@ export const ACKNOWLEDGE_TIMEOUT_MS = 45000;
 export interface BulkAckOutcome {
   acknowledged: string[];
   failed: string[];
+  /** One entry per failed id, in completion order, for the caller to report. */
+  errors: unknown[];
 }
 
 /**
@@ -497,6 +499,7 @@ export const ACK_CONCURRENCY = 4;
 export async function acknowledgeAlerts(ids: string[]): Promise<BulkAckOutcome> {
   const acknowledged: string[] = [];
   const failed: string[] = [];
+  const errors: unknown[] = [];
   const queue = [...ids];
 
   async function worker(): Promise<void> {
@@ -506,8 +509,18 @@ export async function acknowledgeAlerts(ids: string[]): Promise<BulkAckOutcome> 
       try {
         await acknowledgeAlert(id);
         acknowledged.push(id);
-      } catch {
+      } catch (err) {
+        // Carry the cause out rather than dropping it. Swallowed, a 403, a 500
+        // and a client-side abort are indistinguishable in the outcome, and the
+        // caller's reportInternalError never fires for them because they never
+        // propagate — so the one signal that would identify a systematic
+        // failure (every id aborting at the same deadline) is lost.
+        //
+        // Reported by the CALLER, not here: lib/errorReporting imports from
+        // this module, so reporting inline would make the import cycle
+        // api -> errorReporting -> api.
         failed.push(id);
+        errors.push(err);
       }
     }
   }
@@ -515,7 +528,7 @@ export async function acknowledgeAlerts(ids: string[]): Promise<BulkAckOutcome> 
   await Promise.all(
     Array.from({ length: Math.min(ACK_CONCURRENCY, ids.length) }, () => worker())
   );
-  return { acknowledged, failed };
+  return { acknowledged, failed, errors };
 }
 
 export async function acknowledgeAlert(id: string): Promise<Alert> {

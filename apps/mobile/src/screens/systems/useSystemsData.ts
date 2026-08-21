@@ -77,8 +77,13 @@ export function useSystemsData() {
   const lastFetchAt = useRef<number>(0);
   const inFlight = useRef<boolean>(false);
 
-  const fetchAll = useCallback(async (mode: 'initial' | 'refresh') => {
-    if (inFlight.current) return;
+  // Returns whether this call actually replaced the data with a fresh read.
+  // Callers that hide rows optimistically need to know: un-hiding on the back
+  // of a refetch that never happened (or that failed) shows stale rows as if
+  // they were current truth.
+  const fetchAll = useCallback(async (mode: 'initial' | 'refresh'): Promise<boolean> => {
+    // Coalesced into an in-flight request — this call fetched nothing itself.
+    if (inFlight.current) return false;
     inFlight.current = true;
     setData((d) => ({
       ...d,
@@ -125,7 +130,9 @@ export function useSystemsData() {
       });
       // Only count as a successful fetch when something arrived; an all-failed
       // round must not suppress the next focus refresh for a full minute.
-      if (failedCount < 5) lastFetchAt.current = Date.now();
+      const arrived = failedCount < 5;
+      if (arrived) lastFetchAt.current = Date.now();
+      return arrived;
     } finally {
       inFlight.current = false;
     }

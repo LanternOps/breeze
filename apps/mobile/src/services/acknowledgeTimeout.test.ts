@@ -68,6 +68,24 @@ describe('acknowledge write deadline', () => {
     expect(timeoutMs).toBe(ACKNOWLEDGE_TIMEOUT_MS);
   });
 
+  it('carries each failure out so the caller can report it', async () => {
+    // Swallowed, a 403 / 500 / client abort are indistinguishable in the
+    // outcome, and the caller's reportInternalError never fires because these
+    // never throw — so a systematic failure (every id aborting at the same
+    // deadline) leaves no telemetry and reads as ordinary partial failure.
+    fetchWithTimeoutMock
+      .mockResolvedValueOnce(ackResponse())
+      .mockRejectedValueOnce(new Error('aborted'))
+      .mockRejectedValueOnce(new Error('aborted'));
+
+    const outcome = await acknowledgeAlerts(['a1', 'a2', 'a3']);
+
+    expect(outcome.acknowledged).toHaveLength(1);
+    expect(outcome.failed).toHaveLength(2);
+    expect(outcome.errors).toHaveLength(2);
+    expect(String((outcome.errors[0] as Error).message)).toContain('aborted');
+  });
+
   it('applies the same deadline to every write in a bulk acknowledge', async () => {
     // The bulk path fans out through acknowledgeAlert, so a regression that
     // dropped the override on one path would silently halve the protection.
