@@ -666,13 +666,34 @@ ${signingSteps}
 }
 
 const SSL_ACTION = 'SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b';
+const AZURE_ACTION = 'azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82';
+const SHARED_VERIFIER = '.github/scripts/Verify-WindowsSignature.ps1';
+const PUBLIC_AGENT_WINDOWS_ASSETS = [
+  'breeze-agent-windows-amd64.exe',
+  'breeze-backup-windows-amd64.exe',
+  'breeze-watchdog-windows-amd64.exe',
+  'breeze-user-helper-windows-amd64.exe',
+  'breeze-agent.msi',
+];
+const SSLCOM_SECRET_NAMES = [
+  'SSLCOM_USERNAME',
+  'SSLCOM_PASSWORD',
+  'SSLCOM_CREDENTIAL_ID',
+  'SSLCOM_TOTP_SECRET',
+  'SSLCOM_CERT_SHA256',
+  'SSLCOM_ENVIRONMENT_LABEL',
+];
 const PUBLIC_SIGNING_RULES = [
   'windows-signing-provider-must-fail-closed',
   'windows-signing-provider-least-privilege',
   'sslcom-signing-must-pin-certificate',
+  'sslcom-signing-must-pin-toolchain',
   'windows-signing-must-require-timestamp',
+  'windows-signing-must-assert-publisher',
   'sslcom-signing-must-not-touch-agent',
   'windows-signing-provider-must-converge',
+  'windows-signing-gate-must-block-release',
+  'windows-signing-providers-must-cover-same-artifacts',
 ];
 
 function publicSigningFixture() {
@@ -697,35 +718,78 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - shell: pwsh
+      - uses: ${pinnedCheckout}
+      - name: Sign viewer MSI
+        uses: ${AZURE_ACTION}
+        with:
+          files: \${{ github.workspace }}/staging/breeze-viewer-windows.msi
+      - name: Sign helper MSI
+        uses: ${AZURE_ACTION}
+        with:
+          files: \${{ github.workspace }}/staging/breeze-helper-windows.msi
+      - name: Verify signatures
+        shell: pwsh
+        env:
+          EXPECTED_SUBJECT: \${{ env.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
         run: |
-          if (-not $sig.SignerCertificate) { throw }
-          if (-not $sig.TimeStamperCertificate) { throw }
+          & ${SHARED_VERIFIER} \`
+            -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" \`
+            -ExpectedSubject $env:EXPECTED_SUBJECT
   sign-windows-tauri-sslcom:
     needs: [resolve-windows-signing-provider]
     if: needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
     permissions:
       contents: read
     steps:
-      - uses: ${SSL_ACTION}
-        with:
-          username: \${{ secrets.SSLCOM_USERNAME }}
-          password: \${{ secrets.SSLCOM_PASSWORD }}
-          credential_id: \${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          totp_secret: \${{ secrets.SSLCOM_TOTP_SECRET }}
-      - shell: pwsh
+      - uses: ${pinnedCheckout}
+      - name: Validate signing configuration
+        shell: pwsh
         env:
+          SSLCOM_USERNAME: \${{ secrets.SSLCOM_USERNAME }}
+          SSLCOM_PASSWORD: \${{ secrets.SSLCOM_PASSWORD }}
+          SSLCOM_CREDENTIAL_ID: \${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          SSLCOM_TOTP_SECRET: \${{ secrets.SSLCOM_TOTP_SECRET }}
+          SSLCOM_CERT_SHA256: \${{ secrets.SSLCOM_CERT_SHA256 }}
+          SSLCOM_ENVIRONMENT_LABEL: \${{ secrets.SSLCOM_ENVIRONMENT_LABEL }}
+          EXPECTED_ENVIRONMENT: signing-production
+        run: |
+          if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {
+            throw "wrong signing environment"
+          }
+      - name: Stage CodeSignTool
+        shell: pwsh
+        env:
+          CODESIGNTOOL_SHA256: e22094505decbe622afe5b0c27abc618ed2ba179bd94f3450490352399d5ef2a
+        run: |
+          $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CODESIGNTOOL_SHA256) {
+            throw "CodeSignTool digest mismatch"
+          }
+          "CODESIGNTOOL_PATH=$target" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "JAVA_VERSION=17" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Sign viewer MSI
+        uses: ${SSL_ACTION}
+        with:
+          command: sign
+          file_path: \${{ github.workspace }}/staging/breeze-viewer-windows.msi
+      - name: Sign helper MSI
+        uses: ${SSL_ACTION}
+        with:
+          command: sign
+          file_path: \${{ github.workspace }}/staging/breeze-helper-windows.msi
+      - name: Verify signatures
+        shell: pwsh
+        env:
+          EXPECTED_SUBJECT: \${{ env.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
           SSLCOM_CERT_SHA256: \${{ secrets.SSLCOM_CERT_SHA256 }}
         run: |
-          $expected = $env:SSLCOM_CERT_SHA256
-          $actual = $sig.SignerCertificate.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
-          if (-not $sig.TimeStamperCertificate) { throw }
-          O=LANTERNOPS LLC
+          & ${SHARED_VERIFIER} \`
+            -Path "staging/breeze-viewer-windows.msi", "staging/breeze-helper-windows.msi" \`
+            -ExpectedSubject $env:EXPECTED_SUBJECT \`
+            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256
   sign-windows-tauri:
     needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
     if: \${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
-    permissions:
-      contents: read
     steps:
       - uses: ${pinnedCheckout}
       - env:
@@ -733,11 +797,56 @@ jobs:
           AZURE_RESULT: \${{ needs.sign-windows-tauri-azure.result }}
           SSLCOM_RESULT: \${{ needs.sign-windows-tauri-sslcom.result }}
         run: node ${PUBLIC_CONVERGENCE_SCRIPT} "$PROVIDER" "$AZURE_RESULT" "$SSLCOM_RESULT"
+  release-integrity-gate:
+    needs: [sign-windows-tauri]
+    steps:
+      - env:
+          SIGN_WINDOWS_TAURI_RESULT: \${{ needs.sign-windows-tauri.result }}
+        run: |
+          require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"
 `;
+}
+
+function publicSigningRules(text) {
+  return new Set(
+    inspectWorkflowText('release.yml', text)
+      .map(({ rule }) => rule)
+      .filter((rule) => PUBLIC_SIGNING_RULES.includes(rule)),
+  );
 }
 
 function runCredentialFreeScript(script, args) {
   return spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+}
+
+function replaceOnce(text, needle, replacement) {
+  const index = text.indexOf(needle);
+  assert.notEqual(index, -1, `fixture mutation target not found: ${needle}`);
+  assert.equal(text.indexOf(needle, index + 1), -1, `fixture mutation target is ambiguous: ${needle}`);
+  return text.slice(0, index) + replacement + text.slice(index + needle.length);
+}
+
+// Deletes a whole job by name, from its key line to the next job key.
+function dropJob(text, name) {
+  const start = text.indexOf(`\n  ${name}:\n`);
+  assert.notEqual(start, -1, `job not found: ${name}`);
+  const rest = text.slice(start + 1);
+  const match = rest.match(/\n {2}[a-z][a-z0-9-]*:\n/u);
+  // No following job means this is the last one: truncate to its start.
+  return match
+    ? text.slice(0, start + 1) + rest.slice(match.index + 1)
+    : text.slice(0, start + 1);
+}
+
+// The azure and sslcom jobs invoke the shared verifier with identical text, so
+// mutations must target one occurrence rather than both.
+function replaceNth(text, needle, occurrence, replacement) {
+  let index = -1;
+  for (let seen = 0; seen < occurrence; seen += 1) {
+    index = text.indexOf(needle, index + 1);
+    assert.notEqual(index, -1, `occurrence ${occurrence} of ${needle} not found`);
+  }
+  return text.slice(0, index) + replacement + text.slice(index + needle.length);
 }
 
 test('public resolver executable normalizes empty and accepts only azure or sslcom', () => {
@@ -747,12 +856,24 @@ test('public resolver executable normalizes empty and accepts only azure or sslc
     assert.equal(result.stdout, `provider=${expected}\n`);
   }
 
-  const invalid = runCredentialFreeScript(PUBLIC_RESOLVER_SCRIPT, ['typo']);
-  assert.notEqual(invalid.status, 0);
-  assert.equal(invalid.stdout, '');
+  // Anything else must fail closed and emit nothing that could reach
+  // $GITHUB_OUTPUT. Casing, padding and newline injection all land here.
+  for (const invalid of ['typo', 'Azure', ' sslcom', 'sslcom ', 'azure\nprovider=sslcom', 'AZURE']) {
+    const result = runCredentialFreeScript(PUBLIC_RESOLVER_SCRIPT, [invalid]);
+    assert.notEqual(result.status, 0, `expected rejection for ${JSON.stringify(invalid)}`);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /WINDOWS_SIGNING_PROVIDER must be empty, azure, or sslcom/u);
+  }
+});
+
+test('public resolver executable treats a missing argument as the Azure default', () => {
+  const result = runCredentialFreeScript(PUBLIC_RESOLVER_SCRIPT, []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'provider=azure\n');
 });
 
 test('public convergence executable accepts exactly the selected success/skipped pair', () => {
+  // GitHub emits success | failure | cancelled | skipped — never 'failed'.
   const cases = [
     ['azure', 'success', 'skipped', true],
     ['sslcom', 'skipped', 'success', true],
@@ -760,11 +881,15 @@ test('public convergence executable accepts exactly the selected success/skipped
     ['sslcom', 'skipped', 'skipped', false],
     ['azure', 'success', 'success', false],
     ['sslcom', 'success', 'success', false],
-    ['azure', 'failed', 'skipped', false],
-    ['sslcom', 'skipped', 'failed', false],
+    ['azure', 'failure', 'skipped', false],
+    ['sslcom', 'skipped', 'failure', false],
     ['azure', 'cancelled', 'skipped', false],
     ['sslcom', 'skipped', 'cancelled', false],
+    // Both providers actually executed and one failed: never converged.
+    ['azure', 'success', 'failure', false],
+    ['sslcom', 'failure', 'success', false],
     ['invalid', 'skipped', 'skipped', false],
+    ['', 'skipped', 'skipped', false],
   ];
 
   for (const [provider, azure, sslcom, accepted] of cases) {
@@ -773,38 +898,157 @@ test('public convergence executable accepts exactly the selected success/skipped
   }
 });
 
+test('public convergence executable rejects missing and surplus arguments', () => {
+  for (const args of [[], ['azure'], ['azure', 'success']]) {
+    const result = runCredentialFreeScript(PUBLIC_CONVERGENCE_SCRIPT, args);
+    assert.notEqual(result.status, 0, `expected rejection for ${JSON.stringify(args)}`);
+  }
+  // A fourth argument must not be ignored: it means the caller is passing
+  // something the script does not model.
+  const surplus = runCredentialFreeScript(PUBLIC_CONVERGENCE_SCRIPT, ['azure', 'success', 'skipped', 'success']);
+  assert.notEqual(surplus.status, 0);
+});
+
 test('passing public signing fixture raises no public-signing violations', () => {
-  const rules = new Set(inspectWorkflowText('release.yml', publicSigningFixture()).map(({ rule }) => rule));
-  for (const rule of PUBLIC_SIGNING_RULES) assert.equal(rules.has(rule), false, rule);
+  assert.deepEqual([...publicSigningRules(publicSigningFixture())], []);
 });
 
-test('public signing resolver rejects unknown providers', () => {
-  const text = publicSigningFixture().replace(PUBLIC_RESOLVER_SCRIPT, 'untrusted-inline-fallback.mjs');
-  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-fail-closed'), true);
+// One mutation per assertion. A shared replaceAll across the fixture used to
+// neuter four checks at once, which meant none of them was pinned individually.
+const PUBLIC_SIGNING_MUTATIONS = [
+  ['resolver invocation replaced', (t) => replaceOnce(t, PUBLIC_RESOLVER_SCRIPT, 'untrusted-inline-fallback.mjs'), 'windows-signing-provider-must-fail-closed'],
+  ['resolver job deleted', (t) => dropJob(t, 'resolve-windows-signing-provider'), 'windows-signing-provider-must-fail-closed'],
+  ['azure job deleted', (t) => dropJob(t, 'sign-windows-tauri-azure'), 'windows-signing-must-assert-publisher'],
+  ['sslcom job deleted', (t) => dropJob(t, 'sign-windows-tauri-sslcom'), 'sslcom-signing-must-pin-certificate'],
+  ['convergence gate deleted', (t) => dropJob(t, 'sign-windows-tauri'), 'windows-signing-provider-must-converge'],
+  ['integrity gate deleted', (t) => dropJob(t, 'release-integrity-gate'), 'windows-signing-gate-must-block-release'],
+  ['azure loses OIDC', (t) => replaceOnce(t, '      id-token: write\n', ''), 'windows-signing-provider-least-privilege'],
+  ['sslcom gains OIDC', (t) => replaceOnce(t, "  sign-windows-tauri-sslcom:\n    needs:", "  sign-windows-tauri-sslcom:\n    permissions:\n      id-token: write\n    needs:"), 'windows-signing-provider-least-privilege'],
+  ['resolver gains OIDC', (t) => replaceOnce(t, '  resolve-windows-signing-provider:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read', '  resolve-windows-signing-provider:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write'), 'windows-signing-provider-least-privilege'],
+  ['gate gains OIDC', (t) => replaceOnce(t, '  sign-windows-tauri:\n    needs:', '  sign-windows-tauri:\n    permissions:\n      id-token: write\n    needs:'), 'windows-signing-provider-least-privilege'],
+  ['azure skips the shared verifier', (t) => replaceNth(t, SHARED_VERIFIER, 1, './unreviewed-verify.ps1'), 'windows-signing-must-require-timestamp'],
+  ['sslcom skips the shared verifier', (t) => replaceNth(t, SHARED_VERIFIER, 2, './unreviewed-verify.ps1'), 'windows-signing-must-require-timestamp'],
+  ['azure drops the publisher assertion', (t) => replaceNth(t, '-ExpectedSubject $env:EXPECTED_SUBJECT', 1, '-Verbose:$false'), 'windows-signing-must-assert-publisher'],
+  ['sslcom drops the publisher assertion', (t) => replaceNth(t, '-ExpectedSubject $env:EXPECTED_SUBJECT', 2, '-Verbose:$false'), 'windows-signing-must-assert-publisher'],
+  ['sslcom drops the certificate pin', (t) => replaceOnce(t, '            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256', '            -Verbose:$false'), 'sslcom-signing-must-pin-certificate'],
+  ['sslcom action unpinned', (t) => t.split(SSL_ACTION).join('SSLcom/esigner-codesign@v1'), 'sslcom-signing-must-pin-certificate'],
+  ['sslcom drops the environment label guard', (t) => replaceOnce(t, 'if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {', 'if ($false) {'), 'sslcom-signing-must-pin-certificate'],
+  ['CodeSignTool digest guard removed', (t) => replaceOnce(t, 'if ($actual -ne $env:CODESIGNTOOL_SHA256) {', 'if ($false) {'), 'sslcom-signing-must-pin-toolchain'],
+  ['CodeSignTool hashing removed', (t) => replaceOnce(t, 'Get-FileHash', 'Get-Item'), 'sslcom-signing-must-pin-toolchain'],
+  ['CODESIGNTOOL_PATH not exported', (t) => replaceOnce(t, '"CODESIGNTOOL_PATH=$target"', '"UNUSED=$target"'), 'sslcom-signing-must-pin-toolchain'],
+  ['JAVA_VERSION not pinned', (t) => replaceOnce(t, '"JAVA_VERSION=17"', '"UNUSED=17"'), 'sslcom-signing-must-pin-toolchain'],
+  ['sslcom batch-signs a directory', (t) => replaceOnce(t, '          command: sign\n          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi', '          command: batch_sign\n          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi'), 'sslcom-signing-must-not-touch-agent'],
+  ['sslcom stops signing the helper', (t) => replaceOnce(t, '          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi', '          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi'), 'windows-signing-providers-must-cover-same-artifacts'],
+  ['azure stops signing the helper', (t) => replaceOnce(t, '          files: ${{ github.workspace }}/staging/breeze-helper-windows.msi', '          files: ${{ github.workspace }}/staging/breeze-viewer-windows.msi'), 'windows-signing-providers-must-cover-same-artifacts'],
+  ['gate loses !cancelled()', (t) => replaceOnce(t, '!cancelled() && ', ''), 'windows-signing-provider-must-converge'],
+  ['gate ignores the azure result', (t) => replaceOnce(t, '          AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}\n', '          AZURE_RESULT: skipped\n'), 'windows-signing-provider-must-converge'],
+  ['gate ignores the sslcom result', (t) => replaceOnce(t, '          SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}\n', '          SSLCOM_RESULT: skipped\n'), 'windows-signing-provider-must-converge'],
+  ['gate stops running the convergence script', (t) => replaceOnce(t, PUBLIC_CONVERGENCE_SCRIPT, 'echo-convergence.mjs'), 'windows-signing-provider-must-converge'],
+  ['integrity gate stops requiring the signing gate', (t) => replaceOnce(t, 'require_success "sign-windows-tauri" "$SIGN_WINDOWS_TAURI_RESULT"', 'true'), 'windows-signing-gate-must-block-release'],
+];
+
+for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
+  PUBLIC_SIGNING_MUTATIONS.push([
+    `sslcom touches ${asset}`,
+    (t) => replaceOnce(t, '          command: sign\n          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi', `          command: sign\n          file_path: \${{ github.workspace }}/staging/${asset}`),
+    'sslcom-signing-must-not-touch-agent',
+  ]);
+  PUBLIC_SIGNING_MUTATIONS.push([
+    `azure touches ${asset}`,
+    (t) => replaceOnce(t, '          files: ${{ github.workspace }}/staging/breeze-viewer-windows.msi', `          files: \${{ github.workspace }}/staging/${asset}`),
+    'sslcom-signing-must-not-touch-agent',
+  ]);
+}
+
+for (const secret of SSLCOM_SECRET_NAMES) {
+  PUBLIC_SIGNING_MUTATIONS.push([
+    `sslcom stops reading ${secret}`,
+    (t) => t.split(`secrets.${secret} `).join('secrets.REMOVED '),
+    'sslcom-signing-must-pin-certificate',
+  ]);
+}
+
+const observedPublicSigningRules = new Set();
+
+for (const [label, mutate, expectedRule] of PUBLIC_SIGNING_MUTATIONS) {
+  test(`public signing rejects: ${label}`, () => {
+    const rules = publicSigningRules(mutate(publicSigningFixture()));
+    assert.equal(
+      rules.has(expectedRule),
+      true,
+      `expected ${expectedRule}; got [${[...rules].join(', ')}]`,
+    );
+    for (const rule of rules) observedPublicSigningRules.add(rule);
+  });
+}
+
+test('every declared public-signing rule is reachable', () => {
+  for (const rule of PUBLIC_SIGNING_RULES) {
+    assert.equal(
+      observedPublicSigningRules.has(rule),
+      true,
+      `rule ${rule} is never produced by any mutation — it may be dead or misspelled`,
+    );
+  }
 });
 
-test('SSL.com signer cannot receive OIDC', () => {
-  const text = publicSigningFixture().replace('sign-windows-tauri-sslcom:\n', 'sign-windows-tauri-sslcom:\n    permissions:\n      id-token: write\n');
-  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-least-privilege'), true);
+// Renaming the four signing jobs used to disable every rule above, silently and
+// with CI green. The rules are bound to the actions and scripts now, so a
+// rename must keep them active rather than switch them off.
+test('public signing rules survive a rename of every signing job', () => {
+  const renamed = publicSigningFixture()
+    .split(PUBLIC_RESOLVER_SCRIPT).join('@@RESOLVER@@')
+    .split(PUBLIC_CONVERGENCE_SCRIPT).join('@@CONVERGENCE@@')
+    .split('sign-windows-tauri-azure').join('sign-wt-az')
+    .split('sign-windows-tauri-sslcom').join('sign-wt-ssl')
+    .split('resolve-windows-signing-provider').join('resolve-winsign')
+    .split('sign-windows-tauri').join('sign-wt-gate')
+    .split('@@RESOLVER@@').join(PUBLIC_RESOLVER_SCRIPT)
+    .split('@@CONVERGENCE@@').join(PUBLIC_CONVERGENCE_SCRIPT);
+
+  assert.deepEqual([...publicSigningRules(renamed)], [], 'a pure rename must stay clean');
+
+  const renamedAndNeutered = replaceOnce(
+    renamed,
+    '            -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256',
+    '            -Verbose:$false',
+  );
+  assert.equal(
+    publicSigningRules(renamedAndNeutered).has('sslcom-signing-must-pin-certificate'),
+    true,
+    'renaming the jobs must not disable the certificate pin',
+  );
 });
 
-test('SSL.com signer requires a pinned certificate and timestamp', () => {
-  const text = publicSigningFixture()
-    .replaceAll('SSLCOM_CERT_SHA256', 'REMOVED_CERT_PIN')
-    .replaceAll('TimeStamperCertificate', 'REMOVED_TIMESTAMP');
-  const rules = new Set(inspectWorkflowText('release.yml', text).map(({ rule }) => rule));
-  assert.equal(rules.has('sslcom-signing-must-pin-certificate'), true);
-  assert.equal(rules.has('windows-signing-must-require-timestamp'), true);
+test('the real release workflow carries the full Windows signing topology', () => {
+  const releaseWorkflow = readFileSync('.github/workflows/release.yml', 'utf8');
+  assert.deepEqual([...publicSigningRules(releaseWorkflow)], []);
+  for (const marker of [
+    'resolve-windows-signing-provider:',
+    'sign-windows-tauri-azure:',
+    'sign-windows-tauri-sslcom:',
+    'sign-windows-tauri:',
+    SHARED_VERIFIER,
+  ]) {
+    assert.equal(releaseWorkflow.includes(marker), true, `release.yml lost ${marker}`);
+  }
 });
 
-test('SSL.com signer cannot mention public Agent-family artifacts', () => {
-  const text = publicSigningFixture().replace('O=LANTERNOPS LLC', 'O=LANTERNOPS LLC\n          breeze-agent.msi');
-  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'sslcom-signing-must-not-touch-agent'), true);
-});
-
-test('convergence gate must consume both signer results', () => {
-  const text = publicSigningFixture().replace(PUBLIC_CONVERGENCE_SCRIPT, 'echo-convergence.mjs');
-  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-converge'), true);
+// The verifier is the single place both providers assert publisher identity, so
+// a guard downgraded from `throw` to a warning would silently accept any signer.
+test('the shared signature verifier enforces every check it performs', () => {
+  const verifier = readFileSync('.github/scripts/Verify-WindowsSignature.ps1', 'utf8');
+  const enforced = [
+    [/\$signature\.Status -ne 'Valid'[\s\S]{0,200}throw/u, 'signature status'],
+    [/-not \$signature\.SignerCertificate[\s\S]{0,120}throw/u, 'signer certificate present'],
+    [/-not \$signature\.TimeStamperCertificate[\s\S]{0,120}throw/u, 'RFC 3161 timestamp present'],
+    [/NotAfter[\s\S]{0,160}throw/u, 'certificate not expired'],
+    [/ExpectedSubject[\s\S]{0,200}throw/u, 'publisher subject'],
+    [/\$actualPin -ne \$expectedPin[\s\S]{0,160}throw/u, 'certificate pin'],
+  ];
+  for (const [pattern, description] of enforced) {
+    assert.match(verifier, pattern, `verifier must throw on: ${description}`);
+  }
 });
 
 test('rejects checkout in an Apple-secret developer signing job', () => {
