@@ -110,6 +110,34 @@ describe('invoiceService guards', () => {
     ).rejects.toBeInstanceOf(InvoiceServiceError);
   });
 
+  it('createManualInvoice stamps the draft with the org currency (spec §5)', async () => {
+    queueResult([{ currencyCode: 'EUR' }]); // org lookup
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'EUR' }]); // insert returning
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await svc.createManualInvoice({ orgId: 'org1' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
+  });
+
+  it('createManualInvoice: an explicit currencyCode wins over the org currency', async () => {
+    // No org lookup is queued: the override short-circuits the org read, so the
+    // only db call is the insert. GBP in the insert values proves the override
+    // wins even for an org whose currency differs.
+    queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'GBP' }]); // insert returning
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+    await svc.createManualInvoice({ orgId: 'org1', currencyCode: 'GBP' }, actor);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'GBP' }));
+  });
+
+  it('createManualInvoice throws ORG_NOT_FOUND (404) when the org row is missing', async () => {
+    queueResult([]); // org lookup finds nothing (RLS-scoped empty)
+    const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: null };
+    await expect(
+      svc.createManualInvoice({ orgId: 'missing-org' }, actor)
+    ).rejects.toMatchObject({ code: 'ORG_NOT_FOUND', status: 404 });
+  });
+
   it('recordPayment rejects payment on a draft (INVALID_STATE 409)', async () => {
     queueResult([{ id: 'i1', status: 'draft', orgId: 'org1', partnerId: 'p1', balance: '0.00' }]);
     const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };

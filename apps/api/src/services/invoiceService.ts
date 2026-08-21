@@ -62,13 +62,24 @@ function assertDraft(inv: { status: string }): void {
   if (inv.status !== 'draft') throw new InvoiceServiceError('Invoice is not a draft', 409, 'NOT_A_DRAFT');
 }
 
-export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string }, actor: InvoiceActor) {
+export async function createManualInvoice(input: { orgId: string; siteId?: string; notes?: string; termsAndConditions?: string; currencyCode?: string }, actor: InvoiceActor) {
   const partnerId = requirePartner(actor);
   requireOrgAccess(actor, input.orgId);
   requireSiteAccess(actor, input.siteId ?? null);
+  // Stamp the document currency at creation (spec §5): the explicit override
+  // (used internally by contract generation, which copies the CONTRACT's stamp)
+  // or the org's currency — never the partner's, and never a DB default.
+  let currencyCode = input.currencyCode;
+  if (!currencyCode) {
+    const [org] = await db.select({ currencyCode: organizations.currencyCode })
+      .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
+    if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    currencyCode = org.currencyCode;
+  }
   const rows = await db.insert(invoices).values({
     partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft',
-    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null, createdBy: actor.userId
+    notes: input.notes ?? null, termsAndConditions: input.termsAndConditions ?? null,
+    currencyCode, createdBy: actor.userId
   }).returning();
   return rows[0]!;
 }
@@ -596,7 +607,11 @@ export async function assembleDraftFromOrg(input: { orgId: string; siteId?: stri
   // Create the draft FIRST so the gathered line totals are rounded in the
   // invoice row's actual currency (JPY drafts must not persist cent-fraction
   // line totals). On an empty range the transient draft is deleted again.
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', createdBy: actor.userId }).returning();
+  // The draft is stamped with the ORG's currency at creation (spec §5).
+  const [org] = await db.select({ currencyCode: organizations.currencyCode })
+    .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
+  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
   const specs = [
     ...(await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode)),
     ...(await gatherOrgParts(input.orgId, from, to, inv!.currencyCode))
@@ -620,7 +635,11 @@ export async function assembleDraftFromTicket(ticketId: string, actor: InvoiceAc
   requireSiteAccess(actor, null);
   // Draft first: gathered line totals must round in the invoice row's actual
   // currency (see assembleDraftFromOrg). Empty gathers delete the transient draft.
-  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', createdBy: actor.userId }).returning();
+  // Stamped with the ticket org's currency at creation (spec §5).
+  const [org] = await db.select({ currencyCode: organizations.currencyCode })
+    .from(organizations).where(eq(organizations.id, tk.orgId)).limit(1);
+  if (!org) throw new InvoiceServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  const [inv] = await db.insert(invoices).values({ partnerId, orgId: tk.orgId, status: 'draft', currencyCode: org.currencyCode, createdBy: actor.userId }).returning();
   const specs = await gatherTicketBillables(ticketId, inv!.currencyCode);
   if (specs.length === 0) {
     await db.delete(invoices).where(eq(invoices.id, inv!.id));
@@ -859,8 +878,11 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(ticketParts.id, partIds));
 
     if (!opts.reissue) return;
-    // Clone source-backed lines into a fresh draft (released rows are not_billed again).
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    // Clone source-backed lines into a fresh draft (released rows are not_billed
+    // again). The clone copies the ORIGINAL document's currency, not the org's
+    // current setting (spec §5) — line totals are copied verbatim, so they only
+    // make sense in the currency they were rounded in.
+    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
     const srcLines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
