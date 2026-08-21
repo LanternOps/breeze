@@ -89,7 +89,7 @@ describe('resendInvoiceEmail', () => {
     const result = await resendInvoiceEmail(INV_ID, actor);
     expect(result.emailed).toBe(true);
     expect(result.recipients).toEqual(['ap@acme.test']);
-    const envelope = sendEmailMock.mock.calls[0][0];
+    const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.to).toEqual(['ap@acme.test']);
     expect(envelope.replyTo).toBe('billing@lantern.test');
     expect(envelope.from).toBe('Lantern MSP via Breeze <no-reply@breeze.test>');
@@ -115,7 +115,7 @@ describe('resendInvoiceEmail', () => {
       cc: ['Books@acme.test'],
     });
     expect(result.recipients).toEqual(['ap@acme.test', 'cfo@acme.test']);
-    const envelope = sendEmailMock.mock.calls[0][0];
+    const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.to).toEqual(['ap@acme.test', 'cfo@acme.test']);
     expect(envelope.cc).toEqual(['books@acme.test']);
   });
@@ -123,7 +123,7 @@ describe('resendInvoiceEmail', () => {
   it('carries the composer subject and note onto the message', async () => {
     queueHappyPath();
     await resendInvoiceEmail(INV_ID, actor, { subject: 'Copy of invoice 0007', message: 'As requested on the call.' });
-    const envelope = sendEmailMock.mock.calls[0][0];
+    const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.subject).toBe('Copy of invoice 0007');
     expect(envelope.html).toContain('As requested on the call.');
     expect(envelope.text).toContain('As requested on the call.');
@@ -134,7 +134,7 @@ describe('resendInvoiceEmail', () => {
   it('includePdf:false sends no attachment and drops the "PDF is attached" copy', async () => {
     queueHappyPath(invoice(), { withPdf: false });
     await resendInvoiceEmail(INV_ID, actor, { includePdf: false });
-    const envelope = sendEmailMock.mock.calls[0][0];
+    const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.attachments).toBeUndefined();
     expect(envelope.text).not.toContain('A PDF copy is attached');
   });
