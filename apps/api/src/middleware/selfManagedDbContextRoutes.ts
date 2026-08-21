@@ -131,6 +131,15 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks and do everything else outside any context.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/?$/ },
+  // Live agent session listing — the handler issues a `list_sessions` command to
+  // the agent and awaits the round-trip for up to LIST_SESSIONS_TIMEOUT_MS (10s).
+  // That await is a network wait on a customer device, not a DB operation, so
+  // holding a pooled connection idle-in-transaction across it is the same #1105
+  // pool-poison as the routes above. A handful of concurrent dashboard tabs
+  // polling this route is enough to exhaust the pool and 503 the whole API.
+  // The handler reads the device row through a short `withAuthDbAccessContext`
+  // block and makes the agent call outside any context.
+  { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
 ];
 
 /**
