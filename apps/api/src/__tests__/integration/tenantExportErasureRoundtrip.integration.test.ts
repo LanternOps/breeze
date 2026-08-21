@@ -48,9 +48,9 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     VALUES (${partnerId}, ${'RoundtripCo ' + suffix}, ${'roundtrip-' + suffix})
   `);
   await db.execute(sql`
-    INSERT INTO organizations (id, partner_id, name, slug) VALUES
-      (${orgA}, ${partnerId}, ${'Org A ' + suffix}, ${'org-a-' + suffix}),
-      (${orgB}, ${partnerId}, ${'Org B ' + suffix}, ${'org-b-' + suffix})
+    INSERT INTO organizations (id, partner_id, name, slug, currency_code) VALUES
+      (${orgA}, ${partnerId}, ${'Org A ' + suffix}, ${'org-a-' + suffix}, 'USD'),
+      (${orgB}, ${partnerId}, ${'Org B ' + suffix}, ${'org-b-' + suffix}, 'USD')
   `);
 
   const userId = crypto.randomUUID();

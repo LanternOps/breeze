@@ -66,6 +66,7 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
         const [org] = await db
           .insert(organizations)
           .values({
+            currencyCode: 'USD',
             partnerId: partner!.id,
             name: `Agg Org ${unique}`,
             slug: `agg-org-${unique}`,
@@ -326,6 +327,7 @@ describe('installer token usage aggregate (#2992, real Postgres)', () => {
       const [o] = await db
         .insert(organizations)
         .values({
+          currencyCode: 'USD',
           partnerId: partner!.id,
           name: `Degrade Org ${unique}`,
           slug: `degrade-org-${unique}`,

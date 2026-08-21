@@ -124,6 +124,7 @@ beforeEach(async () => {
     const [org] = await db
       .insert(organizations)
       .values({
+        currencyCode: 'USD',
         partnerId: partner!.id,
         name: `PAX Org ${unique}`,
         slug: `pax-org-${unique}`,

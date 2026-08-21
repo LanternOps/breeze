@@ -157,6 +157,7 @@ export async function createPartner(input: CreatePartnerInput): Promise<CreatePa
       .insert(organizations)
       .values({
         partnerId: newPartner.id,
+        currencyCode: newPartner.currencyCode,
         name: input.orgName,
         slug: orgSlug,
         type: 'customer',

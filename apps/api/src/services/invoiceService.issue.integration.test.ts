@@ -46,6 +46,7 @@ async function seedFixture(opts?: {
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
+      currencyCode: 'USD',
       partnerId, name: `Org ${suffix}`, slug: `inv-org-${suffix}`
     }).returning({ id: organizations.id });
     const orgId = o!.id;

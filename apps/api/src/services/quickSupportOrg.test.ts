@@ -43,6 +43,11 @@ vi.mock('../db', () => {
 });
 
 vi.mock('../db/schema', () => ({
+  partners: {
+    _tableName: 'partners',
+    id: 'partners.id',
+    currencyCode: 'partners.currency_code',
+  },
   organizations: {
     _tableName: 'organizations',
     id: 'organizations.id',
@@ -81,6 +86,7 @@ describe('getOrCreateQuickSupportOrg', () => {
 
   it('lazily creates the hidden org and its default site', async () => {
     queueSelect([]); // org lookup misses
+    queueSelect([{ currencyCode: 'CAD' }]); // partner currency lookup
     queueSelect([{ id: 'org-new' }]); // re-select after insert
     queueSelect([]); // site lookup misses
     insertReturns.push([]); // org insert (onConflictDoNothing)
@@ -92,6 +98,7 @@ describe('getOrCreateQuickSupportOrg', () => {
     expect(insertCalls[0]?.table).toBe('organizations');
     expect(insertCalls[0]?.values).toMatchObject({
       partnerId: PARTNER_ID,
+      currencyCode: 'CAD',
       type: 'quick_support',
       status: 'active',
     });
@@ -101,6 +108,7 @@ describe('getOrCreateQuickSupportOrg', () => {
 
   it('slugs with the full partner uuid so slugs cannot collide across partners', async () => {
     queueSelect([]);
+    queueSelect([{ currencyCode: 'CAD' }]);
     queueSelect([{ id: 'org-new' }]);
     queueSelect([{ id: 'site-1' }]);
     insertReturns.push([]);
@@ -112,6 +120,7 @@ describe('getOrCreateQuickSupportOrg', () => {
 
   it('lets the re-select win when a concurrent create took the unique index', async () => {
     queueSelect([]); // our lookup missed
+    queueSelect([{ currencyCode: 'CAD' }]); // partner currency lookup
     queueSelect([{ id: 'org-from-racer' }]); // the racer's row is visible now
     queueSelect([{ id: 'site-1' }]);
     insertReturns.push([]); // onConflictDoNothing swallowed our insert
@@ -123,6 +132,7 @@ describe('getOrCreateQuickSupportOrg', () => {
 
   it('throws rather than returning a bogus id when provisioning cannot converge', async () => {
     queueSelect([]); // lookup misses
+    queueSelect([{ currencyCode: 'CAD' }]); // partner currency lookup
     queueSelect([]); // re-select still misses
     insertReturns.push([]);
 

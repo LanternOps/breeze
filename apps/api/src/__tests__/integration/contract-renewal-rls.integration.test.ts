@@ -14,8 +14,8 @@ async function seed() {
       name: `RN Partner ${sfx}`, slug: `rn-${sfx}`, type: 'msp', plan: 'pro', status: 'active'
     }).returning({ id: partners.id });
     const [orgA, orgB] = await db.insert(organizations).values([
-      { partnerId: p!.id, name: 'RN Org A', slug: `rn-a-${sfx}` },
-      { partnerId: p!.id, name: 'RN Org B', slug: `rn-b-${sfx}` }
+      { currencyCode: 'USD', partnerId: p!.id, name: 'RN Org A', slug: `rn-a-${sfx}` },
+      { currencyCode: 'USD', partnerId: p!.id, name: 'RN Org B', slug: `rn-b-${sfx}` }
     ]).returning({ id: organizations.id });
     const [c] = await db.insert(contracts).values({
       partnerId: p!.id, orgId: orgA!.id, name: 'rn', status: 'active',
