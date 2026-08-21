@@ -278,6 +278,20 @@ async function request<T>(
   return requestWithPrefix<T>(endpoint, API_PREFIX, options);
 }
 
+/**
+ * Issue a request against the core `/api/v1` surface from a sibling service
+ * module. Exported so feature services (tickets, …) reuse this hardened path
+ * — auth header, CSRF header, per-install device id, and the `device_blocked`
+ * notification — instead of re-implementing `fetch` and silently dropping all
+ * four (see `services/search.ts` for the copy this exists to prevent spreading).
+ */
+export async function coreRequest<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options);
+}
+
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
 
 function mapAlert(alert: MobileAlertRecord): Alert {
