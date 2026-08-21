@@ -41,10 +41,16 @@ describe('getDevices paging', () => {
     expect(String(fetchWithTimeout.mock.calls[1][0])).toContain('cursor=cur1');
   });
 
-  it('requests the maximum page size', async () => {
+  it('asks for a page size the server will actually honour', async () => {
+    // Was `limit=200`, asserted against `patches/helpers.ts MAX_PAGE_LIMIT` —
+    // the wrong route's constant. `/mobile/devices` runs through
+    // `getPagination`, which does `Math.min(100, ...)`: it CLAMPS silently, so
+    // asking 200 returned 100 and the 20-page walk delivered 2,000 devices
+    // while the code read as 4,000. The test agreed with the comment and both
+    // were wrong about the server, which is why neither caught it.
     fetchWithTimeout.mockImplementationOnce(page([], null));
     await getDevices();
-    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('limit=200');
+    expect(String(fetchWithTimeout.mock.calls[0][0])).toContain('limit=100');
   });
 
   it('scopes to an org server-side rather than filtering a truncated page', async () => {

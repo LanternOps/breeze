@@ -5,9 +5,12 @@ export type DeviceStatusFilter = 'all' | 'online' | 'offline';
 /**
  * Client-side list shaping for the devices browser.
  *
- * The fleet arrives as one page from `/mobile/devices` (50 by default), so
- * filtering and sorting happen here rather than round-tripping. Kept pure so
- * the ordering contract is testable without a renderer.
+ * `getDevices` walks the cursor to the end of the fleet before this runs, so
+ * filtering and sorting happen here over the whole in-memory list rather than
+ * round-tripping per keystroke. (This previously said the fleet "arrives as one
+ * page ... 50 by default" — true before #3720 added the walk, stale the moment
+ * it landed.) Kept pure so the ordering contract is testable without a
+ * renderer.
  */
 
 /** Offline-first: the machines that need attention sort to the top. */

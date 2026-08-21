@@ -2,7 +2,7 @@ import type { Alert, Device } from '../../services/api';
 import type { MobileSummary, OrganizationSummary } from '../../services/systems';
 
 /**
- * The four independent fetches behind the Systems screen, in the order
+ * The five independent fetches behind the Systems screen, in the order
  * `fetchAll` issues them.
  */
 export interface SystemsSlices {
@@ -39,11 +39,11 @@ function take<T>(result: PromiseSettledResult<T>, previous: T): T {
 }
 
 /**
- * Merge the settled results of the four Systems fetches over the previously
+ * Merge the settled results of the five Systems fetches over the previously
  * rendered data.
  *
  * The screen used to issue these through `Promise.all`, so a single rejection
- * discarded ALL FOUR results — a transient failure on, say, the summary call
+ * discarded ALL FIVE results — a transient failure on, say, the summary call
  * blanked a fleet of devices that had loaded perfectly well, and the user saw an
  * empty screen with a generic error. Each slice now stands on its own: whatever
  * arrived is rendered, whatever failed keeps its last-known value, and the error

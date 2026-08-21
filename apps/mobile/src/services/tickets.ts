@@ -167,6 +167,11 @@ export async function addTicketComment(
  * Returns the updated ticket the endpoint responds with, so callers apply the
  * server's authoritative status (custom-status mapping can make it differ from
  * the requested one) rather than echoing their own request back into state.
+ *
+ * Note what it does NOT carry: this route returns the raw `tickets` row, so
+ * `statusName`/`statusColor` are absent — those come from a join present only
+ * on the list and detail GET routes. Callers needing the display label must
+ * refetch.
  */
 export async function changeTicketStatus(
   id: string,
