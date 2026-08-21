@@ -311,13 +311,34 @@ export default function NotificationChannelList({
                   {getChannelDescription(channel, t)}
                 </p>
 
-                {/* Last Test Status */}
+                {/* Last Test Status.
+                    The verdict used to live ONLY in the icon: the text beside
+                    it is byte-identical either way ("Last test: {time}"), so a
+                    failed channel test read as a success unless you noticed a
+                    12px glyph. It was worse than that for assistive tech —
+                    lucide-react stamps aria-hidden="true" on any icon with no
+                    children and no aria-, role or title prop, so the verdict was
+                    not in the accessibility tree at all.
+
+                    The status word now carries it as real text, which fixes both
+                    audiences at once and needs no new strings. The icon goes
+                    back to being decorative, which is what it now is. #3697. */}
                 <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                   {channel.lastTestStatus === 'success' && (
-                    <CheckCircle className="h-3 w-3 text-green-600" />
+                    <>
+                      <CheckCircle className="h-3 w-3 text-green-600" />
+                      <span className="font-medium text-green-600">
+                        {t('common:shared.progress.status.success')}
+                      </span>
+                    </>
                   )}
                   {channel.lastTestStatus === 'failed' && (
-                    <XCircle className="h-3 w-3 text-red-600" />
+                    <>
+                      <XCircle className="h-3 w-3 text-red-600" />
+                      <span className="font-medium text-red-600">
+                        {t('common:shared.progress.status.failed')}
+                      </span>
+                    </>
                   )}
                   <span>
                     {channel.lastTestStatus
