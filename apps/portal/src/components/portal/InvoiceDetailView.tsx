@@ -324,9 +324,9 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
             {Number(invoice.amountPaid) > 0 && (
               <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid, currency)}</span></div>
             )}
-            <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+            <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
               <span className="text-sm font-semibold text-foreground">Balance due</span>
-              <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }} data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
+              <span className="doc-accent-text text-2xl font-semibold tabular-nums" data-testid="invoice-balance-due">{money(invoice.balance, currency)}</span>
             </div>
             {hasDeposit && (
               <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="invoice-deposit-strip">

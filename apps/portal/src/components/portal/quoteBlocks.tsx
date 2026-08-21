@@ -152,6 +152,18 @@ function PricingTable({
   );
 }
 
+/** Author-chosen column alignment as a utility class.
+ *  This was an inline `textAlign` style, which the production CSP refuses
+ *  (`style-src-attr 'none'`), so every author-set column quietly left-aligned
+ *  for customers while looking right in dev. */
+function alignClass(align?: string | null): string {
+  switch (align) {
+    case 'center': return 'text-center';
+    case 'right': return 'text-right';
+    default: return 'text-left';
+  }
+}
+
 export function QuoteBlocks({
   blocks,
   lines,
@@ -223,8 +235,12 @@ export function QuoteBlocks({
             <img
               src={imageUrl(imageId)}
               alt={caption || 'Proposal image'}
-              className="rounded-lg border"
-              style={Number.isFinite(width) && width > 0 ? { maxWidth: `${width}px`, width: '100%' } : { maxWidth: '100%' }}
+              // The author's width rides on the `width` ATTRIBUTE rather than an
+              // inline style: attributes are presentational, not covered by
+              // `style-src-attr 'none'`, so the sizing survives in production.
+              // max-w-full keeps it from overflowing a narrow phone.
+              width={Number.isFinite(width) && width > 0 ? width : undefined}
+              className="h-auto max-w-full rounded-lg border"
             />
           ) : (
             <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">Image unavailable</div>
@@ -289,8 +305,8 @@ export function QuoteBlocks({
                 {c.columns.map((col, i) => (
                   <th
                     key={i}
-                    style={{ textAlign: col.align ?? 'left' }}
-                    className="px-3 py-2 font-semibold text-foreground"
+                    scope="col"
+                    className={`px-3 py-2 font-semibold text-foreground ${alignClass(col.align)}`}
                     dangerouslySetInnerHTML={{ __html: col.label }}
                   />
                 ))}
@@ -302,8 +318,7 @@ export function QuoteBlocks({
                   {row.cells.map((cell, ci) => (
                     <td
                       key={ci}
-                      style={{ textAlign: c.columns?.[ci]?.align ?? 'left' }}
-                      className="px-3 py-2 align-top text-foreground/90"
+                      className={`px-3 py-2 align-top text-foreground/90 ${alignClass(c.columns?.[ci]?.align)}`}
                       dangerouslySetInnerHTML={{ __html: cell }}
                     />
                   ))}

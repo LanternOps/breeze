@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
 
-const SIGNATURE_FONT = '"Snell Roundhand", "Brush Script MT", "Segoe Script", "Apple Chancery", cursive';
 
 function today(): string {
   const d = new Date();
@@ -84,8 +83,11 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix }: Sign
         <div className="flex min-h-12 items-end border-b border-foreground/30 pb-1.5">
           <span
             data-testid={`${testIdPrefix}-signature-preview`}
-            style={{ fontFamily: SIGNATURE_FONT }}
-            className="text-3xl leading-none text-foreground"
+            /* .signature-preview carries the cursive stack. It was an inline
+               fontFamily, which the production CSP (style-src-attr 'none')
+               refuses, so the signature rendered in ordinary body text for
+               every customer while looking correct in dev. */
+            className="signature-preview text-3xl leading-none text-foreground"
           >
             {trimmed || ' '}
           </span>

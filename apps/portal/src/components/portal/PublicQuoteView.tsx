@@ -209,13 +209,13 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
               <>
                 {/* Anchor row — due on acceptance = deposit due now + remaining
                     balance, stated instead of implied (see QuoteDetailView). */}
-                <div className="flex justify-between border-t pt-3 text-sm" style={{ borderColor: 'var(--doc-accent)' }} data-testid="public-quote-due-on-acceptance">
+                <div className="doc-accent-border flex justify-between border-t pt-3 text-sm" data-testid="public-quote-due-on-acceptance">
                   <span className="font-medium text-foreground">Due on acceptance</span>
                   <span className="font-medium tabular-nums text-foreground">{money(dueOnAcceptance, currency)}</span>
                 </div>
                 <div className="flex items-baseline justify-between" data-testid="public-quote-deposit-due">
                   <span className="text-sm font-semibold text-foreground">Deposit due now</span>
-                  <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                  <span className="doc-accent-text text-2xl font-semibold tabular-nums">
                     {money(depositDue, currency)}
                   </span>
                 </div>
@@ -225,9 +225,9 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
                 </div>
               </>
             ) : (
-              <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+              <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
                 <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-                <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
+                <span className="doc-accent-text text-2xl font-semibold tabular-nums">
                   {money(dueOnAcceptance, currency)}
                 </span>
               </div>
