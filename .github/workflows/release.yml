@@ -1731,8 +1731,16 @@ jobs:
           # credential and a prerelease tag would be signed with the production
           # certificate. This label can only match one environment, so a
           # repo-level secret fails the other one loudly instead.
+          #
+          # It is stored as a SECRET despite holding no secret value, because it
+          # only proves anything if it lives in the same store as the
+          # credentials. As a repository/environment variable an operator could
+          # scope the label correctly while still leaving the credentials at
+          # repository level, and this check would pass.
           if ($env:SSLCOM_ENVIRONMENT_LABEL -ne $env:EXPECTED_ENVIRONMENT) {
-            throw "SSLCOM_ENVIRONMENT_LABEL is '$($env:SSLCOM_ENVIRONMENT_LABEL)' but this job runs in '$($env:EXPECTED_ENVIRONMENT)'. The SSLCOM_* secrets must be scoped to each signing environment, not to the repository."
+            # Do not interpolate the label: it is stored as a secret, so its
+            # value is masked in the log and would print as '***'.
+            throw "SSLCOM_ENVIRONMENT_LABEL does not match '$($env:EXPECTED_ENVIRONMENT)', the environment this job is running in. Add the SSLCOM_* secrets to the signing-production and signing-prerelease environments individually -- not to the repository -- and set SSLCOM_ENVIRONMENT_LABEL in each to that environment's own name."
           }
 
       # SUPPLY CHAIN: the action pin below is a 40-char commit SHA, but at

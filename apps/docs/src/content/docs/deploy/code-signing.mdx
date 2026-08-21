@@ -77,7 +77,9 @@ The MSI carries a **per-edition product identity**: the public release builds th
 <Aside type="note" title="Operators: SSL.com secrets are per-environment">
   The SSL.com path reads `SSLCOM_USERNAME`, `SSLCOM_PASSWORD`, `SSLCOM_CREDENTIAL_ID`, `SSLCOM_TOTP_SECRET`, `SSLCOM_CERT_SHA256` and `SSLCOM_ENVIRONMENT_LABEL`. These **must** be added to the `signing-production` and `signing-prerelease` GitHub Environments individually, not to the repository.
 
-  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against exactly that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and a repository-level secret will fail the other environment loudly instead of signing silently.
+  Only the first four are credentials. `SSLCOM_CERT_SHA256` is a public certificate hash and `SSLCOM_ENVIRONMENT_LABEL` is just the environment's own name — both are stored as secrets rather than variables so that they sit in the same place as the credentials they describe.
+
+  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against exactly that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and a repository-level secret will fail the other environment loudly instead of signing silently. Keeping it alongside the credentials is what makes the check meaningful — as a variable it could be scoped correctly while the credentials were not.
 </Aside>
 
 ---
