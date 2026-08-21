@@ -98,6 +98,7 @@ async function createFixture(unique: string) {
     const [org] = await db
       .insert(organizations)
       .values({
+        currencyCode: 'USD',
         partnerId: partner!.id,
         name: `Cleanup Org ${unique}`,
         slug: `cleanup-org-${unique}`,

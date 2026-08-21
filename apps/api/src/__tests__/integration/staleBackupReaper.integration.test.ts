@@ -33,7 +33,7 @@ runDb('reaps an in-flight stalled backup job but leaves a terminal (completed) j
       .returning({ id: partners.id });
     const [org] = await db
       .insert(organizations)
-      .values({ partnerId: partner!.id, name: `Reap Org ${unique}`, slug: `reap-org-${unique}`, type: 'customer', status: 'active' })
+      .values({ currencyCode: 'USD', partnerId: partner!.id, name: `Reap Org ${unique}`, slug: `reap-org-${unique}`, type: 'customer', status: 'active' })
       .returning({ id: organizations.id });
     const [site] = await db.insert(sites).values({ orgId: org!.id, name: `Reap Site ${unique}` }).returning({ id: sites.id });
     const [device] = await db

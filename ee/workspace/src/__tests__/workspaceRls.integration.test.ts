@@ -20,9 +20,9 @@ beforeAll(async () => {
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerA}, 'wsp-rls-a', ${`wsp-rls-a-${fixtureSuffix}`}),
                      (${partnerB}, 'wsp-rls-b', ${`wsp-rls-b-${fixtureSuffix}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerA}, 'wsp-org-a', ${`wsp-org-a-${fixtureSuffix}`}),
-                     (${orgB}, ${partnerB}, 'wsp-org-b', ${`wsp-org-b-${fixtureSuffix}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerA}, 'wsp-org-a', ${`wsp-org-a-${fixtureSuffix}`}, 'USD'),
+                     (${orgB}, ${partnerB}, 'wsp-org-b', ${`wsp-org-b-${fixtureSuffix}`}, 'USD')`;
   userA = randomUUID();
   userB = randomUUID();
   await admin`INSERT INTO users (id, partner_id, org_id, email, name)

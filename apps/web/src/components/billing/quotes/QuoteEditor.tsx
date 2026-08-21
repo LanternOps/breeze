@@ -714,8 +714,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         customerVisible: l.customerVisible, recurrence: l.recurrence,
       };
     });
-    return computeQuoteTotals(merged, effectiveRate);
-  }, [lineDrafts, lines, effectiveRate, hasPendingDeletes]);
+    return computeQuoteTotals(merged, effectiveRate, undefined, quote.currencyCode);
+  }, [lineDrafts, lines, effectiveRate, hasPendingDeletes, quote.currencyCode]);
   const railOneTime = optimisticTotals?.oneTimeTotal ?? quote.oneTimeTotal;
   const railMonthly = optimisticTotals?.monthlyRecurringTotal ?? quote.monthlyRecurringTotal;
   const railAnnual = optimisticTotals?.annualRecurringTotal ?? quote.annualRecurringTotal;
@@ -758,8 +758,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     [depositType, depositPercentDraft, parseDepositPercent],
   );
   const liveDepositTotals = useMemo(
-    () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig),
-    [mergedLines, effectiveRate, depositConfig],
+    () => computeQuoteTotals(mergedLines, effectiveRate, depositConfig, quote.currencyCode),
+    [mergedLines, effectiveRate, depositConfig, quote.currencyCode],
   );
   const railDeposit = liveDepositTotals.depositDueTotal;
   const railBreakdown = liveDepositTotals.categoryBreakdown;
@@ -1816,11 +1816,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     const withCost = selectedLines.filter((l) => l.unitCost !== null && Number(l.unitCost) > 0);
     void applyBulk(
       withCost,
-      (l) => ({ unitPrice: Number(priceFromMarkup(l.unitCost as string, pct)) }),
+      (l) => ({ unitPrice: Number(priceFromMarkup(l.unitCost as string, pct, quote.currencyCode)) }),
       'price',
       selectedLines.length - withCost.length,
     );
-  }, [applyBulk, selectedLines]);
+  }, [applyBulk, selectedLines, quote.currencyCode]);
 
   // Inline edit of a block's content (heading text/level, rich-text html). The
   // block type is restated so the server validates the content shape; it is

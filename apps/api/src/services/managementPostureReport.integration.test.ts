@@ -56,7 +56,7 @@ async function seedMixedFixture(): Promise<{ org1: string; org2: string }> {
       .values({ name: `PostureP1 ${sfx}`, slug: `posture-p1-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o1] = await db.insert(organizations)
-      .values({ partnerId: p1!.id, name: 'Posture Org 1', slug: `posture-o1-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p1!.id, name: 'Posture Org 1', slug: `posture-o1-${sfx}` })
       .returning({ id: organizations.id });
     const [s1] = await db.insert(sites)
       .values({ orgId: o1!.id, name: 'HQ' })
@@ -69,7 +69,7 @@ async function seedMixedFixture(): Promise<{ org1: string; org2: string }> {
       .values({ name: `PostureP2 ${sfx}`, slug: `posture-p2-${sfx}`, type: 'msp', plan: 'pro', status: 'active' })
       .returning({ id: partners.id });
     const [o2] = await db.insert(organizations)
-      .values({ partnerId: p2!.id, name: 'Posture Org 2', slug: `posture-o2-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p2!.id, name: 'Posture Org 2', slug: `posture-o2-${sfx}` })
       .returning({ id: organizations.id });
     const [s2] = await db.insert(sites)
       .values({ orgId: o2!.id, name: 'HQ' })

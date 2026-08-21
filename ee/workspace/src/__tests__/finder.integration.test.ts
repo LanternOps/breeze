@@ -128,9 +128,9 @@ beforeAll(async () => {
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerA}, 'wsp finder a', ${`wsp-finder-a-${suffix}`}),
                      (${partnerB}, 'wsp finder b', ${`wsp-finder-b-${suffix}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerA}, 'wsp finder org a', ${`wsp-finder-org-a-${suffix}`}),
-                     (${orgB}, ${partnerB}, 'wsp finder org b', ${`wsp-finder-org-b-${suffix}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerA}, 'wsp finder org a', ${`wsp-finder-org-a-${suffix}`}, 'USD'),
+                     (${orgB}, ${partnerB}, 'wsp finder org b', ${`wsp-finder-org-b-${suffix}`}, 'USD')`;
   await admin`INSERT INTO sites (id, org_id, name)
               VALUES (${siteA}, ${orgA}, 'wsp finder site')`;
   await admin`INSERT INTO devices

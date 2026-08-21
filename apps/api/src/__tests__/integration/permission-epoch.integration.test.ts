@@ -45,6 +45,7 @@ async function seedFixture(): Promise<Fixture> {
   const [org] = await tdb
     .insert(organizations)
     .values({
+      currencyCode: 'USD',
       partnerId: partner!.id,
       name: `Permission epoch org ${suffix}`,
       slug: `permission-epoch-org-${suffix}`,

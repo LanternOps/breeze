@@ -44,7 +44,7 @@ async function seedActiveTenant(status: 'active' | 'suspended' = 'active'): Prom
       .values({ name: `TS ${sfx}`, slug: `ts-${sfx}`, type: 'msp', plan: 'pro', status })
       .returning({ id: partners.id });
     const [o] = await db.insert(organizations)
-      .values({ partnerId: p!.id, name: `TSOrg ${sfx}`, slug: `tso-${sfx}` })
+      .values({ currencyCode: 'USD', partnerId: p!.id, name: `TSOrg ${sfx}`, slug: `tso-${sfx}` })
       .returning({ id: organizations.id });
     return { partnerId: p!.id, orgId: o!.id };
   });

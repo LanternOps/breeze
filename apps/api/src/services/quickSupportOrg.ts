@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { organizations, sites } from '../db/schema';
+import { organizations, partners, sites } from '../db/schema';
 
 /**
  * Resolve (creating on first use) the hidden 'quick_support' organization for a
@@ -31,11 +31,19 @@ export async function getOrCreateQuickSupportOrg(
 
     let [org] = await findOrg();
     if (!org) {
+      const [partnerRow] = await db
+        .select({ currencyCode: partners.currencyCode })
+        .from(partners)
+        .where(eq(partners.id, partnerId))
+        .limit(1);
+      if (!partnerRow) throw new Error('quick support partner not found');
+
       // onConflictDoNothing + re-select rather than catching a 23505: postgres.js
       // rethrows errors handled inside begin(), so relying on transaction-abort
       // recovery would surface as a 500 under concurrent creation.
       await db.insert(organizations).values({
         partnerId,
+        currencyCode: partnerRow.currencyCode,
         name: 'Quick Support',
         // Full uuid, not an 8-char prefix: org slugs are globally unique, and a
         // truncated prefix could collide across partners and make provisioning

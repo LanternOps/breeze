@@ -51,7 +51,7 @@ vi.mock('./providerRegistry', () => ({
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../tenantLifecycle', () => ({ restoreOrganizationTenantAccess: vi.fn() }));
 
-import { organizations, organizationExternalLinks, sites } from '../../db/schema';
+import { organizations, organizationExternalLinks, partners, sites } from '../../db/schema';
 import { contacts } from '../../db/schema/contacts';
 import {
   importQuickbooksCustomers,
@@ -90,6 +90,8 @@ function stubState(orgs: OrgRow[] = [], links: LinkRow[] = [], laterLinkReads: u
         let rows: unknown[];
         if (table === organizations) {
           rows = orgRows;
+        } else if (table === partners) {
+          rows = [{ currencyCode: 'CAD' }];
         } else if (table === contacts) {
           // The contacts compat mirror reads the existing primary before
           // writing. Keyed by table so it does NOT consume a link read —
@@ -232,7 +234,7 @@ describe('importQuickbooksCustomers', () => {
     expect(summary.errors).toEqual([]);
 
     expect(orgInserts()[0]).toMatchObject({
-      partnerId: 'p1', name: 'Acme Co', slug: 'acme-co', type: 'customer',
+      partnerId: 'p1', currencyCode: 'CAD', name: 'Acme Co', slug: 'acme-co', type: 'customer',
       billingContact: { name: 'Jane Doe', email: 'ap@acme.test', phone: '555' },
       billingAddressLine1: '1 Bill St', billingAddressCity: 'Austin',
       billingAddressRegion: 'TX', billingAddressPostalCode: '78701', billingAddressCountry: 'US',

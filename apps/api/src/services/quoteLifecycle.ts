@@ -105,6 +105,7 @@ export async function sendQuote(
       lines as QuoteLineForMath[],
       quote.taxRate ? parseFloat(quote.taxRate) : null,
       toQuoteDepositConfig(quote.depositType, quote.depositPercent),
+      quote.currencyCode,
     );
     if (!check.ok) {
       throw new QuoteServiceError(`Cannot send: ${check.message}`, 409, 'DEPOSIT_INVALID');

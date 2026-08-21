@@ -110,6 +110,7 @@ async function seedDeviceWithOnedrivePolicy(options: {
     const [org] = await db
       .insert(organizations)
       .values({
+        currencyCode: 'USD',
         partnerId: partner.id,
         name: `OD Test Org ${ts}-${rand}`,
         slug: `od-org-${ts}-${rand}`,

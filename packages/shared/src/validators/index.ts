@@ -15,6 +15,7 @@ export * from './reliability';
 export * from './businessEmail';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
+export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './safeRelativePath';
 export * from './authenticator';

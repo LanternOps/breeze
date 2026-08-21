@@ -68,7 +68,7 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
       // Derive the amount accept actually invoices (one-time only) so the prospect
       // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
       // plus the deposit due + per-category subtotals for the summary panel.
-      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent));
+      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
       // Resolves every `contract` block's pinned template version (system context)
       // and replaces its raw authoring content with the token-gated render contract.
       const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`);

@@ -88,8 +88,8 @@ beforeAll(async () => {
 
   await admin`INSERT INTO partners (id, name, slug)
               VALUES (${partnerId}, 'workspace crawler integration', ${`wsp-crawler-${suffix}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgId}, ${partnerId}, 'workspace crawler org', ${`wsp-crawler-org-${suffix}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgId}, ${partnerId}, 'workspace crawler org', ${`wsp-crawler-org-${suffix}`}, 'USD')`;
   await admin`INSERT INTO sites (id, org_id, name)
               VALUES (${siteId}, ${orgId}, 'workspace crawler site')`;
   await admin`INSERT INTO devices

@@ -54,6 +54,10 @@ import { mergeBillingContact } from './contacts/compat';
 describe('invoiceService guards', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
+  const invoiceId = 'i1';
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const { recordPayment } = svc;
+
   it('addManualLine rejects a non-draft invoice with NOT_A_DRAFT (409)', async () => {
     // getOwnedInvoiceOr404 → a sent invoice
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
@@ -128,6 +132,75 @@ describe('invoiceService guards', () => {
     await expect(
       svc.recordPayment('i1', { amount: 50.01, method: 'check', receivedAt: '2026-06-14' }, actor)
     ).rejects.toMatchObject({ code: 'OVERPAYMENT', status: 400 });
+  });
+
+  it('rejects a payment not representable in the invoice currency', async () => {
+    const invoice = {
+      id: invoiceId,
+      status: 'sent',
+      orgId: 'org1',
+      siteId: null,
+      partnerId: 'p1',
+      invoiceNumber: 'INV-0001',
+      currencyCode: 'JPY',
+      total: '2000.00',
+      amountPaid: '0.00',
+      balance: '2000.00',
+      dueDate: '2026-09-01',
+      voidedAt: null,
+      paidAt: null,
+      markedOverdueAt: null,
+    };
+    queueResult([invoice]);
+    queueResult([{ id: 'pay1', amount: '100.50', method: 'cash', reference: null, recordedBy: actor.userId }]);
+    queueResult([invoice]);
+    queueResult([{ amount: '100.50' }]);
+    queueResult([]);
+    queueResult([{ ...invoice, status: 'partially_paid', amountPaid: '100.50', balance: '1899.50' }]);
+
+    await expect(recordPayment(invoiceId, { amount: '100.50', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
+  });
+
+  it('accepts the exact payoff of a legacy non-representable balance (JPY 1000.50)', async () => {
+    // Pre-multi-currency cent math could leave a JPY invoice with a
+    // cent-fraction balance. The exact-payoff amount must bypass the
+    // representability guard or the invoice can never reach 'paid'.
+    const invoice = {
+      id: invoiceId,
+      status: 'sent',
+      orgId: 'org1',
+      siteId: null,
+      partnerId: 'p1',
+      invoiceNumber: 'INV-0002',
+      currencyCode: 'JPY',
+      total: '1000.50',
+      amountPaid: '0.00',
+      balance: '1000.50',
+      dueDate: '2026-09-01',
+      voidedAt: null,
+      paidAt: null,
+      markedOverdueAt: null,
+    };
+    queueResult([invoice]); // getOwnedInvoiceOr404 (guards)
+    queueResult([{ id: 'pay1', amount: '1000.50', method: 'cash', reference: null, recordedBy: actor.userId }]); // payment insert
+    queueResult([invoice]); // recomputeInvoiceStatus → invoice
+    queueResult([{ amount: '1000.50' }]); // payments sum
+    queueResult([]); // invoice status update
+    queueResult([{ ...invoice, status: 'paid', amountPaid: '1000.50', balance: '0.00' }]); // final read
+
+    const res = await recordPayment(invoiceId, { amount: '1000.50', method: 'cash', receivedAt: new Date() } as any, actor);
+    expect(res.invoice.status).toBe('paid');
+    expect(res.audit.paymentId).toBe('pay1');
+  });
+
+  it('still rejects a non-representable JPY amount that is NOT the exact payoff', async () => {
+    queueResult([{
+      id: invoiceId, status: 'sent', orgId: 'org1', siteId: null, partnerId: 'p1',
+      currencyCode: 'JPY', total: '1000.50', amountPaid: '0.00', balance: '1000.50',
+    }]);
+    await expect(recordPayment(invoiceId, { amount: '500.50', method: 'cash', receivedAt: new Date() } as any, actor))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AMOUNT' });
   });
 
   it('getCustomerInvoice returns 404 INVOICE_NOT_FOUND for a mismatched org (no existence leak)', async () => {

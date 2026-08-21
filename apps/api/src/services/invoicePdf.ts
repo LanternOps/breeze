@@ -479,7 +479,7 @@ export function buildInvoiceEmailAmounts(inv: {
   currencyCode: string | null;
 }): { total: string; amountDueNow: string; amountPaid: string | undefined } {
   const currency = inv.currencyCode ?? 'USD';
-  const chargeNow = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance });
+  const chargeNow = computeChargeNow({ depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance }, currency);
   return {
     total: formatMoney(inv.total, currency),
     amountDueNow: formatMoney(chargeNow.amount, currency),
