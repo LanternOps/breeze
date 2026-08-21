@@ -431,7 +431,7 @@ export function ReadonlyLineRow({ line: l, quoteId, currency, taxRate, isFirst, 
   const markupStr = mk === null ? na : formatPercent(mk / 100, { maximumFractionDigits: 2 });
   const netCents = l.unitCost === null
     ? null
-    : toCents(computeLineTotal(l.quantity, l.unitPrice)) - toCents(computeLineTotal(l.quantity, l.unitCost));
+    : toCents(computeLineTotal(l.quantity, l.unitPrice, currency)) - toCents(computeLineTotal(l.quantity, l.unitCost, currency));
   // Explicit cost=0 ("no cost", e.g. labor/service — Task B1) is distinct from
   // a never-entered cost (null, flagged by costMissing below): it's a real,
   // deliberately-zero value, not a gap.
@@ -827,7 +827,7 @@ export function EditableLineRow({
   // price can't make the row Total and the rail contribution disagree by a cent
   // while typing. When qty/price are unchanged we defer to the authoritative
   // persisted lineTotal so server normalization still wins on settle.
-  const displayTotal = totalDiverged ? computeLineTotal(effQty, effPrice) : line.lineTotal;
+  const displayTotal = totalDiverged ? computeLineTotal(effQty, effPrice, currency) : line.lineTotal;
   const displayTax = lineTaxAmount(displayTotal, taxable, taxRate);
 
   // Markup is derived from price+cost. The input is controlled by local state that
@@ -842,7 +842,7 @@ export function EditableLineRow({
   useEffect(() => { if (!markupFocused.current) setMarkupInput(markupStr); }, [markupStr]);
   const netCents = cost.trim() === ''
     ? null
-    : toCents(computeLineTotal(effQty, effPrice)) - toCents(computeLineTotal(effQty, cost));
+    : toCents(computeLineTotal(effQty, effPrice, currency)) - toCents(computeLineTotal(effQty, cost, currency));
   const costDirty = cost.trim() === '' ? line.unitCost !== null : Number(cost) !== Number(line.unitCost);
   // Independent of `costDirty` (unsaved-vs-persisted): true whenever the FIELD
   // is currently empty, saved or not — drives the warning treatment (Task 2)
@@ -1008,7 +1008,7 @@ export function EditableLineRow({
     // Number('') is 0 (finite), which would otherwise rewrite unitPrice down to cost
     // (zero margin) just because the user cleared the field.
     if (cost.trim() === '' || raw.trim() === '' || !Number.isFinite(m)) return;
-    const nextPrice = priceFromMarkup(cost, m);
+    const nextPrice = priceFromMarkup(cost, m, currency);
     setPrice(nextPrice);
     priceEdited.current = false;
     if (Number(nextPrice) !== Number(line.unitPrice)) void edit({ unitPrice: Number(nextPrice) }, 'price');

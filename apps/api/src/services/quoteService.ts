@@ -230,6 +230,7 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
     taxRate: quotes.taxRate,
     depositType: quotes.depositType,
     depositPercent: quotes.depositPercent,
+    currencyCode: quotes.currencyCode,
   }).from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   const lines = await dbc.select({
     quantity: quoteLines.quantity,
@@ -241,7 +242,7 @@ async function recomputeAndPersist(quoteId: string, dbc: Pick<typeof db, 'select
     itemType: quoteLines.itemType,
   }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId));
   const deposit = toQuoteDepositConfig(q?.depositType, q?.depositPercent);
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit);
+  const totals = computeQuoteTotals(lines as QuoteLineForMath[], q?.taxRate ? parseFloat(q.taxRate) : null, deposit, q?.currencyCode);
   await dbc.update(quotes).set({
     subtotal: totals.subtotal,
     taxTotal: totals.taxTotal,
@@ -427,6 +428,7 @@ export async function cloneQuote(id: string, actor: QuoteActor, input: CloneQuot
     lines as QuoteLineForMath[],
     taxRate ? parseFloat(taxRate) : null,
     toQuoteDepositConfig(source.depositType, source.depositPercent),
+    source.currencyCode,
   );
 
   // A clone must never mint a NEW orphan. Two source shapes produce one:
@@ -628,6 +630,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
     lines as QuoteLineForMath[],
     q.taxRate ? parseFloat(q.taxRate) : null,
     toQuoteDepositConfig(q.depositType, q.depositPercent),
+    q.currencyCode,
   );
   // Resolve the customer "bill to" for display. Keyed on quote STATUS, not on
   // whether the frozen fields happen to be populated:
@@ -805,6 +808,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       lines as QuoteLineForMath[],
       effectiveTaxRate === null ? null : Number(effectiveTaxRate),
       toQuoteDepositConfig(nextType, nextPercent),
+      q.currencyCode,
     );
     if (!check.ok) throw new QuoteServiceError(check.message, 400, check.code);
     set.depositType = nextType;
@@ -1039,7 +1043,7 @@ export async function addManualLine(quoteId: string, input: QuoteLineInput, acto
     unitPrice,
     taxable: input.taxable,
     customerVisible: input.customerVisible,
-    lineTotal: computeLineTotal(quantity, unitPrice),
+    lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
     recurrence: input.recurrence,
     termMonths: input.termMonths ?? null,
     billingFrequency: input.billingFrequency ?? null,
@@ -1107,7 +1111,7 @@ export async function addCatalogLine(
     unitPrice: item.unitPrice,
     taxable: item.taxable,
     customerVisible: true,
-    lineTotal: computeLineTotal(qty, item.unitPrice),
+    lineTotal: computeLineTotal(qty, item.unitPrice, q.currencyCode),
     recurrence,
     termMonths: item.commitmentTermMonths ?? null,
     billingFrequency: item.billingFrequency ?? null,
@@ -1146,7 +1150,7 @@ export async function updateLine(
   },
   actor: QuoteActor
 ) {
-  await loadDraft(quoteId, actor);
+  const q = await loadDraft(quoteId, actor);
   const [existing] = await db.select().from(quoteLines)
     .where(and(eq(quoteLines.id, lineId), eq(quoteLines.quoteId, quoteId))).limit(1);
   if (!existing) throw new QuoteServiceError('Line not found', 404, 'LINE_NOT_FOUND');
@@ -1162,7 +1166,7 @@ export async function updateLine(
     taxable: input.taxable ?? existing.taxable,
     customerVisible: input.customerVisible ?? existing.customerVisible,
     recurrence: input.recurrence ?? existing.recurrence,
-    lineTotal: computeLineTotal(quantity, unitPrice),
+    lineTotal: computeLineTotal(quantity, unitPrice, q.currencyCode),
   };
   if (input.termMonths !== undefined) set.termMonths = input.termMonths;
   if (input.sortOrder !== undefined) set.sortOrder = input.sortOrder;
