@@ -135,6 +135,30 @@ Removes the catalog item and all of its associated versions. Returns `{ "success
 
 ---
 
+## Install methods
+
+When you add a package under **Software Library → Add Package**, you choose where the installer comes from. Each version records its own method, so a single catalog item can cover Windows and macOS with whatever fits each platform.
+
+| Source | Use it for |
+|---|---|
+| **Download URL** | A vendor installer fetched over HTTPS. Breeze records the installer type (MSI, EXE, DMG, DEB, PKG) or auto-detects it from the URL. |
+| **Upload file** | An installer you host in Breeze. Requires S3-compatible object storage configured on the server; the form tells you if it is not. |
+| **Package manager** | Let **winget** (Windows) or **Homebrew** (macOS) install and update the software. You supply a package ID — search the catalog, or type it in by hand. |
+
+The package-manager option is usually the least work to maintain: there is no installer to host, no download URL to keep current, and no silent-install arguments to work out, because the package manager already knows how to install and upgrade the application.
+
+Search the catalog by name or enter an ID directly (for example `Google.Chrome` for winget). If the package index is unreachable, the form says so and falls back to manual entry rather than leaving you with an empty result list.
+
+### Sharing packages across customers
+
+A package can be scoped to **All organizations** (partner-wide) or to a single organization. Partner-wide packages let you define software once and deploy it to every customer you manage, which is usually what you want for standard applications.
+
+<Aside>
+  Variables work here too — reference values like `{{org.name}}` in a URL or install arguments and Breeze resolves them per organization at deploy time. See [Variables](/features/scripts/#variables).
+</Aside>
+
+---
+
 ## Software Versions
 
 Each catalog item can have multiple version records. Versions track release metadata, download URLs, checksums, and silent install/uninstall arguments that the agent uses for automated deployment.
