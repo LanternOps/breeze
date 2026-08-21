@@ -22,6 +22,9 @@ function sqlNumberPresent(t: { invoiceNumber: unknown }): SQL {
 function sqlOpenForOverdue(t: { status: unknown }): SQL {
   return sql`${t.status} IN ('sent','partially_paid')`;
 }
+function sqlPublicLinkHashPresent(t: { publicLinkTokenHash: unknown }): SQL {
+  return sql`${t.publicLinkTokenHash} IS NOT NULL`;
+}
 
 export const invoices = pgTable('invoices', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -60,6 +63,13 @@ export const invoices = pgTable('invoices', {
   // self-FKs created in SQL (ON DELETE SET NULL) to keep drizzle types simple
   replacesInvoiceId: uuid('replaces_invoice_id'),
   replacedByInvoiceId: uuid('replaced_by_invoice_id'),
+  // Public view-and-pay link (2026-08-21 spec): SHA-256 hex of the opaque bearer
+  // token (the lookup key — replacing it revokes every issued link), the token
+  // encrypted at rest (row-bound AAD via encryptedColumnRegistry, so copy-link
+  // reproduces the same url), and the expiry persisted at mint.
+  publicLinkTokenHash: char('public_link_token_hash', { length: 64 }),
+  publicLinkTokenCt: text('public_link_token_ct'),
+  publicLinkExpiresAt: timestamp('public_link_expires_at'),
   pdfDocumentRef: text('pdf_document_ref'),
   pdfSha256: char('pdf_sha256', { length: 64 }),
   createdBy: uuid('created_by').references(() => users.id),
@@ -74,7 +84,9 @@ export const invoices = pgTable('invoices', {
   // Composite-FK target for the child (invoice_id, org_id) FKs and the
   // invoices(org_id, partner_id) → organizations dual-axis FK. Created in SQL
   // migration 2026-06-15-b; declared here so db:check-drift stays clean.
-  uniqueIndex('invoices_id_org_uq').on(t.id, t.orgId)
+  uniqueIndex('invoices_id_org_uq').on(t.id, t.orgId),
+  // Public-link lookup key + cross-invoice collision guard (2026-08-21).
+  uniqueIndex('invoices_public_link_hash_uq').on(t.publicLinkTokenHash).where(sqlPublicLinkHashPresent(t))
 ]);
 
 export const invoiceLines = pgTable('invoice_lines', {

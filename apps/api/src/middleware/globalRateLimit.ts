@@ -62,6 +62,13 @@ export interface IsolatedBucket {
  */
 export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/desktop-ws/', name: 'desktopws', limit: 600 },
+  // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
+  // bearer-URL surface. Isolated so a scanner hammering a leaked/expired link
+  // can't burn the shared budget of everything else behind the same NAT, and
+  // capped well below the global 300 — a human paying an invoice makes a
+  // handful of requests. The Stripe-backed mutations (/pay, /settle-return)
+  // carry an additional per-token limiter inside the route.
+  { prefix: '/api/v1/invoices/public/', name: 'invoicepublic', limit: 60 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

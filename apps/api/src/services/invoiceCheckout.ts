@@ -32,7 +32,23 @@ const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
  * the mapping INSERT runs inside a context so it isn't a contextless 0-row
  * no-op (#1375).
  */
-export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActor): Promise<{ url: string }> {
+export interface InvoiceCheckoutUrls {
+  /** Overrides for the Checkout return URLs. The public invoice-link path uses
+   *  session-id-only URLs so the durable bearer token never reaches Stripe's
+   *  logs (2026-08-21 spec §5); the default is the authenticated portal detail
+   *  page, unchanged for the portal/MSP callers. */
+  successUrl?: string;
+  cancelUrl?: string;
+  /** Discriminates the Stripe idempotency key when the return URLs differ from
+   *  the default — identical keys with different params make Stripe reject the
+   *  replay outright, so each URL shape needs its own key family. Omitted for
+   *  the historical portal/MSP path to keep its keys byte-identical. */
+  idempotencySuffix?: string;
+}
+
+export async function createInvoicePayLink(
+  invoiceId: string, actor: InvoiceActor, urls: InvoiceCheckoutUrls = {},
+): Promise<{ url: string }> {
   const [inv] = await withSystemDbAccessContext(() =>
     db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1)
   );
@@ -101,8 +117,8 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     // {CHECKOUT_SESSION_ID} is substituted by Stripe on redirect — the portal
     // verify-on-return handler reads it to settle server-side (the API-key model
     // has no inbound webhook).
-    success_url: `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${portalBaseUrl}/invoices/${inv.id}`,
+    success_url: urls.successUrl ?? `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: urls.cancelUrl ?? `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
       invoice_id: inv.id,
       org_id: inv.orgId,
@@ -118,7 +134,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
     // 50%-deposit invoice has the SAME chargeMinor for the deposit and the later
     // balance charge (different product name but equal amount), so the amount
     // alone can't disambiguate — the explicit dep/bal discriminator does.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}`,
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}`,
   }));
 
   if (!session.url) throw new InvoiceServiceError('Stripe did not return a checkout URL', 500, 'STRIPE_NO_URL');
