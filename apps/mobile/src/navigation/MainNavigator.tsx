@@ -3,6 +3,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import { AlertDetailScreen } from '../screens/alerts/AlertDetailScreen';
 import { DeviceDetailScreen } from '../screens/devices/DeviceDetailScreen';
+import { DevicesListScreen } from '../screens/devices/DevicesListScreen';
 import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
@@ -13,6 +14,7 @@ import type { Alert, Device } from '../services/api';
 
 export type SystemsStackParamList = {
   Systems: undefined;
+  SystemsDevices: { orgId?: string | null; orgName?: string | null } | undefined;
   SystemsAlertDetail: { alert: Alert };
   SystemsDeviceDetail: { device: Device };
 };
@@ -79,6 +81,11 @@ function SystemsStackNavigator() {
       <SystemsStack.Screen
         name="Systems"
         component={SystemsScreen}
+        options={{ headerShown: false }}
+      />
+      <SystemsStack.Screen
+        name="SystemsDevices"
+        component={DevicesListScreen}
         options={{ headerShown: false }}
       />
       <SystemsStack.Screen
