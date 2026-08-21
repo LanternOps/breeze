@@ -22,9 +22,16 @@ value containing a comma (`O="LanternOps, LLC"`) is handled correctly instead of
 failing the release.
 
 .PARAMETER ExpectedThumbprintSha256
-Optional SHA-256 certificate pin. Empty means "do not pin", which is correct for
-Azure Artifact Signing, whose leaf certificates are short-lived by design and
-rotate automatically. Non-empty must be 64 hex characters, separators ignored.
+Optional SHA-256 certificate pin, or a comma-separated allowlist of them. Empty
+means "do not pin", which is correct for Azure Artifact Signing, whose leaf
+certificates are short-lived by design and rotate automatically.
+
+Each entry must be 64 hex characters; internal separators such as the colons in
+`C9:EA:...` are ignored, and entries are split on commas, semicolons and
+whitespace. An allowlist exists so a certificate renewal can be staged: add the
+incoming thumbprint alongside the outgoing one before the changeover, then drop
+the old entry afterwards. Otherwise renewal is a release-day edit made after the
+signing steps have already run and consumed eSigner quota.
 #>
 [CmdletBinding()]
 param(
@@ -68,11 +75,20 @@ function Get-SubjectOrganizationNames {
     return $names
 }
 
-$expectedPin = ''
+$expectedPins = @()
 if (-not [string]::IsNullOrWhiteSpace($ExpectedThumbprintSha256)) {
-    $expectedPin = ($ExpectedThumbprintSha256 -replace '[^0-9A-Fa-f]', '').ToLowerInvariant()
-    if ($expectedPin -notmatch '^[0-9a-f]{64}$') {
-        throw 'ExpectedThumbprintSha256 must contain exactly 64 hexadecimal characters'
+    # Split on list separators only: colons are kept, because a thumbprint is
+    # commonly pasted in 'C9:EA:...' form.
+    foreach ($candidate in ($ExpectedThumbprintSha256 -split '[,;\s]+')) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $normalized = ($candidate -replace '[^0-9A-Fa-f]', '').ToLowerInvariant()
+        if ($normalized -notmatch '^[0-9a-f]{64}$') {
+            throw 'Each ExpectedThumbprintSha256 entry must contain exactly 64 hexadecimal characters'
+        }
+        $expectedPins += $normalized
+    }
+    if ($expectedPins.Count -eq 0) {
+        throw 'ExpectedThumbprintSha256 was set but contained no usable thumbprint'
     }
 }
 
@@ -124,10 +140,10 @@ foreach ($item in $Path) {
         [System.Security.Cryptography.HashAlgorithmName]::SHA256
     ).ToLowerInvariant()
 
-    if ($expectedPin -ne '') {
-        if ($actualPin -ne $expectedPin) {
-            throw "Unexpected signer certificate for $target (SHA-256 $actualPin)"
-        }
+    # Only the actual thumbprint is reported: the expected value is supplied as
+    # a secret and would be masked anyway.
+    if ($expectedPins.Count -gt 0 -and $expectedPins -notcontains $actualPin) {
+        throw "Unexpected signer certificate for $target (SHA-256 $actualPin)"
     }
 
     Write-Host "Verified: $target - Status: $($signature.Status) - Signer: $($certificate.Subject) - SHA-256: $actualPin"

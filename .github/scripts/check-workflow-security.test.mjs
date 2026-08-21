@@ -1044,7 +1044,8 @@ test('the shared signature verifier enforces every check it performs', () => {
     [/-not \$signature\.TimeStamperCertificate[\s\S]{0,120}throw/u, 'RFC 3161 timestamp present'],
     [/NotAfter[\s\S]{0,160}throw/u, 'certificate not expired'],
     [/ExpectedSubject[\s\S]{0,200}throw/u, 'publisher subject'],
-    [/\$actualPin -ne \$expectedPin[\s\S]{0,160}throw/u, 'certificate pin'],
+    [/\$expectedPins -notcontains \$actualPin[\s\S]{0,200}throw/u, 'certificate pin'],
+    [/-notmatch '\^\[0-9a-f\]\{64\}\$'[\s\S]{0,160}throw/u, 'thumbprint format'],
   ];
   for (const [pattern, description] of enforced) {
     assert.match(verifier, pattern, `verifier must throw on: ${description}`);

@@ -1849,6 +1849,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Republished so the release manifest can record which CA vouched for the
+    # Windows artifacts. Without it a provider switch is invisible to every
+    # downstream verifier holding the manifest signing key.
+    outputs:
+      provider: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
     steps:
       - name: Checkout convergence assertion
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2127,6 +2132,10 @@ jobs:
           merge-multiple: false
 
       - name: Prepare release assets
+        env:
+          # Empty when Windows signing was skipped; the manifest then simply
+          # omits the field rather than asserting a provider that never ran.
+          WINDOWS_SIGNING_PROVIDER_USED: ${{ needs.sign-windows-tauri.outputs.provider }}
         run: |
           mkdir -p release-assets
 
@@ -2274,6 +2283,12 @@ jobs:
                   return "macos-developer-id-notarization-required"
               return "release-workflow-produced"
 
+          windows_signing_provider = os.environ.get("WINDOWS_SIGNING_PROVIDER_USED", "").strip()
+          if windows_signing_provider not in ("", "azure", "sslcom"):
+              raise SystemExit(
+                  f"unexpected Windows signing provider: {windows_signing_provider!r}"
+              )
+
           assets = []
           for path in sorted(release_dir.iterdir(), key=lambda item: item.name):
               if not path.is_file() or path.name in excluded:
@@ -2292,6 +2307,14 @@ jobs:
               }
               if is_signing_input(path.name):
                   entry["intendedUse"] = "signing-input"
+              # Which CA actually vouched for this artifact. Recorded only where
+              # Authenticode is required, so a provider switch is auditable from
+              # the signed manifest rather than only from workflow logs.
+              if (
+                  entry["platformTrust"] == "windows-authenticode-required"
+                  and windows_signing_provider
+              ):
+                  entry["signingProvider"] = windows_signing_provider
               assets.append(entry)
 
           manifest = {
