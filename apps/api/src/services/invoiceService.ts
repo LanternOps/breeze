@@ -18,7 +18,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
-import type { ManualLineInput, RecordPaymentInput } from '@breeze/shared';
+import { isRepresentableInCurrency, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 function requirePartner(actor: InvoiceActor): string {
   if (!actor.partnerId) throw new InvoiceServiceError('Partner could not be resolved', 400, 'PARTNER_UNRESOLVABLE');
@@ -737,6 +737,9 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   requireInvoiceAccess(actor, inv);
   if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+  if (!isRepresentableInCurrency(input.amount, inv.currencyCode)) {
+    throw new InvoiceServiceError('Payment amount has more precision than the invoice currency allows', 400, 'INVALID_AMOUNT');
+  }
   // Exact integer-cents comparison — robust against float representation error.
   if (Math.round(Number(input.amount) * 100) > Math.round(Number(inv.balance) * 100)) {
     throw new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT');

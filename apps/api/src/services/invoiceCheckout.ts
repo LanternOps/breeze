@@ -48,7 +48,7 @@ export async function createInvoicePayLink(invoiceId: string, actor: InvoiceActo
   // deposit, deposit partially/fully paid) — never reimplement that logic here.
   const chargeNow = computeChargeNow({
     depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
-  });
+  }, inv.currencyCode);
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');

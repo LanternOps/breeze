@@ -107,7 +107,7 @@ export function InvoiceDetailView({ detail, error }: InvoiceDetailViewProps) {
     depositDue: invoice.depositDue ?? null,
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
-  });
+  }, invoice.currencyCode);
   const payLabel = chargeNow.isDeposit
     ? `Pay deposit ${money(chargeNow.amount, currency)}`
     : `Pay ${money(chargeNow.amount, currency)}`;
