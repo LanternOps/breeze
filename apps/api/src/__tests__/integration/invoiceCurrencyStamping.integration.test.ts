@@ -26,7 +26,7 @@ interface Fixture {
  * assertion below is that the ORG's currency wins over the partner's) plus
  * one billable time entry for the assembly path.
  */
-async function seedFixture(): Promise<Fixture> {
+async function seedFixture(orgCurrency = 'EUR'): Promise<Fixture> {
   const suffix = Math.random().toString(36).slice(2, 10);
   return withSystemDbAccessContext(async () => {
     const [p] = await db.insert(partners).values({
@@ -35,7 +35,7 @@ async function seedFixture(): Promise<Fixture> {
     }).returning({ id: partners.id });
     const partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
-      partnerId, name: `Org ${suffix}`, slug: `cur-org-${suffix}`, currencyCode: 'EUR'
+      partnerId, name: `Org ${suffix}`, slug: `cur-org-${suffix}`, currencyCode: orgCurrency
     }).returning({ id: organizations.id });
     const orgId = o!.id;
     const [u] = await db.insert(users).values({
@@ -106,5 +106,41 @@ describe.runIf(RUN)('invoice currency stamping (spec §5)', () => {
     expect(result.invoice.status).toBe('draft');
     expect(result.invoice.replacesInvoiceId).toBe(issuedId);
     expect(result.invoice.currencyCode).toBe('EUR');
+  });
+});
+
+describe.runIf(RUN)('issueInvoice keeps the stamped header currency (B1)', () => {
+  it('issues an EUR draft under a USD partner without overwriting the header currency', async () => {
+    const f = await seedFixture(); // USD partner, EUR org
+    const { invoice } = await withDbAccessContext(ctx(f), () =>
+      svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
+    expect(invoice.currencyCode).toBe('EUR');
+
+    const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    expect(issued.status).toBe('sent');
+    // B1: the issue UPDATE must not restamp from the partner ('USD').
+    expect(issued.currencyCode).toBe('EUR');
+    // Totals are 2-decimal EUR-rounded (1h @ 100.00, non-taxable labor) and
+    // agree with the header currency.
+    expect(issued.subtotal).toBe('100.00');
+    expect(issued.total).toBe('100.00');
+    expect(issued.balance).toBe('100.00');
+  });
+
+  it('JPY draft: header-currency rounding drives the persisted total (3 × 333.33 → 1000)', async () => {
+    const f = await seedFixture('JPY'); // USD partner, JPY org
+    const inv = await withDbAccessContext(ctx(f), () =>
+      svc.createManualInvoice({ orgId: f.orgId }, actor(f)));
+    expect(inv.currencyCode).toBe('JPY');
+    await withDbAccessContext(ctx(f), () =>
+      svc.addManualLine(inv.id, { description: 'Consulting', quantity: 3, unitPrice: 333.33, taxable: false }, actor(f)));
+
+    const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(inv.id, actor(f)));
+    expect(issued.currencyCode).toBe('JPY');
+    // 3 × 333.33 = 999.99 rounds to a WHOLE-unit JPY total, not the USD-cent
+    // 999.99 the partner currency would have produced.
+    expect(issued.total).toBe('1000.00');
+    expect(issued.subtotal).toBe('1000.00');
+    expect(issued.balance).toBe('1000.00');
   });
 });

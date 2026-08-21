@@ -714,7 +714,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // NULL here on purpose — it means "emailed to the customer" and is stamped
       // only by sendInvoiceEmail. That lets the UI distinguish "Issued" (no email
       // yet) from "Sent" (emailed) instead of mislabeling a plain Issue as Sent.
-      status: 'sent', invoiceNumber: number, currencyCode: partner?.currencyCode ?? 'USD',
+      // currencyCode is deliberately NOT written here (B1): the draft's stamped
+      // header currency is a snapshot and must survive issue verbatim — totals
+      // above are already rounded with inv.currencyCode, so header and totals agree.
+      status: 'sent', invoiceNumber: number,
       issueDate: issueDate.toISOString().slice(0, 10), dueDate: dueDate.toISOString().slice(0, 10),
       taxRate, subtotal, taxTotal, total, balance: total,
       billToName: org?.name ?? null, billToAddress, billToTaxId: org?.taxId ?? null,
