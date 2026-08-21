@@ -1,5 +1,5 @@
 // Executed contract-document snapshots (Task 15 of the contract documents +
-// enhanced proposals plan, docs/superpowers/plans/
+// enhanced proposals plan, docs/superpowers/plans/billing/
 // 2026-07-16-contract-documents-and-enhanced-proposals.md).
 //
 // When a quote that embeds `contract` blocks is ACCEPTED, each block's pinned

@@ -1,5 +1,5 @@
 // Contract block render data + `{{variable}}` substitution (Task 10 of the
-// contract documents + enhanced proposals plan, docs/superpowers/plans/
+// contract documents + enhanced proposals plan, docs/superpowers/plans/billing/
 // 2026-07-16-contract-documents-and-enhanced-proposals.md).
 //
 // Three independent concerns live here:
