@@ -4,6 +4,12 @@ import * as Sentry from '@sentry/react-native';
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
 import { fetchWithTimeout } from './fetchWithTimeout';
+import {
+  applyCsrfSignal,
+  forgetCsrfToken,
+  getCsrfHeaderValue,
+  readCsrfCookie,
+} from './csrfToken';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -215,7 +221,10 @@ async function requestWithPrefix<T>(
   }
 
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    (headers as Record<string, string>)[CSRF_HEADER_NAME] = CSRF_HEADER_VALUE;
+    // Echo the server's double-submit token. Sending the fixed bootstrap value
+    // once the CSRF cookie exists fails `safeCompareTokens` server-side and
+    // rejects every refresh, which ends the session at the access-token TTL.
+    (headers as Record<string, string>)[CSRF_HEADER_NAME] = await getCsrfHeaderValue();
   }
 
   // Always send the per-install id so the API can recognise this phone. This
@@ -247,6 +256,13 @@ async function requestWithPrefix<T>(
     timeoutMs
   );
 
+  // The server sets a fresh CSRF cookie on login and refresh, and clears it on
+  // sign-out or a rejected refresh. It is deliberately not HttpOnly so a native
+  // client can read and echo it. A `cleared` signal must drop our copy too —
+  // holding a token whose cookie is gone fails the server's no-cookie path,
+  // which accepts only the bootstrap literal.
+  await applyCsrfSignal(readCsrfCookie(response.headers.get('set-cookie')));
+
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
     const code = typeof body.code === 'string' ? body.code : undefined;
@@ -254,11 +270,22 @@ async function requestWithPrefix<T>(
       const reason = typeof body.reason === 'string' ? body.reason : null;
       notifyDeviceBlocked(reason);
     }
+    // Self-heal a token the server will not accept. The stored value can
+    // outlive its cookie — SecureStore survives an iOS reinstall while the
+    // cookie jar does not — and if `set-cookie` is not readable on this runtime
+    // we would never have learned a good one. Forgetting it makes the next
+    // request bootstrap with the literal the no-cookie path accepts, so the
+    // client recovers instead of looping.
+    const message =
+      (typeof body.error === 'string' && body.error)
+      || (typeof body.message === 'string' && body.message)
+      || 'An error occurred';
+    if (/csrf/i.test(message)) {
+      await forgetCsrfToken();
+    }
+
     const error: ApiError = {
-      message:
-        (typeof body.error === 'string' && body.error)
-        || (typeof body.message === 'string' && body.message)
-        || 'An error occurred',
+      message,
       code,
       statusCode: response.status
     };

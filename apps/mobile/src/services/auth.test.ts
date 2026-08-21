@@ -16,9 +16,23 @@ vi.mock('@sentry/react-native', () => ({
   captureException: (...a: unknown[]) => sentry.captureException(...a),
 }));
 
+// The CSRF wipe goes through its owning module, not SecureStore directly, so it
+// is invisible to the deleteItemAsync assertions above and needs its own mock.
+const csrf = {
+  clearCsrfToken: vi.fn(),
+};
+vi.mock('./csrfToken', () => ({
+  // auth.ts imports the canonical key from here too, so the factory must supply
+  // it — otherwise the deletions entry is keyed `undefined` and the wipe-failure
+  // report names nothing.
+  CSRF_TOKEN_KEY: 'breeze_csrf_token',
+  clearCsrfToken: (...a: unknown[]) => csrf.clearCsrfToken(...a),
+}));
+
 beforeEach(() => {
   secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
   sentry.captureException.mockReset();
+  csrf.clearCsrfToken.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -31,6 +45,31 @@ describe('clearAuthData', () => {
 
     const keys = secureStore.deleteItemAsync.mock.calls.map((c) => c[0]);
     expect(keys).toContain('breeze.applock.state.v1');
+  });
+
+  it('removes the CSRF token, so the next account cannot inherit a stale double-submit value', async () => {
+    // The token is account-scoped: a survivor hands the next account a value
+    // that fails every write. This assertion is deliberately separate from the
+    // deleteItemAsync checks — the wipe runs through clearCsrfToken(), so it
+    // would not show up there even if it were working.
+    await clearAuthData();
+
+    expect(csrf.clearCsrfToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the real CSRF key when its wipe fails, and still runs every other delete', async () => {
+    // The failure path is the one that matters: a surviving CSRF token is only
+    // discoverable if SecureWipeError names the key that actually failed. This
+    // also pins the key to the module's exported constant, so renaming it there
+    // cannot silently leave this reporting a stale literal.
+    csrf.clearCsrfToken.mockRejectedValue(new Error('keychain locked'));
+
+    await expect(clearAuthData()).rejects.toBeInstanceOf(SecureWipeError);
+
+    const keys = secureStore.deleteItemAsync.mock.calls.map((c) => c[0]);
+    expect(keys).toContain('breeze_auth_token');
+    expect(keys).toContain('breeze.applock.state.v1');
+    expect(sentry.captureException).toHaveBeenCalled();
   });
 
   it('removes the auth token, the stored user, and the persistent approvals cache', async () => {
