@@ -95,10 +95,22 @@ The following secrets live in both `signing-production` and
 - `SSLCOM_CREDENTIAL_ID`
 - `SSLCOM_TOTP_SECRET`
 - `SSLCOM_CERT_SHA256`
+- `SSLCOM_ENVIRONMENT_LABEL`
 
 `SSLCOM_CERT_SHA256` is the 64-character lowercase SHA-256 thumbprint of the
 expected LanternOps leaf certificate. It is intentionally environment-scoped
 so certificate renewal can be staged in prerelease before production changes.
+
+Environment scoping is load-bearing and invisible in the workflow: nothing about
+the YAML differs between a stable and a prerelease tag except which environment
+supplies these secrets. If they are added at repository level instead -- the
+path of least resistance, and how every `AZURE_*` secret is stored today -- both
+environments resolve the same credential and a prerelease tag is signed with the
+production certificate, with every check passing. `SSLCOM_ENVIRONMENT_LABEL`
+holds the environment's own name (`signing-production` / `signing-prerelease`)
+and is compared against the environment the job actually runs in, so a
+repository-level secret fails one of the two loudly. No lint rule can detect
+this from the YAML, which is why it is enforced at run time.
 
 The current SSL.com action remains pinned to the immutable commit behind its
 `v1.3.2` tag:
@@ -106,32 +118,60 @@ The current SSL.com action remains pinned to the immutable commit behind its
 may appear in the workflow.
 
 The SSL.com job signs the Viewer MSI and Helper MSI in place with malware
-blocking enabled and log cleanup enabled. The GitHub Environment remains the
-human approval boundary before long-lived eSigner credentials become readable.
+blocking enabled. `clean_logs` is deliberately not set: it is a no-op in this
+action, which computes `path.dirname()` over the entire command string and so
+removes a path that never exists.
+
+Pinning the action commit does **not** pin what the action executes. At run time
+it downloads CodeSignTool from a mutable GitHub release asset with no integrity
+check and runs it in this job, and separately installs Amazon Corretto resolved
+from a floating "latest" index whose published checksum it reads but never
+compares. Either download is arbitrary code execution alongside long-lived,
+portable eSigner credentials. The job therefore stages CodeSignTool itself from
+a digest-verified archive and exports `CODESIGNTOOL_PATH`, which the action
+honours to skip its own fetch, and pins `JAVA_VERSION` so the Corretto path
+never runs -- the verified archive bundles its own JDK.
+
+The GitHub Environment scopes which credentials are readable. It is not by
+itself an approval boundary: neither signing environment currently carries
+required reviewers, only a `v*` tag restriction.
 
 ## Verification
 
-Verification is provider-specific but converges on the same release gate.
+Both providers run the **same** verification, `.github/scripts/Verify-WindowsSignature.ps1`.
+Two inline copies previously drifted: the SSL.com copy pinned a certificate
+while the Azure copy asserted only that some timestamped signature existed, so a
+mis-set endpoint or certificate profile would have shipped under an unintended
+publisher with every check green. Nothing downstream catches that -- the release
+manifest's `platformTrust` field is a declaration, not a verification.
 
 For every Viewer/Helper MSI, both providers must prove:
 
+- the artifact exists;
 - `Get-AuthenticodeSignature` returns `Valid` or `UnknownError`;
 - `SignerCertificate` exists;
 - `TimeStamperCertificate` exists, proving an RFC 3161 timestamp;
-- no expected artifact is missing.
+- the signer certificate is inside its validity window;
+- an `O` or `CN` of the signer subject equals the expected publisher.
 
-The SSL.com path additionally requires:
+`UnknownError` is PowerShell's default bucket and also covers `CERT_E_EXPIRED`,
+`CERT_E_REVOKED`, `CERT_E_UNTRUSTEDROOT` and `CERT_E_CHAINING`. Tolerating it is
+only sound because the subject and validity checks establish the publisher
+independently of chain building.
 
-- the signer certificate SHA-256 thumbprint equals `SSLCOM_CERT_SHA256` using a
-  case-insensitive, separator-free comparison;
-- the certificate subject contains `O=LANTERNOPS LLC` or
-  `CN=LANTERNOPS LLC` as a readable diagnostic guard.
+The subject is compared by parsing the DN with `X500DistinguishedName.Format()`
+and unquoting each RDN value, not by matching a regex against the raw subject
+string. A regex over the raw string rejects a legitimate
+`O="LanternOps, LLC"` certificate outright -- fail-closed, but a release-day
+outage that only appears at renewal.
 
-The thumbprint is authoritative; the subject check improves failure messages
-but cannot substitute for the pin.
+The SSL.com path additionally requires the signer certificate SHA-256 thumbprint
+to equal `SSLCOM_CERT_SHA256`, compared case-insensitively and ignoring
+separators.
 
-The Azure path retains its current chain-and-timestamp check because Azure
-Artifact Signing certificates are short-lived and rotate automatically.
+The Azure path pins no thumbprint, because Azure Artifact Signing certificates
+are short-lived and rotate automatically. Identity there rests on the subject
+assertion, which survives rotation.
 
 ## Public Agent-family non-regression
 

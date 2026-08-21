@@ -495,3 +495,60 @@ Skip this commit when the independent review is clean.
 - [ ] **Step 4: Record rollout prerequisites without configuring secrets**
 
 In the implementation handoff, list the five SSL.com secrets required in both `signing-prerelease` and `signing-production`, state that the TOTP value is the enrollment seed rather than the rotating six-digit code, and require a prerelease tag with local signature inspection before changing the stable environment. Do not create secrets, change repository variables, dispatch a workflow, or publish a release until the user confirms the reset PIN/TOTP state and authorizes those external mutations.
+
+---
+
+## Post-review amendments (2026-08-21)
+
+The PR review found gaps that changed several decisions above. The task
+snippets earlier in this document record what was originally planned; where they
+conflict with the list below, the list below is what shipped.
+
+1. **CodeSignTool is staged locally against a verified digest.** Pinning the
+   `SSLcom/esigner-codesign` commit does not pin what the action runs: it
+   downloads CodeSignTool from a mutable GitHub release asset with no checksum
+   and executes it in the job holding the eSigner credentials, and installs
+   Amazon Corretto from a floating "latest" index whose checksum it reads but
+   never compares. Both are now suppressed via `CODESIGNTOOL_PATH` and
+   `JAVA_VERSION`. The verified archive bundles its own JDK.
+
+2. **`clean_logs: true` was dropped, not added.** It is a no-op in this action —
+   `path.dirname()` is applied to the whole command string, so it deletes a path
+   that never exists and `force: true` swallows the error. The plan's rationale
+   for enabling it does not hold.
+
+3. **Verification is shared, not provider-specific.** Both providers now call
+   `.github/scripts/Verify-WindowsSignature.ps1`. Keeping two inline copies is
+   what produced the asymmetry the review found: the Azure copy asserted only
+   that *some* timestamped signature existed and never checked the publisher.
+
+4. **The subject check is not a regex and is not merely diagnostic.** It parses
+   the DN via `X500DistinguishedName.Format()`. The planned regex rejected a
+   legitimate `O="LanternOps, LLC"` certificate. On the Azure path — which pins
+   no thumbprint, by design — the subject assertion is the *only* publisher
+   binding, so it is authoritative there.
+
+5. **`SSLCOM_ENVIRONMENT_LABEL` is a new required secret.** The stable/prerelease
+   certificate split relies entirely on GitHub Environment scoping, which is
+   invisible in YAML and unverifiable by lint. Both signing environments are
+   currently empty and every `AZURE_*` secret lives at repository level, so the
+   likeliest operator error would sign prereleases with the production
+   certificate. This label makes that fail loudly.
+
+6. **Lint rules bind to shape, not job names.** The planned rules keyed on four
+   exact job names behind an early return, so a consistent rename disabled all of
+   them — confirmed by deleting the certificate pin and subject check with CI
+   green. Rules now locate each provider by the action or script that defines it,
+   and a workflow that signs the Tauri MSIs must declare the full topology.
+
+7. **The environments are not an approval boundary.** Neither carries required
+   reviewers today — only a `v*` tag restriction. Statements to the contrary in
+   the plan and in the first draft of the docs were corrected.
+
+Still open, and deliberately not addressed here:
+
+- Adding required reviewers to `signing-production` / `signing-prerelease` is an
+  operator action, not a code change.
+- Leaf-thumbprint rotation remains a single value. If staging a renewal without a
+  release-day edit becomes necessary, `SSLCOM_CERT_SHA256` should become a
+  separator-delimited allowlist.

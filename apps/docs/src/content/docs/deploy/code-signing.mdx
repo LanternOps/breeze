@@ -50,13 +50,15 @@ The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no 
 
 1. The release workflow selects exactly one configured Windows signing provider and fails if the provider value is invalid.
 
-2. Azure authenticates with a short-lived OIDC token. SSL.com eSigner uses environment-protected credentials and a pinned LanternOps certificate thumbprint. The two providers run in separate jobs so SSL.com never receives Azure's OIDC permission.
+2. Azure authenticates with a short-lived OIDC token. SSL.com eSigner authenticates with credentials scoped to the tag's signing environment. The two providers run in separate jobs, so the SSL.com job never receives Azure's OIDC permission.
 
-3. The selected provider Authenticode-signs and RFC 3161-timestamps the Viewer and Helper installers.
+3. The SSL.com path stages its signing toolchain from a checksum-verified archive before any credential is used, rather than letting the signing action fetch it unverified at run time.
 
-4. The workflow verifies the signer certificate and timestamp before upload. The SSL.com path also requires the exact configured SHA-256 certificate thumbprint.
+4. The selected provider Authenticode-signs and RFC 3161-timestamps the Viewer and Helper installers.
 
-5. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
+5. Both providers verify through the same script before upload: signature status, signer certificate, RFC 3161 timestamp, certificate validity window, and that the publisher is LanternOps. The SSL.com path additionally requires the exact configured SHA-256 certificate thumbprint; Azure does not pin one, because its certificates are short-lived and rotate automatically.
+
+6. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
 
 </Steps>
 
@@ -70,6 +72,12 @@ The MSI carries a **per-edition product identity**: the public release builds th
 
 <Aside type="caution">
   Verify the publisher as LanternOps when installing Viewer or Helper packages. Public Agent packages remain unsigned by design so self-hosters can sign them with their own certificate; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/).
+</Aside>
+
+<Aside type="note" title="Operators: SSL.com secrets are per-environment">
+  The SSL.com path reads `SSLCOM_USERNAME`, `SSLCOM_PASSWORD`, `SSLCOM_CREDENTIAL_ID`, `SSLCOM_TOTP_SECRET`, `SSLCOM_CERT_SHA256` and `SSLCOM_ENVIRONMENT_LABEL`. These **must** be added to the `signing-production` and `signing-prerelease` GitHub Environments individually, not to the repository.
+
+  Nothing in the workflow differs between a stable and a prerelease tag except which environment supplies the credentials, so repository-level secrets would sign prereleases with the production certificate. `SSLCOM_ENVIRONMENT_LABEL` guards against exactly that: set it to the environment's own name (`signing-production` or `signing-prerelease`) and a repository-level secret will fail the other environment loudly instead of signing silently.
 </Aside>
 
 ---
