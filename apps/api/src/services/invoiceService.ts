@@ -93,7 +93,7 @@ export async function recomputeInvoiceTotals(invoiceId: string, taxRateOverride?
     lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible
   }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
   const taxRate = taxRateOverride !== undefined ? taxRateOverride : await effectiveRateForOrg(inv.orgId, inv.partnerId);
-  const totals = computeInvoiceTotals(lines, taxRate);
+  const totals = computeInvoiceTotals(lines, taxRate, inv.currencyCode);
   const balance = fromCents(toCents(totals.total) - toCents(inv.amountPaid));
   await db.update(invoices).set({
     subtotal: totals.subtotal, taxRate, taxTotal: totals.taxTotal, total: totals.total, balance, updatedAt: new Date()
@@ -115,7 +115,7 @@ async function insertLineAndRecompute(
 
 export async function addManualLine(invoiceId: string, input: ManualLineInput, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); assertDraft(inv); requireInvoiceAccess(actor, inv);
-  const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice));
+  const lineTotal = computeLineTotal(String(input.quantity), String(input.unitPrice), inv.currencyCode);
   return insertLineAndRecompute(invoiceId, inv.orgId, {
     sourceType: 'manual', sourceId: null, catalogItemId: null, parentLineId: null, ticketId: null,
     name: input.name ?? null, description: input.description ?? null, quantity: String(input.quantity), unitPrice: Number(input.unitPrice).toFixed(2),
@@ -673,7 +673,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 
     // Recompute totals with the snapshotted rate, then write everything atomically.
     const lineRows = await db.select({ lineTotal: invoiceLines.lineTotal, taxable: invoiceLines.taxable, customerVisible: invoiceLines.customerVisible }).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
-    const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate);
+    const { subtotal, taxTotal, total } = computeInvoiceTotals(lineRows, taxRate, inv.currencyCode);
     const billToAddress = buildBillToAddress(org);
 
     await db.update(invoices).set({
