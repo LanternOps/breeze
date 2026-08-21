@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,8 @@ import {
 
 const temporaryDirectories = [];
 const pinnedCheckout = 'actions/checkout@0123456789abcdef0123456789abcdef01234567';
+const PUBLIC_RESOLVER_SCRIPT = '.github/scripts/resolve-windows-signing-provider.mjs';
+const PUBLIC_CONVERGENCE_SCRIPT = '.github/scripts/assert-windows-signing-convergence.mjs';
 
 afterEach(async () => {
   await Promise.all(
@@ -682,14 +685,11 @@ jobs:
     outputs:
       provider: \${{ steps.provider.outputs.provider }}
     steps:
+      - uses: ${pinnedCheckout}
       - id: provider
         env:
           RAW_PROVIDER: \${{ vars.WINDOWS_SIGNING_PROVIDER }}
-        run: |
-          case "\${RAW_PROVIDER:-azure}" in
-            azure|sslcom) echo "provider=\${RAW_PROVIDER:-azure}" >> "$GITHUB_OUTPUT" ;;
-            *) exit 1 ;;
-          esac
+        run: node ${PUBLIC_RESOLVER_SCRIPT} "$RAW_PROVIDER" >> "$GITHUB_OUTPUT"
   sign-windows-tauri-azure:
     needs: [resolve-windows-signing-provider]
     if: needs.resolve-windows-signing-provider.outputs.provider == 'azure'
@@ -727,13 +727,51 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: ${pinnedCheckout}
       - env:
           PROVIDER: \${{ needs.resolve-windows-signing-provider.outputs.provider }}
           AZURE_RESULT: \${{ needs.sign-windows-tauri-azure.result }}
           SSLCOM_RESULT: \${{ needs.sign-windows-tauri-sslcom.result }}
-        run: echo convergence
+        run: node ${PUBLIC_CONVERGENCE_SCRIPT} "$PROVIDER" "$AZURE_RESULT" "$SSLCOM_RESULT"
 `;
 }
+
+function runCredentialFreeScript(script, args) {
+  return spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+}
+
+test('public resolver executable normalizes empty and accepts only azure or sslcom', () => {
+  for (const [input, expected] of [['', 'azure'], ['azure', 'azure'], ['sslcom', 'sslcom']]) {
+    const result = runCredentialFreeScript(PUBLIC_RESOLVER_SCRIPT, [input]);
+    assert.equal(result.status, 0, `${input}: ${result.stderr}`);
+    assert.equal(result.stdout, `provider=${expected}\n`);
+  }
+
+  const invalid = runCredentialFreeScript(PUBLIC_RESOLVER_SCRIPT, ['typo']);
+  assert.notEqual(invalid.status, 0);
+  assert.equal(invalid.stdout, '');
+});
+
+test('public convergence executable accepts exactly the selected success/skipped pair', () => {
+  const cases = [
+    ['azure', 'success', 'skipped', true],
+    ['sslcom', 'skipped', 'success', true],
+    ['azure', 'skipped', 'skipped', false],
+    ['sslcom', 'skipped', 'skipped', false],
+    ['azure', 'success', 'success', false],
+    ['sslcom', 'success', 'success', false],
+    ['azure', 'failed', 'skipped', false],
+    ['sslcom', 'skipped', 'failed', false],
+    ['azure', 'cancelled', 'skipped', false],
+    ['sslcom', 'skipped', 'cancelled', false],
+    ['invalid', 'skipped', 'skipped', false],
+  ];
+
+  for (const [provider, azure, sslcom, accepted] of cases) {
+    const result = runCredentialFreeScript(PUBLIC_CONVERGENCE_SCRIPT, [provider, azure, sslcom]);
+    assert.equal(result.status === 0, accepted, `${provider}/${azure}/${sslcom}: ${result.stderr}`);
+  }
+});
 
 test('passing public signing fixture raises no public-signing violations', () => {
   const rules = new Set(inspectWorkflowText('release.yml', publicSigningFixture()).map(({ rule }) => rule));
@@ -741,7 +779,7 @@ test('passing public signing fixture raises no public-signing violations', () =>
 });
 
 test('public signing resolver rejects unknown providers', () => {
-  const text = publicSigningFixture().replace('*) exit 1 ;;', '*) echo "provider=azure" >> "$GITHUB_OUTPUT" ;;');
+  const text = publicSigningFixture().replace(PUBLIC_RESOLVER_SCRIPT, 'untrusted-inline-fallback.mjs');
   assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-fail-closed'), true);
 });
 
@@ -765,7 +803,7 @@ test('SSL.com signer cannot mention public Agent-family artifacts', () => {
 });
 
 test('convergence gate must consume both signer results', () => {
-  const text = publicSigningFixture().replace(/ +AZURE_RESULT:[^\n]*\n/u, '');
+  const text = publicSigningFixture().replace(PUBLIC_CONVERGENCE_SCRIPT, 'echo-convergence.mjs');
   assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-converge'), true);
 });
 

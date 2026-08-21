@@ -1515,6 +1515,11 @@ jobs:
     outputs:
       provider: ${{ steps.provider.outputs.provider }}
     steps:
+      - name: Checkout resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Validate provider
         id: provider
         shell: bash
@@ -1522,11 +1527,7 @@ jobs:
           RAW_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
         run: |
           set -euo pipefail
-          provider="${RAW_PROVIDER:-azure}"
-          case "$provider" in
-            azure|sslcom) echo "provider=$provider" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::WINDOWS_SIGNING_PROVIDER must be empty, azure, or sslcom"; exit 1 ;;
-          esac
+          node .github/scripts/resolve-windows-signing-provider.mjs "$RAW_PROVIDER" >> "$GITHUB_OUTPUT"
 
   sign-windows-tauri-azure:
     name: Sign Windows Tauri artifacts (Azure)
@@ -1791,6 +1792,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout convergence assertion
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
       - name: Assert single-provider convergence
         shell: bash
         env:
@@ -1799,16 +1805,7 @@ jobs:
           SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
         run: |
           set -euo pipefail
-          case "$PROVIDER" in
-            azure)
-              [ "$AZURE_RESULT" = success ] && [ "$SSLCOM_RESULT" = skipped ] ;;
-            sslcom)
-              [ "$AZURE_RESULT" = skipped ] && [ "$SSLCOM_RESULT" = success ] ;;
-            *)
-              echo "::error::provider resolution failed or produced an unexpected value"
-              exit 1 ;;
-          esac
-          echo "Provider '$PROVIDER' converged (azure=$AZURE_RESULT, sslcom=$SSLCOM_RESULT)."
+          node .github/scripts/assert-windows-signing-convergence.mjs "$PROVIDER" "$AZURE_RESULT" "$SSLCOM_RESULT"
 
   package-windows-updater:
     name: Package Windows Updater Bundle

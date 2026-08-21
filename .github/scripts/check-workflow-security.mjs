@@ -1056,7 +1056,7 @@ function publicReleaseSigningViolations(file, lines) {
   const violations = [];
   requirePattern(
     resolver,
-    /RAW_PROVIDER[\s\S]*:-azure[\s\S]*azure\|sslcom[\s\S]*\*\)[\s\S]*exit 1/u,
+    /node\s+\.github\/scripts\/resolve-windows-signing-provider\.mjs\s+"\$RAW_PROVIDER"\s*>>\s*"\$GITHUB_OUTPUT"/u,
     WINDOWS_SIGNING_PROVIDER_FAIL_CLOSED_RULE,
     violations,
     file,
@@ -1142,6 +1142,13 @@ function publicReleaseSigningViolations(file, lines) {
   requirePattern(
     gate,
     /needs\.sign-windows-tauri-sslcom\.result/u,
+    WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    gate,
+    /node\s+\.github\/scripts\/assert-windows-signing-convergence\.mjs\s+"\$PROVIDER"\s+"\$AZURE_RESULT"\s+"\$SSLCOM_RESULT"/u,
     WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
     violations,
     file,
