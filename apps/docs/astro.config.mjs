@@ -8,6 +8,7 @@ export default defineConfig({
       title: 'Breeze RMM',
       logo: {
         src: './src/assets/logo.svg',
+        alt: 'Breeze RMM',
       },
       favicon: '/favicon.svg',
       customCss: ['./src/styles/custom.css'],

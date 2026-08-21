@@ -7,7 +7,7 @@ import { Steps, Aside, Tabs, TabItem, Card } from '@astrojs/starlight/components
 
 The **Monitoring** tab of the Integrations page connects Breeze to the observability and on-call tools your team already runs. From a single screen you can publish Breeze metrics to a **Prometheus** scrape endpoint, deep-link to **Grafana** dashboards, route critical alerts to **PagerDuty** and **OpsGenie**, forward monitoring events to any number of **outbound webhooks**, and choose exactly which **metrics** are exposed to external monitors.
 
-Open it from **Integrations → Monitoring** ([`/integrations#monitoring`](/integrations#monitoring)).
+Open it from **Integrations → Monitoring** (`/integrations#monitoring`).
 
 <Aside type="caution" title="Not the internal Monitoring stack">
   This page is about sending Breeze's telemetry and alerts *out* to your third-party tools. It is **not** the self-hosted observability stack that monitors the Breeze platform itself. If you are looking to stand up Prometheus, Grafana, Loki, and Alertmanager to watch the Breeze API/agents, see the [Observability Stack](/monitoring/stack/) instead — that's a different thing entirely.

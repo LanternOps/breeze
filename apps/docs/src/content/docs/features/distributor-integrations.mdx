@@ -7,12 +7,12 @@ sidebar:
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Distributor integrations live on the **Distributors** tab of the Integrations page (**Integrations → Distributors**, [`/integrations#distributors`](/integrations#distributors)). They let you bring vendor licenses and live product pricing into Breeze: **Pax8** syncs client companies and license subscriptions you can map to organizations and link to recurring contract lines, and **TD SYNNEX Pricing** (EC Express) looks up real-time cost, MSRP, and stock availability you can import straight into your [Product Catalog](/features/product-catalog/).
+Distributor integrations live on the **Distributors** tab of the Integrations page (**Integrations → Distributors**, `/integrations#distributors`). They let you bring vendor licenses and live product pricing into Breeze: **Pax8** syncs client companies and license subscriptions you can map to organizations and link to recurring contract lines, and **TD SYNNEX Pricing** (EC Express) looks up real-time cost, MSRP, and stock availability you can import straight into your [Product Catalog](/features/product-catalog/).
 
 The tab has two sub-tabs:
 
-- **Pax8** — [`/integrations#pax8`](/integrations#pax8)
-- **TD SYNNEX Pricing** — [`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)
+- **Pax8** — `/integrations#pax8`
+- **TD SYNNEX Pricing** — `/integrations#tdsynnex-ec`
 
 <Aside type="note">
   Distributor integrations are **partner-account only**. They are configured once for your MSP and shared across all of your customers. If you sign in with an organization-scoped account, both sub-tabs show a message that the integration is available to partner accounts only — there is nothing to configure at the organization level.
@@ -32,7 +32,7 @@ The tab has two sub-tabs:
 Pax8 connects with your Pax8 **OAuth client credentials**. Once connected, Breeze pulls your Pax8 companies and their license subscriptions so you can map them to Breeze organizations and link them to recurring contract lines.
 
 <Steps>
-1. Open **Integrations → Distributors → Pax8** ([`/integrations#pax8`](/integrations#pax8)).
+1. Open **Integrations → Distributors → Pax8** (`/integrations#pax8`).
 
 2. In the **Connection** card, fill in:
    - **Display name** — a label for this connection (defaults to `Pax8`).
@@ -123,7 +123,7 @@ On a converted quote, technicians see **“This quote staged a Pax8 order (N ite
 **TD SYNNEX Pricing** connects to TD SYNNEX **EC Express** to look up real-time cost, MSRP, and stock availability, and import products straight into your [Product Catalog](/features/product-catalog/). It authenticates with your EC Express account credentials.
 
 <Steps>
-1. Open **Integrations → Distributors → TD SYNNEX Pricing** ([`/integrations#tdsynnex-ec`](/integrations#tdsynnex-ec)).
+1. Open **Integrations → Distributors → TD SYNNEX Pricing** (`/integrations#tdsynnex-ec`).
 
 2. Fill in your EC Express connection details:
    - **Customer No** — your TD SYNNEX customer number.
