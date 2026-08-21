@@ -48,6 +48,20 @@ const statusConfig: Record<ConnectionStatus, { labelKey: string; color: string }
 
 export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: VncViewerProps) {
   const { t } = useTranslation('remote');
+
+  // `t` must NOT be an effect dependency. react-i18next returns a NEW `t`
+  // identity on `languageChanged`, and the connection effect's cleanup calls
+  // `rfb.disconnect()` — so a locale change tore down a LIVE RFB session. That
+  // is reachable without touching the language picker:
+  // `scheduleStoredLocaleAfterHydration()` fires `changeLanguage` after mount
+  // on every page load for any user with a saved non-English locale (#3632).
+  //
+  // Error strings still need the current translator, so keep it in a ref: read
+  // at call time, never a dependency.
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
   const containerRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<any>(null);
   // Whether noVNC ever reported `connect` for the CURRENT wsUrl. A ws-ticket is
@@ -105,7 +119,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
           setStatus('disconnected');
         } else {
           setStatus('error');
-          setErrorMessage(t('vncViewer.errors.connectionLost'));
+          setErrorMessage(tRef.current('vncViewer.errors.connectionLost'));
         }
         // An unclean disconnect with no preceding `connect` is a handshake the
         // server refused before the upgrade — the caller needs to tell that
@@ -136,12 +150,12 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       rfb.addEventListener('securityfailure', (e: CustomEvent) => {
         console.warn('[VNC] securityfailure:', e.detail);
         if (disposed) return;
-        const reason = e.detail?.reason || t('vncViewer.errors.authenticationFailed');
+        const reason = e.detail?.reason || tRef.current('vncViewer.errors.authenticationFailed');
         setStatus('error');
         setErrorMessage(
-          e.detail?.status === 1 ? t('vncViewer.errors.authenticationDetail', { reason })
-          : e.detail?.status === 2 ? t('vncViewer.errors.securityType', { reason })
-          : t('vncViewer.errors.securityFailure', { reason })
+          e.detail?.status === 1 ? tRef.current('vncViewer.errors.authenticationDetail', { reason })
+          : e.detail?.status === 2 ? tRef.current('vncViewer.errors.securityType', { reason })
+          : tRef.current('vncViewer.errors.securityFailure', { reason })
         );
       });
       rfb.addEventListener('clipboard', (e: CustomEvent) => {
@@ -221,7 +235,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
     connect().catch((err) => {
       if (!disposed) {
         setStatus('error');
-        setErrorMessage(err instanceof Error ? err.message : t('vncViewer.errors.loadViewer'));
+        setErrorMessage(err instanceof Error ? err.message : tRef.current('vncViewer.errors.loadViewer'));
       }
     });
 
@@ -233,7 +247,7 @@ export default function VncViewer({ wsUrl, tunnelId, onDisconnect, className }: 
       }
       rfbRef.current = null;
     };
-  }, [wsUrl, onDisconnect, t]);
+  }, [wsUrl, onDisconnect]);
 
   // Sync scale setting to RFB instance
   useEffect(() => {

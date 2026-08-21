@@ -121,6 +121,8 @@ interface ListResponse<T> {
     page: number;
     limit: number;
     total: number;
+    /** Keyset cursor for the next page; null on the last page. */
+    nextCursor?: string | null;
   };
 }
 
@@ -197,7 +199,8 @@ async function getToken(): Promise<string | null> {
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  timeoutMs?: number
 ): Promise<T> {
   const token = await getToken();
   const method = (options.method ?? 'GET').toUpperCase();
@@ -238,11 +241,11 @@ async function requestWithPrefix<T>(
 
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
   const url = `${baseUrl}${prefix}${endpoint}`;
-  const response = await fetchWithTimeout(url, {
-    ...options,
-    headers,
-    credentials: 'include',
-  });
+  const response = await fetchWithTimeout(
+    url,
+    { ...options, headers, credentials: 'include' },
+    timeoutMs
+  );
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({} as Record<string, unknown>));
@@ -273,9 +276,24 @@ async function requestWithPrefix<T>(
 
 async function request<T>(
   endpoint: string,
+  options: RequestInit = {},
+  timeoutMs?: number
+): Promise<T> {
+  return requestWithPrefix<T>(endpoint, API_PREFIX, options, timeoutMs);
+}
+
+/**
+ * Issue a request against the core `/api/v1` surface from a sibling service
+ * module. Exported so feature services (tickets, …) reuse this hardened path
+ * — auth header, CSRF header, per-install device id, and the `device_blocked`
+ * notification — instead of re-implementing `fetch` and silently dropping all
+ * four (see `services/search.ts` for the copy this exists to prevent spreading).
+ */
+export async function coreRequest<T>(
+  endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  return requestWithPrefix<T>(endpoint, API_PREFIX, options);
+  return requestWithPrefix<T>(endpoint, API_CORE_PREFIX, options);
 }
 
 export type DeviceAction = 'reboot' | 'shutdown' | 'wake' | 'update';
@@ -412,8 +430,21 @@ export async function changePassword(currentPassword: string, newPassword: strin
 }
 
 // Alerts API
-export async function getAlerts(): Promise<Alert[]> {
-  const response = await request<ListResponse<MobileAlertRecord>>('/alerts/inbox');
+/**
+ * Fetch the alert inbox.
+ *
+ * Defaults to `status=active` because the inbox is a RECENCY window, not a
+ * priority one: it returns the newest non-dismissed alerts and the client asks
+ * for one page. On a real fleet the page fills with resolved low-severity
+ * noise and never reaches anything actionable — measured on a 7,023-alert
+ * tenant, all 50 rows came back `low` and 48 of them resolved, so the Systems
+ * screen rendered zero issues while 18 unacknowledged high/medium alerts sat
+ * just outside the window. Asking for active-only makes the same page carry
+ * what the screen actually renders.
+ */
+export async function getAlerts(status: 'active' | 'all' = 'active'): Promise<Alert[]> {
+  const path = status === 'active' ? '/alerts/inbox?status=active' : '/alerts/inbox';
+  const response = await request<ListResponse<MobileAlertRecord>>(path);
   return response.data.map(mapAlert);
 }
 
@@ -422,10 +453,24 @@ export async function getAlert(id: string): Promise<Alert> {
   return mapAlert(response);
 }
 
+/**
+ * Acknowledge an alert.
+ *
+ * Given a longer timeout than the 15s default because this write is slow on
+ * real deployments: the API awaits its local event handlers inside the request
+ * path (see upstream #1105 — the server itself logs "held a pooled connection
+ * ... for 15439ms"). Measured acknowledges of 13.4s and 15.2s returned 200
+ * while the client had already aborted at 15s and told the user it failed,
+ * which invites a retry of an action that already succeeded.
+ */
+export const ACKNOWLEDGE_TIMEOUT_MS = 45000;
+
 export async function acknowledgeAlert(id: string): Promise<Alert> {
-  const response = await request<MobileAlertRecord>(`/alerts/${id}/acknowledge`, {
-    method: 'POST',
-  });
+  const response = await request<MobileAlertRecord>(
+    `/alerts/${id}/acknowledge`,
+    { method: 'POST' },
+    ACKNOWLEDGE_TIMEOUT_MS
+  );
   return mapAlert(response);
 }
 
@@ -453,9 +498,74 @@ export async function getAlertStats(): Promise<{
 }
 
 // Devices API
-export async function getDevices(): Promise<Device[]> {
-  const response = await request<ListResponse<MobileDeviceRecord>>('/devices');
-  return response.data.map(mapDevice);
+/**
+ * Server cap on `limit` for THIS route. `/mobile/devices` runs its query
+ * through `getPagination`, which does `Math.min(100, ...)` — it CLAMPS rather
+ * than rejecting, so asking for more is silently downgraded with nothing in the
+ * response to say so.
+ *
+ * This previously read 200, citing `patches/helpers.ts MAX_PAGE_LIMIT`. That is
+ * a different route's constant (the patches endpoints do cap at 200); the
+ * mobile route never has. The effect was a walk that read as 4,000 devices and
+ * delivered 2,000.
+ */
+const DEVICE_PAGE_LIMIT = 100;
+/**
+ * Safety stop for the cursor walk: 20 x 100 = 2,000 devices. Deliberate, not a
+ * by-product of the page size — it bounds the loop if the server ever returns a
+ * non-advancing cursor, and 2,000 is far beyond any fleet that belongs on a
+ * phone screen. Hitting it is reported rather than silently truncating.
+ */
+const MAX_DEVICE_PAGES = 20;
+
+/**
+ * Fetch devices, following the cursor to the end of the fleet.
+ *
+ * A single request returns `limit` rows (default 50, capped at 200), so asking
+ * once silently truncates: a 210-device tenant showed 50 and any client-side
+ * org filter then searched only that first page — an org whose machines sat
+ * further down rendered as empty. `orgId` is pushed to the server so a scoped
+ * view pages through that org rather than through the whole fleet.
+ */
+export async function getDevices(orgId?: string | null): Promise<Device[]> {
+  const out: MobileDeviceRecord[] = [];
+  let cursor: string | null = null;
+
+  for (let page = 0; page < MAX_DEVICE_PAGES; page += 1) {
+    const params = new URLSearchParams({ limit: String(DEVICE_PAGE_LIMIT) });
+    if (orgId) params.set('orgId', orgId);
+    if (cursor) params.set('cursor', cursor);
+
+    const response = await request<ListResponse<MobileDeviceRecord>>(
+      `/devices?${params.toString()}`
+    );
+    const rows = Array.isArray(response.data) ? response.data : [];
+    out.push(...rows);
+
+    const next = response.pagination?.nextCursor ?? null;
+    // Stop on a null cursor, a short page, or a cursor that did not advance —
+    // the last of these would otherwise spin until the page cap.
+    if (!next || next === cursor || rows.length === 0) {
+      cursor = null;
+      break;
+    }
+    cursor = next;
+  }
+
+  // Exhausting the page budget with a live cursor means the fleet is larger
+  // than the walk returns. Silently handing back a short list is the failure
+  // this cap would otherwise introduce: the caller cannot tell 2,000 devices
+  // from "the first 2,000 of more", and any client-side filter then searches a
+  // subset while looking authoritative.
+  if (cursor) {
+    Sentry.captureMessage('device walk hit its page cap; fleet is truncated', {
+      level: 'warning',
+      tags: { area: 'device-walk' },
+      extra: { returned: out.length, pageLimit: DEVICE_PAGE_LIMIT, maxPages: MAX_DEVICE_PAGES },
+    });
+  }
+
+  return out.map(mapDevice);
 }
 
 export async function getDevice(id: string): Promise<Device> {

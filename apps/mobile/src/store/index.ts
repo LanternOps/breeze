@@ -5,6 +5,7 @@ import authReducer from './authSlice';
 import alertsReducer from './alertsSlice';
 import approvalsReducer from './approvalsSlice';
 import aiChatReducer from './aiChatSlice';
+import ticketsReducer from './ticketsSlice';
 import lifecycleReducer from './lifecycleSlice';
 import { withLogoutReset } from './resettable';
 
@@ -13,6 +14,7 @@ const appReducer = combineReducers({
   alerts: alertsReducer,
   approvals: approvalsReducer,
   aiChat: aiChatReducer,
+  tickets: ticketsReducer,
   lifecycle: lifecycleReducer,
 });
 
@@ -67,3 +69,18 @@ export {
   selectUnacknowledgedAlertsCount,
   selectCriticalAlertsCount,
 } from './alertsSlice';
+
+export {
+  fetchTickets,
+  setQueue,
+  setAssignee,
+  applyStatusChange,
+  syncTicketFromDetail,
+  clearError as clearTicketsError,
+  selectTickets,
+  selectTicketsLoading,
+  selectTicketsError,
+  selectTicketQueue,
+  selectTicketAssignee,
+  selectTicketTotal,
+} from './ticketsSlice';

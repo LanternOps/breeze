@@ -16,6 +16,7 @@ import {
   type OrganizationSummary,
 } from '../../services/systems';
 import { createSystemsRealtimeClient } from '../../services/systemsRealtime';
+import { mergeSystemsResults, rejectionReasons } from './mergeSystemsResults';
 
 export interface OrgRollup {
   id: string;
@@ -27,6 +28,7 @@ export interface OrgRollup {
 export interface SystemsData {
   summary: MobileSummary | null;
   alerts: Alert[];
+  activeAlerts: Alert[];
   devices: Device[];
   orgs: OrganizationSummary[];
   loading: boolean;
@@ -56,7 +58,9 @@ function alertOrgId(a: Alert): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
-// Fetches summary, alerts, devices, and orgs in parallel. Owns the local
+// Fetches summary, alerts, activeAlerts, devices and orgs in parallel — five,
+// matching `const total = 5` in mergeSystemsResults. Miscounting here is not
+// cosmetic: that total is the threshold for "everything failed". Owns the local
 // org-filter state so the screen reads filtered slices straight from the
 // hook. Failures keep last-known data; only the in-section error banner
 // flips.
@@ -64,6 +68,7 @@ export function useSystemsData() {
   const [data, setData] = useState<SystemsData>({
     summary: null,
     alerts: [],
+    activeAlerts: [],
     devices: [],
     orgs: [],
     loading: true,
@@ -84,35 +89,45 @@ export function useSystemsData() {
       error: null,
     }));
     try {
-      const [summary, alerts, devices, orgs] = await Promise.all([
+      // allSettled, NOT all: these five are independent, and a rejection in one
+      // must not discard the others. Under Promise.all a transient failure on
+      // any single call blanked the whole screen — devices that had loaded fine
+      // were thrown away and the user saw an empty fleet.
+      //
+      // Two alert pages on purpose. The inbox is ordered by RECENCY, so one
+      // page cannot serve both consumers: RECENT wants lifecycle context
+      // (acknowledged/resolved included), while ACTIVE ISSUES needs unresolved
+      // rows that a busy fleet pushes outside a recency window entirely.
+      const [summary, alerts, activeAlerts, devices, orgs] = await Promise.allSettled([
         getMobileSummary(),
-        getAlerts(),
+        getAlerts('all'),
+        getAlerts('active'),
         getDevices(),
-        // Org list is best-effort — partner-scope users get the rollup,
-        // org-scope users get a single row, and we tolerate failure since
-        // the hero + alerts still work without it.
-        listOrganizations().catch(() => [] as OrganizationSummary[]),
+        listOrganizations(),
       ]);
-      setData({
-        summary,
-        alerts,
-        devices,
-        orgs,
-        loading: false,
-        refreshing: false,
-        error: null,
+      const results = { summary, alerts, activeAlerts, devices, orgs };
+      // The raw messages are internal (function name + HTTP status) — report
+      // them to Sentry and keep only a static string in UI state (issue #3141).
+      for (const reason of rejectionReasons(results)) {
+        reportInternalError(reason, 'systems-data');
+      }
+      let failedCount = 0;
+      // Merge inside the updater so the previous slices come from committed
+      // state. Mirroring `data` into a ref during render would let an
+      // abandoned concurrent render supply the baseline.
+      setData((previous) => {
+        const merged = mergeSystemsResults(previous, results);
+        failedCount = merged.failed.length;
+        return {
+          ...merged.slices,
+          loading: false,
+          refreshing: false,
+          error: merged.error,
+        };
       });
-      lastFetchAt.current = Date.now();
-    } catch (err) {
-      // The raw message is internal (function name + HTTP status) — report it
-      // to Sentry and keep only a static string in UI state (issue #3141).
-      reportInternalError(err, 'systems-data');
-      setData((d) => ({
-        ...d,
-        loading: false,
-        refreshing: false,
-        error: 'Failed to load systems data.',
-      }));
+      // Only count as a successful fetch when something arrived; an all-failed
+      // round must not suppress the next focus refresh for a full minute.
+      if (failedCount < 5) lastFetchAt.current = Date.now();
     } finally {
       inFlight.current = false;
     }
@@ -172,16 +187,22 @@ export function useSystemsData() {
     return data.alerts.filter((a) => alertOrgId(a) === filterOrgId);
   }, [data.alerts, filterOrgId]);
 
+  // ACTIVE ISSUES reads the active-only page; RECENT reads the full one.
+  const filteredActiveAlerts = useMemo(() => {
+    if (!filterOrgId) return data.activeAlerts;
+    return data.activeAlerts.filter((a) => alertOrgId(a) === filterOrgId);
+  }, [data.activeAlerts, filterOrgId]);
+
   const activeIssues = useMemo(
     () =>
-      filteredAlerts
+      filteredActiveAlerts
         .filter((a) => !a.acknowledged && ISSUE_SEVERITIES.has(a.severity))
         .sort((a, b) => {
           const sev = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
           if (sev !== 0) return sev;
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
         }),
-    [filteredAlerts],
+    [filteredActiveAlerts],
   );
 
   const recent = useMemo(() => {
@@ -216,7 +237,10 @@ export function useSystemsData() {
     for (const d of data.devices) {
       if (d.organizationId) ensure(d.organizationId).deviceCount++;
     }
-    for (const a of data.alerts) {
+    // Issue counts come from the active page for the same reason the section
+    // does: the unfiltered page is recency-ordered and can contain no
+    // unresolved rows at all on a busy fleet.
+    for (const a of data.activeAlerts) {
       const id = alertOrgId(a);
       if (id && !a.acknowledged && ISSUE_SEVERITIES.has(a.severity)) {
         ensure(id).issueCount++;
@@ -227,7 +251,7 @@ export function useSystemsData() {
       if (b.issueCount !== a.issueCount) return b.issueCount - a.issueCount;
       return a.name.localeCompare(b.name);
     });
-  }, [data.alerts, data.devices, data.orgs, filterOrgId]);
+  }, [data.activeAlerts, data.devices, data.orgs, filterOrgId]);
 
   const filterOrgName = useMemo(() => {
     if (!filterOrgId) return null;

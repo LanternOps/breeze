@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.breeze.rmm",
-      "buildNumber": "5",
+      "buildNumber": "6",
       "associatedDomains": [
         "webcredentials:us.2breeze.app",
         "webcredentials:eu.2breeze.app"

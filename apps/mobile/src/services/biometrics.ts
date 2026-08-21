@@ -163,10 +163,14 @@ export async function authenticateIfEnabled(): Promise<boolean> {
  * Get the security level of the device
  */
 export async function getSecurityLevel(): Promise<LocalAuthentication.SecurityLevel> {
-  try {
-    return await LocalAuthentication.getEnrolledLevelAsync();
-  } catch (error) {
-    console.error('Error getting security level:', error);
-    return LocalAuthentication.SecurityLevel.NONE;
-  }
+  // Deliberately does NOT swallow, unlike its neighbours in this file.
+  //
+  // Its only caller is the app lock (navigation/AppLockGate.tsx), where
+  // `SecurityLevel.NONE` means "this device has no authenticator, so do not
+  // lock" — an unlock. Returning NONE on a failed check would therefore turn a
+  // transient native error into a silent bypass of a security control, and
+  // would do it invisibly: the caller's own `.catch` could never fire, so the
+  // fail-open would look defended. Let it throw so the caller can tell "no
+  // authenticator exists" from "I could not find out" and fail closed.
+  return LocalAuthentication.getEnrolledLevelAsync();
 }
