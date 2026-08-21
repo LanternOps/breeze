@@ -195,6 +195,17 @@ vi.mock('../../services/manifestSigning', () => ({
   },
 }));
 
+// `routes/metrics` is mocked rather than loaded: heartbeat.ts imports
+// `recordAgentHeartbeat` from it directly (as routes/agents/helpers.ts already
+// did), and pulling the real module in would drag the whole metrics + db graph
+// into this suite. `resolveResponseStatus` keeps its real behaviour, since the
+// success/failed split depends on it.
+const recordAgentHeartbeatMock = vi.hoisted(() => vi.fn());
+vi.mock('../metrics', () => ({
+  recordAgentHeartbeat: recordAgentHeartbeatMock,
+  resolveResponseStatus: (c: any) => (c?.finalized ? (c.res?.status ?? 500) : 500),
+}));
+
 import { and, eq, notInArray } from 'drizzle-orm';
 import { heartbeatRoutes } from './heartbeat';
 import { devices } from '../../db/schema';
@@ -850,6 +861,95 @@ const watchdogDeviceRow = {
   watchdogStatus: 'connected',
   watchdogLastSeen: new Date(),
 };
+
+// `agent_heartbeat_total` had a Grafana panel and a `NoAgentHeartbeats` alert rule
+// but no producer — the route never touched the counter, so both read a flat zero
+// against a live fleet. These tests pin the producer in place.
+describe('POST /agents/:id/heartbeat — agent_heartbeat_total producer', () => {
+  let observed: string[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    observed = [];
+    recordAgentHeartbeatMock.mockImplementation((status: string) => {
+      observed.push(status);
+    });
+
+    selectMock.mockReturnValueOnce(selectChainResolving([watchdogDeviceRow]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockImplementation(() => ({ values: vi.fn(() => Promise.resolve(undefined)) }));
+    selectMock.mockReturnValue(selectChainResolving([]));
+  });
+
+  it('counts an accepted heartbeat as success', async () => {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(observed).toEqual(['success']);
+  });
+
+  it('counts a rejected heartbeat as failed', async () => {
+    // No middleware sets `agent`, so the handler short-circuits with a 401.
+    //
+    // In production `agentRoutes.use('/:id/*', agentAuthMiddleware)` sits ABOVE
+    // this router, so a bad or missing agent token is rejected before reaching
+    // the counter — deliberately. `agent_heartbeat_total` answers "are enrolled
+    // agents checking in", and counting unauthenticated traffic to a public URL
+    // would let anyone on the internet inflate it. `failed` therefore means an
+    // authenticated agent whose beat was rejected downstream.
+    const app = new Hono();
+    app.route('/agents', heartbeatRoutes);
+
+    const resp = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(401);
+    expect(observed).toEqual(['failed']);
+  });
+
+  it('does not count requests to sibling routes on the same router', async () => {
+    const resp = await buildApp().request('/agents/device-1/config');
+
+    expect(resp.status).toBe(200);
+    expect(observed).toEqual([]);
+  });
+
+  // The middleware is POST-scoped. `use()` would register for every method, and an
+  // authenticated GET to this path 404s — which would be counted as a failed
+  // heartbeat and drag `NoAgentHeartbeats` toward firing on pure noise.
+  it('does not count a non-POST request to the heartbeat path', async () => {
+    const resp = await buildApp().request('/agents/device-1/heartbeat');
+
+    expect(resp.status).toBe(404);
+    expect(observed).toEqual([]);
+  });
+
+  // Pins the docstring claim that the middleware sits OUTSIDE `bodyLimit`, which
+  // holds only because the `on('POST', ...)` is registered before the route. An
+  // agent that starts sending oversized payloads is exactly what this counter is
+  // meant to surface, so the 413 must be counted rather than vanish.
+  // (`zValidator` is mocked to a passthrough in this suite, so the schema-rejection
+  // half of that claim cannot be exercised here — bodyLimit is the real thing.)
+  it('counts an oversized heartbeat rejected by bodyLimit as failed', async () => {
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'x'.repeat(5 * 1024 * 1024 + 1),
+    });
+
+    expect(resp.status).toBe(413);
+    expect(observed).toEqual(['failed']);
+  });
+});
 
 describe('POST /agents/:id/heartbeat — watchdog restart-stats logging (#799)', () => {
   // Track the values passed to the most recent agentLogs insert.
