@@ -22,6 +22,7 @@ import { relativeTime } from '../../lib/relativeTime';
 
 import {
   emptyStateCopy,
+  emptyStateKind,
   isBreached,
   priorityColor,
   priorityLabel,
@@ -109,6 +110,7 @@ export function TicketsScreen() {
   }, [load]);
 
   const empty = emptyStateCopy(queue, assignee);
+  const emptyKind = emptyStateKind(loading, error);
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + spacing['3'] }]}>
@@ -149,7 +151,22 @@ export function TicketsScreen() {
           />
         }
         ListEmptyComponent={
-          loading ? undefined : (
+          // Gated on `error` as well as `loading`. A rejected fetch leaves
+          // `tickets` empty, so gating on `loading` alone rendered the error
+          // line and, directly beneath it, "The open queue is clear" — two
+          // contradictory statements in one viewport, the reassuring one of
+          // which is wrong. A tech skimming past the error acts on it.
+          emptyKind === 'none' ? undefined : emptyKind === 'error' ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>Couldn&apos;t load tickets</Text>
+              <Text style={styles.emptyBody}>
+                The queue could not be reached, so this list is not a picture of what is open.
+              </Text>
+              <Pressable onPress={() => void load()} accessibilityRole="button" style={styles.retry}>
+                <Text style={styles.retryText}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : (
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>{empty.title}</Text>
               <Text style={styles.emptyBody}>{empty.body}</Text>
@@ -217,4 +234,15 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingHorizontal: spacing['6'] },
   emptyTitle: { ...type.bodyMd, color: palette.dark.textHi },
   emptyBody: { ...type.meta, color: palette.dark.textLo, marginTop: spacing['1'], textAlign: 'center' },
+  // Mirrors TicketDetailScreen's retry affordance so the two error states look
+  // and behave the same.
+  retry: {
+    marginTop: spacing['4'],
+    paddingHorizontal: spacing['4'],
+    paddingVertical: spacing['2'],
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.dark.border,
+  },
+  retryText: { ...type.meta, color: palette.dark.textHi },
 });

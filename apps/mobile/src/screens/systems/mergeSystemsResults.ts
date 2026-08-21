@@ -92,3 +92,32 @@ export function rejectionReasons(results: {
     .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     .map((r) => r.reason);
 }
+
+/**
+ * Distinct from 'Unknown organization' on purpose: that one means the org is
+ * genuinely absent from a list we successfully loaded, this one means we never
+ * loaded the list.
+ */
+export const ORG_NAME_UNAVAILABLE = 'Organization unavailable';
+export const ORG_NAME_UNKNOWN = 'Unknown organization';
+
+/**
+ * Resolve an org id to a display name, distinguishing "not in the list" from
+ * "there is no list".
+ *
+ * Both used to collapse to 'Unknown organization', so a failed `orgs` slice
+ * produced rows that looked exactly like real data about a genuinely unlisted
+ * org. The caller renders under a partial-failure banner in that case, and a
+ * confidently-labelled row directly contradicts it.
+ */
+export function resolveOrgName(
+  orgs: ReadonlyArray<{ id: string; name: string }>,
+  id: string,
+  orgsFailed: boolean
+): { name: string; unavailable: boolean } {
+  const resolved = orgs.find((o) => o.id === id)?.name;
+  if (resolved) return { name: resolved, unavailable: false };
+  return orgsFailed
+    ? { name: ORG_NAME_UNAVAILABLE, unavailable: true }
+    : { name: ORG_NAME_UNKNOWN, unavailable: false };
+}
