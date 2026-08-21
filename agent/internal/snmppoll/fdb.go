@@ -55,7 +55,15 @@ func parseFdbPortColumn(pdus []gosnmp.SnmpPDU) []FdbRow {
 		if !ok {
 			continue
 		}
-		v := ParseValue(pdu)
+		v, hexEncoded := parseValue(pdu)
+		if hexEncoded {
+			// A hex-encoded value is an octet dump of a binary payload, not a
+			// port number, and hex is all-digit often enough to sail through
+			// Atoi: an OCTET STRING {0x00,0x05} renders "0005" and would record
+			// a phantom bridge port 5, {0x05,0x00} port 500. The hex flag exists
+			// to stop exactly this numeric coercion, so drop the row instead.
+			continue
+		}
 		port, ok := toInt(v)
 		if !ok || port <= 0 {
 			continue
@@ -95,7 +103,11 @@ func parseBridgePortIfIndex(pdus []gosnmp.SnmpPDU) map[int]int {
 		if !ok {
 			continue
 		}
-		ifIndex, ok := toInt(ParseValue(pdu))
+		v, hexEncoded := parseValue(pdu)
+		if hexEncoded {
+			continue // same numeric-coercion hazard as parseFdbPortColumn
+		}
+		ifIndex, ok := toInt(v)
 		if !ok {
 			continue
 		}
@@ -112,7 +124,11 @@ func parseIfName(pdus []gosnmp.SnmpPDU) map[int]string {
 		if !ok {
 			continue
 		}
-		name, ok := ParseValue(pdu).(string)
+		v, hexEncoded := parseValue(pdu)
+		if hexEncoded {
+			continue // an octet dump is not an interface name
+		}
+		name, ok := v.(string)
 		if !ok || name == "" {
 			continue
 		}
@@ -204,7 +220,9 @@ func AssembleFdbEntries(fdbPortPDUs, basePortPDUs, ifNamePDUs, qBridgePDUs []gos
 	return entries
 }
 
-// toInt coerces a ParseValue result (int64/uint64/string) into an int.
+// toInt coerces a parseValue result (int64/uint64/string) into an int. Callers
+// must reject hex-encoded values BEFORE calling it: hex is often all-digit and
+// parses cleanly into a wrong number.
 func toInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case int64:
