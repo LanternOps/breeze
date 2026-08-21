@@ -1259,8 +1259,36 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     }
   }
 
+  // Device count per organization. The list is where an MSP scans "how big is
+  // each customer", and the web card renders `{{count}} devices` — with no
+  // count in the payload that interpolated to a bare " devices" (#3699).
+  //
+  // ONE grouped query over the page's ids rather than a count per row. The
+  // page can hold 100 orgs and `fetchAllOrganizations.ts` walks this endpoint
+  // page by page, so a per-row count would repeat that scan 100x per page. It
+  // is index-backed: `org_id` leads both `devices_org_id_status_idx` and
+  // `devices_org_id_last_seen_at_idx`, and EXPLAIN on a populated deployment
+  // takes the index, not a seq scan.
+  //
+  // `devices` has no soft-delete or archive column, so every row is a live
+  // device and a plain count is the whole story. An org with no devices is
+  // absent from the grouped result, hence the `?? 0` rather than leaving it
+  // undefined — "0 devices" is the truth for a new tenant, and undefined is
+  // what produced the blank label in the first place.
+  const pageOrgIds = ordered.map((org) => org.id);
+  const deviceCounts = pageOrgIds.length
+    ? await db
+        .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
+        .from(devices)
+        .where(inArray(devices.orgId, pageOrgIds))
+        .groupBy(devices.orgId)
+    : [];
+  const deviceCountByOrgId = new Map(
+    deviceCounts.map((row) => [row.orgId, Number(row.count)])
+  );
+
   return c.json({
-    data: ordered,
+    data: ordered.map((org) => ({ ...org, deviceCount: deviceCountByOrgId.get(org.id) ?? 0 })),
     pagination: { page, limit, total: Number(count) }
   });
 });

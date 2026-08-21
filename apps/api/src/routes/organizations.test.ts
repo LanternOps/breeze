@@ -325,6 +325,22 @@ describe('organization routes', () => {
               })
             })
           })
+        } as any)
+        // partner-settings read for the preferred org order
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // grouped per-org device counts (#3699)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 3 }])
+            })
+          })
         } as any);
 
       const res = await app.request('/orgs/organizations?page=1&limit=50', {

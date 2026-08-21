@@ -1577,6 +1577,31 @@ describe('org routes', () => {
   });
 
   describe('GET /orgs/organizations', () => {
+    // GET /orgs/organizations ends with one grouped per-org device-count query
+    // (#3699), shaped as db.select({...}).from(devices).where(...).groupBy(...).
+    // Mirrors mockSiteDeviceCounts, which does the same for GET /orgs/sites.
+    // Only needed when the page returns rows — an empty page skips the query.
+    const mockOrgDeviceCounts = (rows: Array<{ orgId: string; count: number }>) =>
+      ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockResolvedValue(rows)
+          })
+        })
+      }) as any;
+
+    // Partner scope reads partners.settings for the preferred org order, which
+    // lands BETWEEN the page query and the device counts. It has to be queued
+    // explicitly once anything follows it, or it consumes the next mock.
+    const mockPartnerOrderSettings = () =>
+      ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([])
+          })
+        })
+      }) as any;
+
     it('should return organizations with pagination', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.select)
@@ -1595,7 +1620,9 @@ describe('org routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 2 }]));
 
       const res = await app.request('/orgs/organizations?page=1&limit=1');
 
@@ -1603,6 +1630,79 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.data).toHaveLength(1);
       expect(body.pagination.total).toBe(1);
+    });
+
+    // #3699 — the web card renders `{{count}} devices`. With no count in the
+    // payload that interpolated to a bare " devices", which reads as either a
+    // loading bug or an empty tenant on the one screen where the number is the
+    // point. An org absent from the grouped result is a real 0, not unknown.
+    it('returns a device count per organization, defaulting an org with none to 0', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1', 'org-2'] });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 2 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }, { id: 'org-2' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        // org-2 has no devices, so the grouped query simply omits it.
+        .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-1', count: 12 }]));
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.find((o: { id: string }) => o.id === 'org-1').deviceCount).toBe(12);
+      expect(body.data.find((o: { id: string }) => o.id === 'org-2').deviceCount).toBe(0);
+    });
+
+    // The grouped count is ONE query for the whole page, not a per-row
+    // subselect: this endpoint is walked page-by-page by fetchAllOrganizations,
+    // so a correlated count would multiply into hundreds of queries per render.
+    it('costs one grouped query for the page rather than one per organization', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123', accessibleOrgIds: ['org-1', 'org-2', 'org-3'] });
+      const groupBySpy = vi.fn().mockResolvedValue([]);
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 3 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue([{ id: 'org-1' }, { id: 'org-2' }, { id: 'org-3' }])
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ groupBy: groupBySpy })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations?page=1&limit=10');
+
+      expect(res.status).toBe(200);
+      expect(groupBySpy).toHaveBeenCalledTimes(1);
+      const body = await res.json();
+      expect(body.data.every((o: { deviceCount: number }) => o.deviceCount === 0)).toBe(true);
     });
 
     // #3462: apps/web/src/lib/fetchAllOrganizations.ts pages through this
@@ -1663,7 +1763,9 @@ describe('org routes', () => {
               })
             })
           })
-        } as any);
+        } as any)
+        .mockReturnValueOnce(mockPartnerOrderSettings())
+        .mockReturnValueOnce(mockOrgDeviceCounts([]));
 
       const res = await app.request('/orgs/organizations?search=contoso');
 
@@ -4801,6 +4903,16 @@ describe('org routes', () => {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockRejectedValue(new Error('db blew up'))
+          })
+        })
+      } as any);
+      // 4) grouped per-org device counts (#3699) — runs after the soft-fail,
+      // proving the settings failure degrades ordering only and still yields
+      // a fully-shaped list response.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockResolvedValue([{ orgId: 'org-1', count: 7 }])
           })
         })
       } as any);
