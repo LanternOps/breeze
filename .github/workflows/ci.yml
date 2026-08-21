@@ -2289,28 +2289,87 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          # NOTE: deliberately no `-e`. This job is a notifier, not a gate, and
+          # it is a normal job in the CI workflow — so an unhandled failure here
+          # turns an otherwise fully green run red at the workflow and
+          # check-suite level. That happened on a transient
+          # `HTTP 503 ... api.github.com/graphql` with 41/41 real jobs green and
+          # `CI Success` itself passing (#3692). Under `set -e` an
+          # assignment-only command takes the exit status of its command
+          # substitution, so a failed `gh issue list` aborted the script before
+          # the `case` block ever ran. Every call is handled explicitly below.
+          set -uo pipefail
+
+          # RETRIES ARE FOR READS ONLY.
+          #
+          # The GitHub API returns transient 5xx often enough that a single
+          # attempt is the actual bug here, but a retried WRITE is worse than a
+          # missed one: if the server accepted `gh issue create` and only the
+          # response was lost, retrying opens a second ci-red issue. Same for
+          # `issue comment`. Reads are idempotent, so only they are retried; the
+          # mutations below get one attempt and an annotation if they fail, and
+          # self-heal on the next push to main or a re-run of this job.
+          #
+          # Progress goes to STDERR, never stdout: this is called inside
+          # `existing=$(gh_read_retry gh issue list ...)`, and anything on stdout
+          # is captured into that variable. Writing the retry notice to stdout
+          # made `existing` the notice text with the issue number glued on the
+          # end, so the next call became `gh issue close "gh call failed...42"`.
+          # Caught by driving this script against a stubbed `gh`; no linter sees
+          # it.
+          gh_read_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              echo "gh read failed (attempt ${attempt}/3): $*" >&2
+              # No sleep after the final attempt — there is no fourth.
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            return 1
+          }
+
+          # Unchanged from before: one attempt, errors swallowed. The common
+          # failure is "already exists", which is why stderr is discarded.
           gh label create ci-red --repo "$GITHUB_REPOSITORY" \
             --color B60205 --description "CI is failing on main" 2>/dev/null || true
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
-            --json number --jq ".[0].number // empty")
+
+          # Read the current state FIRST, and treat "could not read" as its own
+          # outcome rather than folding it into "none found". Defaulting to an
+          # empty string on failure would make the failure branch below open a
+          # SECOND ci-red issue every red push while the API is degraded.
+          if existing=$(gh_read_retry gh issue list --repo "$GITHUB_REPOSITORY" --label ci-red --state open \
+            --json number --jq ".[0].number // empty"); then
+            :
+          else
+            echo "::error::Could not read ci-red issues after 3 attempts; skipping reconciliation for this run."
+            echo "ci-success result was '$RESULT'. State is unchanged and will reconcile on the next push to main, or by re-running this job."
+            exit 0
+          fi
+
           short_sha="${SHA:0:8}"
           case "$RESULT" in
             success)
               if [ -n "$existing" ]; then
                 gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
-                  --comment "Main is green again as of \`$short_sha\`: $RUN_URL"
+                  --comment "Main is green again as of \`$short_sha\`: $RUN_URL" \
+                  || echo "::error::Failed to close ci-red issue #$existing; it will close on the next green main run."
               fi
               ;;
             failure)
               if [ -n "$existing" ]; then
                 gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-                  --body "Still red at \`$short_sha\`: $RUN_URL"
+                  --body "Still red at \`$short_sha\`: $RUN_URL" \
+                  || echo "::error::Failed to comment on ci-red issue #$existing; the issue is already open, so main-red state is still tracked."
               else
                 body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
-                  --body "$body"
+                  --body "$body" \
+                  || echo "::error::Failed to open a ci-red issue for $short_sha — main is RED and untracked. Re-run this job once the API recovers."
               fi
               ;;
             *)
