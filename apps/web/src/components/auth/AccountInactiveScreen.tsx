@@ -12,6 +12,8 @@ interface StatusInfo {
   message: string | null;
   actionUrl: string | null;
   actionLabel: string | null;
+  meetingUrl: string | null;
+  meetingLabel: string | null;
 }
 
 function isSafeUrl(url: string): boolean {
@@ -52,6 +54,8 @@ export default function AccountInactiveScreen() {
           message: data.statusMessage ?? defaultMessages[data.status] ?? t('accountInactive.defaultMessages.generic', { defaultValue: 'Your account is not active.' }),
           actionUrl: data.statusActionUrl,
           actionLabel: data.statusActionLabel,
+          meetingUrl: data.statusMeetingUrl,
+          meetingLabel: data.statusMeetingLabel,
         });
       })
       .catch(() => {
@@ -60,6 +64,8 @@ export default function AccountInactiveScreen() {
           message: t('accountInactive.defaultMessages.loadFailed', { defaultValue: 'Unable to load account status. Please try again later.' }),
           actionUrl: null,
           actionLabel: null,
+          meetingUrl: null,
+          meetingLabel: null,
         });
       })
       .finally(() => setLoading(false));
@@ -103,6 +109,16 @@ export default function AccountInactiveScreen() {
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90"
             >
               {info.actionLabel ?? t('accountInactive.takeAction', { defaultValue: 'Take Action' })}
+            </a>
+          )}
+          {info?.status === 'pending' && info.meetingUrl && isSafeUrl(info.meetingUrl) && (
+            <a
+              href={info.meetingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
+              {info.meetingLabel ?? t('accountInactive.bookMeeting', { defaultValue: 'Book a call with us' })}
             </a>
           )}
           <button

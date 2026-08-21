@@ -135,6 +135,61 @@ describe('partner routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    const mockPartnerRow = (settings: Record<string, unknown> = {}) => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: 'partner-123',
+              name: 'Acme MSP',
+              slug: 'acme',
+              status: 'pending',
+              settings,
+            }]),
+          }),
+        }),
+      } as any);
+    };
+
+    it('surfaces the configured meeting link for pending partners', async () => {
+      vi.stubEnv('PENDING_ACCOUNT_MEETING_URL', ' https://calendly.example.com/breeze ');
+      vi.stubEnv('PENDING_ACCOUNT_MEETING_LABEL', 'Book a demo');
+      try {
+        mockPartnerRow();
+        const res = await app.request('/partner/me', {
+          headers: { Authorization: 'Bearer token' },
+        });
+        expect(await res.json()).toMatchObject({
+          statusMeetingUrl: 'https://calendly.example.com/breeze',
+          statusMeetingLabel: 'Book a demo',
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('drops a non-http(s) meeting URL and nulls when unset', async () => {
+      vi.stubEnv('PENDING_ACCOUNT_MEETING_URL', 'javascript:alert(1)');
+      try {
+        mockPartnerRow();
+        const res = await app.request('/partner/me', {
+          headers: { Authorization: 'Bearer token' },
+        });
+        expect(await res.json()).toMatchObject({
+          statusMeetingUrl: null,
+          statusMeetingLabel: null,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+
+      mockPartnerRow();
+      const res = await app.request('/partner/me', {
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(await res.json()).toMatchObject({ statusMeetingUrl: null });
+    });
   });
 
   it('returns partner dashboard customer payload', async () => {
