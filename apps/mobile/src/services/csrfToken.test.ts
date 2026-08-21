@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const store = new Map<string, string>();
+// csrfToken now reports read failures directly to Sentry (it cannot use
+// lib/errorReporting without an api -> csrfToken import cycle), and the real
+// @sentry/react-native is a Flow source this .ts-only suite cannot parse.
+const sentry = { captureException: vi.fn(), captureMessage: vi.fn() };
+vi.mock('@sentry/react-native', () => ({
+  captureException: (...a: unknown[]) => sentry.captureException(...a),
+  captureMessage: (...a: unknown[]) => sentry.captureMessage(...a),
+}));
+
 vi.mock('expo-secure-store', () => ({
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'wutdo',
   getItemAsync: vi.fn(async (k: string) => store.get(k) ?? null),
@@ -145,5 +154,28 @@ describe('clearCsrfToken', () => {
     (store.deleteItemAsync as unknown as { mockRejectedValueOnce: (e: Error) => void })
       .mockRejectedValueOnce(new Error('keychain locked'));
     await expect(clearCsrfToken()).rejects.toThrow('keychain locked');
+  });
+});
+
+
+describe('getCsrfHeaderValue read failures', () => {
+  it('reports a keychain read failure instead of folding it into first-run', async () => {
+    // A read FAILURE and "nothing stored" are different states. Treated the
+    // same, a real stored token coexists with us sending the bootstrap
+    // literal — the server sees a genuine CSRF cookie against a bootstrap
+    // header, safeCompareTokens fails, refresh is rejected and the user is
+    // bounced. That is #3723's symptom with nothing in the logs to tell them
+    // apart, which is exactly what makes it expensive to diagnose.
+    const secureStore = await import('expo-secure-store');
+    sentry.captureException.mockClear();
+    __resetCsrfCacheForTests();
+    vi.mocked(secureStore.getItemAsync).mockRejectedValueOnce(new Error('keychain locked'));
+
+    const value = await getCsrfHeaderValue();
+
+    // Still falls back, so a genuine first run is unaffected...
+    expect(value).toBe(CSRF_BOOTSTRAP_VALUE);
+    // ...but the failure is now visible.
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
   });
 });

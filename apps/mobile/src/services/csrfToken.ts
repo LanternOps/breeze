@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Sentry from '@sentry/react-native';
 
 /**
  * Double-submit CSRF token handling for the native client.
@@ -132,8 +133,26 @@ export async function getCsrfHeaderValue(): Promise<string> {
       cached = stored;
       return stored;
     }
-  } catch {
-    // fall through to bootstrap
+  } catch (err) {
+    // A read FAILURE is not the same as "nothing stored", and folding the two
+    // together recreates the bug this module exists to fix. If a token really
+    // is stored, the request carries a real CSRF cookie while we send the
+    // bootstrap literal — the mismatch fails safeCompareTokens server-side,
+    // the refresh is rejected, and the user is bounced. Identical to #3723's
+    // symptom, with nothing in the logs to distinguish it.
+    //
+    // Reported directly to Sentry rather than through lib/errorReporting:
+    // that module imports services/api, which imports this one, so routing it
+    // there would create csrfToken -> errorReporting -> api -> csrfToken.
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(`csrf token read failed: ${String(err)}`),
+      { tags: { area: 'csrf-token-read' } }
+    );
+    // Deliberately NOT calling forgetCsrfToken() here. `cached` was already
+    // checked above, so there is no in-memory value to distrust, and the read
+    // failing tells us nothing about whether a stored token exists — a
+    // temporarily locked keychain would have us delete a perfectly good token.
+    // The self-heal on a CSRF-rejected response is the right place to discard.
   }
   return CSRF_BOOTSTRAP_VALUE;
 }
