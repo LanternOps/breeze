@@ -1503,14 +1503,36 @@ jobs:
           path: apps/helper/breeze-helper-macos.dmg
           retention-days: 30
 
-  sign-windows-tauri:
-    name: Sign Windows Tauri Artifacts
+  resolve-windows-signing-provider:
+    name: Resolve Windows signing provider
     if: >-
       vars.ENABLE_WINDOWS_SIGNING == 'true'
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      provider: ${{ steps.provider.outputs.provider }}
+    steps:
+      - name: Validate provider
+        id: provider
+        shell: bash
+        env:
+          RAW_PROVIDER: ${{ vars.WINDOWS_SIGNING_PROVIDER }}
+        run: |
+          set -euo pipefail
+          provider="${RAW_PROVIDER:-azure}"
+          case "$provider" in
+            azure|sslcom) echo "provider=$provider" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::WINDOWS_SIGNING_PROVIDER must be empty, azure, or sslcom"; exit 1 ;;
+          esac
+
+  sign-windows-tauri-azure:
+    name: Sign Windows Tauri artifacts (Azure)
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    if: needs.resolve-windows-signing-provider.outputs.provider == 'azure'
     runs-on: windows-latest
-    needs: [build-viewer, build-helper]
     permissions:
       contents: read
       id-token: write
@@ -1529,23 +1551,7 @@ jobs:
           name: breeze-helper-windows.msi
           path: staging/
 
-      # WINDOWS SIGNING PROVIDER SWITCH (#3708)
-      #
-      # `vars.WINDOWS_SIGNING_PROVIDER` selects the CA. Unset or anything other
-      # than "sslcom" means Azure, so the existing path is the default and an
-      # absent variable cannot silently disable signing.
-      #
-      # Both providers write an Authenticode signature in place over the same two
-      # staged MSIs, and the shared "Verify signatures" step below validates the
-      # result with Get-AuthenticodeSignature regardless of who produced it — so
-      # the provider swap cannot quietly ship an unsigned artifact.
-      #
-      # Stable vs prerelease certificates are selected by the job's GitHub
-      # Environment (signing-production / signing-prerelease), which is why the
-      # ssl.com path needs one step per file rather than Azure's one per
-      # file-and-profile: the environment already scopes SSLCOM_CREDENTIAL_ID.
       - name: Validate signing configuration (Azure)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1560,24 +1566,7 @@ jobs:
             }
           }
 
-      - name: Validate signing configuration (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        shell: pwsh
-        env:
-          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
-          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
-          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
-        run: |
-          $required = @("SSLCOM_USERNAME", "SSLCOM_PASSWORD", "SSLCOM_CREDENTIAL_ID", "SSLCOM_TOTP_SECRET")
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing required signing secret: $name"
-            }
-          }
-
       - name: Azure Login (OIDC)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1585,7 +1574,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Sign viewer MSI (stable profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
+        if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1597,7 +1586,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign viewer MSI (prerelease profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
+        if: ${{ contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1609,7 +1598,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (stable profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
+        if: ${{ !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1621,7 +1610,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (prerelease profile)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
+        if: ${{ contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1631,36 +1620,6 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
-
-      # SSL.com eSigner. `override: true` signs in place, matching what the Azure
-      # action does, so the staged paths the verify step checks are unchanged.
-      # No file-digest/timestamp inputs: eSigner timestamps internally rather
-      # than taking an RFC-3161 URL the way azure/artifact-signing-action does.
-      - name: Sign viewer MSI (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: sign
-          username: ${{ secrets.SSLCOM_USERNAME }}
-          password: ${{ secrets.SSLCOM_PASSWORD }}
-          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
-          override: true
-          malware_block: false
-
-      - name: Sign helper MSI (SSL.com)
-        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
-        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
-        with:
-          command: sign
-          username: ${{ secrets.SSLCOM_USERNAME }}
-          password: ${{ secrets.SSLCOM_PASSWORD }}
-          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
-          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi
-          override: true
-          malware_block: false
 
       - name: Verify signatures
         shell: pwsh
@@ -1676,6 +1635,12 @@ jobs:
             }
             if ($sig.Status -eq "UnknownError") {
               Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError)."
+            }
+            if (-not $sig.SignerCertificate) {
+              throw "Signer certificate missing for $target"
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              throw "RFC 3161 timestamp missing for $target"
             }
             Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $($sig.SignerCertificate.Subject)"
           }
@@ -1695,6 +1660,155 @@ jobs:
           path: staging/breeze-helper-windows.msi
           overwrite: true
           retention-days: 30
+
+  sign-windows-tauri-sslcom:
+    name: Sign Windows Tauri artifacts (SSL.com)
+    needs: [build-viewer, build-helper, resolve-windows-signing-provider]
+    if: needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
+    steps:
+      - name: Download viewer Windows MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/
+
+      - name: Download helper Windows MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/
+
+      - name: Validate signing configuration (SSL.com)
+        shell: pwsh
+        env:
+          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
+          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
+          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          SSLCOM_CERT_SHA256: ${{ secrets.SSLCOM_CERT_SHA256 }}
+        run: |
+          $required = @("SSLCOM_USERNAME", "SSLCOM_PASSWORD", "SSLCOM_CREDENTIAL_ID", "SSLCOM_TOTP_SECRET", "SSLCOM_CERT_SHA256")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
+      # SSL.com eSigner signs each staged MSI in place. `malware_block: true`
+      # blocks a detected malware payload and `clean_logs: true` removes logs.
+      - name: Sign viewer MSI (SSL.com)
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
+          override: true
+          malware_block: true
+          clean_logs: true
+
+      - name: Sign helper MSI (SSL.com)
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi
+          override: true
+          malware_block: true
+          clean_logs: true
+
+      - name: Verify signatures
+        shell: pwsh
+        env:
+          SSLCOM_CERT_SHA256: ${{ secrets.SSLCOM_CERT_SHA256 }}
+        run: |
+          $targets = @(
+            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-viewer-windows.msi"),
+            (Join-Path $env:GITHUB_WORKSPACE "staging\breeze-helper-windows.msi")
+          )
+          foreach ($target in $targets) {
+            $sig = Get-AuthenticodeSignature -FilePath $target
+            if ($sig.Status -ne "Valid" -and $sig.Status -ne "UnknownError") {
+              throw "Signature validation failed for $target. Status: $($sig.Status)"
+            }
+            if ($sig.Status -eq "UnknownError") {
+              Write-Host "::warning::$target signed but root cert not yet trusted locally (Status: UnknownError)."
+            }
+            if (-not $sig.SignerCertificate) {
+              throw "Signer certificate missing for $target"
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              throw "RFC 3161 timestamp missing for $target"
+            }
+            $expected = ($env:SSLCOM_CERT_SHA256 -replace '[^0-9A-Fa-f]', '').ToLowerInvariant()
+            if ($expected -notmatch '^[0-9a-f]{64}$') {
+              throw 'SSLCOM_CERT_SHA256 must contain exactly 64 hexadecimal characters'
+            }
+            $actual = ($sig.SignerCertificate.GetCertHashString(
+              [System.Security.Cryptography.HashAlgorithmName]::SHA256
+            ) -replace '[^0-9A-Fa-f]', '').ToLowerInvariant()
+            if ($actual -ne $expected) {
+              throw "Unexpected SSL.com signer certificate for $target (SHA-256 $actual)"
+            }
+            $subject = $sig.SignerCertificate.Subject
+            if ($subject -notmatch '(?i)(?:^|,\s*)(?:O|CN)=LANTERNOPS LLC(?:,|$)') {
+              throw "Unexpected SSL.com signer subject for $target: $subject"
+            }
+            Write-Host "Verified: $target - Status: $($sig.Status) - Signer: $subject"
+          }
+
+      - name: Upload signed viewer MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-viewer-windows.msi
+          path: staging/breeze-viewer-windows.msi
+          overwrite: true
+          retention-days: 30
+
+      - name: Upload signed helper MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: breeze-helper-windows.msi
+          path: staging/breeze-helper-windows.msi
+          overwrite: true
+          retention-days: 30
+
+  sign-windows-tauri:
+    name: Windows Tauri signing convergence gate
+    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    if: ${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Assert single-provider convergence
+        shell: bash
+        env:
+          PROVIDER: ${{ needs.resolve-windows-signing-provider.outputs.provider }}
+          AZURE_RESULT: ${{ needs.sign-windows-tauri-azure.result }}
+          SSLCOM_RESULT: ${{ needs.sign-windows-tauri-sslcom.result }}
+        run: |
+          set -euo pipefail
+          case "$PROVIDER" in
+            azure)
+              [ "$AZURE_RESULT" = success ] && [ "$SSLCOM_RESULT" = skipped ] ;;
+            sslcom)
+              [ "$AZURE_RESULT" = skipped ] && [ "$SSLCOM_RESULT" = success ] ;;
+            *)
+              echo "::error::provider resolution failed or produced an unexpected value"
+              exit 1 ;;
+          esac
+          echo "Provider '$PROVIDER' converged (azure=$AZURE_RESULT, sslcom=$SSLCOM_RESULT)."
 
   package-windows-updater:
     name: Package Windows Updater Bundle

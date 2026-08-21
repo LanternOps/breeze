@@ -662,6 +662,113 @@ ${signingSteps}
 `;
 }
 
+const SSL_ACTION = 'SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b';
+const PUBLIC_SIGNING_RULES = [
+  'windows-signing-provider-must-fail-closed',
+  'windows-signing-provider-least-privilege',
+  'sslcom-signing-must-pin-certificate',
+  'windows-signing-must-require-timestamp',
+  'sslcom-signing-must-not-touch-agent',
+  'windows-signing-provider-must-converge',
+];
+
+function publicSigningFixture() {
+  return `on: push
+jobs:
+  resolve-windows-signing-provider:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      provider: \${{ steps.provider.outputs.provider }}
+    steps:
+      - id: provider
+        env:
+          RAW_PROVIDER: \${{ vars.WINDOWS_SIGNING_PROVIDER }}
+        run: |
+          case "\${RAW_PROVIDER:-azure}" in
+            azure|sslcom) echo "provider=\${RAW_PROVIDER:-azure}" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+  sign-windows-tauri-azure:
+    needs: [resolve-windows-signing-provider]
+    if: needs.resolve-windows-signing-provider.outputs.provider == 'azure'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - shell: pwsh
+        run: |
+          if (-not $sig.SignerCertificate) { throw }
+          if (-not $sig.TimeStamperCertificate) { throw }
+  sign-windows-tauri-sslcom:
+    needs: [resolve-windows-signing-provider]
+    if: needs.resolve-windows-signing-provider.outputs.provider == 'sslcom'
+    permissions:
+      contents: read
+    steps:
+      - uses: ${SSL_ACTION}
+        with:
+          username: \${{ secrets.SSLCOM_USERNAME }}
+          password: \${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: \${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: \${{ secrets.SSLCOM_TOTP_SECRET }}
+      - shell: pwsh
+        env:
+          SSLCOM_CERT_SHA256: \${{ secrets.SSLCOM_CERT_SHA256 }}
+        run: |
+          $expected = $env:SSLCOM_CERT_SHA256
+          $actual = $sig.SignerCertificate.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+          if (-not $sig.TimeStamperCertificate) { throw }
+          O=LANTERNOPS LLC
+  sign-windows-tauri:
+    needs: [resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    if: \${{ !cancelled() && needs.resolve-windows-signing-provider.result != 'skipped' }}
+    permissions:
+      contents: read
+    steps:
+      - env:
+          PROVIDER: \${{ needs.resolve-windows-signing-provider.outputs.provider }}
+          AZURE_RESULT: \${{ needs.sign-windows-tauri-azure.result }}
+          SSLCOM_RESULT: \${{ needs.sign-windows-tauri-sslcom.result }}
+        run: echo convergence
+`;
+}
+
+test('passing public signing fixture raises no public-signing violations', () => {
+  const rules = new Set(inspectWorkflowText('release.yml', publicSigningFixture()).map(({ rule }) => rule));
+  for (const rule of PUBLIC_SIGNING_RULES) assert.equal(rules.has(rule), false, rule);
+});
+
+test('public signing resolver rejects unknown providers', () => {
+  const text = publicSigningFixture().replace('*) exit 1 ;;', '*) echo "provider=azure" >> "$GITHUB_OUTPUT" ;;');
+  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-fail-closed'), true);
+});
+
+test('SSL.com signer cannot receive OIDC', () => {
+  const text = publicSigningFixture().replace('sign-windows-tauri-sslcom:\n', 'sign-windows-tauri-sslcom:\n    permissions:\n      id-token: write\n');
+  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-least-privilege'), true);
+});
+
+test('SSL.com signer requires a pinned certificate and timestamp', () => {
+  const text = publicSigningFixture()
+    .replaceAll('SSLCOM_CERT_SHA256', 'REMOVED_CERT_PIN')
+    .replaceAll('TimeStamperCertificate', 'REMOVED_TIMESTAMP');
+  const rules = new Set(inspectWorkflowText('release.yml', text).map(({ rule }) => rule));
+  assert.equal(rules.has('sslcom-signing-must-pin-certificate'), true);
+  assert.equal(rules.has('windows-signing-must-require-timestamp'), true);
+});
+
+test('SSL.com signer cannot mention public Agent-family artifacts', () => {
+  const text = publicSigningFixture().replace('O=LANTERNOPS LLC', 'O=LANTERNOPS LLC\n          breeze-agent.msi');
+  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'sslcom-signing-must-not-touch-agent'), true);
+});
+
+test('convergence gate must consume both signer results', () => {
+  const text = publicSigningFixture().replace(/ +AZURE_RESULT:[^\n]*\n/u, '');
+  assert.equal(inspectWorkflowText('release.yml', text).some(({ rule }) => rule === 'windows-signing-provider-must-converge'), true);
+});
+
 test('rejects checkout in an Apple-secret developer signing job', () => {
   const text = developerSigningWorkflow(`      - name: Verify unsigned artifact before secrets
         run: shasum -a 256 -c SHA256SUMS

@@ -8,7 +8,28 @@ const PR_TARGET_HEAD_RULE = 'pr-target-must-not-execute-head';
 const SIGNING_BUILD_RULE = 'signing-job-must-not-build-source';
 const SIGNING_VERIFY_RULE = 'signing-job-must-verify-artifact-before-secrets';
 const UNSUPPORTED_SYNTAX_RULE = 'unsupported-workflow-syntax';
+const WINDOWS_SIGNING_PROVIDER_FAIL_CLOSED_RULE = 'windows-signing-provider-must-fail-closed';
+const WINDOWS_SIGNING_PROVIDER_LEAST_PRIVILEGE_RULE = 'windows-signing-provider-least-privilege';
+const SSLCOM_SIGNING_CERTIFICATE_PIN_RULE = 'sslcom-signing-must-pin-certificate';
+const WINDOWS_SIGNING_TIMESTAMP_RULE = 'windows-signing-must-require-timestamp';
+const SSLCOM_SIGNING_AGENT_ISOLATION_RULE = 'sslcom-signing-must-not-touch-agent';
+const WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE = 'windows-signing-provider-must-converge';
 const PINNED_EXTERNAL_USES = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$/u;
+const PUBLIC_AGENT_WINDOWS_ASSETS = [
+  'breeze-agent-windows-amd64.exe',
+  'breeze-backup-windows-amd64.exe',
+  'breeze-watchdog-windows-amd64.exe',
+  'breeze-user-helper-windows-amd64.exe',
+  'breeze-agent.msi',
+];
+const SSLCOM_ACTION = 'SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b';
+const SSLCOM_SECRETS = [
+  'SSLCOM_USERNAME',
+  'SSLCOM_PASSWORD',
+  'SSLCOM_CREDENTIAL_ID',
+  'SSLCOM_TOTP_SECRET',
+  'SSLCOM_CERT_SHA256',
+];
 
 function stripInlineComment(line) {
   let quote = null;
@@ -681,6 +702,39 @@ function workflowJobs(lines) {
   return jobs;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function requirePattern(section, pattern, rule, violations, file) {
+  const content = section?.lines.map((line) => line.content).join('\n') ?? '';
+  if (section && pattern.test(content)) {
+    return;
+  }
+  violations.push({
+    file,
+    line: section?.lines[0].line ?? 1,
+    rule,
+    message: `release signing job "${section?.name ?? 'missing'}" must satisfy ${rule}`,
+  });
+}
+
+function forbidPattern(section, pattern, rule, violations, file) {
+  if (!section) {
+    return;
+  }
+  const content = section.lines.map((line) => line.content).join('\n');
+  if (!pattern.test(content)) {
+    return;
+  }
+  violations.push({
+    file,
+    line: section.lines[0].line,
+    rule,
+    message: `release signing job "${section.name}" must not violate ${rule}`,
+  });
+}
+
 function scalarListValues(value) {
   const scalar = unquote(value);
   if (!scalar.startsWith('[') || !scalar.endsWith(']')) {
@@ -985,6 +1039,117 @@ function developerSigningViolations(file, lines) {
   return violations;
 }
 
+function publicReleaseSigningViolations(file, lines) {
+  if (file !== 'release.yml') {
+    return [];
+  }
+
+  const jobs = new Map(workflowJobs(lines).map((job) => [job.name, job]));
+  const resolver = jobs.get('resolve-windows-signing-provider');
+  const azure = jobs.get('sign-windows-tauri-azure');
+  const sslcom = jobs.get('sign-windows-tauri-sslcom');
+  const gate = jobs.get('sign-windows-tauri');
+  if (!resolver && !azure && !sslcom && !gate) {
+    return [];
+  }
+
+  const violations = [];
+  requirePattern(
+    resolver,
+    /RAW_PROVIDER[\s\S]*:-azure[\s\S]*azure\|sslcom[\s\S]*\*\)[\s\S]*exit 1/u,
+    WINDOWS_SIGNING_PROVIDER_FAIL_CLOSED_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    azure,
+    /id-token:\s*write/u,
+    WINDOWS_SIGNING_PROVIDER_LEAST_PRIVILEGE_RULE,
+    violations,
+    file,
+  );
+  for (const section of [resolver, sslcom, gate]) {
+    forbidPattern(
+      section,
+      /id-token:/u,
+      WINDOWS_SIGNING_PROVIDER_LEAST_PRIVILEGE_RULE,
+      violations,
+      file,
+    );
+  }
+  requirePattern(
+    sslcom,
+    new RegExp(escapeRegExp(SSLCOM_ACTION), 'u'),
+    SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
+    violations,
+    file,
+  );
+  for (const secret of SSLCOM_SECRETS) {
+    requirePattern(
+      sslcom,
+      new RegExp(`secrets\\.${secret}\\b`, 'u'),
+      SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
+      violations,
+      file,
+    );
+  }
+  requirePattern(
+    sslcom,
+    /\$env:SSLCOM_CERT_SHA256/u,
+    SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    sslcom,
+    /GetCertHashString\(\s*\[System\.Security\.Cryptography\.HashAlgorithmName\]::SHA256/u,
+    SSLCOM_SIGNING_CERTIFICATE_PIN_RULE,
+    violations,
+    file,
+  );
+  for (const section of [azure, sslcom]) {
+    requirePattern(
+      section,
+      /TimeStamperCertificate/u,
+      WINDOWS_SIGNING_TIMESTAMP_RULE,
+      violations,
+      file,
+    );
+  }
+  for (const asset of PUBLIC_AGENT_WINDOWS_ASSETS) {
+    forbidPattern(
+      sslcom,
+      new RegExp(escapeRegExp(asset), 'u'),
+      SSLCOM_SIGNING_AGENT_ISOLATION_RULE,
+      violations,
+      file,
+    );
+  }
+  requirePattern(
+    gate,
+    /!cancelled\(\)/u,
+    WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    gate,
+    /needs\.sign-windows-tauri-azure\.result/u,
+    WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
+    violations,
+    file,
+  );
+  requirePattern(
+    gate,
+    /needs\.sign-windows-tauri-sslcom\.result/u,
+    WINDOWS_SIGNING_PROVIDER_CONVERGENCE_RULE,
+    violations,
+    file,
+  );
+
+  return violations;
+}
+
 function compareViolations(left, right) {
   return codePointCompare(left.file, right.file)
     || left.line - right.line
@@ -1047,6 +1212,7 @@ export function inspectWorkflowText(file, text) {
   }
 
   violations.push(...developerSigningViolations(file, lines));
+  violations.push(...publicReleaseSigningViolations(file, lines));
 
   return violations.sort(compareViolations);
 }
