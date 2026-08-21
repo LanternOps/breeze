@@ -1529,7 +1529,23 @@ jobs:
           name: breeze-helper-windows.msi
           path: staging/
 
-      - name: Validate signing configuration
+      # WINDOWS SIGNING PROVIDER SWITCH (#3708)
+      #
+      # `vars.WINDOWS_SIGNING_PROVIDER` selects the CA. Unset or anything other
+      # than "sslcom" means Azure, so the existing path is the default and an
+      # absent variable cannot silently disable signing.
+      #
+      # Both providers write an Authenticode signature in place over the same two
+      # staged MSIs, and the shared "Verify signatures" step below validates the
+      # result with Get-AuthenticodeSignature regardless of who produced it — so
+      # the provider swap cannot quietly ship an unsigned artifact.
+      #
+      # Stable vs prerelease certificates are selected by the job's GitHub
+      # Environment (signing-production / signing-prerelease), which is why the
+      # ssl.com path needs one step per file rather than Azure's one per
+      # file-and-profile: the environment already scopes SSLCOM_CREDENTIAL_ID.
+      - name: Validate signing configuration (Azure)
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1544,7 +1560,24 @@ jobs:
             }
           }
 
+      - name: Validate signing configuration (SSL.com)
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
+        shell: pwsh
+        env:
+          SSLCOM_USERNAME: ${{ secrets.SSLCOM_USERNAME }}
+          SSLCOM_PASSWORD: ${{ secrets.SSLCOM_PASSWORD }}
+          SSLCOM_CREDENTIAL_ID: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          SSLCOM_TOTP_SECRET: ${{ secrets.SSLCOM_TOTP_SECRET }}
+        run: |
+          $required = @("SSLCOM_USERNAME", "SSLCOM_PASSWORD", "SSLCOM_CREDENTIAL_ID", "SSLCOM_TOTP_SECRET")
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              throw "Missing required signing secret: $name"
+            }
+          }
+
       - name: Azure Login (OIDC)
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' }}
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1552,7 +1585,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Sign viewer MSI (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1564,7 +1597,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign viewer MSI (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1576,7 +1609,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (stable profile)
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && !contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1588,7 +1621,7 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign helper MSI (prerelease profile)
-        if: ${{ contains(github.ref_name, '-') }}
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER != 'sslcom' && contains(github.ref_name, '-') }}
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -1598,6 +1631,36 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+
+      # SSL.com eSigner. `override: true` signs in place, matching what the Azure
+      # action does, so the staged paths the verify step checks are unchanged.
+      # No file-digest/timestamp inputs: eSigner timestamps internally rather
+      # than taking an RFC-3161 URL the way azure/artifact-signing-action does.
+      - name: Sign viewer MSI (SSL.com)
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-viewer-windows.msi
+          override: true
+          malware_block: false
+
+      - name: Sign helper MSI (SSL.com)
+        if: ${{ vars.WINDOWS_SIGNING_PROVIDER == 'sslcom' }}
+        uses: SSLcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.SSLCOM_USERNAME }}
+          password: ${{ secrets.SSLCOM_PASSWORD }}
+          credential_id: ${{ secrets.SSLCOM_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.SSLCOM_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/staging/breeze-helper-windows.msi
+          override: true
+          malware_block: false
 
       - name: Verify signatures
         shell: pwsh
