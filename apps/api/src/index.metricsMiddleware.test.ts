@@ -39,7 +39,9 @@ describe('metricsMiddleware mount (index.ts)', () => {
     // a 429/413 stops being counted at all.
     const metricsAt = indexSource.indexOf("app.use('*', metricsMiddleware)");
     // The CALL site, not the import at the top of the file.
-    const bodyLimitAt = indexSource.indexOf('bodyLimitForPath(c.req.path)');
+    // Main applies the global body limit via createGlobalBodyLimitMiddleware({...})
+    // since #3660; the trailing '({' distinguishes the call from the import.
+    const bodyLimitAt = indexSource.indexOf('createGlobalBodyLimitMiddleware({');
     const rateLimitAt = indexSource.indexOf("app.use('*', globalRateLimit())");
 
     expect(metricsAt).toBeGreaterThan(-1);
