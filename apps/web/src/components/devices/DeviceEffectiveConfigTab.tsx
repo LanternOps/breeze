@@ -81,12 +81,16 @@ type EffectiveConfiguration = {
 // feature rendered no card because it was absent from a hand-maintained list.
 //
 // remote_access and pam are deliberately absent from FeatureType (and so from
-// this map): they are the two baselines that actively *apply* a value to an
-// unassigned device (`applied: true` in policyBaselineDefaults.ts — remote_access
-// defaults ON, pam is present but uacInterceptionEnabled:false). For them a
-// 'default' source still means something is in effect, so the "Not enforced"
-// labeling below would mislabel them. Every type present here is a "not enforced
-// when unassigned" baseline, so that labeling is safe.
+// this map): they are baselines that actively *apply* a value to an unassigned
+// device (`applied: true` in policyBaselineDefaults.ts — remote_access defaults
+// ON, pam is present but uacInterceptionEnabled:false) and aren't shown on this
+// tab at all.
+//
+// event_log IS present here and is also an applied baseline: collection runs by
+// default on every device. So a 'default'-sourced feature is NOT automatically
+// "not enforced" — we split on whether the default carries inlineSettings. A
+// default WITH settings (event_log) renders as a "Breeze default" card showing
+// the values; a default WITHOUT settings collapses into the "Not enforced" strip.
 //
 // NOTE: parity with the canonical CONFIG_FEATURE_TYPES
 // (apps/api/src/services/configFeatureTypes.ts) minus those two is maintained by
@@ -212,10 +216,17 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
 
   // ── Empty state ────────────────────────────────────────────────────
 
-  const hasRealFeatures = data
+  // Show the tab whenever there's anything worth showing: a real assigned policy,
+  // OR an applied Breeze default that carries actual settings (e.g. event_log
+  // collection, which is always on). Only fall back to the empty state when there
+  // is genuinely nothing — no real policy and no applied default.
+  const hasEnforced = data
     ? Object.values(data.features).some((f) => f.sourceLevel !== 'default')
     : false;
-  if (!data || !hasRealFeatures) {
+  const hasAppliedDefault = data
+    ? Object.values(data.features).some((f) => f.sourceLevel === 'default' && f.inlineSettings != null)
+    : false;
+  if (!data || (!hasEnforced && !hasAppliedDefault)) {
     return (
       <div className="rounded-lg border bg-card p-8 text-center shadow-xs">
         <Layers className="mx-auto h-10 w-10 text-muted-foreground/50" />
@@ -248,11 +259,19 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
   // dedicated /configuration-policies/defaults page covers them in full.
   const assignedChain = inheritanceChain.filter((e) => e.level !== 'default');
   const configuredTypes = ALL_FEATURE_TYPES.filter((ft) => features[ft]);
-  // Split enforced (a real assigned policy wins) from baseline fall-through.
-  // Every type in ALL_FEATURE_TYPES is "not enforced when unassigned", so a
-  // 'default' source unambiguously means baseline here (see the constant's note).
+  // Three buckets (see FEATURE_META note):
+  //  - enforced: a real assigned policy wins → card sourced from that policy
+  //  - appliedDefault: 'default' source WITH settings (event_log) → "Breeze default" card
+  //  - baseline: 'default' source with no settings → "Not enforced" chip strip
   const enforcedTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel !== 'default');
-  const baselineTypes = configuredTypes.filter((ft) => features[ft]!.sourceLevel === 'default');
+  const appliedDefaultTypes = configuredTypes.filter(
+    (ft) => features[ft]!.sourceLevel === 'default' && features[ft]!.inlineSettings != null,
+  );
+  const baselineTypes = configuredTypes.filter(
+    (ft) => features[ft]!.sourceLevel === 'default' && features[ft]!.inlineSettings == null,
+  );
+  // Enforced cards first, then applied-default ("Breeze default") cards.
+  const cardTypes = [...enforcedTypes, ...appliedDefaultTypes];
 
   return (
     <div className="space-y-6">
@@ -264,6 +283,9 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
             Resolved configuration from {assignedChain.length} assigned{' '}
             {assignedChain.length === 1 ? 'policy' : 'policies'} ·{' '}
             {enforcedTypes.length} enforced feature{enforcedTypes.length !== 1 ? 's' : ''}
+            {appliedDefaultTypes.length > 0 && (
+              <> · {appliedDefaultTypes.length} Breeze default{appliedDefaultTypes.length !== 1 ? 's' : ''}</>
+            )}
           </p>
         </div>
         <button
@@ -276,13 +298,15 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
         </button>
       </div>
 
-      {/* Enforced feature cards — only features a real assigned policy wins. */}
-      {enforcedTypes.length > 0 && (
+      {/* Feature cards — enforced (a real assigned policy wins) plus applied
+          Breeze defaults that carry settings (e.g. event_log collection). */}
+      {cardTypes.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {enforcedTypes.map((ft) => {
+          {cardTypes.map((ft) => {
             const feature = features[ft]!;
             const { label, Icon } = FEATURE_META[ft];
             const settings = summarizeSettings(feature.inlineSettings);
+            const isDefault = feature.sourceLevel === 'default';
 
             return (
               <div key={ft} className="rounded-lg border bg-card p-5 shadow-xs">
@@ -293,11 +317,19 @@ export default function DeviceEffectiveConfigTab({ deviceId }: DeviceEffectiveCo
                   <div className="min-w-0 flex-1">
                     <h4 className="font-semibold">{label}</h4>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
-                      {' '}
-                      <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
-                        {LEVEL_LABELS[feature.sourceLevel]}
-                      </span>
+                      {isDefault ? (
+                        <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
+                          {LEVEL_LABELS.default}
+                        </span>
+                      ) : (
+                        <>
+                          From: <span className="font-medium text-foreground">{feature.sourcePolicyName}</span>
+                          {' '}
+                          <span className="inline-flex items-center rounded-full border bg-muted/50 px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {LEVEL_LABELS[feature.sourceLevel]}
+                          </span>
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>

@@ -96,6 +96,12 @@ describe('resolveEffectiveConfig includeBaseline', () => {
     expect(r!.features.patch!.sourceLevel).toBe('default');
     expect(r!.features.patch!.inlineSettings).toBeNull();
 
+    // event_log is an applied default: synthesized with non-null collection
+    // settings, the basis for the device Config tab's "Breeze default" card.
+    const el = r!.features.event_log!;
+    expect(el.sourceLevel).toBe('default');
+    expect((el.inlineSettings as Record<string, unknown>).retentionDays).toBe(30);
+
     // Full sentinel assertions on a synthesized feature.
     expect(ra.sourcePolicyId).toBe('breeze-defaults');
     expect(ra.sourceTargetId).toBe('breeze-defaults');

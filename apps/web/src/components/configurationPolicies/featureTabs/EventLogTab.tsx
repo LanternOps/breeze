@@ -31,9 +31,9 @@ const allCategories = [
 ];
 
 const levelOptions = [
-  { value: 'info', label: 'Info (all events)' },
-  { value: 'warning', label: 'Warning+' },
-  { value: 'error', label: 'Error+' },
+  { value: 'info', label: 'Info & above' },
+  { value: 'warning', label: 'Warning & above' },
+  { value: 'error', label: 'Error & above' },
   { value: 'critical', label: 'Critical only' },
 ];
 
@@ -177,7 +177,12 @@ export default function EventLogTab({ policyId, existingLink, onLinkChanged, lin
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
-          <p className="mt-1 text-xs text-muted-foreground">Events below this level are filtered out.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Drops collected events below this severity. At <strong>Info &amp; above</strong> the agent keeps
+            errors, criticals, security warnings, and boot/power lifecycle events (routine Information-level
+            Windows noise is never collected); raising the level here additionally drops those warnings and
+            lifecycle events.
+          </p>
         </div>
 
         {/* Collection interval */}

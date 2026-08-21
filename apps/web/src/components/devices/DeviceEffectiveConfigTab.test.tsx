@@ -2,16 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
 
-// Device with ONLY baseline (synthetic 'default') features — no real assigned policy.
-const baselineOnlyResponse = {
+// DEFENSIVE empty-state fixture: a response with no displayable features at all.
+// NOTE: the real /effective route hardcodes includeBaseline:true and now always
+// synthesizes applied defaults (event_log, plus remote_access/pam) with non-null
+// settings, so an unassigned device renders the event_log "Breeze default" card
+// (covered by dev-5), NOT this empty state. This degenerate response only
+// exercises the component's defensive fallback when nothing is displayable.
+const emptyResponse = {
   deviceId: 'dev-1',
-  features: {
-    patch: { featureType: 'patch', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
-    alert_rule: { featureType: 'alert_rule', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
-  },
-  inheritanceChain: [
-    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['patch', 'alert_rule'] },
-  ],
+  features: {},
+  inheritanceChain: [],
 };
 
 // Device with one REAL org-level policy plus baseline fall-through for the rest.
@@ -57,15 +57,58 @@ const allEnforcedResponse = {
   ],
 };
 
+// Device with NO assigned policy but an applied Breeze default that carries
+// settings (event_log collection is always on). It must render as a "Breeze
+// default" card showing the values — NOT the empty state, and NOT a grey chip.
+const appliedDefaultResponse = {
+  deviceId: 'dev-5',
+  features: {
+    event_log: {
+      featureType: 'event_log', featurePolicyId: null,
+      inlineSettings: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ['security', 'hardware', 'application', 'system'], minimumLevel: 'info', collectionIntervalMinutes: 5, rateLimitPerHour: 12000 },
+      sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0,
+    },
+    patch: { featureType: 'patch', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
+  },
+  inheritanceChain: [
+    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['event_log', 'patch'] },
+  ],
+};
+
+// Realistic full device: a real enforced org policy (patch) + the always-on
+// event_log applied default + a not-enforced baseline (backup). Exercises all
+// three buckets at once — header's 3-segment count and the enforced-before-
+// default card ordering (cardTypes = [...enforced, ...appliedDefault]).
+const combinedResponse = {
+  deviceId: 'dev-6',
+  features: {
+    patch: { featureType: 'patch', featurePolicyId: null, inlineSettings: { autoApprove: true }, sourceLevel: 'organization', sourceTargetId: 'org-1', sourcePolicyId: 'pol-patch', sourcePolicyName: 'Org Patch Policy', sourcePriority: 10 },
+    event_log: {
+      featureType: 'event_log', featurePolicyId: null,
+      inlineSettings: { retentionDays: 30, maxEventsPerCycle: 100, collectCategories: ['security', 'hardware', 'application', 'system'], minimumLevel: 'info', collectionIntervalMinutes: 5, rateLimitPerHour: 12000 },
+      sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0,
+    },
+    backup: { featureType: 'backup', featurePolicyId: null, inlineSettings: null, sourceLevel: 'default', sourceTargetId: 'breeze-defaults', sourcePolicyId: 'breeze-defaults', sourcePolicyName: 'Breeze Defaults', sourcePriority: 0 },
+  },
+  inheritanceChain: [
+    { level: 'organization', targetId: 'org-1', policyId: 'pol-patch', policyName: 'Org Patch Policy', priority: 10, featureTypes: ['patch'] },
+    { level: 'default', targetId: 'breeze-defaults', policyId: 'breeze-defaults', policyName: 'Breeze Defaults', priority: 0, featureTypes: ['event_log', 'backup'] },
+  ],
+};
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async (url: string) => {
-    const body = url.includes('dev-4')
-      ? allEnforcedResponse
-      : url.includes('dev-3')
-        ? warrantyResponse
-        : url.includes('dev-2')
-          ? mixedResponse
-          : baselineOnlyResponse;
+    const body = url.includes('dev-6')
+      ? combinedResponse
+      : url.includes('dev-5')
+        ? appliedDefaultResponse
+        : url.includes('dev-4')
+          ? allEnforcedResponse
+          : url.includes('dev-3')
+            ? warrantyResponse
+            : url.includes('dev-2')
+              ? mixedResponse
+              : emptyResponse;
     return { ok: true, status: 200, statusText: 'OK', json: async () => body };
   }),
 }));
@@ -73,7 +116,7 @@ vi.mock('../../stores/auth', () => ({
 describe('DeviceEffectiveConfigTab baseline labeling', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('shows the empty state with a Breeze Defaults link when only the baseline is present', async () => {
+  it('shows the defensive empty state with a Breeze Defaults link when no features are displayable', async () => {
     render(<DeviceEffectiveConfigTab deviceId="dev-1" />);
     await waitFor(() =>
       expect(screen.getByText('No Configuration Policies')).toBeInTheDocument(),
@@ -129,6 +172,39 @@ describe('DeviceEffectiveConfigTab baseline labeling', () => {
     // ...and with nothing falling through to default, the strip must NOT render —
     // otherwise the UI would falsely claim defaults apply when none do.
     expect(screen.queryByText('Not enforced')).not.toBeInTheDocument();
+  });
+
+  it('renders an applied Breeze default (event_log) as a card with its settings, even with no assigned policy', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-5" />);
+    // The applied default must surface as a full card (heading), not the empty
+    // state and not a grey "Not enforced" chip.
+    await screen.findByRole('heading', { level: 4, name: 'Event Logs' });
+    expect(screen.queryByText('No Configuration Policies')).not.toBeInTheDocument();
+    // Card is sourced from "Breeze Defaults" and shows the actual values.
+    expect(screen.getAllByText(/Breeze Defaults/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/retention days: 30/i)).toBeInTheDocument();
+    // The header counts it as a Breeze default (0 assigned policies, 0 enforced).
+    expect(screen.getByText(/1 Breeze default/i)).toBeInTheDocument();
+    // patch (a default with no settings) still collapses into the Not-enforced strip.
+    expect(screen.getByText('Not enforced')).toBeInTheDocument();
+  });
+
+  it('renders enforced, applied-default, and not-enforced buckets together with a 3-segment header', async () => {
+    render(<DeviceEffectiveConfigTab deviceId="dev-6" />);
+    // Enforced card (real org policy) renders...
+    await screen.findByRole('heading', { level: 4, name: 'Patch Management' });
+    // ...the applied Breeze default (event_log) renders as its own card...
+    expect(screen.getByRole('heading', { level: 4, name: 'Event Logs' })).toBeInTheDocument();
+    // ...and the not-enforced baseline (backup) collapses into the strip.
+    expect(screen.getByText('Not enforced')).toBeInTheDocument();
+    expect(screen.getAllByText('Backup').length).toBeGreaterThan(0);
+    // Header reports all three segments simultaneously.
+    expect(screen.getByText(/1 assigned/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 enforced feature/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 Breeze default/i)).toBeInTheDocument();
+    // Enforced card must render before the applied-default card (cardTypes order).
+    const headings = screen.getAllByRole('heading', { level: 4 }).map((h) => h.textContent);
+    expect(headings.indexOf('Patch Management')).toBeLessThan(headings.indexOf('Event Logs'));
   });
 
   it('omits the synthetic default node from the inheritance-chain table (no dead link)', async () => {

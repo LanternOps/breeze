@@ -51,6 +51,7 @@ import {
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { getEventLogBaseline } from '../../services/policyBaselineDefaults';
 import { captureException } from '../../services/sentry';
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
@@ -1631,14 +1632,10 @@ export interface EventLogSettings {
   rateLimitPerHour: number;
 }
 
-export const EVENT_LOG_DEFAULTS: EventLogSettings = {
-  retentionDays: 30,
-  maxEventsPerCycle: 100,
-  collectCategories: ['security', 'hardware', 'application', 'system'],
-  minimumLevel: 'info',
-  collectionIntervalMinutes: 5,
-  rateLimitPerHour: 12000,
-};
+// Single source of truth: the canonical "Breeze default" event-log collection
+// behavior lives in policyBaselineDefaults.ts (surfaced read-only in the UI as an
+// applied baseline). This is the value sent when no policy resolves for a device.
+export const EVENT_LOG_DEFAULTS: EventLogSettings = getEventLogBaseline();
 
 const LEVEL_PRIORITY: Record<string, number> = {
   device: 5,

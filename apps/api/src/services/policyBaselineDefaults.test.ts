@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CONFIG_FEATURE_TYPES } from './configurationPolicy';
-import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
+import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline, getEventLogBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
 
@@ -22,6 +22,24 @@ describe('policyBaselineDefaults', () => {
     const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'pam')!;
     expect(entry.applied).toBe(true);
     expect(entry.inlineSettings).toEqual({ uacInterceptionEnabled: false });
+  });
+
+  it('marks event_log as an applied default with the canonical collection settings', () => {
+    const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'event_log')!;
+    expect(entry.applied).toBe(true);
+    expect(entry.inlineSettings).toEqual(getEventLogBaseline());
+    expect(entry.behavior).toMatch(/by default/i);
+  });
+
+  it('getEventLogBaseline returns the canonical collection defaults', () => {
+    expect(getEventLogBaseline()).toEqual({
+      retentionDays: 30,
+      maxEventsPerCycle: 100,
+      collectCategories: ['security', 'hardware', 'application', 'system'],
+      minimumLevel: 'info',
+      collectionIntervalMinutes: 5,
+      rateLimitPerHour: 12000,
+    });
   });
 
   it('marks patch (and other unenforced features) as not applied', () => {
