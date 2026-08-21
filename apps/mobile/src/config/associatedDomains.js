@@ -117,8 +117,12 @@ function validateHostname(hostname, original) {
 /**
  * Merge extra associated domains into the static list.
  *
- * With no configured value the base list is returned verbatim, so the published
- * App Store build cannot be affected by this code path at all.
+ * With no configured value the returned list is EQUAL to the base list, so the
+ * published App Store build cannot be affected by this code path at all. It is
+ * a copy, not the same array — `base.slice()` runs before `raw` is examined, and
+ * the test asserts `not.toBe(base)` deliberately. Do not "fix" this into
+ * returning `base` itself to match a stricter reading: handing the caller our
+ * internal array back would let a later mutation reach the entitlement list.
  *
  * Accepts comma or whitespace separated values. Semicolon is deliberately NOT
  * a separator: it is legal inside a URL path and splitting on it would reject a
