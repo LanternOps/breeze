@@ -1604,6 +1604,30 @@ coreRoutes.delete(
           error: `Cannot delete: device still has related records${constraintTable ? ` in ${constraintTable}` : ''}. This table may need to be added to the cascade delete list.`,
         }, 409);
       }
+      // 55P03 lock_not_available — the cascade bounds its wait for the devices
+      // row (services/deviceDeletion.ts) so a delete racing a long-running site
+      // move or moveOrg fails fast instead of pinning a pooled connection.
+      // Without this branch that bound would surface as a generic 500, which
+      // reads as a bug rather than the transient, retryable conflict it is.
+      //
+      // RETRY IS NOT OPTIONAL WHEN uninstallSent IS TRUE. The best-effort
+      // SELF_UNINSTALL above is dispatched BEFORE this transaction and is
+      // irreversible, so a bounded lock failure is the one path that can leave
+      // an agent uninstalling itself while its device row survives — an
+      // unmanageable orphan if the operator walks away. The transaction itself
+      // rolled back cleanly (the lock is the first statement, so nothing was
+      // mutated); it is only that pre-dispatched command that has already
+      // happened. Report it explicitly so the caller knows a retry is required
+      // rather than merely advisable.
+      if (pgCode === '55P03') {
+        console.warn(`[devices] lock timeout acquiring devices row for ${deviceId}; another writer holds it (uninstallSent=${uninstallSent})`, err);
+        return c.json({
+          error: uninstallSent
+            ? 'Device is busy: another operation is modifying it, so it was not deleted. The uninstall command was already sent to the agent — retry this delete to remove the device record.'
+            : 'Device is busy: another operation is currently modifying it. Try again in a moment.',
+          uninstallSent,
+        }, 409);
+      }
       throw err;
     }
 

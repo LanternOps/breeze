@@ -1,6 +1,10 @@
 import * as Sentry from '@sentry/node';
 import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
+// Shared postgres-js/drizzle row-count reader. Imported rather than re-derived:
+// this repo already has six copies of the same three-shape check, and getting it
+// wrong here reports the opposite of the truth (see the lock check below).
+import { extractRowCount } from '../jobs/deviceMetricsRetention';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
@@ -8,9 +12,59 @@ import {
 } from '../routes/devices/core';
 
 /**
+ * Bound on how long the parent-row lock below may wait.
+ *
+ * Without it, converting a deadlock into a plain lock wait trades a fast 40P01
+ * for a potentially unbounded block on a request-path DELETE — and a hung
+ * transaction holds its pooled connection, which has been a recurring
+ * production failure here rather than a hypothetical. A deadlock resolves in
+ * milliseconds; a wait behind a long-running site move does not. Bounding it
+ * turns that case into a fast 55P03 (lock_not_available), which the permanent
+ * -delete route maps to a retryable 409 rather than a generic 500.
+ *
+ * The setting is RESTORED immediately after the lock is taken — see below. It
+ * must not stay in force for the child deletes or for the caller's later work.
+ */
+const DEVICE_LOCK_TIMEOUT_MS = 3000;
+
+/**
+ * Read `current_setting('lock_timeout')` out of a postgres-js result.
+ *
+ * postgres-js resolves to an array-like of row objects, so the value is at
+ * `[0].lock_timeout`.
+ *
+ * Throws rather than substituting a default. There is no safe guess: `'0'`
+ * means "wait forever" in Postgres, so inventing it would silently WIDEN a
+ * caller or role that had deliberately set a stricter timeout, for the whole
+ * remainder of the outer transaction. This can only fire if the driver's result
+ * shape changes, which is precisely the class of silent breakage that produced
+ * the row-count bug this same commit fixes — fail loudly instead. Nothing has
+ * been mutated at this point, so aborting here is safe.
+ */
+function extractLockTimeout(result: unknown): string {
+  const row = Array.isArray(result)
+    ? (result[0] as { lock_timeout?: unknown } | undefined)
+    : undefined;
+  if (typeof row?.lock_timeout !== 'string') {
+    throw new Error(
+      "deleteDeviceCascade: could not read current_setting('lock_timeout') — " +
+        'refusing to change the lock timeout without being able to restore it'
+    );
+  }
+  return row.lock_timeout;
+}
+
+/**
  * Minimal transaction surface this needs — satisfied by a Drizzle tx handle.
- * Typed structurally so callers can pass either a tx or the db handle without
- * dragging Drizzle's full generic transaction type through every signature.
+ * Typed structurally so callers need not drag Drizzle's full generic
+ * transaction type through every signature.
+ *
+ * This MUST be a real transaction (or savepoint), never the raw `db` handle.
+ * Under autocommit each statement commits on its own, which would (a) discard
+ * the transaction-local lock_timeout before the lock is even attempted, (b)
+ * release the parent row lock before the first child delete — defeating the
+ * entire point of this function — and (c) allow a half-finished cascade to
+ * persist. Both callers pass a transaction; keep it that way.
  */
 export interface DeviceDeletionTx {
   execute(query: unknown): Promise<unknown>;
@@ -27,8 +81,9 @@ export interface DeviceDeletionTx {
  * orphaned-row bugs in this repo before.
  *
  * Order matters and is not alphabetical:
- *   0. lock the devices row (SELECT ... FOR UPDATE) so this transaction takes
- *      the parent lock first, matching every other writer — see below
+ *   0. bound the wait (transaction-local lock_timeout), then lock the devices
+ *      row (SELECT ... FOR UPDATE) so this transaction takes the parent lock
+ *      first, matching every other writer — see below
  *   1. transitive children (rows referencing alerts/ai_sessions, which
  *      themselves reference the device) — they have no device_id of their own
  *   2. linked_device_id and device_id detach targets set to NULL (business
@@ -72,10 +127,43 @@ export async function deleteDeviceCascade(
   // must NOT abort — two reapers racing would then error instead of one simply
   // finding nothing. Report it instead, so an unserialized cascade is visible
   // rather than silently assumed safe.
-  const locked = (await tx.execute(
+  //
+  // Bound the wait, then put it back.
+  //
+  // `set_config(..., true)` is transaction-local, NOT statement-local: Postgres
+  // applies lock_timeout to every subsequent lock acquisition until the
+  // transaction ends. Both callers already run inside an outer transaction
+  // (withDbAccessContext opens one — db/index.ts), and a nested
+  // `db.transaction()` is only a SAVEPOINT, whose release does NOT undo a
+  // SET LOCAL. So without an explicit restore this 3s bound would silently
+  // govern every child DELETE below, the route's link-group dissolution, and —
+  // in the reaper, which wraps its whole pass in one context — every device
+  // purged after this one. Capture the caller's value and restore it as soon as
+  // the row lock is held; the lock itself survives to transaction end, so the
+  // timeout does not need to stay in force.
+  const priorLockTimeout = extractLockTimeout(
+    await tx.execute(sql`SELECT current_setting('lock_timeout') AS lock_timeout`)
+  );
+  await tx.execute(
+    sql`select set_config('lock_timeout', ${`${DEVICE_LOCK_TIMEOUT_MS}ms`}, true)`
+  );
+  const locked = await tx.execute(
     sql`SELECT id FROM devices WHERE id = ${deviceId} FOR UPDATE`
-  )) as { rowCount?: number | null; rows?: unknown[] } | undefined;
-  const lockedRows = locked?.rowCount ?? locked?.rows?.length ?? 0;
+  );
+  // Restored only on the success path, deliberately. If the lock times out the
+  // statement aborts the (sub)transaction, and any statement issued after that
+  // fails with 25P02 — a `finally` here would mask the 55P03 the caller needs
+  // to see. Nothing leaks on that path: rolling back to the savepoint that
+  // precedes a SET LOCAL undoes it, which is exactly what Drizzle's nested
+  // transaction does on error.
+  await tx.execute(
+    sql`select set_config('lock_timeout', ${priorLockTimeout}, true)`
+  );
+  // postgres-js resolves to an array-like carrying `.count` — NOT node-postgres'
+  // `.rowCount`/`.rows`. Reading the wrong shape yields 0 on every call, which
+  // would fire the warning below on every successful delete and bury the one
+  // signal that the RLS/absent-row branch actually happened.
+  const lockedRows = extractRowCount(locked);
   if (lockedRows === 0) {
     Sentry.captureMessage('device cascade ran without holding the devices row lock', {
       level: 'warning',
