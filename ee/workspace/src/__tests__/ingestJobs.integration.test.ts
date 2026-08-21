@@ -43,10 +43,10 @@ beforeAll(async () => {
               VALUES (${partnerA}, 'wsp-ingest-jobs-a', ${`wsp-ingest-jobs-a-${sfx}`}),
                      (${partnerB}, 'wsp-ingest-jobs-b', ${`wsp-ingest-jobs-b-${sfx}`}),
                      (${partnerC}, 'wsp-ingest-jobs-c', ${`wsp-ingest-jobs-c-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${orgA}, ${partnerA}, 'wsp-ingest-jobs-org-a', ${`wsp-ingest-jobs-org-a-${sfx}`}),
-                     (${orgB}, ${partnerB}, 'wsp-ingest-jobs-org-b', ${`wsp-ingest-jobs-org-b-${sfx}`}),
-                     (${orgC}, ${partnerC}, 'wsp-ingest-jobs-org-c', ${`wsp-ingest-jobs-org-c-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${orgA}, ${partnerA}, 'wsp-ingest-jobs-org-a', ${`wsp-ingest-jobs-org-a-${sfx}`}, 'USD'),
+                     (${orgB}, ${partnerB}, 'wsp-ingest-jobs-org-b', ${`wsp-ingest-jobs-org-b-${sfx}`}, 'USD'),
+                     (${orgC}, ${partnerC}, 'wsp-ingest-jobs-org-c', ${`wsp-ingest-jobs-org-c-${sfx}`}, 'USD')`;
 });
 
 afterAll(async () => {

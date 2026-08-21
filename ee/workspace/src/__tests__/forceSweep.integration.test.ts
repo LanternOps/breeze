@@ -86,8 +86,8 @@ beforeAll(async () => {
   partner = randomUUID(); org = randomUUID(); source = randomUUID();
   const sfx = randomUUID();
   await admin`INSERT INTO partners (id, name, slug) VALUES (${partner}, 'wsp-force', ${`wsp-force-${sfx}`})`;
-  await admin`INSERT INTO organizations (id, partner_id, name, slug)
-              VALUES (${org}, ${partner}, 'wsp-force-org', ${`wsp-force-org-${sfx}`})`;
+  await admin`INSERT INTO organizations (id, partner_id, name, slug, currency_code)
+              VALUES (${org}, ${partner}, 'wsp-force-org', ${`wsp-force-org-${sfx}`}, 'USD')`;
   await admin`INSERT INTO workspace_org_settings (org_id, content_enabled, dlp_config)
               VALUES (${org}, true, ${JSON.stringify(DLP_CONFIG)}::jsonb)`;
   await admin`INSERT INTO workspace_sources (id, org_id, kind, display_name, root_path, visibility_group_ids)
