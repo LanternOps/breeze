@@ -10,6 +10,7 @@ import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmailAcceptedInvoice } from '../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../services/quoteOutcomeNotify';
 import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
 import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
@@ -176,6 +177,9 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     // Auto-email the issued invoice (public link CTA) so closing the tab is
     // harmless — partner-gated inside, best-effort, post-commit.
     await autoEmailAcceptedInvoice(res);
+    // Tell the tech who sent the quote (decline-completion spec §A) — before
+    // this, acceptance was only visible as an invoice quietly appearing.
+    await notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', signerName: body.signerName });
     return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
@@ -245,5 +249,8 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   // Consume the single-use token post-commit so a declined link can't be replayed.
   // A failed revoke leaves the link replayable (security-relevant) → capture.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
+  // Post-commit: tell the tech who sent it (with the customer's verbatim note)
+  // — before this, a decline wrote the row and nobody was ever told.
+  await notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined' });
   return c.json({ data: { status: 'declined' } });
 });

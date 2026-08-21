@@ -1044,7 +1044,13 @@
         "title": "Summen"
       },
       "viewInvoice": "Rechnung ansehen",
-      "sentTo": "Gesendet an"
+      "sentTo": "Gesendet an",
+      "declinedBanner": {
+        "title": "Abgelehnt am {{date}}",
+        "reasonLabel": "Anmerkung des Kunden:",
+        "revise": "Duplizieren & überarbeiten",
+        "revising": "Wird dupliziert…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} verfügbar",

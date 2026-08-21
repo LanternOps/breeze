@@ -17,6 +17,7 @@ import { resolveThemeId, resolvePageSize } from './documentThemes';
 import { loadContractBlockRenderData, resolveAutoVariables, findUnresolvedVariables, loadContractPdfInputs } from './contractTemplateRender';
 import { portalBase } from './portalUrl';
 import { emitQuoteEvent } from './quoteEvents';
+import { notifyQuoteOutcome } from './quoteOutcomeNotify';
 import { captureException } from './sentry';
 
 export { portalBase };
@@ -755,5 +756,8 @@ export async function declineQuoteByActor(id: string, reason: string | undefined
   const now = new Date();
   await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
+  // Tell the tech who sent it (decline-completion spec §A) — covers the portal
+  // decline and the MSP-side mark-declined alike. Best-effort, own context.
+  await notifyQuoteOutcome({ quoteId: id, outcome: 'declined' });
   return updated!;
 }

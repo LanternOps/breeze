@@ -125,6 +125,8 @@ export interface Quote {
   coverPage?: CoverPage | null;
   acceptedAt: string | null;
   declinedAt: string | null;
+  /** Customer's verbatim decline note. Optional — older payloads omit it. */
+  declineReason?: string | null;
   convertedAt: string | null;
   convertedInvoiceId: string | null;
   sentAt: string | null;

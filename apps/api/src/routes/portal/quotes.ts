@@ -9,6 +9,7 @@ import { portalBranding } from '../../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema } from '@breeze/shared';
 import { markQuoteViewed, declineQuoteByActor } from '../../services/quoteLifecycle';
 import { acceptQuote, emitAcceptInvoiceIssued, autoEmailAcceptedInvoice } from '../../services/quoteAcceptService';
+import { notifyQuoteOutcome } from '../../services/quoteOutcomeNotify';
 import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
@@ -252,6 +253,8 @@ quoteRoutes.post('/quotes/:id/accept', zValidator('param', idParam), zValidator(
     // Auto-email the issued invoice (public-link CTA) — same recovery/record
     // email the public accept path sends; partner-gated inside, best-effort.
     await autoEmailAcceptedInvoice(res);
+    // Tell the tech who sent the quote (decline-completion spec §A).
+    await notifyQuoteOutcome({ quoteId: id, outcome: 'accepted', signerName });
     return c.json({ data: { invoiceId: res.invoiceId, status: res.quote.status, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);

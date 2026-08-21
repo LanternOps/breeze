@@ -1044,7 +1044,13 @@
         "tax": "Vergi",
         "title": "Toplamlar"
       },
-      "viewInvoice": "Faturayı görüntüle"
+      "viewInvoice": "Faturayı görüntüle",
+      "declinedBanner": {
+        "title": "{{date}} tarihinde reddedildi",
+        "reasonLabel": "Müşterinin notu:",
+        "revise": "Çoğalt ve gözden geçir",
+        "revising": "Çoğaltılıyor…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} mevcut",

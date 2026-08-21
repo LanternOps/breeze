@@ -1044,7 +1044,13 @@
         "title": "Totals"
       },
       "viewInvoice": "View invoice",
-      "sentTo": "Sent to"
+      "sentTo": "Sent to",
+      "declinedBanner": {
+        "title": "Declined {{date}}",
+        "reasonLabel": "Customer's note:",
+        "revise": "Duplicate & revise",
+        "revising": "Duplicating…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} avail",

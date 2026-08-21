@@ -98,9 +98,8 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
     );
   };
 
-  const decline = async () => {
+  const decline = async (reason?: string) => {
     if (busy) return;
-    const reason = window.prompt('Optionally, tell us why:') ?? undefined;
     setBusy(true);
     setMsg(null);
     setMsgError(false);
@@ -112,7 +111,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       return;
     }
     setStatus('declined');
-    setMsg('You have declined this proposal.');
+    setMsg(`Thanks — ${branding.partnerName} has been notified.`);
   };
 
   return (
@@ -262,7 +261,7 @@ export function PublicQuoteView({ token, initial, error }: PublicQuoteViewProps)
       {open && (
         <SignaturePanel
           onAccept={(signerName) => void accept(signerName)}
-          onDecline={() => void decline()}
+          onDecline={(reason) => void decline(reason)}
           busy={busy}
           testIdPrefix="public-quote"
         />

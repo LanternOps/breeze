@@ -1044,7 +1044,13 @@
         "title": "Totali"
       },
       "viewInvoice": "Visualizza fattura",
-      "sentTo": "Inviato a"
+      "sentTo": "Inviato a",
+      "declinedBanner": {
+        "title": "Rifiutato il {{date}}",
+        "reasonLabel": "Nota del cliente:",
+        "revise": "Duplica e rivedi",
+        "revising": "Duplicazione…"
+      }
     },
     "distributorLookup": {
       "available": "{{count}} disp.",
