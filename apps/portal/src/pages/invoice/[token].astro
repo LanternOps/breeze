@@ -1,25 +1,16 @@
 ---
+// PUBLIC invoice page — deliberately NO SSR fetch (unlike quote/[token].astro):
+// the portal container's server-side API calls carry no client IP, so every
+// SSR load would share one 'unknown'-keyed slot of the /invoices/public
+// isolated rate bucket — one bot hammering an expired link could 429 every
+// customer's invoice page region-wide. PublicInvoiceView fetches client-side,
+// where the customer's own IP keys the bucket.
 import PublicDocumentLayout from '../../layouts/PublicDocumentLayout.astro';
 import PublicInvoiceView from '../../components/portal/PublicInvoiceView';
-import { portalApi } from '../../lib/api';
-import { buildServerApiConfig } from '../../lib/server';
 
 const { token } = Astro.params;
-const response = await portalApi.getPublicInvoice(token!, buildServerApiConfig(Astro.request));
-
-// An invalid/expired/reset token returns 401 from the API. This page is public,
-// so we must NOT redirect an anonymous customer to the portal login — render
-// PublicInvoiceView's own generic invalid-link fallback instead (and suppress
-// the raw 401 text, which would otherwise read "Session expired").
-const initial = response.data?.data ?? null;
-const error = response.statusCode === 401 ? undefined : response.error;
-const partnerName = initial?.branding?.partnerName;
-const number = initial?.invoice?.invoiceNumber;
-const title = partnerName
-  ? `${number ?? 'Invoice'} — ${partnerName}`
-  : (number ?? 'Invoice');
 ---
 
-<PublicDocumentLayout title={title}>
-  <PublicInvoiceView token={token!} initial={initial} error={error} client:load />
+<PublicDocumentLayout title="Invoice">
+  <PublicInvoiceView token={token!} client:load />
 </PublicDocumentLayout>

@@ -157,7 +157,15 @@ export async function getOrMintInvoiceLink(row: LinkColumns): Promise<InvoiceLin
   }).from(invoices).where(eq(invoices.id, row.id)).limit(1);
   const winnerToken = winner && reproduceToken(winner);
   if (winnerToken && winner.publicLinkExpiresAt) {
-    return { token: winnerToken, expiresAt: winner.publicLinkExpiresAt, origin };
+    // We hand out the winner's (already-live) token, so from the customer's
+    // side nothing changed — a bare 'minted' here would falsely audit "prior
+    // links are now dead". Only keep the minted_* origin when the ROW we read
+    // really had a dead link (expired/unreadable) that the winner replaced.
+    return {
+      token: winnerToken,
+      expiresAt: winner.publicLinkExpiresAt,
+      origin: row.publicLinkTokenHash == null ? 'reproduced' : origin,
+    };
   }
   // Winner's token unreadable too (or row vanished) — give up loudly rather
   // than loop; the caller surfaces a 500 and the next attempt re-races.

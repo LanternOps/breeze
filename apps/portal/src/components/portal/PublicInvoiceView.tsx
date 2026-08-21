@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
@@ -19,7 +19,9 @@ import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './
 
 interface PublicInvoiceViewProps {
   token: string;
-  initial: PublicInvoiceDetail | null;
+  /** Test seam — production always fetches client-side (see [token].astro:
+   *  SSR fetches would share one rate-limit slot for every customer). */
+  initial?: PublicInvoiceDetail | null;
   error?: string | null;
 }
 
@@ -48,23 +50,50 @@ function lineTax(lineTotal: string | number, taxable: boolean, rate: number): nu
   return Math.round(cents * rate) / 100;
 }
 
-export function PublicInvoiceView({ token, initial, error }: PublicInvoiceViewProps) {
+export function PublicInvoiceView({ token, initial = null, error }: PublicInvoiceViewProps) {
+  const [detail, setDetail] = useState<PublicInvoiceDetail | null>(initial);
+  const [loadError, setLoadError] = useState<string | null>(error ?? null);
+  const [loading, setLoading] = useState(initial == null && !error);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  if (error || !initial) {
+  // Client-side fetch (see [token].astro). A 401 gets ONE generic message —
+  // never a login redirect for an anonymous customer.
+  useEffect(() => {
+    if (detail || loadError) return;
+    let cancelled = false;
+    void portalApi.getPublicInvoice(token, { redirectOnUnauthorized: false })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.data?.data) setDetail(res.data.data);
+        else setLoadError(res.statusCode === 401 ? '' : (res.error || ''));
+        setLoading(false);
+      })
+      .catch(() => { if (!cancelled) { setLoadError(''); setLoading(false); } });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  if (loading) {
+    return (
+      <div data-testid="public-invoice-loading" className="mx-auto max-w-lg p-8 text-center text-sm text-muted-foreground">
+        Loading invoice…
+      </div>
+    );
+  }
+  if (loadError != null || !detail) {
     return (
       <div data-testid="public-invoice-error" className="mx-auto max-w-lg p-8 text-center">
         <p className="text-sm text-destructive">
-          {error ?? 'This invoice link is invalid or has expired. Please contact the sender for a new one.'}
+          {loadError || 'This invoice link is invalid or has expired. Please contact the sender for a new one.'}
         </p>
       </div>
     );
   }
 
-  const { invoice, lines, chargeNow, payable, branding } = initial;
+  const { invoice, lines, chargeNow, payable, branding } = detail;
   const returnFlag = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search)
     : new URLSearchParams();

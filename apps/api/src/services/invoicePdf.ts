@@ -490,7 +490,7 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
  *  (the caller is mid-issue and must learn the send failed), while a re-send
  *  changes no invoice state and so has nothing to roll back — reporting the
  *  failure honestly beats a 500 on an invoice that is already issued. */
-export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed';
+export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed' | 'pdf_render_failed';
 
 /** Result of a send attempt: the (issued) invoice plus an honest signal of
  *  whether an email was actually dispatched. `emailed:false` means the invoice
@@ -569,16 +569,45 @@ async function deliverInvoiceEmail(
 ): Promise<{ emailed: boolean; reason?: SendInvoiceEmailReason; recipients: string[] }> {
   const invoiceId = invoice.id;
 
+  // Mint/reproduce the public link FIRST, from the row snapshot we hold — a
+  // fresh render below also resolves the link (for the PDF's "Pay online"
+  // line), and doing ours after it would hand getOrMintInvoiceLink a stale
+  // snapshot that loses its own claim race on every first send.
+  // (See §7 below for what the link is; failure falls back to the portal url.)
+  let portalLink = `${portalBase()}/invoices/${invoiceId}`;
+  let publicLinked = false;
+  try {
+    const link = await getOrMintInvoiceLink({
+      id: invoice.id, dueDate: invoice.dueDate,
+      publicLinkTokenHash: invoice.publicLinkTokenHash,
+      publicLinkTokenCt: invoice.publicLinkTokenCt,
+      publicLinkExpiresAt: invoice.publicLinkExpiresAt,
+    });
+    portalLink = buildPublicInvoiceUrl(link.token);
+    publicLinked = true;
+  } catch (err) {
+    console.error(`[invoicePdf] could not mint public link for invoice ${invoiceId} — emailing the portal url instead`, err);
+  }
+
   // Ensure the PDF exists (render synchronously if absent). Skipped entirely
   // when the composer dropped the attachment — there is nothing to attach and
-  // no reason to pay for a render.
+  // no reason to pay for a render. On the re-send path a render failure is
+  // part of the swallow contract (the invoice is already issued; nothing to
+  // roll back) — reported as reason 'pdf_render_failed', with the audit record
+  // still written by the route.
   const includePdf = opts.includePdf !== false;
   let pdf: Buffer | null = null;
   if (includePdf) {
-    pdf = await getInvoicePdf(invoiceId);
-    if (!pdf) {
-      await renderInvoicePdf(invoiceId);
+    try {
       pdf = await getInvoicePdf(invoiceId);
+      if (!pdf) {
+        await renderInvoicePdf(invoiceId);
+        pdf = await getInvoicePdf(invoiceId);
+      }
+    } catch (err) {
+      if (!swallowThrow) throw err;
+      console.error(`[invoicePdf] re-send PDF render failed for invoice ${invoiceId}:`, err);
+      return { emailed: false, reason: 'pdf_render_failed', recipients: [] };
     }
   }
 
@@ -608,27 +637,10 @@ async function deliverInvoiceEmail(
     return { emailed: false, reason: 'no_billing_contact', recipients: [] };
   }
 
-  // The email CTA is the DURABLE PUBLIC LINK — view, PDF, and pay with no
-  // portal login (2026-08-21 spec §7; most invoice recipients have no portal
-  // account, and nothing in this path ever invited them to one). Mint-or-
-  // reproduce is idempotent: every re-send carries the same url. If the link
-  // cannot be produced (encryption/config fault), fall back to the portal
-  // detail page rather than failing the send — a login-gated link still beats
-  // no invoice email.
-  let portalLink = `${portalBase()}/invoices/${invoiceId}`;
-  let publicLinked = false;
-  try {
-    const link = await getOrMintInvoiceLink({
-      id: invoice.id, dueDate: invoice.dueDate,
-      publicLinkTokenHash: invoice.publicLinkTokenHash,
-      publicLinkTokenCt: invoice.publicLinkTokenCt,
-      publicLinkExpiresAt: invoice.publicLinkExpiresAt,
-    });
-    portalLink = buildPublicInvoiceUrl(link.token);
-    publicLinked = true;
-  } catch (err) {
-    console.error(`[invoicePdf] could not mint public link for invoice ${invoiceId} — emailing the portal url instead`, err);
-  }
+  // §7: the email CTA is the DURABLE PUBLIC LINK — view, PDF, and pay with no
+  // portal login (most invoice recipients have no portal account, and nothing
+  // in this path ever invited them to one). Minted/reproduced at the top of
+  // this function; `portalLink` holds the portal fallback if that failed.
   // "View & pay" only when the page will actually offer payment: payable
   // status with a balance, and the partner has a Stripe key on file. This read
   // runs in the caller's context — the send routes are partner/system scoped,
@@ -706,6 +718,17 @@ export async function sendInvoiceEmail(
   // 404 not 403 — don't leak existence across tenants.
   if (actor.accessibleOrgIds !== null && !actor.accessibleOrgIds.includes(invoice.orgId)) {
     throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  }
+
+  // Server-side lifecycle gate (the web gate is advisory): /send is the
+  // FIRST-send path — it stamps sent_at and emits invoice.sent. A VOID invoice
+  // is a cancelled demand, and a PAID one would email "Amount due now: $0.00";
+  // a paid copy for the customer's records goes through /resend instead.
+  if (invoice.status === 'void') {
+    throw new InvoiceServiceError('Cannot send a void invoice', 409, 'INVALID_STATE');
+  }
+  if (invoice.status === 'paid') {
+    throw new InvoiceServiceError('This invoice is already paid — use re-send to email a copy', 409, 'INVALID_STATE');
   }
 
   if (invoice.status === 'draft') {

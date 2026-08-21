@@ -9,7 +9,8 @@ import { issueInvoice, voidInvoice, requireOrgAccess, requireSiteAccess } from '
 import { getOrMintInvoiceLink, resetInvoiceLink, buildPublicInvoiceUrl } from '../../services/invoiceLinkToken';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { db } from '../../db';
-import { invoices } from '../../db/schema';
+import { invoices, invoiceDocuments } from '../../db/schema';
+import { enqueueInvoicePdfRender } from '../../jobs/invoiceWorker';
 import { eq } from 'drizzle-orm';
 import { sendInvoiceEmail, resendInvoiceEmail, type SendInvoiceEmailOptions } from '../../services/invoicePdf'; // added in Phase 5
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -130,6 +131,15 @@ invoiceLifecycleRoutes.post('/:id/reset-link', scopes, sendPerm, zValidator('par
   try {
     const inv = await loadLinkableInvoice(id, invoiceActorFrom(c));
     const link = await resetInvoiceLink({ id: inv.id, dueDate: inv.dueDate });
+    // The stored PDF prints the OLD link ("Pay online: …"), and both re-send
+    // and download reuse the artifact without re-rendering — purge it so the
+    // next touch re-renders with the fresh url, and kick the async render so
+    // the artifact is usually back before anyone needs it.
+    await db.delete(invoiceDocuments).where(eq(invoiceDocuments.invoiceId, inv.id));
+    await db.update(invoices).set({ pdfDocumentRef: null, pdfSha256: null, updatedAt: new Date() }).where(eq(invoices.id, inv.id));
+    try { await enqueueInvoicePdfRender(inv.id); } catch (err) {
+      console.error('[invoices] PDF re-render enqueue failed after link reset (next send/download renders inline)', { invoiceId: inv.id, err });
+    }
     writeRouteAudit(c, {
       orgId: inv.orgId,
       action: 'invoice.public_link_reset',

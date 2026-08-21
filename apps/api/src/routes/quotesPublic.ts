@@ -175,11 +175,12 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     const invoiceUrl = await resolveAcceptInvoiceUrl(res);
     const payDeferred = res.invoiceIssued && invoiceUrl == null;
     // Auto-email the issued invoice (public link CTA) so closing the tab is
-    // harmless — partner-gated inside, best-effort, post-commit.
-    await autoEmailAcceptedInvoice(res);
-    // Tell the tech who sent the quote (decline-completion spec §A) — before
-    // this, acceptance was only visible as an invoice quietly appearing.
-    await notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', signerName: body.signerName });
+    // harmless, and tell the tech who sent the quote (decline-completion spec
+    // §A) — before this, acceptance was only visible as an invoice quietly
+    // appearing. Both UNAWAITED: they end in SMTP round trips and must never
+    // delay the accept response; both swallow their own errors.
+    void autoEmailAcceptedInvoice(res);
+    void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'accepted', source: 'customer', signerName: body.signerName });
     return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
@@ -250,7 +251,8 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   // A failed revoke leaves the link replayable (security-relevant) → capture.
   try { await revokeQuoteAcceptJti(claims.jti); } catch (err) { console.error('[quotesPublic] jti revoke failed', err); captureException(err instanceof Error ? err : new Error(String(err))); }
   // Post-commit: tell the tech who sent it (with the customer's verbatim note)
-  // — before this, a decline wrote the row and nobody was ever told.
-  await notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined' });
+  // — before this, a decline wrote the row and nobody was ever told. UNAWAITED:
+  // SMTP latency must not delay the customer's response; errors are swallowed.
+  void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined', source: 'customer' });
   return c.json({ data: { status: 'declined' } });
 });

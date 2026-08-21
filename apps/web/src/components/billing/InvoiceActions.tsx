@@ -354,7 +354,12 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
   // (never re-mail a demand we already cancelled). Matches the server's own
   // gate in resendInvoiceEmail — a PAID invoice IS re-sendable, because "send
   // me a copy for our records" is the commonest reason a customer asks.
-  const canResend = can('invoices', 'send') && !isDraft && invoice.status !== 'void';
+  // A paid-but-never-emailed invoice is excluded: the button would run the
+  // FIRST-send path (/send), which the server now refuses on 'paid' — there is
+  // no sensible "Send invoice" for a settled document that was never emailed.
+  // A paid invoice that WAS emailed keeps Re-send ("copy for our records").
+  const canResend = can('invoices', 'send') && !isDraft && invoice.status !== 'void'
+    && !(invoice.status === 'paid' && invoice.sentAt == null);
   // The payment link is only meaningful while money is still owed, and only
   // exists when the partner's Stripe is connected. Mirrors the gate the
   // payments card uses for the record-payment form.

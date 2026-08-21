@@ -743,7 +743,14 @@ export async function markQuoteViewed(quoteId: string, orgId: string): Promise<v
 }
 
 /** Internal/portal decline. */
-export async function declineQuoteByActor(id: string, reason: string | undefined, actor: QuoteActor): Promise<QuoteRow> {
+export async function declineQuoteByActor(
+  id: string, reason: string | undefined, actor: QuoteActor,
+  // Attribution for the outcome notification: 'customer' (portal decline on the
+  // customer's behalf) emails the quote creator; 'msp' (a tech marking their own
+  // quote declined — AI tool / internal route) only emits the bus event, so an
+  // internal action is never misattributed to the customer.
+  source: 'customer' | 'msp' = 'msp',
+): Promise<QuoteRow> {
   const { quote } = await getQuote(id, actor);
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot decline a quote in status ${quote.status}`, 409, 'INVALID_STATE');
@@ -756,8 +763,9 @@ export async function declineQuoteByActor(id: string, reason: string | undefined
   const now = new Date();
   await db.update(quotes).set({ status: 'declined', declineReason: reason ?? null, declinedAt: now, updatedAt: now }).where(eq(quotes.id, id));
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  // Tell the tech who sent it (decline-completion spec §A) — covers the portal
-  // decline and the MSP-side mark-declined alike. Best-effort, own context.
-  await notifyQuoteOutcome({ quoteId: id, outcome: 'declined' });
+  // Tell the tech who sent it (decline-completion spec §A). Deliberately
+  // UNAWAITED: it emails over SMTP and must never add latency to (or fail)
+  // the decline the caller already committed; it swallows its own errors.
+  void notifyQuoteOutcome({ quoteId: id, outcome: 'declined', source });
   return updated!;
 }

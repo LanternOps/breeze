@@ -55,7 +55,7 @@ describe('notifyQuoteOutcome', () => {
     dbResults.push([{ email: 'tech@lantern.test' }]);   // creator
     dbResults.push([{ billingEmail: 'billing@lantern.test' }]); // partner (fallback, unused)
     dbResults.push([{ name: 'Acme Corp' }]);            // org
-    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined' });
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
     expect(emitQuoteEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'quote.declined', quoteId: QUOTE_ID }));
     const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.to).toBe('tech@lantern.test');
@@ -69,7 +69,7 @@ describe('notifyQuoteOutcome', () => {
     dbResults.push([quoteRow({ createdBy: null })]);
     dbResults.push([{ billingEmail: 'billing@lantern.test' }]);
     dbResults.push([{ name: 'Acme Corp' }]);
-    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined' });
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
     expect(sendEmailMock.mock.calls[0]![0].to).toBe('billing@lantern.test');
   });
 
@@ -79,7 +79,7 @@ describe('notifyQuoteOutcome', () => {
     dbResults.push([{ billingEmail: null }]);
     dbResults.push([{ name: 'Acme Corp' }]);
     dbResults.push([{ invoiceNumber: 'INV-2026-0099' }]);
-    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', signerName: 'Pat Prospect' });
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'accepted', source: 'customer', signerName: 'Pat Prospect' });
     expect(emitQuoteEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'quote.accepted' }));
     const envelope = sendEmailMock.mock.calls[0]![0];
     expect(envelope.subject).toBe('Quote Q-2026-0042 accepted — Acme Corp');
@@ -90,7 +90,7 @@ describe('notifyQuoteOutcome', () => {
   it('skips quietly when no recipient can be resolved (still emits the event)', async () => {
     dbResults.push([quoteRow({ createdBy: null })]);
     dbResults.push([{ billingEmail: null }]);
-    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined' });
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
     expect(emitQuoteEventMock).toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
@@ -101,12 +101,20 @@ describe('notifyQuoteOutcome', () => {
     dbResults.push([{ billingEmail: null }]);
     dbResults.push([{ name: 'Acme Corp' }]);
     sendEmailMock.mockRejectedValue(new Error('smtp down'));
-    await expect(notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined' })).resolves.toBeUndefined();
+    await expect(notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' })).resolves.toBeUndefined();
+  });
+
+
+  it("an MSP-side decline emits the event but sends NO email (never misattributed to the customer)", async () => {
+    dbResults.push([quoteRow()]);
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'msp' });
+    expect(emitQuoteEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'quote.declined' }));
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   it('no-ops on a vanished quote', async () => {
     dbResults.push([]);
-    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined' });
+    await notifyQuoteOutcome({ quoteId: QUOTE_ID, outcome: 'declined', source: 'customer' });
     expect(emitQuoteEventMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
   });

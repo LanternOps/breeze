@@ -221,13 +221,23 @@ describe('POST /invoices/public/settle-return', () => {
   });
 
   it('does not hand out the url for a stale, already-settled session', async () => {
-    dbResults.push([{ invoiceId: INV_ID, status: 'recorded', updatedAt: new Date(Date.now() - 2 * 3600_000) }]);
+    dbResults.push([{ invoiceId: INV_ID, status: 'succeeded', updatedAt: new Date(Date.now() - 2 * 3600_000) }]);
     dbResults.push([invoice()]);
-    settleMock.mockResolvedValue({ settled: false });
     const res = await post();
     const { data } = await res.json();
+    expect(data.settled).toBe(true);
     expect(data.publicUrl).toBeNull();
     // Already settled — no second settle call.
+    expect(settleMock).not.toHaveBeenCalled();
+  });
+
+  it('a FAILED mapping is never reported settled (no false payment-received banner)', async () => {
+    dbResults.push([{ invoiceId: INV_ID, status: 'failed', updatedAt: new Date() }]);
+    dbResults.push([invoice()]);
+    const res = await post();
+    const { data } = await res.json();
+    expect(data.settled).toBe(false);
+    // Terminal non-success: no settle replay either.
     expect(settleMock).not.toHaveBeenCalled();
   });
 });

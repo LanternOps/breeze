@@ -17,6 +17,7 @@ import { safeContentDispositionFilename } from '../utils/httpHeaders';
 import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 
 /**
  * Unauthenticated, token-gated PUBLIC INVOICE surface — the customer's durable
@@ -52,20 +53,21 @@ function applyPublicLinkHeaders(c: { header: (k: string, v: string) => void }): 
 }
 
 /**
- * Per-key fixed-window limiter for the Stripe-backed mutations (the isolated
- * per-IP bucket in globalRateLimit caps the surface as a whole; this bounds a
- * single token/session being hammered from many IPs). Fail-open on Redis
- * outage: /pay is idempotency-keyed and /settle-return is idempotent, so
- * availability wins over a strict cap here.
+ * Per-key limiter for the Stripe-backed mutations (the isolated per-IP bucket
+ * in globalRateLimit caps the surface as a whole; this bounds a single
+ * token/session being hammered from many IPs). Delegates to the MULTI-atomic
+ * sliding-window rateLimiter — a hand-rolled INCR-then-EXPIRE here could
+ * strand a TTL-less counter that 429s an invoice's Pay button forever. The
+ * one policy difference: FAIL-OPEN on Redis outage (rateLimiter itself fails
+ * closed) — /pay is idempotency-keyed and /settle-return is idempotent, so
+ * availability wins over a strict cap.
  */
 async function overPublicOpLimit(kind: string, key: string, limit: number, windowSeconds = 60): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
   try {
-    const bucket = `invoice-public:${kind}:${key}`;
-    const n = await redis.incr(bucket);
-    if (n === 1) await redis.expire(bucket, windowSeconds);
-    return n > limit;
+    const result = await rateLimiter(redis, `invoice-public:${kind}:${key}`, limit, windowSeconds);
+    return !result.allowed;
   } catch {
     return false;
   }
@@ -159,11 +161,17 @@ invoicesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (
   if (inv.status === 'void') return c.json({ error: 'This invoice is no longer available' }, 409);
   if (await overPublicOpLimit('pdf', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
 
-  let pdf = await getInvoicePdf(inv.id);
-  if (!pdf) {
-    await renderInvoicePdf(inv.id);
-    pdf = await getInvoicePdf(inv.id);
-  }
+  // System context like every other handler here — these reads/renders run
+  // with NO auth middleware, so a bare call would execute without a DB access
+  // context and RLS would return zero rows (500 on every public download).
+  const pdf = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    let bytes = await getInvoicePdf(inv.id);
+    if (!bytes) {
+      await renderInvoicePdf(inv.id);
+      bytes = await getInvoicePdf(inv.id);
+    }
+    return bytes;
+  }));
   if (!pdf) return c.json({ error: 'Failed to generate invoice PDF' }, 500);
   const filename = safeContentDispositionFilename(`${inv.invoiceNumber || `invoice-${inv.id}`}.pdf`);
   return new Response(new Uint8Array(pdf), {
@@ -240,10 +248,14 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
     const [inv] = await db.select().from(invoices).where(eq(invoices.id, mapping.invoiceId)).limit(1);
     if (!inv) return null;
 
-    const alreadySettled = mapping.status !== 'pending';
+    // Only an actual SUCCESS is "settled" — a failed/refunded mapping is also
+    // not-pending, and reporting settled:true for those would paint a
+    // "Payment received" banner over a payment that failed or was refunded.
+    const alreadySettled = mapping.status === 'succeeded';
+    const terminalNonSuccess = mapping.status !== 'pending' && !alreadySettled;
     let settled = alreadySettled;
     let justSettled = false;
-    if (!alreadySettled) {
+    if (!alreadySettled && !terminalNonSuccess) {
       try {
         ({ settled } = await settleCheckoutSession(inv.partnerId, sessionId));
         justSettled = settled;
