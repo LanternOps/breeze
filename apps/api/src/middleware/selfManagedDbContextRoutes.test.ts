@@ -69,6 +69,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections/conn-1/import'],
     ['POST', '/api/v1/psa/connections/conn-1/import/'],
     ['post', '/api/v1/psa/connections/conn-1/import'],
+
+    // Live agent session listing — awaits a 10s agent round-trip (#1105), so it
+    // must not hold a pooled connection idle-in-transaction.
+    ['GET', '/api/v1/devices/dev-1/sessions/live'],
+    ['GET', '/api/v1/devices/dev-1/sessions/live/'],
+    ['get', '/api/v1/devices/dev-1/sessions/live'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -144,6 +150,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
+
+    // The sibling session routes do only DB work and MUST keep the ambient tx.
+    ['GET', '/api/v1/devices/dev-1/sessions/active', 'active listing is DB-only'],
+    ['GET', '/api/v1/devices/dev-1/sessions/history', 'history is DB-only'],
+    ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
+    ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
+    ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {
