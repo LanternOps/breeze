@@ -1393,6 +1393,25 @@
     }
   },
   "invoiceActions": {
+    "composer": {
+      "toLabel": "Kime",
+      "toPlaceholder": "muhasebe@musteri.com",
+      "ccToggle": "Cc",
+      "ccLabel": "Cc",
+      "subjectLabel": "Konu",
+      "subjectPlaceholder": "Sağlayıcınızdan {{number}} numaralı fatura",
+      "subjectPlaceholderNoNumber": "Faturanız",
+      "messageLabel": "Mesaj (isteğe bağlı)",
+      "messagePlaceholder": "Müşteri için kısa bir not ekleyin…",
+      "includePdfLabel": "Fatura PDF’ini ekle",
+      "signaturePreviewLabel": "İmzanız eklenecek:",
+      "invalidEmail": "Geçerli bir e-posta adresi değil: {{addresses}}",
+      "tooManyRecipients": "En fazla {{max}} adres.",
+      "recipientRequired": "En az bir alıcı ekleyin.",
+      "noBillingContactHint": "Bu şirketin henüz bir fatura iletişim kişisi yok — <orgLink>bir tane ekleyin</orgLink> veya yukarıya bir adres yazın."
+    },
+    "copyPaymentLink": "Ödeme bağlantısını kopyala",
+    "copyingPaymentLink": "Kopyalanıyor…",
     "deleteConfirm": {
       "message": "Bu, taslak faturayı kalıcı olarak siler. Bu geri alınamaz.",
       "title": "Taslak faturayı sil"
@@ -1404,6 +1423,9 @@
     "downloadPdfError": "Fatura PDF'si indirilemedi.",
     "issue": "Sayı",
     "issueAndSend": "Düzenle ve Gönder",
+    "issueBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin, ardından Sorun.",
+    "issueCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Sorun iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
+    "issueCanceledStillSaving": "Değişiklikleriniz hâlâ kaydediliyor — Sorun iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
     "issueError": "Fatura düzenlenemedi.",
     "issueNoEmailWarning": "Fatura düzenlendi — ancak e-posta gönderilmedi (faturalandırmayla ilgili kişi yok / e-posta yapılandırılmadı)",
     "issueSendConfirm": {
@@ -1416,12 +1438,21 @@
     "issueSuccess": "Fatura düzenlendi",
     "issuing": "Veriliyor…",
     "noVisibleLineHint": "Düzenlemeye müşterinin görebileceği en az bir satır ekleyin.",
+    "paymentLinkCopyFailed": "Otomatik kopyalanamadı. Ödeme bağlantısı: {{url}}",
     "preparing": "Hazırlanıyor…",
+    "resend": "Yeniden gönder",
+    "resendConfirm": {
+      "title": "Bu fatura yeniden gönderilsin mi?",
+      "message": "{{customer}} adresine {{amount}} tutarında bir kopya daha gönderilir. Faturada hiçbir şey değişmez — aynı numara, aynı tarihler, aynı tutarlar."
+    },
+    "resendSuccess": "Fatura yeniden gönderildi",
+    "resending": "Gönderiliyor…",
     "savingHint": "Değişiklikler kaydediliyor… Her şey kaydedildiğinde sorunun kilidi açılır.",
     "savingTitle": "Değişiklikleriniz kaydediliyor — Her şey kaydedildiğinde sorunun kilidi açılır.",
-    "issueCanceledSaveFailed": "Bir değişiklik kaydedilemediğinden Sorun iptal edildi. Vurgulanan alanı düzeltip tekrar deneyin.",
-    "issueCanceledStillSaving": "Değişiklikleriniz hâlâ kaydediliyor — Sorun iptal edildi. Her şey kaydedildikten sonra tekrar deneyin.",
-    "issueBlockedUnsaved": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor. Orada düzeltin, ardından Sorun.",
+    "sendConfirm": {
+      "title": "Bu fatura gönderilsin mi?",
+      "message": "{{amount}} tutarındaki fatura {{customer}} adresine e-postayla gönderilir."
+    },
     "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },

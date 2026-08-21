@@ -40,6 +40,14 @@ export interface InvoiceEmailParams {
   // intentionally the same for ALL invoices; there's no behavioral copy fork.
   amountDueNow?: string;
   amountPaid?: string;
+  /** Optional free-text note from the sender, shown above the "View invoice" CTA. */
+  message?: string;
+  /** Sender-chosen subject line; falls back to the standard one. */
+  subject?: string;
+  /** Whether the caller is attaching the PDF — drives the "A PDF copy is attached" copy. */
+  pdfAttached?: boolean;
+  /** Partner's configured plain-text signature, rendered muted under the CTA. */
+  signature?: string;
 }
 
 export interface PasswordResetEmailParams {
@@ -858,22 +866,39 @@ function buildInviteTemplate(params: InviteEmailParams): EmailTemplate {
 
 export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate {
   const number = params.invoiceNumber.trim();
-  const subject = `Invoice ${number} from ${params.partnerName}`;
+  const subject = params.subject?.trim() || `Invoice ${number} from ${params.partnerName}`;
   const preheader = `Invoice ${number} — ${params.total}${params.dueDate ? `, due ${params.dueDate}` : ''}.`;
   const dueNow = params.amountDueNow ?? params.total;
+  // The composer can drop the attachment; the intro must not then promise one.
+  const pdfAttached = params.pdfAttached ?? true;
+  const introSuffix = pdfAttached ? ' A PDF copy is attached to this email.' : '';
   const dueLine = params.dueDate
     ? `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong> by <strong>${escapeHtml(params.dueDate)}</strong>.</p>`
     : `<p style="${BODY_PARA}">Amount due now: <strong>${escapeHtml(dueNow)}</strong>.</p>`;
   const paidLine = params.amountPaid
     ? `<p style="${MUTED_PARA}">Paid to date: ${escapeHtml(params.amountPaid)} of ${escapeHtml(params.total)}.</p>`
     : '';
+  // Sender's personal note, if any. Escaped, with newlines preserved as <br> so a
+  // multi-line note keeps its shape. Rendered between the intro and the amounts
+  // (mirrors buildQuoteTemplate).
+  const note = params.message?.trim();
+  const messageBlock = note
+    ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
+    : '';
+  // Partner signature: muted, under the CTA — reads as a sign-off, not content.
+  const signature = params.signature?.trim();
+  const signatureBlock = signature
+    ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
+    : '';
   const body = `
       <p style="${BODY_PARA}">Hi there,</p>
-      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>. A PDF copy is attached to this email.</p>
+      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you invoice <strong>${escapeHtml(number)}</strong>.${introSuffix}</p>
+      ${messageBlock}
       ${dueLine}
       ${paidLine}
       ${renderButton('View invoice', params.portalUrl)}
       <p style="${MUTED_PARA}">You can view this invoice and download a copy any time from your customer portal.</p>
+      ${signatureBlock}
   `;
   const html = renderLayout({
     title: subject,
@@ -888,10 +913,12 @@ export function buildInvoiceTemplate(params: InvoiceEmailParams): EmailTemplate 
   const support = getSupportEmail(params.supportEmail);
   const text = [
     'Hi there,',
-    `${params.partnerName} has sent you invoice ${number}. A PDF copy is attached.`,
+    `${params.partnerName} has sent you invoice ${number}.${pdfAttached ? ' A PDF copy is attached.' : ''}`,
+    note || null,
     params.dueDate ? `Amount due now: ${dueNow} by ${params.dueDate}.` : `Amount due now: ${dueNow}.`,
     params.amountPaid ? `Paid to date: ${params.amountPaid} of ${params.total}.` : null,
     `View invoice: ${params.portalUrl}`,
+    signature || null,
     support ? `Questions about this invoice? Contact ${support}.` : null,
   ]
     .filter(Boolean)

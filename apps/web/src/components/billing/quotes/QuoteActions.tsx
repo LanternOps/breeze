@@ -5,13 +5,13 @@ import '../../../lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../../lib/runAction';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
+import { parseAddressList, MAX_RECIPIENTS } from '../shared/addressList';
 import { scheduleQuoteSend, cancelScheduledSend } from '../../../lib/api/quotes';
 import { showToast } from '../../shared/Toast';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
 import { fetchWithAuth } from '../../../stores/auth';
 import { getJwtClaims } from '../../../lib/authScope';
-import { isValidEmail } from '@/lib/email';
 import { cloneQuote, deleteQuote, sendQuote, resendQuote, getQuoteShareLink, type SendQuoteOptions, type QuoteSendEmailReason, type QuoteAcceptUrlOrigin } from '../../../lib/api/quotes';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { Dialog } from '../../shared/Dialog';
@@ -170,27 +170,6 @@ function linkOriginNotice(
     // rather than guess which of the two opposite stories applies.
     default: return null;
   }
-}
-
-/** Mirrors the send route's `.max(10)` on both `to` and `cc`. */
-const MAX_RECIPIENTS = 10;
-
-/** Split a comma/semicolon/newline-separated address list into valid + invalid
- *  entries (case-insensitively deduped, first-seen order kept). The server
- *  re-validates every address; this only powers the pre-submit UX guard. */
-function parseAddressList(raw: string): { emails: string[]; invalid: string[] } {
-  const emails: string[] = [];
-  const invalid: string[] = [];
-  const seen = new Set<string>();
-  for (const part of raw.split(/[,;\n]+/)) {
-    const addr = part.trim();
-    if (!addr) continue;
-    const key = addr.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    (isValidEmail(addr) ? emails : invalid).push(addr);
-  }
-  return { emails, invalid };
 }
 
 interface Props {

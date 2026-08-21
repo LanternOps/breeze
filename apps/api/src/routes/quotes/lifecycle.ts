@@ -1,7 +1,8 @@
-import { Hono, type Context } from 'hono';
+import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
+import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
@@ -36,46 +37,6 @@ function remoteImageStatus(reason: RemoteImageFailureReason): 413 | 415 | 502 | 
     case 'timeout': return 504;
     case 'unreachable': return 502;
   }
-}
-
-// Composer options for the customer email. `.strict()` so a mis-keyed field
-// (e.g. {"mesage":"hi"}) is a 400, not a silently dropped note.
-const sendEmailField = z.string().trim().email().max(255);
-const sendBodySchema = z.object({
-  message: z.string().trim().max(2000).optional(),
-  // Composer fields (all optional — an empty body reproduces the classic send):
-  // explicit recipients override the org billing-contact fallback.
-  to: z.array(sendEmailField).min(1).max(10).optional(),
-  cc: z.array(sendEmailField).max(10).optional(),
-  subject: z.string().trim().max(200).optional(),
-  includePdf: z.boolean().optional(),
-}).strict();
-
-/**
- * Read the optional composer body shared by /send, /schedule-send and /resend.
- *
- * Distinguishes an ABSENT body (most callers — bulk-send/MCP/tests POST nothing,
- * yet fetchWithAuth still stamps a JSON content-type) from a PRESENT-but-broken
- * one. An empty body degrades to "no options"; a non-empty body that fails to
- * parse/validate is rejected rather than silently swallowing recipients or a
- * note the sender intended. A body-READ failure (stream aborted mid-request) is
- * likewise an error, not an absent body.
- *
- * Returns the parsed options, or an `error` the caller returns verbatim.
- */
-async function parseComposerBody<T extends z.ZodTypeAny>(
-  c: Context,
-  schema: T,
-): Promise<{ ok: true; data: Partial<z.infer<T>> } | { ok: false; error: string }> {
-  if (!(c.req.header('content-type') ?? '').includes('application/json')) return { ok: true, data: {} };
-  const raw = await c.req.text().catch(() => null);
-  if (raw === null) return { ok: false, error: 'Could not read request body' };
-  if (!raw.trim()) return { ok: true, data: {} };
-  let json: unknown;
-  try { json = JSON.parse(raw); } catch { return { ok: false, error: 'Invalid JSON body' }; }
-  const parsed = schema.safeParse(json);
-  if (!parsed.success) return { ok: false, error: 'Invalid send options' };
-  return { ok: true, data: parsed.data };
 }
 
 // POST /:id/send — issue + email. Gated on the (previously dead) quotes:send permission.

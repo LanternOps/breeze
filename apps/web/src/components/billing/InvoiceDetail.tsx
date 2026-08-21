@@ -151,13 +151,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const canEditDueDate =
     can('invoices', 'write') && ['sent', 'partially_paid', 'overdue'].includes(invoice.status);
 
-  // Re-sending an issued, part-paid invoice reads as "request payment" rather than
-  // "send" — same POST /send call. Gate on a live, still-owing invoice + invoices:send.
-  const partiallyPaid = Number(invoice.amountPaid) > 0 && Number(invoice.balance) > 0;
-  const canRequestPayment =
-    can('invoices', 'send') &&
-    invoice.status !== 'draft' && invoice.status !== 'void' && invoice.status !== 'paid' &&
-    Number(invoice.balance) > 0;
+  // The email action on a live invoice (Send invoice / Request payment /
+  // Re-send) moved into InvoiceActions when invoices gained the quote composer:
+  // it belongs beside Issue & Send, and only there is it reachable from the
+  // workspace header as well as this rail.
 
   const saveDueDate = useCallback(async () => {
     if (busy || !dueDateDraft) return;
@@ -179,30 +176,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       setBusy(false);
     }
   }, [busy, dueDateDraft, invoice.id, refresh, t]);
-
-  const requestPayment = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      // /send is honest about whether an email actually went out — only claim it
-      // was sent when the API confirms an email was dispatched.
-      const result = await runAction<{ data: { emailed: boolean } }>({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, { method: 'POST' }),
-        errorFallback: t('invoiceDetail.requestPayment.sendError'),
-        onUnauthorized: UNAUTHORIZED,
-      });
-      if (result?.data?.emailed) {
-        showToast({ type: 'success', message: partiallyPaid ? t('invoiceDetail.requestPayment.paymentRequestSent') : t('invoiceDetail.requestPayment.invoiceSent') });
-      } else {
-        showToast({ type: 'warning', message: t('invoiceDetail.requestPayment.noEmailWarning') });
-      }
-      refresh();
-    } catch (err) {
-      handleActionError(err, t('invoiceDetail.requestPayment.sendError'));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, partiallyPaid, refresh, t]);
 
   const recordPayment = useCallback(async () => {
     if (busy || !payAmount) return;
@@ -230,37 +203,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       setBusy(false);
     }
   }, [busy, payAmount, payMethod, payRef, payDate, invoice.id, refresh, t]);
-
-  const sendPayLink = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const result = await runAction<{ data: { url: string } }>({
-        request: () => fetchWithAuth(`/invoices/${invoice.id}/pay-link`, { method: 'POST' }),
-        errorFallback: t('invoiceDetail.payments.linkError'),
-        friendly: (code) => (code === 'STRIPE_NOT_CONNECTED' ? t('invoiceDetail.payments.connectStripe') : undefined),
-        onUnauthorized: UNAUTHORIZED,
-      });
-      const url = result?.data?.url;
-      if (url) {
-        try {
-          await navigator.clipboard.writeText(url);
-          showToast({ type: 'success', message: t('invoiceDetail.payments.linkCopied') });
-        } catch {
-          // Clipboard blocked (insecure context / permissions) — surface the URL.
-          window.prompt(t('invoiceDetail.payments.shareLinkPrompt'), url);
-        }
-      } else {
-        // 200 without a URL shouldn't happen (the API throws STRIPE_NO_URL), but
-        // never leave a money action with no feedback.
-        showToast({ type: 'error', message: t('invoiceDetail.payments.noLinkReturned') });
-      }
-    } catch (err) {
-      handleActionError(err, t('invoiceDetail.payments.linkError'));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, invoice.id, t]);
 
   const voidPayment = useCallback(async (paymentId: string) => {
     if (busy) return;
@@ -519,23 +461,13 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
-          {/* Primary actions (Issue / PDF / Delete) + void. The rail copy of
-              InvoiceActions is suppressed when the workspace header owns the
-              actions; Void stays here — its written-reason dialog belongs with
-              the issued-lifecycle rail, not the header. */}
+          {/* Primary actions (Issue / Send / Copy payment link / PDF / Delete)
+              + void. The rail copy of InvoiceActions is suppressed when the
+              workspace header owns the actions; Void stays here — its
+              written-reason dialog belongs with the issued-lifecycle rail, not
+              the header. */}
           <div className="space-y-2">
             {!actionsInHeader && <InvoiceActions detail={detail} onChanged={onChanged} variant="rail" />}
-            {/* Re-send the issued invoice. Reads as "Request payment" once the
-                customer has partially paid (same POST /send call). */}
-            {canRequestPayment && (
-              <button
-                type="button" onClick={() => void requestPayment()} disabled={busy}
-                data-testid="invoice-request-payment"
-                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {partiallyPaid ? t('invoiceDetail.requestPayment.requestPayment') : t('invoiceDetail.requestPayment.sendInvoice')}
-              </button>
-            )}
             {canVoid && can('invoices', 'send') && (
               <button
                 type="button" onClick={() => { setVoidReason(''); setVoidReissue(false); setVoidOpen(true); }}
@@ -597,15 +529,6 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               </p>
             )}
 
-            {canRecordPayment && stripeConnected && can('invoices', 'send') && (
-              <button
-                type="button" onClick={() => void sendPayLink()} disabled={busy}
-                data-testid="invoice-pay-link"
-                className="mt-3 inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-              >
-                {t('invoiceDetail.payments.sendLink')}
-              </button>
-            )}
             {canRecordPayment && !stripeConnected && (
               <p className="mt-3 text-xs text-muted-foreground" data-testid="invoice-stripe-nudge">
                 {t('invoiceDetail.payments.stripeNudge')}{' '}
