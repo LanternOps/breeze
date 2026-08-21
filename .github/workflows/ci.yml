@@ -719,6 +719,20 @@ jobs:
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
 
+      # release.yml and releaseAssetTrust.ts independently encode "which agent-family
+      # Windows assets ship unsigned". When they drifted in v0.105.0, the API rejected
+      # the four unsigned exes and aborted the ENTIRE binary sync — freezing
+      # agent_versions at 0.104.0 in both prod regions for nine days, and surfacing as a
+      # 404 on Linux and macOS too, which were signed correctly (#3504).
+      # The guard's own parser is tested first, deliberately. This check reads two
+      # hand-written declarations, so a parser regression would make it silently
+      # find nothing to compare — indistinguishable from passing.
+      - name: Test release trust allowlist guard
+        run: node --test scripts/security/check-release-trust-allowlist.test.mjs
+
+      - name: Run release trust allowlist drift guard
+        run: node scripts/security/check-release-trust-allowlist.mjs
+
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
 
