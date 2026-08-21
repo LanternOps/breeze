@@ -1,3 +1,4 @@
+import { useCallback, useRef } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
@@ -19,6 +20,13 @@ interface Props {
   selectable?: boolean;
   selected?: boolean;
 }
+
+/**
+ * Two swipe-opens closer together than this are treated as one gesture. Long
+ * enough to swallow a duplicated event, far below the time a user needs to
+ * deliberately swipe the same row twice.
+ */
+const DOUBLE_DISPATCH_WINDOW_MS = 600;
 
 function severityColor(sev: Alert['severity']): string {
   switch (sev) {
@@ -46,6 +54,29 @@ export function IssueRow({
   selectable = false,
   selected = false,
 }: Props) {
+  // Collapse a same-tick double open into one dispatch. The optimistic path
+  // removes the row, so the unmount usually ends the gesture — but that is a
+  // race, not a guarantee, and two opens in one tick would double-decrement the
+  // pendingAcks refcount.
+  //
+  // Deliberately time-boxed rather than a permanent per-row latch: a failed
+  // acknowledge RESTORES the row, which is the whole point of the rollback
+  // path, and a latch that never resets would leave that restored row
+  // un-acknowledgeable by swipe for as long as React kept the instance alive.
+  // Recovering from a failure must not cost the user the gesture.
+  const lastDispatchRef = useRef(0);
+  const handleSwipeOpen = useCallback(
+    (direction: 'left' | 'right') => {
+      if (direction !== 'right') return;
+      const now = Date.now();
+      if (now - lastDispatchRef.current < DOUBLE_DISPATCH_WINDOW_MS) return;
+      lastDispatchRef.current = now;
+      haptic.tap();
+      onSwipeAcknowledge?.();
+    },
+    [onSwipeAcknowledge]
+  );
+
   const theme = useApprovalTheme('dark');
   const dot = severityColor(alert.severity);
   const subtitle = alert.deviceName ?? '';
@@ -168,12 +199,7 @@ export function IssueRow({
       friction={2}
       rightThreshold={48}
       renderRightActions={renderAcknowledgeAction}
-      onSwipeableOpen={(direction) => {
-        if (direction === 'right') {
-          haptic.tap();
-          onSwipeAcknowledge();
-        }
-      }}
+      onSwipeableOpen={handleSwipeOpen}
     >
       {body}
     </ReanimatedSwipeable>
