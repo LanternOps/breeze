@@ -99,10 +99,24 @@ jobs:
               PORTAL_BASE_PATH=/portal
               PUBLIC_API_URL=
     steps:
-      - name: Checkout tag
+      # An empty `ref` makes actions/checkout fall back to the triggering
+      # revision instead of failing, which would silently reintroduce the
+      # content-vs-label mismatch this pinning exists to prevent. Fail closed.
+      - name: Require a resolved commit sha
+        env:
+          SHA: ${{ needs.validate.outputs.sha }}
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::validate did not produce a commit sha (got '$SHA')" >&2
+            exit 1
+          fi
+
+      # Checkout the commit `validate` resolved, so later tag movement cannot
+      # silently change the source built under the validated revision label.
+      - name: Checkout validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Docker Buildx
@@ -172,10 +186,24 @@ jobs:
           - m365-graph-actions-executor
           - m365-communications-executor
     steps:
-      - name: Checkout tag
+      # An empty `ref` makes actions/checkout fall back to the triggering
+      # revision instead of failing, which would silently reintroduce the
+      # content-vs-label mismatch this pinning exists to prevent. Fail closed.
+      - name: Require a resolved commit sha
+        env:
+          SHA: ${{ needs.validate.outputs.sha }}
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::validate did not produce a commit sha (got '$SHA')" >&2
+            exit 1
+          fi
+
+      # Checkout the commit `validate` resolved, so later tag movement cannot
+      # silently change the source built under the validated revision label.
+      - name: Checkout validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.validate.outputs.sha }}
           persist-credentials: false
 
       - name: Set up Docker Buildx
