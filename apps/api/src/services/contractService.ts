@@ -43,14 +43,14 @@ export async function createContract(input: {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
-  const [org] = await db.select({ partnerId: organizations.partnerId })
+  const [org] = await db.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
   if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
   const [row] = await db.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
-    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? 'USD',
+    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? org.currencyCode,
     notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
@@ -455,7 +455,7 @@ export async function createContractWithLinesDetailed(
       startDate: spec.startDate,
       endDate: spec.endDate ?? null,
       autoIssue: false,
-      currencyCode: spec.currencyCode ?? 'USD',
+      currencyCode: spec.currencyCode,
       notes: spec.notes ?? null,
       terms: spec.terms ?? null,
       createdBy: spec.createdBy ?? null,

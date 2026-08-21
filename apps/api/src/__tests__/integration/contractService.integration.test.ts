@@ -25,7 +25,7 @@ import {
 } from '../../services/contractService';
 import { ContractServiceError } from '../../services/contractTypes';
 
-async function seedOrg(): Promise<{ actor: ContractActorT; orgId: string }> {
+async function seedOrg(orgCurrencyCode = 'USD'): Promise<{ actor: ContractActorT; orgId: string }> {
   const sfx = Math.random().toString(36).slice(2, 8);
   let orgId = ''; let partnerId = '';
   await withSystemDbAccessContext(async () => {
@@ -34,7 +34,7 @@ async function seedOrg(): Promise<{ actor: ContractActorT; orgId: string }> {
     }).returning({ id: partners.id });
     partnerId = p!.id;
     const [o] = await db.insert(organizations).values({
-      currencyCode: 'USD',
+      currencyCode: orgCurrencyCode,
       partnerId, name: 'COrg', slug: `co-${sfx}`
     }).returning({ id: organizations.id });
     orgId = o!.id;
@@ -53,6 +53,23 @@ describe('contractService CRUD', () => {
     const got = await withSystemDbAccessContext(() => getContract(c.id, actor));
     expect(got.contract.name).toBe('Acme MSP');
     expect(got.lines).toHaveLength(0);
+  });
+
+  it('stamps the org currency when no currencyCode input is given', async () => {
+    const { actor, orgId } = await seedOrg('EUR');
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'Euro MSP', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    expect(c.currencyCode).toBe('EUR');
+  });
+
+  it('explicit currencyCode input wins over the org currency', async () => {
+    const { actor, orgId } = await seedOrg('EUR');
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'GBP override', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01',
+      currencyCode: 'GBP'
+    }, actor));
+    expect(c.currencyCode).toBe('GBP');
   });
 
   it('adds flat + per_device lines to a draft', async () => {

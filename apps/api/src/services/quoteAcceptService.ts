@@ -319,7 +319,7 @@ export async function acceptQuote(
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,
-      currencyCode: quote.currencyCode ?? null,
+      currencyCode: quote.currencyCode,
       terms: quote.terms ?? null,
     },
     lines.map((l) => ({
