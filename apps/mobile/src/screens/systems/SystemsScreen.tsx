@@ -212,14 +212,23 @@ export function SystemsScreen() {
         // Successful ids stay hidden until the refetch supplies the new truth,
         // so the list cannot flash the old rows back.
         setPendingAcks((p) => endAck(p, failed));
-        // Only un-hide once a refetch has actually landed. `refresh()` resolves
-        // either way — it swallows its own failures and reports them — so
-        // awaiting it is not evidence the data moved. Un-hiding on a failed or
-        // coalesced refetch republishes the pre-ack rows as current, and the
-        // user has already been told the acknowledge succeeded.
-        if (await refresh()) {
-          setPendingAcks((p) => endAck(p, acknowledged));
-        }
+        // Un-hide unconditionally, DELIBERATELY, despite `refresh()` being an
+        // unreliable signal of freshness (it swallows its own failures and
+        // resolves either way).
+        //
+        // Gating the un-hide on the refetch is the obvious fix and it is worse:
+        // when this refresh coalesces into one already in flight it reports no
+        // fresh read, nothing else releases these ids, and the rows stay hidden
+        // for the life of the screen. A briefly stale visible row is recoverable;
+        // a permanently concealed active alert is not, and this list is how an
+        // operator learns an alert exists.
+        //
+        // The real fix is to release a pending ack when a NEWER alerts snapshot
+        // lands, whoever fetched it — a fetch generation the pendingAcks map can
+        // compare against — rather than tying release to this one call. That is
+        // a change to the data layer, not to this call site. See the PR thread.
+        await refresh();
+        setPendingAcks((p) => endAck(p, acknowledged));
         return;
       } catch (err) {
         reportInternalError(err, 'bulk-acknowledge');

@@ -77,10 +77,11 @@ export function useSystemsData() {
   const lastFetchAt = useRef<number>(0);
   const inFlight = useRef<boolean>(false);
 
-  // Returns whether this call actually replaced the data with a fresh read.
-  // Callers that hide rows optimistically need to know: un-hiding on the back
-  // of a refetch that never happened (or that failed) shows stale rows as if
-  // they were current truth.
+  // Returns whether THIS call fetched and at least one slice arrived. Note what
+  // that does NOT mean: it is false when the call coalesces into an in-flight
+  // request that may yet succeed, and it is true when unrelated slices arrived
+  // but `alerts` itself failed. So it is not a freshness signal for any single
+  // slice, and callers must not treat it as one.
   const fetchAll = useCallback(async (mode: 'initial' | 'refresh'): Promise<boolean> => {
     // Coalesced into an in-flight request — this call fetched nothing itself.
     if (inFlight.current) return false;
