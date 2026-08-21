@@ -10,6 +10,7 @@ import RoleManager, {
   RoleUsersModal
 } from './RoleManager';
 import { fetchWithAuth } from '../../stores/auth';
+import { getOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -195,10 +196,19 @@ export default function RolesPage() {
   }) => {
     setSubmitting(true);
     try {
+      // When focused on a specific org (partner admin drilled into one org, or
+      // an org-scope user), create the role scoped to that org so it shows up in
+      // that org's SSO default-role picker (#3524). In fleet view (scope 'all')
+      // send nothing — the API defaults a partner caller to a partner-scoped
+      // role, preserving the prior behavior.
+      const scope = getOrgScope();
+      const body = scope.scope === 'org'
+        ? { ...data, orgId: scope.orgId }
+        : data;
       await runAction({
         request: () => fetchWithAuth('/roles', {
           method: 'POST',
-          body: JSON.stringify(data)
+          body: JSON.stringify(body)
         }),
         errorFallback: t('rolesPage.failedToCreateRole'),
         successMessage: t('rolesPage.roleCreated', { name: data.name }),

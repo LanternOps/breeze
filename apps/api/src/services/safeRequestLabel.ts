@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Context } from 'hono';
 
+declare module 'hono' {
+  interface ContextVariableMap {
+    /** Set by `requestPathLogger`; read back via `requestCorrelationId`. */
+    requestCorrelationId: string;
+  }
+}
+
 export const UNMATCHED_ROUTE_LABEL = 'unmatched';
 
 const CANONICAL_UUID =
@@ -33,4 +40,16 @@ export function safeMatchedRouteLabel(c: Context): string {
 
 export function newRequestCorrelationId(inbound: string | undefined): string {
   return inbound && CANONICAL_UUID.test(inbound) ? inbound : randomUUID();
+}
+
+/**
+ * The correlation ID `requestPathLogger` stamped on this request, or
+ * `'unknown'` if it is missing or not a canonical UUID (e.g. a middleware that
+ * runs before the logger, or a unit test that mounts the gate standalone).
+ * Re-validating keeps a caller-supplied `X-Request-Id` from reaching a log line
+ * or a Sentry tag unchecked, even if the logger's own validation ever moves.
+ */
+export function requestCorrelationId(c: Context): string {
+  const requestId = c.get('requestCorrelationId');
+  return typeof requestId === 'string' && CANONICAL_UUID.test(requestId) ? requestId : 'unknown';
 }

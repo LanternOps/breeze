@@ -38,7 +38,16 @@ interface InboundConfig {
   autoresponseBody: string | null;
   slug: string;
   domainConfigured: boolean;
+  // Connected M365 shared mailboxes (status 'connected'). Absent on an older
+  // API → 0 → the card behaves exactly as it did before this field existed.
+  connectedMailboxCount?: number;
+  // Mirrors the API's IS_HOSTED. Absent (older API) is treated as hosted so we
+  // don't show a self-host-only variable name to a hosted partner.
+  isHosted?: boolean;
 }
+
+// The self-hosted setup section added in #3586.
+const INBOUND_DOCS_URL = 'https://docs.breezermm.com/deploy/environment/#inbound-email-to-ticket-mailgun';
 
 interface OrgOption {
   id: string;
@@ -276,9 +285,36 @@ export default function InboundEmailCard() {
                 {t('common:actions.copy')}
               </button>
             </div>
+          ) : (cfg.connectedMailboxCount ?? 0) > 0 ? (
+            // Only the NATIVE address is missing — mail is still arriving via the
+            // connected M365 mailbox(es) listed in the card below, which need no
+            // inbound domain. Rendering the amber "not configured" error here told
+            // M365-only operators their working setup was broken (#3598).
+            <p className="mt-0.5 text-xs text-muted-foreground" data-testid="inbound-address-via-mailbox">
+              {t('inboundEmail.addressViaMailbox')}
+            </p>
           ) : (
             <p className="mt-0.5 text-xs text-amber-600" data-testid="inbound-address-unconfigured">
-              {t('inboundEmail.domainNotConfigured')}
+              {cfg.isHosted === false ? (
+                <Trans
+                  i18nKey="inboundEmail.domainNotConfiguredSelfHosted"
+                  t={t}
+                  components={{
+                    var: <code className="rounded bg-muted px-1 py-0.5 font-mono" />,
+                    docs: (
+                      <a
+                        href={INBOUND_DOCS_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                        data-testid="inbound-address-unconfigured-docs"
+                      />
+                    ),
+                  }}
+                />
+              ) : (
+                t('inboundEmail.domainNotConfigured')
+              )}
             </p>
           )}
         </div>

@@ -36,6 +36,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   devices,
@@ -170,6 +171,73 @@ describe('helper policy resolution (dual-axis + disabled precedence)', () => {
 
     expect(settings).not.toBeNull();
     expect(settings!.enabled).toBe(false);
+  });
+
+  // #3202: showTrayIcon must survive resolution as an explicit false, and must
+  // default to TRUE when a pre-#3202 policy row has no such key — a false
+  // default would blank the tray on every already-configured helper policy.
+  runDb('resolves showTrayIcon:false, and defaults to true when the key is absent', async () => {
+    const { orgId, deviceId } = await seedBase();
+    let policyId = '';
+
+    await withSystemDbAccessContext(async () => {
+      const [policy] = await db
+        .insert(configurationPolicies)
+        .values({
+          name: `org-tray-helper-${Date.now()}`,
+          status: 'active',
+          orgId,
+          partnerId: null,
+        })
+        .returning({ id: configurationPolicies.id });
+      if (!policy) throw new Error('policy insert failed');
+      policyId = policy.id;
+
+      await db.insert(configPolicyFeatureLinks).values({
+        configPolicyId: policy.id,
+        featureType: 'helper',
+        inlineSettings: {
+          enabled: true,
+          showTrayIcon: false,
+          showOpenPortal: true,
+          showDeviceInfo: true,
+          showRequestSupport: true,
+        },
+      });
+
+      await db.insert(configPolicyAssignments).values({
+        configPolicyId: policy.id,
+        level: 'organization',
+        targetId: orgId,
+      });
+    });
+
+    const hidden = await withSystemDbAccessContext(() =>
+      resolveDeviceHelperSettings(deviceId)
+    );
+    expect(hidden).not.toBeNull();
+    expect(hidden!.showTrayIcon).toBe(false);
+
+    // Now drop the key entirely, simulating a policy saved before #3202.
+    await withSystemDbAccessContext(async () => {
+      await db
+        .update(configPolicyFeatureLinks)
+        .set({
+          inlineSettings: {
+            enabled: true,
+            showOpenPortal: true,
+            showDeviceInfo: true,
+            showRequestSupport: true,
+          },
+        })
+        .where(eq(configPolicyFeatureLinks.configPolicyId, policyId));
+    });
+
+    const legacy = await withSystemDbAccessContext(() =>
+      resolveDeviceHelperSettings(deviceId)
+    );
+    expect(legacy).not.toBeNull();
+    expect(legacy!.showTrayIcon).toBe(true);
   });
 
   runDb('returns null when no helper feature link exists at all', async () => {

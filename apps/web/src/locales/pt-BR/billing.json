@@ -436,7 +436,10 @@
       "uploadError": "Falha ao enviar o PDF",
       "uploadSuccess": "Versão PDF enviada",
       "publishError": "Falha ao publicar a versão",
-      "publishSuccess": "Versão publicada"
+      "publishSuccess": "Versão publicada",
+      "warnings": {
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos contratos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+      }
     }
   },
   "quotes": {
@@ -512,7 +515,9 @@
         "imageSectionPdf": "Seção de imagem (renderizada no PDF).",
         "richTextContentAria": "Conteúdo de rich text",
         "tableEmpty": "Tabela vazia.",
-        "calloutEmpty": "Destaque vazio."
+        "calloutEmpty": "Destaque vazio.",
+        "edit": "Editar",
+        "saveEdit": "Salvar"
       },
       "blockTypes": {
         "heading": "Título",
@@ -658,6 +663,8 @@
         "partNumberOptional": "Nº da peça (opcional)",
         "profit": "Lucro",
         "quantityAria": "Quantidade",
+        "quantityForAria": "Quantidade de {{item}}",
+        "unitPriceForAria": "Preço unitário de {{item}}",
         "saveToCatalog": "Salvar no catálogo",
         "showLess": "Mostrar menos",
         "showMore": "Mostrar mais",
@@ -747,7 +754,8 @@
         "zebra": "Linhas alternadas",
         "headerStyle": "Estilo do cabeçalho",
         "headerStylePlain": "Simples",
-        "headerStyleAccent": "Destaque"
+        "headerStyleAccent": "Destaque",
+        "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
         "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
@@ -805,7 +813,9 @@
       "ghost": {
         "add": "Adicionar",
         "nameAria": "Nome da nova linha",
-        "placeholder": "Digite o nome do item…"
+        "placeholder": "Digite o nome do item…",
+        "quantityAria": "Quantidade da nova linha",
+        "unitPriceAria": "Preço unitário da nova linha"
       },
       "unassigned": {
         "explainer": "Estas linhas não estão em nenhuma seção de preços, mas mesmo assim aparecem na cotação do cliente e entram nos totais dela. Mova cada uma para uma seção de preços para controlar onde ela aparece.",
@@ -825,6 +835,9 @@
         "variantWarn": "Aviso",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto do destaque"
+      },
+      "warnings": {
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O texto formatado oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
     },
     "actions": {
@@ -878,10 +891,11 @@
         "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização ou compartilhe o link de aceitação manualmente.",
+        "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
         "noEmailService": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — o e-mail não está configurado neste servidor.",
         "pdfRenderFailed": "Proposta marcada como Enviada, mas o PDF não pôde ser gerado, portanto nenhum e-mail foi entregue. Verifique os arquivos de contrato anexados e envie novamente.",
-        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço ou compartilhe o link de aceitação manualmente."
+        "sendFailed": "Proposta marcada como Enviada, mas o e-mail não pôde ser entregue. Verifique o endereço e envie novamente.",
+        "shareLinkHint": "Use \"{{action}}\" nesta proposta para copiar o link e enviá-lo você mesmo."
       },
       "sendError": "Não foi possível enviar a proposta.",
       "sendProposal": "Enviar proposta",
@@ -1318,7 +1332,12 @@
       "lineName": "Nome da linha",
       "name": "Nome",
       "quantity": "Quantidade",
+      "quantityFor": "Quantidade de {{item}}",
+      "quantityNewLine": "Quantidade da nova linha",
+      "unitPriceFor": "Preço unitário de {{item}}",
+      "unitPriceNewLine": "Preço unitário da nova linha",
       "taxable": "Tributável",
+      "untitledLine": "esta linha",
       "unitPrice": "Preço unitário"
     },
     "hiddenSuffix": " (oculta)",

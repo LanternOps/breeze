@@ -148,7 +148,7 @@ operationsRoutes.get(
       .select()
       .from(patchJobs)
       .where(whereClause)
-      .orderBy(desc(patchJobs.createdAt))
+      .orderBy(desc(patchJobs.createdAt), desc(patchJobs.id))
       .limit(limit)
       .offset(offset);
 

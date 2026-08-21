@@ -979,7 +979,7 @@ huntressRoutes.get(
           .from(huntressIncidents)
           .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
           .where(where)
-          .orderBy(desc(huntressIncidents.reportedAt), desc(huntressIncidents.createdAt))
+          .orderBy(desc(huntressIncidents.reportedAt), desc(huntressIncidents.createdAt), desc(huntressIncidents.id))
           .limit(limit)
           .offset(offset),
         db

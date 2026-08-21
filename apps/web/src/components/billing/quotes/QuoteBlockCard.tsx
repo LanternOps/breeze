@@ -22,13 +22,12 @@ import {
   type QuoteBlock,
   type QuoteLine,
   type QuoteLineRecurrence,
-  type QuoteTableContent,
-  type QuoteCalloutContent,
   formatMoney,
 } from './quoteTypes';
 import { type LineUpdate, SrSaved, fieldRing, pendingKey, seamless } from './quoteEditorShared';
 import { GhostRow, EditableLineRow, ReadonlyLineRow, type LineRevealRequest } from './QuoteLineRows';
 import { ContractBlockEditor } from './QuoteContractBlockEditor';
+import { TableBlockEditor, CalloutBlockEditor } from './QuoteStructuredBlockEditor';
 
 // ── A single block, with an inline line builder when it is a pricing table ──
 export function BlockCard({
@@ -382,85 +381,13 @@ export function BlockCard({
           <ContractBlockEditor block={block} canWrite={canWrite} onEditBlock={onEditBlock} />
         )}
 
-        {block.blockType === 'table' && (() => {
-          // Structured JSON, never HTML-parsed — column labels and cell values
-          // are sanitized server-side with the inline-only profile on both
-          // write and read (quoteService's read-path sanitizer), same
-          // dangerouslySetInnerHTML precedent as QuoteDocument.tsx's canonical
-          // table rendering, which this mirrors. Read-only for now (no inline
-          // edit affordance yet — remove-and-re-add is the only way to change
-          // a persisted table, same limitation the contract block used to
-          // have before ContractBlockEditor).
-          const content = block.content as Partial<QuoteTableContent> | undefined;
-          if (!content?.columns?.length || !content?.rows?.length) {
-            return (
-              <p className="text-sm text-muted-foreground" data-testid={`quote-block-table-content-${block.id}`}>
-                {t('quotes.editor.block.tableEmpty')}
-              </p>
-            );
-          }
-          return (
-            <div className="overflow-x-auto" data-testid={`quote-block-table-content-${block.id}`}>
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className={content.headerStyle === 'plain' ? 'border-b-2' : 'border-b-2 bg-primary/10'}>
-                    {content.columns.map((col, i) => (
-                      <th
-                        key={i}
-                        style={{ textAlign: col.align ?? 'left' }}
-                        className="px-3 py-2 font-semibold text-foreground"
-                        dangerouslySetInnerHTML={{ __html: col.label }}
-                      />
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {content.rows.map((row, ri) => (
-                    <tr key={ri} className={content.zebra && ri % 2 === 1 ? 'bg-muted/30' : undefined}>
-                      {row.cells.map((cell, ci) => (
-                        <td
-                          key={ci}
-                          style={{ textAlign: content.columns?.[ci]?.align ?? 'left' }}
-                          className="px-3 py-2 align-top text-foreground/90"
-                          dangerouslySetInnerHTML={{ __html: cell }}
-                        />
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {content.caption && <p className="mt-1 text-xs text-muted-foreground">{content.caption}</p>}
-            </div>
-          );
-        })()}
+        {block.blockType === 'table' && (
+          <TableBlockEditor block={block} canWrite={canWrite} busy={blockBusy} onEditBlock={onEditBlock} />
+        )}
 
-        {block.blockType === 'callout' && (() => {
-          // Same server-sanitized-HTML precedent as rich_text. Read-only for
-          // now — see the table block's note above.
-          const content = block.content as Partial<QuoteCalloutContent> | undefined;
-          if (!content?.html?.trim()) {
-            return (
-              <p className="text-sm text-muted-foreground" data-testid={`quote-block-callout-content-${block.id}`}>
-                {t('quotes.editor.block.calloutEmpty')}
-              </p>
-            );
-          }
-          const tone =
-            content.variant === 'warn'
-              ? 'border-amber-500/40 bg-amber-500/10'
-              : content.variant === 'accent'
-                ? 'border-primary/40 bg-primary/10'
-                : 'border-border bg-muted/40';
-          return (
-            <div className={`rounded-lg border-l-4 p-4 ${tone}`} data-testid={`quote-block-callout-content-${block.id}`}>
-              {content.title && <p className="mb-1 text-sm font-semibold text-foreground">{content.title}</p>}
-              <div
-                className="quote-rich-text prose prose-sm max-w-prose dark:prose-invert"
-                dangerouslySetInnerHTML={{ __html: content.html }}
-              />
-            </div>
-          );
-        })()}
+        {block.blockType === 'callout' && (
+          <CalloutBlockEditor block={block} canWrite={canWrite} busy={blockBusy} onEditBlock={onEditBlock} />
+        )}
 
         {isTable && (
           <div className="space-y-3">

@@ -525,6 +525,23 @@ describe('fleet findings — end-to-end (Task 11)', () => {
     expect(targetAfterDispatch?.status).toBe('queued');
     expect(targetAfterDispatch?.deviceCommandId).toBe(command.id);
 
+    // The chunk's own roll-up recompute (#3637) already ran — the run left
+    // `queued` without waiting for a poll tick. With the target still in
+    // flight the recompute must hold the run OPEN: `running`, no completedAt,
+    // and no count credited to a target that has not resolved. A recompute
+    // that derived in-flight from anything other than the live target rows
+    // would terminalize here and the poll scheduler would unschedule itself
+    // before ever reconciling this command.
+    const [runAfterDispatch] = await getTestDb()
+      .select()
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.id, runId));
+    expect(runAfterDispatch?.status).toBe('running');
+    expect(runAfterDispatch?.completedAt).toBeNull();
+    expect(runAfterDispatch?.succeededCount).toBe(0);
+    expect(runAfterDispatch?.failedCount).toBe(0);
+    expect(runAfterDispatch?.skippedCount).toBe(0);
+
     // Simulate the agent completing the command.
     await getTestDb()
       .update(deviceCommands)
@@ -544,6 +561,132 @@ describe('fleet findings — end-to-end (Task 11)', () => {
     expect(runFinal?.succeededCount).toBe(1);
     expect(runFinal?.failedCount).toBe(0);
     expect(runFinal?.completedAt).not.toBeNull();
+  });
+
+  runDb('(c2) #3637: the run roll-up is fresh the moment a dispatch chunk ends, with no poll tick', async () => {
+    // THE regression. `dispatchRunChunk`'s markTargetSkipped/markTargetFailed
+    // used to write the target row and nothing else, so the run's
+    // succeeded/failed/skipped columns kept their creation-time values until
+    // `pollRunProgress` next fired — up to 30 seconds later. The web UI was
+    // patched to count target rows itself (#3633), but the run-detail and
+    // run-list API responses, AI tools and reports all read the columns and so
+    // reported a finished run as all-zeros-and-still-queued.
+    //
+    // Both devices are offline, so the whole chunk resolves inside dispatch
+    // (skipped/unreachable) with no device_commands and nothing for a poll to
+    // reconcile. `pollRunProgress` is deliberately NEVER called in this test:
+    // if the roll-up is only correct after a poll, this fails.
+    const f = await buildFixture();
+    const app = buildApp();
+
+    await getTestDb().update(devices).set({ status: 'offline' }).where(eq(devices.id, f.devA2));
+    await getTestDb().update(devices).set({ status: 'offline' }).where(eq(devices.id, f.devA3));
+
+    const [findingRow] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(fleetFindings)
+        .where(and(eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'metric_anomaly_pattern')))
+    );
+    if (!findingRow) throw new Error('metric_anomaly_pattern finding not found');
+
+    const remediateRes = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.orgAUser, { mfa: true }),
+      body: JSON.stringify({
+        actionKind: 'command',
+        commandType: 'restart_service',
+        parameters: {},
+        deviceIds: [f.devA2, f.devA3],
+      }),
+    });
+    expect(remediateRes.status).toBe(202);
+    const { runId } = (await remediateRes.json()) as { runId: string };
+
+    await withSystemDbAccessContext(() => dispatchRunChunk(runId, 0));
+
+    const targets = await getTestDb()
+      .select()
+      .from(fleetRemediationRunTargets)
+      .where(eq(fleetRemediationRunTargets.runId, runId));
+    expect(targets.length).toBe(2);
+    expect(targets.every((t) => t.status === 'skipped' && t.skipReason === 'unreachable')).toBe(true);
+    // Nothing was ever sent to a device, so there is no command for a poll to
+    // resolve — the run is fully determined by what dispatch already wrote.
+    expect(targets.every((t) => t.deviceCommandId === null)).toBe(true);
+
+    const [run] = await getTestDb().select().from(fleetRemediationRuns).where(eq(fleetRemediationRuns.id, runId));
+    expect(run?.skippedCount).toBe(2);
+    expect(run?.succeededCount).toBe(0);
+    expect(run?.failedCount).toBe(0);
+    expect(run?.status).toBe('failed');
+    expect(run?.completedAt).not.toBeNull();
+  });
+
+  runDb('(c3) the roll-up recompute is idempotent and never resurrects a cancelled run', async () => {
+    // Two properties the ABSOLUTE recompute buys over the per-target atomic
+    // increment the issue also floated. (1) A BullMQ retry re-runs a chunk
+    // whose targets are already terminal; an increment would double-count them
+    // permanently, a recompute cannot. (2) Cancellation is an operator
+    // decision about the RUN, not a fact about its targets — a recompute
+    // triggered by a late chunk or poll must not rewrite `cancelled` back to a
+    // target-derived status, which would restart the run in every UI reading
+    // the column.
+    const f = await buildFixture();
+    const app = buildApp();
+
+    await getTestDb().update(devices).set({ status: 'offline' }).where(eq(devices.id, f.devA1));
+
+    const [findingRow] = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(fleetFindings)
+        .where(and(eq(fleetFindings.orgId, f.orgA.id), eq(fleetFindings.kind, 'reliability_offenders')))
+    );
+    if (!findingRow) throw new Error('reliability_offenders finding not found');
+
+    const remediateRes = await app.request(`/fleet/findings/${findingRow.id}/remediate`, {
+      method: 'POST',
+      headers: await tokenHeaders(f.orgAUser, { mfa: true }),
+      body: JSON.stringify({
+        actionKind: 'command',
+        commandType: 'restart_service',
+        parameters: {},
+        deviceIds: [f.devA1],
+      }),
+    });
+    expect(remediateRes.status).toBe(202);
+    const { runId } = (await remediateRes.json()) as { runId: string };
+
+    await withSystemDbAccessContext(() => dispatchRunChunk(runId, 0));
+    const [afterFirst] = await getTestDb()
+      .select()
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.id, runId));
+    expect(afterFirst?.skippedCount).toBe(1);
+
+    // Replay the identical chunk, exactly as a BullMQ retry would.
+    await withSystemDbAccessContext(() => dispatchRunChunk(runId, 0));
+    const [afterReplay] = await getTestDb()
+      .select()
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.id, runId));
+    expect(afterReplay?.skippedCount).toBe(1);
+    expect(afterReplay?.completedAt).toEqual(afterFirst?.completedAt);
+
+    // Now cancel the run and let a late poll fire against it.
+    await getTestDb()
+      .update(fleetRemediationRuns)
+      .set({ status: 'cancelled' })
+      .where(eq(fleetRemediationRuns.id, runId));
+
+    await withSystemDbAccessContext(() => pollRunProgress(runId));
+
+    const [afterCancel] = await getTestDb()
+      .select()
+      .from(fleetRemediationRuns)
+      .where(eq(fleetRemediationRuns.id, runId));
+    expect(afterCancel?.status).toBe('cancelled');
   });
 
   runDb('(d) RLS forge: cross-tenant INSERT into fleet_findings fails with 42501', async () => {

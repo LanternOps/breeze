@@ -102,9 +102,7 @@ The standalone maintenance window routes (`POST /maintenance/windows`, `PATCH /m
 
 3. **Configure suppression.** Set `suppressAlerts`, `suppressPatches`, and `suppressAutomations` to control which actions are paused.
 
-4. **Set notifications.** Optionally set `notifyBefore` (minutes before start), `notifyOnStart`, and `notifyOnEnd`.
-
-5. **Submit the request.** POST to `/maintenance/windows`. The system creates the window and auto-generates up to 10 upcoming occurrences based on the recurrence rule.
+4. **Submit the request.** POST to `/maintenance/windows`. The system creates the window and auto-generates up to 10 upcoming occurrences based on the recurrence rule.
 </Steps>
 
 ```bash
@@ -125,14 +123,15 @@ POST /maintenance/windows
   "siteIds": ["site-uuid-1", "site-uuid-2"],
   "suppressAlerts": true,
   "suppressPatches": true,
-  "suppressAutomations": false,
-  "notifyBefore": 30,
-  "notifyOnStart": true,
-  "notifyOnEnd": true
+  "suppressAutomations": false
 }
 ```
 
 The response returns the created window object with a `201` status code.
+
+<Aside type="note">
+The standalone routes previously accepted `notifyBefore`, `notifyOnStart`, and `notifyOnEnd`. Nothing ever consumed them -- no notification was sent -- so they were removed from the request schema. Sending them is harmless (they are ignored), but they no longer appear in the documented surface. End-user notification for maintenance windows is tracked separately.
+</Aside>
 
 ### Partner-wide Windows (All organizations)
 

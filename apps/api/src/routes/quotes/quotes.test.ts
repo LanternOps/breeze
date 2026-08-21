@@ -395,6 +395,37 @@ describe('quote crud + lines routes', () => {
     );
   });
 
+  // Issue #3520: the sanitizer silently discarded out-of-subset markup and the
+  // route answered a clean 200. The service's `warnings` now ride the envelope
+  // beside `data` — never folded into the block itself.
+  it('PATCH /:id/blocks/:blockId surfaces stripped markup as top-level warnings, outside data', async () => {
+    const warnings = [{ code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'content.html', removedTags: ['blockquote', 'table'] }];
+    (svc.updateBlock as any).mockResolvedValue({ id: BLOCK_ID, blockType: 'rich_text', content: { html: '<p>kept</p>' }, warnings });
+    const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blockType: 'rich_text', content: { html: '<p>kept</p><table><tr><td>gone</td></tr></table>' } }),
+    });
+    expect(res.status).toBe(200); // still a success — the block saved
+    const body = await res.json();
+    expect(body.warnings).toEqual(warnings);
+    expect(body.data.warnings).toBeUndefined();
+    expect(body.data.id).toBe(BLOCK_ID);
+  });
+
+  it('POST /:id/blocks answers an empty warnings array when nothing was stripped', async () => {
+    (svc.addBlock as any).mockResolvedValue({ id: BLOCK_ID, blockType: 'rich_text', content: { html: '<p>ok</p>' }, warnings: [] });
+    const res = await app().request(`/${QUOTE_ID}/blocks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ blockType: 'rich_text', content: { html: '<p>ok</p>' } }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.warnings).toEqual([]);
+    expect(body.data.id).toBe(BLOCK_ID);
+  });
+
   it('PATCH /:id/blocks/:blockId rejects an invalid content shape (400)', async () => {
     const res = await app().request(`/${QUOTE_ID}/blocks/${BLOCK_ID}`, {
       method: 'PATCH',

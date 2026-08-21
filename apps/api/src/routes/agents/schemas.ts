@@ -419,8 +419,14 @@ export const securityStatusIngestSchema = z.object({
   windowsSecurityCenterAvailable: z.boolean().optional(),
   avProducts: z.array(
     z.object({
-      displayName: z.string().optional(),
-      provider: z.string().optional(),
+      // Bounded because this array is persisted to security_status.av_products.
+      // TRUNCATE, never reject: displayName is raw WMI SecurityCenter2 text, so
+      // a `.max()` here would 400 the ENTIRE security-status submission (and,
+      // via getSecurityStatusFromResult, silently drop it) for one long vendor
+      // name — recurring on every heartbeat until the product name changes.
+      // Sibling collectors truncate agent-side for the same reason.
+      displayName: z.string().transform((v) => v.slice(0, 200)).optional(),
+      provider: z.string().transform((v) => v.slice(0, 100)).optional(),
       realTimeProtection: z.boolean().optional(),
       definitionsUpToDate: z.boolean().optional(),
       productState: z.number().int().optional()

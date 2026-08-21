@@ -436,7 +436,10 @@
       "uploadError": "Failed to upload the PDF",
       "uploadSuccess": "PDF version uploaded",
       "publishError": "Failed to publish the version",
-      "publishSuccess": "Version published"
+      "publishSuccess": "Version published",
+      "warnings": {
+        "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Contract bodies support headings, bold, italic, underline, lists and links."
+      }
     }
   },
   "quotes": {
@@ -512,7 +515,9 @@
         "imageSectionPdf": "Image section (rendered in the PDF).",
         "richTextContentAria": "Rich text content",
         "tableEmpty": "Empty table.",
-        "calloutEmpty": "Empty callout."
+        "calloutEmpty": "Empty callout.",
+        "edit": "Edit",
+        "saveEdit": "Save"
       },
       "blockTypes": {
         "heading": "Heading",
@@ -658,6 +663,7 @@
         "partNumberOptional": "Part # (optional)",
         "profit": "Profit",
         "quantityAria": "Quantity",
+        "quantityForAria": "Quantity for {{item}}",
         "saveToCatalog": "Save to catalog",
         "showLess": "Show less",
         "showMore": "Show more",
@@ -665,7 +671,8 @@
         "skuHelp": "Your catalog or distributor stock number for this item.",
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Tidy with AI",
-        "unitCost": "Unit cost"
+        "unitCost": "Unit cost",
+        "unitPriceForAria": "Unit price for {{item}}"
       },
       "liveTotals": {
         "annualRecurring": "Annual recurring",
@@ -747,7 +754,8 @@
         "zebra": "Zebra stripes",
         "headerStyle": "Header style",
         "headerStylePlain": "Plain",
-        "headerStyleAccent": "Accent"
+        "headerStyleAccent": "Accent",
+        "reshapedWarning": "This table didn't fit the {{columns}}-column x {{rows}}-row limit, so it was reshaped to fit. Saving replaces the stored table with what you see here."
       },
       "terms": {
         "placeholder": "Payment terms, warranty clauses, etc.",
@@ -805,7 +813,9 @@
       "ghost": {
         "add": "Add",
         "nameAria": "New line name",
-        "placeholder": "Type an item name…"
+        "placeholder": "Type an item name…",
+        "quantityAria": "New line quantity",
+        "unitPriceAria": "New line unit price"
       },
       "unassigned": {
         "explainer": "These lines aren’t in any pricing section, but they still appear on the customer’s quote and count toward its totals. Move each one into a pricing section to control where it appears.",
@@ -825,6 +835,9 @@
         "variantWarn": "Warning",
         "titlePlaceholder": "Title (optional)",
         "bodyAria": "Callout text"
+      },
+      "warnings": {
+        "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Rich text supports headings, bold, italic, underline, lists and links."
       }
     },
     "actions": {
@@ -878,10 +891,11 @@
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, or share the accept link manually.",
+        "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
         "noEmailService": "Proposal marked Sent, but no email was delivered — email is not configured on this server.",
         "pdfRenderFailed": "Proposal marked Sent, but the PDF could not be generated, so no email was delivered. Check the attached contract files, then resend.",
-        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address and try sharing the accept link manually."
+        "sendFailed": "Proposal marked Sent, but the email could not be delivered. Check the address, then resend.",
+        "shareLinkHint": "Use \"{{action}}\" on this proposal to copy the link and send it yourself."
       },
       "sendError": "Could not send the proposal.",
       "sendProposal": "Send proposal",
@@ -1318,8 +1332,13 @@
       "lineName": "Line name",
       "name": "Name",
       "quantity": "Quantity",
+      "quantityFor": "Quantity for {{item}}",
+      "quantityNewLine": "New line quantity",
       "taxable": "Taxable",
-      "unitPrice": "Unit price"
+      "unitPrice": "Unit price",
+      "unitPriceFor": "Unit price for {{item}}",
+      "unitPriceNewLine": "New line unit price",
+      "untitledLine": "this line"
     },
     "hiddenSuffix": " (hidden)",
     "notes": {

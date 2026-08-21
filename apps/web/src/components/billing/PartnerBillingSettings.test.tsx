@@ -46,6 +46,22 @@ describe('PartnerBillingSettings', () => {
     expect((screen.getByTestId('partner-billing-prefix') as HTMLInputElement).value).toBe('EU');
   });
 
+  /**
+   * #3204 turned the free-text currency field into a <select>. A select whose
+   * value is absent from its options silently reads back '' and would then be
+   * SAVED as '' — wiping a partner's currency on any unrelated edit. Off-list
+   * codes (historical, or set before the curated list existed) must survive.
+   */
+  it('keeps an off-list stored currency selectable instead of resetting it', async () => {
+    fetchMock.mockResolvedValue(json({
+      currencyCode: 'ISK', defaultTaxRate: null, invoiceNumberPrefix: 'INV',
+      invoiceTermsDays: 30, invoiceFooter: null,
+    }));
+    render(<PartnerBillingSettings />);
+    await waitFor(() => expect(screen.getByTestId('partner-billing-settings')).toBeInTheDocument());
+    expect((screen.getByTestId('partner-billing-currency') as HTMLSelectElement).value).toBe('ISK');
+  });
+
   it('saves, converting the percentage back to a fraction', async () => {
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });

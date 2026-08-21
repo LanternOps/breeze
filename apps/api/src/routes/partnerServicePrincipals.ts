@@ -9,6 +9,10 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { PERMISSIONS } from '../services/permissions';
 import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../services/partnerWideAccess';
+import {
   PartnerServicePrincipalKeyError,
   issuePartnerServicePrincipalKey,
   rotatePartnerServicePrincipalKey,
@@ -54,8 +58,34 @@ const issueKeySchema = z.object({
 type ManagementAuth = {
   scope: 'partner' | 'system' | 'organization';
   partnerId?: string | null;
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
   user: { id: string; email?: string };
 };
+
+/**
+ * A partner service principal is partner-wide BY CONSTRUCTION: the API key it
+ * issues carries partner-axis access to every org under the MSP, including
+ * orgs created later. Minting, re-scoping, or re-keying one is therefore
+ * partner-wide administration and requires the capability, not merely partner
+ * scope (epic #2135; security review 2026-08-16 §1.1 #6 — the severe one).
+ *
+ * Before this gate the only checks were `requireScope('partner','system')` +
+ * `organizations:write` + MFA — so an `orgAccess: selected` user could mint a
+ * DURABLE credential with effectively `all` access: an escalation that
+ * outlives the session and never shows up as a role change.
+ *
+ * Applied to every MUTATION route in this file (create principal, update
+ * principal, issue key, rotate key, revoke key). Deliberately NOT applied to
+ * the list route — reading the inventory is not administering it, and
+ * `resolvePartnerId` already bounds it to the caller's own partner.
+ *
+ * Returns a 403 response for the caller to return, or null to proceed.
+ */
+function partnerWideAdminDenial(c: any): { response: Response } | null {
+  const auth = c.get('auth') as ManagementAuth;
+  if (canManagePartnerWidePolicies(auth)) return null;
+  return { response: c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403) };
+}
 
 function resolvePartnerId(
   c: any,
@@ -191,6 +221,8 @@ partnerServicePrincipalRoutes.post(
     const input = c.req.valid('json');
     const resolved = resolvePartnerId(c, input.partnerId);
     if ('response' in resolved) return resolved.response;
+    const createDenial = partnerWideAdminDenial(c);
+    if (createDenial) return createDenial.response;
     const validated = validatePrincipalFields(c, input);
     if ('response' in validated) return validated.response;
 
@@ -247,6 +279,8 @@ partnerServicePrincipalRoutes.patch(
     const input = c.req.valid('json');
     const resolved = resolvePartnerId(c, input.partnerId);
     if ('response' in resolved) return resolved.response;
+    const updateDenial = partnerWideAdminDenial(c);
+    if (updateDenial) return updateDenial.response;
     const changed = Object.keys(input).filter((key) => key !== 'partnerId');
     if (changed.length === 0) return c.json({ error: 'No updates provided' }, 400);
     const validated = validatePrincipalFields(c, input);
@@ -310,6 +344,8 @@ partnerServicePrincipalRoutes.post(
     const input = c.req.valid('json');
     const resolved = resolvePartnerId(c, input.partnerId);
     if ('response' in resolved) return resolved.response;
+    const issueDenial = partnerWideAdminDenial(c);
+    if (issueDenial) return issueDenial.response;
     const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
     if (expiresAt && expiresAt.getTime() <= Date.now()) return c.json({ error: 'Expiry must be in the future' }, 400);
     try {
@@ -341,6 +377,8 @@ partnerServicePrincipalRoutes.post(
     const { id, keyId } = c.req.valid('param');
     const resolved = resolvePartnerId(c, c.req.valid('query').partnerId);
     if ('response' in resolved) return resolved.response;
+    const rotateDenial = partnerWideAdminDenial(c);
+    if (rotateDenial) return rotateDenial.response;
     try {
       const rotated = await db.transaction((tx) => rotatePartnerServicePrincipalKey(tx as unknown as Database, {
         partnerServicePrincipalId: id, keyId, partnerId: resolved.partnerId, actorId: auth.user.id,
@@ -368,6 +406,8 @@ partnerServicePrincipalRoutes.delete(
     const { id, keyId } = c.req.valid('param');
     const resolved = resolvePartnerId(c, c.req.valid('query').partnerId);
     if ('response' in resolved) return resolved.response;
+    const revokeDenial = partnerWideAdminDenial(c);
+    if (revokeDenial) return revokeDenial.response;
     const [existing] = await db.select({
       id: partnerServicePrincipalKeys.id, name: partnerServicePrincipalKeys.name,
       status: partnerServicePrincipalKeys.status, keyPrefix: partnerServicePrincipalKeys.keyPrefix,

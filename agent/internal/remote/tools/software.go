@@ -295,34 +295,98 @@ func uninstallSoftwareLinux(name string) error {
 	return runUninstallAttempts(name, attempts)
 }
 
+// providerNotFoundMarkers are the phrases an uninstall provider emits when it
+// has no record of the requested package. They mean "*this tool* cannot see it"
+// — NOT "the package is absent from the device". winget in particular indexes
+// only a subset of Add/Remove Programs, and under the SYSTEM service account it
+// cannot see per-user installs at all, so it answers
+// "No installed package found matching input criteria." for plenty of software
+// that is very much installed (#3592).
+var providerNotFoundMarkers = []string{
+	"not installed",
+	"no package",
+	"no installed package",
+	"unknown package",
+	"not found",
+	// wmic's no-match message. It is emitted with EXIT CODE 0, which is why the
+	// marker check runs on the success path too.
+	"no instance(s) available",
+}
+
+func providerReportedNotFound(lowerOutput string) bool {
+	for _, marker := range providerNotFoundMarkers {
+		if strings.Contains(lowerOutput, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// Seams for tests. uninstallVerifyStillPresent is the post-condition check; see
+// software_uninstall_verify.go.
+var (
+	uninstallLookPath   = exec.LookPath
+	runUninstallCommand = func(attempt uninstallAttempt) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		return exec.CommandContext(ctx, attempt.command, attempt.args...).CombinedOutput()
+	}
+	uninstallVerifyStillPresent = softwareStillInstalled
+)
+
+// runUninstallAttempts walks the platform's uninstall providers in order and
+// then VERIFIES the post-condition before reporting success.
+//
+// The verification is the point of this function, not a belt-and-braces extra.
+// Before #3592 two separate paths returned nil without any evidence of removal:
+//
+//  1. `err == nil` from the provider. `wmic product where name='X' call
+//     uninstall` exits 0 even when the WHERE clause matches nothing, so the
+//     fallback attempt reported success unconditionally.
+//  2. A provider "not found" message short-circuited the whole operation as
+//     "already absent". Because winget is the FIRST attempt on Windows, any
+//     software winget does not index made Breeze answer
+//     `{"action":"uninstall","success":true}` with exit code 0 while never
+//     running the wmic fallback and never touching the machine.
+//
+// Both produced a device_commands row that says the uninstall succeeded, after
+// which the next genuinely-fresh inventory scan legitimately re-reports the
+// software — the "stale entry survives a fresh scan" symptom in #3592.
+//
+// A provider that cannot see the package no longer ends the operation; it falls
+// through to the next provider, and the inventory re-check below decides the
+// outcome. Verification failing (collector error) is not treated as proof of
+// either state — we fall back to the provider signals in that case.
 func runUninstallAttempts(softwareName string, attempts []uninstallAttempt) error {
 	errors := make([]string, 0, len(attempts))
 	attempted := 0
+	providerClaimedRemoval := false
+	providerNotFoundCount := 0
 
 	for _, attempt := range attempts {
-		if _, err := exec.LookPath(attempt.command); err != nil {
+		if _, err := uninstallLookPath(attempt.command); err != nil {
 			continue
 		}
 
 		attempted++
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		cmd := exec.CommandContext(ctx, attempt.command, attempt.args...)
-		output, err := cmd.CombinedOutput()
-		cancel()
+		output, err := runUninstallCommand(attempt)
 		sanitizedOutput, outputTruncated := sanitizeUninstallOutput(string(output))
 		lowerOutput := strings.ToLower(sanitizedOutput)
 
-		if err == nil {
-			return nil
+		// A zero exit code is not automatically a removal claim.
+		// `wmic product where name='X' call uninstall` exits 0 and prints
+		// "No Instance(s) Available." when the WHERE clause matches nothing, so
+		// the no-match markers are checked here as well as on the failure path.
+		// Otherwise that lie becomes the one signal still trusted when the
+		// post-condition check is unavailable.
+		if err == nil && !providerReportedNotFound(lowerOutput) {
+			providerClaimedRemoval = true
+			break
 		}
 
-		// If package is already absent, treat as successful remediation.
-		if strings.Contains(lowerOutput, "not installed") ||
-			strings.Contains(lowerOutput, "no package") ||
-			strings.Contains(lowerOutput, "no installed package") ||
-			strings.Contains(lowerOutput, "unknown package") ||
-			strings.Contains(lowerOutput, "not found") {
-			return nil
+		if providerReportedNotFound(lowerOutput) {
+			providerNotFoundCount++
+			continue
 		}
 
 		errLine := fmt.Sprintf("%s %v: %v (%s)", attempt.command, attempt.args, err, strings.TrimSpace(sanitizedOutput))
@@ -340,5 +404,41 @@ func runUninstallAttempts(softwareName string, attempts []uninstallAttempt) erro
 	if truncated {
 		joined += " [error summary truncated]"
 	}
-	return fmt.Errorf("failed to uninstall %q after %d attempt(s): %s", softwareName, attempted, joined)
+
+	// Verification may only DOWNGRADE an unproven success to a failure. It must
+	// never upgrade a hard provider error into a success, because "absent from
+	// the inventory collector" is not always "absent from the device": the name
+	// handed to an uninstall command does not always appear verbatim in the
+	// collector's output (a brew cask token is "google-chrome" while
+	// system_profiler reports "Google Chrome"). Letting a name the collector
+	// simply cannot see convert a real apt/brew/msiexec failure into `nil` would
+	// re-create the exact silent success this change exists to remove.
+	if len(errors) > 0 && !providerClaimedRemoval {
+		return fmt.Errorf("failed to uninstall %q after %d attempt(s): %s", softwareName, attempted, joined)
+	}
+
+	stillPresent, verifyErr := uninstallVerifyStillPresent(softwareName)
+	if verifyErr != nil {
+		// We could not look. A provider that actually exited 0 is still real
+		// evidence something ran, so honour it. "No provider could even see the
+		// package" is NOT evidence — accepting it here would restore the #3592
+		// silent success behind a transient collector failure, which on macOS is
+		// entirely reachable (a system_profiler hiccup during an uninstall of
+		// software Homebrew does not manage).
+		if providerClaimedRemoval {
+			return nil
+		}
+		return fmt.Errorf("could not confirm %q was removed: no provider reported removing it (%d of %d attempted providers reported it as unknown) and this device's software inventory could not be read: %v", softwareName, providerNotFoundCount, attempted, verifyErr)
+	}
+
+	if !stillPresent {
+		return nil
+	}
+
+	// Verified still installed — every "success" below this line would have been
+	// a lie.
+	if providerClaimedRemoval {
+		return fmt.Errorf("uninstall command for %q reported success but it is still present in this device's software inventory (the uninstaller may have been silently blocked, or may require a reboot to finish)", softwareName)
+	}
+	return fmt.Errorf("no uninstall provider on this endpoint could locate %q (%d of %d attempted providers reported it as unknown), and it is still present in this device's software inventory", softwareName, providerNotFoundCount, attempted)
 }

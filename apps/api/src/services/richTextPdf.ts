@@ -28,12 +28,28 @@ export interface RichTextRun {
   link?: string;
 }
 
-export interface RichTextBlock {
+export interface RichTextTextBlock {
   kind: 'p' | 'h3' | 'h4' | 'li';
   ordinal?: number;
   indent: 0 | 1;
   runs: RichTextRun[];
 }
+
+/** One `<tr>` of a rich-text `<table>` (issue #3484). `header` is true for a row
+ *  whose cells were `<th>` or that sat inside `<thead>` — drawn bold on a tinted
+ *  fill, and repeated at the top of every page the table spills onto. Cells hold
+ *  inline runs only, matching the sanitizer's cell contract. */
+export interface RichTextTableRow {
+  header: boolean;
+  cells: RichTextRun[][];
+}
+
+export interface RichTextTableBlock {
+  kind: 'table';
+  rows: RichTextTableRow[];
+}
+
+export type RichTextBlock = RichTextTextBlock | RichTextTableBlock;
 
 // ---------------------------------------------------------------------------
 // Minimal tokenizer / tree builder over the known 11-tag subset. Not a general
@@ -190,6 +206,39 @@ const BASE_CTX: InlineCtx = { bold: false, italic: false, underline: false };
 // indent 1 rather than growing indent per depth.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Table assembly (#3484): <table> → one 'table' block. Rows are collected
+// through thead/tbody/tfoot wrappers (and directly off <table>, which is what
+// a bare `<table><tr>` paste produces). Cells are inline runs only — the
+// sanitizer guarantees that, and anything block-level that slipped past it
+// flattens through extractRuns rather than being dropped.
+// ---------------------------------------------------------------------------
+
+function collectTableRows(node: ElementNode, inHeader: boolean, rows: RichTextTableRow[]): void {
+  for (const child of node.children) {
+    if (child.type !== 'el') continue;
+    if (child.tag === 'thead') collectTableRows(child, true, rows);
+    else if (child.tag === 'tbody' || child.tag === 'tfoot') collectTableRows(child, false, rows);
+    else if (child.tag === 'tr') {
+      const cells: RichTextRun[][] = [];
+      let allHeaderCells = true;
+      for (const cell of child.children) {
+        if (cell.type !== 'el' || (cell.tag !== 'td' && cell.tag !== 'th')) continue;
+        if (cell.tag !== 'th') allHeaderCells = false;
+        cells.push(extractRuns(cell.children, BASE_CTX));
+      }
+      if (cells.length === 0) continue;
+      rows.push({ header: inHeader || allHeaderCells, cells });
+    }
+  }
+}
+
+function parseTableBlock(node: ElementNode): RichTextTableBlock | null {
+  const rows: RichTextTableRow[] = [];
+  collectTableRows(node, false, rows);
+  return rows.length ? { kind: 'table', rows } : null;
+}
+
 function collectListItems(list: ElementNode, indent: 0 | 1, blocks: RichTextBlock[]): void {
   let ordinal = 0;
   for (const child of list.children) {
@@ -216,6 +265,9 @@ function collectListItems(list: ElementNode, indent: 0 | 1, blocks: RichTextBloc
 // into an implicit paragraph so the PDF matches the browser's HTML render
 // (which lays out stray root inline content as flowing text).
 const ROOT_INLINE_TAGS = new Set(['strong', 'em', 'u', 'a', 'br']);
+
+/** Table parts orphaned from their `<table>` — see the root walk below. */
+const STRAY_TABLE_TAGS = new Set(['thead', 'tbody', 'tfoot', 'tr', 'th', 'td']);
 
 /** Parse sanitized rich-text subset HTML into an ordered block list. Pure /
  *  side-effect-free — safe to unit test without any PDF rendering. */
@@ -251,6 +303,15 @@ export function parseRichText(html: string): RichTextBlock[] {
     } else if (node.tag === 'ul' || node.tag === 'ol') {
       flushInline();
       collectListItems(node, 0, blocks);
+    } else if (node.tag === 'table') {
+      flushInline();
+      const table = parseTableBlock(node);
+      if (table) blocks.push(table);
+    } else if (STRAY_TABLE_TAGS.has(node.tag)) {
+      // A `<tr>`/`<td>` that reached the document root without its `<table>`
+      // (hand-written API/MCP HTML). The browser lays its text out as flowing
+      // content, so buffer it as inline rather than dropping it from the PDF.
+      pendingInline.push(node);
     } else if (ROOT_INLINE_TAGS.has(node.tag)) {
       pendingInline.push(node);
     }
@@ -276,7 +337,7 @@ interface BlockStyle {
   forceBold: boolean;
 }
 
-function styleFor(kind: RichTextBlock['kind']): BlockStyle {
+function styleFor(kind: RichTextTextBlock['kind']): BlockStyle {
   if (kind === 'h3') return { fontSize: 13, spacingAfter: 8, forceBold: true };
   if (kind === 'h4') return { fontSize: 11.5, spacingAfter: 8, forceBold: true };
   return { fontSize: 11, spacingAfter: 8, forceBold: false }; // 'p' | 'li'
@@ -318,8 +379,13 @@ export interface RenderRichTextOpts {
  *  via opts.ensureRoom. Returns the new y cursor (below the last block + its
  *  trailing spacing), for the caller to continue drawing from. */
 export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opts: RenderRichTextOpts): number {
-  const bodyFonts = opts.fonts ?? DEFAULT_BODY_FONTS;
-  const blocks = parseRichText(html);
+  return drawBlocks(doc, parseRichText(html), opts, opts.fonts ?? DEFAULT_BODY_FONTS);
+}
+
+/** The block draw loop, split out of renderRichTextIntoPdf so the oversized-row
+ *  degrade path in drawTableBlock can reuse it on synthetic paragraph blocks
+ *  (which contain no tables, so the mutual recursion terminates at one level). */
+function drawBlocks(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], opts: RenderRichTextOpts, bodyFonts: BodyFonts): number {
   // Side-by-side callers can legitimately leave pdfkit's implicit cursor at the
   // bottom of the column drawn last rather than the lower of both columns.
   // startY is the public contract; synchronize doc.y before ensureRoom reads it.
@@ -332,6 +398,11 @@ export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opt
   // the actual draw calls) never reflects a gap that hasn't been drawn as text.
   let gapBefore = 0;
   for (const block of blocks) {
+    if (block.kind === 'table') {
+      y = drawTableBlock(doc, block, opts, bodyFonts, y, gapBefore);
+      gapBefore = TABLE_SPACING_AFTER;
+      continue;
+    }
     const style = styleFor(block.kind);
     // Ordered-list ordinals reach 2+ digits ("10.", "11.", …) which overflow the
     // fixed 14pt bullet gutter and character-wrap, garbling clause numbering.
@@ -493,7 +564,7 @@ function maxLineHeightForRuns(doc: PDFKit.PDFDocument, runs: RichTextRun[], font
  *  and indent math as the draw loop, but via countWrappedLines instead of an
  *  actual pdfkit draw. Returns the block's own height (excluding spacingAfter —
  *  callers accumulate that separately, matching renderRichTextIntoPdf). */
-function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextBlock, width: number, fonts: BodyFonts): number {
+function measureBlockHeight(doc: PDFKit.PDFDocument, block: RichTextTextBlock, width: number, fonts: BodyFonts): number {
   const style = styleFor(block.kind);
   const isLi = block.kind === 'li';
   const prefix = isLi ? (block.ordinal != null ? `${block.ordinal}.` : '•') : '';
@@ -526,6 +597,11 @@ export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: nu
     let total = 0;
     let gapBefore = 0;
     for (const block of blocks) {
+      if (block.kind === 'table') {
+        total += gapBefore + measureTableBlock(doc, block, width, bodyFonts);
+        gapBefore = TABLE_SPACING_AFTER;
+        continue;
+      }
       const style = styleFor(block.kind);
       total += gapBefore + measureBlockHeight(doc, block, width, bodyFonts);
       gapBefore = style.spacingAfter;
@@ -564,9 +640,24 @@ export function renderInlineRunsIntoPdf(
   color: string = TEXT_COLOR,
   forceBold = false,
 ): void {
-  const bodyFonts = fonts ?? DEFAULT_BODY_FONTS;
   if (!html || !html.trim()) return;
-  const runs = extractRuns(tokenize(html), BASE_CTX);
+  drawRuns(doc, extractRuns(tokenize(html), BASE_CTX), x, y, width, fontSize, fonts ?? DEFAULT_BODY_FONTS, align, color, forceBold);
+}
+
+/** Run-sequence draw core shared by renderInlineRunsIntoPdf and the table-cell
+ *  draw (which already holds parsed runs and must not re-serialize to HTML). */
+function drawRuns(
+  doc: PDFKit.PDFDocument,
+  runs: RichTextRun[],
+  x: number,
+  y: number,
+  width: number,
+  fontSize: number,
+  bodyFonts: BodyFonts,
+  align: 'left' | 'center' | 'right' = 'left',
+  color: string = TEXT_COLOR,
+  forceBold = false,
+): void {
   const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
   effectiveRuns.forEach((run, i) => {
     const isFirst = i === 0;
@@ -597,12 +688,198 @@ export function measureInlineRuns(doc: PDFKit.PDFDocument, html: string, width: 
   const saved = saveFontState(doc);
   try {
     if (!html || !html.trim()) return 0;
-    const runs = extractRuns(tokenize(html), BASE_CTX);
-    const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
-    const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, forceBold);
-    const lineHeight = maxLineHeightForRuns(doc, effectiveRuns, fontSize, bodyFonts, forceBold);
-    return lines * lineHeight;
+    return measureRuns(doc, extractRuns(tokenize(html), BASE_CTX), width, fontSize, bodyFonts, forceBold);
   } finally {
     restoreFontState(doc, saved);
   }
+}
+
+/** Run-sequence measure core (counterpart to drawRuns). Mutates doc font state
+ *  as it measures — callers save/restore around it. */
+function measureRuns(doc: PDFKit.PDFDocument, runs: RichTextRun[], width: number, fontSize: number, bodyFonts: BodyFonts, forceBold = false): number {
+  const effectiveRuns = runs.length ? runs : [{ text: '', bold: false, italic: false, underline: false }];
+  const lines = countWrappedLines(doc, effectiveRuns, width, fontSize, bodyFonts, forceBold);
+  const lineHeight = maxLineHeightForRuns(doc, effectiveRuns, fontSize, bodyFonts, forceBold);
+  return lines * lineHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Rich-text <table> blocks (#3484)
+//
+// Deliberately NOT tablePdf.ts: that module renders the STRUCTURED `table`
+// block type, whose author-supplied column weights / zebra / header style have
+// no counterpart in pasted HTML — and it imports this module, so the dependency
+// can only run one way. What the two share is the cell primitive (drawRuns /
+// measureRuns above), which is where the formatting fidelity actually lives.
+//
+// Column widths are inferred, since HTML carries no weights: each column's
+// weight is the longest plain-text cell in it, clamped so one prose-heavy
+// column can't squeeze the rest below a readable floor.
+// ---------------------------------------------------------------------------
+
+const TABLE_FONT_SIZE = 10;
+const TABLE_CELL_PADDING = 5;
+const TABLE_MIN_COLUMN_WIDTH = 36;
+const TABLE_SPACING_AFTER = 8;
+const TABLE_HEADER_FILL = '#f1f5f9';
+const TABLE_BORDER_COLOR = '#e2e8f0';
+/** Clamp on a column's inferred weight — without an upper bound a single long
+ *  paragraph cell would starve every other column down to the floor. */
+const TABLE_MAX_COLUMN_WEIGHT = 60;
+
+function runsPlainText(runs: RichTextRun[]): string {
+  return runs.map((r) => r.text).join('');
+}
+
+function tableColumnCount(block: RichTextTableBlock): number {
+  return block.rows.reduce((max, row) => Math.max(max, row.cells.length), 0);
+}
+
+/** Distribute `width` across the table's columns by inferred weight, flooring
+ *  each at TABLE_MIN_COLUMN_WIDTH. Like tablePdf's distributeColumnWidths, the
+ *  floor does not re-balance: a table with more columns than fit simply
+ *  overflows rather than rendering illegibly narrow cells. */
+function tableColumnWidths(block: RichTextTableBlock, width: number): number[] {
+  const count = tableColumnCount(block);
+  if (count === 0) return [];
+  const weights = Array.from({ length: count }, (_, i) =>
+    Math.min(
+      TABLE_MAX_COLUMN_WEIGHT,
+      Math.max(1, ...block.rows.map((row) => runsPlainText(row.cells[i] ?? []).trim().length)),
+    ),
+  );
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0) || count;
+  return weights.map((w) => Math.max(TABLE_MIN_COLUMN_WIDTH, Math.round((width * w) / totalWeight)));
+}
+
+/** Row height = tallest cell in the row, padding included. Header rows are
+ *  drawn bold, so they must be MEASURED bold — a themed bold face can carry
+ *  taller line metrics than its regular face. */
+function measureTableRow(doc: PDFKit.PDFDocument, row: RichTextTableRow, widths: number[], fonts: BodyFonts): number {
+  const saved = saveFontState(doc);
+  try {
+    let tallest = 0;
+    row.cells.forEach((cell, i) => {
+      const columnWidth = widths[i];
+      if (columnWidth === undefined) return;
+      const inner = Math.max(0, columnWidth - 2 * TABLE_CELL_PADDING);
+      tallest = Math.max(tallest, measureRuns(doc, cell, inner, TABLE_FONT_SIZE, fonts, row.header));
+    });
+    return tallest + 2 * TABLE_CELL_PADDING;
+  } finally {
+    restoreFontState(doc, saved);
+  }
+}
+
+/** Height the table occupies with NO page breaks — repeated headers are not
+ *  counted, exactly as measureRichText ignores pagination for every other block
+ *  kind. Today's only caller (calloutPdf) passes a non-paginating ensureRoom, so
+ *  measure and draw agree; a future paginating caller would need this to grow a
+ *  page-aware variant rather than trusting this number. */
+function measureTableBlock(doc: PDFKit.PDFDocument, block: RichTextTableBlock, width: number, fonts: BodyFonts): number {
+  const widths = tableColumnWidths(block, width);
+  return block.rows.reduce((total, row) => total + measureTableRow(doc, row, widths, fonts), 0);
+}
+
+function drawTableRow(
+  doc: PDFKit.PDFDocument,
+  row: RichTextTableRow,
+  widths: number[],
+  x: number,
+  y: number,
+  height: number,
+  fonts: BodyFonts,
+): void {
+  const totalWidth = widths.reduce((sum, w) => sum + w, 0);
+  if (row.header) {
+    doc.save();
+    doc.rect(x, y, totalWidth, height).fill(TABLE_HEADER_FILL);
+    doc.restore();
+  }
+  let cx = x;
+  widths.forEach((columnWidth, i) => {
+    doc.save();
+    doc.lineWidth(0.5).strokeColor(TABLE_BORDER_COLOR).rect(cx, y, columnWidth, height).stroke();
+    doc.restore();
+    drawRuns(
+      doc,
+      row.cells[i] ?? [],
+      cx + TABLE_CELL_PADDING,
+      y + TABLE_CELL_PADDING,
+      Math.max(0, columnWidth - 2 * TABLE_CELL_PADDING),
+      TABLE_FONT_SIZE,
+      fonts,
+      'left',
+      TEXT_COLOR,
+      row.header,
+    );
+    cx += columnWidth;
+  });
+}
+
+/** Draw one table block, row at a time. Rows never split: the leading header
+ *  row is redrawn on every page the table spills onto, and a row too tall for
+ *  even a fresh page degrades BEFORE drawing into stacked "header: value"
+ *  paragraphs (which paginate themselves) — so this can never loop asking for
+ *  room that does not exist. Mirrors tablePdf.ts's contract for the structured
+ *  block type, but detects the page break from doc.y rather than needing the
+ *  richer EnsureRoomRich callback, keeping renderRichTextIntoPdf's public
+ *  `ensureRoom: (needed) => number` signature (and all its call sites) intact. */
+function drawTableBlock(
+  doc: PDFKit.PDFDocument,
+  block: RichTextTableBlock,
+  opts: RenderRichTextOpts,
+  fonts: BodyFonts,
+  startY: number,
+  gapBefore: number,
+): number {
+  const widths = tableColumnWidths(block, opts.width);
+  if (widths.length === 0) return startY;
+  const totalWidth = widths.reduce((sum, w) => sum + w, 0);
+  const headerRow = block.rows[0]?.header ? block.rows[0] : null;
+  const headerHeight = headerRow ? measureTableRow(doc, headerRow, widths, fonts) : 0;
+  const usablePageHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+
+  let y = startY;
+  let leadingGap = gapBefore;
+  block.rows.forEach((row, index) => {
+    const height = measureTableRow(doc, row, widths, fonts);
+    // ensureRoom decides from pdfkit's OWN cursor, which the per-cell draws
+    // above leave wherever the LAST column ended — resync before every call so
+    // the decision is anchored to the y this function tracks (same hazard and
+    // fix as tablePdf.ts's renderTableIntoPdf).
+    doc.y = y;
+    const beforeDocY = doc.y;
+    const reserved = opts.ensureRoom(leadingGap + height);
+    const brokePage = doc.y !== beforeDocY;
+    y = brokePage ? reserved : reserved + leadingGap;
+    leadingGap = 0;
+
+    if (brokePage && headerRow && index > 0) {
+      drawTableRow(doc, headerRow, widths, opts.x, y, headerHeight, fonts);
+      y += headerHeight;
+    }
+
+    if (height > usablePageHeight - headerHeight) {
+      // Taller than a whole page even on its own — fall back to prose so the
+      // content still reaches the reader instead of being clipped.
+      const degraded: RichTextBlock[] = row.cells.map((cell, i) => {
+        const label = headerRow ? runsPlainText(headerRow.cells[i] ?? []).trim() : '';
+        const runs: RichTextRun[] = label
+          ? [{ text: `${label}: `, bold: true, italic: false, underline: false }, ...cell]
+          : [...cell];
+        return { kind: 'p', indent: 0, runs };
+      });
+      y = drawBlocks(doc, degraded, { ...opts, width: totalWidth, startY: y }, fonts);
+      return;
+    }
+
+    drawTableRow(doc, row, widths, opts.x, y, height, fonts);
+    y += height;
+  });
+
+  // Leave pdfkit's cursor where this block actually ended, so the next block's
+  // ensureRoom sees the table's true bottom rather than the last cell's.
+  doc.y = y;
+  return y;
 }

@@ -1,9 +1,8 @@
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   ticketEmailInbound,
   tickets,
-  ticketComments,
   portalUsers,
   organizations,
   partners,
@@ -13,11 +12,13 @@ import { createTicket } from '../ticketService';
 import { resolvePartnerByRecipient } from './resolvePartner';
 import { resolveOrgBySenderDomain, findOrCreateEmailContact, loadPartnerInboundPolicy } from './resolveOrg';
 import { maybeSendAutoresponse } from './autoresponder';
-import { emitTicketEvent } from '../ticketEvents';
+import { insertEmailAuthoredComment } from './emailComments';
 import { captureException, captureMessage } from '../sentry';
 import { getConfig } from '../../config/validate';
 import type { NormalizedInboundEmail, InboundParseStatus } from './types';
 import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
+import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
+import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 
 // Synthetic actor for the inbound pipeline. Only ever written to audit_logs.actor_id
 // (NOT NULL, but no FK to users — same pattern as auditEvents.ANONYMOUS_ACTOR_ID /
@@ -30,7 +31,7 @@ import type { M365MailboxGenerationContext } from '../inboundEmailQueue';
 const SYSTEM_ACTOR = { userId: '00000000-0000-0000-0000-000000000000', name: 'Inbound Email' };
 
 // Per-partner ticket display number, e.g. T-2026-0001.
-const TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
+const TOKEN_RE = TICKET_TOKEN_RE;
 
 async function logInbound(
   n: NormalizedInboundEmail,
@@ -252,6 +253,41 @@ export async function processInboundEmail(
       return;
     }
 
+    // (2b) CROSS-CHANNEL idempotency — the `ticket_email_links` ledger (spec §4:
+    // ONE message-id, ONE canonical association, across BOTH channels).
+    //
+    // Why this must exist here and not only at the claim sites: a technician who
+    // links or creates from the Outlook add-in at t=0 claims the Message-ID, but
+    // the 90s mailbox poller then ingests that SAME message. For a FRESH email
+    // there is no thread header and no ticket token to match on, so without this
+    // consult the pipeline falls through to `createFromEmail` and mints a SECOND
+    // ticket, whose `claimMessageLink` then no-ops (onConflictDoNothing) and used
+    // to be swallowed — a duplicate ticket with no ledger row. The add-in route
+    // has the same consult (routes/officeAddin/tickets.ts, "idempotency fast
+    // path"); this is its inbound-side twin.
+    //
+    // PLACEMENT (deliberate, w.r.t. the R4 sender-auth gate below): this runs
+    // BEFORE the gate. That is safe because the short-circuit CREATES NOTHING —
+    // no ticket, no comment, no reopen, no autoresponse; it only writes the audit
+    // row. The gate exists to stop a spoofed From: from driving those writes, and
+    // there are none to drive: an existing claim means an AUTHENTICATED technician
+    // already decided what this message is. Quarantining it instead would just put
+    // an already-handled message in front of a human. Everything that must keep
+    // precedence still runs first — mailbox-generation locking, partner
+    // resolution, the partner-status gate, self-loop drop, and provider dedup —
+    // so no unclaimed message's path changes by so much as a query.
+    // `normalizeMessageId` throws on an empty id, so require a non-blank one —
+    // the same shape the add-in route's fast path uses (`?.trim() || null`).
+    if (n.messageId?.trim()) {
+      const claimed = await findLinkByMessageId(partnerId, normalizeMessageId(n.messageId));
+      if (claimed) {
+        // 'matched' is the honest terminal status: this message IS associated with
+        // that ticket, we simply didn't have to do the associating.
+        await logInbound(n, partnerId, 'matched', claimed.ticketId, `already claimed by ${claimed.origin}`);
+        return;
+      }
+    }
+
     // (R4) Sender authentication gate. The From header is spoofable and the per-partner
     // ticket token (T-YYYY-NNNN) is enumerable, so a token/thread match or a
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
@@ -291,7 +327,10 @@ export async function processInboundEmail(
       return;
     }
 
-    const matched = await findTicketInPartner(n, partnerId);
+    // Resolve sender identity lazily so token binding and unmatched fallthrough
+    // reuse the same partner-scoped lookups.
+    const senderResolver = createSenderResolver(n.from, partnerId);
+    const matched = await findTicketInPartner(n, partnerId, senderResolver);
     if (matched) {
       // GUARD (spec §6 layer 2): never act across partners. A partner-scoped match query
       // should already make this impossible, but re-assert before ANY write and throw
@@ -302,11 +341,38 @@ export async function processInboundEmail(
       }
 
       // Append a public inbound comment, then reopen if resolved.
-      await appendInboundComment(matched.id, n, partnerId);
+      const commentId = await appendInboundComment(matched.id, n, partnerId, senderResolver);
       if (matched.status === 'resolved') {
         await reopenResolvedTicket(matched.id, partnerId);
       }
-      await logInbound(n, partnerId, 'matched', matched.id);
+      // Record the reply's OWN Message-ID as a claimed link row (Task 4). This
+      // preserves the next hop when a client strips older References entries —
+      // the NEXT reply's In-Reply-To will point at THIS message, and the link
+      // table (consulted by findTicketInPartner) still resolves it to this
+      // ticket even though no header column carries it. Runs inside the same
+      // outer transaction as the comment insert (NOT the durable outside-context
+      // pattern) — a rollback must discard this together with the comment.
+      let lostClaimTo: string | null = null;
+      if (n.messageId) {
+        const claim = await claimMessageLink({
+          ticketId: matched.id,
+          orgId: matched.orgId,
+          partnerId,
+          messageId: n.messageId,
+          origin: 'inbound',
+          visibility: 'public',
+          commentId
+        });
+        lostClaimTo = claimRaceLoserTicketId(claim, matched.id);
+        if (lostClaimTo) warnLostClaim(n, partnerId, matched.id, lostClaimTo, 'matched-reply');
+      }
+      await logInbound(
+        n,
+        partnerId,
+        'matched',
+        matched.id,
+        lostClaimTo ? `lost message-id claim to ticket ${lostClaimTo}` : undefined
+      );
       return;
     }
 
@@ -315,20 +381,20 @@ export async function processInboundEmail(
     // SEPARATE from findTicketInPartner (which excludes closed) so the live-continuation
     // it spawns is what future replies match — the closed original is never re-matched,
     // which is what prevents a thread from forking into N tickets (FIX 2).
-    const closedOriginal = await findClosedTicketInPartner(n, partnerId);
+    const closedOriginal = await findClosedTicketInPartner(n, partnerId, senderResolver);
     if (closedOriginal) {
       const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
     // (5) Known portal-user sender -> their home org. Most specific; wins over
     // domain rules (a user who belongs to a sub-org isn't overridden by a
     // broader domain mapping).
-    const sender = await findPortalUserInPartner(n.from, partnerId);
+    const sender = await senderResolver.portalUser();
     if (sender) {
       const t = await createFromEmail(n, partnerId, sender.orgId, null, null, sender.id);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -336,13 +402,13 @@ export async function processInboundEmail(
     // ticket; optionally onboard a password-less contact so future replies
     // thread + attribute. This sits behind the senderAuth.verified (DMARC) gate
     // above, so a forged From: @customer.com can't file into the customer's org.
-    const domainMatch = await resolveOrgBySenderDomain(n.from, partnerId);
+    const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
       const submittedBy = domainMatch.autoCreateContact
         ? await findOrCreateEmailContact(domainMatch.orgId, n.from, n.fromName ?? null)
         : undefined;
       const t = await createFromEmail(n, partnerId, domainMatch.orgId, null, null, submittedBy);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -363,7 +429,7 @@ export async function processInboundEmail(
     // is configured; otherwise fall through to quarantine).
     if (policy.unknownSenderMode === 'triage' && policy.defaultTriageOrgId) {
       const t = await createFromEmail(n, partnerId, policy.defaultTriageOrgId, null, null);
-      await logInbound(n, partnerId, 'created', t.id);
+      await logCreated(n, partnerId, t);
       return;
     }
 
@@ -383,123 +449,40 @@ export async function processInboundEmail(
   }
 }
 
-interface MatchedTicket {
-  id: string;
-  partnerId: string | null;
-  orgId: string;
-  status: string;
-  emailThreadKey: string | null;
-  internalNumber: string | null;
+// Lazy, memoized sender-identity lookups. Threaded through the matchers (token
+// binding, #3643) and the unmatched fallthrough so both reuse the same
+// partner-scoped queries instead of issuing duplicates.
+function createSenderResolver(from: string, partnerId: string): SenderResolver {
+  let portalUserPromise: Promise<{ id: string; orgId: string; name: string | null } | null> | undefined;
+  let domainOrgPromise: Promise<{ orgId: string; autoCreateContact: boolean } | null> | undefined;
+
+  return {
+    portalUser() {
+      portalUserPromise ??= findPortalUserInPartner(from, partnerId);
+      return portalUserPromise;
+    },
+    domainOrg() {
+      domainOrgPromise ??= resolveOrgBySenderDomain(from, partnerId);
+      return domainOrgPromise;
+    }
+  };
 }
 
-const MATCH_COLS = {
-  id: tickets.id,
-  partnerId: tickets.partnerId,
-  orgId: tickets.orgId,
-  status: tickets.status,
-  emailThreadKey: tickets.emailThreadKey,
-  internalNumber: tickets.internalNumber
-};
-
-// Candidate threading keys: In-Reply-To + every References entry (a reply's parent
-// can be anywhere in the References chain), deduped.
-function candidateThreadKeys(n: NormalizedInboundEmail): string[] {
-  return Array.from(new Set([n.inReplyTo, ...(n.references ?? [])].filter(Boolean) as string[]));
-}
-
-// (3) Thread-match within the resolved partner. BOTH queries carry an explicit
-// partner_id predicate (spec §6 layer 1) — ticket numbers are per-partner sequences, so an
-// unscoped token match would hit the wrong tenant.
-//
-// CLOSED tickets are EXCLUDED (`ne(status,'closed')`): a closed→new-linked continuation
-// is stamped with the SAME email_thread_key as its closed original (no unique constraint
-// on that column), so an unordered LIMIT 1 could otherwise re-return the closed original
-// and fork the thread into N tickets. Excluding closed here makes a reply to a closed
-// ticket fall through to the dedicated closed lookup (-> ONE new linked ticket), while
-// subsequent replies match the LIVE continuation. Resolved tickets still match (reopen).
-async function findTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
-  // 1) thread headers -> email_thread_key OR email_message_id (scoped to partner,
-  // live tickets only). Candidate keys (In-Reply-To ∪ References) are matched
-  // against EITHER column: email_thread_key carries the generated anchor (so a
-  // reply to the autoresponse / outbound reply threads), and email_message_id
-  // carries the customer's OWN original Message-Id (so an autoresponder-OFF
-  // partner's customer replying to their own original — In-Reply-To = their
-  // original Message-Id, NOT the anchor — still threads instead of forking a
-  // duplicate). The partner predicate stays mandatory (spec §6 layer 1).
-  const candidateKeys = candidateThreadKeys(n);
-  if (candidateKeys.length > 0) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        ne(tickets.status, 'closed'),
-        isNull(tickets.deletedAt), // never thread a reply onto a soft-deleted ticket
-        or(
-          inArray(tickets.emailThreadKey, candidateKeys),
-          inArray(tickets.emailMessageId, candidateKeys)
-        )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  // 2) subject token [T-YYYY-NNNN] (scoped to partner, live tickets only)
-  const m = n.subject.match(TOKEN_RE);
-  if (m) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        ne(tickets.status, 'closed'),
-        isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  return null;
-}
-
-// Looks up the CLOSED original for a reply, by the same thread-key / subject-token
-// signals findTicketInPartner uses — but matching ONLY closed tickets. Used to spawn a
-// single new linked ticket when a customer replies to a closed thread. Kept separate from
-// findTicketInPartner (which returns live tickets only) so the closed original is never
-// re-matched for an append. Still partner-scoped (spec §6 layer 1).
-async function findClosedTicketInPartner(n: NormalizedInboundEmail, partnerId: string): Promise<MatchedTicket | null> {
-  const candidateKeys = candidateThreadKeys(n);
-  if (candidateKeys.length > 0) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        eq(tickets.status, 'closed'),
-        isNull(tickets.deletedAt), // a deleted closed original must not spawn a continuation
-        inArray(tickets.emailThreadKey, candidateKeys)
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  const m = n.subject.match(TOKEN_RE);
-  if (m) {
-    const rows = await db
-      .select(MATCH_COLS)
-      .from(tickets)
-      .where(and(
-        eq(tickets.partnerId, partnerId),
-        eq(tickets.status, 'closed'),
-        isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
-  }
-
-  return null;
+// Terminal audit row for a create-path result. `lostClaimTo` is normally null;
+// when set, the row names the ticket that already owned this message-id so the
+// duplicate is reconcilable without reading Sentry (see `warnLostClaim`).
+async function logCreated(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  result: { id: string; lostClaimTo: string | null }
+): Promise<void> {
+  await logInbound(
+    n,
+    partnerId,
+    'created',
+    result.id,
+    result.lostClaimTo ? `lost message-id claim to ticket ${result.lostClaimTo}` : undefined
+  );
 }
 
 // (4) Sender -> portal user, scoped to the resolved partner via the org->partner join.
@@ -567,6 +550,29 @@ async function createFromEmail(
     SYSTEM_ACTOR
   );
 
+  // Record the originating Message-ID as a claimed link row (Task 4) — same
+  // idempotent claim as the matched-reply path, covering the create path (fresh
+  // ticket + closed-continuation). Runs inside the pipeline's outer transaction
+  // — a rollback discards it with the ticket.
+  //
+  // A created:false whose winner is a DIFFERENT ticket means we just minted a
+  // duplicate: someone (the add-in, or a concurrent worker) claimed this
+  // message between the (2b) ledger consult and here. It is reported, never
+  // swallowed — see `warnLostClaim`.
+  let lostClaimTo: string | null = null;
+  if (n.messageId) {
+    const claim = await claimMessageLink({
+      ticketId: ticket.id,
+      orgId,
+      partnerId,
+      messageId: n.messageId,
+      origin: 'inbound',
+      visibility: 'public'
+    });
+    lostClaimTo = claimRaceLoserTicketId(claim, ticket.id);
+    if (lostClaimTo) warnLostClaim(n, partnerId, ticket.id, lostClaimTo, 'create');
+  }
+
   // Stamp the threading key so future replies match. Precedence:
   //   1) carryThreadKey — preserves a closed-continuation's original thread, so a
   //      reply to the linked ticket still resolves to the original thread key.
@@ -622,45 +628,78 @@ async function createFromEmail(
       subject: persisted[0]?.subject ?? '',
     });
   }
-  return ticket;
+  return { id: ticket.id, lostClaimTo };
 }
 
-async function appendInboundComment(ticketId: string, n: NormalizedInboundEmail, partnerId: string): Promise<void> {
-  // Inserted directly (NOT via addTicketComment, which forces authorType:'internal' /
-  // user_id=actor). Under system scope the ticket_comments INSERT policy permits user_id IS
-  // NULL. Email-sourced comments are ALWAYS public (spec §4: email can never create an internal note).
-  const sender = await findPortalUserInPartner(n.from, partnerId);
+/**
+ * A `claimMessageLink` result that lost the (partner_id, message_id) race to a
+ * DIFFERENT ticket. `created:false` pointing at the ticket we just wrote to is
+ * an ordinary idempotent replay (a retry re-observing its own prior claim) and
+ * returns null; anything else is the lost race.
+ */
+function claimRaceLoserTicketId(
+  claim: Awaited<ReturnType<typeof claimMessageLink>>,
+  ourTicketId: string
+): string | null {
+  if (claim.created) return null;
+  return claim.existing.ticketId === ourTicketId ? null : claim.existing.ticketId;
+}
+
+/**
+ * Report a lost message-id claim. With the (2b) ledger consult in place this is
+ * near-unreachable (it needs a claim committed in the window between that SELECT
+ * and this INSERT), which is exactly why it must be loud rather than deleted:
+ * it is the invariant alarm for "one message-id, one canonical association".
+ *
+ * We report rather than throw deliberately. `processInboundEmail`'s catch
+ * SWALLOWS and returns, so the worker's transaction would COMMIT anyway — a
+ * throw would buy no rollback here, only a `failed` audit row that hides which
+ * two tickets are involved. The comment/ticket we already wrote therefore
+ * stands, and the audit row plus this Sentry warning name both sides so the
+ * duplicate is reconcilable by a human.
+ */
+function warnLostClaim(
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  ourTicketId: string,
+  winnerTicketId: string,
+  path: 'matched-reply' | 'create'
+): void {
+  captureMessage(
+    'Inbound email lost the message-id claim race: duplicate ticket/comment written',
+    'warning',
+    {
+      path,
+      partnerId,
+      provider: n.provider,
+      providerMessageId: n.providerMessageId,
+      messageId: n.messageId,
+      ourTicketId,
+      winnerTicketId,
+    }
+  );
+}
+
+async function appendInboundComment(
+  ticketId: string,
+  n: NormalizedInboundEmail,
+  partnerId: string,
+  senderResolver: SenderResolver
+): Promise<string> {
+  const sender = await senderResolver.portalUser();
   // appendInboundComment is only reached on the verified-sender match path (R4 gate
   // upstream), so a matched portal user is an authenticated identity: prefer their
   // STORED name over the spoofable From display name. Fall back to the header only
   // when the sender isn't a known portal user (still verified by SPF/DKIM/DMARC).
   const authorName = sender?.name ?? n.fromName ?? n.from;
-  const inserted = await db.insert(ticketComments).values({
+  const { commentId } = await insertEmailAuthoredComment({
     ticketId,
-    userId: null,
-    portalUserId: sender?.id ?? null,
+    orgId: '', // existing wart, preserved — see EmailCommentInput
+    senderPortalUserId: sender?.id ?? null,
     authorName,
-    authorType: 'email',
-    commentType: 'comment',
-    content: n.text,
-    isPublic: true,
-    oldValue: null,
-    newValue: null
-  }).returning();
-  const comment = inserted[0];
-  if (!comment) throw new Error('failed to insert inbound comment');
-
-  // inbound:true -> the notify worker's ticket.commented branch skips the requester
-  // echo when event.payload.inbound is set (its guard is `isPublic && !inbound`), so the
-  // email is never bounced back to the same sender — preventing a mail loop.
-  await emitTicketEvent({
-    type: 'ticket.commented',
-    ticketId,
-    orgId: '',
-    partnerId,
-    actorUserId: null,
-    payload: { commentId: comment.id, isPublic: true, inbound: true }
+    content: n.text
   });
+  return commentId;
 }
 
 // Reopen a resolved ticket via a direct partner-scoped UPDATE (FK-safe — see SYSTEM_ACTOR note).

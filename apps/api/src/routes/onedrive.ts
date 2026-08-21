@@ -68,8 +68,23 @@ onedriveRoutes.get(
     if (!device) {
       return c.json({ error: 'Device not found' }, 404);
     }
+    // Explicit projection, not `select()`: the panel consumes exactly these
+    // columns (OneDriveDeviceState in apps/web/src/lib/api/onedrive.ts), and a
+    // whole-row select would ship internal bookkeeping columns to the browser
+    // and silently widen the response whenever a column is added to the table.
     const [state] = await db
-      .select().from(onedriveDeviceState)
+      .select({
+        deviceId: onedriveDeviceState.deviceId,
+        signedIn: onedriveDeviceState.signedIn,
+        filesOnDemandOn: onedriveDeviceState.filesOnDemandOn,
+        oneDriveVersion: onedriveDeviceState.oneDriveVersion,
+        kfmFolderStates: onedriveDeviceState.kfmFolderStates,
+        mountedLibraries: onedriveDeviceState.mountedLibraries,
+        entitledLibraries: onedriveDeviceState.entitledLibraries,
+        driftEntries: onedriveDeviceState.driftEntries,
+        lastReportedAt: onedriveDeviceState.lastReportedAt,
+      })
+      .from(onedriveDeviceState)
       .where(eq(onedriveDeviceState.deviceId, deviceId)).limit(1);
     return c.json({ state: state ?? null });
   }

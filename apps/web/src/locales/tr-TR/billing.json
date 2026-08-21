@@ -304,7 +304,7 @@
       "empty": "Bu kuruluş için henüz hiçbir Pax8 aboneliği senkronize edilmedi. Bunları Entegrasyonlar → Pax8 altında senkronize edin.",
       "subscriptionFallback": "Pax8 aboneliği",
       "quantity": "adet {{quantity}}",
-      "priceEach": "{{currency}} {{price}}/ea",
+      "priceEach": "{{currency}} {{price}}/adet",
       "alreadyLinked": "zaten bağlı",
       "relink": "Yeniden bağlantı oluştur",
       "link": "Bağlantı",
@@ -436,7 +436,10 @@
       "uploadError": "PDF yüklenemedi",
       "uploadSuccess": "PDF sürümü yüklendi",
       "publishError": "Sürüm yayınlanamadı",
-      "publishSuccess": "Sürüm yayınlandı"
+      "publishSuccess": "Sürüm yayınlandı",
+      "warnings": {
+        "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Sözleşme gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
+      }
     }
   },
   "quotes": {
@@ -512,7 +515,9 @@
         "imageSectionPdf": "Resim bölümü (PDF'de oluşturulmuştur).",
         "richTextContentAria": "Zengin metin içeriği",
         "tableEmpty": "Boş tablo.",
-        "calloutEmpty": "Boş çağrı kutusu."
+        "calloutEmpty": "Boş çağrı kutusu.",
+        "edit": "Düzenle",
+        "saveEdit": "Kaydet"
       },
       "blockTypes": {
         "heading": "Başlık",
@@ -666,6 +671,8 @@
         "partNumberOptional": "Parça No (isteğe bağlı)",
         "profit": "Kâr",
         "quantityAria": "Adet",
+        "quantityForAria": "{{item}} adedi",
+        "unitPriceForAria": "{{item}} birim fiyatı",
         "saveToCatalog": "Kataloğa kaydet",
         "showLess": "Daha az göster",
         "showMore": "Daha fazlasını göster",
@@ -755,7 +762,8 @@
         "zebra": "Zebra şeritleri",
         "headerStyle": "Başlık stili",
         "headerStylePlain": "Düz",
-        "headerStyleAccent": "Vurgulu"
+        "headerStyleAccent": "Vurgulu",
+        "reshapedWarning": "Bu tablo {{columns}} sütun x {{rows}} satır sınırına sığmadığı için yeniden düzenlendi. Kaydetmek, kayıtlı tabloyu burada gördüğünüzle değiştirir."
       },
       "terms": {
         "placeholder": "Ödeme koşulları, garanti hükümleri vb.",
@@ -813,7 +821,9 @@
       "ghost": {
         "add": "Ekle",
         "nameAria": "Yeni satır adı",
-        "placeholder": "Bir öğe adı yazın…"
+        "placeholder": "Bir öğe adı yazın…",
+        "quantityAria": "Yeni satır adedi",
+        "unitPriceAria": "Yeni satır birim fiyatı"
       },
       "unassigned": {
         "explainer": "Bu satırlar herhangi bir fiyatlandırma bölümünde yer almaz ancak yine de müşterinin teklifinde görünür ve toplamlara dahil edilir. Nerede görüneceğini kontrol etmek için her birini bir fiyatlandırma bölümüne taşıyın.",
@@ -825,6 +835,9 @@
       },
       "unsavedField": {
         "lines": "Satır öğeleri"
+      },
+      "warnings": {
+        "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Zengin metin başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
       }
     },
     "actions": {
@@ -878,10 +891,11 @@
         "noBillingContactHint": "Bu kuruluş için kayıtlı fatura iletişim kişisi yok — bir e-posta girin veya <orgLink>kuruluş ayarları</orgLink>'e bir e-posta ekleyin."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin veya kabul bağlantısını manuel olarak paylaşın.",
+        "noBillingContact": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — {{orgName}}'de fatura iletişim e-postası yok. Kuruluş ayarlarına bir tane ekleyin ve yeniden gönderin.",
         "noEmailService": "Teklif Gönderildi olarak işaretlendi ancak e-posta teslim edilmedi — e-posta bu sunucuda yapılandırılmadı.",
         "pdfRenderFailed": "Teklif Gönderildi olarak işaretlendi, ancak PDF oluşturulamadığı için e-posta teslim edilmedi. Ekteki sözleşme dosyalarını kontrol edin ve yeniden gönderin.",
-        "sendFailed": "Teklif Gönderildi olarak işaretlendi, ancak e-posta teslim edilemedi. Adresi kontrol edin ve kabul bağlantısını manuel olarak paylaşmayı deneyin."
+        "sendFailed": "Teklif Gönderildi olarak işaretlendi, ancak e-posta teslim edilemedi. Adresi kontrol edin ve yeniden gönderin.",
+        "shareLinkHint": "Bağlantıyı kopyalayıp kendiniz göndermek için bu teklifte \"{{action}}\" seçeneğini kullanın."
       },
       "sendError": "Teklif gönderilemedi.",
       "sendProposal": "Teklifi gönder",
@@ -1318,7 +1332,12 @@
       "lineName": "Satır adı",
       "name": "Ad",
       "quantity": "Adet",
+      "quantityFor": "{{item}} adedi",
+      "quantityNewLine": "Yeni satır adedi",
+      "unitPriceFor": "{{item}} birim fiyatı",
+      "unitPriceNewLine": "Yeni satır birim fiyatı",
       "taxable": "Vergiye tabi",
+      "untitledLine": "bu satır",
       "unitPrice": "Birim fiyatı"
     },
     "hiddenSuffix": "(gizli)",

@@ -596,6 +596,8 @@
     "address": "Gelen adresi",
     "localPart": "Gelen adresin yerel kısmı",
     "domainNotConfigured": "Platform gelen etki alanı henüz yapılandırılmadı. Yöneticinizle iletişime geçin.",
+    "domainNotConfiguredSelfHosted": "Platform gelen etki alanı yapılandırılmadığı için gelen adres oluşturulamıyor. Breeze sunucunuzda <var>TICKETS_INBOUND_DOMAIN</var> değerini ayarlayın ve API'yi yeniden başlatın — bkz. <docs>E-postadan talebe kurulumu</docs>. Alternatif olarak, bir Microsoft 365 paylaşılan posta kutusu bağlayabilirsiniz — bu yol gelen etki alanı gerektirmez.",
+    "addressViaMailbox": "Yerel bir gelen adres yapılandırılmadı, ancak e-postalar aşağıdaki bağlı Microsoft 365 posta kutusu üzerinden gelmeye devam ediyor — bu yol için gelen etki alanı gerekmez.",
     "triageOrganization": "Varsayılan triyaj organizasyonu",
     "unknownSenders": "Bilinmeyen gönderenler",
     "unknownDescription": "Göndereni portal kullanıcısı olmayan, eşlenen müşteri alanı olmayan veya mevcut bir destek bildirimine yanıt olmayan postalarla ne yapılmalı?",
@@ -1010,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Uzaktan Erişim",
     "description": "Tünel kısıtlamalarını, hedef izin verilenler listelerini ve site başına etkin oturumları yönetin.",
-    "ipRestrictions": {
-      "title": "Kaynak IP Kısıtlamalar",
-      "description": "Hangi IP'lerin tünel oluşturabileceğini kısıtlayın. Kimliği doğrulanmış herhangi bir kullanıcıya izin vermek için boş bırakın.",
-      "empty": "(Kısıtlama yok; kimliği doğrulanmış herhangi bir kullanıcı tünel oluşturabilir)",
-      "placeholder": "ör. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Siteler",
       "empty": "(Bu kuruluşta site yok)",
@@ -3353,5 +3349,25 @@
       "deleted": "Değişken silindi",
       "deleteFailed": "Değişken silinemedi"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Outlook eklenti bağlamaları",
+    "description": "Outlook teknisyen eklentisine bağlı teknisyenler. Bir bağlamayı iptal etmek, teknisyenin tüm cihazlardaki eklenti oturumunu kapatır.",
+    "loading": "Bağlamalar yükleniyor…",
+    "loadFailed": "Bağlamalar yüklenemedi.",
+    "retry": "Tekrar deneyin",
+    "empty": "Henüz hiçbir teknisyen Outlook eklentisini bağlamadı.",
+    "user": "Kullanıcı",
+    "entraTenant": "Entra kiracısı",
+    "boundOn": "Bağlanma tarihi",
+    "mfaVerified": "MFA doğrulandı",
+    "actions": "Eylemler",
+    "revoke": "İptal Et",
+    "revoked": "Bağlama iptal edildi",
+    "revokeFailed": "Bağlama iptal edilemedi",
+    "confirmTitle": "Outlook eklenti bağlamasını iptal et",
+    "confirmBody": "Bu işlem {{name}} kullanıcısının Outlook teknisyen eklentisi oturumunu tüm cihazlarda kapatır. Yeniden oturum açarak tekrar bağlanabilirler.",
+    "cancel": "İptal",
+    "confirmRevoke": "Bağlamayı iptal et"
   }
 }

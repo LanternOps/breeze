@@ -82,7 +82,13 @@
     "orderedList": "Numbered list",
     "link": "Link",
     "linkPrompt": "Enter a URL (http:// or https://)",
-    "linkInvalid": "Only http:// and https:// links are allowed"
+    "linkInvalid": "Only http:// and https:// links are allowed",
+    "insertTable": "Table",
+    "addRow": "Add row",
+    "deleteRow": "Delete row",
+    "addColumn": "Add column",
+    "deleteColumn": "Delete column",
+    "deleteTable": "Delete table"
   },
   "actions": {
     "save": "Save",
@@ -252,7 +258,11 @@
       "viewAll": "View all",
       "allClear": "All clear",
       "empty": "No active alerts across your fleet",
-      "fallbackTitle": "Alert"
+      "fallbackTitle": "Alert",
+      "noDevicesTitle": "No devices reporting yet",
+      "noDevicesHint": "Alerts will appear once a device is enrolled.",
+      "noActiveAlerts": "No active alerts",
+      "deviceStatusUnavailable": "Device status unavailable — fleet coverage can't be confirmed."
     },
     "customizer": {
       "title": "Dashboard Customizer",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} devices",
       "kevDevices_one": "{{count}} device",
-      "kevDevices_other": "{{count}} devices"
+      "kevDevices_other": "{{count}} devices",
+      "noDevicesTitle": "No devices reporting yet",
+      "noDevicesHint": "Enroll a device to start scanning for vulnerabilities.",
+      "noneReported": "No open findings reported",
+      "coverageUnknown": "Device status unavailable — scan coverage can't be confirmed."
     },
     "refreshFailed": "Couldn't refresh — showing older data"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} device(s) are running the hosted agent edition on this self-hosted server. Migrate to the self-host agent edition.",
+    "message_one": "{{count}} device is running the hosted agent edition on this self-hosted server. Migrate to the self-host agent edition.",
+    "message_other": "{{count}} devices are running the hosted agent edition on this self-hosted server. Migrate to the self-host agent edition.",
     "cta": "How to migrate"
   },
   "longTail": {

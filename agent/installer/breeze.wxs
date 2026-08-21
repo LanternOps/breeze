@@ -145,6 +145,27 @@
     <Property Id="ENROLLMENT_SECRET" Secure="yes" Hidden="yes" />
     <?endif?>
     <Property Id="BOOTSTRAP_TOKEN" Secure="yes" Hidden="yes" />
+    <!-- Always write a verbose MSI log to %TEMP%\MSI*.LOG and print its path in
+         the failure dialog. Without this, a rolled-back install shows only
+         "Breeze Agent Setup Wizard ended prematurely" with no cause and no log
+         to ask the reporter for — every enroll failure (the agent distinguishes
+         seven categories as exit codes 10-17, see internal/agentapp/enroll_error.go)
+         collapses into an indistinguishable 1603, and support has to talk the
+         user through re-running under `msiexec /i ... /l*v`. That re-run is
+         itself unreliable: the failure is often environmental (expired token,
+         captive portal) and no longer reproduces by the time we ask.
+
+         Secret safety: the `p` flag logs property VALUES, so every property
+         carrying a credential must be Hidden="yes" (WiX emits those into
+         MsiHiddenProperties, and the log prints them as `**********`).
+         ENROLLMENT_KEY, ENROLLMENT_SECRET and BOOTSTRAP_TOKEN are all marked
+         above — KEEP IT THAT WAY when adding any new credential-bearing
+         property, or it lands in a world-readable file under %TEMP%.
+         The bootstrap token also appears inside the filename-bootstrap
+         package path (OriginalDatabase, "Breeze Agent (TOKEN@HOST).msi"),
+         which MSI logs in its header regardless of flags; that is accepted
+         because the same token is already on disk in the file's own name. -->
+    <Property Id="MsiLogging" Value="voicewarmupx" />
     <Property Id="ARPNOREPAIR" Value="1" />
     <Property Id="POWERSHELL_EXE" Secure="yes" />
     <Property Id="BREEZE_KILL_CMD" Secure="yes" />

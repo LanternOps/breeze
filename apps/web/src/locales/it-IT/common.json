@@ -82,7 +82,13 @@
     "orderedList": "Elenco numerato",
     "link": "Collegamento",
     "linkPrompt": "Inserisci un URL (http:// o https://)",
-    "linkInvalid": "Sono consentiti solo i collegamenti http:// e https://"
+    "linkInvalid": "Sono consentiti solo i collegamenti http:// e https://",
+    "insertTable": "Tabella",
+    "addRow": "Aggiungi riga",
+    "deleteRow": "Elimina riga",
+    "addColumn": "Aggiungi colonna",
+    "deleteColumn": "Elimina colonna",
+    "deleteTable": "Elimina tabella"
   },
   "actions": {
     "save": "Salva",
@@ -252,7 +258,11 @@
       "viewAll": "Visualizza tutto",
       "allClear": "Tutto chiaro",
       "empty": "Nessun avviso attivo nella tua flotta",
-      "fallbackTitle": "Avviso"
+      "fallbackTitle": "Avviso",
+      "noDevicesTitle": "Nessun dispositivo sta ancora inviando dati",
+      "noDevicesHint": "Gli avvisi compariranno una volta registrato un dispositivo.",
+      "noActiveAlerts": "Nessun avviso attivo",
+      "deviceStatusUnavailable": "Stato dei dispositivi non disponibile: impossibile confermare la copertura della flotta."
     },
     "customizer": {
       "title": "Personalizzazione del dashboard",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVE",
       "kevDevices": "{{count}} dispositivi",
       "kevDevices_one": "{{count}} dispositivo",
-      "kevDevices_other": "{{count}} dispositivi"
+      "kevDevices_other": "{{count}} dispositivi",
+      "noDevicesTitle": "Nessun dispositivo sta ancora inviando dati",
+      "noDevicesHint": "Registra un dispositivo per avviare la scansione delle vulnerabilità.",
+      "noneReported": "Nessun rilevamento aperto segnalato",
+      "coverageUnknown": "Stato dei dispositivi non disponibile: impossibile confermare la copertura della scansione."
     },
     "refreshFailed": "Aggiornamento non riuscito — vengono mostrati dati meno recenti"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} dispositivo/i utilizzano l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
+    "message_one": "{{count}} dispositivo utilizza l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
+    "message_other": "{{count}} dispositivi utilizzano l'edizione hosted dell'agente su questo server self-hosted. Esegui la migrazione all'edizione self-hosted dell'agente.",
     "cta": "Come eseguire la migrazione"
   },
   "longTail": {

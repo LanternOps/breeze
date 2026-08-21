@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ComponentRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -67,7 +67,7 @@ export function LoginScreen({ navigation }: Props) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [serverUrl, setServerUrlState] = useState<string | null>(null);
-  const passwordRef = useRef<TextInput>(null);
+  const passwordRef = useRef<ComponentRef<typeof TextInput>>(null);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {

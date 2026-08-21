@@ -681,13 +681,13 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.qty')} aria-label={t('invoiceEditor.fields.quantity')} value={manualQty}
+                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.qty')} aria-label={t('invoiceEditor.fields.quantityNewLine')} value={manualQty}
                   onChange={(e) => setManualQty(e.target.value)}
                   data-testid="invoice-manual-qty"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
                 <input
-                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.price')} aria-label={t('invoiceEditor.fields.unitPrice')} value={manualPrice}
+                  type="number" min="0" step="0.01" placeholder={t('invoiceEditor.table.price')} aria-label={t('invoiceEditor.fields.unitPriceNewLine')} value={manualPrice}
                   onChange={(e) => setManualPrice(e.target.value)}
                   data-testid="invoice-manual-price"
                   className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -716,7 +716,7 @@ export default function InvoiceEditor({ detail, onChanged, onPendingEditsChange,
                 </span>
                 <input
                   type="number" min="0" step="0.01" value={pickQty}
-                  onChange={(e) => setPickQty(e.target.value)} aria-label={t('invoiceEditor.fields.quantity')}
+                  onChange={(e) => setPickQty(e.target.value)} aria-label={t('invoiceEditor.fields.quantityFor', { item: picked.name })}
                   data-testid="invoice-pick-qty"
                   className="h-9 w-20 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 />
@@ -890,6 +890,13 @@ function LineRow({
   const taxableKey = `taxable-${line.id}`;
   const visibleKey = `visible-${line.id}`;
   const removeKey = `remove-${line.id}`;
+  // Accessible names for this row's numeric fields. Every row (and the two
+  // add-line rows) previously labelled its qty/price inputs "Quantity"/"Unit
+  // price", so a screen reader's form-controls list was N indistinguishable
+  // pairs (#2151). Scoping the name to the line's item makes each addressable.
+  // Deliberately the PERSISTED name, not the live draft — an accessible name
+  // that changes on every keystroke is itself SR churn.
+  const rowLabelItem = (line.name ?? '').trim() || (line.description ?? '').trim() || t('invoiceEditor.fields.untitledLine');
   const [name, setName] = useState(line.name ?? '');
   const [desc, setDesc] = useState(line.description ?? '');
   const [qty, setQty] = useState(line.quantity);
@@ -1025,7 +1032,7 @@ function LineRow({
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={qty} disabled={!canWrite || isPending(qtyKey)}
-            aria-label={t('invoiceEditor.fields.quantity')}
+            aria-label={t('invoiceEditor.fields.quantityFor', { item: rowLabelItem })}
             aria-describedby={qtyDirty ? unsavedHintId('invoice-line', line.id, 'qty') : undefined}
             onChange={(e) => { setQty(e.target.value); qtyEdited.current = true; }}
             onBlur={commitQty}
@@ -1037,7 +1044,7 @@ function LineRow({
         <td className="px-3 py-2 text-right">
           <input
             type="number" min="0" step="0.01" value={price} disabled={!canWrite || isPending(priceKey)}
-            aria-label={t('invoiceEditor.fields.unitPrice')}
+            aria-label={t('invoiceEditor.fields.unitPriceFor', { item: rowLabelItem })}
             aria-describedby={priceDirty ? unsavedHintId('invoice-line', line.id, 'price') : undefined}
             onChange={(e) => { setPrice(e.target.value); priceEdited.current = true; }}
             onBlur={commitPrice}

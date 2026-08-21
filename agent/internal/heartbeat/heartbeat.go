@@ -217,7 +217,12 @@ type HeartbeatResponse struct {
 }
 
 type HelperSettings struct {
-	Enabled            bool   `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// ShowTrayIcon is a POINTER so that an omitted field (an older server that
+	// predates #3202) is distinguishable from an explicit false. A plain bool
+	// would decode a missing key as false and silently hide the tray icon on
+	// every device talking to an older API — see trayIconVisible().
+	ShowTrayIcon       *bool  `json:"showTrayIcon,omitempty"`
 	ShowOpenPortal     bool   `json:"showOpenPortal"`
 	ShowDeviceInfo     bool   `json:"showDeviceInfo"`
 	ShowRequestSupport bool   `json:"showRequestSupport"`
@@ -226,6 +231,14 @@ type HelperSettings struct {
 	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
 	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
 	LifecycleMode string `json:"lifecycleMode,omitempty"`
+}
+
+// trayIconVisible resolves HelperSettings.ShowTrayIcon to the value the helper
+// manager consumes. Nil (field absent — pre-#3202 server) means "show it",
+// matching the API's showTrayIcon default of true and the Tauri helper's
+// #[serde(default = "default_true")]. Only an explicit false hides the icon.
+func trayIconVisible(v *bool) bool {
+	return v == nil || *v
 }
 
 type Command struct {
@@ -523,6 +536,13 @@ type Heartbeat struct {
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
 
+	// Cooldown state for an upgrade target the server refused as untrusted
+	// (updater.ErrUntrustedRelease / HTTP 409). Guarded by untrustedReleaseMu
+	// because doUpgrade runs on a goroutine per heartbeat. Issue #3544.
+	untrustedReleaseMu  sync.Mutex
+	untrustedReleaseVer string
+	untrustedReleaseAt  time.Time
+
 	// Path to the agent state file, set by main after startup.
 	statePath string
 
@@ -535,6 +555,12 @@ type Heartbeat struct {
 	// real sendInventory call inside handleRefreshInventory. nil in
 	// production — the real sendInventory method is invoked.
 	sendInventoryFn func()
+
+	// sendSoftwareInventoryFn is an optional override used by tests to replace
+	// the post-uninstall software re-report inside handleSoftwareUninstall. nil
+	// in production — the real sendSoftwareInventory method runs in its own
+	// goroutine.
+	sendSoftwareInventoryFn func()
 
 	// userHelperDownloader is an optional test seam: when non-nil,
 	// prefetchUserHelper calls this instead of constructing a real
@@ -4433,6 +4459,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	if response.HelperSettings != nil {
 		h.helperMgr.Apply(&helper.Settings{
 			Enabled:            response.HelperSettings.Enabled,
+			ShowTrayIcon:       trayIconVisible(response.HelperSettings.ShowTrayIcon),
 			ShowOpenPortal:     response.HelperSettings.ShowOpenPortal,
 			ShowDeviceInfo:     response.HelperSettings.ShowDeviceInfo,
 			ShowRequestSupport: response.HelperSettings.ShowRequestSupport,
@@ -6564,8 +6591,48 @@ func (h *Heartbeat) reconcileUserHelperFromExecutable() {
 	h.reconcileUserHelper(binaryPath)
 }
 
+// untrustedReleaseRetryCooldown bounds how often an upgrade target the server
+// has already refused to serve (HTTP 409, updater.ErrUntrustedRelease) is
+// retried. The condition is terminal for that version — no amount of retrying
+// on the device can produce a signed manifest — but it is not permanent: an
+// operator re-registering the version with a signed manifest must recover
+// automatically, so this is a cooldown rather than a hard disable (unlike
+// ErrReadOnlyFS, which calls setAutoUpdate(false)). Mirrors
+// watchdogUpgradeRetryCooldown. Issue #3544, where every device in a fleet
+// re-attempted the same doomed upgrade every ~60s indefinitely.
+const untrustedReleaseRetryCooldown = 30 * time.Minute
+
+// untrustedReleaseBackoffActive reports whether targetVersion was already
+// refused as untrusted within the cooldown window. Tracked per version so a
+// NEW upgrade target is always attempted immediately.
+func (h *Heartbeat) untrustedReleaseBackoffActive(targetVersion string) bool {
+	h.untrustedReleaseMu.Lock()
+	defer h.untrustedReleaseMu.Unlock()
+	return h.untrustedReleaseVer == targetVersion &&
+		time.Since(h.untrustedReleaseAt) < untrustedReleaseRetryCooldown
+}
+
+// noteUntrustedRelease starts (or restarts) the cooldown for targetVersion.
+func (h *Heartbeat) noteUntrustedRelease(targetVersion string) {
+	h.untrustedReleaseMu.Lock()
+	defer h.untrustedReleaseMu.Unlock()
+	h.untrustedReleaseVer = targetVersion
+	h.untrustedReleaseAt = time.Now()
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	// Checked before sendUpdateStatus and before any download work: the server
+	// re-sends the same upgradeTo on every heartbeat, so without this the
+	// device would keep announcing "Updating" and re-running the whole
+	// prefetch + download path for a version the server is guaranteed to
+	// refuse again.
+	if h.untrustedReleaseBackoffActive(targetVersion) {
+		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
+
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
 	h.sendUpdateStatus(targetVersion)
@@ -6665,6 +6732,21 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 		// Binary is currently executing (ETXTBSY) — transient, retry next heartbeat.
 		if errors.Is(err, updater.ErrTextBusy) {
 			log.Warn("update deferred: binary is executing, will retry", "targetVersion", targetVersion, "error", err.Error())
+			return
+		}
+		// The server refused to serve this version (409): its registered
+		// release manifest is missing or does not verify. Terminal for this
+		// target until an operator fixes the registration, so back off instead
+		// of retrying every heartbeat. err.Error() is safe to log here — it is
+		// a plain error built from the sentinel plus a sanitized snake_case
+		// reason (see updater.downloadInfoRejectionReason), never a *url.Error
+		// carrying the request URL. Issue #3544.
+		if errors.Is(err, updater.ErrUntrustedRelease) {
+			h.noteUntrustedRelease(targetVersion)
+			log.Error("auto-update blocked: the server has this version registered without a valid signed release manifest — re-register it with a signed manifest, or promote a different version",
+				"targetVersion", targetVersion,
+				"error", err.Error(),
+				"retryAfter", untrustedReleaseRetryCooldown.String())
 			return
 		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a

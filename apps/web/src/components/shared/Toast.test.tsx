@@ -333,3 +333,27 @@ describe('ToastContainer', () => {
     });
   });
 });
+
+describe('ToastContainer bottom anchor (#2151)', () => {
+  beforeEach(() => _resetToastQueueForTests());
+  afterEach(() => {
+    _resetToastQueueForTests();
+    document.documentElement.removeAttribute('data-toast-rail');
+  });
+
+  it('anchors off the --breeze-toast-bottom variable instead of hardcoding one page’s rail clearance', () => {
+    render(<ToastContainer />);
+    act(() => {
+      showToast({ type: 'success', message: 'anchored' });
+    });
+
+    const container = screen.getByTestId('toast-container');
+    // The lift belongs to the page that has the rail (useToastRailOffset), not
+    // to this shared container: a baked-in class moved EVERY page's toasts.
+    expect(container.className).not.toMatch(/bottom-24/);
+    expect(container.style.bottom).toBe('var(--breeze-toast-bottom, 1.5rem)');
+    // Still bottom-right — only the offset became a variable.
+    expect(container.className).toContain('fixed');
+    expect(container.className).toContain('right-6');
+  });
+});

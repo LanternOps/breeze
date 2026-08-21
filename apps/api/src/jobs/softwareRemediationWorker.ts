@@ -397,10 +397,19 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
   // manual job that consumed its single-use token and then hit the cooldown would
   // burn the authorization and skip with zero commands (no retry). Bypassing it
   // for verified manual keeps the token and the operator's intent whole.
-  // Tradeoff (intended): an authenticated, MFA-gated operator can re-trigger
-  // manual remediation without a cooldown wait. Concurrent double-clicks still
-  // dedupe on the in-flight uninstall-command check below; there is deliberately
-  // no separate manual throttle — a manual run is an explicit human decision.
+  // Tradeoff (intended, confirmed in #3614): an authenticated, MFA-gated
+  // operator can re-trigger manual remediation without a cooldown wait.
+  // Concurrent double-clicks still dedupe on the in-flight uninstall-command
+  // check below; there is deliberately no separate manual throttle — a manual
+  // run is an explicit human decision.
+  //
+  // The cooldown exists to stop the UNATTENDED worker from retrying a failing
+  // policy every scheduling tick. A human who has just passed MFA and burned a
+  // single-use authorization row (#3585) has already cleared a stricter gate
+  // than the cooldown, and making them wait would strand exactly the operator
+  // trying to correct a bad remediation. Do not "fix" this into a throttle
+  // without replacing the token semantics too: consume-then-cooldown-skip
+  // would burn the row for zero queued commands and leave no way to retry.
   if (trigger !== 'manual' && compliance.lastRemediationAttempt) {
     const nextEligibleAt = new Date(compliance.lastRemediationAttempt.getTime() + (cooldownMinutes * 60 * 1000));
     if (nextEligibleAt.getTime() > now.getTime()) {

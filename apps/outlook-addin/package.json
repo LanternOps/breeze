@@ -16,12 +16,13 @@
   },
   "dependencies": {
     "@breeze/office-addin-core": "workspace:*",
+    "@breeze/shared": "workspace:*",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
-    "@types/office-js": "^1.0.604",
+    "@types/office-js": "^1.0.605",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@tailwindcss/vite": "^4.3.3",

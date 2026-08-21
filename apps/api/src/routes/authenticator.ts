@@ -11,6 +11,10 @@ import {
   verifyApproverRegistration,
 } from '../services/approverWebAuthn';
 import { loadPartnerPolicy, validateRaiseOnly } from '../services/authenticatorPolicy';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../services/partnerWideAccess';
 import { readMobileDeviceId } from '../services/mobileDeviceBinding';
 import {
   requireCurrentPasswordStepUp,
@@ -500,6 +504,14 @@ authenticatorRoutes.put(
     const auth = c.get('auth');
     if (!auth.partnerId) {
       return c.json({ error: 'Approval-security policy is partner-scoped' }, 400);
+    }
+    // The approval-assurance floor applies to EVERY org under the partner, so
+    // it is partner-wide state: capability gate, not just a partner context
+    // (epic #2135; security review 2026-08-16 §1.1 #2). Without this an
+    // `orgAccess: selected` user with users:write could rewrite the whole
+    // MSP's step-up enforcement.
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
     const input = c.req.valid('json');
     // floorOverrides already infers as AssuranceFloorOverrides (literal levels in

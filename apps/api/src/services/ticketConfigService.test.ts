@@ -153,6 +153,12 @@ vi.mock('../db/schema/portal', () => ({
 const { configRef } = vi.hoisted(() => ({ configRef: { current: { TICKETS_INBOUND_DOMAIN: 'tickets.example.com' as string | undefined } } }));
 vi.mock('../config/validate', () => ({ getConfig: () => configRef.current }));
 
+// The M365 mailbox count is a separate partner-scoped query (#3598); mock it so
+// the inbound tests stay on ticketConfigService's own FIFO of select results.
+// countConnectedMailboxes' own filtering is covered in connectionService.test.ts.
+const { countConnectedMailboxesMock } = vi.hoisted(() => ({ countConnectedMailboxesMock: vi.fn(async () => 0) }));
+vi.mock('./ticketMailbox/connectionService', () => ({ countConnectedMailboxes: countConnectedMailboxesMock }));
+
 // createTicket lives in ./ticketService — mock it so convert doesn't hit the
 // real ticket-creation service (DB inserts, event emission, SLA resolution).
 const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
@@ -182,6 +188,8 @@ beforeEach(() => {
   dbMocks.insertErrors.length = 0;
   dbMocks.insertResult = [];
   dbMocks.updateResult = [];
+  countConnectedMailboxesMock.mockClear();
+  countConnectedMailboxesMock.mockResolvedValue(0);
 });
 
 // Recursively flatten a predicate sentinel (eq/inArray/and) into its leaf clauses.
@@ -284,6 +292,41 @@ describe('getTicketConfig inbound block', () => {
     const cfg = await getTicketConfig('p-1');
     expect(cfg.inbound.domainConfigured).toBe(false);
     expect(cfg.inbound.address).toBe('');
+  });
+  // #3599: the card's "no inbound domain" copy branches on this — self-hosted
+  // readers get the TICKETS_INBOUND_DOMAIN variable name, hosted partners don't.
+  it.each([
+    ['true', true],
+    ['false', false],
+    [undefined, false],
+  ] as const)('reports isHosted=%s → %s', async (raw, expected) => {
+    const prev = process.env.IS_HOSTED;
+    if (raw === undefined) delete process.env.IS_HOSTED;
+    else process.env.IS_HOSTED = raw;
+    try {
+      enqueueForInbound({ slug: 'acme', settings: {} });
+      const cfg = await getTicketConfig('p-1');
+      expect(cfg.inbound.isHosted).toBe(expected);
+    } finally {
+      if (prev === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = prev;
+    }
+  });
+  // #3598: an M365-only partner has no inbound domain by design. The card needs
+  // the mailbox count to tell that apart from "nothing is configured".
+  it('reports connectedMailboxCount for the partner alongside domainConfigured=false', async () => {
+    configRef.current.TICKETS_INBOUND_DOMAIN = undefined;
+    countConnectedMailboxesMock.mockResolvedValue(2);
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.domainConfigured).toBe(false);
+    expect(cfg.inbound.connectedMailboxCount).toBe(2);
+    expect(countConnectedMailboxesMock).toHaveBeenCalledWith(PARTNER);
+  });
+  it('reports connectedMailboxCount=0 when no mailbox is connected', async () => {
+    enqueueForInbound({ slug: 'acme', settings: {} });
+    const cfg = await getTicketConfig(PARTNER);
+    expect(cfg.inbound.connectedMailboxCount).toBe(0);
   });
   it('defaults unknownSenderMode=quarantine and dropUnverifiedSenders=false when absent', async () => {
     enqueueForInbound({ slug: 'acme', settings: {} });

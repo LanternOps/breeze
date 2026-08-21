@@ -21,15 +21,25 @@ export type MailboxEmailAddress = { displayName: string; emailAddress: string };
 export type MailboxItem = {
   subject: string;
   from?: MailboxEmailAddress;
+  /** Send-on-behalf provenance; the real host always populates this (equal to
+   *  `from` outside a send-on-behalf scenario). */
+  sender?: MailboxEmailAddress;
   to?: MailboxEmailAddress[];
   cc?: MailboxEmailAddress[];
   dateTimeCreated?: Date;
+  conversationId?: string;
+  /** Mailbox 1.8+, read mode only. */
+  internetMessageId?: string;
   body: {
     getAsync: (coercionType: string, cb: (r: AsyncResult<string>) => void) => void;
     setAsync?: (data: string, options: unknown, cb?: (r: AsyncResult<void>) => void) => void;
   };
   displayReplyForm?: (formData: string | { htmlBody?: string }) => void;
   displayReplyAllForm?: (formData: string | { htmlBody?: string }) => void;
+  /** Mailbox 1.8+, read mode only: raw internet headers block. */
+  getAllInternetHeadersAsync?: (cb: (r: AsyncResult<string>) => void) => void;
+  /** Presence-only shared-mailbox signal; not called by v1 readers. */
+  getSharedPropertiesAsync?: (cb: (r: AsyncResult<unknown>) => void) => void;
 };
 
 type AsyncResult<T> = {
@@ -38,15 +48,27 @@ type AsyncResult<T> = {
   error?: { name: string; message: string; code: number };
 };
 
+/** Read the CURRENT mailbox item, or undefined when none is open (e.g. a
+ *  pinned pane mid item-changed transition). Never throws. */
+function readMailboxItem(): MailboxItem | undefined {
+  const mailbox = (globalThis as { Office?: typeof Office }).Office?.context?.mailbox;
+  return mailbox?.item as MailboxItem | undefined;
+}
+
 /**
  * Read the CURRENT mailbox item. Throws if the host isn't Outlook (no mailbox) —
  * callers in tool executors run only inside the pane, where it's always present.
  */
 export function getMailboxItem(): MailboxItem {
-  const mailbox = (globalThis as { Office?: typeof Office }).Office?.context?.mailbox;
-  const item = mailbox?.item as MailboxItem | undefined;
+  const item = readMailboxItem();
   if (!item) throw new Error('No mailbox item is open (Office.context.mailbox.item is unavailable)');
   return item;
+}
+
+/** Non-throwing counterpart to getMailboxItem() for callers that must handle
+ *  "no item open" as a legitimate state (e.g. emailIdentity's mode:'none'). */
+export function getMailboxItemOrNull(): MailboxItem | undefined {
+  return readMailboxItem();
 }
 
 /** Coercion type for the plain-text body read (DLP-friendly; no markup). */

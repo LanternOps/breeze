@@ -17,6 +17,12 @@ let activeAuthContext: {
   scope: 'partner';
   partnerId: string;
   accessibleOrgIds: string[];
+  /**
+   * Mirrors the real authMiddleware field (auth.ts:266) that
+   * canManagePartnerWidePolicies() gates on. Partner-wide (org_id NULL) writes
+   * require a full-partner admin ('all'); org-scoped writes must NOT.
+   */
+  partnerOrgAccess?: 'all' | 'selected' | 'none' | null;
 } | null = null;
 
 vi.mock('../../middleware/auth', async () => {
@@ -27,6 +33,7 @@ vi.mock('../../middleware/auth', async () => {
       c.set('auth', {
         scope: activeAuthContext.scope,
         partnerId: activeAuthContext.partnerId,
+        partnerOrgAccess: activeAuthContext.partnerOrgAccess ?? null,
         orgId: null,
         accessibleOrgIds: activeAuthContext.accessibleOrgIds,
         user: { id: null, email: 'integration@test' },
@@ -95,7 +102,7 @@ const JSON_HEADERS = { Authorization: 'Bearer x', 'Content-Type': 'application/j
 describe('adminTemplates routes against real RLS (breeze_app)', () => {
   it('POST creates a partner-wide template (org_id NULL) — the §10 write path', async () => {
     const partner = await createPartner();
-    activeAuthContext = { scope: 'partner', partnerId: partner.id, accessibleOrgIds: [] };
+    activeAuthContext = { scope: 'partner', partnerId: partner.id, accessibleOrgIds: [], partnerOrgAccess: 'all' };
 
     const app = await buildApp();
     const res = await app.request('/client-ai/admin/templates', {
@@ -124,7 +131,7 @@ describe('adminTemplates routes against real RLS (breeze_app)', () => {
     const partnerA = await createPartner();
     const partnerB = await createPartner();
 
-    activeAuthContext = { scope: 'partner', partnerId: partnerA.id, accessibleOrgIds: [] };
+    activeAuthContext = { scope: 'partner', partnerId: partnerA.id, accessibleOrgIds: [], partnerOrgAccess: 'all' };
     let app = await buildApp();
     const createRes = await app.request('/client-ai/admin/templates', {
       method: 'POST',
@@ -134,7 +141,7 @@ describe('adminTemplates routes against real RLS (breeze_app)', () => {
     const { template } = await createRes.json();
     created.push(template.id);
 
-    activeAuthContext = { scope: 'partner', partnerId: partnerB.id, accessibleOrgIds: [] };
+    activeAuthContext = { scope: 'partner', partnerId: partnerB.id, accessibleOrgIds: [], partnerOrgAccess: 'all' };
     app = await buildApp();
     const list = await app.request('/client-ai/admin/templates', { headers: JSON_HEADERS });
     const listBody = await list.json();

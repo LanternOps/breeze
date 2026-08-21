@@ -6,7 +6,7 @@ import { devices, patches } from '../../db/schema';
 import * as enrichmentModule from '../../services/thirdPartyEnrichment';
 import * as auditEvents from '../../services/auditEvents';
 import * as wingetWorker from '../../jobs/wingetReleaseTestWorker';
-import { patchesRoutes } from './patches';
+import { patchesRoutes, raiseOnlySeverity } from './patches';
 
 const AGENT_ID = 'agent-001';
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -33,6 +33,7 @@ const tables = vi.hoisted(() => ({
     downloadSizeMb: 'patches.downloadSizeMb',
     vendor: 'patches.vendor',
     packageId: 'patches.packageId',
+    version: 'patches.version',
     osTypes: 'patches.osTypes',
   },
   devicePatches: {
@@ -43,6 +44,7 @@ const tables = vi.hoisted(() => ({
     lastCheckedAt: 'devicePatches.lastCheckedAt',
     installedAt: 'devicePatches.installedAt',
     installedVersion: 'devicePatches.installedVersion',
+    availableVersion: 'devicePatches.availableVersion',
     scope: 'devicePatches.scope',
     updatedAt: 'devicePatches.updatedAt',
   },
@@ -178,10 +180,75 @@ function mockPatchInsertTx() {
   return { tx, insertedRows, devicePatchValues };
 }
 
+type MockSqlFragment = {
+  op: 'sql';
+  strings: string[];
+  values: unknown[];
+};
+
+const RAISING_SEVERITY_STRINGS = [
+  'CASE\n    WHEN ',
+  ' IS NULL THEN ',
+  '::patch_severity\n    WHEN COALESCE(array_position(',
+  ', ',
+  '), 0)\n       > COALESCE(array_position(',
+  ', ',
+  '::text), 0)\n      THEN ',
+  '::patch_severity\n    ELSE ',
+  '\n  END',
+];
+
+function expectRaisingSeverityFragment(fragment: unknown, incoming: string) {
+  const query = fragment as MockSqlFragment;
+  expect(query.op).toBe('sql');
+  expect(query.strings).toEqual(RAISING_SEVERITY_STRINGS);
+  expect(query.values).toHaveLength(8);
+  expect(query.values[0]).toBe(tables.patches.severity);
+  expect(query.values[1]).toBe(incoming);
+  expect(query.values[2]).toEqual({
+    op: 'sql',
+    strings: ["ARRAY['unknown','low','moderate','important','critical']::text[]"],
+    values: [],
+  });
+  expect(query.values[3]).toBe(incoming);
+  expect(query.values[4]).toEqual(query.values[2]);
+  expect(query.values[5]).toBe(tables.patches.severity);
+  expect(query.values[6]).toBe(incoming);
+  // The final CASE value is the stored column: lower/equal reports fall through
+  // to it instead of replacing the catalog row.
+  expect(query.values[7]).toBe(tables.patches.severity);
+}
+
+describe('patch catalog SQL integrity helpers', () => {
+  it('renders a ranked CASE whose fallthrough keeps the stored severity', () => {
+    expectRaisingSeverityFragment(
+      raiseOnlySeverity(tables.patches.severity, 'low'),
+      'low',
+    );
+  });
+
+  it.each(['unknown', null] as const)('keeps the stored severity for %s', (incoming) => {
+    expect(raiseOnlySeverity(tables.patches.severity, incoming)).toEqual({
+      op: 'sql',
+      strings: ['COALESCE(', ", 'unknown'::patch_severity)"],
+      values: [tables.patches.severity],
+    });
+  });
+
+  it('binds critical as a parameter in the raising CASE', () => {
+    expectRaisingSeverityFragment(
+      raiseOnlySeverity(tables.patches.severity, 'critical'),
+      'critical',
+    );
+  });
+});
+
 describe('PUT /agents/:id/patches - third-party fields', () => {
   let app: Hono;
   let patchRows: Array<Record<string, unknown>>;
   let patchUpsertSet: Record<string, unknown> | undefined;
+  let devicePatchValues: Record<string, unknown> | undefined;
+  let devicePatchUpsertSet: Record<string, unknown> | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -194,6 +261,8 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
     patchRows = [];
     patchUpsertSet = undefined;
+    devicePatchValues = undefined;
+    devicePatchUpsertSet = undefined;
     app = new Hono();
     // Simulate agentAuthMiddleware setting the main-agent credential so the
     // requireAgentRole guard on patchesRoutes lets these ingest tests through.
@@ -251,6 +320,8 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
                 };
               }
 
+              devicePatchValues = values;
+              devicePatchUpsertSet = set;
               return {
                 returning: vi.fn().mockResolvedValue([]),
               };
@@ -314,7 +385,7 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     }));
   });
 
-  it('uses enriched title/vendor/severity from catalog in the upsert', async () => {
+  it('uses enriched title/vendor and a raise-only severity expression in the upsert', async () => {
     vi.mocked(enrichmentModule.enrichFromCatalog).mockResolvedValue({
       title: 'Mozilla Firefox',
       vendor: 'Mozilla',
@@ -347,8 +418,8 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     expect(patchUpsertSet).toEqual(expect.objectContaining({
       title: 'Mozilla Firefox',
       vendor: 'Mozilla',
-      severity: 'important',
     }));
+    expectRaisingSeverityFragment(patchUpsertSet?.severity, 'important');
 
     vi.mocked(enrichmentModule.enrichFromCatalog).mockRestore();
   });
@@ -406,7 +477,7 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     );
   });
 
-  it('persists agent-supplied version into patches.version', async () => {
+  it('only fills patches.version and stores the reported version on device_patches', async () => {
     const res = await app.request(`/agents/${AGENT_ID}/patches`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -424,9 +495,46 @@ describe('PUT /agents/:id/patches - third-party fields', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(patchUpsertSet).toEqual(expect.objectContaining({
-      version: '121.0.1',
+    expect(patchUpsertSet?.version).toEqual({
+      op: 'sql',
+      strings: ['COALESCE(', ', ', ')'],
+      values: [tables.patches.version, '121.0.1'],
+    });
+    expect(devicePatchValues).toEqual(expect.objectContaining({
+      availableVersion: '121.0.1',
     }));
+    expect(devicePatchUpsertSet?.availableVersion).toBe('121.0.1');
+  });
+
+  it('keeps the stored catalog and device versions when the scan omits version', async () => {
+    const res = await app.request(`/agents/${AGENT_ID}/patches`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patches: [
+          {
+            name: 'Mozilla Firefox',
+            source: 'third_party',
+            packageId: 'Mozilla.Firefox',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(patchUpsertSet?.version).toEqual({
+      op: 'sql',
+      strings: ['', ''],
+      values: [tables.patches.version],
+    });
+    expect(devicePatchValues).toEqual(expect.objectContaining({
+      availableVersion: null,
+    }));
+    expect(devicePatchUpsertSet?.availableVersion).toEqual({
+      op: 'sql',
+      strings: ['', ''],
+      values: [tables.devicePatches.availableVersion],
+    });
   });
 });
 

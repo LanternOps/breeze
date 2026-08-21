@@ -109,7 +109,7 @@ patchPolicyRoutes.get(
       .select()
       .from(patchPolicies)
       .where(whereCondition)
-      .orderBy(desc(patchPolicies.updatedAt))
+      .orderBy(desc(patchPolicies.updatedAt), desc(patchPolicies.id))
       .limit(limit)
       .offset(offset);
 

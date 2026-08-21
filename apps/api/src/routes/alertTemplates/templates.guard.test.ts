@@ -11,8 +11,12 @@ const partnerWide: Row = { orgId: null, partnerId: 'p-1', isBuiltIn: false };
 const builtIn: Row = { orgId: null, partnerId: null, isBuiltIn: true };
 
 const orgUser = { scope: 'organization' as const, partnerId: 'p-1', canAccessOrg: (id: string) => id === 'org-1' };
-const partnerUser = { scope: 'partner' as const, partnerId: 'p-1', canAccessOrg: (id: string) => id === 'org-1' };
-const otherPartnerUser = { scope: 'partner' as const, partnerId: 'p-2', canAccessOrg: () => false };
+// Full partner admin: org_access = 'all' is the capability to administer
+// partner-wide state (epic #2135). `restrictedPartnerUser` is the same partner
+// with a narrowed selection — visible to it, but not administrable.
+const partnerUser = { scope: 'partner' as const, partnerId: 'p-1', partnerOrgAccess: 'all' as const, canAccessOrg: (id: string) => id === 'org-1' };
+const restrictedPartnerUser = { scope: 'partner' as const, partnerId: 'p-1', partnerOrgAccess: 'selected' as const, canAccessOrg: (id: string) => id === 'org-1' };
+const otherPartnerUser = { scope: 'partner' as const, partnerId: 'p-2', partnerOrgAccess: 'all' as const, canAccessOrg: () => false };
 const systemUser = { scope: 'system' as const, partnerId: null, canAccessOrg: () => true };
 
 describe('canWriteTemplate', () => {
@@ -35,6 +39,16 @@ describe('canWriteTemplate', () => {
 
   it('lets the owning partner edit a partner-wide template', () => {
     expect(canWriteTemplate(partnerUser, partnerWide)).toEqual({ ok: true });
+  });
+
+  it('denies a RESTRICTED partner user (orgAccess selected) the partner-wide write (§1.1 #5)', () => {
+    // Scope proves WHICH partner, not the capability to administer its shared
+    // state. The row is visible to this user; it must not be writable.
+    expect(canWriteTemplate(restrictedPartnerUser, partnerWide)).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('still lets a restricted partner user edit an ORG-owned template they can reach', () => {
+    expect(canWriteTemplate(restrictedPartnerUser, orgRow)).toEqual({ ok: true });
   });
 
   it('hides another partner’s partner-wide template (404)', () => {

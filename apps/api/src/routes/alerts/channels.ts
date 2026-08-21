@@ -144,7 +144,7 @@ channelsRoutes.get(
       .select()
       .from(notificationChannels)
       .where(whereCondition)
-      .orderBy(desc(notificationChannels.updatedAt))
+      .orderBy(desc(notificationChannels.updatedAt), desc(notificationChannels.id))
       .limit(limit)
       .offset(offset);
 

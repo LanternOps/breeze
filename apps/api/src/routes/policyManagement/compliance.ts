@@ -672,7 +672,7 @@ complianceRoutes.get(
         .from(automationPolicyCompliance)
         .leftJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
         .where(whereCondition)
-        .orderBy(desc(automationPolicyCompliance.updatedAt))
+        .orderBy(desc(automationPolicyCompliance.updatedAt), desc(automationPolicyCompliance.id))
         .limit(limit)
         .offset(offset);
 
@@ -872,7 +872,7 @@ complianceRoutes.get(
       .from(automationPolicyCompliance)
       .leftJoin(devices, eq(automationPolicyCompliance.deviceId, devices.id))
       .where(configWhereCondition)
-      .orderBy(desc(automationPolicyCompliance.updatedAt))
+      .orderBy(desc(automationPolicyCompliance.updatedAt), desc(automationPolicyCompliance.id))
       .limit(limit)
       .offset(offset);
 

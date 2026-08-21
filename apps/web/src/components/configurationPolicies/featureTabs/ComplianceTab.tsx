@@ -937,6 +937,9 @@ export default function ComplianceTab({
                                           "policies:configurationPolicies.featureTabs.complianceTab.filePath",
                                         )}
                                       </label>
+                                      {/* The placeholder is a literal example
+                                          filesystem path, not display copy —
+                                          it must never be localized. */}
                                       <input
                                         value={rule.configFilePath ?? ""}
                                         onChange={(e) =>
@@ -944,9 +947,7 @@ export default function ComplianceTab({
                                             configFilePath: e.target.value,
                                           })
                                         }
-                                        placeholder={i18n.t(
-                                          "policies:configurationPolicies.featureTabs.complianceTab.etcSshSshdConfig",
-                                        )}
+                                        placeholder="/etc/ssh/sshd_config"
                                         className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-sm"
                                       />
                                     </div>

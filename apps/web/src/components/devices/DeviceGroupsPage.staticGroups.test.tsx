@@ -1,14 +1,18 @@
 import '@/lib/i18n';
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import DeviceGroupsPage from './DeviceGroupsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore registers an orgId provider at module load; the component now
+  // pulls in orgStore via useFleetOrgOwner, so this export must exist.
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../../hooks/useFilterPreview', () => ({
@@ -42,12 +46,30 @@ const SUPPORTING_RESPONSES: Record<string, unknown> = {
  * for whatever the create/edit write returns, so a test can make the server
  * reject the submission.
  */
-const serveGroups = (groups: unknown[], writeResponse?: Response) => {
+const serveGroups = (
+  groups: unknown[],
+  writeResponse?: Response,
+  /**
+   * Membership served by `GET /device-groups/:id/devices` — the authoritative
+   * baseline the edit-mode chooser diffs against. A `Response` stands in for a
+   * server that rejects the read.
+   */
+  membership: Record<string, string[]> | Response = {},
+) => {
   mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = String(url).split('?')[0];
     const method = init?.method ?? 'GET';
     if (path === '/device-groups' && method === 'GET') {
       return jsonResponse({ data: groups, total: groups.length });
+    }
+    const memberMatch = /^\/device-groups\/([^/]+)\/devices$/.exec(path);
+    if (memberMatch && method === 'GET') {
+      if (!Array.isArray(membership) && 'ok' in membership) return membership as Response;
+      const deviceIds = (membership as Record<string, string[]>)[memberMatch[1]] ?? [];
+      return jsonResponse({
+        data: deviceIds.map((deviceId) => ({ deviceId })),
+        total: deviceIds.length,
+      });
     }
     if (path.startsWith('/device-groups')) {
       return writeResponse ?? jsonResponse({ data: { id: 'new-group' } });
@@ -66,20 +88,55 @@ const findWrite = (method: string) =>
 const parseBody = (call: unknown[] | undefined) =>
   JSON.parse(String((call?.[1] as RequestInit).body)) as Record<string, unknown>;
 
+/**
+ * The membership chooser panel. Queries have to be scoped to it: a static
+ * group's card lists the same hostnames, so a bare `getByText` is ambiguous
+ * once the modal is open.
+ */
+const chooser = () => {
+  const panel = screen
+    .getByText('Manual Device Assignment')
+    .closest('div.rounded-md');
+  if (!panel) throw new Error('No membership chooser panel');
+  return within(panel as HTMLElement);
+};
+
+/** The assignment checkbox on the chooser row naming `hostname`. */
+const assignmentCheckbox = (hostname: string) => {
+  const row = chooser().getByText(hostname).closest('label');
+  if (!row) throw new Error(`No assignment row for ${hostname}`);
+  const checkbox = row.querySelector('input[type="checkbox"]');
+  if (!checkbox) throw new Error(`No checkbox for ${hostname}`);
+  return checkbox as HTMLInputElement;
+};
+
 /** Ticks the assignment checkbox on the row naming `hostname`. */
 const selectDevice = async (
   user: ReturnType<typeof userEvent.setup>,
   hostname: string,
 ) => {
-  const row = screen.getByText(hostname).closest('label');
-  if (!row) throw new Error(`No assignment row for ${hostname}`);
-  const checkbox = row.querySelector('input[type="checkbox"]');
-  if (!checkbox) throw new Error(`No checkbox for ${hostname}`);
-  await user.click(checkbox);
+  await user.click(assignmentCheckbox(hostname));
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A resolved focused-org scope: no fleet picker, create proceeds normally
+  // (the injected ?orgId= supplies the owner).
+  useOrgStore.setState({
+    currentOrgId: 'org-focused',
+    allOrgs: false,
+    organizations: [
+      {
+        id: 'org-focused',
+        partnerId: 'p-1',
+        name: 'Focused Org',
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00Z',
+      },
+    ],
+    organizationsLoaded: true,
+    error: null,
+  });
 });
 
 /**
@@ -226,18 +283,172 @@ describe('DeviceGroupsPage static groups', () => {
     expect(screen.getByText('Manual Device Assignment')).toBeInTheDocument();
   });
 
-  it('hides the static device chooser on edit (membership is not editable there)', async () => {
-    const user = userEvent.setup();
-    serveGroups([
-      { id: 'group-1', name: 'Web Servers', type: 'static', deviceCount: 1, deviceIds: ['device-1'] },
-    ]);
+  /**
+   * Regression coverage for issue #3615: #3554 hid the membership chooser on
+   * edit because `PATCH /:id` ignores `deviceIds`. The capability was on the API
+   * all along under `POST /:id/devices` and `DELETE /:id/devices/:deviceId` — it
+   * was simply never wired, so static membership was uneditable from the UI.
+   */
+  describe('editing static membership', () => {
+    const STATIC_GROUP = {
+      id: 'group-1',
+      name: 'Web Servers',
+      type: 'static',
+      deviceCount: 1,
+      deviceIds: ['device-1'],
+    };
 
-    render(<DeviceGroupsPage />);
-    await screen.findByText('Web Servers');
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    it('offers the chooser on edit, seeded from the group membership endpoint', async () => {
+      const user = userEvent.setup();
+      serveGroups([STATIC_GROUP], undefined, { 'group-1': ['device-2'] });
 
-    // Editing a static group must not present a membership chooser that a PATCH
-    // would silently ignore — it's create-only now.
-    expect(screen.queryByText('Manual Device Assignment')).toBeNull();
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Web Servers');
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+
+      expect(await screen.findByText('Manual Device Assignment')).toBeInTheDocument();
+
+      // Seeded from GET /:id/devices, NOT from the list row's `deviceIds`
+      // (device-1). The save diff issues DELETEs, so a stale baseline would drop
+      // devices the user never deselected.
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+      expect(assignmentCheckbox('web-01')).not.toBeChecked();
+    });
+
+    it('sends the added and removed devices to the membership endpoints, never in the PATCH', async () => {
+      const user = userEvent.setup();
+      serveGroups([STATIC_GROUP], undefined, { 'group-1': ['device-2'] });
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Web Servers');
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      await screen.findByText('Manual Device Assignment');
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+
+      await selectDevice(user, 'web-01'); // add device-1
+      await selectDevice(user, 'db-01'); // remove device-2
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(findWrite('POST')).toBeDefined());
+
+      // Membership is not part of the group's definition — the PATCH route has
+      // no `deviceIds` field, so folding it in there is a silent no-op (#3554).
+      const patch = findWrite('PATCH');
+      expect(parseBody(patch)).not.toHaveProperty('deviceIds');
+
+      const post = findWrite('POST');
+      expect(String(post?.[0])).toBe('/device-groups/group-1/devices');
+      expect(parseBody(post).deviceIds).toEqual(['device-1']);
+
+      // Removal is path-param style and one call per device — the API offers no
+      // bulk-remove verb.
+      const deletes = mockFetch.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+      );
+      expect(deletes.map((call) => String(call[0]))).toEqual([
+        '/device-groups/group-1/devices/device-2',
+      ]);
+    });
+
+    it('issues no membership calls when the selection is unchanged', async () => {
+      const user = userEvent.setup();
+      serveGroups([STATIC_GROUP], undefined, { 'group-1': ['device-2'] });
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Web Servers');
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+      await screen.findByText('Manual Device Assignment');
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+      await waitFor(() => expect(findWrite('PATCH')).toBeDefined());
+      expect(findWrite('POST')).toBeUndefined();
+      expect(findWrite('DELETE')).toBeUndefined();
+    });
+
+    it('disables the chooser and the save when the membership read fails', async () => {
+      const user = userEvent.setup();
+      serveGroups([STATIC_GROUP], undefined, {
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'boom' }),
+      } as unknown as Response);
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Web Servers');
+      await user.click(screen.getByRole('button', { name: 'Edit' }));
+
+      // Without a trustworthy baseline the diff would be a guess, so the form
+      // says so rather than rendering a chooser that misreports membership.
+      expect(
+        await screen.findByText('Failed to load group membership'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    });
+
+    it('ignores a membership read that resolves after the user moved to another group', async () => {
+      const user = userEvent.setup();
+      const groups = [
+        { ...STATIC_GROUP, id: 'group-a', name: 'Group A', deviceIds: [] },
+        { ...STATIC_GROUP, id: 'group-b', name: 'Group B', deviceIds: [] },
+      ];
+      const membership: Record<string, string[]> = {
+        'group-a': ['device-1'],
+        'group-b': ['device-2'],
+      };
+
+      // Group A's read hangs until `releaseA()`, so it can be made to land after
+      // the user has already opened Group B.
+      let releaseA = () => {};
+      const aPending = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+
+      mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        const path = String(url).split('?')[0];
+        const method = init?.method ?? 'GET';
+        if (path === '/device-groups' && method === 'GET') {
+          return jsonResponse({ data: groups, total: groups.length });
+        }
+        const memberMatch = /^\/device-groups\/([^/]+)\/devices$/.exec(path);
+        if (memberMatch && method === 'GET') {
+          const groupId = memberMatch[1];
+          if (groupId === 'group-a') await aPending;
+          const deviceIds = membership[groupId] ?? [];
+          return jsonResponse({
+            data: deviceIds.map((deviceId) => ({ deviceId })),
+            total: deviceIds.length,
+          });
+        }
+        if (path.startsWith('/device-groups')) {
+          return jsonResponse({ data: { id: 'group-b' } });
+        }
+        if (path in SUPPORTING_RESPONSES) return jsonResponse(SUPPORTING_RESPONSES[path]);
+        return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
+      });
+
+      render(<DeviceGroupsPage />);
+      await screen.findByText('Group A');
+
+      const editButtons = screen.getAllByRole('button', { name: 'Edit' });
+      await user.click(editButtons[0]); // Group A — read hangs
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await user.click(screen.getAllByRole('button', { name: 'Edit' })[1]); // Group B
+
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+
+      releaseA();
+      await waitFor(() => expect(assignmentCheckbox('db-01')).toBeChecked());
+      // Group A's late answer must not install itself as Group B's baseline:
+      // saving an untouched Group B would then remove device-2 and add
+      // device-1 — devices moved between groups purely on request timing.
+      expect(assignmentCheckbox('web-01')).not.toBeChecked();
+
+      await user.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() => expect(findWrite('PATCH')).toBeDefined());
+      expect(findWrite('POST')).toBeUndefined();
+      expect(findWrite('DELETE')).toBeUndefined();
+    });
   });
 });

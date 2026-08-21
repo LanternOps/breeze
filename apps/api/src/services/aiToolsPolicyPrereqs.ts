@@ -252,6 +252,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'create') {
         if (!partnerId) return JSON.stringify({ error: 'Partner context required' });
+        // Rings are partner-owned by construction — they govern patching for
+        // every org under the partner (security review 2026-08-16 §1.1 #3).
+        if (!canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Update rings are partner-wide and require full partner org access (orgAccess must be "all")' });
+        }
         if (!input.name) return JSON.stringify({ error: 'name is required' });
 
         // Fail-closed autoApprove (#1317): reject enabled-without-severity at the
@@ -296,6 +301,9 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(patchPolicies).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Update ring not found or access denied' });
+        if (!canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: 'Modifying an update ring requires full partner org access (orgAccess must be "all")' });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;

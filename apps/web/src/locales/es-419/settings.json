@@ -596,6 +596,8 @@
     "address": "Dirección entrante",
     "localPart": "Parte local de dirección entrante",
     "domainNotConfigured": "El dominio entrante de la plataforma aún no está configurado. Póngase en contacto con su administrador.",
+    "domainNotConfiguredSelfHosted": "No hay ningún dominio entrante de la plataforma configurado, por lo que no se puede generar una dirección entrante. Configure <var>TICKETS_INBOUND_DOMAIN</var> en su servidor Breeze y reinicie la API — consulte <docs>Configuración de correo electrónico a ticket</docs>. Como alternativa, conecte un buzón compartido de Microsoft 365 — esa vía no necesita dominio entrante.",
+    "addressViaMailbox": "No hay una dirección de entrada nativa configurada, pero el correo sigue llegando a través del buzón de Microsoft 365 conectado que aparece abajo: esa vía no necesita un dominio entrante.",
     "triageOrganization": "Organización de clasificación predeterminada",
     "unknownSenders": "Remitentes desconocidos",
     "unknownDescription": "Qué hacer con el correo cuyo remitente no es un usuario del portal, un dominio de cliente asignado o una respuesta a un ticket existente.",
@@ -1010,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Acceso remoto",
     "description": "Administre restricciones de túneles, listas de destinos permitidos y sesiones activas por sitio.",
-    "ipRestrictions": {
-      "title": "Fuente IP Restricciones",
-      "description": "Restrinja qué IP pueden crear túneles. Déjelo vacío para permitir cualquier usuario autenticado.",
-      "empty": "(Sin restricciones: cualquier usuario autenticado puede crear túneles)",
-      "placeholder": "p.ej. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Sitios",
       "empty": "(No hay sitios en esta organización)",
@@ -3353,5 +3349,25 @@
       "deleted": "Variable eliminada",
       "deleteFailed": "No se pudo eliminar la variable"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Vinculaciones del complemento de Outlook",
+    "description": "Técnicos vinculados al complemento técnico de Outlook. Revocar una vinculación cierra la sesión del técnico en el complemento en todos los dispositivos.",
+    "loading": "Cargando vinculaciones…",
+    "loadFailed": "No se pudieron cargar las vinculaciones.",
+    "retry": "Reintentar",
+    "empty": "Ningún técnico ha vinculado el complemento de Outlook todavía.",
+    "user": "Usuario",
+    "entraTenant": "Inquilino de Entra",
+    "boundOn": "Vinculado el",
+    "mfaVerified": "MFA verificado",
+    "actions": "Acciones",
+    "revoke": "Revocar",
+    "revoked": "Vinculación revocada",
+    "revokeFailed": "No se pudo revocar la vinculación",
+    "confirmTitle": "Revocar vinculación del complemento de Outlook",
+    "confirmBody": "Esto cierra la sesión de {{name}} en el complemento técnico de Outlook en todos los dispositivos. Puede volver a vincularse iniciando sesión de nuevo.",
+    "cancel": "Cancelar",
+    "confirmRevoke": "Revocar vinculación"
   }
 }

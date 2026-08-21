@@ -3,10 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AddDnsIntegrationModal from './AddDnsIntegrationModal';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore, type Organization } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore registers an orgId provider at module load; the component now
+  // pulls in orgStore via useFleetOrgOwner, so this export must exist.
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -25,9 +29,33 @@ function makeJsonResponse(payload: unknown, ok = true, status = ok ? 200 : 500):
   } as unknown as Response;
 }
 
+const orgA: Organization = {
+  id: 'org-aaaa',
+  partnerId: 'p-1',
+  name: 'Acme Corp',
+  status: 'active',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+const orgB: Organization = {
+  id: 'org-bbbb',
+  partnerId: 'p-1',
+  name: 'Beta Inc',
+  status: 'active',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+
 describe('AddDnsIntegrationModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset to a concrete-org (non-fleet) scope so the picker stays hidden
+    // unless a test explicitly opts into the All-orgs view.
+    useOrgStore.setState({
+      currentOrgId: 'org-aaaa',
+      allOrgs: false,
+      organizations: [orgA, orgB],
+      organizationsLoaded: true,
+      error: null,
+    });
   });
 
   it('only lists the 5 supported providers (opendns + quad9 hidden)', () => {
@@ -97,6 +125,9 @@ describe('AddDnsIntegrationModal', () => {
       isActive: true,
     });
     expect(body.apiSecret).toBeUndefined();
+    // Focused scope must still send the concrete org in the body — the DNS
+    // route reads only body.orgId, never the injected query (#3505).
+    expect(body.orgId).toBe('org-aaaa');
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'success', message: expect.stringMatching(/Cloudflare/) }),
@@ -126,5 +157,68 @@ describe('AddDnsIntegrationModal', () => {
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  describe('All-organizations (fleet) scope', () => {
+    beforeEach(() => {
+      // Explicit All-orgs view: no injected ?orgId=, so the picker is required.
+      useOrgStore.setState({
+        currentOrgId: null,
+        allOrgs: true,
+        organizations: [orgA, orgB],
+        organizationsLoaded: true,
+        error: null,
+      });
+    });
+
+    it('renders an Organization picker listing the accessible orgs', () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      const select = screen.getByLabelText('Organization') as HTMLSelectElement;
+      const labels = Array.from(select.options).map((o) => o.textContent);
+      expect(labels).toContain('Acme Corp');
+      expect(labels).toContain('Beta Inc');
+    });
+
+    it('keeps the submit button disabled until an org is chosen', () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme HQ' } });
+      fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'cf-token-abc' } });
+      const submit = screen.getByRole('button', { name: /Add integration/i });
+      expect(submit).toBeDisabled();
+      fireEvent.change(screen.getByLabelText('Organization'), { target: { value: 'org-bbbb' } });
+      expect(submit).toBeEnabled();
+    });
+
+    it('guards a programmatic submit with an in-form error and no request', async () => {
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme HQ' } });
+      fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'cf-token-abc' } });
+      // Bypass the disabled button (Enter-key / programmatic path) by dispatching
+      // submit straight to the form — the JS guard must still stop it.
+      const form = screen.getByLabelText('Organization').closest('form')!;
+      fireEvent.submit(form);
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(/Select an organization/i);
+      });
+      expect(fetchWithAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('includes the chosen orgId in the POST body once an org is selected', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: { id: 'new-1' } }));
+      render(<AddDnsIntegrationModal onClose={() => {}} onCreated={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Organization'), { target: { value: 'org-bbbb' } });
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme HQ' } });
+      fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'cf-token-abc' } });
+      fireEvent.change(screen.getByLabelText('Account ID'), { target: { value: '0123456789abcdef' } });
+      fireEvent.click(screen.getByRole('button', { name: /Add integration/i }));
+
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+      });
+      const init = fetchWithAuthMock.mock.calls[0]![1] as RequestInit;
+      const body = JSON.parse(String(init.body));
+      expect(body.orgId).toBe('org-bbbb');
+    });
   });
 });

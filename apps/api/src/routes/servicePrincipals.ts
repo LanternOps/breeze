@@ -142,7 +142,7 @@ servicePrincipalRoutes.get(
       .select()
       .from(servicePrincipals)
       .where(whereCondition)
-      .orderBy(desc(servicePrincipals.createdAt))
+      .orderBy(desc(servicePrincipals.createdAt), desc(servicePrincipals.id))
       .limit(limit)
       .offset(offset);
 

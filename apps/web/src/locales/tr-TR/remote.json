@@ -789,7 +789,7 @@
     },
     "code": {
       "heading": "Bu kodu yardım ettiğiniz kişiye okuyun",
-      "shownOnce": "Bu kod yalnızca bir kez görünür. Bu sayfadan ayrılmadan önce kopyalayın; bir daha asla görüntülenemez.",
+      "shownOnce": "Bu kodu şimdi kopyalayın. Breeze yalnızca kodun bir özetini (hash) saklar; bu sayfadan ayrıldığınızda veya sayfayı yenilediğinizde kod kurtarılamaz — yeni bir oturum başlatmanız gerekir.",
       "expires": "Süresi {{time}} tarihinde doluyor",
       "instructions": "Onlara bağlantıyı gönderin, ardından indirilen istemciyi çalıştırıp kodu yazmalarını sağlayın.",
       "copyCode": "Kodu kopyala",

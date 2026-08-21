@@ -389,7 +389,7 @@ orgRoutes.get('/partners', requireScope('system'), requireOrgRead, zValidator('q
     .where(conditions)
     .limit(limit)
     .offset(offset)
-    .orderBy(partners.createdAt);
+    .orderBy(partners.createdAt, partners.id);
 
   return c.json({
     data,
@@ -1177,7 +1177,7 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
       .where(ownOrgCondition)
       .limit(limit)
       .offset(offset)
-      .orderBy(organizations.createdAt);
+      .orderBy(organizations.createdAt, organizations.id);
     return c.json({
       data,
       pagination: { page, limit, total: Number(countResult[0]?.count ?? 0) }
@@ -1216,7 +1216,14 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     .where(conditions)
     .limit(limit)
     .offset(offset)
-    .orderBy(organizations.createdAt);
+    // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
+    // `created_at` is `defaultNow()` and Postgres `now()` is the TRANSACTION
+    // timestamp, so every org written in one transaction (seed, bulk import,
+    // migration) shares a byte-identical value. Ordering on a tied key alone
+    // leaves row order undefined between two LIMIT/OFFSET queries, so the page
+    // walk in `apps/web/src/lib/fetchAllOrganizations.ts` would silently see
+    // some orgs twice and miss others.
+    .orderBy(organizations.createdAt, organizations.id);
 
   // Apply the partner's preferred organization order, when one is set.
   // - partner scope: load own partner settings.
@@ -1252,8 +1259,36 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     }
   }
 
+  // Device count per organization. The list is where an MSP scans "how big is
+  // each customer", and the web card renders `{{count}} devices` — with no
+  // count in the payload that interpolated to a bare " devices" (#3699).
+  //
+  // ONE grouped query over the page's ids rather than a count per row. The
+  // page can hold 100 orgs and `fetchAllOrganizations.ts` walks this endpoint
+  // page by page, so a per-row count would repeat that scan 100x per page. It
+  // is index-backed: `org_id` leads both `devices_org_id_status_idx` and
+  // `devices_org_id_last_seen_at_idx`, and EXPLAIN on a populated deployment
+  // takes the index, not a seq scan.
+  //
+  // `devices` has no soft-delete or archive column, so every row is a live
+  // device and a plain count is the whole story. An org with no devices is
+  // absent from the grouped result, hence the `?? 0` rather than leaving it
+  // undefined — "0 devices" is the truth for a new tenant, and undefined is
+  // what produced the blank label in the first place.
+  const pageOrgIds = ordered.map((org) => org.id);
+  const deviceCounts = pageOrgIds.length
+    ? await db
+        .select({ orgId: devices.orgId, count: sql<number>`count(*)` })
+        .from(devices)
+        .where(inArray(devices.orgId, pageOrgIds))
+        .groupBy(devices.orgId)
+    : [];
+  const deviceCountByOrgId = new Map(
+    deviceCounts.map((row) => [row.orgId, Number(row.count)])
+  );
+
   return c.json({
-    data: ordered,
+    data: ordered.map((org) => ({ ...org, deviceCount: deviceCountByOrgId.get(org.id) ?? 0 })),
     pagination: { page, limit, total: Number(count) }
   });
 });
@@ -1947,7 +1982,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     .where(whereCondition)
     .limit(limit)
     .offset(offset)
-    .orderBy(sites.createdAt);
+    .orderBy(sites.createdAt, sites.id);
 
   // Enrich each site with its device count. The `sites` row carries no count
   // column, so without this the API omits `deviceCount` entirely and the web

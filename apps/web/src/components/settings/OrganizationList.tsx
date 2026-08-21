@@ -7,7 +7,14 @@ export type Organization = {
   id: string;
   name: string;
   status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding';
-  deviceCount: number;
+  /**
+   * Absent when the caller is organization-scoped: that branch of
+   * `GET /orgs/organizations` returns a deliberately minimal projection
+   * (id/name/slug/status) because those users reach the route without
+   * `organizations:read`. Optional here so the renderer has to decide what to
+   * show rather than interpolating `undefined` into a label (#3699).
+   */
+  deviceCount?: number;
   createdAt: string;
 };
 

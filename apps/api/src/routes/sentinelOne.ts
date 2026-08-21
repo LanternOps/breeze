@@ -726,7 +726,7 @@ sentinelOneRoutes.get(
         .from(s1Threats)
         .leftJoin(devices, eq(s1Threats.deviceId, devices.id))
         .where(where)
-        .orderBy(desc(s1Threats.detectedAt), desc(s1Threats.updatedAt))
+        .orderBy(desc(s1Threats.detectedAt), desc(s1Threats.updatedAt), desc(s1Threats.id))
         .limit(limit)
         .offset(offset),
       db

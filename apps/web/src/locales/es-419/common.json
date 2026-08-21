@@ -82,7 +82,13 @@
     "orderedList": "Lista numerada",
     "link": "Enlace",
     "linkPrompt": "Introduce una URL (http:// o https://)",
-    "linkInvalid": "Solo se permiten enlaces http:// y https://"
+    "linkInvalid": "Solo se permiten enlaces http:// y https://",
+    "insertTable": "Tabla",
+    "addRow": "Agregar fila",
+    "deleteRow": "Eliminar fila",
+    "addColumn": "Agregar columna",
+    "deleteColumn": "Eliminar columna",
+    "deleteTable": "Eliminar tabla"
   },
   "actions": {
     "save": "Guardar",
@@ -252,7 +258,11 @@
       "viewAll": "Ver todo",
       "allClear": "Todo claro",
       "empty": "No hay alertas activas en toda su flota",
-      "fallbackTitle": "Alerta"
+      "fallbackTitle": "Alerta",
+      "noDevicesTitle": "Aún no hay dispositivos reportando",
+      "noDevicesHint": "Las alertas aparecerán cuando se inscriba un dispositivo.",
+      "noActiveAlerts": "Sin alertas activas",
+      "deviceStatusUnavailable": "Estado de dispositivos no disponible: no se puede confirmar la cobertura de la flota."
     },
     "customizer": {
       "title": "Personalizador de panel",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVE",
       "kevDevices": "{{count}} dispositivos",
       "kevDevices_one": "{{count}} dispositivo",
-      "kevDevices_other": "{{count}} dispositivos"
+      "kevDevices_other": "{{count}} dispositivos",
+      "noDevicesTitle": "Aún no hay dispositivos reportando",
+      "noDevicesHint": "Inscribe un dispositivo para comenzar a buscar vulnerabilidades.",
+      "noneReported": "No se reportaron hallazgos abiertos",
+      "coverageUnknown": "Estado de dispositivos no disponible: no se puede confirmar la cobertura del análisis."
     },
     "refreshFailed": "No se pudo actualizar — mostrando datos anteriores"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} dispositivo(s) usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "message_one": "{{count}} dispositivo usa la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
+    "message_other": "{{count}} dispositivos usan la edición alojada del agente en este servidor autoalojado. Migre a la edición del agente para autoalojamiento.",
     "cta": "Cómo migrar"
   },
   "longTail": {

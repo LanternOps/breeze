@@ -341,7 +341,7 @@ async function queryRows(where: SQL | undefined, limit: number, offset: number):
       sql`${devices.agentId} = ${auditLogsTable.details}->>'rawActorId' AND ${auditLogsTable.actorType} = 'agent'`
     )
     .where(where)
-    .orderBy(desc(auditLogsTable.timestamp))
+    .orderBy(desc(auditLogsTable.timestamp), desc(auditLogsTable.id))
     .limit(limit)
     .offset(offset);
 }

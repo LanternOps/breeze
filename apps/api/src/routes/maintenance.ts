@@ -123,10 +123,14 @@ const createWindowSchema = z.object({
   deviceIds: z.array(z.string().guid()).optional(),
   suppressAlerts: z.boolean().default(true),
   suppressPatches: z.boolean().default(true),
-  suppressAutomations: z.boolean().default(false),
-  notifyBefore: z.number().int().positive().optional(),
-  notifyOnStart: z.boolean().default(false),
-  notifyOnEnd: z.boolean().default(false)
+  suppressAutomations: z.boolean().default(false)
+  // RETIRED (#3256): `notifyBefore` / `notifyOnStart` / `notifyOnEnd` were
+  // accepted and persisted here but no worker, scheduler, or agent command ever
+  // read them — an admin setting "notify before: 30 minutes" got nothing, with
+  // no indication the setting was inert. They stay off the write surface until a
+  // real maintenance-window notification consumer exists (#3207). This object is
+  // non-strict, so clients still sending the keys get them stripped (200, not
+  // 400) rather than a hard break.
 }).refine((data) => {
   const start = new Date(data.startTime);
   const end = new Date(data.endTime);
@@ -147,10 +151,11 @@ const updateWindowSchema = z.object({
   deviceIds: z.array(z.string().guid()).optional(),
   suppressAlerts: z.boolean().optional(),
   suppressPatches: z.boolean().optional(),
-  suppressAutomations: z.boolean().optional(),
-  notifyBefore: z.number().int().positive().optional(),
-  notifyOnStart: z.boolean().optional(),
-  notifyOnEnd: z.boolean().optional()
+  suppressAutomations: z.boolean().optional()
+  // RETIRED (#3256) — see createWindowSchema. A PATCH carrying only the retired
+  // notification keys now strips to an empty update and returns the existing
+  // "No updates provided" 400, which is the honest answer: there is nothing
+  // those keys can change.
 });
 
 const listWindowsSchema = z.object({
@@ -409,9 +414,9 @@ maintenanceRoutes.post(
         suppressAlerts: body.suppressAlerts,
         suppressPatching: body.suppressPatches,
         suppressAutomations: body.suppressAutomations,
-        notifyBefore: body.notifyBefore,
-        notifyOnStart: body.notifyOnStart,
-        notifyOnEnd: body.notifyOnEnd,
+        // notifyBefore / notifyOnStart / notifyOnEnd deliberately not written
+        // (#3256) — the columns keep their DB defaults (NULL / false / false),
+        // which is what the old code stored anyway.
         createdBy: auth.user.id
       })
       .returning();
@@ -540,9 +545,7 @@ maintenanceRoutes.patch(
     if (updates.suppressAlerts !== undefined) updateData.suppressAlerts = updates.suppressAlerts;
     if (updates.suppressPatches !== undefined) updateData.suppressPatching = updates.suppressPatches;
     if (updates.suppressAutomations !== undefined) updateData.suppressAutomations = updates.suppressAutomations;
-    if (updates.notifyBefore !== undefined) updateData.notifyBefore = updates.notifyBefore;
-    if (updates.notifyOnStart !== undefined) updateData.notifyOnStart = updates.notifyOnStart;
-    if (updates.notifyOnEnd !== undefined) updateData.notifyOnEnd = updates.notifyOnEnd;
+    // notifyBefore / notifyOnStart / notifyOnEnd retired from the write surface (#3256).
 
     const [updated] = await db
       .update(maintenanceWindows)

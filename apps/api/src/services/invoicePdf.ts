@@ -386,7 +386,17 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{ invoice: Invoi
     invoice,
     lines,
     branding: {
-      partnerName: partner?.name ?? 'Invoice',
+      // Seller-snapshot fallback before the document-type literal (#2151), so
+      // the invoice PDF degrades the same way the quote side does
+      // (resolveQuoteBranding) and the same way both web previews already do
+      // (`branding.partnerName || seller.name`). A partner row that reads back
+      // empty is an RLS/scope artifact, not a nameless partner, and the frozen
+      // snapshot above still carries the company name — printing the word
+      // "Invoice" in the wordmark slot (beside the header's own INVOICE
+      // eyebrow) threw that away.
+      // `||`, not `??`: neither name column is constrained non-empty, and a
+      // blank wordmark is a worse document than the generic word.
+      partnerName: partner?.name || (invoice.sellerSnapshot as SellerSnapshot | null)?.name || 'Invoice',
       logoUrl: branding?.logoUrl ?? null,
       primaryColor: branding?.primaryColor ?? null,
       footerText: invoice.terms ?? partner?.invoiceFooter ?? branding?.footerText ?? null,

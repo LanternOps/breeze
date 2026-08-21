@@ -570,7 +570,7 @@ analyticsRoutes.get(
       .select()
       .from(analyticsDashboards)
       .where(whereCondition)
-      .orderBy(desc(analyticsDashboards.updatedAt))
+      .orderBy(desc(analyticsDashboards.updatedAt), desc(analyticsDashboards.id))
       .limit(limit)
       .offset(offset);
 
@@ -1585,7 +1585,7 @@ analyticsRoutes.get(
       .select()
       .from(slaDefinitionsTable)
       .where(whereCondition)
-      .orderBy(desc(slaDefinitionsTable.updatedAt))
+      .orderBy(desc(slaDefinitionsTable.updatedAt), desc(slaDefinitionsTable.id))
       .limit(limit)
       .offset(offset);
 

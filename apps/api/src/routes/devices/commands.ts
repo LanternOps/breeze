@@ -505,7 +505,7 @@ commandsRoutes.get(
       .select()
       .from(deviceCommands)
       .where(eq(deviceCommands.deviceId, deviceId))
-      .orderBy(desc(deviceCommands.createdAt))
+      .orderBy(desc(deviceCommands.createdAt), desc(deviceCommands.id))
       .limit(pagination.limit)
       .offset(pagination.offset);
 

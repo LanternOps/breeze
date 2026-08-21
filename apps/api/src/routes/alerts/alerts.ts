@@ -260,7 +260,7 @@ alertsRoutes.get(
       .leftJoin(alertRules, eq(alerts.ruleId, alertRules.id))
       .leftJoin(organizations, eq(alerts.orgId, organizations.id))
       .where(whereCondition)
-      .orderBy(desc(alerts.triggeredAt))
+      .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
       .limit(limit)
       .offset(offset);
 

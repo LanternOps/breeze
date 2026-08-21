@@ -82,7 +82,13 @@
     "orderedList": "Lista numerada",
     "link": "Link",
     "linkPrompt": "Insira uma URL (http:// ou https://)",
-    "linkInvalid": "Somente links http:// e https:// são permitidos"
+    "linkInvalid": "Somente links http:// e https:// são permitidos",
+    "insertTable": "Tabela",
+    "addRow": "Adicionar linha",
+    "deleteRow": "Excluir linha",
+    "addColumn": "Adicionar coluna",
+    "deleteColumn": "Excluir coluna",
+    "deleteTable": "Excluir tabela"
   },
   "actions": {
     "save": "Salvar",
@@ -252,7 +258,11 @@
       "viewAll": "Ver todos",
       "allClear": "Tudo certo",
       "empty": "Nenhum alerta ativo em sua frota",
-      "fallbackTitle": "Alerta"
+      "fallbackTitle": "Alerta",
+      "noDevicesTitle": "Nenhum dispositivo reportando ainda",
+      "noDevicesHint": "Os alertas aparecerão assim que um dispositivo for registrado.",
+      "noActiveAlerts": "Nenhum alerta ativo",
+      "deviceStatusUnavailable": "Status dos dispositivos indisponível: não é possível confirmar a cobertura da frota."
     },
     "customizer": {
       "title": "Personalizador do painel",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} dispositivos",
       "kevDevices_one": "{{count}} dispositivo",
-      "kevDevices_other": "{{count}} dispositivos"
+      "kevDevices_other": "{{count}} dispositivos",
+      "noDevicesTitle": "Nenhum dispositivo reportando ainda",
+      "noDevicesHint": "Registre um dispositivo para começar a verificar vulnerabilidades.",
+      "noneReported": "Nenhuma ocorrência aberta reportada",
+      "coverageUnknown": "Status dos dispositivos indisponível: não é possível confirmar a cobertura da varredura."
     },
     "refreshFailed": "Falha ao atualizar — exibindo dados mais antigos"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} dispositivo(s) estão usando a edição hospedada do agente neste servidor auto-hospedado. Migre para a edição do agente auto-hospedado.",
+    "message_one": "{{count}} dispositivo está usando a edição hospedada do agente neste servidor auto-hospedado. Migre para a edição do agente auto-hospedado.",
+    "message_other": "{{count}} dispositivos estão usando a edição hospedada do agente neste servidor auto-hospedado. Migre para a edição do agente auto-hospedado.",
     "cta": "Como migrar"
   },
   "longTail": {

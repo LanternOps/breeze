@@ -169,8 +169,8 @@ describe('QuickSupportPage', () => {
         body: JSON.stringify({ attributedOrgId: 'org-1', attributionLabel: "Jane's laptop" }),
       }),
     );
-    // The "you only get this once" warning must be on screen with the code.
-    expect(screen.getByText(/This code appears only once/i)).toBeInTheDocument();
+    // The "copy it now, it is not recoverable" warning rides with the code.
+    expect(screen.getByText(/Copy this code now/i)).toBeInTheDocument();
   });
 
   it('copies the landing URL from the copy-link button', async () => {
@@ -471,6 +471,50 @@ describe('QuickSupportPage', () => {
     expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
     expect(screen.getByTestId('quick-support-detail')).toHaveTextContent('Reception PC');
     expect(window.location.hash).toBe('#ss-old');
+  });
+
+  // #3432: the warning copy used to claim the code "can never be shown again",
+  // which this path contradicts — `created` is not cleared, so re-selecting the
+  // session minted in THIS page load shows the same code again. That is
+  // deliberate (same operator, same tab, already saw it; a stray click should
+  // not burn a live session), so the fix was to make the copy state the real
+  // constraint: the server keeps only a hash, so a reload loses it for good.
+  it('shows the minted code again when its own session is re-selected in the same page load', async () => {
+    installFetch({
+      // Both the older session and the one this page load is about to mint are
+      // in history, so the tech can click between them.
+      list: [
+        view({ id: 'ss-old', status: 'active', attributionLabel: 'Reception PC' }),
+        view({ id: SESSION_ID, status: 'pending', attributionLabel: 'New call' }),
+      ],
+      detail: [view({ status: 'pending' })],
+    });
+    render(<QuickSupportPage />);
+    await createSession();
+
+    const rows = await screen.findAllByTestId('quick-support-row');
+    expect(rows).toHaveLength(2);
+
+    // Away to the older session...
+    fireEvent.click(rows[0]);
+    expect(window.location.hash).toBe('#ss-old');
+    expect(screen.queryByTestId('quick-support-code')).not.toBeInTheDocument();
+
+    // ...and back to the one this page load minted: the code is on screen again.
+    fireEvent.click(rows[1]);
+    expect(window.location.hash).toBe(`#${SESSION_ID}`);
+    expect(screen.getByTestId('quick-support-code')).toHaveTextContent('ABC-DEF-GHI');
+  });
+
+  it('warns that the code is unrecoverable after leaving, not that it is never re-shown', async () => {
+    installFetch();
+    render(<QuickSupportPage />);
+    await createSession();
+
+    const detail = screen.getByTestId('quick-support-detail');
+    expect(detail).toHaveTextContent(/Breeze stores only a hash of it/i);
+    expect(detail).toHaveTextContent(/cannot be recovered/i);
+    expect(detail).not.toHaveTextContent(/never be shown again/i);
   });
 
   it('surfaces a list load failure', async () => {

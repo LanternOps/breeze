@@ -348,7 +348,7 @@ webhookRoutes.get(
         .select()
         .from(webhooksTable)
         .where(whereCondition)
-        .orderBy(desc(webhooksTable.createdAt))
+        .orderBy(desc(webhooksTable.createdAt), desc(webhooksTable.id))
         .limit(limit)
         .offset(offset)
     ]);
@@ -613,7 +613,7 @@ webhookRoutes.get(
         .select()
         .from(webhookDeliveries)
         .where(whereCondition)
-        .orderBy(desc(webhookDeliveries.createdAt))
+        .orderBy(desc(webhookDeliveries.createdAt), desc(webhookDeliveries.id))
         .limit(limit)
         .offset(offset)
     ]);

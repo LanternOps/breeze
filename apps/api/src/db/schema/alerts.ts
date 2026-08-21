@@ -25,6 +25,22 @@ export const alertSeverityEnum = pgEnum('alert_severity', ['critical', 'high', '
 export const alertStatusEnum = pgEnum('alert_status', ['active', 'acknowledged', 'resolved', 'suppressed', 'dismissed']);
 export const notificationChannelTypeEnum = pgEnum('notification_channel_type', NOTIFICATION_CHANNEL_TYPES);
 
+// An alert template is owned by EITHER an org (orgId set, partnerId NULL) OR a
+// partner (partnerId set, orgId NULL — "partner-wide / all orgs", #1357/#1425),
+// never both: CHECK `alert_templates_one_owner_chk` (migration
+// 2026-08-25-alert-templates-one-owner). Rows with NEITHER axis set are legal
+// and mean "global" — the seeded built-ins, plus system-created rows with no
+// orgId — which is why the constraint is "never both" rather than a strict XOR.
+//
+// Before that migration the create route ALSO wrote partnerId onto org-owned
+// rows, and the read predicate's `partner_id = <caller partner>` branch then
+// selected every template under the partner — a cross-org read for partner
+// callers with restricted org access (security review 2026-08-16 §1.5).
+// Partner-wide MUST always be expressed as `partner_id = X AND org_id IS NULL`.
+//
+// isBuiltIn is NOT an ownership axis: policyAlertBridge auto-creates ORG-OWNED
+// rows with isBuiltIn true, so a global-visibility predicate must say
+// `is_built_in = true AND org_id IS NULL`, never a bare `is_built_in = true`.
 export const alertTemplates = pgTable('alert_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
@@ -43,7 +59,9 @@ export const alertTemplates = pgTable('alert_templates', {
   isBuiltIn: boolean('is_built_in').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  partnerIdIdx: index('alert_templates_partner_id_idx').on(table.partnerId)
+}));
 
 // An alert rule is owned by EITHER an org (orgId set, partnerId NULL — the
 // original shape) OR a partner (partnerId set, orgId NULL — "partner-wide /

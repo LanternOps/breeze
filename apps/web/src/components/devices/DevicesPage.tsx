@@ -90,6 +90,17 @@ function summarizeFailedDevices(names: string[]): string {
   return rest > 0 ? `${shown.join(', ')} and ${rest} more` : shown.join(', ');
 }
 
+// #3698: destructive single-device actions, confirm-gated to match the device
+// detail page. `lock` is deliberately NOT here: it is reversible and does not
+// disconnect the machine, which is where DeviceActions.tsx draws the same line.
+// Module scope — these are constant, so there is no reason to rebuild them on
+// every render.
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown']);
+
+// The command name is snake_case; the locale keys are camelCase.
+const confirmKeyFor = (action: string): string =>
+  action === 'reboot_safe_mode' ? 'rebootSafeMode' : action;
+
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
   // Org scope is shown by the always-visible top-bar switcher (scope pill +
@@ -125,6 +136,12 @@ export default function DevicesPage() {
   // silently discarded.
   type PendingDecommissionedSkip = { action: string; devices: Device[]; skippedCount: number; totalCount: number };
   const [pendingDecommissionedSkip, setPendingDecommissionedSkip] = useState<PendingDecommissionedSkip | null>(null);
+  // #3698: single-device destructive actions from the row kebab. The device
+  // DETAIL page has always confirmed these (DeviceActions.tsx); the list did
+  // not, so whether rebooting a production box asked "are you sure?" depended
+  // on which screen you were on — and the list is the dense, easy-to-mis-click
+  // one, with Reboot sitting next to Run Script and Wake.
+  const [pendingDeviceAction, setPendingDeviceAction] = useState<{ action: string; device: Device } | null>(null);
   const [settingsDevice, setSettingsDevice] = useState<Device | null>(null);
   // v2 chip bar seeds its filter from the URL hash so a filtered view is
   // shareable; the legacy DeviceFilterBar owns its own state and ignores it.
@@ -655,6 +672,15 @@ export default function DevicesPage() {
   };
 
   const handleDeviceAction = async (action: string, device: Device) => {
+    if (actionInProgress) return;
+    if (CONFIRM_REQUIRED_ACTIONS.has(action)) {
+      setPendingDeviceAction({ action, device });
+      return;
+    }
+    await runDeviceAction(action, device);
+  };
+
+  const runDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;
 
     try {
@@ -1417,6 +1443,30 @@ export default function DevicesPage() {
             total: pendingDecommissionedSkip.totalCount,
             eligible: pendingDecommissionedSkip.devices.length,
           })}
+        />
+      )}
+
+      {/* #3698: mirror of the device-detail confirm gate, reusing the SAME
+          deviceActions.confirm.* copy so the two screens read identically and
+          no new locale keys are needed. Confirming UNMOUNTS the dialog, which
+          is what makes a double-click safe — see the decommissioned-skip
+          dialog above for why isLoading is deliberately absent. */}
+      {pendingDeviceAction && (
+        <ConfirmDialog
+          open={true}
+          onClose={() => setPendingDeviceAction(null)}
+          onConfirm={() => {
+            const p = pendingDeviceAction;
+            setPendingDeviceAction(null);
+            void runDeviceAction(p.action, p.device);
+          }}
+          title={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.title`)}
+          message={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.message`, {
+            hostname: pendingDeviceAction.device.hostname,
+          })}
+          confirmLabel={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.confirm`)}
+          variant={pendingDeviceAction.action === 'shutdown' ? 'destructive' : 'warning'}
+          confirmTestId="confirm-device-action"
         />
       )}
 

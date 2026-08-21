@@ -548,7 +548,7 @@ accountDeletionAdminRoutes.get(
         .from(accountDeletionRequests)
         .leftJoin(users, eq(users.id, accountDeletionRequests.userId))
         .where(eq(accountDeletionRequests.status, status))
-        .orderBy(desc(accountDeletionRequests.requestedAt))
+        .orderBy(desc(accountDeletionRequests.requestedAt), desc(accountDeletionRequests.id))
         .limit(limit)
         .offset(offset);
       return query;

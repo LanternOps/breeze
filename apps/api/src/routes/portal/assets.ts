@@ -66,7 +66,7 @@ assetRoutes.get('/assets', zValidator('query', listSchema), async (c) => {
       )
     )
     .where(availableWhere)
-    .orderBy(desc(devices.updatedAt))
+    .orderBy(desc(devices.updatedAt), desc(devices.id))
     .limit(limit)
     .offset(offset);
 

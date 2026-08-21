@@ -51,6 +51,7 @@ import {
 import {
   addFeatureLink,
   updateFeatureLink,
+  policyAccessCondition,
 } from './configurationPolicy';
 import {
   reports,
@@ -959,12 +960,31 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const configPolicyId = input.configPolicyId as string | undefined;
 
         if (configPolicyId) {
-          // Check if policy exists and user has access
-          const oc = orgWhere(auth, configurationPolicies.orgId);
+          // Check if policy exists and user has access.
+          //
+          // NOTE: this whole action is currently unreachable — `setup_auto_approval`
+          // early-returns as disabled above (patch policies are managed through
+          // configuration policies). The two fixes below are defense-in-depth,
+          // kept correct so the block is not a trap if the gate is ever lifted
+          // — same convention as the disabled `manage_alert_rules` branch.
+          //
+          // `policyAccessCondition`, not a bare org-equality (#3493): a
+          // partner-wide policy stores `org_id NULL`, so the org form would tell
+          // the partner-scoped tech who AUTHORED the policy it "was not found".
           const policyConditions: SQL[] = [eq(configurationPolicies.id, configPolicyId)];
+          const oc = policyAccessCondition(auth);
           if (oc) policyConditions.push(oc);
           const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
           if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
+
+          // Making a partner-wide policy REACHABLE is not the same as making it
+          // writable. Everything below mutates the policy's patch feature link,
+          // which lands on every org the policy covers — so it takes the same
+          // capability the HTTP feature-link route requires
+          // (routes/configurationPolicies/featureLinks.ts).
+          if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
+            return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+          }
 
           // Check if patch feature link already exists
           const existingLinks = await db.select()
@@ -1804,7 +1824,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const oc = orgWhere(auth, alertTemplates.orgId);
         if (oc) {
           // Org/partner scope: built-in OR belonging to accessible org(s)
-          conditions.push(sql`(${alertTemplates.isBuiltIn} = true OR ${oc})`);
+          // `is_built_in AND org_id IS NULL` — policyAlertBridge creates
+          // ORG-OWNED built-in rows, so a bare is_built_in disjunct would show
+          // another org's template (security review 2026-08-16 §1.5, same class).
+          conditions.push(sql`((${alertTemplates.isBuiltIn} = true AND ${alertTemplates.orgId} IS NULL) OR ${oc})`);
         }
         // System scope (oc undefined): no filter — show all templates
         if (typeof input.category === 'string') conditions.push(eq(alertTemplates.category, input.category as string));
@@ -2473,9 +2496,17 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const orgId = getOrgId(auth);
 
       if (action === 'list') {
-        // List all monitoring watches, optionally filtered by policy
+        // List all monitoring watches, optionally filtered by policy.
+        //
+        // `policyAccessCondition`, not a bare `orgWhere` on
+        // configurationPolicies.orgId (#3493): a partner-wide policy stores
+        // `org_id NULL`, so the org-equality form silently omits every
+        // partner-owned monitoring policy — including from the partner-scoped
+        // techs who authored them. The helper adds the dual-axis branch and is
+        // gated on partner scope so the app layer never claims more than RLS
+        // grants.
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, configurationPolicies.orgId);
+        const oc = policyAccessCondition(auth);
         if (oc) conditions.push(oc);
         if (typeof input.configPolicyId === 'string') {
           conditions.push(eq(configPolicyFeatureLinks.configPolicyId, input.configPolicyId as string));

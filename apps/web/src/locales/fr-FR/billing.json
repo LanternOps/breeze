@@ -436,7 +436,10 @@
       "uploadError": "Échec de l’import du PDF",
       "uploadSuccess": "Version PDF importée",
       "publishError": "Échec de la publication de la version",
-      "publishSuccess": "Version publiée"
+      "publishSuccess": "Version publiée",
+      "warnings": {
+        "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des contrats prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+      }
     }
   },
   "quotes": {
@@ -512,7 +515,9 @@
         "imageSectionPdf": "Section image (rendue dans le PDF).",
         "richTextContentAria": "Contenu en texte enrichi",
         "tableEmpty": "Tableau vide.",
-        "calloutEmpty": "Encadré vide."
+        "calloutEmpty": "Encadré vide.",
+        "edit": "Modifier",
+        "saveEdit": "Enregistrer"
       },
       "blockTypes": {
         "heading": "Titre",
@@ -658,6 +663,8 @@
         "partNumberOptional": "Part # (facultatif)",
         "profit": "Profit",
         "quantityAria": "Quantité",
+        "quantityForAria": "Quantité pour {{item}}",
+        "unitPriceForAria": "Prix unitaire pour {{item}}",
         "saveToCatalog": "Enregistrer dans le catalogue",
         "showLess": "Afficher moins",
         "showMore": "Afficher plus",
@@ -747,7 +754,8 @@
         "zebra": "Lignes zébrées",
         "headerStyle": "Style d'en-tête",
         "headerStylePlain": "Simple",
-        "headerStyleAccent": "Accentué"
+        "headerStyleAccent": "Accentué",
+        "reshapedWarning": "Ce tableau dépassait la limite de {{columns}} colonnes x {{rows}} lignes et a été ajusté. L'enregistrement remplace le tableau stocké par celui affiché ici."
       },
       "terms": {
         "placeholder": "Conditions de paiement, clauses de garantie, etc.",
@@ -805,7 +813,9 @@
       "ghost": {
         "add": "Ajouter",
         "nameAria": "Nom de la nouvelle ligne",
-        "placeholder": "Saisissez le nom de l'article…"
+        "placeholder": "Saisissez le nom de l'article…",
+        "quantityAria": "Quantité de la nouvelle ligne",
+        "unitPriceAria": "Prix unitaire de la nouvelle ligne"
       },
       "unassigned": {
         "explainer": "Ces lignes ne figurent dans aucune section tarifaire, mais elles apparaissent malgré tout sur le devis du client et sont comptées dans ses totaux. Déplacez chacune d'elles dans une section tarifaire pour maîtriser l'endroit où elle apparaît.",
@@ -825,6 +835,9 @@
         "variantWarn": "Avertissement",
         "titlePlaceholder": "Titre (facultatif)",
         "bodyAria": "Texte de l'encadré"
+      },
+      "warnings": {
+        "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le texte enrichi prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
     },
     "actions": {
@@ -878,10 +891,11 @@
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez un e-mail ou ajoutez-en un dans les <orgLink>paramètres de l'organisation</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation ou partagez le lien d'acceptation manuellement.",
+        "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation, puis renvoyez.",
         "noEmailService": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — l'e-mail n'est pas configuré sur ce serveur.",
         "pdfRenderFailed": "Proposition marquée comme Envoyée, mais le PDF n'a pas pu être généré, aucun e-mail n'a donc été remis. Vérifiez les fichiers de contrat joints, puis renvoyez-la.",
-        "sendFailed": "Proposition marquée comme Envoyée, mais l'e-mail n'a pas pu être remis. Vérifiez l'adresse ou partagez le lien d'acceptation manuellement."
+        "sendFailed": "Proposition marquée comme Envoyée, mais l'e-mail n'a pas pu être remis. Vérifiez l'adresse, puis renvoyez.",
+        "shareLinkHint": "Utilisez « {{action}} » sur cette proposition pour copier le lien et l’envoyer vous-même."
       },
       "sendError": "Impossible d'envoyer la proposition.",
       "sendProposal": "Envoyer la proposition",
@@ -1318,7 +1332,12 @@
       "lineName": "Nom de la ligne",
       "name": "Nom",
       "quantity": "Quantité",
+      "quantityFor": "Quantité pour {{item}}",
+      "quantityNewLine": "Quantité de la nouvelle ligne",
+      "unitPriceFor": "Prix unitaire pour {{item}}",
+      "unitPriceNewLine": "Prix unitaire de la nouvelle ligne",
       "taxable": "Taxable",
+      "untitledLine": "cette ligne",
       "unitPrice": "Prix unitaire"
     },
     "hiddenSuffix": " (masqué)",

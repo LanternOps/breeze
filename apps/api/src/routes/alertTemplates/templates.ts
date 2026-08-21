@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { alertTemplates } from '../../db/schema';
-import { eq, and, or, ilike, desc, inArray } from 'drizzle-orm';
+import { eq, and, or, ilike, desc, inArray, isNull } from 'drizzle-orm';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { listTemplatesSchema, createTemplateSchema, updateTemplateSchema } from './schemas';
@@ -10,10 +10,36 @@ import { parseBoolean } from './helpers';
 import { getPagination } from '../../utils/pagination';
 import { PERMISSIONS } from '../../services/permissions';
 import { retiredConditionTypeError } from '../../services/alertConditions';
+import {
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  canManagePartnerWidePolicies,
+} from '../../services/partnerWideAccess';
 
 export const templateRoutes = new Hono();
 
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);
+
+// Partner-wide means `partner_id = X AND org_id IS NULL` — NEVER a bare
+// `partner_id = X`. Security review 2026-08-16 §1.5 (CRITICAL): org-owned rows
+// used to be written with BOTH axes populated (the create path denormalized
+// partner_id onto org rows), so `eq(partnerId, auth.partnerId)` sitting next to
+// `inArray(orgId, accessibleOrgIds)` in an OR selected EVERY template under the
+// partner and voided the org restriction beside it. For a partner-scope caller
+// with orgAccess 'selected'/'none' that was a real cross-org read: partner-axis
+// RLS is flat, so the database did not catch it. The `org_id IS NULL` conjunct
+// below is the fix; `alert_templates_one_owner_chk` (migration
+// 2026-08-25-alert-templates-one-owner) stops the both-axes shape recurring.
+const partnerWideCondition = (partnerId: string) =>
+  and(eq(alertTemplates.partnerId, partnerId), isNull(alertTemplates.orgId)) as ReturnType<typeof eq>;
+
+// Same class of bug on the OTHER global disjunct, found reviewing the §1.5 fix:
+// `is_built_in = true` is not by itself a global marker. policyAlertBridge
+// (`ensureTemplate`) auto-creates an ORG-OWNED row with isBuiltIn true, so a
+// bare `is_built_in` disjunct hands every org's policy-compliance template to
+// every other caller. A genuinely global built-in has no owner; org-owned
+// built-ins remain visible to their own org through the org disjunct.
+export const globalBuiltInCondition = () =>
+  and(eq(alertTemplates.isBuiltIn, true), isNull(alertTemplates.orgId)) as ReturnType<typeof eq>;
 
 // Visibility predicate mirroring the Scripts dual-axis union (#1357/#1425): a
 // caller sees built-in templates (global) ∪ their org's custom templates ∪
@@ -22,22 +48,30 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
 // RLS on alert_templates is the real boundary; this just shapes which of the
 // visible rows to return. Returns a 403 sentinel string when org scope lacks an
 // org context.
+//
+// The org-scope partner-wide branch is deliberate and NOT the generic
+// "partner-wide reads must be gated on scope === 'partner'" case: alert_templates
+// is one of four catalog tables whose RLS carries an explicit
+// `(org_id IS NULL AND partner_id = breeze_current_partner_id())` SELECT branch
+// (2026-06-13-catalog-partner-read-branch), and org-scope sessions are given
+// currentPartnerId precisely so they can read their MSP's shared templates
+// read-only (bearerTokenAuth.ts, MCP-OAUTH-06). App layer and RLS agree here.
 export function templateScopeCondition(auth: AuthContext): ReturnType<typeof or> | 'no-org-context' | undefined {
   if (auth.scope === 'system') return undefined;
   if (auth.scope === 'organization') {
     if (!auth.orgId) return 'no-org-context';
     const ors: ReturnType<typeof eq>[] = [
-      eq(alertTemplates.isBuiltIn, true),
+      globalBuiltInCondition(),
       eq(alertTemplates.orgId, auth.orgId),
     ];
-    if (auth.partnerId) ors.push(eq(alertTemplates.partnerId, auth.partnerId));
+    if (auth.partnerId) ors.push(partnerWideCondition(auth.partnerId));
     return or(...ors);
   }
   // partner scope
   const orgIds = auth.accessibleOrgIds ?? [];
-  const ors: ReturnType<typeof eq>[] = [eq(alertTemplates.isBuiltIn, true)];
+  const ors: ReturnType<typeof eq>[] = [globalBuiltInCondition()];
   if (orgIds.length > 0) ors.push(inArray(alertTemplates.orgId, orgIds) as ReturnType<typeof eq>);
-  if (auth.partnerId) ors.push(eq(alertTemplates.partnerId, auth.partnerId));
+  if (auth.partnerId) ors.push(partnerWideCondition(auth.partnerId));
   return or(...ors);
 }
 
@@ -45,7 +79,7 @@ export function templateScopeCondition(auth: AuthContext): ReturnType<typeof or>
 // rows belong to the MSP and are read-only for org scope; built-in rows are
 // read-only for everyone (only seeding creates them). Caller is the AuthContext.
 export function canWriteTemplate(
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg'>,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'canAccessOrg' | 'partnerOrgAccess'>,
   row: { orgId: string | null; partnerId: string | null; isBuiltIn: boolean },
 ): { ok: true } | { ok: false; status: 403 | 404; error: string } {
   if (row.isBuiltIn) return { ok: false, status: 403, error: 'Built-in templates cannot be modified' };
@@ -55,8 +89,14 @@ export function canWriteTemplate(
     if (auth.scope === 'organization') {
       return { ok: false, status: 403, error: 'This template is shared across your organization and is read-only here' };
     }
-    if (row.partnerId === auth.partnerId) return { ok: true };
-    return { ok: false, status: 404, error: 'Template not found' };
+    if (row.partnerId !== auth.partnerId) return { ok: false, status: 404, error: 'Template not found' };
+    // Partner scope proves WHICH partner, not the capability to administer
+    // that partner's shared state (epic #2135; security review 2026-08-16
+    // §1.1 #5).
+    if (!canManagePartnerWidePolicies(auth)) {
+      return { ok: false, status: 403, error: PARTNER_WIDE_WRITE_DENIED_MESSAGE };
+    }
+    return { ok: true };
   }
   // Org-specific record: caller must be able to access that org.
   if (row.orgId !== null && auth.canAccessOrg(row.orgId)) return { ok: true };
@@ -128,8 +168,10 @@ templateRoutes.get(
   async (c) => {
     try {
       const query = c.req.valid('query');
+      // Only genuinely global built-ins — an org-owned is_built_in row
+      // (policyAlertBridge) must not surface on this unscoped endpoint.
       const conditions: ReturnType<typeof eq>[] = [
-        eq(alertTemplates.isBuiltIn, true)
+        globalBuiltInCondition()
       ];
 
       if (query.severity) {
@@ -186,20 +228,29 @@ templateRoutes.post(
       }
 
       // Resolve org/partner axes from scope + the requested availability,
-      // mirroring Scripts (#1357). partner_id is denormalized onto org rows for
-      // RLS consistency; a partner-wide template has org_id NULL.
+      // mirroring Scripts (#1357). EXACTLY ONE axis is set: an org-owned
+      // template is (org_id set, partner_id NULL), a partner-wide template is
+      // (org_id NULL, partner_id set). The old code denormalized partner_id
+      // onto org rows "for RLS consistency"; that shape is what made the
+      // partner-wide read predicate leak across orgs (security review
+      // 2026-08-16 §1.5) and is now rejected by
+      // alert_templates_one_owner_chk.
       let orgId: string | null = data.orgId ?? null;
       let partnerId: string | null = null;
 
       if (auth.scope === 'organization') {
         if (!auth.orgId) return c.json({ error: 'Organization context required' }, 403);
         orgId = auth.orgId;
-        partnerId = auth.partnerId ?? null;
+        partnerId = null;
       } else if (auth.scope === 'partner') {
         if (data.availability === 'partner') {
           orgId = null;
           partnerId = auth.partnerId ?? null;
           if (!partnerId) return c.json({ error: 'Partner context required' }, 403);
+          // Partner-wide row: capability gate, not just scope (§1.1 #5).
+          if (!canManagePartnerWidePolicies(auth)) {
+            return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+          }
         } else {
           if (!orgId) {
             const single = auth.accessibleOrgIds?.[0];
@@ -212,7 +263,8 @@ templateRoutes.post(
           if (!auth.canAccessOrg(orgId)) {
             return c.json({ error: 'Access to this organization denied' }, 403);
           }
-          partnerId = auth.partnerId ?? null;
+          // Org-owned row: the partner axis stays NULL (see the XOR note above).
+          partnerId = null;
         }
       }
       // System scope: orgId from the request body (may be null), no partner axis.

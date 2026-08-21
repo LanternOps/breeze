@@ -82,7 +82,13 @@
     "orderedList": "Liste numérotée",
     "link": "Lien",
     "linkPrompt": "Saisissez une URL (http:// ou https://)",
-    "linkInvalid": "Seuls les liens http:// et https:// sont autorisés"
+    "linkInvalid": "Seuls les liens http:// et https:// sont autorisés",
+    "insertTable": "Tableau",
+    "addRow": "Ajouter une ligne",
+    "deleteRow": "Supprimer la ligne",
+    "addColumn": "Ajouter une colonne",
+    "deleteColumn": "Supprimer la colonne",
+    "deleteTable": "Supprimer le tableau"
   },
   "actions": {
     "save": "Enregistrer",
@@ -252,7 +258,11 @@
       "viewAll": "Voir tout",
       "allClear": "Tout est clair",
       "empty": "Aucune alerte active dans votre flotte",
-      "fallbackTitle": "Alerte"
+      "fallbackTitle": "Alerte",
+      "noDevicesTitle": "Aucun appareil ne transmet encore de données",
+      "noDevicesHint": "Les alertes s'afficheront dès qu'un appareil sera inscrit.",
+      "noActiveAlerts": "Aucune alerte active",
+      "deviceStatusUnavailable": "État des appareils indisponible : impossible de confirmer la couverture du parc."
     },
     "customizer": {
       "title": "Customizer de tableau de bord",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVE",
       "kevDevices": "{{count}} appareils",
       "kevDevices_one": "{{count}} appareil",
-      "kevDevices_other": "{{count}} appareils"
+      "kevDevices_other": "{{count}} appareils",
+      "noDevicesTitle": "Aucun appareil ne transmet encore de données",
+      "noDevicesHint": "Inscrivez un appareil pour lancer la recherche de vulnérabilités.",
+      "noneReported": "Aucune vulnérabilité ouverte signalée",
+      "coverageUnknown": "État des appareils indisponible : impossible de confirmer la couverture de l'analyse."
     },
     "refreshFailed": "Impossible d'actualiser — affichage de données plus anciennes"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} appareil(s) utilisent l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
+    "message_one": "{{count}} appareil utilise l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
+    "message_other": "{{count}} appareils utilisent l'édition hébergée de l'agent sur ce serveur auto-hébergé. Migrez vers l'édition de l'agent auto-hébergé.",
     "cta": "Comment migrer"
   },
   "longTail": {

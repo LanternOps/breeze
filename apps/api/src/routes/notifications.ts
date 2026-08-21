@@ -48,7 +48,7 @@ notificationRoutes.get(
         .select()
         .from(userNotifications)
         .where(and(...conditions))
-        .orderBy(desc(userNotifications.createdAt))
+        .orderBy(desc(userNotifications.createdAt), desc(userNotifications.id))
         .limit(query.limit)
         .offset(query.offset),
       db

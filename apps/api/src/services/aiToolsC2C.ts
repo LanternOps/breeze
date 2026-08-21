@@ -261,7 +261,7 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
           .from(c2cBackupItems)
           .leftJoin(c2cBackupConfigs, eq(c2cBackupItems.configId, c2cBackupConfigs.id))
           .where(whereClause)
-          .orderBy(desc(c2cBackupItems.createdAt))
+          .orderBy(desc(c2cBackupItems.createdAt), desc(c2cBackupItems.id))
           .limit(limit)
           .offset(offset),
         db

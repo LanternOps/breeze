@@ -596,6 +596,8 @@
     "address": "Indirizzo in ingresso",
     "localPart": "Parte locale dell'indirizzo in ingresso",
     "domainNotConfigured": "Il dominio in ingresso della piattaforma non è ancora configurato. Contatta l'amministratore.",
+    "domainNotConfiguredSelfHosted": "Non è configurato alcun dominio in ingresso della piattaforma, quindi non è possibile generare un indirizzo in ingresso. Imposta <var>TICKETS_INBOUND_DOMAIN</var> sul tuo server Breeze e riavvia l'API — vedi <docs>Configurazione da e-mail a ticket</docs>. In alternativa, collega una cassetta postale condivisa Microsoft 365 — questo percorso non richiede alcun dominio in ingresso.",
+    "addressViaMailbox": "Nessun indirizzo in ingresso nativo è configurato, ma le email continuano ad arrivare tramite la casella di posta Microsoft 365 collegata qui sotto: quel percorso non richiede un dominio in ingresso.",
     "triageOrganization": "Organizzazione di triage predefinita",
     "unknownSenders": "Mittenti sconosciuti",
     "unknownDescription": "Cosa fare con email il cui mittente non è un utente del portale, un dominio cliente mappato o una risposta a un ticket esistente.",
@@ -1010,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Accesso remoto",
     "description": "Gestisci restrizioni dei tunnel, allowlist delle destinazioni e sessioni attive per sito.",
-    "ipRestrictions": {
-      "title": "Restrizioni IP di origine",
-      "description": "Limita quali IP possono creare tunnel. Lascia vuoto per consentire a qualsiasi utente autenticato.",
-      "empty": "(Nessuna restrizione - qualsiasi utente autenticato può creare tunnel)",
-      "placeholder": "es. 10.0.0.0/8"
-    },
     "sites": {
       "title": "Siti",
       "empty": "(Nessun sito in questa organizzazione)",
@@ -3353,5 +3349,25 @@
       "deleted": "Variabile eliminata",
       "deleteFailed": "Impossibile eliminare la variabile"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Associazioni del componente aggiuntivo Outlook",
+    "description": "Tecnici associati al componente aggiuntivo tecnico di Outlook. Revocare un'associazione disconnette il tecnico dal componente aggiuntivo su ogni dispositivo.",
+    "loading": "Caricamento delle associazioni…",
+    "loadFailed": "Impossibile caricare le associazioni.",
+    "retry": "Riprova",
+    "empty": "Nessun tecnico ha ancora associato il componente aggiuntivo Outlook.",
+    "user": "Utente",
+    "entraTenant": "Tenant Entra",
+    "boundOn": "Associato il",
+    "mfaVerified": "MFA verificata",
+    "actions": "Azioni",
+    "revoke": "Revoca",
+    "revoked": "Associazione revocata",
+    "revokeFailed": "Impossibile revocare l'associazione",
+    "confirmTitle": "Revoca associazione del componente aggiuntivo Outlook",
+    "confirmBody": "Questo disconnette {{name}} dal componente aggiuntivo tecnico di Outlook su ogni dispositivo. Potrà associarsi di nuovo effettuando l'accesso.",
+    "cancel": "Annulla",
+    "confirmRevoke": "Revoca associazione"
   }
 }

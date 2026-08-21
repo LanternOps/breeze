@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import {
   Dimensions,
   NativeScrollEvent,
@@ -44,7 +44,7 @@ const PAGE_COUNT = 3;
 export function OnboardingScreen({ onComplete }: Props) {
   const insets = useSafeAreaInsets();
   const theme = useApprovalTheme('dark');
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
   const [page, setPage] = useState(0);
   const { width } = Dimensions.get('window');
 

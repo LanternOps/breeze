@@ -9,13 +9,14 @@
  * `host` (object-model seam) and `clientHost` (wire discriminant) straight to
  * ChatPane once a session exists, and never touches a concrete host itself.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import {
   AuthBlockedError,
   getStoredSession,
   signIn,
   type AuthBlockKind,
-  type ClientSession,
+  type PersonaSession,
+  type TechPersonaSession,
 } from '../auth/session';
 import { BlockedScreen } from './BlockedScreen';
 import { SignInScreen } from './SignInScreen';
@@ -28,9 +29,28 @@ type Phase =
   | { name: 'loading' }
   | { name: 'signin'; failed: boolean }
   | { name: 'blocked'; kind: AuthBlockKind }
-  | { name: 'ready'; session: ClientSession };
+  | { name: 'ready'; session: PersonaSession };
 
-export function App({ host, clientHost }: { host: HostAdapter; clientHost: ClientHost }) {
+export interface AppProps {
+  host: HostAdapter;
+  clientHost: ClientHost;
+  /** Which exchange endpoint signIn hits. Defaults to '/client-ai/auth/exchange' (Word/Excel/PowerPoint unchanged). */
+  exchangePath?: string;
+  /** Renders a 'tech'-persona session instead of ChatPane. Omitted for Word/Excel/PowerPoint, which never see persona 'tech'. */
+  techPane?: ComponentType<{ session: TechPersonaSession }>;
+  /**
+   * Outlook-only technician bind/re-link affordance (Task 25) — a "Technician
+   * sign-in" control that opens BindFlow, supplied by Outlook's main.tsx so App
+   * stays host-neutral. Rendered on the sign-in screen, on the client-resolution
+   * blocked screen (`not_provisioned` — a technician hitting the client-AI 404
+   * before ever binding), and on the `relink_required` blocked screen (a
+   * previously-bound technician whose binding needs to be re-established).
+   * Omitted entirely for Word/Excel/PowerPoint.
+   */
+  signInExtra?: ReactNode;
+}
+
+export function App({ host, clientHost, exchangePath, techPane, signInExtra }: AppProps) {
   const [phase, setPhase] = useState<Phase>({ name: 'loading' });
 
   // Item-changed rebinding (the mail-model behavior) needs NO App-level effect:
@@ -50,7 +70,7 @@ export function App({ host, clientHost }: { host: HostAdapter; clientHost: Clien
     }
     let cancelled = false;
     // Silent path only — popups are blocked outside user gestures.
-    signIn({ interactive: false })
+    signIn({ interactive: false, exchangePath })
       .then((session) => {
         if (!cancelled) setPhase({ name: 'ready', session });
       })
@@ -62,17 +82,17 @@ export function App({ host, clientHost }: { host: HostAdapter; clientHost: Clien
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [exchangePath]);
 
   const interactiveSignIn = useCallback(() => {
     setPhase({ name: 'loading' });
-    signIn({ interactive: true })
+    signIn({ interactive: true, exchangePath })
       .then((session) => setPhase({ name: 'ready', session }))
       .catch((err: unknown) => {
         if (err instanceof AuthBlockedError) setPhase({ name: 'blocked', kind: err.kind });
         else setPhase({ name: 'signin', failed: true });
       });
-  }, []);
+  }, [exchangePath]);
 
   // ErrorBoundary wraps every phase so an uncaught render error (a host adapter
   // throwing, a malformed payload) surfaces a readable message instead of
@@ -88,15 +108,28 @@ export function App({ host, clientHost }: { host: HostAdapter; clientHost: Clien
           </div>
         );
       case 'signin':
-        return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} />;
+        return <SignInScreen failed={phase.failed} onSignIn={interactiveSignIn} extra={signInExtra} />;
       case 'blocked':
         return (
           <BlockedScreen
             kind={phase.kind}
             onRetry={phase.kind === 'retryable' ? interactiveSignIn : undefined}
+            extra={
+              phase.kind === 'not_provisioned' || phase.kind === 'relink_required'
+                ? signInExtra
+                : undefined
+            }
           />
         );
       case 'ready':
+        if (phase.session.persona === 'tech') {
+          const TechPane = techPane;
+          // Defensive: a tech session must never fall into the client chat, even
+          // if a host that never sets `techPane` (Word/Excel/PowerPoint) somehow
+          // gets one back from the exchange.
+          if (!TechPane) return <BlockedScreen kind="unsupported_persona" />;
+          return <TechPane session={phase.session} />;
+        }
         return <ChatPane session={phase.session} host={host} clientHost={clientHost} />;
     }
   }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -234,18 +236,23 @@ func applyUserAutoMount(sid string, rules []LibraryRule) (written []LibraryRule,
 }
 
 // pokeAutoMountTimer forces OneDrive to process AutoMount promptly (it
-// otherwise runs on an up-to-8h timer). Only possible when the user has a
-// Business1 account key (i.e. is signed in); missing key is fine — OneDrive
-// will process on sign-in. Business1 specifically: any signed-in business
-// account's OneDrive process serves the same AutoMount timer, so poking the
-// primary slot is sufficient — no need to enumerate Business2..9 here.
+// otherwise runs on an up-to-8h timer). The poke lives under a work-account
+// slot key, so it is only possible when the user is signed in to at least one;
+// no slot at all is fine — OneDrive processes AutoMount on sign-in anyway.
+//
+// Every populated slot is poked, not just Business1: account slots are sparse
+// after an unlink, so a profile can have Business2/Business3 with no Business1
+// at all. Poking only slot 1 on such a profile is a silent no-op and the newly
+// entitled library then waits on OneDrive's own multi-hour timer.
 func pokeAutoMountTimer(sid string) {
-	k, err := registry.OpenKey(registry.USERS, sid+`\`+businessAccountKeyPath(1), registry.SET_VALUE)
-	if err != nil {
-		return
+	for n := 1; n <= maxBusinessAccounts; n++ {
+		k, err := registry.OpenKey(registry.USERS, sid+`\`+businessAccountKeyPath(n), registry.SET_VALUE)
+		if err != nil {
+			continue // slot not present (sparse accounts) — keep scanning
+		}
+		_ = k.SetQWordValue("TimerAutoMount", 1)
+		k.Close()
 	}
-	defer k.Close()
-	_ = k.SetQWordValue("TimerAutoMount", 1)
 }
 
 // activeUserSessions enumerates active WTS sessions and resolves each to a SID
@@ -286,15 +293,72 @@ func activeUserSessions() []userSession {
 	return out
 }
 
+// sidLookupCache memoizes successful group-name → SID resolutions.
+//
+// LookupSID is an LSA call that, for a domain group on a workstation with no
+// cached ticket, becomes a network round-trip to a DC. PartitionLibraries calls
+// isTokenGroupMember once per local_ad_group rule per session per Apply, so a
+// policy with a handful of group-targeted libraries across two logged-on users
+// pays that cost every heartbeat cycle — on a slow or unreachable DC link the
+// repeated lookups are the whole cost of the pass.
+//
+// Only successes are cached: a miss usually means the group does not exist YET
+// (just created, or the DC was briefly unreachable), and caching that would
+// keep the library fail-closed long after the group appeared. Entries expire so
+// a group deleted and recreated under a new SID converges without a restart.
+var sidLookupCache = struct {
+	sync.Mutex
+	entries map[string]sidLookupEntry
+}{entries: map[string]sidLookupEntry{}}
+
+type sidLookupEntry struct {
+	sid       string
+	expiresAt time.Time
+}
+
+const sidLookupTTL = 10 * time.Minute
+
+// lookupGroupSID resolves a group name to its uppercase SID string, memoized
+// for sidLookupTTL. Returns ok=false when the name cannot be resolved.
+func lookupGroupSID(groupName string) (string, bool) {
+	key := strings.ToUpper(groupName)
+	now := time.Now()
+
+	sidLookupCache.Lock()
+	if e, hit := sidLookupCache.entries[key]; hit && now.Before(e.expiresAt) {
+		sidLookupCache.Unlock()
+		return e.sid, true
+	}
+	sidLookupCache.Unlock()
+
+	// Resolved outside the lock: a slow DC round-trip must not block the other
+	// sessions' lookups. A duplicate concurrent resolve is harmless (same answer).
+	sid, _, _, err := windows.LookupSID("", groupName)
+	if err != nil {
+		return "", false
+	}
+	upper := strings.ToUpper(sid.String())
+
+	sidLookupCache.Lock()
+	// Keys come from policy-authored group names, so the map is naturally tiny;
+	// the cap is only a backstop against an absurd policy growing it unbounded.
+	if len(sidLookupCache.entries) >= 256 {
+		sidLookupCache.entries = map[string]sidLookupEntry{}
+	}
+	sidLookupCache.entries[key] = sidLookupEntry{sid: upper, expiresAt: now.Add(sidLookupTTL)}
+	sidLookupCache.Unlock()
+	return upper, true
+}
+
 // isTokenGroupMember resolves a local/domain group name to a SID and checks the
 // session token's group list. Unresolvable names are treated as non-member
 // (fail closed).
 func isTokenGroupMember(s userSession, groupName string) bool {
-	sid, _, _, err := windows.LookupSID("", groupName)
-	if err != nil {
+	sid, ok := lookupGroupSID(groupName)
+	if !ok {
 		return false
 	}
-	return s.groupSIDs[strings.ToUpper(sid.String())]
+	return s.groupSIDs[sid]
 }
 
 // sessionUpns reads the signed-in user's UPNs across all of the session's

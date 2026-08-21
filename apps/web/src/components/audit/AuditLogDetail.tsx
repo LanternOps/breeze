@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { Clock, Globe, Shield, User, X } from 'lucide-react';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { useAuditActionFormatter } from '@/lib/auditFormat';
 
 export type AuditLogEntry = {
   id: string;
@@ -36,6 +37,7 @@ const formatJson = (value: Record<string, unknown>) => JSON.stringify(value, nul
 
 export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: AuditLogDetailProps) {
   const { t } = useTranslation('admin');
+  const formatAuditAction = useAuditActionFormatter();
   if (!isOpen) return null;
 
   return (
@@ -45,7 +47,10 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
           <div className="min-w-0">
             <h2 className="text-lg font-semibold">{t('audit.auditLogDetail.title')}</h2>
             <p className="truncate text-sm text-muted-foreground">
-              {t('audit.auditLogDetail.subtitle', { action: entry.action, resource: entry.resource })}
+              {t('audit.auditLogDetail.subtitle', {
+                action: formatAuditAction(entry.action),
+                resource: entry.resource,
+              })}
             </p>
           </div>
           <button
@@ -70,7 +75,9 @@ export default function AuditLogDetail({ entry, isOpen, onClose, timezone }: Aud
                   {formatDateTime(entry.timestamp, { timeZone: timezone })}
                 </p>
                 <p>
-                  <span className="font-medium text-foreground">{t('audit.auditLogDetail.fields.action')}</span> {entry.action}
+                  <span className="font-medium text-foreground">{t('audit.auditLogDetail.fields.action')}</span>{' '}
+                  {formatAuditAction(entry.action)}{' '}
+                  <code className="font-mono text-xs text-muted-foreground">({entry.action})</code>
                 </p>
                 <p>
                   <span className="font-medium text-foreground">{t('audit.auditLogDetail.fields.resource')}</span> {entry.resource}{' '}

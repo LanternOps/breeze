@@ -476,7 +476,7 @@ psaRoutes.get(
       })
       .from(psaConnectionsTable)
       .where(whereClause)
-      .orderBy(desc(psaConnectionsTable.updatedAt))
+      .orderBy(desc(psaConnectionsTable.updatedAt), desc(psaConnectionsTable.id))
       .limit(limit)
       .offset(offset);
 
@@ -1032,7 +1032,7 @@ psaRoutes.get(
     const rows = await (perms?.allowedSiteIds
       ? rowsQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
       : rowsQuery.where(whereClause))
-      .orderBy(desc(psaTicketMappings.updatedAt))
+      .orderBy(desc(psaTicketMappings.updatedAt), desc(psaTicketMappings.id))
       .limit(limit)
       .offset(offset);
 
@@ -1105,7 +1105,7 @@ psaRoutes.get(
     const rows = await (perms?.allowedSiteIds
       ? rowsQuery.leftJoin(devices, eq(psaTicketMappings.deviceId, devices.id)).where(whereClause)
       : rowsQuery.where(whereClause))
-      .orderBy(desc(psaTicketMappings.updatedAt))
+      .orderBy(desc(psaTicketMappings.updatedAt), desc(psaTicketMappings.id))
       .limit(limit)
       .offset(offset);
 

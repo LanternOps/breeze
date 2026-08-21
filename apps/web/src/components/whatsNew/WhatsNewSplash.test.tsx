@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import WhatsNewSplash from './WhatsNewSplash';
+import WhatsNewSplash, { REOPEN_EVENT } from './WhatsNewSplash';
 import { LAST_SEEN_KEY } from '../../lib/whatsNewState';
 
 // t returns key + interpolated version so assertions are stable without real i18n.
@@ -50,13 +50,34 @@ describe('WhatsNewSplash', () => {
     });
   });
 
-  it('renders nothing when there is no applicable entry', async () => {
-    window.localStorage.clear(); // first-ever load => baseline only, no show
+  // #3646: with no stored floor (existing user upgrading from a pre-feature
+  // build) the newest shipped entry must still auto-show rather than be
+  // silently baselined away.
+  it('shows the newest entry when no floor is stored', async () => {
+    window.localStorage.clear();
+    render(<WhatsNewSplash />);
+    expect(await screen.findByText(/whatsNew\.title:/)).toBeInTheDocument();
+    // Nothing is written until the user acknowledges it.
+    expect(window.localStorage.getItem(LAST_SEEN_KEY)).toBeNull();
+  });
+
+  it('renders nothing once the newest entry has been acknowledged', async () => {
+    window.localStorage.setItem(LAST_SEEN_KEY, '99.0.0');
     const { container } = render(<WhatsNewSplash />);
-    // Give the mount effect a tick to run (it will write the baseline and stay closed).
     await waitFor(() => {
       expect(container).toBeEmptyDOMElement();
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  // The sidebar link reopens via a window event and ignores the dismissal floor.
+  it('reopens on the sidebar event even when the floor suppresses the splash', async () => {
+    window.localStorage.setItem(LAST_SEEN_KEY, '99.0.0');
+    render(<WhatsNewSplash />);
+    await waitFor(() => {
+      expect(screen.queryByText('whatsNew.gotIt')).not.toBeInTheDocument();
+    });
+    fireEvent(window, new Event(REOPEN_EVENT));
+    expect(await screen.findByText(/whatsNew\.title:/)).toBeInTheDocument();
   });
 });

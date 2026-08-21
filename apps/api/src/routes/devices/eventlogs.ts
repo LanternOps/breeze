@@ -74,7 +74,7 @@ eventLogsRoutes.get(
       .select()
       .from(deviceEventLogs)
       .where(whereCondition)
-      .orderBy(desc(deviceEventLogs.timestamp))
+      .orderBy(desc(deviceEventLogs.timestamp), desc(deviceEventLogs.id))
       .limit(limit)
       .offset(offset);
 

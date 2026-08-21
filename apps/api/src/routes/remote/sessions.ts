@@ -401,7 +401,7 @@ sessionRoutes.get(
       .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
       .leftJoin(users, eq(remoteSessions.userId, users.id))
       .where(whereCondition)
-      .orderBy(desc(remoteSessions.createdAt))
+      .orderBy(desc(remoteSessions.createdAt), desc(remoteSessions.id))
       .limit(limit)
       .offset(offset);
 
@@ -556,7 +556,7 @@ sessionRoutes.get(
       .innerJoin(devices, eq(remoteSessions.deviceId, devices.id))
       .leftJoin(users, eq(remoteSessions.userId, users.id))
       .where(whereCondition)
-      .orderBy(desc(remoteSessions.createdAt))
+      .orderBy(desc(remoteSessions.createdAt), desc(remoteSessions.id))
       .limit(limit)
       .offset(offset);
 

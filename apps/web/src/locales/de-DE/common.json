@@ -82,7 +82,13 @@
     "orderedList": "Nummerierte Liste",
     "link": "Link",
     "linkPrompt": "Geben Sie eine URL ein (http:// oder https://)",
-    "linkInvalid": "Nur http://- und https://-Links sind zulässig"
+    "linkInvalid": "Nur http://- und https://-Links sind zulässig",
+    "insertTable": "Tabelle",
+    "addRow": "Zeile hinzufügen",
+    "deleteRow": "Zeile löschen",
+    "addColumn": "Spalte hinzufügen",
+    "deleteColumn": "Spalte löschen",
+    "deleteTable": "Tabelle löschen"
   },
   "actions": {
     "save": "Speichern",
@@ -252,7 +258,11 @@
       "viewAll": "Alle anzeigen",
       "allClear": "Alles in Ordnung",
       "empty": "Keine aktiven Warnmeldungen im Gerätebestand",
-      "fallbackTitle": "Warnmeldung"
+      "fallbackTitle": "Warnmeldung",
+      "noDevicesTitle": "Noch keine Geräte melden Daten",
+      "noDevicesHint": "Warnungen erscheinen, sobald ein Gerät registriert ist.",
+      "noActiveAlerts": "Keine aktiven Warnungen",
+      "deviceStatusUnavailable": "Gerätestatus nicht verfügbar — Flottenabdeckung kann nicht bestätigt werden."
     },
     "customizer": {
       "title": "Dashboard-Anpassung",
@@ -353,7 +363,11 @@
       "kevCves_other": "{{count}} CVEs",
       "kevDevices": "{{count}} Geräte",
       "kevDevices_one": "{{count}} Gerät",
-      "kevDevices_other": "{{count}} Geräte"
+      "kevDevices_other": "{{count}} Geräte",
+      "noDevicesTitle": "Noch keine Geräte melden Daten",
+      "noDevicesHint": "Registrieren Sie ein Gerät, um mit der Suche nach Schwachstellen zu beginnen.",
+      "noneReported": "Keine offenen Funde gemeldet",
+      "coverageUnknown": "Gerätestatus nicht verfügbar — Scan-Abdeckung kann nicht bestätigt werden."
     },
     "refreshFailed": "Aktualisierung fehlgeschlagen — ältere Daten werden angezeigt"
   },
@@ -706,7 +720,8 @@
     }
   },
   "migrationBanner": {
-    "message": "{{count}} Gerät(e) verwenden auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
+    "message_one": "{{count}} Gerät verwendet auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
+    "message_other": "{{count}} Geräte verwenden auf diesem selbst gehosteten Server die gehostete Agent-Edition. Wechseln Sie zur Self-Hosting-Agent-Edition.",
     "cta": "Anleitung zur Migration"
   },
   "longTail": {

@@ -130,6 +130,47 @@ func providerFromName(name string) string {
 	}
 }
 
+// resolveWSCPrimary picks the Windows Security Center product that owns the
+// device's provider label: the first product reporting real-time protection,
+// falling back to the first registered product. The second return value is
+// whether that product is a genuine attribution — a registered product resolves
+// the provider even when its display name maps to "other" (see
+// defenderOwnsProvider).
+func resolveWSCPrimary(products []AVProduct) (AVProduct, bool) {
+	if len(products) == 0 {
+		return AVProduct{}, false
+	}
+
+	primary := products[0]
+	for _, candidate := range products {
+		if candidate.RealTimeProtection {
+			primary = candidate
+			break
+		}
+	}
+
+	return primary, primary.Registered
+}
+
+// defenderOwnsProvider reports whether the Microsoft Defender fallback may claim
+// the `provider` label for this row.
+//
+// It may when no other AV source identified a provider, or when Defender is the
+// only source reporting active real-time protection. It must NOT when another
+// registered product already supplied both the provider and the
+// real-time-protection value: provider "other" is a real attribution for a
+// registered product whose display name we don't map (CylancePROTECT, for
+// example), not a "nothing found" sentinel. Treating it as one relabelled a
+// third-party product's real-time protection as Defender's, reporting
+// real_time_protection=true on a windows_defender row for a device where
+// Defender was fully disabled (#3593).
+func defenderOwnsProvider(providerIdentified, currentRealTime, defenderRealTime bool) bool {
+	if !providerIdentified {
+		return true
+	}
+	return defenderRealTime && !currentRealTime
+}
+
 func latestScanTime(defenderStatus DefenderStatus) string {
 	if defenderStatus.LastFullScan != "" {
 		return defenderStatus.LastFullScan
@@ -989,6 +1030,10 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.Provider = "other"
 	status.EncryptionStatus = "unknown"
 
+	// "other" is both the default and a legitimate provider value, so track
+	// separately whether an AV source actually resolved the provider (#3593).
+	providerIdentified := false
+
 	// Windows Security Center AV products (workstations) first.
 	if runtime.GOOS == "windows" {
 		products, wscErr := GetWindowsSecurityCenterProducts()
@@ -999,17 +1044,11 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 		} else {
 			status.WindowsSecurityCenterAvailable = true
 			status.AVProducts = products
-			if len(products) > 0 {
-				primary := products[0]
-				for _, candidate := range products {
-					if candidate.RealTimeProtection {
-						primary = candidate
-						break
-					}
-				}
+			if primary, identified := resolveWSCPrimary(products); primary.Provider != "" {
 				status.Provider = primary.Provider
 				status.RealTimeProtection = primary.RealTimeProtection
 				status.DefinitionsUpdatedAt = primary.Timestamp
+				providerIdentified = identified
 			}
 		}
 	}
@@ -1022,8 +1061,9 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 				errs = append(errs, macDefenderErr)
 			}
 		} else {
-			if status.Provider == "other" && macDefenderStatus.Enabled {
+			if !providerIdentified && macDefenderStatus.Enabled {
 				status.Provider = "windows_defender"
+				providerIdentified = true
 			}
 			if macDefenderProduct != nil {
 				status.AVProducts = append(status.AVProducts, *macDefenderProduct)
@@ -1061,8 +1101,9 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 			}
 		} else if elasticProduct != nil {
 			status.AVProducts = append(status.AVProducts, *elasticProduct)
-			if status.Provider == "other" {
+			if !providerIdentified {
 				status.Provider = elasticProduct.Provider
+				providerIdentified = true
 			}
 			if status.ProviderVersion == "" {
 				status.ProviderVersion = elasticVersion
@@ -1080,7 +1121,7 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 			errs = append(errs, defErr)
 		}
 	} else {
-		if status.Provider == "other" {
+		if defenderOwnsProvider(providerIdentified, status.RealTimeProtection, defenderStatus.RealTimeProtection) {
 			status.Provider = "windows_defender"
 		}
 		if status.ProviderVersion == "" {

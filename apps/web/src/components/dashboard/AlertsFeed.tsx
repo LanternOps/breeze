@@ -1,10 +1,11 @@
-import { AlertTriangle, AlertCircle, Info, XCircle, CheckCircle2, ChevronRight } from 'lucide-react';
+import { AlertTriangle, AlertCircle, Info, XCircle, CheckCircle2, ChevronRight, HardDriveDownload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { useTranslation } from 'react-i18next';
+import { fleetPresence } from './fleetPresence';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
-import type { AlertRow, AlertsSummary } from './types';
+import type { AlertRow, AlertsSummary, DeviceStats } from './types';
 
 const severityConfig: Record<string, { icon: typeof Info; chipClass: string; iconClass: string }> = {
   critical: { icon: XCircle, chipClass: 'bg-destructive/10', iconClass: 'text-destructive' },
@@ -19,15 +20,20 @@ const severityConfig: Record<string, { icon: typeof Info; chipClass: string; ico
  * filters server-side); rows with a device deep-link to it. Hidden when the
  * caller can't read alerts — an empty success state on a 403 would be a
  * false health claim.
+ *
+ * An empty feed is only "all clear" once the fleet denominator is known to be
+ * non-zero — see `fleetPresence` (#3613).
  */
 export default function AlertsFeed({
   alerts,
   summary,
+  devices,
   showOrg,
   onRetry,
 }: {
   alerts: DashboardQueryState<AlertRow[]>;
   summary: DashboardQueryState<AlertsSummary>;
+  devices: DashboardQueryState<DeviceStats>;
   showOrg: boolean;
   onRetry: () => void;
 }) {
@@ -108,18 +114,70 @@ export default function AlertsFeed({
   }
 
   const rows = alerts.data ?? [];
+  const presence = fleetPresence(devices);
+
+  // An empty feed says nothing about fleet health until the device count is
+  // known. Only `present` earns the green all-clear; the other three states
+  // report what we actually know instead of asserting health.
+  const renderEmpty = () => {
+    if (presence === 'loading') {
+      return (
+        <div
+          className="flex h-40 flex-col items-center justify-center gap-2"
+          data-testid="dashboard-alerts-empty-pending"
+        >
+          <div className="skeleton h-10 w-10 rounded-full" />
+          <div className="skeleton h-3.5 w-40 rounded" />
+        </div>
+      );
+    }
+
+    if (presence === 'none') {
+      return (
+        <div
+          className="flex h-40 flex-col items-center justify-center gap-2 text-center"
+          data-testid="dashboard-alerts-empty-no-devices"
+        >
+          <div className="rounded-full bg-muted p-2.5">
+            <HardDriveDownload className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <p className="text-sm font-medium text-foreground/80">{t('dashboard.alerts.noDevicesTitle')}</p>
+          <p className="text-xs text-muted-foreground">{t('dashboard.alerts.noDevicesHint')}</p>
+        </div>
+      );
+    }
+
+    if (presence === 'unknown') {
+      return (
+        <div
+          className="flex h-40 flex-col items-center justify-center gap-2 text-center"
+          data-testid="dashboard-alerts-empty-coverage-unknown"
+        >
+          <div className="rounded-full bg-muted p-2.5">
+            <Info className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <p className="text-sm font-medium text-foreground/80">{t('dashboard.alerts.noActiveAlerts')}</p>
+          <p className="text-xs text-muted-foreground">{t('dashboard.alerts.deviceStatusUnavailable')}</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex h-40 flex-col items-center justify-center gap-2 text-center" data-testid="dashboard-alerts-all-clear">
+        <div className="rounded-full bg-success/10 p-2.5">
+          <CheckCircle2 className="h-5 w-5 text-success" />
+        </div>
+        <p className="text-sm font-medium text-foreground/80">{t('dashboard.alerts.allClear')}</p>
+        <p className="text-xs text-muted-foreground">{t('dashboard.alerts.empty')}</p>
+      </div>
+    );
+  };
 
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs">
       {header}
       {rows.length === 0 ? (
-        <div className="flex h-40 flex-col items-center justify-center gap-2 text-center">
-          <div className="rounded-full bg-success/10 p-2.5">
-            <CheckCircle2 className="h-5 w-5 text-success" />
-          </div>
-          <p className="text-sm font-medium text-foreground/80">{t('dashboard.alerts.allClear')}</p>
-          <p className="text-xs text-muted-foreground">{t('dashboard.alerts.empty')}</p>
-        </div>
+        renderEmpty()
       ) : (
         <div className="-mx-2 divide-y divide-border/60">
           {rows.map((alert) => {

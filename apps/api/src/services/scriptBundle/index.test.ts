@@ -392,7 +392,8 @@ describe('importBundle', () => {
   it('resolves tags by name in the target scope: reuses existing, creates missing, links both', async () => {
     const bundle = validBundle([{ ...baseEntry, tags: ['printing', 'windows'] }]);
     h.state.selectQueue.push(
-      [], // findExistingByName → none
+      [], // findConflictByName → no org-owned match
+      [], // findConflictByName → no partner-wide match (#3450)
       [{ id: TAG_ID, name: 'printing' }] // ensureTagIds → 'printing' exists, 'windows' missing
     );
     const result = await importBundle(makeAuth(), bundle, { mode: 'skip', availability: 'org' });
@@ -438,10 +439,124 @@ describe('importBundle', () => {
     expect(h.state.updates).toHaveLength(0);
   });
 
+  // -------------------------------------------------------------------------
+  // #3450: partner-wide collisions on an org-target import.
+  // -------------------------------------------------------------------------
+  it('skip mode skips a partner-wide name match instead of creating a duplicate (#3450)', async () => {
+    h.state.selectQueue.push(
+      [], // no org-owned row
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'something else' }]
+    );
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode: 'skip',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('skipped' in result) {
+      expect(result.skipped).toBe(1);
+      expect(result.imported).toBe(0);
+      expect(result.scripts[0]).toMatchObject({ action: 'skipped', scriptId: SCRIPT_ID });
+    }
+    // The whole point: no new scripts row.
+    expect(h.state.inserts.filter((i) => i.table === scripts)).toHaveLength(0);
+  });
+
+  it('new-version mode refuses to version a read-only partner-wide row, and does not duplicate it', async () => {
+    h.state.selectQueue.push(
+      [],
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: 'DIFFERENT content' }]
+    );
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode: 'new-version',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.name).toBe(baseEntry.name);
+      expect(result.errors[0]!.error).toContain('partner-wide');
+      expect(result.errors[0]!.error).toContain('read-only');
+      expect(result.imported).toBe(0);
+      expect(result.versioned).toBe(0);
+    }
+    // Neither a duplicate org row nor any mutation of the partner-wide row.
+    expect(h.state.inserts.filter((i) => i.table === scripts)).toHaveLength(0);
+    expect(h.state.inserts.filter((i) => i.table === scriptVersions)).toHaveLength(0);
+    expect(h.state.updates).toHaveLength(0);
+  });
+
+  it('isolates the partner-wide new-version refusal to its own entry — the rest of the bundle still imports', async () => {
+    const bundle = validBundle([baseEntry, { ...baseEntry, name: 'Unrelated script' }]);
+    h.state.selectQueue.push(
+      [], // entry 1: no org-owned match
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: 'DIFFERENT content' }],
+      [], // entry 2: no org-owned match
+      [] // entry 2: no partner-wide match either → imports normally
+    );
+    const result = await importBundle(makeAuth(), bundle, {
+      mode: 'new-version',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('errors' in result) {
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]!.index).toBe(0);
+      // The refusal must `continue`, not abort the loop.
+      expect(result.imported).toBe(1);
+      expect(result.scripts).toHaveLength(1);
+      expect(result.scripts[0]).toMatchObject({ index: 1, name: 'Unrelated script', action: 'imported' });
+    }
+    const scriptInserts = h.state.inserts.filter((i) => i.table === scripts);
+    expect(scriptInserts).toHaveLength(1);
+    expect((scriptInserts[0]!.values as Record<string, unknown>).name).toBe('Unrelated script');
+  });
+
+  it('new-version mode treats an identical-content partner-wide match as a no-op skip', async () => {
+    h.state.selectQueue.push(
+      [],
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 4, content: baseEntry.content }]
+    );
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode: 'new-version',
+      availability: 'org'
+    });
+    if ('skipped' in result) {
+      expect(result.skipped).toBe(1);
+      expect(result.errors).toHaveLength(0);
+    }
+    expect(h.state.inserts.filter((i) => i.table === scripts)).toHaveLength(0);
+    expect(h.state.updates).toHaveLength(0);
+  });
+
+  it('rename mode picks a name free of BOTH the org and partner-wide namespaces', async () => {
+    h.state.selectQueue.push(
+      [], // no org-owned row
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'x' }], // partner-wide match
+      [{ name: `${baseEntry.name} (2)` }] // findFreeName: "(2)" already taken
+    );
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode: 'rename',
+      availability: 'org'
+    });
+    expect('error' in result).toBe(false);
+    if ('renamed' in result) {
+      expect(result.renamed).toBe(1);
+      expect(result.scripts[0]).toMatchObject({ action: 'renamed', finalName: `${baseEntry.name} (3)` });
+    }
+
+    // The free-name query must span both namespaces. For an ORG target,
+    // scopeCondition alone never mentions partner_id — so its presence here
+    // proves the partner-wide branch was OR'd in rather than the assertion
+    // passing on the org condition by accident.
+    const freeNameWhere = h.state.selectWheres[2];
+    expect(conditionMentionsColumn(freeNameWhere, 'partner_id')).toBe(true);
+    expect(conditionMentionsColumn(freeNameWhere, 'org_id')).toBe(true);
+  });
+
   it('conflict lookups exclude system-library rows, so a bundle can never update an is_system script', async () => {
     h.state.selectQueue.push([]);
     await importBundle(makeAuth(), validBundle([baseEntry]), { mode: 'new-version', availability: 'org' });
-    // The first SELECT is findExistingByName; its WHERE must filter on
+    // The first SELECT is findConflictByName; its WHERE must filter on
     // is_system (= false) so a system script sharing the name is never
     // matched — and therefore never rewritten by new-version mode.
     expect(h.state.selectWheres.length).toBeGreaterThan(0);
@@ -555,6 +670,75 @@ describe('previewBundle', () => {
     const auth = makeAuth({ scope: 'partner', orgId: null, partnerOrgAccess: 'selected' });
     const result = await previewBundle(auth, validBundle([baseEntry]), { availability: 'partner' });
     expect(result).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, status: 403 });
+  });
+
+  // -------------------------------------------------------------------------
+  // #3450: an org-target import collides with the caller's PARTNER-WIDE rows
+  // too. They are not writable here, but they render in the same library list,
+  // so annotating them 'new' is what produced visible same-name duplicates.
+  // -------------------------------------------------------------------------
+  it('flags a partner-wide name match as a conflict, not "new" (#3450)', async () => {
+    h.state.selectQueue.push(
+      [], // no org-owned row with this name
+      [{ id: SCRIPT_ID, name: baseEntry.name, version: 3 }] // ...but a partner-wide one exists
+    );
+    const result = await previewBundle(makeAuth(), validBundle([baseEntry]), { availability: 'org' });
+    expect('error' in result).toBe(false);
+    if ('entries' in result) {
+      expect(result.entries[0]).toMatchObject({
+        status: 'name-conflict',
+        conflictKind: 'partner-wide',
+        existingScriptId: SCRIPT_ID,
+        existingVersion: 3
+      });
+    }
+    expect(h.state.inserts).toHaveLength(0);
+    expect(h.state.updates).toHaveLength(0);
+  });
+
+  it('prefers the org-owned match over a partner-wide one and never queries for the latter', async () => {
+    h.state.selectQueue.push([{ id: SCRIPT_ID, name: baseEntry.name, version: 2 }]);
+    const result = await previewBundle(makeAuth(), validBundle([baseEntry]), { availability: 'org' });
+    if ('entries' in result) {
+      expect(result.entries[0]).toMatchObject({
+        status: 'name-conflict',
+        conflictKind: 'target-scope',
+        existingScriptId: SCRIPT_ID
+      });
+    }
+    // Only the owned lookup ran — the partner-wide lookup short-circuits, so a
+    // writable row is never shadowed by a read-only one.
+    expect(h.state.selectWheres).toHaveLength(1);
+  });
+
+  it('omits conflictKind entirely when the entry is new', async () => {
+    h.state.selectQueue.push([], []);
+    const result = await previewBundle(makeAuth(), validBundle([baseEntry]), { availability: 'org' });
+    if ('entries' in result) {
+      expect(result.entries[0]!.status).toBe('new');
+      expect(result.entries[0]).not.toHaveProperty('conflictKind');
+    }
+  });
+
+  it('does NOT run a partner-wide lookup when the target IS partner-wide (already in scope)', async () => {
+    const auth = makeAuth({ scope: 'partner', orgId: null, partnerOrgAccess: 'all' });
+    h.state.selectQueue.push([]);
+    const result = await previewBundle(auth, validBundle([baseEntry]), { availability: 'partner' });
+    expect('entries' in result).toBe(true);
+    // scopeCondition already targets (org_id IS NULL, partner_id = P); a second
+    // identical query would be pure waste.
+    expect(h.state.selectWheres).toHaveLength(1);
+  });
+
+  it('does NOT run a partner-wide lookup for a system-scope import (no partner context)', async () => {
+    const auth = makeAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
+    h.state.selectQueue.push([]);
+    const result = await previewBundle(auth, validBundle([baseEntry]), {
+      availability: 'org',
+      orgId: ORG_ID
+    });
+    expect('entries' in result).toBe(true);
+    expect(h.state.selectWheres).toHaveLength(1);
   });
 });
 

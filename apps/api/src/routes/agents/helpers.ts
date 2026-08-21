@@ -479,14 +479,31 @@ export function getSecurityStatusFromResult(resultData: Record<string, unknown> 
   const nested = isObject(resultData.status) ? resultData.status : undefined;
   const candidate = nested ?? resultData;
   const parsed = securityStatusIngestSchema.safeParse(candidate);
-  if (!parsed.success) return undefined;
+  if (!parsed.success) {
+    // Previously this dropped the whole update with no trace at all, which is
+    // the same diagnostic dead end #3641 is about — a security-status update
+    // that vanishes between the device and the row.
+    console.warn(
+      '[agents/helpers] Discarding security status result: payload failed validation:',
+      parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
+    );
+    return undefined;
+  }
   return parsed.data;
 }
 
 export async function upsertSecurityStatusForDevice(deviceId: string, orgId: string, payload: SecurityStatusPayload): Promise<void> {
   const avProducts = Array.isArray(payload.avProducts) ? payload.avProducts : [];
+  // `preferredProduct` only backfills the top-level summary when the payload
+  // omits it entirely. The current Go agent always marshals `provider` and
+  // `realTimeProtection` (non-pointer fields, no omitempty), so these fallbacks
+  // are unreachable from it — they exist for partial payloads from other
+  // producers (e.g. script-result ingestion via getSecurityStatusFromResult).
+  // The array itself is persisted below; it is the evidence behind the derived
+  // `realTimeProtection` boolean. See #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
   const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+  const avProductsValue = payload.avProducts ?? null;
 
   await db
     .insert(securityStatus)
@@ -506,6 +523,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
       encryptionDetails: payload.encryptionDetails ?? null,
       localAdminSummary: payload.localAdminSummary ?? null,
       passwordPolicySummary: payload.passwordPolicySummary ?? null,
+      avProducts: avProductsValue,
       gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
       updatedAt: new Date()
     })
@@ -525,6 +543,7 @@ export async function upsertSecurityStatusForDevice(deviceId: string, orgId: str
         encryptionDetails: payload.encryptionDetails ?? null,
         localAdminSummary: payload.localAdminSummary ?? null,
         passwordPolicySummary: payload.passwordPolicySummary ?? null,
+        avProducts: avProductsValue,
         gatekeeperEnabled: payload.gatekeeperEnabled ?? payload.guardianEnabled ?? null,
         updatedAt: new Date()
       }
@@ -2462,6 +2481,14 @@ export async function issueMtlsCertForDevice(deviceId: string, orgId: string): P
 
 export interface HelperSettings {
   enabled: boolean;
+  /**
+   * Whether Breeze Assist draws its system-tray icon. Independent of
+   * `enabled` — the helper still serves chat, remote-access consent and PAM
+   * dialogs with the icon hidden (#3202). Defaults to true; only an explicit
+   * false hides it (the agent treats an absent field as true so an older
+   * server can never blank a fleet's trays).
+   */
+  showTrayIcon: boolean;
   showOpenPortal: boolean;
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
@@ -2477,6 +2504,7 @@ export interface HelperSettings {
 
 const HELPER_DEFAULTS: HelperSettings = {
   enabled: false,
+  showTrayIcon: true,
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
@@ -2563,6 +2591,7 @@ export async function resolveDeviceHelperSettings(deviceId: string): Promise<Hel
   const s = winner.inlineSettings as Record<string, unknown>;
   return {
     enabled: typeof s.enabled === 'boolean' ? s.enabled : HELPER_DEFAULTS.enabled,
+    showTrayIcon: typeof s.showTrayIcon === 'boolean' ? s.showTrayIcon : HELPER_DEFAULTS.showTrayIcon,
     showOpenPortal: typeof s.showOpenPortal === 'boolean' ? s.showOpenPortal : HELPER_DEFAULTS.showOpenPortal,
     showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
     showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
@@ -2956,23 +2985,54 @@ async function resolveDeviceOnedriveSettings(deviceId: string): Promise<Onedrive
     // already-claimed commands. Past the budget, remaining UPNs stay untagged
     // this cycle (fail closed) and retry next heartbeat against a warm cache.
     const taggingDeadline = Date.now() + 15_000;
-    for (const upn of upns) {
-      if (Date.now() > taggingDeadline) {
-        console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
-        break;
+
+    // Resolved through a small fixed-size worker pool rather than one at a
+    // time: a multi-session host (RDS/VDI) reports a UPN per logged-on user,
+    // and serialized round-trips sum into the 15s budget fast enough that the
+    // last users go untagged — their libraries then silently don't mount. The
+    // cap stays small on purpose: these calls share one org's Graph token and
+    // rate limit, so widening it trades a burst of 429s for the latency win.
+    const TAGGING_CONCURRENCY = 4;
+    const memberships = new Array<Set<string> | null>(upns.length).fill(null);
+    let nextIndex = 0;
+    let budgetExhausted = false;
+
+    const worker = async () => {
+      for (;;) {
+        const i = nextIndex++;
+        if (i >= upns.length) return;
+        if (Date.now() > taggingDeadline) {
+          budgetExhausted = true;
+          return;
+        }
+        const res = await resolveUserGroupMembershipCached(device.orgId, upns[i]!);
+        if (res.kind !== 'ok') {
+          // Deliberately no UPN in the log line — it's end-user PII; the code +
+          // deviceId is enough to triage.
+          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+          continue;
+        }
+        memberships[i] = new Set(res.data.groupIds.map(normalizeGuid));
       }
-      const res = await resolveUserGroupMembershipCached(device.orgId, upn);
-      if (res.kind !== 'ok') {
-        // Deliberately no UPN in the log line — it's end-user PII; the code +
-        // deviceId is enough to triage.
-        console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
-        continue;
-      }
-      const groupIds = new Set(res.data.groupIds.map(normalizeGuid));
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(TAGGING_CONCURRENCY, upns.length) }, () => worker()),
+    );
+
+    if (budgetExhausted) {
+      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+    }
+
+    // Applied in the original UPN order (not completion order) so allowedUpns
+    // is deterministic for a given input regardless of how the pool interleaved.
+    for (let i = 0; i < upns.length; i++) {
+      const groupIds = memberships[i];
+      if (!groupIds) continue;
       for (const rule of graphRules) {
         if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
           const arr = allowedByLib.get(rule.id) ?? [];
-          arr.push(upn);
+          arr.push(upns[i]!);
           allowedByLib.set(rule.id, arr);
         }
       }

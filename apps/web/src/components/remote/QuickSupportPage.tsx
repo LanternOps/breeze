@@ -62,6 +62,15 @@ const POLL_INTERVAL_MS = 3000;
  * memory and is never retrievable from the API again); the
  * status/connect/end block below it is shared by both cases.
  *
+ * Note the exact scope of that guarantee: `created` survives re-selection
+ * within this page load, so a tech who clicks away to another history row and
+ * back DOES see the same code again. That is deliberate — it is the same
+ * operator in the same tab who was already shown the code, and it saves a
+ * session from being burned by a stray click. What is genuinely unrecoverable
+ * is the code after a reload or a new page load, because the server only ever
+ * stored a hash. The `quickSupport.code.shownOnce` copy states that constraint
+ * (not "never shown again", which this re-selection path contradicts).
+ *
  * Polling uses a recursive `setTimeout` held in a ref (same shape as
  * ConnectDesktopButton) rather than setInterval: it self-terminates on a
  * terminal status and never overlaps requests, so a session that ends while
@@ -304,7 +313,9 @@ export default function QuickSupportPage() {
       : (sessions.find((session) => session.id === selectedId) ?? null);
 
   // The one-time code exists only in memory, only for the session minted in
-  // this page load — a re-opened session can never show one.
+  // this page load. A session from an earlier page load can never show one;
+  // re-selecting THIS page load's session does show it again (see the header
+  // comment for why that is intended).
   const createdCode = created && created.id === selectedId ? created : null;
 
   const currentStatus: SupportSessionStatus = selectedSession?.status ?? 'pending';

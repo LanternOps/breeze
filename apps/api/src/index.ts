@@ -11,11 +11,10 @@ import { cors } from 'hono/cors';
 import { HTTPException } from 'hono/http-exception';
 import { prettyJSON } from 'hono/pretty-json';
 import { secureHeaders } from 'hono/secure-headers';
-import { bodyLimit } from 'hono/body-limit';
 
 import { securityMiddleware } from './middleware/security';
 import { requestPathLogger } from './middleware/requestPathLogger';
-import { bodyLimitForPath } from './middleware/bodyLimit';
+import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
@@ -94,6 +93,7 @@ import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
 import { clientAiRoutes } from './routes/clientAi';
+import { officeAddinRoutes } from './routes/officeAddin';
 import { pluginRoutes } from './routes/plugins';
 import { maintenanceRoutes } from './routes/maintenance';
 import { securityRoutes } from './routes/security';
@@ -237,6 +237,10 @@ import {
   initializeSoftwareUploadSessionCleanupWorker,
   shutdownSoftwareUploadSessionCleanupWorker,
 } from './jobs/softwareUploadSessionCleanup';
+import {
+  initializeSoftwareRemediationRequestCleanupWorker,
+  shutdownSoftwareRemediationRequestCleanupWorker,
+} from './jobs/softwareRemediationRequestCleanup';
 import { initializeAuditRetentionWorker, shutdownAuditRetentionWorker } from './jobs/auditRetention';
 import {
   initializeAuditChainVerifyWorker,
@@ -492,14 +496,12 @@ app.use(
   })
 );
 app.use('*', securityMiddleware());
-app.use('*', async (c, next) => {
-  // oidc-provider reads the raw Node IncomingMessage stream itself.
-  if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
-    return next();
-  }
-  const { maxSize, error } = bodyLimitForPath(c.req.path);
-  return bodyLimit({ maxSize, onError: (ctx) => ctx.json({ error }, 413) })(c, next);
-});
+app.use(
+  '*',
+  createGlobalBodyLimitMiddleware({
+    capture: (message, tags) => captureMessage(message, 'warning', undefined, tags),
+  })
+);
 app.use('*', globalRateLimit());
 app.use('*', prettyJSON());
 app.use(
@@ -1075,6 +1077,7 @@ api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
 api.route('/client-ai', clientAiRoutes);
+api.route('/office-addin', officeAddinRoutes);
 api.route('/plugins', pluginRoutes);
 api.route('/maintenance', maintenanceRoutes);
 api.route('/security', securityRoutes);
@@ -1429,6 +1432,7 @@ async function initializeWorkers(): Promise<void> {
     // hard cap, detects end-user disconnects, and purges ephemeral devices.
     ['quickSupportReaper', initializeQuickSupportReaper],
     ['softwareUploadSessionCleanup', initializeSoftwareUploadSessionCleanupWorker],
+    ['softwareRemediationRequestCleanup', initializeSoftwareRemediationRequestCleanupWorker],
     ['auditRetention', initializeAuditRetentionWorker],
     ['auditChainVerify', initializeAuditChainVerifyWorker],
     ['auditChainAnchor', initializeAuditChainAnchorWorker],
@@ -1655,6 +1659,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
     shutdownEnrollmentKeyCleanupWorker,
     shutdownQuickSupportReaper,
     shutdownSoftwareUploadSessionCleanupWorker,
+    shutdownSoftwareRemediationRequestCleanupWorker,
     shutdownAuditRetentionWorker,
     shutdownAuditChainVerifyWorker,
     shutdownAuditChainAnchorWorker,

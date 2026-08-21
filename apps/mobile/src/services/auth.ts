@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as Sentry from '@sentry/react-native';
 import type { User } from './api';
 import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
+import { APP_LOCK_STATE_KEY } from './appLockState';
 
 const TOKEN_KEY = 'breeze_auth_token';
 const USER_KEY = 'breeze_user';
@@ -113,6 +114,12 @@ export async function clearAuthData(): Promise<void> {
     { key: TOKEN_KEY, run: () => SecureStore.deleteItemAsync(TOKEN_KEY) },
     { key: USER_KEY, run: () => SecureStore.deleteItemAsync(USER_KEY) },
     { key: APPROVAL_CACHE_KEY, run: () => clearApprovalCacheOrThrow() },
+    // The app-lock record is a standing assertion that THIS device is currently
+    // unlocked. Left behind, a stale `locked: false` outlives the session it
+    // describes: if the token delete below fails, the surviving token restores
+    // on the next launch and the leftover record waves it straight past the
+    // lock. Deleting is the fail-secure direction — an absent record locks.
+    { key: APP_LOCK_STATE_KEY, run: () => SecureStore.deleteItemAsync(APP_LOCK_STATE_KEY) },
   ];
 
   const results = await Promise.allSettled(deletions.map((d) => d.run()));

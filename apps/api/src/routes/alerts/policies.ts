@@ -82,7 +82,7 @@ policiesRoutes.get(
       .select()
       .from(escalationPolicies)
       .where(whereCondition)
-      .orderBy(desc(escalationPolicies.updatedAt))
+      .orderBy(desc(escalationPolicies.updatedAt), desc(escalationPolicies.id))
       .limit(limit)
       .offset(offset);
 

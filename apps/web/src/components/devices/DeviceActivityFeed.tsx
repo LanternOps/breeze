@@ -283,7 +283,29 @@ export default function DeviceActivityFeed({
               ? `, ${activeAlerts} ${t("deviceActivityFeed.activeAlert")}${
                   activeAlerts === 1 ? "" : t("deviceActivityFeed.s")
                 }`
-              : ""
+              : loading
+                ? ""
+                : // A failed load is NOT "no activity". Without this branch the
+                  // rail announced "No recent actions on this device." after a
+                  // fetch failure — a false negative, and worse than the bare
+                  // "Activity" it replaced, because it states something untrue
+                  // about the device. The expanded card carries the real
+                  // "Couldn't load / Retry" affordance but is lg:hidden while
+                  // collapsed, and DeviceDetails defaults collapsed=true.
+                  error
+                  ? `, ${t("deviceActivityFeed.couldnTLoadActivity")}`
+                : // A device with nothing to show auto-collapses to this rail, so
+                  // the empty state in the expanded card is never reached on
+                  // desktop. Without this the rail announced (and displayed) a
+                  // bare "Activity" and nothing else — indistinguishable from
+                  // still-loading (#3452).
+                  itemCount === 0
+                  ? `, ${t("deviceActivityFeed.noRecentActionsOnThisDevice")}`
+                  : // The count badge is aria-hidden (an aria-label on the
+                    // button suppresses descendant text anyway), so without
+                    // this the everyday "events but no active alerts" state
+                    // announced a bare "Activity" and dropped the count.
+                    `, ${t("deviceActivityFeed.recentActions", { count: itemCount })}`
           }`}
           className={`hidden w-full flex-col items-center gap-3 rounded-lg border bg-card py-4 shadow-xs transition hover:bg-muted/50 lg:flex lg:h-full ${
             activeAlerts > 0 ? 'border-warning/40' : ''
@@ -292,15 +314,25 @@ export default function DeviceActivityFeed({
           <Activity className={`h-4 w-4 ${activeAlerts > 0 ? 'text-warning' : 'text-muted-foreground'}`} />
           {loading ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden="true" />
-          ) : itemCount > 0 ? (
+          ) : error ? (
+            // Same reason as the aria-label above: a muted "0" reads as a
+            // confirmed-empty device rather than a load that never landed.
+            <AlertTriangle className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          ) : (
             <span
+              data-testid="activity-rail-count"
               className={`rounded-full px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
-                activeAlerts > 0 ? 'bg-warning/15 text-warning' : 'bg-primary/10 text-primary'
+                itemCount === 0
+                  ? 'bg-muted text-muted-foreground'
+                  : activeAlerts > 0
+                    ? 'bg-warning/15 text-warning'
+                    : 'bg-primary/10 text-primary'
               }`}
+              aria-hidden="true"
             >
               {countLabel}
             </span>
-          ) : null}
+          )}
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground [writing-mode:vertical-rl]">
             {t("deviceActivityFeed.activity")}
           </span>

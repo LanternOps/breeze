@@ -30,7 +30,17 @@ vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="default
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
 vi.mock('./OrgSecuritySettings', () => ({ default: () => <div data-testid="security" /> }));
 vi.mock('./OrgEventLogSettings', () => ({ default: () => <div data-testid="event-logs" /> }));
-vi.mock('./OrgRemoteAccessSettings', () => ({ default: () => <div data-testid="remote-access" /> }));
+// Capture the props the Remote Access tab is mounted with. #3432: the parent
+// used to hand it `onDirty`, which it fired AFTER already persisting a rule —
+// leaving the page permanently "unsaved" and firing a bogus beforeunload
+// prompt. Nothing on that tab holds draft state, so it must get no onDirty.
+const remoteAccessProps: Array<Record<string, unknown>> = [];
+vi.mock('./OrgRemoteAccessSettings', () => ({
+  default: (props: Record<string, unknown>) => {
+    remoteAccessProps.push(props);
+    return <div data-testid="remote-access" />;
+  },
+}));
 vi.mock('./OrgTicketSettingsEditor', () => ({ default: () => <div data-testid="org-ticket-settings" /> }));
 vi.mock('../organizations/Pax8OrgTab', () => ({ default: ({ orgId }: { orgId: string }) => <div data-testid="pax8-org-tab">{orgId}</div> }));
 vi.mock('../extensions/ExtensionSlotHost', () => ({
@@ -340,6 +350,23 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     const link = await screen.findByRole('link', { name: /^remote access$/i });
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('remote-access')).not.toBeNull();
+  });
+
+  it('mounts the Remote Access tab without an onDirty channel, so it can never strand the page as unsaved (#3432)', async () => {
+    remoteAccessProps.length = 0;
+    window.location.hash = '#remote-access';
+
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('remote-access');
+
+    expect(remoteAccessProps.length).toBeGreaterThan(0);
+    for (const props of remoteAccessProps) {
+      expect(props.onDirty).toBeUndefined();
+    }
+
+    // ...and with nothing able to mark it dirty, no unsaved banner appears.
+    expect(screen.queryByText(/unsaved changes/i)).toBeNull();
   });
 
   it('keeps a selected Pax8 order deep link active through hashchange and back navigation', async () => {

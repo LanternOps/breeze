@@ -58,7 +58,7 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
     })
     .from(invoices)
     .where(conditions)
-    .orderBy(desc(invoices.issueDate), desc(invoices.createdAt))
+    .orderBy(desc(invoices.issueDate), desc(invoices.createdAt), desc(invoices.id))
     .limit(limit)
     .offset(offset);
 

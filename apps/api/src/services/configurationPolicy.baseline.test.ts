@@ -11,6 +11,13 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // Required by withDevicePartnerPolicyVisibility (#3493), which the effective-
+  // config policy join now runs through. Reporting 'system' makes the
+  // partner-visibility widening a no-op here — correct for this suite, which
+  // stubs the query wholesale and asserts only the baseline-synthesis layer.
+  // Omitting it is a hard "No getCurrentDbAccessContext export is defined on
+  // the mock" failure by design; see the note in services/configPolicyOwnership.ts.
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' as const })),
 }));
 
 import { resolveEffectiveConfig } from './configurationPolicy';

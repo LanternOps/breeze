@@ -168,8 +168,10 @@ vi.mock('../middleware/auth', () => ({
     }
     c.set('auth', {
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+      scope: 'partner',
       orgId: 'org-123',
       partnerId: 'partner-123',
+      partnerOrgAccess: 'all',
       token: { mfa: true, sid: 'sid-123' },
     });
     return next();

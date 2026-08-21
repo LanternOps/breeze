@@ -21,7 +21,7 @@
  *   the fact — which is why the route audits every imported script with the
  *   bundle's identity.
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { findVariableTokens } from '@breeze/shared';
 import { db } from '../../db';
 import { scripts, scriptTags, scriptToTags, scriptVersions, tenantVariables } from '../../db/schema';
@@ -216,21 +216,75 @@ function scopeCondition(scope: ScriptCreateScope) {
   );
 }
 
-function sameNameCondition(scope: ScriptCreateScope, name: string) {
-  return and(eq(scripts.name, name), scopeCondition(scope));
+/**
+ * Condition matching the caller's PARTNER-WIDE scripts when the import targets
+ * an ORG (#3450). These rows are not writable by an org-target import, but the
+ * scripts list renders partner-wide and org rows in one library, so a name that
+ * already exists partner-wide is a real collision from the operator's point of
+ * view — annotating it `new` and importing it anyway produces a visible
+ * same-name duplicate.
+ *
+ * Returns null when the target IS partner-wide (`scope.orgId` null — then
+ * {@link scopeCondition} already covers these rows) or when there is no partner
+ * context at all (system-scope import into a specific org).
+ *
+ * Gating is on the RESOLVED SCOPE, not `auth.scope`: organization-scope users
+ * legitimately SEE their MSP's partner-wide scripts — `resolveScriptCreateScope`
+ * carries `auth.partnerId` through for them, the list route unions on
+ * `partner_id`, and RLS grants the read via the own-partner SELECT branch
+ * (`2026-06-13-catalog-partner-read-branch.sql`). They just cannot WRITE them,
+ * which is exactly why this is a separate, read-only conflict class.
+ */
+function partnerWideConflictCondition(scope: ScriptCreateScope) {
+  if (!scope.orgId || !scope.partnerId) return null;
+  return and(
+    isNull(scripts.orgId),
+    eq(scripts.partnerId, scope.partnerId),
+    eq(scripts.isSystem, false),
+    isNull(scripts.deletedAt)
+  );
 }
 
-async function findExistingByName(scope: ScriptCreateScope, name: string) {
+/**
+ * How a bundle entry's name collided:
+ * - `target-scope` — a row the import OWNS and may rewrite (skip/rename/version).
+ * - `partner-wide` — a partner-wide row visible to the caller but READ-ONLY for
+ *   an org-target import (#3262). Never versioned, never rewritten.
+ */
+export type BundleConflictKind = 'target-scope' | 'partner-wide';
+
+export type BundleConflict = { row: ScriptRow; kind: BundleConflictKind };
+
+/**
+ * Resolve a name to the conflicting row, if any. A `target-scope` match always
+ * wins over a `partner-wide` one: when both exist the owned row is the thing
+ * the operator's chosen mode should act on, and versioning it is safe.
+ */
+async function findConflictByName(
+  scope: ScriptCreateScope,
+  name: string
+): Promise<BundleConflict | undefined> {
   // Duplicate names are not prevented by any unique index; order by creation
   // so a conflict deterministically resolves to the OLDEST matching row
   // instead of whichever row the query plan happens to return first.
-  const [existing] = await db
+  const [owned] = await db
     .select()
     .from(scripts)
-    .where(sameNameCondition(scope, name))
+    .where(and(eq(scripts.name, name), scopeCondition(scope)))
     .orderBy(scripts.createdAt)
     .limit(1);
-  return existing;
+  if (owned) return { row: owned, kind: 'target-scope' };
+
+  const partnerWide = partnerWideConflictCondition(scope);
+  if (!partnerWide) return undefined;
+
+  const [shared] = await db
+    .select()
+    .from(scripts)
+    .where(and(eq(scripts.name, name), partnerWide))
+    .orderBy(scripts.createdAt)
+    .limit(1);
+  return shared ? { row: shared, kind: 'partner-wide' } : undefined;
 }
 
 /**
@@ -250,6 +304,13 @@ export type BundlePreviewEntry = {
   index: number;
   name: string;
   status: 'new' | 'name-conflict' | 'invalid';
+  /**
+   * Present exactly when `status === 'name-conflict'` (#3450). Deliberately a
+   * refinement of the existing status rather than a new status value: a client
+   * older than this change still renders a generic conflict badge instead of
+   * falling through to "Invalid" on an unrecognised enum member.
+   */
+  conflictKind?: BundleConflictKind;
   error?: string;
   existingScriptId?: string;
   existingVersion?: number;
@@ -299,12 +360,18 @@ export async function previewBundle(
       entries.push({ index, name: parsed.name, status: 'invalid', error: parsed.error });
       continue;
     }
-    const existing = await findExistingByName(scope, parsed.entry.name);
+    const conflict = await findConflictByName(scope, parsed.entry.name);
     entries.push({
       index,
       name: parsed.entry.name,
-      status: existing ? 'name-conflict' : 'new',
-      ...(existing ? { existingScriptId: existing.id, existingVersion: existing.version } : {})
+      status: conflict ? 'name-conflict' : 'new',
+      ...(conflict
+        ? {
+            conflictKind: conflict.kind,
+            existingScriptId: conflict.row.id,
+            existingVersion: conflict.row.version
+          }
+        : {})
     });
   }
 
@@ -366,10 +433,14 @@ async function findFreeName(scope: ScriptCreateScope, base: string): Promise<str
     const suffix = ` (${i})`;
     candidates.push(base.slice(0, 255 - suffix.length) + suffix);
   }
+  // Both namespaces are off-limits: a rename that dodges the org rows but lands
+  // on a partner-wide name reproduces the very duplicate #3450 is about.
+  const partnerWide = partnerWideConflictCondition(scope);
+  const visible = partnerWide ? or(scopeCondition(scope), partnerWide) : scopeCondition(scope);
   const taken = await db
     .select({ name: scripts.name })
     .from(scripts)
-    .where(and(inArray(scripts.name, candidates), scopeCondition(scope)));
+    .where(and(inArray(scripts.name, candidates), visible));
   const takenNames = new Set(taken.map((t) => t.name));
   return candidates.find((c) => !takenNames.has(c)) ?? null;
 }
@@ -436,9 +507,13 @@ export async function importBundle(
         continue;
       }
 
-      const existing = await findExistingByName(scope, entry.name);
+      const conflict = await findConflictByName(scope, entry.name);
+      const existing = conflict?.row;
 
       if (existing && options.mode === 'skip') {
+        // Skips on a partner-wide match too (#3450) — the operator asked not to
+        // add a name that already exists in the library they are looking at,
+        // and partner-wide rows are in that same list.
         result.skipped++;
         result.scripts.push({ index, name: entry.name, action: 'skipped', scriptId: existing.id });
         continue;
@@ -447,9 +522,28 @@ export async function importBundle(
       if (existing && options.mode === 'new-version' && existing.content === entry.content) {
         // Idempotent re-import: identical content must not pad version
         // history — re-running the same bundle N times would otherwise
-        // produce N no-op versions and N identical snapshots.
+        // produce N no-op versions and N identical snapshots. Applies to a
+        // partner-wide match as well: the content is already live for this org
+        // under that name, so an org-owned copy would add nothing but a
+        // duplicate.
         result.skipped++;
         result.scripts.push({ index, name: entry.name, action: 'skipped', scriptId: existing.id });
+        continue;
+      }
+
+      if (conflict?.kind === 'partner-wide' && options.mode === 'new-version') {
+        // An org-target import may never version a partner-wide row (#3262),
+        // and silently creating an org-owned row of the same name is the
+        // duplicate #3450 reports. Fail this entry loudly with the two modes
+        // that CAN proceed; the rest of the bundle still imports.
+        result.errors.push({
+          index,
+          name: entry.name,
+          error:
+            `A partner-wide script named "${entry.name}" already exists and is read-only for an ` +
+            'organization import. Re-run with the "Skip it" or "Rename" collision mode, or import ' +
+            'the bundle as partner-wide to version it.'
+        });
         continue;
       }
 

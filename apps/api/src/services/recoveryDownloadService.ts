@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { posix as pathPosix, resolve as resolvePath } from 'node:path';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { recoveryTokens } from '../db/schema';
@@ -54,7 +55,7 @@ function buildS3Client(config: {
   // problem (Sentry BREEZE-P). See coerceS3EndpointUrl for the two distinct
   // failure modes a scheme-less value produces.
   const endpoint = coerceS3EndpointUrl(config.endpoint);
-  return new S3Client({
+  return createGuardedS3Client({
     region: config.region,
     endpoint,
     forcePathStyle: Boolean(endpoint),

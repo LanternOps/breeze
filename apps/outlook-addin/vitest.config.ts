@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@breeze/office-addin-core': path.resolve(__dirname, '../../packages/office-addin-core/src'),
+      '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
     },
   },
   test: {

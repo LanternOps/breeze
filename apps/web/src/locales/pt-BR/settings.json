@@ -596,6 +596,8 @@
     "address": "Endereço de entrada",
     "localPart": "Parte local do endereço de entrada",
     "domainNotConfigured": "O domínio de entrada da plataforma ainda não está configurado. Entre em contato com o administrador.",
+    "domainNotConfiguredSelfHosted": "Nenhum domínio de entrada da plataforma está configurado, portanto não é possível gerar um endereço de entrada. Defina <var>TICKETS_INBOUND_DOMAIN</var> no seu servidor Breeze e reinicie a API — consulte <docs>Configuração de e-mail para ticket</docs>. Como alternativa, conecte uma caixa de correio compartilhada do Microsoft 365 — esse caminho não precisa de domínio de entrada.",
+    "addressViaMailbox": "Nenhum endereço de entrada nativo está configurado, mas os e-mails continuam chegando pela caixa de correio do Microsoft 365 conectada abaixo — esse caminho não precisa de um domínio de entrada.",
     "triageOrganization": "Organização de triagem padrão",
     "unknownSenders": "Remetentes desconhecidos",
     "unknownDescription": "O que fazer com mensagens cujo remetente não é usuário do portal, domínio de cliente mapeado nem resposta a um chamado existente.",
@@ -1010,12 +1012,6 @@
   "orgRemoteAccessSettings": {
     "title": "Acesso remoto",
     "description": "Gerencie restrições de túnel, listas de destinos permitidos e sessões ativas por site.",
-    "ipRestrictions": {
-      "title": "Restrições de IP de origem",
-      "description": "Restrinja quais IPs podem criar túneis. Deixe vazio para permitir qualquer usuário autenticado.",
-      "empty": "(Sem restrições — qualquer usuário autenticado pode criar túneis)",
-      "placeholder": "por exemplo, 10.0.0.0/8"
-    },
     "sites": {
       "title": "Sites",
       "empty": "(Nenhum site nesta organização)",
@@ -3353,5 +3349,25 @@
       "deleted": "Variável excluída",
       "deleteFailed": "Não foi possível excluir a variável"
     }
+  },
+  "officeAddinBindings": {
+    "title": "Vínculos do add-in do Outlook",
+    "description": "Técnicos vinculados ao add-in técnico do Outlook. Revogar um vínculo desconecta o técnico do add-in em todos os dispositivos.",
+    "loading": "Carregando vínculos…",
+    "loadFailed": "Falha ao carregar os vínculos.",
+    "retry": "Tentar novamente",
+    "empty": "Nenhum técnico vinculou o add-in do Outlook ainda.",
+    "user": "Usuário",
+    "entraTenant": "Locatário do Entra",
+    "boundOn": "Vinculado em",
+    "mfaVerified": "MFA verificado",
+    "actions": "Ações",
+    "revoke": "Revogar",
+    "revoked": "Vínculo revogado",
+    "revokeFailed": "Falha ao revogar o vínculo",
+    "confirmTitle": "Revogar vínculo do add-in do Outlook",
+    "confirmBody": "Isso desconecta {{name}} do add-in técnico do Outlook em todos os dispositivos. É possível vincular novamente ao entrar na conta.",
+    "cancel": "Cancelar",
+    "confirmRevoke": "Revogar vínculo"
   }
 }

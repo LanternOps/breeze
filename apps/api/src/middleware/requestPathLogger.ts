@@ -17,6 +17,9 @@ export function requestPathLogger(
     const method = c.req.method;
     const requestId = newRequestCorrelationId(c.req.header('X-Request-Id'));
     const startedAt = Date.now();
+    // Published on the context so later middleware (e.g. the global body-limit
+    // gate, #3517) can correlate its own logs without re-deriving an ID.
+    c.set('requestCorrelationId', requestId);
     c.header('X-Request-Id', requestId);
     print(`<-- ${method} request_id=${requestId}`);
 

@@ -789,7 +789,7 @@
     },
     "code": {
       "heading": "Read this code to the person you are helping",
-      "shownOnce": "This code appears only once. Copy it before you leave this page — it can never be shown again.",
+      "shownOnce": "Copy this code now. Breeze stores only a hash of it, so once you leave or reload this page it cannot be recovered — you would have to start a new session.",
       "expires": "Expires at {{time}}",
       "instructions": "Send them the link, then have them run the downloaded client and type the code.",
       "copyCode": "Copy code",

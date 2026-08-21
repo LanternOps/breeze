@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { restoreJobs } from '../db/schema';
 import { redactSecretsFromOutput } from './secretRedaction';
@@ -31,6 +31,36 @@ export function deriveRestoreStatus(
 
 export function isMutableRestoreStatus(status: string | null | undefined): boolean {
   return status === 'pending' || status === 'running';
+}
+
+/**
+ * #3607 — a restore job that is `failed` ONLY because a server-side sweep gave
+ * up on it, not because the device reported a failure.
+ *
+ * `propagateTimedOutDeviceCommand` (jobs/staleCommandReaper.ts) fails the
+ * restore job in lockstep with the `device_commands` timeout and stamps
+ * `targetConfig.result.timedOutBy = 'server'`. That stamp is the marker: the
+ * agent never said anything, the server guessed.
+ *
+ * Before #3607 the guess was unfalsifiable — the widened `device_commands`
+ * acceptance did not exist, so a late restore result was rejected at ingest and
+ * both rows stayed consistently "timed out". Now the command row DOES accept
+ * the real result, so without this the two rows disagree: `device_commands`
+ * would read `completed` while `restore_jobs` still read `failed`, and the UI
+ * reads the latter. Let the device's actual outcome supersede the guess, on the
+ * same terms as the script path.
+ *
+ * Deliberately narrow: only the server's own timeout stamp qualifies. A restore
+ * the AGENT reported as failed carries no `timedOutBy`, and stays final.
+ */
+export function isServerTimedOutRestoreJob(job: {
+  status?: string | null;
+  targetConfig?: unknown;
+}): boolean {
+  if (job.status !== 'failed') return false;
+  const targetConfig = job.targetConfig as Record<string, unknown> | null | undefined;
+  const result = targetConfig?.result as Record<string, unknown> | null | undefined;
+  return result?.timedOutBy === 'server';
 }
 
 export function buildRestoreResultMetadata(
@@ -113,7 +143,8 @@ export async function updateRestoreJobFromResult(
   commandType: string,
   result: RestoreCommandResultLike
 ): Promise<boolean> {
-  if (!isMutableRestoreStatus(restoreJob.status ?? null)) {
+  const recoveringServerTimeout = isServerTimedOutRestoreJob(restoreJob);
+  if (!isMutableRestoreStatus(restoreJob.status ?? null) && !recoveringServerTimeout) {
     return false;
   }
 
@@ -139,7 +170,14 @@ export async function updateRestoreJobFromResult(
     .where(
       and(
         eq(restoreJobs.id, restoreJob.id),
-        inArray(restoreJobs.status, ['pending', 'running'])
+        // #3607: the compare-and-set must admit the same set the guard above
+        // admitted, or the recovery is a silent 0-row no-op. Still keyed on
+        // the server-timeout stamp via the `sql` predicate — re-checked here
+        // rather than trusted from the earlier read, so a concurrent genuine
+        // result that landed in between still wins.
+        recoveringServerTimeout
+          ? sql`(${restoreJobs.status} IN ('pending','running') OR (${restoreJobs.status} = 'failed' AND ${restoreJobs.targetConfig}->'result'->>'timedOutBy' = 'server'))`
+          : inArray(restoreJobs.status, ['pending', 'running'])
       )
     )
     .returning({ id: restoreJobs.id });

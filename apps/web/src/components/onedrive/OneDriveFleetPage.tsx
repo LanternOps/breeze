@@ -111,7 +111,12 @@ export function OneDriveFleetPage() {
   const filtered = useMemo(() => devices.filter((d) => matchesFilter(d, filter)), [devices, filter]);
 
   const total = stats?.total ?? 0;
-  const kfmWarning = stats !== null && stats.kfmProtected < stats.signedIn;
+  // The server derives `kfmProtected` from EVERY reporting device (not just the
+  // signed-in ones), and the "kfm-gap" row filter matches that same population,
+  // so the tile's caption and warning threshold must use `total` as the
+  // denominator. Comparing against `signedIn` reads as a different ratio than
+  // the number actually shown.
+  const kfmWarning = stats !== null && stats.kfmProtected < stats.total;
 
   const renderDriftCount = (row: OneDriveFleetRow) => {
     const n = row.driftEntries.length;
@@ -233,7 +238,7 @@ export function OneDriveFleetPage() {
             label="KFM protected"
             value={stats?.kfmProtected ?? '—'}
             variant={kfmWarning ? 'warning' : 'success'}
-            detail={stats ? `of ${stats.signedIn} signed in` : undefined}
+            detail={stats ? `of ${stats.total} reporting` : undefined}
             loading={loading}
             interactive
             active={filter === 'kfm-gap'}

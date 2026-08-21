@@ -422,7 +422,13 @@ scriptRoutes.get(
       .select()
       .from(scripts)
       .where(whereCondition)
-      .orderBy(desc(scripts.updatedAt))
+      // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
+      // `updated_at` defaults to the TRANSACTION timestamp, so a bundle import
+      // writes many scripts with a byte-identical value. Ordering on a tied key
+      // alone leaves row order undefined between two LIMIT/OFFSET queries, so
+      // the page walk in `apps/web/src/lib/scriptsFetch.ts` would silently drop
+      // a script and duplicate another.
+      .orderBy(desc(scripts.updatedAt), desc(scripts.id))
       .limit(limit)
       .offset(offset);
 
@@ -1095,7 +1101,7 @@ scriptRoutes.get(
       .from(scriptExecutions)
       .leftJoin(devices, eq(scriptExecutions.deviceId, devices.id))
       .where(siteRestrictedWhereCondition)
-      .orderBy(desc(scriptExecutions.createdAt))
+      .orderBy(desc(scriptExecutions.createdAt), desc(scriptExecutions.id))
       .limit(limit)
       .offset(offset);
 

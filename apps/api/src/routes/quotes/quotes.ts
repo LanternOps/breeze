@@ -145,8 +145,14 @@ quoteCrudRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), 
   try { await deleteDraftQuote(c.req.valid('param').id, quoteActorFrom(c)); return c.json({ data: { ok: true } }); }
   catch (err) { return handleServiceError(c, err); }
 });
+// Block writes answer `{ data, warnings }`. `warnings` is always present (often
+// empty) and names any markup the rich-text sanitizer had to discard, so an
+// author is never told "saved" about content that silently went away (#3520).
 quoteCrudRoutes.post('/:id/blocks', scopes, writePerm, zValidator('param', idParam), zValidator('json', quoteBlockInputSchema), async (c) => {
-  try { return c.json({ data: await addBlock(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c)) }); }
+  try {
+    const { warnings, ...data } = await addBlock(c.req.valid('param').id, c.req.valid('json'), quoteActorFrom(c));
+    return c.json({ data, warnings });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id/blocks/reorder', scopes, writePerm, zValidator('param', idParam), zValidator('json', reorderBlocksSchema), async (c) => {
@@ -154,7 +160,11 @@ quoteCrudRoutes.patch('/:id/blocks/reorder', scopes, writePerm, zValidator('para
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id/blocks/:blockId', scopes, writePerm, zValidator('param', blockParam), zValidator('json', quoteBlockInputSchema), async (c) => {
-  try { const p = c.req.valid('param'); return c.json({ data: await updateBlock(p.id, p.blockId, c.req.valid('json'), quoteActorFrom(c)) }); }
+  try {
+    const p = c.req.valid('param');
+    const { warnings, ...data } = await updateBlock(p.id, p.blockId, c.req.valid('json'), quoteActorFrom(c));
+    return c.json({ data, warnings });
+  }
   catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id/blocks/:blockId/lines/reorder', scopes, writePerm, zValidator('param', blockParam), zValidator('json', reorderLinesSchema), async (c) => {

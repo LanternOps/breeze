@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { Dialog } from '../shared/Dialog';
+import { useFleetOrgOwner } from '@/hooks/useFleetOrgOwner';
 
 /**
  * Supported provider IDs. Mirrors the wire-format `dns_provider` enum,
@@ -100,6 +101,9 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
   const [config, setConfig] = useState<ConfigPayload>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // In the All-orgs view there is no injected `?orgId=`, so the create needs an
+  // explicit owner org (server would otherwise 400 "orgId is required").
+  const fleet = useFleetOrgOwner();
 
   const spec = PROVIDERS[provider];
 
@@ -112,6 +116,12 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
     if (submitting) return;
     setSubmitting(true);
     setError(null);
+
+    if (fleet.needsOrgSelection) {
+      setError(t('common:layout.orgRequired.title'));
+      setSubmitting(false);
+      return;
+    }
 
     // Trim string-empty values so we don't send them — the server treats
     // empty strings as set, which breaks the provider-specific refinements
@@ -126,6 +136,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
         request: () => fetchWithAuth('/dns-security/integrations', {
           method: 'POST',
           body: JSON.stringify({
+            orgId: fleet.bodyOrgId,
             provider,
             name: name.trim(),
             description: description.trim() || undefined,
@@ -171,6 +182,28 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
         </p>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+          {fleet.isFleetScope && (
+            <Field label={t('common:labels.organization')}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={fleet.orgId}
+                  onChange={(e) => fleet.setOrgId(e.target.value)}
+                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                >
+                  <option value="" disabled>
+                    {t('common:layout.org.noSelection')}
+                  </option>
+                  {fleet.organizations.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          )}
+
           <Field label={t('dnsSecurityAddDnsIntegrationModal.fields.provider')}>
             {(id) => (
               <>
@@ -290,7 +323,7 @@ export default function AddDnsIntegrationModal({ onClose, onCreated }: AddDnsInt
             </button>
             <button
               type="submit"
-              disabled={submitting || !name.trim() || !apiKey.trim()}
+              disabled={submitting || !name.trim() || !apiKey.trim() || fleet.needsOrgSelection}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {submitting

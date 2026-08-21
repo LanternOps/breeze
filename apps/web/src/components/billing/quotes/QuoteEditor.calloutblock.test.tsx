@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
-import { addBlock } from '../../../lib/api/quotes';
+import { addBlock, updateBlock } from '../../../lib/api/quotes';
+
+// Mutable grant set so the edit-affordance gating (writer vs read-only) can be
+// exercised in this file; defaults to the wildcard the create tests assume.
+const auth = vi.hoisted(() => ({ permissions: [{ resource: '*', action: '*' }] as { resource: string; action: string }[] }));
 
 // Same house pattern as TemplateEditor.test.tsx: swap the tiptap-backed
 // RichTextEditor for a plain textarea so this test targets the callout form
@@ -21,7 +25,7 @@ vi.mock('../../../stores/auth', () => ({
   ),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
-      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+      selector({ user: { permissions: auth.permissions } }),
     { getState: () => ({ tokens: null }) },
   ),
 }));
@@ -72,6 +76,7 @@ const detail: QuoteDetailData = {
 };
 
 const addBlockMock = vi.mocked(addBlock);
+const updateBlockMock = vi.mocked(updateBlock);
 
 async function openCalloutForm() {
   render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
@@ -167,5 +172,104 @@ describe('QuoteEditor — persisted callout block', () => {
     const content = screen.getByTestId('quote-block-callout-content-blk-c');
     expect(content).toHaveTextContent('Heads up');
     expect(content).toHaveTextContent('Read carefully');
+  });
+});
+
+// #3547: same edit-in-place contract as the table block — the create-form
+// fields, prefilled from block.content, saved through updateBlock.
+describe('QuoteEditor — edit persisted callout block', () => {
+  const calloutBlock: QuoteBlock = {
+    id: 'blk-c', quoteId: 'q-1', orgId: 'org-1', blockType: 'callout',
+    content: { variant: 'warn', title: 'Heads up', html: '<p>Read carefully</p>' },
+    sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auth.permissions = [{ resource: '*', action: '*' }];
+  });
+
+  async function openEditor() {
+    render(<QuoteEditor detail={{ ...detail, blocks: [calloutBlock] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  }
+
+  it('hides the edit affordance from a read-only viewer but still renders the callout', async () => {
+    auth.permissions = [{ resource: 'quotes', action: 'read' }];
+    await openEditor();
+    expect(screen.getByTestId('quote-block-callout-content-blk-c')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-callout-blk-c-edit')).not.toBeInTheDocument();
+  });
+
+  it('prefills variant, title and body when edit is opened', async () => {
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-form-variant')).toHaveValue('warn');
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-form-title')).toHaveValue('Heads up');
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-form-body')).toHaveValue('<p>Read carefully</p>');
+    expect(screen.queryByTestId('quote-block-callout-content-blk-c')).not.toBeInTheDocument();
+  });
+
+  it('saving PATCHes the edited content through updateBlock and closes the form', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-c' }));
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-variant'), { target: { value: 'accent' } });
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-body'), { target: { value: '<p>Revised</p>' } });
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit-save'));
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-c', {
+      blockType: 'callout',
+      content: { variant: 'accent', title: 'Heads up', html: '<p>Revised</p>' },
+    }));
+    await waitFor(() => expect(screen.queryByTestId('quote-block-callout-blk-c-edit-form')).not.toBeInTheDocument());
+  });
+
+  it('clearing the title drops it from the PATCHed content (never sent as an empty string)', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-c' }));
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-title'), { target: { value: '  ' } });
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit-save'));
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-c', {
+      blockType: 'callout',
+      content: { variant: 'warn', html: '<p>Read carefully</p>' },
+    }));
+  });
+
+  it('an emptied body disables save (an empty callout renders as nothing)', async () => {
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-body'), { target: { value: '' } });
+
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-save')).toBeDisabled();
+    expect(updateBlockMock).not.toHaveBeenCalled();
+  });
+
+  it('cancel discards the draft without PATCHing', async () => {
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-body'), { target: { value: '<p>Discarded</p>' } });
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit-cancel'));
+
+    expect(updateBlockMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('quote-block-callout-content-blk-c')).toHaveTextContent('Read carefully');
+
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-form-body')).toHaveValue('<p>Read carefully</p>');
+  });
+
+  it('a failed save surfaces the error and leaves the form open with the draft intact', async () => {
+    updateBlockMock.mockResolvedValue(errRes());
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-callout-blk-c-edit-form-body'), { target: { value: '<p>Revised</p>' } });
+    fireEvent.click(screen.getByTestId('quote-block-callout-blk-c-edit-save'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('quote-block-callout-blk-c-edit-form-body')).toHaveValue('<p>Revised</p>');
   });
 });

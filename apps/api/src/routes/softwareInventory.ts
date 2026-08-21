@@ -754,7 +754,7 @@ softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zVal
     .from(softwareInventory)
     .innerJoin(devices, eq(softwareInventory.deviceId, devices.id))
     .where(whereClause)
-    .orderBy(desc(softwareInventory.lastSeen))
+    .orderBy(desc(softwareInventory.lastSeen), desc(softwareInventory.id))
     .limit(limit)
     .offset(offset);
 

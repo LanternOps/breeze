@@ -304,7 +304,7 @@
       "empty": "Aún no se han sincronizado suscripciones a Pax8 para esta organización. Sincronízalos en Integraciones → Pax8.",
       "subscriptionFallback": "Suscripción Pax8",
       "quantity": "cantidad {{quantity}}",
-      "priceEach": "{{currency}} {{price}}/ea",
+      "priceEach": "{{currency}} {{price}}/u.",
       "alreadyLinked": "ya vinculado",
       "relink": "Volver a vincular",
       "link": "Enlace",
@@ -436,7 +436,10 @@
       "uploadError": "No se pudo subir el PDF",
       "uploadSuccess": "Versión PDF subida",
       "publishError": "No se pudo publicar la versión",
-      "publishSuccess": "Versión publicada"
+      "publishSuccess": "Versión publicada",
+      "warnings": {
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de contrato admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
+      }
     }
   },
   "quotes": {
@@ -512,7 +515,9 @@
         "imageSectionPdf": "Sección de imagen (representada en PDF).",
         "richTextContentAria": "Contenido de texto enriquecido",
         "tableEmpty": "Tabla vacía.",
-        "calloutEmpty": "Recuadro vacío."
+        "calloutEmpty": "Recuadro vacío.",
+        "edit": "Editar",
+        "saveEdit": "Guardar"
       },
       "blockTypes": {
         "heading": "Título",
@@ -658,6 +663,8 @@
         "partNumberOptional": "Número de pieza (opcional)",
         "profit": "Ganancia",
         "quantityAria": "Cantidad",
+        "quantityForAria": "Cantidad de {{item}}",
+        "unitPriceForAria": "Precio unitario de {{item}}",
         "saveToCatalog": "Guardar en catálogo",
         "showLess": "Mostrar menos",
         "showMore": "Mostrar más",
@@ -747,7 +754,8 @@
         "zebra": "Filas alternadas",
         "headerStyle": "Estilo de encabezado",
         "headerStylePlain": "Simple",
-        "headerStyleAccent": "Acento"
+        "headerStyleAccent": "Acento",
+        "reshapedWarning": "Esta tabla no cabía en el límite de {{columns}} columnas x {{rows}} filas, así que se ajustó. Al guardar, se reemplaza la tabla almacenada por la que ves aquí."
       },
       "terms": {
         "placeholder": "Condiciones de pago, cláusulas de garantía, etc.",
@@ -805,7 +813,9 @@
       "ghost": {
         "add": "Agregar",
         "nameAria": "Nombre de la nueva línea",
-        "placeholder": "Escribe el nombre del ítem…"
+        "placeholder": "Escribe el nombre del ítem…",
+        "quantityAria": "Cantidad de la nueva línea",
+        "unitPriceAria": "Precio unitario de la nueva línea"
       },
       "unassigned": {
         "explainer": "Estas líneas no están en ninguna sección de precios, pero aun así aparecen en la cotización del cliente y se suman a sus totales. Mueve cada una a una sección de precios para controlar dónde aparece.",
@@ -825,6 +835,9 @@
         "variantWarn": "Advertencia",
         "titlePlaceholder": "Título (opcional)",
         "bodyAria": "Texto del recuadro"
+      },
+      "warnings": {
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. El texto enriquecido admite títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
     },
     "actions": {
@@ -878,10 +891,11 @@
         "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>."
       },
       "sendEmailWarning": {
-        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización o comparta el enlace de aceptación manualmente.",
+        "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
         "noEmailService": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — el correo no está configurado en este servidor.",
         "pdfRenderFailed": "La propuesta se marcó como Enviada, pero no se pudo generar el PDF, por lo que no se entregó ningún correo. Revise los archivos de contrato adjuntos y vuelva a enviarla.",
-        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección o comparta el enlace de aceptación manualmente."
+        "sendFailed": "La propuesta se marcó como Enviada, pero el correo no se pudo entregar. Verifique la dirección y vuelva a enviar.",
+        "shareLinkHint": "Use «{{action}}» en esta propuesta para copiar el enlace y enviarlo usted mismo."
       },
       "sendError": "No se pudo enviar la propuesta.",
       "sendProposal": "Enviar propuesta",
@@ -1318,7 +1332,12 @@
       "lineName": "Nombre de línea",
       "name": "Nombre",
       "quantity": "Cantidad",
+      "quantityFor": "Cantidad de {{item}}",
+      "quantityNewLine": "Cantidad de la nueva línea",
+      "unitPriceFor": "Precio unitario de {{item}}",
+      "unitPriceNewLine": "Precio unitario de la nueva línea",
       "taxable": "Imponible",
+      "untitledLine": "esta linea",
       "unitPrice": "Precio unitario"
     },
     "hiddenSuffix": "(oculto)",

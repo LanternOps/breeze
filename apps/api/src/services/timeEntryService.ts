@@ -753,7 +753,7 @@ export async function listTimeEntries(filters: ListTimeEntriesFilters) {
     .leftJoin(tickets, eq(timeEntries.ticketId, tickets.id))
     .leftJoin(users, eq(timeEntries.userId, users.id))
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(timeEntries.startedAt))
+    .orderBy(desc(timeEntries.startedAt), desc(timeEntries.id))
     .limit(filters.limit)
     .offset(filters.offset);
 

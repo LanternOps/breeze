@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AuthBlockedError,
   InvalidEntraTokenError,
+  MalformedExchangeResponseError,
   __resetSessionForTests,
   clearSession,
   getSessionToken,
@@ -30,6 +31,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 beforeEach(() => {
   __resetSessionForTests();
+  sessionStorage.clear();
 });
 
 describe('signIn', () => {
@@ -41,7 +43,38 @@ describe('signIn', () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/client-ai/auth/exchange');
     expect(JSON.parse(init.body as string)).toEqual({ accessToken: 'entra-token' });
-    expect(sessionStorage.getItem('breeze-client-ai-session')).toContain('breeze-session-token-48ch');
+    expect(
+      sessionStorage.getItem('breeze-office-addin-session-v2'),
+    ).toContain('breeze-session-token-48ch');
+  });
+
+  it('defaults exchangePath but honors an override for the neutral (tech) endpoint', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, {
+        persona: 'tech',
+        accessToken: 'tech-tok',
+        expiresInSeconds: 3600,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    const session = await signIn(
+      { interactive: false, exchangePath: '/office-addin/auth/exchange' },
+      { entra: entra(), fetchImpl },
+    );
+    expect(session.persona).toBe('tech');
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/office-addin/auth/exchange');
+    if (session.persona === 'tech') {
+      expect(session.partner).toEqual({ id: 'p-1' });
+    }
+  });
+
+  it('exchange response without a persona field is treated as persona client', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, OK_BODY));
+    const session = await signIn({ interactive: false }, { entra: entra(), fetchImpl });
+    expect(session.persona).toBe('client');
+    expect(session.v).toBe(2);
   });
 
   it('maps exchange error codes to block kinds', async () => {
@@ -86,9 +119,121 @@ describe('signIn', () => {
     ).rejects.toBeInstanceOf(InvalidEntraTokenError);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
+
+  it('rejects a 200 body missing user without storing a session', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { accessToken: 'tok', expiresInSeconds: 3600 }),
+    );
+    await expect(
+      signIn({ interactive: false }, { entra: entra(), fetchImpl }),
+    ).rejects.toBeInstanceOf(MalformedExchangeResponseError);
+    expect(getSessionToken()).toBeNull();
+    expect(sessionStorage.getItem('breeze-office-addin-session-v2')).toBeNull();
+  });
+
+  it('rejects a 200 tech body missing partner.id without storing a session', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, {
+        persona: 'tech',
+        accessToken: 'tok',
+        expiresInSeconds: 3600,
+        user: OK_BODY.user,
+        partner: {},
+      }),
+    );
+    await expect(
+      signIn({ interactive: false }, { entra: entra(), fetchImpl }),
+    ).rejects.toBeInstanceOf(MalformedExchangeResponseError);
+    expect(getSessionToken()).toBeNull();
+  });
+
+  it('rejects a 200 body with an unknown persona discriminant', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { ...OK_BODY, persona: 'admin' }),
+    );
+    await expect(
+      signIn({ interactive: false }, { entra: entra(), fetchImpl }),
+    ).rejects.toBeInstanceOf(MalformedExchangeResponseError);
+  });
 });
 
 describe('reExchange', () => {
+  it('a restored tech session re-exchanges against /office-addin/auth/exchange', async () => {
+    // Simulate a pane reload: the session was RESTORED from sessionStorage
+    // (App's short-circuit), so no signIn call ever recorded an exchangePath.
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'tech',
+        sessionToken: 'tech-tok',
+        expiresAt: Date.now() + 60_000,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    expect(getStoredSession()?.persona).toBe('tech');
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, {
+        persona: 'tech',
+        accessToken: 'tech-tok-2',
+        expiresInSeconds: 3600,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    await reExchange({ entra: entra(), fetchImpl });
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/office-addin/auth/exchange');
+    expect(url).not.toContain('/client-ai/');
+  });
+
+  it('a restored client session re-exchanges against the client-ai endpoint', async () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'client',
+        sessionToken: 'tok',
+        expiresAt: Date.now() + 60_000,
+        user: OK_BODY.user,
+        org: null,
+        branding: null,
+      }),
+    );
+    expect(getStoredSession()?.persona).toBe('client');
+    const fetchImpl = vi.fn(async () => jsonResponse(200, OK_BODY));
+    await reExchange({ entra: entra(), fetchImpl });
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/client-ai/auth/exchange');
+  });
+
+  it('an EXPIRED persisted tech session still derives the tech endpoint', async () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'tech',
+        sessionToken: 'tech-tok',
+        expiresAt: Date.now() - 1,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, {
+        persona: 'tech',
+        accessToken: 'tech-tok-2',
+        expiresInSeconds: 3600,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    await reExchange({ entra: entra(), fetchImpl });
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/office-addin/auth/exchange');
+  });
+
   it('is single-flight: concurrent callers share one exchange', async () => {
     let resolveFetch!: (r: Response) => void;
     const fetchImpl = vi.fn(
@@ -109,8 +254,10 @@ describe('reExchange', () => {
 describe('session store', () => {
   it('restores from sessionStorage and rejects expired entries', () => {
     sessionStorage.setItem(
-      'breeze-client-ai-session',
+      'breeze-office-addin-session-v2',
       JSON.stringify({
+        v: 2,
+        persona: 'client',
         sessionToken: 'tok',
         expiresAt: Date.now() + 60_000,
         user: OK_BODY.user,
@@ -121,8 +268,10 @@ describe('session store', () => {
     expect(getStoredSession()?.sessionToken).toBe('tok');
     __resetSessionForTests();
     sessionStorage.setItem(
-      'breeze-client-ai-session',
+      'breeze-office-addin-session-v2',
       JSON.stringify({
+        v: 2,
+        persona: 'client',
         sessionToken: 'tok',
         expiresAt: Date.now() - 1,
         user: OK_BODY.user,
@@ -138,6 +287,90 @@ describe('session store', () => {
     await signIn({ interactive: false }, { entra: entra(), fetchImpl });
     clearSession();
     expect(getSessionToken()).toBeNull();
+    expect(sessionStorage.getItem('breeze-office-addin-session-v2')).toBeNull();
+  });
+
+  it('returns null for a {v:1} shape', () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 1,
+        sessionToken: 'tok',
+        expiresAt: Date.now() + 60_000,
+        user: OK_BODY.user,
+        org: null,
+        branding: null,
+      }),
+    );
+    expect(getStoredSession()).toBeNull();
+  });
+
+  it('returns null for a v2 blob without a user object', () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'client',
+        sessionToken: 'tok',
+        expiresAt: Date.now() + 60_000,
+        org: null,
+        branding: null,
+      }),
+    );
+    expect(getStoredSession()).toBeNull();
+  });
+
+  it('returns null for a v2 tech blob whose partner has no string id', () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'tech',
+        sessionToken: 'tok',
+        expiresAt: Date.now() + 60_000,
+        user: OK_BODY.user,
+        partner: { id: 42 },
+      }),
+    );
+    expect(getStoredSession()).toBeNull();
+  });
+
+  it('returns null for unversioned/garbage JSON under the v2 key', () => {
+    sessionStorage.setItem('breeze-office-addin-session-v2', JSON.stringify({ foo: 'bar' }));
+    expect(getStoredSession()).toBeNull();
+  });
+
+  it('ignores AND removes a stale unversioned value under the legacy key', () => {
+    sessionStorage.setItem(
+      'breeze-client-ai-session',
+      JSON.stringify({
+        sessionToken: 'legacy-tok',
+        expiresAt: Date.now() + 60_000,
+        user: OK_BODY.user,
+        org: null,
+        branding: null,
+      }),
+    );
+    expect(getStoredSession()).toBeNull();
     expect(sessionStorage.getItem('breeze-client-ai-session')).toBeNull();
+  });
+
+  it('restores a persona tech session with partner', () => {
+    sessionStorage.setItem(
+      'breeze-office-addin-session-v2',
+      JSON.stringify({
+        v: 2,
+        persona: 'tech',
+        sessionToken: 'tech-tok',
+        expiresAt: Date.now() + 60_000,
+        user: { id: 'u-2', email: 'tech@partner.example', name: 'Tech User' },
+        partner: { id: 'p-1' },
+      }),
+    );
+    const session = getStoredSession();
+    expect(session?.persona).toBe('tech');
+    if (session?.persona === 'tech') {
+      expect(session.partner).toEqual({ id: 'p-1' });
+    }
   });
 });

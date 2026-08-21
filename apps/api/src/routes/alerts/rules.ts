@@ -191,7 +191,7 @@ rulesRoutes.get(
         .from(alertRules)
         .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
         .where(whereCondition)
-        .orderBy(desc(alertRules.createdAt));
+        .orderBy(desc(alertRules.createdAt), desc(alertRules.id));
 
       const accessibleRules = [];
       for (const row of candidateRules) {
@@ -225,7 +225,7 @@ rulesRoutes.get(
       .from(alertRules)
       .leftJoin(alertTemplates, eq(alertRules.templateId, alertTemplates.id))
       .where(whereCondition)
-      .orderBy(desc(alertRules.createdAt))
+      .orderBy(desc(alertRules.createdAt), desc(alertRules.id))
       .limit(limit)
       .offset(offset);
 

@@ -99,6 +99,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'partner',
       orgId: null,
       partnerId: PARTNER_ID,
+      partnerOrgAccess: 'all',
       accessibleOrgIds: [],
       canAccessOrg: () => false
     });
@@ -147,6 +148,7 @@ describe('updateRings routes', () => {
         scope: 'partner',
         orgId: null,
         partnerId: PARTNER_ID,
+        partnerOrgAccess: 'all',
         accessibleOrgIds: [],
         canAccessOrg: () => false
       });

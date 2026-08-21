@@ -117,10 +117,23 @@ vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
-// DeviceCard stub renders the hostname so the grid contents are assertable.
+// DeviceCard stub renders the hostname so the grid contents are assertable, and
+// re-emits reboot so the GRID path through handleDeviceAction is covered too —
+// the real DeviceCard emits it from its own kebab (DeviceCard.tsx), and #3698's
+// gate lives on the shared handler, so both surfaces inherit it.
 vi.mock('./DeviceCard', () => ({
-  default: ({ device }: { device: { id: string; hostname: string } }) => (
-    <div data-testid={`device-card-${device.id}`}>{device.hostname}</div>
+  default: ({ device, onAction }: { device: { id: string; hostname: string }; onAction?: (action: string, device: unknown) => void }) => (
+    <div data-testid={`device-card-${device.id}`}>
+      {device.hostname}
+      {/* No text content on purpose: sibling tests assert the card's exact
+          textContent equals the hostname. */}
+      <button
+        type="button"
+        aria-label="card reboot"
+        data-testid={`card-reboot-${device.id}`}
+        onClick={() => onAction?.('reboot', device)}
+      />
+    </div>
   ),
 }));
 
@@ -1158,9 +1171,51 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       render(<DevicesPage />);
       fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
 
+      // #3698: the row action is confirm-gated now, matching the device detail
+      // page. Nothing may reach the API until the operator confirms.
+      expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByTestId('confirm-device-action'));
+
       await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
       return vi.mocked(showToast).mock.calls.map(c => c[0]);
     }
+
+    // #3698: the reason this issue existed — the list fired immediately while
+    // the detail page confirmed. Pin both halves of the gate.
+    it('does not queue anything until the confirm is accepted', async () => {
+      const { sendDeviceCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+      } as never);
+
+      render(<DevicesPage />);
+      fireEvent.click(await screen.findByTestId(`row-reboot-${DEV_1}`));
+
+      // The dialog names the machine, so a mis-click on a dense list is
+      // recoverable rather than merely delayed.
+      expect(await screen.findByText(/host-alpha/)).toBeTruthy();
+      expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+    });
+
+    // #3698 follow-up: the gate lives on the shared handler, so the GRID card
+    // inherits it. Todd flagged this path as gated-but-untested on review.
+    it('grid card reboot is confirm-gated on the same terms as the list row', async () => {
+      const { sendDeviceCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
+      } as never);
+
+      render(<DevicesPage />);
+      fireEvent.click(await screen.findByLabelText('Grid view'));
+      fireEvent.click(await screen.findByTestId(`card-reboot-${DEV_1}`));
+
+      expect(vi.mocked(sendDeviceCommand)).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByTestId('confirm-device-action'));
+      await waitFor(() => expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
+    });
 
     it('online device: reports the command as sent, naming the device', async () => {
       const toasts = await rebootDeviceWithStatus('online');

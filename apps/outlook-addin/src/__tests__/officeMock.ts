@@ -45,9 +45,20 @@ export type ItemSeed = {
   subject?: string;
   body?: string;
   from?: EmailAddress;
+  /** Send-on-behalf provenance; defaults to `from` when omitted (matches the
+   *  real host, where `sender` is always populated). */
+  sender?: EmailAddress;
   to?: EmailAddress[];
   cc?: EmailAddress[];
   dateTimeCreated?: Date;
+  conversationId?: string;
+  /** Mailbox 1.8+ read-mode only; omit to simulate an item with no id. */
+  internetMessageId?: string;
+  /** Raw block returned by getAllInternetHeadersAsync (read mode only). Defaults
+   *  to '' (no References/In-Reply-To present) when not seeded. */
+  rawHeaders?: string;
+  /** When true, exposes getSharedPropertiesAsync (shared-mailbox detection). */
+  sharedMailbox?: boolean;
 };
 
 const DEFAULT_FROM: EmailAddress = { displayName: 'Sender', emailAddress: 'sender@example.com' };
@@ -66,6 +77,19 @@ function failed<T>(value: T, message: string): AsyncResult<T> {
   return { status: 'failed', value, error: { name: 'AsyncError', message, code: 9001 } };
 }
 
+/** Compares dotted-numeric version strings ("1.10" > "1.8"). Returns
+ *  negative/zero/positive like Array.prototype.sort comparators. */
+function compareVersions(a: string, b: string): number {
+  const as = a.split('.').map(Number);
+  const bs = b.split('.').map(Number);
+  const len = Math.max(as.length, bs.length);
+  for (let i = 0; i < len; i += 1) {
+    const diff = (as[i] ?? 0) - (bs[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 /**
  * One mailbox item. The set of *methods* present depends on `mode`:
  *  - read:    body.getAsync, displayReplyForm, displayReplyAllForm (NO body.setAsync)
@@ -77,9 +101,14 @@ export class MockMailboxItem {
   subject: string;
   bodyText: string;
   from: EmailAddress;
+  /** Send-on-behalf provenance; equals `from` unless the seed overrides it. */
+  sender: EmailAddress;
   to: EmailAddress[];
   cc: EmailAddress[];
   dateTimeCreated: Date;
+  conversationId: string;
+  /** Mailbox 1.8+ read-mode only. undefined when not seeded (no id). */
+  internetMessageId?: string;
   readonly body: {
     getAsync: (coercionType: string, cb: (r: AsyncResult<string>) => void) => void;
     setAsync?: (
@@ -90,6 +119,10 @@ export class MockMailboxItem {
   };
   displayReplyForm?: (formData: string | { htmlBody?: string }) => void;
   displayReplyAllForm?: (formData: string | { htmlBody?: string }) => void;
+  /** Mailbox 1.8+ read-mode only: raw headers block for References/In-Reply-To. */
+  getAllInternetHeadersAsync?: (cb: (r: AsyncResult<string>) => void) => void;
+  /** Presence-only shared-mailbox signal (v1 = detect, no property reads). */
+  getSharedPropertiesAsync?: (cb: (r: AsyncResult<unknown>) => void) => void;
 
   constructor(
     private state: MockMailboxState,
@@ -99,9 +132,25 @@ export class MockMailboxItem {
     this.subject = seed.subject ?? '';
     this.bodyText = seed.body ?? '';
     this.from = seed.from ?? DEFAULT_FROM;
+    this.sender = seed.sender ?? this.from;
     this.to = seed.to ?? [];
     this.cc = seed.cc ?? [];
     this.dateTimeCreated = seed.dateTimeCreated ?? new Date('2026-06-14T00:00:00.000Z');
+    this.conversationId = seed.conversationId ?? '';
+    this.internetMessageId = seed.internetMessageId;
+
+    if (mode === 'read') {
+      // getAllInternetHeadersAsync / getSharedPropertiesAsync are read-mode-only
+      // in the real host (matches item.internetMessageId, item.conversationId).
+      this.getAllInternetHeadersAsync = (cb: (r: AsyncResult<string>) => void): void => {
+        cb(succeeded(seed.rawHeaders ?? ''));
+      };
+      if (seed.sharedMailbox) {
+        this.getSharedPropertiesAsync = (cb: (r: AsyncResult<unknown>) => void): void => {
+          cb(succeeded({}));
+        };
+      }
+    }
 
     const self = this;
     this.body = {
@@ -168,6 +217,9 @@ export class MockMailboxState {
   failBodyGet = false;
   /** When true, compose body.setAsync returns a failed AsyncResult (host-error sim). */
   failBodySet = false;
+  /** The Mailbox requirement-set version this mock host satisfies. Tests drop
+   *  this below '1.8' to exercise the headerCapable=false degrade path. */
+  supportedMailboxVersion = '1.8';
 
   constructor() {
     this.item = new MockMailboxItem(this, this.mode, {});
@@ -252,7 +304,11 @@ export function installOfficeMock(): MockMailboxState {
     EventType: { ItemChanged: 'olkItemSelectedChanged' },
     context: {
       requirements: {
-        isSetSupported: (name: string, _minVersion?: string): boolean => name === 'Mailbox',
+        isSetSupported: (name: string, minVersion?: string): boolean => {
+          if (name !== 'Mailbox') return false;
+          if (!minVersion) return true;
+          return compareVersions(state.supportedMailboxVersion, minVersion) >= 0;
+        },
       },
       mailbox,
     },

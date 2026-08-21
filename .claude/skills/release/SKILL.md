@@ -315,10 +315,51 @@ Caveats:
 
 Rolling the fleet is a user-facing change — get Todd's go-ahead before promoting, and don't promote until both regions are deployed and healthy.
 
-**Security releases:** publish the GHSA advisory **after** rollout completes, never before (fix → quiet release → roll out → then publish). Internal cadence docs: `internal/security-hardening-tracker.md`, `internal/pending-release-notes-security.md`.
+**Security releases:** publish the GHSA advisory **after** rollout completes, never before (fix → quiet release → roll out → then publish). Internal cadence docs: `internal/security-disclosure-policy.md` (the decision doc), `internal/security-advisory-queue.md` (what's owed), `internal/security-hardening-tracker.md`.
+
+### Advisory-debt pre-flight — run this FIRST, every release, no exceptions
+
+Not a "security release only" step. Run it before writing the release body, because a pending
+advisory changes how *this* release's notes are worded.
+
+```bash
+gh api repos/lanternops/breeze/security-advisories \
+  --jq '.[] | select(.state=="draft") | "DRAFT \(.ghsa_id) patched=\(.vulnerabilities[0].patched_versions // "?") — \(.summary)"'
+```
+
+**GATE — this release does not proceed if a draft advisory's `patched_versions` has already rolled
+out.** Publish it first (`internal/security-advisory-queue.md` has the exact commands). Once a fix
+ships, it is visible in the diff and the release notes; the advisory is the only thing that turns it
+into a *notification*. Holding it protects nobody and leaves self-hosters unaware they're exposed.
+
+This gate exists because the old trailing checkbox ("GHSA published after rollout") **never once
+fired**: it sat last, after manual go-ahead-gated steps, so the release session always ended before
+rollout finished — and nothing persisted the debt afterward. Two High advisories from v0.69.0 sat
+unpublished for 2.5 months and 36 releases. Binding the check to the *next* release works because
+releases reliably recur; "after rollout" is a moment nobody revisits.
+
+### Release-notes security sections
+
+Split by urgency — one bullet in the first section carries more signal than a paragraph buried in
+forty:
+
+```markdown
+### Security — action required
+Self-hosted operators on <affected range> should upgrade immediately. <what an attacker could DO>.
+(GHSA-xxxx, #NNNN)
+
+### Security — hardening
+<routine defense-in-depth, batched, no urgency language>
+```
+
+Say what an attacker could **do**, not what the code now does — "could execute arbitrary code as
+root on macOS agents with auto-update enabled", not "now verifies the .pkg against the manifest".
+Name the affected version range; self-hosters do not know whether they're affected. Full taxonomy
+and per-severity clocks: `internal/security-disclosure-policy.md`.
 
 ## Quick checklist
 
+- [ ] **Advisory-debt pre-flight run** (`gh api ... select(.state=="draft")`) — any draft whose patched version already rolled out is **published before this release proceeds**
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
@@ -332,7 +373,7 @@ Rolling the fleet is a user-facing change — get Todd's go-ahead before promoti
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
-- [ ] GHSA published *after* rollout (security releases only)
+- [ ] GHSA published *after* rollout (security releases only) — **and its row in `internal/security-advisory-queue.md` moved to Published.** If rollout finishes after this session ends, the queue row is what carries the debt forward; the next release's pre-flight gate will block on it.
 
 ## Notes & gotchas
 

@@ -151,7 +151,9 @@ ruleRoutes.post(
           and(
             eq(alertTemplates.id, data.templateId),
             or(
-              eq(alertTemplates.isBuiltIn, true),
+              // Global built-ins only — an org-owned is_built_in row belongs to
+              // that org (security review 2026-08-16 §1.5, same class).
+              and(eq(alertTemplates.isBuiltIn, true), isNull(alertTemplates.orgId)),
               eq(alertTemplates.orgId, orgId)
             )
           )

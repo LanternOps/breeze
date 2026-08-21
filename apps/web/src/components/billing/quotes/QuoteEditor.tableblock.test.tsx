@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
 import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
-import { addBlock } from '../../../lib/api/quotes';
+import { addBlock, updateBlock } from '../../../lib/api/quotes';
+
+// Mutable grant set so the edit-affordance gating (writer vs read-only) can be
+// exercised in this file; defaults to the wildcard the create tests assume.
+const auth = vi.hoisted(() => ({ permissions: [{ resource: '*', action: '*' }] as { resource: string; action: string }[] }));
 
 // This test targets the table-grid authoring UI (add/remove row+column, align,
 // zebra/headerStyle, submit wiring) — not TipTap internals, which
@@ -24,7 +28,7 @@ vi.mock('../../../stores/auth', () => ({
   ),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
-      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+      selector({ user: { permissions: auth.permissions } }),
     { getState: () => ({ tokens: null }) },
   ),
 }));
@@ -75,6 +79,7 @@ const detail: QuoteDetailData = {
 };
 
 const addBlockMock = vi.mocked(addBlock);
+const updateBlockMock = vi.mocked(updateBlock);
 
 async function openTableForm() {
   render(<QuoteEditor detail={detail} onChanged={vi.fn()} />);
@@ -218,5 +223,177 @@ describe('QuoteEditor — persisted table block', () => {
     expect(content).toHaveTextContent('Item');
     expect(content).toHaveTextContent('Router');
     expect(content).toHaveTextContent('Hardware');
+  });
+});
+
+// #3547: editing a persisted table used to mean delete-and-recreate. The edit
+// affordance reuses the create-form fields, prefilled from block.content, and
+// saves through the same updateBlock path the contract block established.
+describe('QuoteEditor — edit persisted table block', () => {
+  const tableBlock: QuoteBlock = {
+    id: 'blk-t', quoteId: 'q-1', orgId: 'org-1', blockType: 'table',
+    content: {
+      columns: [{ label: 'Item' }, { label: 'Notes', align: 'right' }],
+      rows: [{ cells: ['Router', 'Optional'] }],
+      caption: 'Hardware',
+    },
+    sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auth.permissions = [{ resource: '*', action: '*' }];
+  });
+
+  async function openEditor() {
+    render(<QuoteEditor detail={{ ...detail, blocks: [tableBlock] }} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  }
+
+  it('hides the edit affordance from a read-only viewer but still renders the table', async () => {
+    auth.permissions = [{ resource: 'quotes', action: 'read' }];
+    await openEditor();
+    expect(screen.getByTestId('quote-block-table-content-blk-t')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-table-blk-t-edit')).not.toBeInTheDocument();
+  });
+
+  it('prefills the grid from the persisted content when edit is opened', async () => {
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-column-label-0')).toHaveValue('Item');
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-column-label-1')).toHaveValue('Notes');
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-column-align-1')).toHaveValue('right');
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0')).toHaveValue('Router');
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-1')).toHaveValue('Optional');
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-caption')).toHaveValue('Hardware');
+    // The read-only render is replaced by the form while editing.
+    expect(screen.queryByTestId('quote-block-table-content-blk-t')).not.toBeInTheDocument();
+  });
+
+  it('saving PATCHes the edited grid through updateBlock and closes the form', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-t' }));
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+
+    fireEvent.change(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0'), { target: { value: 'Switch' } });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-save'));
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-t', {
+      blockType: 'table',
+      content: {
+        columns: [{ label: 'Item' }, { label: 'Notes', align: 'right' }],
+        rows: [{ cells: ['Switch', 'Optional'] }],
+        caption: 'Hardware',
+        zebra: false,
+        headerStyle: 'plain',
+      },
+    }));
+    // Form closes on success, returning the canvas to the rendered table.
+    await waitFor(() => expect(screen.queryByTestId('quote-block-table-blk-t-edit-form')).not.toBeInTheDocument());
+  });
+
+  it('keeps grid mutations shape-valid: adding a column pads the persisted row', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-t' }));
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-form-add-column'));
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-save'));
+
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-t', expect.objectContaining({
+      content: expect.objectContaining({
+        columns: [{ label: 'Item' }, { label: 'Notes', align: 'right' }, { label: '' }],
+        rows: [{ cells: ['Router', 'Optional', ''] }],
+      }),
+    })));
+  });
+
+  it('cancel discards the draft without PATCHing, and reopening shows the persisted content again', async () => {
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0'), { target: { value: 'Discarded' } });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-cancel'));
+
+    expect(updateBlockMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('quote-block-table-content-blk-t')).toHaveTextContent('Router');
+
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0')).toHaveValue('Router');
+  });
+
+  it('a failed save surfaces the error and leaves the form open with the draft intact', async () => {
+    updateBlockMock.mockResolvedValue(errRes());
+    await openEditor();
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0'), { target: { value: 'Switch' } });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-save'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0')).toHaveValue('Switch');
+  });
+});
+
+// Review follow-up (#3631): the defensive reshape in tableFormFromContent
+// DISCARDS content, so it must not be silent — and the paths it exists for
+// (out-of-cap / ragged legacy content) need real coverage.
+describe('QuoteEditor — persisted table needing reshape on edit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auth.permissions = [{ resource: '*', action: '*' }];
+  });
+
+  function renderWith(content: Record<string, unknown>) {
+    const block: QuoteBlock = {
+      id: 'blk-t', quoteId: 'q-1', orgId: 'org-1', blockType: 'table',
+      content, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
+    };
+    render(<QuoteEditor detail={{ ...detail, blocks: [block] }} onChanged={vi.fn()} />);
+    return waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+  }
+
+  it('pads a ragged row to columns.length and warns that saving replaces the stored table', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-t' }));
+    // Row has ONE cell for TWO columns — the shape the server schema rejects.
+    await renderWith({ columns: [{ label: 'Item' }, { label: 'Notes' }], rows: [{ cells: ['Router'] }] });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-reshaped')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-1')).toHaveValue('');
+
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-save'));
+    await waitFor(() => expect(updateBlockMock).toHaveBeenCalledWith('q-1', 'blk-t', expect.objectContaining({
+      content: expect.objectContaining({ rows: [{ cells: ['Router', ''] }] }),
+    })));
+  });
+
+  it('does not warn when the stored content already fits', async () => {
+    await renderWith({ columns: [{ label: 'Item' }], rows: [{ cells: ['Router'] }] });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    expect(screen.queryByTestId('quote-block-table-blk-t-edit-reshaped')).not.toBeInTheDocument();
+  });
+
+  it('truncates a table past the 8-column cap, warns, and disables add-column at the cap', async () => {
+    const columns = Array.from({ length: 10 }, (_, i) => ({ label: `C${i}` }));
+    await renderWith({ columns, rows: [{ cells: columns.map((_, i) => `v${i}`) }] });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-reshaped')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-column-label-7')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-block-table-blk-t-edit-form-column-label-8')).not.toBeInTheDocument();
+    // Already at the cap, so the grid cannot grow further.
+    expect(screen.getByTestId('quote-block-table-blk-t-edit-form-add-column')).toBeDisabled();
+  });
+
+  it('flashes the saved cue after a successful edit', async () => {
+    updateBlockMock.mockResolvedValue(okRes({ id: 'blk-t' }));
+    await renderWith({ columns: [{ label: 'Item' }], rows: [{ cells: ['Router'] }] });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit'));
+    fireEvent.change(screen.getByTestId('quote-block-table-blk-t-edit-form-cell-0-0'), { target: { value: 'Switch' } });
+    fireEvent.click(screen.getByTestId('quote-block-table-blk-t-edit-save'));
+
+    // The live region is always mounted — only its TEXT changes — so assert the
+    // announcement, not the element's presence (which would pass regardless).
+    expect(screen.getByTestId('quote-block-table-blk-t-saved')).toHaveTextContent('');
+    await waitFor(() => expect(screen.getByTestId('quote-block-table-blk-t-saved')).toHaveTextContent('Saved'));
   });
 });

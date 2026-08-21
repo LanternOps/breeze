@@ -3,11 +3,13 @@ import {
   useEffect,
   useMemo,
   useCallback,
+  useRef,
   type DragEvent,
   type FormEvent,
 } from "react";
 import { Plus, Pencil, Trash2, Shield, Play, X } from "lucide-react";
 import { fetchWithAuth } from "@/stores/auth";
+import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { asList } from "@/lib/asList";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
@@ -190,6 +192,9 @@ export default function DeviceGroupsPage() {
   const [selectedGroup, setSelectedGroup] = useState<DeviceGroup | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string>();
+  // All-orgs view injects no `?orgId=`, so a create needs an explicit owner org
+  // (the server would otherwise reject it with "orgId is required").
+  const fleet = useFleetOrgOwner();
   const EMPTY_FILTER: FilterConditionGroup = {
     operator: "AND",
     conditions: [{ field: "hostname", operator: "contains", value: "" }],
@@ -205,6 +210,16 @@ export default function DeviceGroupsPage() {
     new Set(),
   );
   const [assignmentQuery, setAssignmentQuery] = useState("");
+  // Membership on an existing static group is edited against the server's own
+  // answer, not the list payload: the diff on save issues DELETEs, so a stale
+  // baseline would drop rows the user never touched. `undefined` means "not
+  // loaded yet" and keeps the chooser disabled (#3615).
+  const [baselineDeviceIds, setBaselineDeviceIds] = useState<
+    string[] | undefined
+  >(undefined);
+  const [membershipLoading, setMembershipLoading] = useState(false);
+  const [membershipError, setMembershipError] = useState<string>();
+  const membershipRequestId = useRef(0);
   const [bulkScriptId, setBulkScriptId] = useState("");
   const [bulkPolicyId, setBulkPolicyId] = useState("");
   const [deleteReassignGroupId, setDeleteReassignGroupId] = useState("");
@@ -225,6 +240,15 @@ export default function DeviceGroupsPage() {
       : null,
     { enabled: true },
   );
+
+  // The chooser is inert until the server's membership answer is in hand: an
+  // unloaded or failed baseline makes every diff on save a guess.
+  const membershipUnavailable =
+    modalMode === "edit" &&
+    groupForm.type === "static" &&
+    (membershipLoading ||
+      baselineDeviceIds === undefined ||
+      Boolean(membershipError));
 
   const deviceById = useMemo(() => {
     return new Map(devices.map((device) => [device.id, device]));
@@ -275,7 +299,12 @@ export default function DeviceGroupsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth("/device-groups");
+      // `includeMemberships` is what puts `deviceIds` on each row. Without it
+      // every static group renders as empty and the drag-and-drop move is inert
+      // (its source-membership guard can never pass).
+      const response = await fetchWithAuth(
+        "/device-groups?includeMemberships=true",
+      );
       if (!response.ok) {
         throw new Error("Failed to fetch device groups");
       }
@@ -393,16 +422,91 @@ export default function DeviceGroupsPage() {
     setFormError(undefined);
   };
 
+  /**
+   * Current membership straight from the server.
+   *
+   * `GET /device-groups` only carries `deviceIds` when asked, and that copy is
+   * as old as the last list refresh. The edit diff turns "absent from the
+   * selection" into a DELETE, so the baseline it diffs against has to be the
+   * authoritative one read at modal-open time.
+   */
+  const fetchGroupMembership = useCallback(
+    async (groupId: string, options: { seedSelection?: boolean } = {}) => {
+      const seedSelection = options.seedSelection ?? true;
+      // Only the newest read may write state. Opening Edit on one group while
+      // another group's read is still in flight would otherwise let the stale
+      // response install ITS membership as this group's baseline — and the next
+      // Save would diff one group's device list against another's, moving
+      // devices between groups with no error shown.
+      const requestId = ++membershipRequestId.current;
+      const isCurrent = () => membershipRequestId.current === requestId;
+
+      setMembershipLoading(seedSelection);
+      setMembershipError(undefined);
+      if (seedSelection) setBaselineDeviceIds(undefined);
+      try {
+        const response = await fetchWithAuth(
+          `/device-groups/${groupId}/devices`,
+        );
+        if (!response.ok) {
+          throw new Error(t("deviceGroupsPage.failedToLoadGroupMembership"));
+        }
+        const body = await response.json();
+        const memberIds = asList<{ deviceId: string }>(body, "devices")
+          .map((member) => member.deviceId)
+          .filter((id): id is string => typeof id === "string");
+        if (!isCurrent()) return;
+        setBaselineDeviceIds(memberIds);
+        // A re-sync after a failed save keeps the user's unsaved picks — only
+        // the baseline they will be diffed against is refreshed.
+        if (seedSelection) {
+          setGroupForm((prev) => ({ ...prev, deviceIds: memberIds }));
+        }
+      } catch (err) {
+        if (!isCurrent()) return;
+        // Without a trustworthy baseline the chooser would misreport membership
+        // and silently no-op on save — say so instead of rendering a lie.
+        setMembershipError(
+          err instanceof Error
+            ? err.message
+            : t("deviceGroupsPage.failedToLoadGroupMembership"),
+        );
+      } finally {
+        if (isCurrent()) setMembershipLoading(false);
+      }
+    },
+    [],
+  );
+
   const handleOpenCreate = () => {
     setSelectedGroup(null);
     resetForm();
+    // Start each create fresh — the hook is page-level, so a prior fleet pick
+    // would otherwise linger across close/reopen.
+    fleet.setOrgId("");
+    setBaselineDeviceIds([]);
+    setMembershipError(undefined);
+    setMembershipLoading(false);
     setModalMode("create");
   };
 
   const handleOpenEdit = (group: DeviceGroup) => {
     setSelectedGroup(group);
     resetForm(group);
+    setMembershipError(undefined);
     setModalMode("edit");
+    if (group.type === "static") {
+      void fetchGroupMembership(group.id);
+    } else {
+      // A dynamic group has no manual membership to diff against — its members
+      // are the server's evaluation, not an authored list. If the user converts
+      // it to static here, the chooser starts empty and every pick is an
+      // addition; re-POSTing the evaluated set would forge manual memberships
+      // the user never asked for.
+      setBaselineDeviceIds([]);
+      setGroupForm((prev) => ({ ...prev, deviceIds: [] }));
+      setMembershipLoading(false);
+    }
   };
 
   const handleOpenDelete = (group: DeviceGroup) => {
@@ -418,6 +522,9 @@ export default function DeviceGroupsPage() {
     setBulkScriptId("");
     setBulkPolicyId("");
     setDeleteReassignGroupId("");
+    setBaselineDeviceIds(undefined);
+    setMembershipError(undefined);
+    setMembershipLoading(false);
   };
 
   const getGroupDeviceIds = (group: DeviceGroup): string[] => {
@@ -441,26 +548,42 @@ export default function DeviceGroupsPage() {
     return getGroupDeviceIds(group).length;
   };
 
-  const updateGroup = async (
-    group: DeviceGroup,
-    overrides: Partial<DeviceGroup> = {},
+  /**
+   * Apply a membership change through the membership endpoints.
+   *
+   * Membership is NOT part of the group's definition: `PATCH /device-groups/:id`
+   * has no `deviceIds` field, so folding membership into it is a write that
+   * silently does nothing (#3554). Adds go to `POST /:id/devices` in one call;
+   * removals are one `DELETE /:id/devices/:deviceId` each, because the API
+   * offers no bulk-remove verb.
+   */
+  const applyMembershipChanges = async (
+    groupId: string,
+    change: { add: string[]; remove: string[] },
   ) => {
-    const nextGroup = { ...group, ...overrides };
-    // No `rules` key: this is a device-assignment write, and omitting the
-    // legacy column leaves whatever a pre-FilterBuilder group already had.
-    const payload = {
-      name: nextGroup.name,
-      type: nextGroup.type,
-      deviceIds: nextGroup.type === "static" ? (nextGroup.deviceIds ?? []) : [],
+    const failed = async (response: Response) => {
+      const body = (await response.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      throw new Error(
+        body?.error ?? t("deviceGroupsPage.failedToUpdateGroupMembership"),
+      );
     };
 
-    const response = await fetchWithAuth(`/device-groups/${nextGroup.id}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-    });
+    if (change.add.length > 0) {
+      const response = await fetchWithAuth(`/device-groups/${groupId}/devices`, {
+        method: "POST",
+        body: JSON.stringify({ deviceIds: change.add }),
+      });
+      if (!response.ok) await failed(response);
+    }
 
-    if (!response.ok) {
-      throw new Error("Failed to update group");
+    for (const deviceId of change.remove) {
+      const response = await fetchWithAuth(
+        `/device-groups/${groupId}/devices/${deviceId}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) await failed(response);
     }
   };
 
@@ -469,6 +592,11 @@ export default function DeviceGroupsPage() {
     const trimmedName = groupForm.name.trim();
     if (!trimmedName) {
       setFormError("Group name is required.");
+      return;
+    }
+    // A new group must land in one org; edits keep the group's existing owner.
+    if (modalMode === "create" && fleet.needsOrgSelection) {
+      setFormError(t("common:layout.orgRequired.title"));
       return;
     }
     if (groupForm.type === "dynamic") {
@@ -503,6 +631,12 @@ export default function DeviceGroupsPage() {
         type: groupForm.type,
       };
 
+      // A create carries the concrete owner org in the body (the focused org, or
+      // the fleet picker's choice); edits never move a group between orgs.
+      if (!isEdit && fleet.bodyOrgId) {
+        payload.orgId = fleet.bodyOrgId;
+      }
+
       if (isDynamic) {
         payload.filterConditions = groupForm.filterConditions;
       } else if (isEdit) {
@@ -510,9 +644,10 @@ export default function DeviceGroupsPage() {
         // differently (#3159). EDIT must send an explicit `null`, because the
         // update route reads `undefined` as "leave the filter alone"; omitting
         // it would strand a stale filter on a group converted from dynamic to
-        // static. Membership is NOT sent on edit: the PATCH route ignores
-        // deviceIds, so sending it would silently no-op (#3554 follow-up) — the
-        // static device chooser is create-only for the same reason.
+        // static. Membership is still NOT in this payload — the PATCH route has
+        // no `deviceIds` field — but it is no longer dropped either: the chooser
+        // is offered on edit and its diff goes to the membership endpoints
+        // below (#3615).
         payload.filterConditions = null;
       } else {
         // Devices are only meaningful for a static group. The create route
@@ -542,6 +677,36 @@ export default function DeviceGroupsPage() {
         throw new Error(
           body?.error ?? t("deviceGroupsPage.failedToSaveDeviceGroup"),
         );
+      }
+
+      // Membership rides its own endpoints, and only on edit — create already
+      // carried `deviceIds` in the POST body. The group definition is saved
+      // first so a dynamic→static conversion is committed before the membership
+      // calls, which the API rejects on a dynamic group.
+      if (isEdit && !isDynamic) {
+        if (baselineDeviceIds === undefined) {
+          // Membership never loaded. Diffing against a guessed baseline is how
+          // a "Save" removes devices the user never deselected.
+          throw new Error(t("deviceGroupsPage.failedToLoadGroupMembership"));
+        }
+        const baseline = baselineDeviceIds;
+        const selected = groupForm.deviceIds;
+        try {
+          await applyMembershipChanges(selectedGroup!.id, {
+            add: selected.filter((id) => !baseline.includes(id)),
+            remove: baseline.filter((id) => !selected.includes(id)),
+          });
+        } catch (membershipErr) {
+          // Removals are one call per device, so a failure can leave the group
+          // half-applied. Re-read the baseline (keeping the user's picks) before
+          // surfacing the error: a retry against the pre-save baseline would
+          // re-DELETE an already-removed device, which the API 404s.
+          await fetchGroupMembership(selectedGroup!.id, {
+            seedSelection: false,
+          });
+          await fetchGroups();
+          throw membershipErr;
+        }
       }
 
       await fetchGroups();
@@ -691,10 +856,19 @@ export default function DeviceGroupsPage() {
     setDragOverGroupId(null);
 
     try {
-      await Promise.all([
-        updateGroup(sourceGroup, { deviceIds: nextSourceIds }),
-        updateGroup(targetGroup, { deviceIds: nextTargetIds }),
-      ]);
+      // One device moves between two static groups: remove it there, add it
+      // here. This used to go through a `PUT /device-groups/:id` that has no
+      // handler at all (#3554) and carried a `deviceIds` the update route
+      // ignores regardless — the optimistic state above was the only thing that
+      // ever changed.
+      await applyMembershipChanges(sourceGroup.id, {
+        add: [],
+        remove: [dragPayload.deviceId],
+      });
+      await applyMembershipChanges(targetGroup.id, {
+        add: [dragPayload.deviceId],
+        remove: [],
+      });
     } catch (err) {
       setError(
         err instanceof Error
@@ -1045,6 +1219,27 @@ export default function DeviceGroupsPage() {
             </div>
 
             <form className="mt-6 space-y-6" onSubmit={handleSubmitGroup}>
+              {modalMode === "create" && fleet.isFleetScope && (
+                <div>
+                  <label className="text-sm font-medium">
+                    {t("common:labels.organization")}
+                  </label>
+                  <select
+                    value={fleet.orgId}
+                    onChange={(event) => fleet.setOrgId(event.target.value)}
+                    className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="" disabled>
+                      {t("common:layout.org.noSelection")}
+                    </option>
+                    {fleet.organizations.map((org) => (
+                      <option key={org.id} value={org.id}>
+                        {org.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <div>
                   <label className="text-sm font-medium">
@@ -1139,10 +1334,12 @@ export default function DeviceGroupsPage() {
                     onRefresh={formPreviewRefresh}
                   />
                 </div>
-              ) : modalMode === "create" ? (
-                // Static membership is editable on CREATE only: the update route
-                // ignores deviceIds (#3554), so offering the chooser on edit
-                // would let a "Save" silently drop membership changes.
+              ) : (
+                // Static membership is editable on create AND edit. Create
+                // carries `deviceIds` in the POST body; edit diffs the selection
+                // against the server's current membership and drives the
+                // `/:id/devices` endpoints (#3615) — the PATCH route still has
+                // no membership field, so nothing is folded into it.
                 <div className="rounded-md border bg-muted/20 p-4">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -1170,11 +1367,20 @@ export default function DeviceGroupsPage() {
                       placeholder={t(
                         "deviceGroupsPage.searchDevicesByHostnameOrTag",
                       )}
-                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      disabled={membershipUnavailable}
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                     />
                   </div>
                   <div className="mt-3 max-h-56 overflow-y-auto space-y-2">
-                    {filteredAssignmentDevices.length === 0 ? (
+                    {membershipLoading ? (
+                      <p className="text-xs text-muted-foreground">
+                        {t("deviceGroupsPage.loadingGroupMembership")}
+                      </p>
+                    ) : membershipError ? (
+                      <p className="text-xs text-destructive">
+                        {membershipError}
+                      </p>
+                    ) : filteredAssignmentDevices.length === 0 ? (
                       <p className="text-xs text-muted-foreground">
                         {t("deviceGroupsPage.noDevicesMatchYourSearch")}
                       </p>
@@ -1189,6 +1395,7 @@ export default function DeviceGroupsPage() {
                             <input
                               type="checkbox"
                               checked={checked}
+                              disabled={membershipUnavailable}
                               onChange={(event) => {
                                 const isChecked = event.target.checked;
                                 setGroupForm((prev) => {
@@ -1224,7 +1431,7 @@ export default function DeviceGroupsPage() {
                     )}
                   </div>
                 </div>
-              ) : null}
+              )}
 
               {formError && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -1242,7 +1449,11 @@ export default function DeviceGroupsPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={
+                    submitting ||
+                    membershipUnavailable ||
+                    (modalMode === "create" && fleet.needsOrgSelection)
+                  }
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting

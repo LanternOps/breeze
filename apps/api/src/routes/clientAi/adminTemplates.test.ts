@@ -20,6 +20,7 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', {
       scope: authState.scope,
       partnerId: authState.partnerId,
+      partnerOrgAccess: authState.scope === 'partner' ? 'all' : null,
       orgId: authState.scope === 'organization' ? '0c0c0c0c-1111-4222-8333-444455556666' : null,
       accessibleOrgIds: ['0c0c0c0c-1111-4222-8333-444455556666'],
       user: { id: 'ce11ce11-1111-4222-8333-444455556666', email: 'msp@example.com' },

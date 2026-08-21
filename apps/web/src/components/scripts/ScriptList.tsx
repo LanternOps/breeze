@@ -92,7 +92,15 @@ export default function ScriptList({
   timezone,
   organizations = [],
 }: ScriptListProps) {
-  const { t } = useTranslation('scripts');
+  // `scripts` stays the default namespace, so every existing `t('scriptList.…')`
+  // call is unaffected; `common` is added for the pagination labels below.
+  const { t } = useTranslation(['scripts', 'common']);
+  // The pagination arrows are icon-only, so their accessible name has to come
+  // from an aria-label — a screen reader announced them as unlabelled buttons
+  // (#3452). Reuses the shared `common:actions.*` pair ConfigPolicyList already
+  // uses rather than minting a scripts-namespace duplicate.
+  const previousPageLabel = t('common:actions.previousPage');
+  const nextPageLabel = t('common:actions.nextPage');
   const [query, setQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [languageFilter, setLanguageFilter] = useState<string>('all');
@@ -403,9 +411,11 @@ export default function ScriptList({
               type="button"
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
+              title={previousPageLabel}
+              aria-label={previousPageLabel}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
             </button>
             <span className="text-sm">
               {t('scriptList.pagination.page', { page: currentPage, total: totalPages })}
@@ -414,9 +424,11 @@ export default function ScriptList({
               type="button"
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
+              title={nextPageLabel}
+              aria-label={nextPageLabel}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

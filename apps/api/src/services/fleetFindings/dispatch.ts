@@ -126,6 +126,87 @@ export function isTerminalRunStatus(status: FleetRunStatus): boolean {
   return status === 'succeeded' || status === 'failed' || status === 'partial' || status === 'cancelled';
 }
 
+/**
+ * THE single writer of `fleet_remediation_runs`' roll-up columns
+ * (`succeeded_count` / `failed_count` / `skipped_count`) and of the derived
+ * run `status`/`completed_at`. Every path that terminalizes a target must call
+ * this afterwards.
+ *
+ * Previously the roll-up was recomputed only by `pollRunProgress`, on its 30s
+ * scheduler, from an in-memory target snapshot it had read at the top of the
+ * function. Two consequences, both shipped:
+ *
+ *  1. `dispatchRunChunk`'s `markTargetSkipped`/`markTargetFailed` wrote the
+ *     target row and nothing else, so between a chunk finishing and the next
+ *     poll tick the run's counts read stale — typically all zeros. The web UI
+ *     was patched to count target rows itself (#3633), but every other
+ *     consumer (the `GET /fleet-findings/runs/:runId` and `GET
+ *     /fleet-findings/:id/runs` responses, AI tools, reports) still read the
+ *     stale columns. This is issue #3637.
+ *  2. The poll's snapshot could not see a concurrently-running chunk's writes,
+ *     so it wrote a *lower* count back over a fresher one.
+ *
+ * The fix is an ABSOLUTE recompute from the target rows — not a per-transition
+ * `count = count + 1`. Increments would be wrong here: `markTargetFailed` can
+ * legitimately fire twice for one target under a BullMQ chunk retry, so a
+ * relative write double-counts, and any drift an increment introduces is
+ * permanent. An absolute recompute is idempotent, self-correcting, and repairs
+ * rows that historical drift already corrupted. It is also *cheaper* than the
+ * increment design the issue considered and rejected: one run-wide write per
+ * chunk rather than one per target.
+ *
+ * `SELECT ... FOR UPDATE` before the aggregate is load-bearing, not defensive
+ * ceremony. Under READ COMMITTED the `UPDATE`'s subquery reads a snapshot taken
+ * at *statement* start, so without the lock two recomputes can interleave and
+ * the one that started earlier can overwrite the newer result with older
+ * counts — which would, in the worst case, reopen a run the poll worker had
+ * already terminalized and unscheduled, stranding it in `running` forever.
+ * Taking the row lock first forces the aggregate's snapshot to be taken after
+ * any competing recompute has committed.
+ *
+ * In-flight is counted directly (`pending`/`queued`) rather than derived as
+ * `target_count - succeeded - failed - skipped`. Deriving it from the
+ * denormalized `target_count` would defeat the point of a self-correcting
+ * recompute: a `target_count` that is too high pins the run in `running`
+ * forever, one that is too low terminalizes it while targets are still live.
+ *
+ * `status <> 'cancelled'` because cancellation is an operator decision about
+ * the run, not a fact about its targets — a recompute must never resurrect a
+ * cancelled run.
+ */
+export async function recalculateRunRollup(runId: string, now: Date = new Date()): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM fleet_remediation_runs WHERE id = ${runId}::uuid FOR UPDATE`);
+
+    await tx.execute(sql`
+      UPDATE fleet_remediation_runs AS r
+      SET succeeded_count = agg.succeeded,
+          failed_count = agg.failed,
+          skipped_count = agg.skipped,
+          status = CASE
+            WHEN agg.in_flight > 0 THEN 'running'
+            WHEN agg.succeeded > 0 AND (agg.failed > 0 OR agg.skipped > 0) THEN 'partial'
+            WHEN agg.succeeded > 0 THEN 'succeeded'
+            ELSE 'failed'
+          END,
+          completed_at = CASE
+            WHEN agg.in_flight > 0 THEN r.completed_at
+            ELSE COALESCE(r.completed_at, ${sqlTimestamp(now)})
+          END
+      FROM (
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+          COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped,
+          COUNT(*) FILTER (WHERE status IN ('pending', 'queued'))::int AS in_flight
+        FROM fleet_remediation_run_targets
+        WHERE run_id = ${runId}::uuid
+      ) AS agg
+      WHERE r.id = ${runId}::uuid AND r.status <> 'cancelled'
+    `);
+  });
+}
+
 function truncateSummary(value: string): string {
   return value.length > REMEDIATION_RESULT_SUMMARY_MAX ? value.slice(0, REMEDIATION_RESULT_SUMMARY_MAX) : value;
 }
@@ -374,7 +455,17 @@ async function markTargetFailed(runId: string, deviceId: string, message: string
       completedAt: new Date(),
     })
     .where(
-      and(eq(fleetRemediationRunTargets.runId, runId), eq(fleetRemediationRunTargets.targetDeviceUuid, deviceId))
+      and(
+        eq(fleetRemediationRunTargets.runId, runId),
+        eq(fleetRemediationRunTargets.targetDeviceUuid, deviceId),
+        // Same claim discipline as `markTargetSkipped`. Every caller reaches
+        // here having just won the `pending -> queued` claim, so the row is
+        // `queued` — but a BullMQ retry of the same chunk can replay this
+        // helper against a row another attempt already terminalized. Without
+        // the guard that replay rewrites a `succeeded` target as `failed`,
+        // which the roll-up then faithfully reports.
+        inArray(fleetRemediationRunTargets.status, ['pending', 'queued'])
+      )
     );
 }
 
@@ -398,10 +489,17 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   }
 
   if (run.status === 'queued') {
+    // CAS on `status = 'queued'`, not a bare id match. Several chunks for the
+    // same run execute concurrently and each read `queued` in its own SELECT
+    // above; with an id-only predicate a chunk that stalls between its read
+    // and its write can land `running` on top of a status the poll has since
+    // moved to terminal, un-finishing a completed run. Only the first chunk to
+    // get here wins, which is also what makes `startedAt` a stable value
+    // rather than whichever writer was last.
     await db
       .update(fleetRemediationRuns)
       .set({ status: 'running', startedAt: run.startedAt ?? new Date() })
-      .where(eq(fleetRemediationRuns.id, runId));
+      .where(and(eq(fleetRemediationRuns.id, runId), eq(fleetRemediationRuns.status, 'queued')));
   }
 
   // Page over ALL of the run's targets (not just `pending` ones), ordered by
@@ -421,7 +519,14 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
     .offset(chunkIndex * REMEDIATION_CHUNK_SIZE);
 
   const pendingTargets = targets.filter((t) => t.status === 'pending');
-  if (pendingTargets.length === 0) return;
+  if (pendingTargets.length === 0) {
+    // Still reconcile. A chunk finds nothing pending when every target in its
+    // page was already dispatched (a retry) or was written `skipped` at
+    // creation time — the latter is the all-skipped run, whose counts would
+    // otherwise sit stale until the first poll tick 30s later.
+    await recalculateRunRollup(runId);
+    return;
+  }
 
   // Resolve liveness for the whole chunk up front. `queueCommandForExecution`
   // rejects a non-online device with a plain error string, which
@@ -587,6 +692,13 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
       );
     }
   }
+
+  // ONE run-wide write per chunk, after the per-target loop — never inside it.
+  // This is the fix for #3637: without it the run's roll-up columns stay at
+  // their creation-time values until the next 30s poll tick, so every consumer
+  // other than the web UI (which counts target rows itself since #3633) reads
+  // stale counts for that whole window.
+  await recalculateRunRollup(runId);
 }
 
 /**
@@ -651,7 +763,6 @@ export async function pollRunProgress(runId: string): Promise<void> {
         status: nextStatus,
         summary: truncateSummary(JSON.stringify(command.result ?? {})),
       });
-      target.status = nextStatus;
       continue;
     }
 
@@ -666,7 +777,6 @@ export async function pollRunProgress(runId: string): Promise<void> {
         timedOutCommandIds.push(target.deviceCommandId);
       }
       timedOut.push(target.targetDeviceUuid);
-      target.status = 'failed';
     }
   }
 
@@ -685,7 +795,9 @@ export async function pollRunProgress(runId: string): Promise<void> {
       UPDATE fleet_remediation_run_targets AS t
       SET status = v.status, result_summary = v.summary, completed_at = ${sqlTimestamp(now)}
       FROM (VALUES ${values}) AS v(device_id, status, summary)
-      WHERE t.run_id = ${runId} AND t.target_device_uuid = v.device_id
+      WHERE t.run_id = ${runId}
+        AND t.target_device_uuid = v.device_id
+        AND t.status IN ('pending', 'queued')
     `);
   }
 
@@ -724,39 +836,23 @@ export async function pollRunProgress(runId: string): Promise<void> {
       .where(
         and(
           eq(fleetRemediationRunTargets.runId, runId),
-          inArray(fleetRemediationRunTargets.targetDeviceUuid, chunk)
+          inArray(fleetRemediationRunTargets.targetDeviceUuid, chunk),
+          // Both flush statements above classify from `inFlight`, a snapshot
+          // read at the top of this function. A dispatch chunk running
+          // concurrently can terminalize one of those rows in between, and
+          // without this predicate the flush overwrites that real outcome with
+          // a stale verdict — corrupting exactly the target rows the roll-up
+          // is then recomputed from.
+          inArray(fleetRemediationRunTargets.status, ['pending', 'queued'])
         )
       );
   }
 
-  const succeededCount = allTargets.filter((t) => t.status === 'succeeded').length;
-  const failedCount = allTargets.filter((t) => t.status === 'failed').length;
-  const skippedCount = allTargets.filter((t) => t.status === 'skipped').length;
-  const stillPending = run.targetCount - succeededCount - failedCount - skippedCount;
-
-  let status: FleetRunStatus;
-  if (stillPending > 0) {
-    status = 'running';
-  } else if (succeededCount > 0 && (failedCount > 0 || skippedCount > 0)) {
-    status = 'partial';
-  } else if (succeededCount > 0) {
-    status = 'succeeded';
-  } else {
-    status = 'failed';
-  }
-
-  const nowTerminal = isTerminalRunStatus(status);
-
-  await db
-    .update(fleetRemediationRuns)
-    .set({
-      succeededCount,
-      failedCount,
-      skippedCount,
-      status,
-      completedAt: nowTerminal ? run.completedAt ?? now : run.completedAt ?? null,
-    })
-    .where(eq(fleetRemediationRuns.id, runId));
+  // Recompute from the committed target rows, NOT from `allTargets` — that
+  // snapshot was read before the flushes above and cannot see a concurrent
+  // dispatch chunk's writes, so counting it wrote a stale roll-up back over a
+  // fresher one. The shared helper is now the only writer of these columns.
+  await recalculateRunRollup(runId, now);
 }
 
 /** `skip_reason` (varchar(80)) stamped on a run's still-`pending` targets when `enqueueRemediationDispatch` itself fails. */
@@ -785,33 +881,22 @@ export async function markRunDispatchFailed(
     .set({ status: 'skipped', skipReason: reason, completedAt: now })
     .where(and(eq(fleetRemediationRunTargets.runId, runId), eq(fleetRemediationRunTargets.status, 'pending')));
 
-  const allTargets = await db
-    .select()
-    .from(fleetRemediationRunTargets)
-    .where(eq(fleetRemediationRunTargets.runId, runId));
-
-  const succeededCount = allTargets.filter((t) => t.status === 'succeeded').length;
-  const failedCount = allTargets.filter((t) => t.status === 'failed').length;
-  const skippedCount = allTargets.filter((t) => t.status === 'skipped').length;
-  const inFlightCount = allTargets.filter((t) => t.status === 'queued').length;
-
-  if (inFlightCount > 0) {
-    // Partial enqueue: `upsertJobScheduler` succeeded and `addBulk` landed some
-    // chunks, so those chunks already claimed targets to `queued` and sent real
-    // commands to real devices. Forcing the run terminal here would make the
-    // poll scheduler remove itself on its next tick without ever reconciling
-    // them — the commands still execute, but their targets stay `queued`
-    // forever and the counts never add up. Record what we know and leave the
-    // run running; the poll owns convergence and will terminalize it.
-    await db
-      .update(fleetRemediationRuns)
-      .set({ status: 'running', succeededCount, failedCount, skippedCount })
-      .where(eq(fleetRemediationRuns.id, runId));
-    return;
-  }
-
-  await db
-    .update(fleetRemediationRuns)
-    .set({ status: 'failed', succeededCount, failedCount, skippedCount, completedAt: now })
-    .where(eq(fleetRemediationRuns.id, runId));
+  // The two branches this replaced hand-rolled the same derivation the shared
+  // helper performs, and reached the same answers:
+  //
+  //  - Partial enqueue (`upsertJobScheduler` succeeded and `addBulk` landed
+  //    some chunks, so real commands went to real devices): those targets are
+  //    still `queued`, the helper counts them as in-flight and holds the run at
+  //    `running` without stamping `completed_at`. Forcing the run terminal here
+  //    would make the poll scheduler remove itself on its next tick without
+  //    ever reconciling them. The poll still owns convergence.
+  //  - Nothing dispatched: every target is now `skipped`, no successes, so the
+  //    helper derives `failed` — the previous hard-coded value.
+  //
+  // One behaviour does change, deliberately: when some targets had already
+  // succeeded before the enqueue failure, the run is now `partial` rather than
+  // a blanket `failed`. `partial` is the truthful reading of those target rows,
+  // and it is what a run reaching the same target state by any other path
+  // already reports.
+  await recalculateRunRollup(runId, now);
 }

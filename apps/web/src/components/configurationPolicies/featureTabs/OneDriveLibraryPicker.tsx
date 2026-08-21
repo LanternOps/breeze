@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { X, Search, Cloud, Loader2, Plus, AlertTriangle, CloudOff } from 'lucide-react';
 import {
   fetchM365ConnectionStatus,
@@ -51,40 +51,70 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
   const [query, setQuery] = useState('');
   const [manualOpen, setManualOpen] = useState(false);
 
-  const loadLibraries = useCallback(async () => {
-    setPhase('loading');
-    setError(undefined);
-    try {
-      const { libraries: libs, skippedSites: skipped } = await fetchOneDriveLibraries(orgId);
-      setLibraries(libs);
-      setSkippedSites(skipped);
-      setPhase('ready');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load libraries.');
-      setPhase('error');
-    }
-  }, [orgId]);
+  // Generation token for the in-flight connection/library fetch. Every state
+  // write that happens after an `await` is gated on it, and the token is
+  // invalidated on unmount, on an `orgId` change, and on each Retry. Graph
+  // calls here are slow (a site enumeration plus a drive call per site), so
+  // closing the picker mid-flight — or retrying twice — is easy to do by hand:
+  // without the gate a late response either warns about setting state on an
+  // unmounted component or overwrites the newer request's result.
+  const requestRef = useRef(0);
+
+  const loadLibraries = useCallback(
+    async (token: number) => {
+      setPhase('loading');
+      setError(undefined);
+      try {
+        const { libraries: libs, skippedSites: skipped } = await fetchOneDriveLibraries(orgId);
+        if (token !== requestRef.current) return;
+        setLibraries(libs);
+        setSkippedSites(skipped);
+        setPhase('ready');
+      } catch (err) {
+        if (token !== requestRef.current) return;
+        setError(err instanceof Error ? err.message : 'Failed to load libraries.');
+        setPhase('error');
+      }
+    },
+    [orgId],
+  );
 
   // Check connection FIRST; only fetch libraries when actually connected.
-  const checkConnection = useCallback(async () => {
-    setPhase('checking');
-    setError(undefined);
-    try {
-      const connected = await fetchM365ConnectionStatus(orgId);
-      if (connected) {
-        await loadLibraries();
-      } else {
-        setPhase('disconnected');
+  const checkConnection = useCallback(
+    async (token: number) => {
+      setPhase('checking');
+      setError(undefined);
+      try {
+        const connected = await fetchM365ConnectionStatus(orgId);
+        if (token !== requestRef.current) return;
+        if (connected) {
+          await loadLibraries(token);
+        } else {
+          setPhase('disconnected');
+        }
+      } catch (err) {
+        if (token !== requestRef.current) return;
+        setError(err instanceof Error ? err.message : 'Failed to check the Microsoft 365 connection.');
+        setPhase('error');
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to check the Microsoft 365 connection.');
-      setPhase('error');
-    }
-  }, [orgId, loadLibraries]);
+    },
+    [orgId, loadLibraries],
+  );
+
+  // Claims a fresh token (invalidating whatever was in flight) and starts a load.
+  const startCheck = useCallback(() => {
+    requestRef.current += 1;
+    void checkConnection(requestRef.current);
+  }, [checkConnection]);
 
   useEffect(() => {
-    void checkConnection();
-  }, [checkConnection]);
+    startCheck();
+    // Bumping on cleanup invalidates the request this effect started, so a
+    // response that lands after unmount is dropped instead of setting state.
+    return () => {
+      requestRef.current += 1;
+    };
+  }, [startCheck]);
 
   // Group filtered libraries by site name, preserving first-seen order.
   const groups = useMemo(() => {
@@ -172,7 +202,7 @@ export default function OneDriveLibraryPicker({ orgId, onAdd, onClose }: OneDriv
               <button
                 type="button"
                 data-testid="onedrive-picker-retry"
-                onClick={() => void checkConnection()}
+                onClick={startCheck}
                 className="inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition hover:bg-muted"
               >
                 Retry

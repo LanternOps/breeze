@@ -137,6 +137,58 @@ describe('DeviceActivityFeed', () => {
     expect(onToggleCollapse).toHaveBeenCalledTimes(1);
   });
 
+  it('collapsed: shows a "0" count badge and appends the empty-state copy to aria-label when there is nothing to show (#3452)', async () => {
+    // Without this, an empty device rendered a bare "Activity" rail —
+    // indistinguishable from still-loading.
+    mockFeed([], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() => expect(within(bar).getByTestId('activity-rail-count')).toBeInTheDocument());
+    expect(within(bar).getByTestId('activity-rail-count')).toHaveTextContent('0');
+    expect(bar).toHaveAttribute('aria-label', 'Activity, No recent actions on this device.');
+  });
+
+  it('collapsed: does NOT claim "no recent actions" when the load failed', async () => {
+    // A failed first load leaves loading=false, itemCount=0 — identical to a
+    // genuinely empty device unless `error` is checked. Announcing the empty
+    // state there tells the tech something untrue about the endpoint, and the
+    // expanded card carrying "Couldn't load / Retry" is lg:hidden while
+    // collapsed (DeviceDetails defaults collapsed=true), so the rail is the
+    // only thing they see.
+    fetchWithAuthMock.mockImplementation(() => Promise.reject(new Error('network')));
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() =>
+      expect(bar).toHaveAttribute('aria-label', "Activity, Couldn't load activity.")
+    );
+    expect(bar.getAttribute('aria-label')).not.toContain('No recent actions');
+    // and no misleading muted "0"
+    expect(within(bar).queryByTestId('activity-rail-count')).toBeNull();
+  });
+
+  it('collapsed: announces the item count when there are events but no active alerts (#3452)', async () => {
+    // The badge is aria-hidden and an aria-label suppresses descendant text,
+    // so without the count in the label this everyday state announced a bare
+    // "Activity" and dropped the number entirely.
+    mockFeed([evt('e1'), evt('e2')], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() =>
+      expect(bar).toHaveAttribute('aria-label', 'Activity, 2 recent actions'),
+    );
+  });
+
+  it('collapsed: uses the singular form for a single item (#3452)', async () => {
+    mockFeed([evt('e1')], []);
+    render(<DeviceActivityFeed deviceId="dev-1" collapsed onToggleCollapse={() => {}} />);
+    const bar = await screen.findByTestId('activity-rail-collapsed');
+
+    await waitFor(() => expect(bar).toHaveAttribute('aria-label', 'Activity, 1 recent action'));
+  });
+
   it('expanded: the header chevron fires onToggleCollapse to collapse', async () => {
     mockFeed([evt('e1')], []);
     const onToggleCollapse = vi.fn();

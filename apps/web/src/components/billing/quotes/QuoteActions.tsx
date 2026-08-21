@@ -25,11 +25,54 @@ const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type TFunction = ReturnType<typeof useTranslation>['t'];
 
+/** Whether the "Copy share link" control is actually offered for this quote.
+ *
+ *  Mirrors assertLinkableQuote (services/quoteLifecycle.ts), which both the
+ *  resend and share-link services call: an OPEN, non-expired quote only.
+ *  Settled outcomes (accepted/declined/converted) and expired quotes are
+ *  excluded because resolving a link can MINT one — manufacturing a fresh
+ *  30-day credential for a finished proposal. The action is quotes:send, not
+ *  quotes:read: it hands the customer a live accept credential.
+ *
+ *  Exported shape rather than an inline expression because the send-failure
+ *  banner has to agree with the toolbar about it: the banner names the control
+ *  by label, and naming a control the reader cannot see is the very bug this
+ *  copy is meant to fix (#3431). */
+export function quoteShareLinkAvailable(
+  quote: Pick<Quote, 'status' | 'expiryDate'>,
+  canSendQuotes: boolean,
+): boolean {
+  const isOpen = quote.status === 'sent' || quote.status === 'viewed';
+  const isExpired =
+    quote.expiryDate != null && new Date(`${quote.expiryDate}T23:59:59Z`).getTime() < Date.now();
+  return canSendQuotes && isOpen && !isExpired;
+}
+
 /** The honest "marked Sent but no email was delivered" copy for a persisted
  *  email-failure reason. Shared by the post-flip toast below and the
  *  persistent banner — unknown codes fall back to the generic send-failed
- *  copy so a new server-side reason never renders blank. */
-function sendEmailWarningMessage(t: TFunction, reason: QuoteSendEmailReason | string, orgName: string): string {
+ *  copy so a new server-side reason never renders blank.
+ *
+ *  The hint naming the Copy share link control is appended only when the
+ *  control is actually on screen — pointing at a button that isn't there is
+ *  the very bug this copy exists to fix (#3431). The base strings therefore
+ *  promise nothing about sharing by hand; the hint carries that instruction
+ *  in full, so suppressing it leaves honest copy rather than a dead end.
+ *
+ *  `pdf_render_failed` is excluded from the hint even when the control IS
+ *  offered. That reason covers contract-input load and uploaded-contract merge
+ *  failures (quoteLifecycle.ts), and the public accept page re-runs the same
+ *  path (`renderContractBlocksForClient` / `loadContractBlockRenderData` in
+ *  routes/quotesPublic.ts) every time the link is opened. Recommending the
+ *  link here would send the customer at a page that fails for the identical
+ *  reason — its own copy ("check the attached contract files, then resend")
+ *  is the remedy that actually works. */
+function sendEmailWarningMessage(
+  t: TFunction,
+  reason: QuoteSendEmailReason | string,
+  orgName: string,
+  shareLinkAvailable = false,
+): string {
   const warnByReason: Record<QuoteSendEmailReason, string> = {
     no_billing_contact: t('quotes.actions.sendEmailWarning.noBillingContact', { orgName }),
     no_email_service: t('quotes.actions.sendEmailWarning.noEmailService'),
@@ -38,7 +81,14 @@ function sendEmailWarningMessage(t: TFunction, reason: QuoteSendEmailReason | st
     // Draft-only code; unreachable on a sent quote, mapped for exhaustiveness.
     schedule_failed: t('quotes.actions.sendEmailWarning.sendFailed'),
   };
-  return warnByReason[reason as QuoteSendEmailReason] ?? warnByReason.send_failed;
+  const message = warnByReason[reason as QuoteSendEmailReason] ?? warnByReason.send_failed;
+  if (!shareLinkAvailable || reason === 'pdf_render_failed') return message;
+  // Interpolating the control's own label keeps the name in the hint identical
+  // to the name on the button in every locale — a hand-translated duplicate
+  // would drift the moment either side is retranslated.
+  return `${message} ${t('quotes.actions.sendEmailWarning.shareLinkHint', {
+    action: t('quotes.actions.copyShareLink'),
+  })}`;
 }
 
 /** Persistent send-outcome banners. The toast-only surfacing race-depends on
@@ -54,6 +104,7 @@ function sendEmailWarningMessage(t: TFunction, reason: QuoteSendEmailReason | st
  *  on the default path for exactly the state it exists to surface. */
 export function QuoteSendOutcomeBanners({ quote, orgName }: { quote: Quote; orgName: string }) {
   const { t } = useTranslation('billing');
+  const { can } = usePermissions();
   const reason = quote.sendEmailReason;
   if (!reason) return null;
   // Draft guard: a live (future) schedule means the user already retried; the
@@ -72,7 +123,12 @@ export function QuoteSendOutcomeBanners({ quote, orgName }: { quote: Quote; orgN
         ? {
             testId: 'quote-email-not-delivered-banner',
             tone: 'border-warning/40 bg-warning/10 text-warning-foreground dark:text-warning',
-            message: sendEmailWarningMessage(t, reason, orgName),
+            message: sendEmailWarningMessage(
+              t,
+              reason,
+              orgName,
+              quoteShareLinkAvailable(quote, can('quotes', 'send')),
+            ),
           }
         : null;
   if (!banner) return null;
@@ -731,11 +787,23 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
     if (prev !== 'draft' || quote.status !== 'sent') return;
     const reason = quote.sendEmailReason;
     if (reason) {
-      showToast({ message: sendEmailWarningMessage(t, reason, orgName), type: 'warning' });
+      showToast({
+        message: sendEmailWarningMessage(
+          t,
+          reason,
+          orgName,
+          quoteShareLinkAvailable(quote, can('quotes', 'send')),
+        ),
+        type: 'warning',
+      });
     } else {
       showToast({ message: t('quotes.actions.sendSuccess', { orgName }), type: 'success' });
     }
-  }, [quote.status, quote.sendEmailReason, orgName, t]);
+    // Deps list the individual quote fields read here, not `quote` itself:
+    // keying on the whole object would re-run on every unrelated field the
+    // polling refresh brings in. (The prevStatusRef guard makes a re-run a
+    // no-op anyway, but the narrow list keeps that intent explicit.)
+  }, [quote.status, quote.sendEmailReason, quote.expiryDate, orgName, can, t]);
 
   const [undoing, setUndoing] = useState(false);
   const undoSend = useCallback(async () => {
@@ -768,16 +836,10 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
   const canSend = can('quotes', 'send') && isDraft;
   const canClone = can('quotes', 'write');
   const canDelete = can('quotes', 'write') && isDraft;
-  // Mirrors assertLinkableQuote (services/quoteLifecycle.ts), which both the
-  // resend and share-link services call: an OPEN, non-expired quote only.
-  // Settled outcomes (accepted/declined/converted) and expired quotes are
-  // excluded because resolving a link can MINT one — manufacturing a fresh
-  // 30-day credential for a finished proposal. Both actions are quotes:send,
-  // not quotes:read: each hands the customer a live accept credential.
-  const isOpen = quote.status === 'sent' || quote.status === 'viewed';
-  const isExpired = quote.expiryDate != null && new Date(`${quote.expiryDate}T23:59:59Z`).getTime() < Date.now();
-  const canResend = can('quotes', 'send') && isOpen && !isExpired;
-  const canShareLink = canResend;
+  // Resend and share-link share one gate (see quoteShareLinkAvailable above,
+  // which mirrors assertLinkableQuote in services/quoteLifecycle.ts).
+  const canShareLink = quoteShareLinkAvailable(quote, can('quotes', 'send'));
+  const canResend = canShareLink;
 
   // Nothing to show (e.g. a viewer on an issued quote) — render no empty container.
   if (!canSend && !can('quotes', 'read') && !canClone && !canDelete && !canResend) return null;

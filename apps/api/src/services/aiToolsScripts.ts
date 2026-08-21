@@ -870,7 +870,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     tier: 1,
     definition: {
       name: 'get_script_execution',
-      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this for runs started OUTSIDE the current tool call — e.g. the user clicked Test Run in the script editor, or you have an execution id from get_script_execution_history. It is not a way to recover a run_script call that timed out: run_script already returns that run\'s final recorded outcome.',
+      description: 'Get a single script execution by ID, including status, exit code, stdout, stderr, and timing. Use this for runs started OUTSIDE the current tool call — e.g. the user clicked Test Run in the script editor, or you have an execution id from get_script_execution_history. Also use it in exactly one other case: when run_script returned status "timeout" for a device, that means the 60s wait expired, NOT that the script failed — the device is still running it, and its real exit code and output land on the executionId run_script returned. Re-check that executionId before concluding anything about the script; do not "fix" a script on the strength of a timeout alone. For any other run_script outcome, the returned result is final — do not re-check it.',
       input_schema: {
         type: 'object' as const,
         properties: {

@@ -213,6 +213,32 @@ describe('contract template routes', () => {
     expect(svc.createDraftVersion).toHaveBeenCalledWith(expect.anything(), TEMPLATE_ID, { bodyHtml: '<p>New draft</p>' });
   });
 
+  // Issue #3520: the response envelope carries `warnings` beside `data` so a
+  // lossy save can't read as a clean success. Warnings never ride inside `data`.
+  it('POST /:id/versions surfaces stripped markup as top-level warnings, outside data', async () => {
+    const warnings = [{ code: 'UNSUPPORTED_HTML_TAGS_REMOVED', field: 'bodyHtml', removedTags: ['table'] }];
+    (svc.createDraftVersion as any).mockResolvedValue({
+      id: VERSION_ID,
+      versionNumber: 2,
+      sourceType: 'authored',
+      bodyHtml: '<p>New draft</p>',
+      status: 'draft',
+      orgId: ORG_ID,
+      partnerId: null,
+      warnings,
+    });
+    const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bodyHtml: '<p>New draft</p><table><tr><td>x</td></tr></table>' }),
+    });
+    expect(res.status).toBe(200); // still a success — the version saved
+    const body = await res.json();
+    expect(body.warnings).toEqual(warnings);
+    expect(body.data.warnings).toBeUndefined();
+    expect(body.data.versionNumber).toBe(2);
+  });
+
   it('POST /:id/versions rejects an empty bodyHtml (400, no service call)', async () => {
     const res = await app().request(`${BASE}/${TEMPLATE_ID}/versions`, {
       method: 'POST',
