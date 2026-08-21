@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import { FileText, AlertCircle } from 'lucide-react';
 import { type QuoteSummary } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -94,7 +95,7 @@ export function QuoteList({ quotes, error }: QuoteListProps) {
               {quotes.map((q) => (
                 <tr key={q.id} data-testid={`quote-row-${q.id}`} className="hover:bg-muted/50">
                   <td className="px-4 py-3">
-                    <a className="font-medium hover:underline" href={`/quotes/${q.id}`}>
+                    <a className="font-medium hover:underline" href={withBase(`/quotes/${q.id}`)}>
                       {q.quoteNumber ?? q.id.slice(0, 8)}
                     </a>
                   </td>

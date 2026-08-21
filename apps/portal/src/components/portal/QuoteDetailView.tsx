@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/basePath';
 import { useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
 import { type QuoteDetail, buildPortalApiUrl, portalApi } from '@/lib/api';
@@ -57,7 +58,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
         <p className="mt-1 text-sm text-muted-foreground">
           {error || 'The proposal you are looking for does not exist.'}
         </p>
-        <a href="/quotes" className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/quotes")} className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
           <ArrowLeft className="h-4 w-4" />
           Back to proposals
         </a>
@@ -141,7 +142,7 @@ export function QuoteDetailView({ detail, error }: QuoteDetailViewProps) {
   return (
     <div className="space-y-5" data-testid="quote-detail">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <a href="/quotes" className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+        <a href={withBase("/quotes")} className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
           <ArrowLeft className="h-4 w-4" />
           Back to proposals
         </a>
